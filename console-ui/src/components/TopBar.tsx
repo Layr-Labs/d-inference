@@ -6,7 +6,13 @@ import { Menu } from "lucide-react";
 import { E2ELockIndicator } from "./E2ELockIndicator";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 
-export function TopBar({ title }: { title?: string }) {
+export function TopBar({
+  title,
+  showChatPrivacy = true,
+}: {
+  title?: string;
+  showChatPrivacy?: boolean;
+}) {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);
   // Subscribe to derived primitives instead of the whole `chats` array so the
@@ -44,8 +50,10 @@ export function TopBar({ title }: { title?: string }) {
           <h1 className="text-base font-medium text-text-secondary">{title}</h1>
         )}
 
-        {/* E2E lock indicator — shown when there's an active chat */}
-        {hasMessages && (
+        {/* Only certified private-v2 chat results earn the E2E indicator. */}
+        {showChatPrivacy &&
+          hasMessages &&
+          lastTrust?.privacyTier === "private-v2-process-bound" && (
           <div className="ml-auto">
             <E2ELockIndicator
               trust={lastTrust}

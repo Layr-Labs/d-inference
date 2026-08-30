@@ -82,6 +82,8 @@ export interface TrustMetadata {
   mdaVerified: boolean;
   providerChip: string;
   providerModel: string;
+  privacyTier?: "private-v2-process-bound" | "legacy-coordinator-decryptable";
+  routeMode?: "public" | "self_route_only";
   // Attestation receipt fields (per-request SE signature)
   responseHash?: string;
   seSignature?: string;

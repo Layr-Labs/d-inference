@@ -66,7 +66,7 @@ function ChatMessageImpl({
   const isThinking = message.streaming && !message.content && !!message.thinking;
 
   return (
-    <div className="message-animate py-4">
+    <div className="message-animate py-4" data-dd-privacy="mask">
       <div className="max-w-4xl mx-auto px-3 sm:px-6">
         <div className="flex gap-2 sm:gap-3">
           {/* Avatar — hand-drawn style */}
@@ -85,6 +85,12 @@ function ChatMessageImpl({
                   <span className="hidden sm:inline"><TrustBadge trust={message.trust} /></span>
                   <span className="sm:hidden"><TrustBadge trust={message.trust} compact /></span>
                 </>
+              )}
+              {message.trust?.privacyTier === "private-v2-process-bound" && (
+                <span className="rounded-full border border-teal/30 bg-teal-light/40 px-2 py-0.5 text-[11px] font-semibold text-teal">
+                  Private v2 · process-bound
+                  {message.trust.routeMode === "self_route_only" && " · Self only"}
+                </span>
               )}
             </div>
 

@@ -161,6 +161,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case inferenceResponseChunk(InferenceResponseChunk)
     case inferenceComplete(InferenceComplete)
     case inferenceError(InferenceError)
+    case privateChunkV2(PrivateV2Chunk)
     case attestationResponse(AttestationResponse)
     case codeAttestationResponse(CodeAttestationResponse)
     case loadModelStatus(LoadModelStatus)
@@ -295,6 +296,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
         public var updateLifecycleState: UpdateLifecycleState?
         public var warmIntent: WarmIntent?
+        public var privateV2: Bool
 
 
         public init(
@@ -311,7 +313,8 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             updateLifecycleState: UpdateLifecycleState? = nil,
-            warmIntent: WarmIntent? = nil
+            warmIntent: WarmIntent? = nil,
+            privateV2: Bool = false
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -327,6 +330,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
             self.updateLifecycleState = updateLifecycleState
             self.warmIntent = warmIntent
+            self.privateV2 = privateV2
 
         }
     }
@@ -772,6 +776,7 @@ extension ProviderMessage: Codable {
         case inferenceResponseChunk = "inference_response_chunk"
         case inferenceComplete = "inference_complete"
         case inferenceError = "inference_error"
+        case privateChunkV2 = "private_chunk_v2"
         case attestationResponse = "attestation_response"
         case codeAttestationResponse = "code_attestation_response"
         case loadModelStatus = "load_model_status"
@@ -819,6 +824,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case privateV2 = "private_v2"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -836,6 +842,8 @@ extension ProviderMessage: Codable {
         case errorReason = "error_reason"
         case terminalCause = "terminal_cause"
         case attemptUsage = "attempt_usage"
+        // PrivateChunkV2
+        case sequence, terminal, ciphertext
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -951,6 +959,9 @@ extension ProviderMessage: Codable {
                 h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
             try container.encodeIfPresent(h.updateLifecycleState, forKey: .updateLifecycleState)
             try container.encodeIfPresent(h.warmIntent, forKey: .warmIntent)
+            if h.privateV2 {
+                try container.encode(true, forKey: .privateV2)
+            }
 
 
         case .inferenceAccepted(let a):
@@ -984,6 +995,18 @@ extension ProviderMessage: Codable {
             // wire shape is byte-identical (mirrors Go `omitempty`).
             try container.encodeIfPresent(e.terminalCause?.rawValue, forKey: .terminalCause)
             try container.encodeIfPresent(e.attemptUsage, forKey: .attemptUsage)
+
+        case .privateChunkV2(let chunk):
+            try container.encode(TypeValue.privateChunkV2, forKey: .type)
+            try container.encode(chunk.version, forKey: .version)
+            try container.encode(chunk.requestId, forKey: .requestId)
+            try container.encode(chunk.sequence, forKey: .sequence)
+            try container.encode(chunk.terminal, forKey: .terminal)
+            try container.encode(chunk.nonce, forKey: .nonce)
+            try container.encode(chunk.ciphertext, forKey: .ciphertext)
+            try container.encodeIfPresent(chunk.usage, forKey: .usage)
+            try container.encodeIfPresent(chunk.failureCode, forKey: .failureCode)
+            try container.encodeIfPresent(chunk.statusCode, forKey: .statusCode)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1184,7 +1207,9 @@ extension ProviderMessage: Codable {
                 updateLifecycleState: try container.decodeIfPresent(
                     UpdateLifecycleState.self, forKey: .updateLifecycleState),
                 warmIntent: try container.decodeIfPresent(
-                    WarmIntent.self, forKey: .warmIntent)
+                    WarmIntent.self, forKey: .warmIntent),
+                privateV2: try container.decodeIfPresent(
+                    Bool.self, forKey: .privateV2) ?? false
             ))
 
         case .inferenceAccepted:
@@ -1229,6 +1254,19 @@ extension ProviderMessage: Codable {
                 errorReason: errorReason,
                 terminalCause: terminalCause,
                 attemptUsage: try container.decodeIfPresent(UsageInfo.self, forKey: .attemptUsage)
+            ))
+
+        case .privateChunkV2:
+            self = .privateChunkV2(PrivateV2Chunk(
+                version: try container.decode(String.self, forKey: .version),
+                requestId: try container.decode(String.self, forKey: .requestId),
+                sequence: try container.decode(UInt64.self, forKey: .sequence),
+                terminal: try container.decode(Bool.self, forKey: .terminal),
+                nonce: try container.decode(String.self, forKey: .nonce),
+                ciphertext: try container.decode(String.self, forKey: .ciphertext),
+                usage: try container.decodeIfPresent(PrivateV2Usage.self, forKey: .usage),
+                failureCode: try container.decodeIfPresent(String.self, forKey: .failureCode),
+                statusCode: try container.decodeIfPresent(Int.self, forKey: .statusCode)
             ))
 
         case .attestationResponse:
@@ -1383,6 +1421,7 @@ extension ProviderMessage: Codable {
 
 public enum CoordinatorMessage: Sendable, Equatable {
     case inferenceRequest(InferenceRequest)
+    case privateRequestV2(PrivateV2Request)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
     case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
@@ -1521,7 +1560,11 @@ public enum CoordinatorMessage: Sendable, Equatable {
     /// the new build, drop the previous) and emit a models_update once verified.
     public struct DesiredModels: Sendable, Equatable {
         public var models: [DesiredModelEntry]
-        public init(models: [DesiredModelEntry]) { self.models = models }
+        public var generation: UInt64
+        public init(models: [DesiredModelEntry], generation: UInt64 = 0) {
+            self.models = models
+            self.generation = generation
+        }
     }
 
     /// Coordinator informs the provider of its current trust level and status
@@ -1588,6 +1631,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
 extension CoordinatorMessage: Codable {
     enum TypeValue: String, Codable {
         case inferenceRequest = "inference_request"
+        case privateRequestV2 = "private_request_v2"
         case cancel
         case attestationChallenge = "attestation_challenge"
         case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
@@ -1621,12 +1665,29 @@ extension CoordinatorMessage: Codable {
         case priority
         case trustLevel = "trust_level"
         case status, reason
-        case models
+        case models, generation
         case binaryHash = "binary_hash"
         case bundleHash = "bundle_hash"
         case metallibHash = "metallib_hash"
         case url, platform, backend, version
         case desiredGeneration = "desired_generation"
+        // PrivateRequestV2
+        case leaseId = "lease_id"
+        case routeId = "route_id"
+        case model, endpoint, stream, deadline
+        case transcriptDigest = "transcript_digest"
+        case processCertificateDigest = "process_certificate_digest"
+        case releaseBinaryHash = "release_binary_hash"
+        case modelManifestHash = "model_manifest_hash"
+        case releaseGeneration = "release_generation"
+        case modelGeneration = "model_generation"
+        case requestedMaxOutputTokens = "requested_max_output_tokens"
+        case routeMode = "route_mode"
+        case ownerBinding = "owner_binding"
+        case requiresVision = "requires_vision"
+        case kdfSalt = "kdf_salt"
+        case clientPublicKey = "client_public_key"
+        case ciphertext
 
     }
 
@@ -1648,6 +1709,33 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(
                 r.toolSchemaMetadataProtocol,
                 forKey: .toolSchemaMetadataProtocol)
+
+        case .privateRequestV2(let request):
+            try container.encode(TypeValue.privateRequestV2, forKey: .type)
+            try container.encode(request.version, forKey: .version)
+            try container.encode(request.leaseId, forKey: .leaseId)
+            try container.encode(request.requestId, forKey: .requestId)
+            try container.encode(request.routeId, forKey: .routeId)
+            try container.encode(request.model, forKey: .model)
+            try container.encode(request.endpoint, forKey: .endpoint)
+            try container.encode(request.stream, forKey: .stream)
+            try container.encode(request.deadline, forKey: .deadline)
+            try container.encode(request.transcriptDigest, forKey: .transcriptDigest)
+            try container.encode(
+                request.processCertificateDigest, forKey: .processCertificateDigest)
+            try container.encode(request.releaseBinaryHash, forKey: .releaseBinaryHash)
+            try container.encode(request.modelManifestHash, forKey: .modelManifestHash)
+            try container.encode(request.releaseGeneration, forKey: .releaseGeneration)
+            try container.encode(request.modelGeneration, forKey: .modelGeneration)
+            try container.encode(
+                request.requestedMaxOutputTokens, forKey: .requestedMaxOutputTokens)
+            try container.encode(request.routeMode, forKey: .routeMode)
+            try container.encode(request.ownerBinding, forKey: .ownerBinding)
+            try container.encode(request.requiresVision, forKey: .requiresVision)
+            try container.encode(request.kdfSalt, forKey: .kdfSalt)
+            try container.encode(request.clientPublicKey, forKey: .clientPublicKey)
+            try container.encode(request.nonce, forKey: .nonce)
+            try container.encode(request.ciphertext, forKey: .ciphertext)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1693,6 +1781,7 @@ extension CoordinatorMessage: Codable {
         case .desiredModels(let d):
             try container.encode(TypeValue.desiredModels, forKey: .type)
             try container.encode(d.models, forKey: .models)
+            try container.encode(d.generation, forKey: .generation)
 
         case .trustStatus(let t):
             try container.encode(TypeValue.trustStatus, forKey: .type)
@@ -1735,6 +1824,34 @@ extension CoordinatorMessage: Codable {
                     Int.self, forKey: .prefixCacheProtocol),
                 toolSchemaMetadataProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolSchemaMetadataProtocol)
+            ))
+
+        case .privateRequestV2:
+            self = .privateRequestV2(PrivateV2Request(
+                version: try container.decode(String.self, forKey: .version),
+                leaseId: try container.decode(String.self, forKey: .leaseId),
+                requestId: try container.decode(String.self, forKey: .requestId),
+                routeId: try container.decode(String.self, forKey: .routeId),
+                model: try container.decode(String.self, forKey: .model),
+                endpoint: try container.decode(PrivateV2Endpoint.self, forKey: .endpoint),
+                stream: try container.decode(Bool.self, forKey: .stream),
+                deadline: try container.decode(String.self, forKey: .deadline),
+                transcriptDigest: try container.decode(String.self, forKey: .transcriptDigest),
+                processCertificateDigest: try container.decode(
+                    String.self, forKey: .processCertificateDigest),
+                releaseBinaryHash: try container.decode(String.self, forKey: .releaseBinaryHash),
+                modelManifestHash: try container.decode(String.self, forKey: .modelManifestHash),
+                releaseGeneration: try container.decode(UInt64.self, forKey: .releaseGeneration),
+                modelGeneration: try container.decode(UInt64.self, forKey: .modelGeneration),
+                requestedMaxOutputTokens: try container.decode(
+                    UInt64.self, forKey: .requestedMaxOutputTokens),
+                routeMode: try container.decode(String.self, forKey: .routeMode),
+                ownerBinding: try container.decode(String.self, forKey: .ownerBinding),
+                requiresVision: try container.decode(Bool.self, forKey: .requiresVision),
+                kdfSalt: try container.decode(String.self, forKey: .kdfSalt),
+                clientPublicKey: try container.decode(String.self, forKey: .clientPublicKey),
+                nonce: try container.decode(String.self, forKey: .nonce),
+                ciphertext: try container.decode(String.self, forKey: .ciphertext)
             ))
 
         case .cancel:
@@ -1783,7 +1900,10 @@ extension CoordinatorMessage: Codable {
 
         case .desiredModels:
             self = .desiredModels(DesiredModels(
-                models: try container.decodeIfPresent([DesiredModelEntry].self, forKey: .models) ?? []
+                models: try container.decodeIfPresent(
+                    [DesiredModelEntry].self, forKey: .models) ?? [],
+                generation: try container.decodeIfPresent(
+                    UInt64.self, forKey: .generation) ?? 0
             ))
 
         case .trustStatus:

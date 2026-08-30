@@ -153,6 +153,7 @@ extension ProviderLoop {
         prefixCacheProtocol: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
+        privateV2: PrivateV2ExecutionContext? = nil,
         send: SendHandle
     ) async {
         logger.info("Processing inference request: \(requestId)")
@@ -179,6 +180,9 @@ extension ProviderLoop {
         defer {
             if !receiptTransferredToTask {
                 lookupReceiptFinalizer.finalize(failure: .policy)
+            }
+            if !receiptTransferredToTask {
+                privateV2?.writer.finish()
             }
         }
 
@@ -211,35 +215,41 @@ extension ProviderLoop {
             return
         }
 
-        // 1. Decrypt the request body. Both `ciphertext` and
-        // `senderPublicKey` are already base64-decoded by CoordinatorClient,
-        // so we hand the raw bytes straight to NodeKeyPair.decrypt.
-        guard let senderKey = senderPublicKey, senderKey.count == 32 else {
-            logger.error("[\(requestId)] missing or malformed sender public key")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
-                fallbackFailure: .policy,
-                send: send)
-            return
-        }
-
+        // 1. Private-v2 has already authenticated and transcript-validated the
+        // raw body inside this process. Legacy requests retain their NaCl-box
+        // decrypt path unchanged; there is no cross-protocol fallback.
+        let senderKey: Data?
         let decryptedData: Data
-        do {
-            decryptedData = try keyPair.decrypt(
-                senderPublicKey: senderKey,
-                ciphertext: ciphertext
-            )
-        } catch {
-            logger.error("[\(requestId)] request decryption failed")
-            lookupReceiptFinalizer.sendTerminal(
-                .inferenceError(
-                    requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
-                fallbackFailure: .policy,
-                send: send)
-            return
+        if let privateV2 {
+            senderKey = nil
+            decryptedData = privateV2.body
+        } else {
+            guard let key = senderPublicKey, key.count == 32 else {
+                logger.error("[\(requestId)] missing or malformed sender public key")
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    fallbackFailure: .policy,
+                    send: send)
+                return
+            }
+            senderKey = key
+            do {
+                decryptedData = try keyPair.decrypt(
+                    senderPublicKey: key,
+                    ciphertext: ciphertext
+                )
+            } catch {
+                logger.error("[\(requestId)] request decryption failed")
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
+                    fallbackFailure: .policy,
+                    send: send)
+                return
+            }
         }
 
         if rejectIfFirstContentDeadlineExpired(
@@ -475,6 +485,38 @@ extension ProviderLoop {
             return
         }
 
+        if let privateV2 {
+            let currentReleaseGeneration =
+                updateLifecycle.record.command?.desiredGeneration
+                ?? updateLifecycle.record.warmIntents.compactMap(\.desiredGeneration).max()
+                ?? 0
+            let loadedHashMatches = slot.loadedWeightHash.map {
+                PrivateV2Crypto.constantTimeEqual(
+                    Data($0.utf8),
+                    Data(privateV2.expectedModelManifestHash.utf8))
+            } ?? false
+            guard loadedHashMatches,
+                  currentReleaseGeneration == privateV2.releaseGeneration,
+                  desiredModelGeneration == privateV2.modelGeneration,
+                  !privateV2.requiresVision || slot.isVLM
+            else {
+                if requestToModel.removeValue(forKey: requestId) != nil {
+                    powerAssertion.release()
+                    syncWarmModelState()
+                    await updateAggregateCapacity()
+                }
+                await cancellationRegistry.finish(requestId: requestId)
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        failure: InferenceFailure(
+                            code: .modelUnavailable, statusCode: 409)),
+                    fallbackFailure: .policy,
+                    send: send)
+                return
+            }
+        }
+
         modelSlots[modelId]?.lastInferenceAt = .now
         syncWarmModelState()
 
@@ -497,7 +539,7 @@ extension ProviderLoop {
                 send: send)
             return
         }
-        let responsePublicKeyData: Data = senderKey
+        let responsePublicKeyData = senderKey
         let providerStats = self.stats
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
@@ -535,11 +577,12 @@ extension ProviderLoop {
         let logprobsChannel: EngineV2LogprobsChannel? =
             logprobsSpec != nil ? EngineV2LogprobsChannel() : nil
 
-        if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
-            firstContentDeadline,
-            requestId: requestId,
-            send: send,
-            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        if privateV2 == nil,
+           await rejectAcceptedRequestIfFirstContentDeadlineExpired(
+               firstContentDeadline,
+               requestId: requestId,
+               send: send,
+               lookupReceiptFinalizer: lookupReceiptFinalizer)
         {
             return
         }
@@ -559,6 +602,7 @@ extension ProviderLoop {
         let task = Task.detached {
             defer {
                 lookupReceiptFinalizer.finalize(failure: .policy)
+                privateV2?.writer.finish()
                 Task {
                     await registry.finish(requestId: requestId)
                     await me.finishInflightRequest(requestId: requestId)
@@ -585,36 +629,67 @@ extension ProviderLoop {
 
             if rejectExpiredDeadline() { return }
 
-            // Phase 3: precompute the DH shared secret once per request.
-            // This drops per-chunk encryption from ~150 us (full Curve25519
-            // scalar multiply + XSalsa20-Poly1305) to ~1-2 us (symmetric
-            // XSalsa20-Poly1305 only).  At ~1-2 us per chunk the synchronous
-            // approach does not measurably affect 80 TPS decode, making an
-            // async encryption queue unnecessary.
-            let sharedKey: Data
-            do {
-                sharedKey = try kp.precomputeSharedKey(
-                    recipientPublicKey: responsePublicKeyData
-                )
-            } catch {
-                log.error("[\(requestId)] response-key setup failed")
-                providerStats.incrementChunkEncryptionErrors()
-                lookupReceiptFinalizer.sendTerminal(
-                    .inferenceError(
-                        requestId: requestId,
-                        failure: InferenceFailure(
-                            code: .encryptionFailure, statusCode: 502)),
-                    fallbackFailure: .policy,
-                    send: send)
-                return
+            // Legacy keeps its precomputed NaCl shared key. Private-v2 already
+            // derived an independent HKDF response key and never enters this
+            // legacy response encryption format.
+            let sharedKey: Data?
+            if privateV2 == nil {
+                guard let responsePublicKeyData else {
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: InferenceFailure(
+                                code: .encryptionFailure, statusCode: 502)),
+                        fallbackFailure: .policy,
+                        send: send)
+                    return
+                }
+                do {
+                    sharedKey = try kp.precomputeSharedKey(
+                        recipientPublicKey: responsePublicKeyData)
+                } catch {
+                    log.error("[\(requestId)] response-key setup failed")
+                    providerStats.incrementChunkEncryptionErrors()
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            failure: InferenceFailure(
+                                code: .encryptionFailure, statusCode: 502)),
+                        fallbackFailure: .policy,
+                        send: send)
+                    return
+                }
+            } else {
+                sharedKey = nil
             }
             if rejectExpiredDeadline() { return }
 
-            /// Encrypts and emits an SSE frame string. Returns `false` if
-            /// encryption failed — callers must abort the inference task
-            /// immediately.  Uses the precomputed DH shared key so each
-            /// call is ~1-2 us (symmetric-only), not ~150 us.
             let emitSSE: @Sendable (String) -> Bool = { sseData in
+                if let privateV2 {
+                    // The upstream service emits SSE. Convert every endpoint
+                    // lifecycle/delta payload before process-local encryption.
+                    let payloads = privateV2.streamAdapter.payloads(fromSSE: sseData)
+                    do {
+                        for payload in payloads {
+                            try privateV2.writer.emit(payload: payload, terminal: false)
+                        }
+                        return true
+                    } catch {
+                        log.error("[\(requestId)] private-v2 response encryption failed")
+                        providerStats.incrementChunkEncryptionErrors()
+                        let code = InferenceFailureCode.internalFailure.rawValue
+                        _ = try? privateV2.writer.emit(
+                            payload: PrivateV2EndpointAdapter.errorPayload(
+                                endpoint: privateV2.endpoint,
+                                failureCode: code),
+                            terminal: true,
+                            failureCode: code,
+                            statusCode: 500)
+                        return false
+                    }
+                }
+
+                guard let sharedKey else { return false }
                 let encryptedPayload: EncryptedPayload
                 do {
                     encryptedPayload = try kp.encryptPayloadFast(
@@ -633,14 +708,6 @@ extension ProviderLoop {
                         send: send)
                     return false
                 }
-
-                // Direct send: bypass the OutboundRouter → AsyncStream →
-                // for-await control path (whose cooperative-pool consumer is
-                // starved ~30-40 ms per turn by CPU-bound MLX decode) and write
-                // the chunk straight to the live NWConnection off a dedicated
-                // serial queue. Ordering vs the terminal inference_complete is
-                // preserved by SendHandle.send's flush barrier. Falls back to the
-                // control path automatically if no direct sender is wired.
                 send.sendChunk(.inferenceChunk(
                     requestId: requestId,
                     data: "",

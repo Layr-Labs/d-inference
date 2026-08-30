@@ -44,6 +44,11 @@ type RequestTraits struct {
 	// provider frame cap; queued and retried routing must then stay on providers
 	// that send the unchanged, already-valid body.
 	MinPrefixCacheProtocol int
+	// RequiresPrivateV2 restricts selection to providers that explicitly
+	// advertise the additive private-v2 wire and whose current certified process
+	// is at the feature floor. It is coordinator-stamped; consumer JSON never
+	// controls it.
+	RequiresPrivateV2 bool
 }
 
 // CooldownShape returns the inference-error circuit-breaker dimension for the
@@ -198,6 +203,9 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 		return false
 	}
 	if t.RequiresToolConstraint && !providerSupportsToolConstraintLocked(p, model) {
+		return false
+	}
+	if t.RequiresPrivateV2 && !r.providerPrivateV2CapableLocked(p, time.Now()) {
 		return false
 	}
 	// Render-broken: applies to ALL requests for the model.

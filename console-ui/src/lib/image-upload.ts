@@ -4,7 +4,7 @@
 // constraint: the image must be an inline base64 `data:` URI (the provider is
 // end-to-end-encrypted and rejects remote URLs). So the browser reads the file,
 // validates it, and base64-encodes it client-side before it enters the
-// (sender→coordinator sealed) request body.
+// process-bound private-v2 request body.
 
 import type { ChatContentPart, Model } from "./api";
 
@@ -16,15 +16,24 @@ export const ALLOWED_IMAGE_TYPES = [
   "image/gif",
 ] as const;
 
-/** Max size per image. base64 inflates ~33%, and the whole request is sealed
- *  and sent inside the encrypted prompt, so keep this conservative. */
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
+/** Per-image and aggregate raw-byte limits keep base64 data URLs plus chat
+ * history below the private-v2 16 MiB decoded-ciphertext ceiling. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_IMAGE_AGGREGATE_BYTES = 8 * 1024 * 1024;
 
 /** Max images attached to a single message. */
 export const MAX_IMAGES_PER_MESSAGE = 4;
 
 function mb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
+}
+
+export function dataUrlDecodedBytes(value: string): number {
+  const comma = value.indexOf(",");
+  if (comma < 0) return 0;
+  const payload = value.slice(comma + 1);
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((payload.length * 3) / 4) - padding);
 }
 
 /**

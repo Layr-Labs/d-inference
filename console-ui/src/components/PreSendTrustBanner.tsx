@@ -51,9 +51,9 @@ export function PreSendTrustBanner({ visible }: { visible: boolean }) {
           <ShieldCheck size={16} className="text-teal shrink-0" />
           <p className="text-xs text-text-secondary flex-1 leading-relaxed">
             <span className="font-semibold text-text-primary">
-              End-to-end encrypted
+              Private v2 · process-bound
             </span>{" "}
-            &mdash; processed on Apple-verified hardware
+            &mdash; browser-to-provider encryption on Apple-verified hardware
             {summary && (
               <span className="text-text-tertiary">
                 {" "}

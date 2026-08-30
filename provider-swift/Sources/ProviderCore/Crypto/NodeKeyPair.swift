@@ -96,6 +96,41 @@ public struct NodeKeyPair: Sendable {
         publicKeyData
     }
 
+    /// Derives private-v2 request/response keys without exposing or persisting
+    /// the process X25519 secret.
+    public func privateV2KeyMaterial(
+        clientPublicKey: Data,
+        salt: Data,
+        transcriptDigest: Data
+    ) throws -> PrivateV2KeyMaterial {
+        guard clientPublicKey.count == 32 else {
+            throw CryptoError.invalidPublicKeyLength(got: clientPublicKey.count)
+        }
+        guard transcriptDigest.count == 32 else {
+            throw PrivateV2Error.invalidLength
+        }
+        let privateKey = try Curve25519.KeyAgreement.PrivateKey(
+            rawRepresentation: secretKeyBytes)
+        let peer = try Curve25519.KeyAgreement.PublicKey(
+            rawRepresentation: clientPublicKey)
+        let shared = try privateKey.sharedSecretFromKeyAgreement(with: peer)
+        var requestInfo = PrivateV2Protocol.requestInfoPrefix
+        requestInfo.append(transcriptDigest)
+        var responseInfo = PrivateV2Protocol.responseInfoPrefix
+        responseInfo.append(transcriptDigest)
+        return PrivateV2KeyMaterial(
+            requestKey: shared.hkdfDerivedSymmetricKey(
+                using: SHA256.self,
+                salt: salt,
+                sharedInfo: requestInfo,
+                outputByteCount: 32),
+            responseKey: shared.hkdfDerivedSymmetricKey(
+                using: SHA256.self,
+                salt: salt,
+                sharedInfo: responseInfo,
+                outputByteCount: 32))
+    }
+
     // MARK: - Decrypt
 
     /// Decrypt a NaCl box message.

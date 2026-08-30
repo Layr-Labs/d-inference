@@ -3,8 +3,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { trackEvent } from "@/lib/google-analytics";
 import {
+  dataUrlDecodedBytes,
   validateImageFile,
   fileToDataURL,
+  MAX_IMAGE_AGGREGATE_BYTES,
   MAX_IMAGES_PER_MESSAGE,
 } from "@/lib/image-upload";
 
@@ -43,6 +45,9 @@ export function useImageUpload(enabled: boolean): ImageUpload {
       if (!enabled || files.length === 0) return;
       setImgError(null);
       let remaining = MAX_IMAGES_PER_MESSAGE - images.length;
+      let remainingBytes =
+        MAX_IMAGE_AGGREGATE_BYTES -
+        images.reduce((total, image) => total + dataUrlDecodedBytes(image), 0);
       if (remaining <= 0) {
         setImgError(`You can attach up to ${MAX_IMAGES_PER_MESSAGE} images per message.`);
         return;
@@ -58,22 +63,42 @@ export function useImageUpload(enabled: boolean): ImageUpload {
           setImgError(err);
           continue;
         }
+        if (file.size > remainingBytes) {
+          setImgError("Attachments can use at most 8 MB total per private-v2 request.");
+          continue;
+        }
         try {
           accepted.push(await fileToDataURL(file));
           remaining -= 1;
+          remainingBytes -= file.size;
         } catch {
           setImgError("Failed to read one of the images. Try again.");
         }
       }
       if (accepted.length > 0) {
-        // Cap inside the updater: two overlapping intakes (e.g. a paste landing
-        // while a prior file read is still awaiting) both read the same stale
-        // `images.length` above, so enforce the limit against the latest state.
-        setImages((prev) => [...prev, ...accepted].slice(0, MAX_IMAGES_PER_MESSAGE));
+        setImages((prev) => {
+          const next = [...prev];
+          let bytes = prev.reduce(
+            (total, image) => total + dataUrlDecodedBytes(image),
+            0,
+          );
+          for (const image of accepted) {
+            const imageBytes = dataUrlDecodedBytes(image);
+            if (
+              next.length >= MAX_IMAGES_PER_MESSAGE ||
+              bytes + imageBytes > MAX_IMAGE_AGGREGATE_BYTES
+            ) {
+              break;
+            }
+            next.push(image);
+            bytes += imageBytes;
+          }
+          return next;
+        });
         trackEvent("chat_image_attached", { count: accepted.length });
       }
     },
-    [enabled, images.length]
+    [enabled, images]
   );
 
   const removeImage = useCallback((index: number) => {
@@ -108,11 +133,13 @@ export function useImageUpload(enabled: boolean): ImageUpload {
     },
     [addFiles]
   );
-
   return {
     images,
     imgError,
-    atLimit: images.length >= MAX_IMAGES_PER_MESSAGE,
+    atLimit:
+      images.length >= MAX_IMAGES_PER_MESSAGE ||
+      images.reduce((total, image) => total + dataUrlDecodedBytes(image), 0) >=
+        MAX_IMAGE_AGGREGATE_BYTES,
     fileInputRef,
     addFiles,
     removeImage,

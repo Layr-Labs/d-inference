@@ -5,7 +5,7 @@ import type { Message } from "@/lib/store";
 export function UserMessage({ message }: { message: Message }) {
   const hasImages = !!message.images && message.images.length > 0;
   return (
-    <div className="message-animate py-4">
+    <div className="message-animate py-4" data-dd-privacy="mask">
       <div className="max-w-4xl mx-auto px-3 sm:px-6 flex justify-end">
         <div className="max-w-[90%] sm:max-w-[80%] flex flex-col items-end gap-2">
           {hasImages && (

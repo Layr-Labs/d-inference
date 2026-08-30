@@ -189,6 +189,10 @@ func (s *Server) verifyProcessEvidenceV1(
 		attested.PublicKey, resp.ProcessEvidenceSignature, input); err != nil {
 		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, processEvidenceReasonSignatureInvalid
 	}
+	canonicalProcessEvidence, err := attestation.BuildProcessEvidenceCanonicalV1(input)
+	if err != nil {
+		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, processEvidenceReasonSignatureInvalid
+	}
 
 	snapshot := s.releaseTrustPolicy.Load()
 	if snapshot == nil || !snapshot.Required {
@@ -242,6 +246,8 @@ func (s *Server) verifyProcessEvidenceV1(
 		ChallengeGeneration:  expected.ChallengeGeneration,
 		ExpiresAt:            expected.ExpiresAt, PolicyGeneration: snapshot.Generation,
 		VerifiedAt: verifiedAt, MLXNAX: mlxNAX,
+		ProcessEvidenceCanonical: append([]byte(nil), canonicalProcessEvidence...),
+		ProcessEvidenceSignature: resp.ProcessEvidenceSignature,
 	}
 	evidence := registry.ApplicationEvidence{
 		SEPublicKey: attested.PublicKey, Serial: attested.SerialNumber,

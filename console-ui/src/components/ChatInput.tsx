@@ -203,7 +203,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 )}
               </div>
 
-              {/* My Machine (prefer self-route, paid fallback) toggle */}
+              {/* My Machine strict self-only route; private v2 never falls back. */}
               <button
                 type="button"
                 onClick={() => {
@@ -213,8 +213,8 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                 }}
                 title={
                   useMyMachine
-                    ? "Prefer your own machine (free when it serves). If it's offline or busy, this falls back to the paid network so you're never stuck."
-                    : "Prefer a Darkbloom node you run (free when it serves); falls back to the paid network if it can't"
+                    ? "Strict self-only routing is on. If your linked machine cannot serve this request, it fails without paid fallback."
+                    : "Route only to your linked machine. Unavailable or incompatible requests fail without paid fallback."
                 }
                 aria-pressed={useMyMachine}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border-2 transition-all ${
@@ -225,7 +225,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
               >
                 <Cpu size={12} />
                 <span className="hidden sm:inline">My Machine</span>
-                {useMyMachine && <span className="text-[10px] opacity-80">· Free, else paid</span>}
+                {useMyMachine && <span className="text-[10px] opacity-80">· Self only</span>}
               </button>
 
               {/* Image attach — only for vision models (e.g. Gemma 4) */}
@@ -243,7 +243,7 @@ export function ChatInput({ onSend, onStop, isStreaming, authenticated = true, o
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={isStreaming || atImageLimit}
-                    title={atImageLimit ? `Up to ${MAX_IMAGES_PER_MESSAGE} images` : "Attach image"}
+                    title={atImageLimit ? `Up to ${MAX_IMAGES_PER_MESSAGE} images or 8 MB total` : "Attach image"}
                     aria-label="Attach image"
                     className="flex items-center px-2.5 py-1.5 rounded-lg text-xs text-text-tertiary hover:text-text-secondary hover:bg-bg-hover border-2 border-transparent hover:border-border-subtle transition-all disabled:opacity-30 disabled:hover:bg-transparent"
                   >

@@ -47,6 +47,7 @@ const (
 	TypePrefixCacheReady        = "prefix_cache_ready"
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
 	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
+	TypePrivateChunkV2          = "private_chunk_v2"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest               = "inference_request"
@@ -59,9 +60,14 @@ const (
 	TypeDesiredModels                  = "desired_models"
 	TypeTrustStatus                    = "trust_status"
 	TypeReleaseUpdate                  = "release_update"
+	TypePrivateRequestV2               = "private_request_v2"
 	// Additive attestation capability/canonical transcript version.
 	ProcessEvidenceV1 = "process_evidence_v1"
 )
+
+// PrivateV2MaxOutputTokens leaves sequence-ledger headroom for terminal,
+// lifecycle, and tool events while bounding one encrypted chunk per token.
+const PrivateV2MaxOutputTokens uint64 = 8000
 
 // Update lifecycle values are frozen across coordinator/provider releases.
 const (
@@ -261,6 +267,7 @@ type PrivacyCapabilities struct {
 	AntiDebugEnabled        bool `json:"anti_debug_enabled"`
 	CoreDumpsDisabled       bool `json:"core_dumps_disabled"`
 	EnvScrubbed             bool `json:"env_scrubbed"`
+	PrivateV2               bool `json:"private_v2,omitempty"`
 }
 
 // HeartbeatMessage is sent periodically by connected providers.
@@ -485,6 +492,61 @@ type UsageInfo struct {
 	CachedTokens       int     `json:"cached_tokens,omitempty"`
 	PrefillTokensSaved int     `json:"prefill_tokens_saved,omitempty"`
 	CacheStageMs       float64 `json:"cache_stage_ms,omitempty"`
+}
+
+// PrivateUsageV2 is the only plaintext inference metadata permitted on a
+// private-v2 terminal chunk. It is content-free and exists solely for the
+// coordinator's existing billing and provider-reputation accounting.
+type PrivateUsageV2 struct {
+	PromptTokens     uint64 `json:"prompt_tokens"`
+	CompletionTokens uint64 `json:"completion_tokens"`
+	TotalTokens      uint64 `json:"total_tokens"`
+}
+
+// PrivateRequestV2Message carries an opaque, client-encrypted request to the
+// exact certified provider process selected during preflight. The coordinator
+// validates these outer fields against its one-use lease but never decrypts or
+// parses Ciphertext.
+type PrivateRequestV2Message struct {
+	Type                     string `json:"type"`
+	Version                  string `json:"version"`
+	LeaseID                  string `json:"lease_id"`
+	RequestID                string `json:"request_id"`
+	RouteID                  string `json:"route_id"`
+	Model                    string `json:"model"`
+	Endpoint                 string `json:"endpoint"`
+	Stream                   bool   `json:"stream"`
+	Deadline                 string `json:"deadline"`
+	TranscriptDigest         string `json:"transcript_digest"`
+	ProcessCertificateDigest string `json:"process_certificate_digest"`
+	ReleaseBinaryHash        string `json:"release_binary_hash"`
+	ModelManifestHash        string `json:"model_manifest_hash"`
+	ReleaseGeneration        uint64 `json:"release_generation"`
+	ModelGeneration          uint64 `json:"model_generation"`
+	RequestedMaxOutputTokens uint64 `json:"requested_max_output_tokens"`
+	RequiresVision           bool   `json:"requires_vision"`
+	RouteMode                string `json:"route_mode"`
+	OwnerBinding             string `json:"owner_binding"`
+	KDFSalt                  string `json:"kdf_salt"`
+	ClientPublicKey          string `json:"client_public_key"`
+	Nonce                    string `json:"nonce"`
+	Ciphertext               string `json:"ciphertext"`
+}
+
+// PrivateChunkV2Message carries an opaque AES-GCM response chunk. Nonce and
+// Ciphertext are relayed byte-for-byte to the consumer. Usage/failure metadata
+// is permitted only on Terminal chunks and must never contain payload text.
+type PrivateChunkV2Message struct {
+	Type        string          `json:"type"`
+	Version     string          `json:"version"`
+	RequestID   string          `json:"request_id"`
+	Sequence    uint64          `json:"sequence"`
+	Terminal    bool            `json:"terminal"`
+	Nonce       string          `json:"nonce"`
+	Ciphertext  string          `json:"ciphertext"`
+	Usage       *PrivateUsageV2 `json:"usage,omitempty"`
+	FailureCode string          `json:"failure_code,omitempty"`
+	StatusCode  int             `json:"status_code,omitempty"`
 }
 
 // PrefixCacheLookupMessage is a nonce-bound provider receipt describing the
@@ -717,8 +779,9 @@ type DesiredModelEntry struct {
 // filters accordingly, because a pre-feature provider's strict decoder throws on
 // unknown message types.
 type DesiredModelsMessage struct {
-	Type   string              `json:"type"`
-	Models []DesiredModelEntry `json:"models"`
+	Type       string              `json:"type"`
+	Generation uint64              `json:"generation"`
+	Models     []DesiredModelEntry `json:"models"`
 }
 
 // ReleaseUpdateMessage is the only coordinator command that authorizes a
@@ -942,6 +1005,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg InferenceResponseChunkMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal inference_response_chunk: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrivateChunkV2:
+		var msg PrivateChunkV2Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal private_chunk_v2: %w", err)
 		}
 		pm.Payload = &msg
 

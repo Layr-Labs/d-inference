@@ -352,6 +352,7 @@ Next steps:
          project (e.g. "darkbloom-console-dev"), set the root to console-ui/.
        - Configure environment variables:
            NEXT_PUBLIC_COORDINATOR_URL = https://api.dev.darkbloom.xyz
+           NEXT_PUBLIC_DARKBLOOM_PRIVATE_V2_RELEASE_HASHES = <comma-separated lowercase SHA-256 hashes of signed dev provider binaries>
        - Add the custom domain console.dev.darkbloom.xyz — Vercel will show
          the CNAME target (usually cname.vercel-dns.com); add it at step 2.
 

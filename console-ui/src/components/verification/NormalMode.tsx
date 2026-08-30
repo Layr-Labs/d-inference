@@ -43,9 +43,9 @@ export function NormalMode({
       color: "text-coral",
       title: "Data Protection",
       description:
-        "Your prompts are encrypted end-to-end. Not even Darkbloom servers can read them.",
-      info: "X25519 key exchange + XSalsa20-Poly1305 encryption (NaCl box). The coordinator only sees ciphertext.",
-      ok: true, // E2E is always active
+        "Your prompts are encrypted in this browser directly to the certified provider process.",
+      info: "Ephemeral X25519 + HKDF-SHA256 + AES-256-GCM. The browser verifies Apple-backed process evidence; the coordinator relays ciphertext only.",
+      ok: trust.privacyTier === "private-v2-process-bound",
     },
     {
       icon: Cpu,

@@ -4,17 +4,14 @@
 // transport/error/metrics plumbing is factored into the small helpers below
 // (proposal F1).
 
-import {
-  SEALED_CONTENT_TYPE,
-  clearCoordinatorKeyCache,
-  getCoordinatorKey,
-  isEncryptionEnabled,
-  sealRequest,
-  unsealResponse,
-  unsealSseEvent,
-} from "../encryption";
 import { STORAGE_KEYS } from "../constants";
 import { proxyHeaders } from "../http/proxy-client";
+import {
+  sealPrivateV2Request,
+  type PrivateV2PlainChunk,
+  type PrivateV2WireChunk,
+  type SealedPrivateV2Request,
+} from "../private-v2";
 import type {
   ChatMessage,
   StreamCallbacks,
@@ -24,58 +21,23 @@ import type {
 import { ThinkStreamParser } from "./think-parser";
 import { readSsePayloads } from "./sse";
 
-type SealContext = { ephemPriv: Uint8Array; coordPub: Uint8Array };
-
-/** Map an upstream error (status + message + error code) to user-facing copy. */
-function chatErrorMessage(status: number, msg: string, code?: string): string {
-  if (code === "no_linked_machine") {
-    return "No machine linked to your account — run `darkbloom login` on your Mac, then try again.";
-  }
-  if (code === "machine_offline") {
-    return "Your machine is offline — start your Darkbloom node and try again. (Free-only self-route won't fall back to the paid network.)";
-  }
-  if (code === "model_not_loaded") {
-    return "This model isn't loaded on your machine — load it on your node, then try again.";
-  }
-  if (code === "machine_busy") {
-    return "Your machine is busy — try again in a moment.";
-  }
-  if (status === 503 && msg.includes("queue timeout")) {
-    return "All providers are busy — please try again in a moment";
-  }
-  if (status === 402) {
-    return "Insufficient credits — buy credits in Billing to continue";
-  }
-  return `Request failed (${status}): ${msg}`;
-}
-
-/** Extract the provider trust metadata advertised on the response headers. */
-function extractTrustMeta(res: Response): TrustMetadata {
+function verifiedTrustMetadata(
+  destination: SealedPrivateV2Request["destination"],
+  model: string,
+  routeMode: SealedPrivateV2Request["routeMode"],
+): TrustMetadata {
   return {
-    attested: res.headers.get("x-provider-attested") === "true",
-    trustLevel: (res.headers.get("x-provider-trust-level") as TrustMetadata["trustLevel"]) || "none",
-    secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
-    mdaVerified: res.headers.get("x-provider-mda-verified") === "true",
-    providerChip: res.headers.get("x-provider-chip") || "",
-    providerModel: res.headers.get("x-provider-model") || "",
-    sePublicKey: res.headers.get("x-attestation-se-public-key") || undefined,
+    attested: true,
+    trustLevel: "hardware",
+    secureEnclave: true,
+    mdaVerified: true,
+    providerChip: "",
+    providerModel: model,
+    privacyTier: "private-v2-process-bound",
+    routeMode,
+    sePublicKey: destination.sePublicKey,
   };
 }
-
-/** Decode an error body (decrypting first when the response was sealed). */
-async function decodeErrorBody(res: Response, sealCtx: SealContext | null): Promise<string> {
-  let text = await res.text();
-  const errCt = res.headers.get("content-type") || "";
-  const errSealed =
-    sealCtx && (res.headers.get("x-eigen-sealed") === "true" ||
-      errCt.toLowerCase().startsWith(SEALED_CONTENT_TYPE));
-  if (errSealed && sealCtx) {
-    const pt = unsealResponse(text, sealCtx.ephemPriv, sealCtx.coordPub);
-    text = new TextDecoder().decode(pt);
-  }
-  return text;
-}
-
 /** Track TTFT / TPS / token count across the stream. */
 class StreamMetricsTracker {
   firstTokenTime = 0;
@@ -112,21 +74,58 @@ class StreamMetricsTracker {
   }
 }
 
-/** Build the (optionally sealed) request body + headers for /api/chat. */
-async function prepareBody(
-  requestBody: unknown,
-  selfRouteHeader: Record<string, string>,
-): Promise<{ headers: Record<string, string>; body: string; sealCtx: SealContext | null }> {
-  if (!isEncryptionEnabled()) {
-    return { headers: proxyHeaders(selfRouteHeader), body: JSON.stringify(requestBody), sealCtx: null };
+function privateV2Error(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string; code?: string } | string };
+    if (typeof parsed.error === "string") return `Private v2 failed (${status}): ${parsed.error}`;
+    if (parsed.error?.message) {
+      return `Private v2 failed (${status}): ${parsed.error.message}`;
+    }
+  } catch {
+    // Preserve the opaque coordinator error below.
   }
-  const coordKey = await getCoordinatorKey();
-  const sealed = sealRequest(requestBody, coordKey);
-  return {
-    headers: proxyHeaders({ "Content-Type": SEALED_CONTENT_TYPE, ...selfRouteHeader }),
-    body: sealed.envelopeJson,
-    sealCtx: { ephemPriv: sealed.ephemeralPrivateKey, coordPub: coordKey.publicKey },
-  };
+  return `Private v2 failed (${status}): ${body || "empty response"}`;
+}
+
+async function readBoundedErrorText(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const limit = 64 * 1024;
+  const bytes = new Uint8Array(limit);
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value.length > limit - length) {
+      await reader.cancel("private-v2 error response byte limit exceeded");
+      return "error response exceeded 64 KiB limit";
+    }
+    bytes.set(value, length);
+    length += value.length;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+  } catch {
+    return "error response was not valid UTF-8";
+  }
+}
+
+function chunkPayload(value: PrivateV2PlainChunk): Record<string, unknown> | null {
+  if (!value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) return null;
+  return value.payload as Record<string, unknown>;
+}
+
+function expireApiKey(): void {
+  localStorage.removeItem(STORAGE_KEYS.apiKey);
+  window.dispatchEvent(new Event("darkbloom-key-expired"));
+}
+
+function requiresVision(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"),
+  );
 }
 
 export async function streamChat(
@@ -136,128 +135,169 @@ export async function streamChat(
   signal?: AbortSignal,
   opts?: { selfRoute?: boolean },
 ): Promise<void> {
-  const requestBody = { model, messages, stream: true };
-  // "Use my machine": prioritize the caller's own provider (free when it serves)
-  // but fall back to the paid fleet. Carried as a header so it never enters the
-  // (optionally sealed) body.
-  const selfRouteHeader: Record<string, string> = opts?.selfRoute
-    ? { "X-Darkbloom-Route": "prefer" }
-    : {};
+  const endpoint = "chat.completions" as const;
+  const requestedMaxOutputTokens = 4096;
+  const vision = requiresVision(messages);
+  const routeMode = opts?.selfRoute ? "self_route_only" as const : "public" as const;
+  const requestBody = { model, messages, stream: true, max_tokens: requestedMaxOutputTokens };
+  const routeHeader = opts?.selfRoute ? { "X-Darkbloom-Route": "self" } : {};
+  const headers = proxyHeaders(routeHeader);
+  const tracker = new StreamMetricsTracker(performance.now());
 
-  let headers: Record<string, string>;
-  let body: string;
-  let sealCtx: SealContext | null;
+  const preflightResponse = await fetch("/api/private/preflight", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      endpoint,
+      stream: true,
+      requested_max_output_tokens: requestedMaxOutputTokens,
+      requires_vision: vision,
+    }),
+    signal,
+  });
+  if (!preflightResponse.ok) {
+    if (preflightResponse.status === 401) expireApiKey();
+    callbacks.onError(privateV2Error(
+      preflightResponse.status,
+      await readBoundedErrorText(preflightResponse),
+    ));
+    return;
+  }
+
+  let preflight: unknown;
   try {
-    ({ headers, body, sealCtx } = await prepareBody(requestBody, selfRouteHeader));
-  } catch (err) {
+    preflight = await preflightResponse.json();
+  } catch {
+    callbacks.onError("Private v2 preflight returned invalid JSON");
+    return;
+  }
+
+  let sealed: SealedPrivateV2Request;
+  try {
+    sealed = await sealPrivateV2Request(
+      preflight,
+      {
+        endpoint,
+        stream: true,
+        requestedMaxOutputTokens,
+        requiresVision: vision,
+        routeMode,
+      },
+      requestBody,
+    );
+  } catch (error) {
     callbacks.onError(
-      `Encryption setup failed: ${err instanceof Error ? err.message : String(err)} — disable "Encrypt to coordinator" in Settings to continue in plaintext.`,
+      `Private v2 cryptographic validation failed: ${error instanceof Error ? error.message : String(error)}`,
     );
     return;
   }
 
-  const tracker = new StreamMetricsTracker(performance.now());
-  const res = await fetch("/api/chat", { method: "POST", headers, body, signal });
-
-  // Stale cached rotation — drop the cache so the next attempt re-fetches.
-  if (sealCtx && res.status === 400) {
-    const text = await res.clone().text();
-    if (text.includes("kid_mismatch")) clearCoordinatorKeyCache();
-  }
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      localStorage.removeItem(STORAGE_KEYS.apiKey);
-      window.dispatchEvent(new Event("darkbloom-key-expired"));
-      callbacks.onError("Session expired — please try again");
+  try {
+    const response = await fetch("/api/private/requests", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(sealed.envelope),
+      signal,
+    });
+    if (!response.ok) {
+      if (response.status === 401) expireApiKey();
+      callbacks.onError(privateV2Error(
+        response.status,
+        await readBoundedErrorText(response),
+      ));
       return;
     }
-    let text: string;
-    try {
-      text = await decodeErrorBody(res, sealCtx);
-    } catch (err) {
-      callbacks.onError(
-        `Could not decrypt sealed error response: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    if (response.headers.get("x-darkbloom-privacy-tier") !== "private-v2-process-bound") {
+      callbacks.onError("Private v2 response was missing its process-bound privacy tier");
       return;
     }
-    try {
-      const errData = JSON.parse(text);
-      callbacks.onError(
-        chatErrorMessage(res.status, errData?.error?.message || text, errData?.error?.code),
-      );
-    } catch {
-      callbacks.onError(`Request failed (${res.status}): ${text}`);
+
+    const trustMeta = verifiedTrustMetadata(
+      sealed.destination,
+      sealed.model,
+      sealed.routeMode,
+    );
+    const reader = response.body?.getReader();
+    if (!reader) {
+      callbacks.onError("Private v2 response had no body");
+      return;
     }
-    return;
-  }
+    const think = new ThinkStreamParser(callbacks.onThinking, callbacks.onToken);
 
-  const trustMeta = extractTrustMeta(res);
-  const reader = res.body?.getReader();
-  if (!reader) {
-    callbacks.onError("No response body");
-    return;
-  }
+    const finish = () => {
+      think.flush();
+      tracker.emit(callbacks.onMetrics);
+      callbacks.onDone(trustMeta, tracker.snapshot());
+    };
 
-  const think = new ThinkStreamParser(callbacks.onThinking, callbacks.onToken);
-  const responseSealed = sealCtx !== null && res.headers.get("x-eigen-sealed") === "true";
-
-  const finish = () => {
-    think.flush();
-    tracker.emit(callbacks.onMetrics);
-    callbacks.onDone(trustMeta, tracker.snapshot());
-  };
-
-  for await (const rawPayload of readSsePayloads(reader)) {
-    let payload = rawPayload;
-    if (responseSealed && sealCtx) {
+    for await (const rawPayload of readSsePayloads(reader)) {
+      let wire: PrivateV2WireChunk;
       try {
-        const inner = unsealSseEvent(payload, sealCtx.ephemPriv, sealCtx.coordPub).trim();
-        payload = inner.startsWith("data: ") ? inner.slice(6) : inner;
-      } catch (err) {
+        wire = JSON.parse(rawPayload) as PrivateV2WireChunk;
+      } catch {
+        callbacks.onError("Private v2 response contained malformed encrypted framing");
+        return;
+      }
+
+      let plain: PrivateV2PlainChunk;
+      try {
+        plain = await sealed.session.decryptChunk(wire);
+      } catch (error) {
         callbacks.onError(
-          `Sealed stream decryption failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Private v2 response rejected: ${error instanceof Error ? error.message : String(error)}`,
         );
+        return;
+      }
+
+      const payload = chunkPayload(plain);
+      if (!payload && !plain.terminal) {
+        callbacks.onError("Private v2 response contained an invalid endpoint payload");
+        return;
+      }
+      if (payload?.error) {
+        const error = payload.error;
+        const message = typeof error === "object" && error
+          ? String((error as Record<string, unknown>).message || "provider error")
+          : String(error);
+        callbacks.onError(`Private v2 provider error: ${message}`);
+        return;
+      }
+
+      if (payload?.se_signature) {
+        trustMeta.seSignature = String(payload.se_signature);
+        trustMeta.responseHash = String(payload.response_hash || "");
+      } else if (payload) {
+        const choices = payload.choices;
+        const first = Array.isArray(choices) ? choices[0] : undefined;
+        const delta = first && typeof first === "object"
+          ? (first as Record<string, unknown>).delta
+          : undefined;
+        const deltaRecord = delta && typeof delta === "object"
+          ? delta as Record<string, unknown>
+          : undefined;
+        const content = typeof deltaRecord?.content === "string" ? deltaRecord.content : "";
+        const reasoningValue = deltaRecord?.reasoning_content ?? deltaRecord?.reasoning;
+        const reasoning = typeof reasoningValue === "string" ? reasoningValue : "";
+        if (reasoning || content) {
+          tracker.record();
+          if (reasoning) {
+            think.onReasoningStart();
+            callbacks.onThinking(reasoning);
+          }
+          if (content) think.handleContent(content);
+          if (tracker.tokenCount % 5 === 0) tracker.emit(callbacks.onMetrics);
+        }
+      }
+
+      if (plain.terminal) {
+        finish();
         return;
       }
     }
 
-    if (payload === "[DONE]") {
-      finish();
-      return;
-    }
-
-    // Attestation receipt event (sent just before [DONE]).
-    try {
-      const receipt = JSON.parse(payload);
-      if (receipt.se_signature) {
-        trustMeta.seSignature = receipt.se_signature;
-        trustMeta.responseHash = receipt.response_hash;
-        continue;
-      }
-    } catch {
-      // Not a receipt — fall through to normal chunk handling.
-    }
-
-    try {
-      const chunk = JSON.parse(payload);
-      const delta = chunk.choices?.[0]?.delta;
-      const content = delta?.content;
-      const reasoning = delta?.reasoning_content || delta?.reasoning;
-      if (reasoning || content) {
-        tracker.record();
-        if (reasoning) {
-          think.onReasoningStart();
-          callbacks.onThinking(reasoning);
-        }
-        if (content) think.handleContent(content);
-        if (tracker.tokenCount % 5 === 0) tracker.emit(callbacks.onMetrics);
-      }
-    } catch {
-      // skip malformed chunks
-    }
+    callbacks.onError("Private v2 stream ended before an authenticated terminal chunk");
+  } finally {
+    sealed.session.dispose();
   }
-
-  // Stream ended without an explicit [DONE].
-  finish();
 }

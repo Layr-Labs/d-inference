@@ -29,14 +29,20 @@ export default function ApiConsolePage() {
 
   return (
     <div className="flex flex-col h-full">
-      <TopBar title="API Console" />
+      <TopBar title="API Console" showChatPrivacy={false} />
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-6 space-y-8">
-          <div className="rounded-xl bg-accent-amber/5 border border-accent-amber/15 px-5 py-4">
+          <div className="rounded-xl bg-accent-amber/5 border border-accent-amber/20 px-5 py-4">
+            <div className="mb-2">
+              <span className="inline-flex rounded-full border border-accent-amber/25 bg-accent-amber/10 px-2.5 py-1 text-xs font-semibold text-accent-amber">
+                Legacy · coordinator-decryptable
+              </span>
+            </div>
             <p className="text-sm text-text-secondary leading-relaxed">
-              <span className="font-semibold text-text-primary">Darkbloom API</span>{" "}
-              — OpenAI-compatible. Swap your base URL, keep your existing code.
-              Every request is end-to-end encrypted and processed on hardware-attested Apple Silicon.
+              <span className="font-semibold text-text-primary">Darkbloom legacy API</span>{" "}
+              — OpenAI-compatible endpoints for existing SDK clients. The coordinator can decrypt
+              request and response plaintext on these endpoints. Use the Chat console for
+              process-bound private v2 encryption.
             </p>
           </div>
 

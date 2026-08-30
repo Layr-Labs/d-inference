@@ -3,18 +3,33 @@
 import { useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 
+export function privacySafeRumConfig(
+  applicationId: string,
+  clientToken: string,
+  site: string,
+) {
+  return {
+    applicationId,
+    clientToken,
+    site,
+    service: "darkbloom-console",
+    env: process.env.NEXT_PUBLIC_DD_ENV || "production",
+    version: process.env.NEXT_PUBLIC_APP_VERSION || "dev",
+    sessionSampleRate: 100,
+    sessionReplaySampleRate: 0,
+    startSessionReplayRecordingManually: true,
+    trackUserInteractions: true,
+    trackResources: true,
+    trackLongTasks: true,
+    enablePrivacyForActionName: true,
+    defaultPrivacyLevel: "mask" as const,
+  };
+}
+
 /**
- * Initializes Datadog Real User Monitoring (RUM) when the required env vars
- * are set. Tracks: page views, user interactions, browser errors, resources,
- * long tasks, and session replay.
- *
- * Env vars:
- *   NEXT_PUBLIC_DD_APPLICATION_ID -- DD RUM application ID
- *   NEXT_PUBLIC_DD_CLIENT_TOKEN   -- DD RUM client token
- *   NEXT_PUBLIC_DD_SITE           -- DD site (default "datadoghq.com")
- *
- * When authenticated, the user's identity (id + email) is attached to the
- * RUM session for user-scoped debugging in Datadog.
+ * Initializes metadata-only Datadog RUM when configured. Session replay is
+ * disabled and all DOM text is masked so prompts, responses, and rehydrated
+ * history cannot leave the browser through observability.
  */
 export function DatadogRUM() {
   const { user, authenticated } = useAuth();
@@ -31,23 +46,11 @@ export function DatadogRUM() {
 
     async function initRUM() {
       const { datadogRum } = await import("@datadog/browser-rum");
-      if (datadogRum.getInternalContext()) {
-        return;
+      if (!datadogRum.getInternalContext()) {
+        datadogRum.init(privacySafeRumConfig(applicationId, clientToken, site));
       }
-      datadogRum.init({
-        applicationId: applicationId as string,
-        clientToken: clientToken as string,
-        site,
-        service: "darkbloom-console",
-        env: process.env.NEXT_PUBLIC_DD_ENV || "production",
-        version: process.env.NEXT_PUBLIC_APP_VERSION || "dev",
-        sessionSampleRate: 100,
-        sessionReplaySampleRate: 20,
-        trackUserInteractions: true,
-        trackResources: true,
-        trackLongTasks: true,
-        defaultPrivacyLevel: "mask-user-input",
-      });
+      // Defense in depth for hot reloads or a previously initialized SDK.
+      datadogRum.stopSessionReplayRecording();
     }
 
     initRUM().catch(() => {

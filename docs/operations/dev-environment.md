@@ -95,7 +95,10 @@ This builds the image, pushes to Artifact Registry, writes the SHA to VM metadat
 In the Vercel dashboard:
 
 1. Import the `d-inference` repo as a new project named `darkbloom-console-dev`. Set root directory to `console-ui/`.
-2. Environment variables: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`.
+2. Environment variables:
+   - `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`
+   - `NEXT_PUBLIC_DARKBLOOM_PRIVATE_V2_RELEASE_HASHES=<comma-separated lowercase SHA-256 hashes of signed dev provider binaries>`
+   Chat fails closed when the release-hash allowlist is absent or stale; update it with each admitted provider release.
 3. Add custom domain `console.dev.darkbloom.xyz`. Vercel provisions the cert; copy the CNAME target it shows and add it in step 3.
 4. Every push to `master` auto-builds. Isolated preview branches still hit the dev coordinator.
 

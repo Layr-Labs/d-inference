@@ -8,7 +8,7 @@ The console UI is Darkbloom's web frontend. It is a Next.js 16 / React 19 applic
 |---|---|
 | Root layout, providers, analytics | `console-ui/src/app/layout.tsx` |
 | Chat pages and API-route handlers | `console-ui/src/app/`, `console-ui/src/app/api/` |
-| API client + sender→coordinator encryption | `console-ui/src/lib/api.ts`, `console-ui/src/lib/encryption.ts` |
+| Browser private-v2 crypto + stream | `console-ui/src/lib/private-v2*.ts`, `console-ui/src/lib/chat/stream.ts` |
 | Global state (chats, selected model, "use my machine") | `console-ui/src/lib/store.ts` |
 | Auth integration (Privy) | `console-ui/src/components/providers/PrivyClientProvider.tsx` |
 | Reusable UI components (chat, trust badge, verification panel, etc.) | `console-ui/src/components/` |
@@ -19,28 +19,37 @@ The console UI is Darkbloom's web frontend. It is a Next.js 16 / React 19 applic
 
 `layout.tsx` wraps every page in `ThemeProvider`, `PrivyClientProvider`, `VerificationModeProvider`, `AppShell`, and telemetry/analytics components. The chat and billing flows live under `src/app/`. API routes under `src/app/api/` act as a server-side proxy to the coordinator, avoiding CORS and keeping the user's API key out of client-side `fetch` headers where possible.
 
-### API client (`console-ui/src/lib/api.ts`)
+### Private-v2 chat transport (`console-ui/src/lib/private-v2*.ts`)
 
-`api.ts` is the browser-side coordinator client. It exports typed helpers such as `fetchModels`, `fetchBalance`, `fetchUsage`, `createStripeCheckout`, and streaming chat helpers. Every request goes to a local `/api/*` route, which forwards to the upstream coordinator resolved from `NEXT_PUBLIC_COORDINATOR_URL` server-side.
+Console Chat never sends prompt plaintext to its Next.js proxy or coordinator.
+For each message it:
 
-The API key is read from `localStorage` under `darkbloom_api_key` and passed as `x-api-key`. Image content must be base64 `data:` URIs; remote `http(s)` or `file` URLs are rejected by the provider because media must ride inside the encrypted prompt.
+1. Requests a 60-second, single-use `/api/private/preflight` lease.
+2. Verifies the selected provider's Apple MDA chain, SE freshness binding,
+   SE-signed process transcript, and compile-time pinned release binary hash.
+3. Generates a browser-ephemeral X25519 key and derives directional keys with
+   HKDF-SHA256.
+4. AES-256-GCM encrypts the transcript-bound request to the certified process.
+5. Sends only the opaque envelope through `/api/private/requests` and decrypts
+   ordered provider ciphertext chunks in the browser.
 
-### Sender→coordinator encryption (`console-ui/src/lib/encryption.ts`)
+The proxies enforce authentication and byte bounds before buffering. They never
+decrypt or log prompt/response content. Any preflight, proof, cryptographic, or
+provider failure is surfaced; Chat does not retry a legacy endpoint.
 
-`encryption.ts` mirrors the coordinator's `sender_encryption.go`. When enabled in Settings, the UI:
-
-1. Fetches the coordinator's long-lived X25519 key from `/api/encryption-key`.
-2. Generates a fresh ephemeral X25519 keypair per request.
-3. NaCl-Box-seals the request body with `Content-Type: application/eigeninference-sealed+json`.
-4. Uses the ephemeral private key to unseal the coordinator's response.
-
-The feature is opt-in and stored in `localStorage` under `darkbloom_encrypt_to_coordinator`.
+`NEXT_PUBLIC_DARKBLOOM_PRIVATE_V2_RELEASE_HASHES` is a required comma-separated
+compile-time allowlist of lowercase signed provider binary SHA-256 hashes. A
+missing, invalid, or unpinned hash fails closed before X25519. It must be updated
+when a newly signed provider release is admitted for private-v2 Chat.
 
 ### State management (`console-ui/src/lib/store.ts`)
 
-`store.ts` is a Zustand store persisted to `localStorage`. It holds chat history, the active chat, the selected model, sidebar state, and the `useMyMachine` flag. When `useMyMachine` is true, chat requests are sent with `X-Darkbloom-Route: prefer`, telling the coordinator to prefer the user's own provider and fall back to the paid network if it cannot serve.
-
-Base64 image data is stripped from persisted messages to avoid exceeding `localStorage` quota.
+`store.ts` is a Zustand store persisted to `localStorage`. It holds chat
+history, active chat, selected model, sidebar state, and the `useMyMachine`
+flag. Private v2 interprets `useMyMachine` strictly: route only to the linked
+machine, with no paid-fleet fallback. Persisted state from the retired
+prefer/fallback behavior is version-migrated off. Base64 image data is stripped
+from persisted messages to avoid exceeding `localStorage` quota.
 
 ### Authentication (`console-ui/src/components/providers/PrivyClientProvider.tsx`)
 
@@ -48,15 +57,18 @@ Consumer login uses Privy. The provider uses the resulting session cookie for Pr
 
 ## Privacy-relevant boundaries
 
-- **API key storage**: The inference API key lives in `localStorage` and is sent as `x-api-key` through the Next.js API proxy. It is never embedded in page URLs or logged.
-- **Prompt visibility**: Chat messages are rendered in the browser. They are sent to the coordinator over TLS and may be optionally sealed with sender→coordinator encryption. The UI never stores prompt content outside the browser's `localStorage`.
-- **Image handling**: Images must be base64 `data:` URIs so they travel inside the encrypted request body. The UI rejects remote image URLs because the provider would receive them unencrypted.
-- **Coordinator URL**: The upstream coordinator is resolved server-side from `NEXT_PUBLIC_COORDINATOR_URL`. Users can override it in Settings, but the proxy validates it before forwarding.
-- **Telemetry**: The layout includes `TelemetryInitializer`, `GoogleAnalytics`, `Analytics`, and `DatadogRUM`. These are client-side observability tools and should not receive prompt text.
+- **API key storage**: The inference API key lives in `localStorage` and is sent as `x-api-key` through bounded same-origin proxies. It is never embedded in page URLs or logged.
+- **Prompt visibility**: Private-v2 prompts and responses exist in plaintext only in the browser and certified provider process. The Next.js proxy and coordinator see ciphertext. Legacy API-console examples are explicitly coordinator-decryptable.
+- **Provider proof disclosure**: Private preflight returns the selected provider's identity-bearing Apple MDA proof for independent local verification. It is kept in memory and is not rendered, persisted, logged, replay-captured, or sent to telemetry.
+- **Image handling**: Images must be base64 `data:` URIs inside the encrypted body. Private-v2 enforces aggregate/plaintext bounds before preflight.
+- **Coordinator URL**: The upstream coordinator is resolved server-side from `NEXT_PUBLIC_COORDINATOR_URL`; bounded proxy routes do not accept a client-supplied upstream.
+- **Telemetry**: Datadog session replay is disabled and chat DOM/action text is privacy-masked. Observability must not receive prompts, responses, keys, or provider proof.
 
 For the encryption model, see [`../security/encryption.md`](../security/encryption.md) and the coordinator-side description in [`coordinator.md`](coordinator.md).
 
-## Outdated claims corrected
+## Legacy compatibility
 
-- The old `ARCHITECTURE.md` described the consumer SDK as the primary interface and did not cover the console UI's API-route proxy architecture. The console UI routes all coordinator calls through `/api/*` to avoid CORS and keep secrets server-side.
-- The old doc's privacy statements about "the coordinator never sees plaintext prompts" are imprecise. The console UI can opt into sender→coordinator encryption, but plaintext TLS remains the default for compatibility.
+The API console documents the existing OpenAI/Anthropic-compatible endpoints as
+`legacy-coordinator-decryptable`. The retired optional sender→coordinator NaCl
+transport remains in compatibility code for those clients, but Console Chat
+uses only private v2.

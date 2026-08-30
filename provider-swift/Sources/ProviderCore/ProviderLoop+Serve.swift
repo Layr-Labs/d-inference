@@ -265,6 +265,9 @@ extension ProviderLoop {
                         send: send
                     )
 
+                case .privateRequestV2(let request):
+                    await handlePrivateV2Request(request, send: send)
+
                 case .cancel(let requestId):
                     await handleCancellation(requestId: requestId)
 
@@ -306,7 +309,14 @@ extension ProviderLoop {
                         await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
                     }
 
-                case .desiredModels(let entries):
+                case .desiredModels(let entries, let generation):
+                    if generation > 0 {
+                        guard generation >= desiredModelGeneration else {
+                            logger.warning("Ignoring stale desired_models generation \(generation)")
+                            continue
+                        }
+                        desiredModelGeneration = generation
+                    }
                     if isDrainingForUpdate {
                         // Desired state is declarative: retain only the latest
                         // frame and reconcile it once certified ready.
@@ -436,7 +446,8 @@ extension ProviderLoop {
                 sipEnabled: posture.sipEnabled,
                 antiDebugEnabled: posture.antiDebugEnabled,
                 coreDumpsDisabled: posture.coreDumpsDisabled,
-                envScrubbed: posture.envScrubbed
+                envScrubbed: posture.envScrubbed,
+                privateV2: true
             )
         }
 
@@ -449,7 +460,8 @@ extension ProviderLoop {
             sipEnabled: SecurityChecks.isSIPEnabled(),
             antiDebugEnabled: false,
             coreDumpsDisabled: false,
-            envScrubbed: false
+            envScrubbed: false,
+            privateV2: true
         )
     }
 

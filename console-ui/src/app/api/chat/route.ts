@@ -29,11 +29,13 @@ export async function POST(req: NextRequest) {
       ...(selfRoute ? { "X-Darkbloom-Route": selfRoute } : {}),
     },
     body: isSealed ? bodyBytes : JSON.stringify(await req.json()),
+    signal: req.signal,
   };
 
   const upstream = await fetch(`${coordinatorUrl()}/v1/chat/completions`, fetchInit);
 
   const respHeaders = new Headers();
+  respHeaders.set("X-Darkbloom-Privacy-Tier", "legacy-coordinator-decryptable");
   // Pass-through content type so sealed responses keep their advertised type.
   const upstreamCt = upstream.headers.get("content-type") || "";
   if (upstreamCt.startsWith("text/event-stream")) {

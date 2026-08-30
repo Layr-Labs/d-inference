@@ -61,10 +61,12 @@ const STEPS: StepData[] = [
     description:
       "Apple's certificate authority confirms this specific device's identity.",
     technical:
-      "Apple's Enterprise Attestation Root CA (P-384, valid until 2047) signs intermediate " +
-      "certificates that chain to the device leaf certificate. This X.509 chain is verified " +
-      "by the coordinator. The leaf certificate embeds device-specific OIDs signed by Apple; " +
-      "the raw certificate, serial number, and UDID remain private to the provider and coordinator.",
+      "Apple's Enterprise Attestation Root CA anchors the device certificate chain. The browser " +
+      "validates the DER chain, certificate constraints and validity, FreshnessCode binding to " +
+      "the Secure Enclave key, and the enclave signature over the provider process evidence " +
+      "before it accepts a process encryption key. Apple's selected-device proof includes that " +
+      "provider's serial number and UDID; it stays in browser memory for verification and is " +
+      "never rendered, persisted, logged, replay-captured, or sent to telemetry.",
   },
   {
     icon: Lock,
@@ -74,11 +76,10 @@ const STEPS: StepData[] = [
     description:
       "Your prompts are encrypted before leaving your browser. Only the verified hardware can decrypt them.",
     technical:
-      "E2E encryption uses X25519/NaCl box (Curve25519 + XSalsa20-Poly1305). " +
-      "The coordinator generates ephemeral X25519 session keys for each request, encrypts " +
-      "the request body with the provider's public key, and forwards the ciphertext. " +
-      "Decryption happens only inside the hardened provider process with PT_DENY_ATTACH, " +
-      "Hardened Runtime, and SIP protections.",
+      "The browser creates an ephemeral X25519 key for each request, derives separate request " +
+      "and response keys with HKDF-SHA256, and uses AES-256-GCM authenticated encryption bound " +
+      "to the certified process transcript. The coordinator receives only ciphertext and never " +
+      "holds the browser's private key. Decryption happens only inside the certified provider process.",
   },
   {
     icon: RefreshCw,
@@ -222,9 +223,9 @@ export function TrustExplainerModal({ open, onClose }: TrustExplainerModalProps)
                   Privacy-Preserving Verification
                 </p>
                 <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                  The coordinator verifies Apple&apos;s certificate chain and
-                  publishes the resulting trust status without exposing the
-                  device&apos;s serial number, UDID, or raw certificate.
+                  Your browser validates the Apple certificate chain and signed process
+                  evidence against pinned cryptographic facts before encrypting. Device
+                  identifiers are used only for that in-browser proof join and are never displayed.
                 </p>
               </div>
             </div>

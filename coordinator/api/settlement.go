@@ -98,6 +98,7 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 			s.recordNoTerminalAfterCancel(pr.Model)
 			s.emitClientGone(pr.Model, pr.EstimatedPromptTokens, "", phaseAfterCommit)
 		}
+		closePrivateV2SettledChannel(pr)
 		return
 	}
 	s.settlements.hold(pr, s.terminalSettleGrace(), func(expired *registry.PendingRequest) {
@@ -118,6 +119,7 @@ func (s *Server) holdForSettlement(pr *registry.PendingRequest) {
 				"request_id", expired.RequestID,
 			)
 		}
+		closePrivateV2SettledChannel(expired)
 	})
 }
 

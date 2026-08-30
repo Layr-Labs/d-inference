@@ -75,8 +75,13 @@ Apple Enterprise Attestation Root CA (P-384, embedded in coordinator)
 
 The coordinator verifies the chain against the embedded root CA, cross-checks
 the serial number against the provider's self-reported attestation, and stores
-the chain privately for trust reuse. The chain is not published because its
-leaf certificate embeds the serial number and UDID. Code:
+the chain for trust reuse. Public fleet, stats, and attestation APIs never
+publish it. The authenticated private-v2 preflight is the narrow exception:
+the selected consumer receives that provider's chain locally so the browser can
+verify Apple → device → Secure Enclave → process-key binding without trusting
+the coordinator. The chain embeds the provider serial and UDID; this is an
+intentional prompt-confidentiality versus provider-anonymity tradeoff. The
+console neither renders, persists, logs, nor sends this proof to telemetry. Code:
 
 - MDA verification: `coordinator/attestation/mda.go:98-186`
 - MDA dispatch and key binding: `coordinator/api/provider.go:2342-2429`
@@ -118,6 +123,8 @@ Code:
 - It cannot install/remove profiles, change settings, lock, or wipe the provider's Mac.
 - The only commands it sends are `SecurityInfo` and `DeviceInformation`.
 - The `.mobileconfig` is CMS-signed by the coordinator so the user sees a signed profile at install time.
-- Serial numbers, UDIDs, and raw MDA certificates remain between the provider,
-  Apple/MDM infrastructure, and coordinator; public APIs expose only redacted
-  trust status.
+- Public APIs keep serial numbers, UDIDs, and raw MDA certificates between the
+  provider, Apple/MDM infrastructure, and coordinator, exposing only redacted
+  trust status. An authenticated private-v2 preflight discloses the selected
+  provider's identity-bearing proof only to the requesting browser for
+  coordinator-independent verification; lease/rate bounds limit enumeration.

@@ -112,7 +112,8 @@ extension CoordinatorClient {
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
             updateLifecycleState: updateLifecycle.state,
-            warmIntent: updateLifecycle.warmIntent
+            warmIntent: updateLifecycle.warmIntent,
+            privateV2: config.privacyCapabilities?.privateV2 == true
         )
 
         do {
@@ -132,6 +133,7 @@ extension CoordinatorClient {
                     "cpu_usage": 0,
                     "thermal_state": "nominal",
                 ],
+                "private_v2": config.privacyCapabilities?.privateV2 == true,
             ]
             if let lifecycleState = updateLifecycle.state {
                 fallback["update_lifecycle_state"] = lifecycleState.rawValue

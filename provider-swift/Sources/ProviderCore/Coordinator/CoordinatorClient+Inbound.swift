@@ -85,6 +85,10 @@ extension CoordinatorClient {
                 firstContentDeadline: firstContentDeadline
             ))
 
+        case .privateRequestV2(let request):
+            logger.info("Received private-v2 request: \(request.requestId)")
+            eventContinuation?.yield(.privateRequestV2(request))
+
         case .cancel(let cancel):
             let requestId = cancel.requestId
             logger.info("Received cancel for: \(requestId)")
@@ -135,7 +139,9 @@ extension CoordinatorClient {
             // Declarative desired-state. ProviderLoop reconciles each entry:
             // prefetch the desired build if missing, then hard-swap once verified.
             logger.info("Received desired_models from coordinator: \(dm.models.count) entr(ies)")
-            eventContinuation?.yield(.desiredModels(entries: dm.models))
+            eventContinuation?.yield(.desiredModels(
+                entries: dm.models,
+                generation: dm.generation))
 
         case .trustStatus(let ts):
             logger.info("Trust status from coordinator: level=\(ts.trustLevel) status=\(ts.status) reason=\(ts.reason)")

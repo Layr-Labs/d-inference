@@ -305,6 +305,7 @@ extension ProviderLoop {
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
+                loadedWeightHash: slot.loadedWeightHash,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,
                 lastInferenceAt: .now

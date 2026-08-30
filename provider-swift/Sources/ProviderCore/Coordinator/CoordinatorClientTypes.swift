@@ -103,6 +103,7 @@ public enum CoordinatorEvent: Sendable {
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?
     )
+    case privateRequestV2(PrivateV2Request)
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
     case processEvidenceChallenge(CoordinatorMessage.AttestationChallenge)
@@ -119,9 +120,8 @@ public enum CoordinatorEvent: Sendable {
     case prefetchModel(modelId: String, priority: Int)
     /// Coordinator's declarative desired-build map. The provider reconciles each
     /// entry: prefetch the desired build if missing, then hard-swap (advertise
-    /// new, drop the previous build) once verified. Sent after register and on
-    /// every change. Replaces the old push-driven migration ramp.
-    case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
+    /// every change, with the exact coordinator desired-model generation.
+    case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry], generation: UInt64)
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
     /// Exact release and generation authorized by the coordinator rollout.
@@ -233,6 +233,7 @@ public enum OutboundMessage: Sendable {
         requestId: String,
         failure: InferenceFailure
     )
+    case privateChunkV2(PrivateV2Chunk)
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
     case loadModelStatus(modelId: String, status: ProviderMessage.LoadModelStatus.Status, error: String?)

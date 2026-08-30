@@ -10,9 +10,10 @@ curl https://api.darkbloom.dev/v1/providers/attestation
 
 The response includes each provider's opaque connection ID, Secure Enclave
 public key, hardware class, security posture, and coordinator-verified MDM/MDA
-status. It deliberately excludes hardware serial numbers, UDIDs, and raw Apple
-MDA certificates. Apple's MDA leaf certificate embeds those identifiers, so
-publishing the chain would disclose them even if the JSON fields were removed.
+status. This public endpoint deliberately excludes hardware serial numbers,
+UDIDs, and raw Apple MDA certificates. Apple's MDA leaf certificate embeds
+those identifiers, so publishing the chain fleet-wide would disclose them even
+if the JSON fields were removed.
 
 ## What verification tells you
 
@@ -22,9 +23,26 @@ publishing the chain would disclose them even if the JSON fields were removed.
   passing periodic challenge-response, but has not completed MDM/MDA.
 - `none` means no attestation was provided.
 
-The coordinator performs Apple certificate-chain and serial cross-checks
-privately. Consumers receive the resulting status, not the identity-bearing
-certificate material.
+The coordinator performs Apple certificate-chain and serial cross-checks for
+public status. Public consumers receive the resulting verdict, not the
+identity-bearing certificate material.
+
+## Private-v2 process proof
+
+Private-v2 makes a different, explicit tradeoff. After authentication and
+provider selection, `/v1/private/preflight` returns the selected provider's
+Apple MDA chain and exact Secure-Enclave-signed process transcript to the
+requesting browser. The browser verifies the pinned Apple root, freshness-code
+binding to the SE key, process signature, and a compile-time pinned release
+binary hash before encrypting. This cryptographically excludes a malicious
+coordinator from substituting its own X25519 key.
+
+The MDA leaf contains the selected provider's serial number and UDID. The proof
+is therefore not anonymous to that authenticated consumer. The console uses it
+only in memory for verification: it is not rendered, persisted, logged, replay
+captured, or sent to telemetry. Preflight lease and per-consumer limits bound
+identity enumeration. If provider anonymity is required instead, use the
+redacted public attestation endpoint and do not request private-v2 proof.
 
 ## Per-response proof
 

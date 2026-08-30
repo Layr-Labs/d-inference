@@ -38,9 +38,8 @@ interface AppState {
   selectedModel: string;
   models: Model[];
   sidebarOpen: boolean;
-  // "Use my machine" — prefer the user's own provider (free when it serves),
-  // falling back to the paid network when it can't (sends X-Darkbloom-Route:
-  // prefer). Not free-only — that strict ceiling is the per-key self_route_only.
+  // "Use my machine" is a strict private-v2 self route. If the linked machine
+  // is unavailable or incompatible, the request fails without paid fallback.
   useMyMachine: boolean;
 
   // Actions
@@ -177,6 +176,16 @@ export const useStore = create<AppState>()(
     }),
     {
       name: STORE_NAME,
+      version: 2,
+      migrate: (persistedState, version) => {
+        const state = persistedState as Partial<AppState>;
+        return {
+          ...state,
+          // v1 meant "prefer, then paid fallback". Do not silently reinterpret
+          // an old opt-in as strict self-only routing.
+          useMyMachine: version < 2 ? false : Boolean(state.useMyMachine),
+        };
+      },
       // Defer reading persisted state until after mount. With the default
       // (synchronous) rehydration, persisted values (chats, sidebarOpen,
       // selectedModel, …) are applied during the first client render and diverge

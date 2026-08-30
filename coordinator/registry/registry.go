@@ -215,9 +215,22 @@ type PendingRequest struct {
 	ChunkCh        chan ProviderChunk      // SSE data chunks stamped at ingress
 	CompleteCh     chan protocol.UsageInfo // closed after usage sent
 	ErrorCh        chan protocol.InferenceErrorMessage
-	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
-	SESignature    string    // SE signature over response hash
-	ResponseHash   string    // SHA-256 of response data
+	// PrivateV2ChunkCh carries opaque process-bound response chunks. It is
+	// separate from ChunkCh so private-v2 bytes can never enter legacy parsing,
+	// normalization, or logging paths.
+	PrivateV2ChunkCh          chan protocol.PrivateChunkV2Message
+	PrivateV2PromptTokenBound int
+	PrivateV2OutputTokenBound int
+	PrivateV2SettledCh        chan struct{}
+	PrivateV2DeliveryCh       chan struct{}
+	privateV2DeliveryOnce     sync.Once
+	privateV2Mu               sync.Mutex
+	privateV2Next             uint64
+	privateV2Bytes            int
+	privateV2Done             bool
+	SessionPrivKey            *[32]byte // E2E session private key for decrypting responses
+	SESignature               string    // SE signature over response hash
+	ResponseHash              string    // SHA-256 of response data
 	// MetadataDetails asks chat-completions writers to include the same
 	// consumer-safe provider/attestation/timing details already returned in
 	// X-Provider-* / X-Timing headers in the JSON body. Opt-in so default
@@ -764,22 +777,24 @@ type DeviceEvidence struct {
 // successfully verified process_evidence_v1 transcript. It is connection-only:
 // no store row can create or restore it.
 type CertifiedProcessEvidence struct {
-	Version              string
-	SEPublicKey          string
-	Serial               string
-	ProcessPublicKey     string
-	BinaryHash           string
-	ProviderVersion      string
-	Platform             string
-	Backend              string
-	RuntimeHash          string
-	MetallibHash         string
-	CoordinatorSessionID string
-	ChallengeGeneration  string
-	ExpiresAt            time.Time
-	PolicyGeneration     uint64
-	VerifiedAt           time.Time
-	MLXNAX               bool
+	Version                  string
+	SEPublicKey              string
+	Serial                   string
+	ProcessPublicKey         string
+	BinaryHash               string
+	ProviderVersion          string
+	Platform                 string
+	Backend                  string
+	RuntimeHash              string
+	MetallibHash             string
+	CoordinatorSessionID     string
+	ChallengeGeneration      string
+	ExpiresAt                time.Time
+	PolicyGeneration         uint64
+	ProcessEvidenceCanonical []byte
+	ProcessEvidenceSignature string
+	VerifiedAt               time.Time
+	MLXNAX                   bool
 }
 
 // ProcessEvidenceChallengeState is the one outstanding v1 transcript expected
@@ -2135,6 +2150,11 @@ type Registry struct {
 	onHardwareEvidenceGranted     func(providerID string)
 	rolloutDisconnectObserver     func(identity string, generation uint64, state string)
 
+	// onProviderInvalidated is fired off-lock whenever a live connection is
+	// disconnected or derouted as untrusted. Private-v2 uses it to revoke every
+	// unconsumed lease bound to that exact connection.
+	onProviderInvalidated func(providerID string)
+	onPendingDisconnected func(pr *PendingRequest)
 	// onHardUntrust is an optional hook fired (off the registry locks) whenever a
 	// provider is HARD-untrusted (a non-recoverable security deroute). The api
 	// layer wires it to invalidate that device's trust-reuse record (DAR-326), so
@@ -3985,6 +4005,7 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 		r.mu.RUnlock()
 		return nil
 	}
+	generation := p.desiredModelGeneration + 1
 	p.mu.Unlock()
 	r.mu.RUnlock()
 
@@ -3992,13 +4013,14 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 		if err := r.desiredModelsSender(providerID, entries); err != nil {
 			return err
 		}
-		recordDesiredModelsSent(p, entries)
+		recordDesiredModelsSent(p, entries, generation)
 		return nil
 	}
 
 	msg := protocol.DesiredModelsMessage{
-		Type:   protocol.TypeDesiredModels,
-		Models: entries,
+		Type:       protocol.TypeDesiredModels,
+		Generation: generation,
+		Models:     entries,
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -4009,7 +4031,7 @@ func (r *Registry) SendDesiredModels(providerID string, entries []protocol.Desir
 	if err := p.WriteText(ctx, data); err != nil {
 		return fmt.Errorf("failed to send desired_models to provider %q: %w", providerID, err)
 	}
-	recordDesiredModelsSent(p, entries)
+	recordDesiredModelsSent(p, entries, generation)
 	r.logger.Info("sent desired_models to provider",
 		"provider_id", providerID,
 		"entries", len(entries),
@@ -4029,10 +4051,10 @@ func desiredModelEntriesEqual(left, right []protocol.DesiredModelEntry) bool {
 	return true
 }
 
-func recordDesiredModelsSent(p *Provider, entries []protocol.DesiredModelEntry) {
+func recordDesiredModelsSent(p *Provider, entries []protocol.DesiredModelEntry, generation uint64) {
 	p.mu.Lock()
 	p.desiredModelsSent = true
-	p.desiredModelGeneration++
+	p.desiredModelGeneration = generation
 	p.lastDesiredModels = append([]protocol.DesiredModelEntry(nil), entries...)
 	p.mu.Unlock()
 }
@@ -4654,8 +4676,12 @@ func (r *Registry) Disconnect(id string) {
 	var rolloutGeneration uint64
 	var rolloutObserver func(identity string, generation uint64, state string)
 	var disconnectedModels []string
+	var invalidatedHook func(providerID string)
+	var pendingDisconnectedHook func(pr *PendingRequest)
 	r.mu.Lock()
 	rolloutObserver = r.rolloutDisconnectObserver
+	invalidatedHook = r.onProviderInvalidated
+	pendingDisconnectedHook = r.onPendingDisconnected
 	p, ok := r.providers[id]
 	if ok {
 		delete(r.providers, id)
@@ -4741,6 +4767,9 @@ func (r *Registry) Disconnect(id string) {
 	if !ok {
 		return
 	}
+	if invalidatedHook != nil {
+		invalidatedHook(id)
+	}
 	// Removing the last capable provider can turn a queued constrained request
 	// from temporarily capacity-blocked into permanently unservable. Re-run
 	// the canonical drain after removal so those waiters receive the immediate
@@ -4759,6 +4788,9 @@ func (r *Registry) Disconnect(id string) {
 	for reqID, pr := range p.pendingReqs {
 		if pr == nil {
 			continue
+		}
+		if pendingDisconnectedHook != nil && pr.PrivateV2ChunkCh != nil {
+			pendingDisconnectedHook(pr)
 		}
 		if pr.ErrorCh != nil {
 			func() {
@@ -4786,6 +4818,12 @@ func (r *Registry) Disconnect(id string) {
 			func() {
 				defer func() { recover() }()
 				close(pr.CompleteCh)
+			}()
+		}
+		if pr.PrivateV2ChunkCh != nil {
+			func() {
+				defer func() { recover() }()
+				close(pr.PrivateV2ChunkCh)
 			}()
 		}
 	}
@@ -4867,6 +4905,22 @@ func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
 	r.mu.Unlock()
 }
 
+// SetProviderInvalidatedHook installs the connection-scoped lease revocation
+// hook. It is called after registry locks are released.
+func (r *Registry) SetProviderInvalidatedHook(fn func(providerID string)) {
+	r.mu.Lock()
+	r.onProviderInvalidated = fn
+	r.mu.Unlock()
+}
+
+// SetPendingDisconnectedHook installs asynchronous API cleanup for private
+// requests whose provider disappears before a terminal usage record.
+func (r *Registry) SetPendingDisconnectedHook(fn func(pr *PendingRequest)) {
+	r.mu.Lock()
+	r.onPendingDisconnected = fn
+	r.mu.Unlock()
+}
+
 // SetRuntimeCapabilitiesPromotedHook registers the API-layer fanout invoked
 // after a connection first gains a non-empty effective capability set.
 func (r *Registry) SetRuntimeCapabilitiesPromotedHook(fn func(providerID string)) {
@@ -4928,6 +4982,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		return
 	}
 	hook := r.onHardUntrust // capture under r.mu (race-safe)
+	invalidationHook := r.onProviderInvalidated
 
 	p.mu.Lock()
 	if p.Status != StatusUntrusted {
@@ -4967,6 +5022,9 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	}
 	p.mu.Unlock()
 	r.mu.Unlock()
+	if invalidationHook != nil {
+		invalidationHook(providerID)
+	}
 	if !recoverable {
 		p.SignalApplicationProofSettled()
 		r.notifyRuntimeCapabilitiesPromoted(providerID)

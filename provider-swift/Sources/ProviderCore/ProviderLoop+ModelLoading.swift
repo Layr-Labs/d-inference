@@ -367,10 +367,7 @@ extension ProviderLoop {
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
-                requireFreshCryptographicHash: reusableSSDRequested)
-            if !reusableSSDRequested {
-                await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
-            }
+                requireFreshCryptographicHash: true)
 
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
@@ -393,35 +390,17 @@ extension ProviderLoop {
             // established. A missing observation serves cold; an actual mismatch
             // proves artifact mutation and fails before engine construction or
             // slot installation.
-            let cacheEligibleWeightHash: String?
-            if reusableSSDRequested {
-                let postLoadHash = try await captureWeightHash(
-                    modelId: modelId,
-                    modelPath: modelPath,
-                    requireFreshCryptographicHash: true)
-                cacheEligibleWeightHash = try await finalizeReusableSSDLoad(
-                    modelId: modelId,
-                    preLoad: preLoadHash,
-                    postLoad: postLoadHash,
-                    newcomer: newcomer)
-            } else {
-                let postLoadFingerprint = await Task.detached(priority: .utility) {
-                    WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-                }.value
-                try Task.checkCancellation()
-                if preLoadHash.fingerprint == nil
-                    || postLoadFingerprint != preLoadHash.fingerprint
-                {
-                    logger.warning(
-                        "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
-                    let postLoadHash = try await captureFreshCryptographicWeightHash(
-                        modelId: modelId,
-                        modelPath: modelPath,
-                        fingerprint: postLoadFingerprint)
-                    await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
-                }
-                cacheEligibleWeightHash = nil
-            }
+            let postLoadHash = try await captureWeightHash(
+                modelId: modelId,
+                modelPath: modelPath,
+                requireFreshCryptographicHash: true)
+            let verifiedLoadedWeightHash = try await finalizeReusableSSDLoad(
+                modelId: modelId,
+                preLoad: preLoadHash,
+                postLoad: postLoadHash,
+                newcomer: newcomer)
+            let cacheEligibleWeightHash: String? =
+                reusableSSDRequested ? verifiedLoadedWeightHash : nil
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no
             // legacy engine left this is a load failure, not a log line.
@@ -664,6 +643,7 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
+                loadedWeightHash: verifiedLoadedWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
@@ -788,8 +768,8 @@ extension ProviderLoop {
     /// state. Idle/unloaded advertised models remain absent.
     internal func loadedModelHashesSnapshot() -> [String: String] {
         var result: [String: String] = [:]
-        for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
-            result[modelId] = liveModelHashes[modelId] ?? ""
+        for (modelId, slot) in modelSlots where !modelsUnloading.contains(modelId) {
+            result[modelId] = slot.loadedWeightHash ?? ""
         }
         return result
     }

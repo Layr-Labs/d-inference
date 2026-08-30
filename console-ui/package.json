@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@datadog/browser-rum": "^6.32.0",
+    "@peculiar/x509": "^2.0.0",
     "@privy-io/react-auth": "^3.18.0",
     "@vercel/analytics": "^2.0.1",
     "lucide-react": "^1.0.1",
@@ -24,6 +25,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
+    "reflect-metadata": "^0.2.2",
     "remark-gfm": "^4.0.1",
     "tweetnacl": "^1.0.3",
     "zustand": "^5.0.12"

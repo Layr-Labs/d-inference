@@ -55,6 +55,8 @@ public final class SendHandle: @unchecked Sendable {
         switch message {
         case .inferenceComplete, .inferenceError:
             chunkSender?.flush()
+        case .privateChunkV2(let chunk) where chunk.terminal:
+            chunkSender?.flush()
         default:
             break
         }
@@ -259,6 +261,9 @@ public actor ProviderLoop {
     /// Latest declarative model target received while update admission is
     /// closed. Replayed exactly once after certified ready.
     internal var deferredDesiredModels = DeferredDesiredModelsBuffer()
+    /// Latest coordinator-authored desired-model generation. Zero means no
+    /// generation-bearing desired_models frame has been received yet.
+    internal var desiredModelGeneration: UInt64 = 0
 
 
     /// Models remain tracked while their scheduler is tearing down so
@@ -289,6 +294,9 @@ public actor ProviderLoop {
 
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
+    /// Process-wide, connection-independent one-use claims. Claims survive a
+    /// WebSocket reconnect until their lease deadline.
+    internal let privateV2ReplayLedger = PrivateV2ReplayLedger()
 
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
@@ -609,6 +617,9 @@ public actor ProviderLoop {
         /// Hash verified for the exact bytes bracketed around this slot's load.
         /// Reused only when rebuilding the engine over the retained container.
         let cacheEligibleWeightHash: String?
+        /// Immutable full-byte hash bracketed around the container load.
+        /// Private-v2 admission requires this exact identity.
+        let loadedWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
         let isVLM: Bool
@@ -641,6 +652,7 @@ public actor ProviderLoop {
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
             cacheEligibleWeightHash: String? = nil,
+            loadedWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
@@ -650,6 +662,7 @@ public actor ProviderLoop {
             self.tokenizer = tokenizer
             self.sizing = sizing
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
+            self.loadedWeightHash = loadedWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
             self.lastInferenceAt = lastInferenceAt
@@ -662,6 +675,7 @@ public actor ProviderLoop {
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
             cacheEligibleWeightHash: String? = nil,
+            loadedWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             mtpDrafter: (any AnyObject & Sendable)? = nil,
@@ -679,6 +693,7 @@ public actor ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
+                loadedWeightHash: loadedWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
                 lastInferenceAt: lastInferenceAt)

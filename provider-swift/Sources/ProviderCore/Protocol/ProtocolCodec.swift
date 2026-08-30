@@ -191,12 +191,14 @@ public enum ProtocolCodecError: Error, Equatable {
     case nonUTF8Output
 }
 
-private enum JSONRawValueExtractor {
+enum JSONRawValueExtractor {
     static func rawValue(forKey targetKey: String, in data: Data) -> Data? {
+        rawValueRange(forKey: targetKey, in: data).map { data.subdata(in: $0) }
+    }
+
+    static func rawValueRange(forKey targetKey: String, in data: Data) -> Range<Int>? {
         var parser = Parser(bytes: [UInt8](data))
-        return parser.rawTopLevelValue(forKey: targetKey).map { range in
-            data.subdata(in: range)
-        }
+        return parser.rawTopLevelValue(forKey: targetKey)
     }
 
     private struct Parser {

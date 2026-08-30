@@ -119,7 +119,8 @@ public enum CoordinatorClientCodec {
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
         prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
         updateLifecycleState: UpdateLifecycleState? = nil,
-        warmIntent: WarmIntent? = nil
+        warmIntent: WarmIntent? = nil,
+        privateV2: Bool = false
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -135,7 +136,8 @@ public enum CoordinatorClientCodec {
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             updateLifecycleState: updateLifecycleState,
-            warmIntent: warmIntent
+            warmIntent: warmIntent,
+            privateV2: privateV2
         ))
     }
 
@@ -171,6 +173,9 @@ public enum CoordinatorClientCodec {
                 requestId: requestId,
                 failure: failure
             ))
+
+        case .privateChunkV2(let chunk):
+            return .privateChunkV2(chunk)
 
         case .attestationResponse(let payload):
             return .attestationResponse(ProviderMessage.AttestationResponse(

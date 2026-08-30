@@ -479,7 +479,9 @@ type Server struct {
 	// chokepoint; the provider still only ever sees data: URIs. Set by
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
-	mediaResolver *mediafetch.Resolver
+	mediaResolver  *mediafetch.Resolver
+	privateLeaseMu sync.Mutex
+	privateLeases  *privateV2LeaseManager
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -781,6 +783,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
 		rolloutHealth:            newRolloutHealthMonitor(),
+		privateLeases:            newPrivateV2LeaseManager(privateV2LeaseCapacity),
 	}
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
@@ -795,6 +798,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	reg.SetProviderInvalidatedHook(s.privateV2Leases().invalidateProvider)
+	reg.SetPendingDisconnectedHook(s.handlePrivateV2PendingDisconnect)
 	reg.SetRolloutDisconnectObserver(func(identity string, generation uint64, state string) {
 		if s.rolloutHealth != nil {
 			s.rolloutHealth.recordProviderDisconnectState(
@@ -2105,10 +2110,15 @@ func (s *Server) routes() {
 	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
 	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
 	// here, gated, alongside the four below.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
-	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
-	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
+	s.mux.HandleFunc("POST /v1/chat/completions", privacyTierHandler(legacyPrivacyTier, s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))))
+	s.mux.HandleFunc("POST /v1/responses", privacyTierHandler(legacyPrivacyTier, s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", privacyTierHandler(legacyPrivacyTier, s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))))
+	s.mux.HandleFunc("POST /v1/messages", privacyTierHandler(legacyPrivacyTier, s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))))
+	// Private-v2 is one logical inference split across two authenticated HTTP
+	// legs. Preflight spends the single RPM debit; submit is the one-use lease
+	// continuation and intentionally applies token admission but not RPM again.
+	s.mux.HandleFunc("POST /v1/private/preflight", privacyTierHandler(privateV2PrivacyTier, s.drainGate(s.requireAuth(s.rateLimitConsumer(s.handlePrivateV2Preflight)))))
+	s.mux.HandleFunc("POST /v1/private/requests", privacyTierHandler(privateV2PrivacyTier, s.drainGate(s.requireAuth(s.handlePrivateV2Submit))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))

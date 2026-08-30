@@ -590,6 +590,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			chunkMsg := msg.Payload.(*protocol.InferenceResponseChunkMessage)
 			s.handleChunk(providerID, provider, chunkMsg)
 
+		case protocol.TypePrivateChunkV2:
+			chunkMsg := msg.Payload.(*protocol.PrivateChunkV2Message)
+			s.handlePrivateV2Chunk(providerID, provider, chunkMsg)
+
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
 			_, receivedAt := provider.MarkPendingCompletionIngressNow(completeMsg.RequestID)
@@ -1936,6 +1940,178 @@ func (e *textChunkViolationError) Error() string {
 	return e.reason
 }
 
+func validPrivateV2FailureCode(code string) bool {
+	return code == "" || protocol.InferenceFailureCode(code).Valid()
+}
+
+func validPrivateV2Usage(pr *registry.PendingRequest, usage *protocol.PrivateUsageV2) bool {
+	if usage == nil {
+		return true
+	}
+	return usage.TotalTokens == usage.PromptTokens+usage.CompletionTokens &&
+		usage.PromptTokens <= uint64(max(0, pr.PrivateV2PromptTokenBound)) &&
+		usage.CompletionTokens <= uint64(max(0, pr.PrivateV2OutputTokenBound)) &&
+		(pr.TokenAdmission.AdmittedOutputTokens <= 0 ||
+			usage.CompletionTokens <= uint64(pr.TokenAdmission.AdmittedOutputTokens))
+}
+
+// handlePrivateV2Chunk validates only the opaque envelope and content-free
+// terminal accounting metadata. Ciphertext is never decrypted, decoded as
+// JSON, logged, normalized, or copied into legacy response channels.
+func sendPrivateV2ChunkWithGrace(pr *registry.PendingRequest, chunk protocol.PrivateChunkV2Message) (delivered bool) {
+	defer func() {
+		if recover() != nil {
+			delivered = false
+		}
+	}()
+	wait := time.NewTimer(chunkOverflowGrace)
+	defer wait.Stop()
+	select {
+	case pr.PrivateV2ChunkCh <- chunk:
+		return true
+	case <-wait.C:
+		return false
+	}
+}
+
+func closePrivateV2ChunkChannel(pr *registry.PendingRequest) {
+	if pr == nil || pr.PrivateV2ChunkCh == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	close(pr.PrivateV2ChunkCh)
+}
+
+func closePrivateV2SettledChannel(pr *registry.PendingRequest) {
+	if pr == nil || pr.PrivateV2SettledCh == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	close(pr.PrivateV2SettledCh)
+}
+
+// handlePrivateV2Chunk validates only the opaque envelope and content-free
+// terminal accounting metadata. Ciphertext is never decrypted, decoded as
+// JSON, logged, normalized, or copied into legacy response channels.
+func (s *Server) handlePrivateV2Chunk(providerID string, provider *registry.Provider, msg *protocol.PrivateChunkV2Message) {
+	if provider == nil || msg == nil {
+		return
+	}
+
+	pr := provider.GetPending(msg.RequestID)
+	parkedConsumer := false
+	if pr == nil {
+		if !msg.Terminal {
+			return
+		}
+		pr = s.claimSettlement(msg.RequestID)
+		parkedConsumer = pr != nil
+	}
+	if pr == nil || pr.PrivateV2ChunkCh == nil {
+		return
+	}
+	valid := msg.Version == privateV2Version && msg.RequestID == pr.RequestID
+	if _, ok := privateV2CanonicalBinary(msg.Nonce, 12, 12); !ok {
+		valid = false
+	}
+	ciphertext, ok := privateV2CanonicalBinary(msg.Ciphertext, 0, maxInferenceBodyBytes+16)
+	if !ok || len(ciphertext) < 16 {
+		valid = false
+	}
+	if !validPrivateV2FailureCode(msg.FailureCode) ||
+		(msg.StatusCode != 0 && (msg.StatusCode < 400 || msg.StatusCode > 599)) {
+		valid = false
+	}
+	usageViolation := !validPrivateV2Usage(pr, msg.Usage)
+	if usageViolation {
+		valid = false
+	}
+	if !valid || !pr.AcceptPrivateV2Sequence(*msg, len(ciphertext)) {
+		s.sendProviderCancel(provider, pr.RequestID)
+		s.privateV2EarlyCleanup(provider, pr, "private-v2-invalid-chunk")
+		if parkedConsumer {
+			s.refundReservedBalance(pr, "private-v2-invalid-parked-terminal")
+			pr.MarkReservationFinalized()
+			pr.ResolvePrivateV2Delivery()
+			closePrivateV2SettledChannel(pr)
+		}
+		if !parkedConsumer && pr.ContentCommittedSafe() {
+			s.refundReservedBalance(pr, "private-v2-invalid-committed-chunk")
+			pr.MarkReservationFinalized()
+			pr.ResolvePrivateV2Delivery()
+			closePrivateV2SettledChannel(pr)
+		}
+		closePrivateV2ChunkChannel(pr)
+		if usageViolation {
+			s.registry.MarkUntrusted(providerID)
+		}
+		return
+	}
+	successfulTerminal := msg.Terminal && msg.FailureCode == "" && msg.StatusCode < 400
+	claimed := pr
+	var receivedAt time.Time
+	if successfulTerminal && !parkedConsumer {
+		_, receivedAt = provider.MarkPendingCompletionIngressNow(msg.RequestID)
+		claimed = provider.RemovePending(msg.RequestID)
+		if claimed == nil {
+			return
+		}
+	}
+	if !parkedConsumer && !sendPrivateV2ChunkWithGrace(pr, *msg) {
+		closePrivateV2ChunkChannel(pr)
+		if successfulTerminal {
+			// The provider terminal is authoritative even when the client relay
+			// buffer is full. Fall through to claimed settlement; never turn
+			// already-generated output into a refund.
+		} else if pr.ContentCommittedSafe() {
+			s.holdForSettlement(pr)
+			s.cancelDispatch(provider, pr)
+			return
+		} else {
+			s.sendProviderCancel(provider, pr.RequestID)
+			s.privateV2EarlyCleanup(provider, pr, "private-v2-chunk-overflow")
+			pr.MarkReservationFinalized()
+			pr.ResolvePrivateV2Delivery()
+			return
+		}
+	}
+	if !msg.Terminal {
+		return
+	}
+	if msg.FailureCode != "" || msg.StatusCode >= 400 {
+		status := msg.StatusCode
+		if status == 0 {
+			status = http.StatusBadGateway
+		}
+		if parkedConsumer {
+			s.holdForSettlement(pr)
+		}
+		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			Type: protocol.TypeInferenceError, RequestID: msg.RequestID,
+			Error: "private provider failure", StatusCode: status,
+			ErrorReason: msg.FailureCode,
+			FailureCode: protocol.InferenceFailureCode(msg.FailureCode),
+		})
+		closePrivateV2SettledChannel(pr)
+		return
+	}
+	usage := protocol.UsageInfo{}
+	if msg.Usage != nil {
+		usage.PromptTokens = int(msg.Usage.PromptTokens)
+		usage.CompletionTokens = int(msg.Usage.CompletionTokens)
+	}
+	if receivedAt.IsZero() {
+		receivedAt = time.Now()
+	}
+	complete := &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: msg.RequestID, Usage: usage,
+	}
+	saferun.Go(s.logger, "handlePrivateV2Complete", func() {
+		s.handleCompleteClaimedAt(
+			providerID, provider, complete, receivedAt, claimed, parkedConsumer)
+	})
+}
+
 func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *protocol.InferenceAcceptedMessage) {
 	if provider == nil {
 		return
@@ -1969,6 +2145,17 @@ func (s *Server) handleCompleteAt(
 	msg *protocol.InferenceCompleteMessage,
 	receivedAt time.Time,
 ) {
+	s.handleCompleteClaimedAt(providerID, provider, msg, receivedAt, nil, false)
+}
+
+func (s *Server) handleCompleteClaimedAt(
+	providerID string,
+	provider *registry.Provider,
+	msg *protocol.InferenceCompleteMessage,
+	receivedAt time.Time,
+	claimed *registry.PendingRequest,
+	claimedConsumerGone bool,
+) {
 	if provider == nil {
 		s.logger.Warn("complete from unregistered provider", "provider_id", providerID)
 		return
@@ -2000,12 +2187,18 @@ func (s *Server) handleCompleteAt(
 			}
 		}
 	}
-	pr := provider.RemovePending(msg.RequestID)
-	// Clear any parked settlement record (consumer disconnected mid-stream):
-	// settles the disconnect case and stops the grace timer from no-op-refunding.
-	parked := s.claimSettlement(msg.RequestID)
+	pr := claimed
+	var parked *registry.PendingRequest
 	if pr == nil {
-		pr = parked
+		pr = provider.RemovePending(msg.RequestID)
+		// Clear any parked settlement record (consumer disconnected mid-stream):
+		// settles the disconnect case and stops the grace timer from no-op-refunding.
+		parked = s.claimSettlement(msg.RequestID)
+		if pr == nil {
+			pr = parked
+		}
+	} else if claimedConsumerGone {
+		parked = claimed
 	}
 	if pr == nil {
 		// Until it matches pending state, request_id is provider-controlled and
@@ -2013,14 +2206,20 @@ func (s *Server) handleCompleteAt(
 		s.logger.Warn("complete for unknown request", "provider_id", providerID)
 		return
 	}
+	if claimed != nil && pr.PrivateV2SettledCh != nil {
+		defer func() {
+			defer func() { _ = recover() }()
+			close(pr.PrivateV2SettledCh)
+		}()
+	}
+	if claimed != nil {
+		pr.AwaitPrivateV2Delivery()
+	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
-	// channel reader, and registry.Disconnect may have already CLOSED the
-	// channels (park-before-remove leaves a window where the record is in both
-	// the pending map and the holder) — sending would panic. Billing still
-	// settles below; only the consumer signaling is skipped.
-	consumerGone := parked != nil
+	// channel reader. Billing still settles below; only consumer signaling skips.
+	consumerGone := claimedConsumerGone || parked != nil
 	// After-commit client cancellation telemetry. The provider finished
 	// but the consumer had already disconnected mid-stream (partial_success /
 	// client_gone_after_commit). Metric-emit only — billing/settlement below is
@@ -2114,8 +2313,12 @@ func (s *Server) handleCompleteAt(
 	// (never a provider's higher custom price) and is exempt from the minimum,
 	// so the debit matches the published per-token OpenRouter feed exactly.
 	providerAccountForPricing := ""
-	if p := s.registry.GetProvider(providerID); p != nil {
-		providerAccountForPricing = providerPricingKeys(p)
+	pricingProvider := s.registry.GetProvider(providerID)
+	if pricingProvider == nil {
+		pricingProvider = provider
+	}
+	if pricingProvider != nil {
+		providerAccountForPricing = providerPricingKeys(pricingProvider)
 	}
 	var customIn, customOut int64
 	var hasCustom bool

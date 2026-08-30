@@ -9,7 +9,7 @@ import { ChatMessage } from "@/components/chat/ChatMessage";
 import { ChatInput } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
 import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
-import { Mail } from "lucide-react";
+import { Mail, ShieldCheck } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
 import { trackEvent } from "@/lib/google-analytics";
 
@@ -153,6 +153,15 @@ export default function ChatPage() {
       <PreSendTrustBanner
         visible={authenticated && (!activeChat || activeChat.messages.length === 0)}
       />
+
+      {authenticated && (
+        <div className="max-w-4xl w-full mx-auto px-3 sm:px-6 pb-2">
+          <div className="inline-flex items-center gap-1.5 rounded-full border border-teal/30 bg-teal-light/40 px-3 py-1 text-xs font-semibold text-teal">
+            <ShieldCheck size={13} />
+            Private v2 · process-bound
+          </div>
+        </div>
+      )}
 
       <ChatInput
         onSend={handleSend}

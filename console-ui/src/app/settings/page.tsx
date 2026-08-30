@@ -12,12 +12,6 @@ import {
   Lock,
 } from "lucide-react";
 import { healthCheck } from "@/lib/api";
-import {
-  clearCoordinatorKeyCache,
-  getCoordinatorKey,
-  isEncryptionEnabled,
-  setEncryptionEnabled,
-} from "@/lib/encryption";
 
 export default function SettingsPage() {
   const addToast = useToastStore((s) => s.addToast);
@@ -28,11 +22,6 @@ export default function SettingsPage() {
   >("idle");
   const [healthInfo, setHealthInfo] = useState("");
 
-  const [encryptToCoord, setEncryptToCoord] = useState(false);
-  const [encStatus, setEncStatus] = useState<
-    "idle" | "checking" | "ok" | "unavailable" | "error"
-  >("idle");
-  const [encInfo, setEncInfo] = useState("");
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -41,41 +30,9 @@ export default function SettingsPage() {
           process.env.NEXT_PUBLIC_COORDINATOR_URL ||
           "https://api.darkbloom.dev"
       );
-      setEncryptToCoord(isEncryptionEnabled());
     }
   }, []);
 
-  // When the user flips the toggle, eagerly fetch the coordinator pubkey so
-  // they get an immediate signal if the feature is unavailable on this
-  // coordinator (rather than failing on first message send).
-  const handleEncryptionToggle = async (enabled: boolean) => {
-    setEncryptToCoord(enabled);
-    setEncryptionEnabled(enabled);
-    if (!enabled) {
-      setEncStatus("idle");
-      setEncInfo("");
-      clearCoordinatorKeyCache();
-      addToast("Encryption to coordinator disabled", "success");
-      return;
-    }
-    setEncStatus("checking");
-    try {
-      const k = await getCoordinatorKey(true);
-      setEncStatus("ok");
-      setEncInfo(`coordinator key kid=${k.kid}`);
-      addToast("Encryption to coordinator enabled", "success");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("not configured")) {
-        setEncStatus("unavailable");
-      } else {
-        setEncStatus("error");
-      }
-      setEncInfo(msg);
-      // Stay enabled so the user knows they intended this — but every request
-      // will surface a clear error until the coordinator publishes a key.
-    }
-  };
 
   const handleSave = () => {
     localStorage.setItem("darkbloom_coordinator_url", coordinatorUrl);
@@ -155,57 +112,23 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          {/* Sender → Coordinator encryption */}
-          <section className="rounded-xl bg-bg-white border border-border-dim p-6 shadow-md">
-            <div className="flex items-center gap-2 mb-4">
-              <Lock size={14} className="text-accent-green" />
+          {/* Chat privacy */}
+          <section className="rounded-xl bg-bg-white border border-teal/30 p-6 shadow-md">
+            <div className="flex items-center gap-2 mb-3">
+              <Lock size={14} className="text-teal" />
               <h3 className="text-sm font-medium text-text-primary">
-                Encrypt requests to coordinator
+                Private v2 · process-bound
               </h3>
             </div>
-            <p className="text-xs text-text-tertiary mb-4">
-              When enabled, your prompts are sealed to the coordinator&apos;s long-lived
-              X25519 public key (NaCl Box) before leaving this browser. The coordinator
-              decrypts inside its TEE, picks a provider, and re-seals to the
-              provider&apos;s Secure Enclave key. Anything in front of the coordinator
-              (CDN, proxies, network observers) sees only ciphertext beyond the TLS
-              tunnel. Optional and off by default — plaintext API clients keep working.
+            <p className="text-xs text-text-tertiary leading-relaxed">
+              Chat always encrypts in this browser directly to the certified provider process
+              selected by a single-use preflight lease. The coordinator relays ciphertext and
+              cannot decrypt prompts or responses. If private v2 negotiation or cryptographic
+              validation fails, Chat reports the failure and never retries a legacy endpoint.
             </p>
-            <label className="flex items-center gap-3 text-sm text-text-primary cursor-pointer">
-              <input
-                type="checkbox"
-                checked={encryptToCoord}
-                onChange={(e) => handleEncryptionToggle(e.target.checked)}
-                className="w-4 h-4 accent-coral"
-              />
-              <span>Seal each request to the coordinator&apos;s public key</span>
-            </label>
-            <div className="flex items-center gap-3 mt-4 text-xs font-mono">
-              {encStatus === "checking" && (
-                <span className="flex items-center gap-1 text-text-tertiary">
-                  <Loader2 size={12} className="animate-spin" />
-                  fetching coordinator key…
-                </span>
-              )}
-              {encStatus === "ok" && (
-                <span className="flex items-center gap-1 text-accent-green">
-                  <Check size={12} />
-                  {encInfo}
-                </span>
-              )}
-              {encStatus === "unavailable" && (
-                <span className="flex items-center gap-1 text-accent-red">
-                  <AlertCircle size={12} />
-                  This coordinator has not configured sender encryption.
-                </span>
-              )}
-              {encStatus === "error" && (
-                <span className="flex items-center gap-1 text-accent-red">
-                  <AlertCircle size={12} />
-                  {encInfo}
-                </span>
-              )}
-            </div>
+            <p className="text-xs text-accent-amber mt-3">
+              Direct OpenAI-compatible API calls are legacy and coordinator-decryptable.
+            </p>
           </section>
 
           {/* Save */}

@@ -1,12 +1,47 @@
 # Encryption and privacy model
 
-This document is the canonical reference for Darkbloom's hop-by-hop encryption. It describes exactly what is encrypted, who can decrypt it, and what each party learns. The code is the source of truth; marketing language that contradicts these paths is wrong.
+This document is the canonical reference for Darkbloom's two inference privacy
+tiers. The code is the source of truth; marketing language that contradicts
+these paths is wrong.
 
-## Hop-by-hop model
+## Private v2: browser → certified provider process
 
-![Encryption layers for a single inference request](../../assets/diagrams/encryption-layers.svg)
+Console Chat uses private v2 and never falls back to a plaintext endpoint.
 
-The provider is the decryption endpoint. NaCl Box provides authenticated encryption with X25519 key agreement and XSalsa20-Poly1305 (`crypto_box`). The arrows in the diagram map to the legs below; each section cites the code that implements it.
+| Property | Value |
+|---|---|
+| Preflight | Authenticated, single-use provider-bound lease; expires within 60 seconds |
+| Destination proof | Browser verifies Apple MDA chain/freshness, SE-signed `process_evidence_v1`, and a compile-time pinned release binary hash |
+| Request key | Browser-ephemeral X25519 × certified process X25519 |
+| KDF / AEAD | HKDF-SHA256; AES-256-GCM |
+| Request binding | Canonical transcript binds lease/request/route, endpoint, concrete model/hash/generation, release hash/generation, route mode, vision trait, output cap, process certificate, and deadline |
+| Response | Provider encrypts every ordered chunk/error directly to the browser key; coordinator relays ciphertext |
+| Replay bounds | One-use lease plus bounded coordinator/provider ledgers; 8,192 total encrypted chunks and 64 MiB relay ceiling |
+
+The coordinator sees the authenticated account, selected model/route, ciphertext
+size, token usage, status, and billing metadata. It never receives private-v2
+request or response plaintext. The provider decrypts only after exact transcript,
+process, release, model, generation, route, media, output-limit, deadline, and
+replay checks.
+
+The independent destination proof intentionally discloses the selected
+provider's identity-bearing Apple MDA certificate to that authenticated browser.
+See `enrollment.md` and the consumer verification guide for the anonymity
+tradeoff and handling restrictions.
+
+Code:
+
+- Lease, transcript, opaque relay: `coordinator/api/private_v2.go`
+- Exact provider/certificate reservation: `coordinator/registry/private_v2.go`
+- Provider decrypt/validate/encrypt: `provider-swift/Sources/ProviderCore/PrivateV2/`
+- Browser proof and crypto: `console-ui/src/lib/private-v2-attestation.ts`,
+  `console-ui/src/lib/private-v2.ts`
+
+## Legacy coordinator-decryptable APIs
+
+The OpenAI/Anthropic-compatible endpoints retain the earlier hop-by-hop design
+for existing SDK clients. They return
+`X-Darkbloom-Privacy-Tier: legacy-coordinator-decryptable`.
 
 ## Consumer → coordinator
 
@@ -55,9 +90,10 @@ The coordinator decrypts the chunks and relays them to the consumer (re-sealing 
 - Provider NaCl Box implementation: `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`
 - Coordinator decryption: `coordinator/internal/e2e/e2e.go:84-118`
 
-## What the coordinator sees
+## What the coordinator sees on legacy APIs
 
-Because the consumer body is decrypted for routing and billing, the coordinator transiently sees:
+Because a legacy consumer body is decrypted for routing and billing, the
+coordinator transiently sees:
 
 - Request metadata: model, `max_tokens`, temperature, stream flag, `reasoning_effort`, cache scope.
 - Prompt content while the request is in flight.

@@ -25,7 +25,7 @@ describe("POST /api/chat self-route header forwarding", () => {
   it("forwards X-Darkbloom-Route: self upstream when the client sets it", async () => {
     upstream.fetch.mockResolvedValueOnce(streamResponse());
     const { POST } = await import("@/app/api/chat/route");
-    await POST(
+    const response = await POST(
       chatRequest({
         "x-api-key": "k1",
         "content-type": "application/json",
@@ -35,6 +35,9 @@ describe("POST /api/chat self-route header forwarding", () => {
     const opts = upstream.fetch.mock.calls[0][1];
     expect(opts.headers["X-Darkbloom-Route"]).toBe("self");
     expect(opts.headers.Authorization).toBe("Bearer k1");
+    expect(response.headers.get("x-darkbloom-privacy-tier")).toBe(
+      "legacy-coordinator-decryptable"
+    );
   });
 
   it("omits the header when the client does not request self-route", async () => {

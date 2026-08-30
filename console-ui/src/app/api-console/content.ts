@@ -53,7 +53,7 @@ export const ENDPOINTS: Endpoint[] = [
     "finish_reason": null
   }]
 }`,
-    notes: "Supports streaming (SSE) and non-streaming responses. All prompts are end-to-end encrypted. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip).",
+    notes: "Legacy · coordinator-decryptable. Supports streaming (SSE) and non-streaming responses. Response headers include provider attestation metadata (x-provider-attested, x-provider-trust-level, x-provider-chip). Use the Chat console for browser-to-provider private v2 encryption.",
   },
   {
     method: "POST",
@@ -84,7 +84,7 @@ export const ENDPOINTS: Endpoint[] = [
     "output_tokens": 256
   }
 }`,
-    notes: "OpenAI Responses API format. Accepts 'input' (string or array) instead of 'messages'. Uses input_tokens/output_tokens for usage. Supports streaming. Same routing, encryption, and billing as chat completions.",
+    notes: "Legacy · coordinator-decryptable. OpenAI Responses API format. Accepts 'input' (string or array) instead of 'messages', uses input_tokens/output_tokens for usage, and supports streaming.",
   },
   {
     method: "GET",

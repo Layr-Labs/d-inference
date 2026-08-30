@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
@@ -496,10 +497,27 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		t.Fatal("precondition: current process evidence does not match the approved runtime")
 	}
 
+	releasePatch := 17
+	clearActiveManifests := func() {
+		t.Helper()
+		for _, release := range st.ListReleases() {
+			if release.Active && release.Platform == "macos-arm64" {
+				if err := st.DeleteRelease(release.Version, release.Platform); err != nil {
+					t.Fatalf("DeleteRelease(%s): %v", release.Version, err)
+				}
+			}
+		}
+	}
+	nextReleaseVersion := func() string {
+		version := fmt.Sprintf("0.8.%d", releasePatch)
+		releasePatch++
+		return version
+	}
 	setManifest := func(hash string) {
 		t.Helper()
+		clearActiveManifests()
 		if err := st.SetRelease(&store.Release{
-			Version:      "0.8.17",
+			Version:      nextReleaseVersion(),
 			Platform:     "macos-arm64",
 			MetallibHash: hash,
 		}); err != nil {
@@ -509,8 +527,9 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	}
 	withdrawManifest := func() {
 		t.Helper()
+		clearActiveManifests()
 		if err := st.SetRelease(&store.Release{
-			Version:  "0.8.17",
+			Version:  nextReleaseVersion(),
 			Platform: "macos-arm64",
 		}); err != nil {
 			t.Fatalf("SetRelease(withdrawal): %v", err)

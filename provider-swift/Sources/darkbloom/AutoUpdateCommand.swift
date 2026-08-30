@@ -5,60 +5,36 @@ import ProviderCore
 struct AutoUpdate: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "autoupdate",
-        abstract: "Enable or disable automatic provider updates.",
+        abstract: "Show coordinator-managed release rollout status.",
         discussion: """
-        Toggles `provider.auto_update` in the TOML config file.
-        When enabled, the provider checks for updates at startup and
-        installs new signed releases automatically.
-
-        Examples:
-          darkbloom autoupdate enable
-          darkbloom autoupdate disable
-          darkbloom autoupdate status
+        Process-evidence-v1 providers receive one coordinator-authorized target
+        and generation. Local enable/disable switches cannot bypass or pause the
+        fleet rollout. The legacy provider.auto_update key remains parseable for
+        older installed providers only.
         """
     )
 
-    @OptionGroup var configOptions: ConfigOptions
-
-    @Argument(help: "Action: enable | disable | status")
+    @Argument(help: "Action: status")
     var action: String
 
     mutating func run() async throws {
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        let path = snapshot.configPath
-
         switch action.lowercased() {
         case "status":
-            print("Auto-update is \(snapshot.config.provider.autoUpdate ? "ENABLED" : "DISABLED")")
-            print("Config: \(describeConfigPath(snapshot))")
+            let record = try UpdateLifecycleStore().load()
+            print("Release rollout is COORDINATOR MANAGED.")
+            print("Lifecycle: \(record.state.rawValue)")
+            if let command = record.command {
+                print("Authorized target: v\(command.version) (generation \(command.desiredGeneration))")
+            }
 
-        case "enable", "on", "true":
-            try writeAutoUpdate(true, snapshot: snapshot, path: path)
-            print("Auto-update ENABLED.")
-            print("The provider will check for new signed releases at startup.")
-
-        case "disable", "off", "false":
-            try writeAutoUpdate(false, snapshot: snapshot, path: path)
-            print("Auto-update DISABLED.")
-            print("Run 'darkbloom update' manually to install new releases.")
+        case "enable", "on", "true", "disable", "off", "false":
+            printError(
+                "local auto-update toggles are retired for process-evidence-v1 providers; the coordinator is authoritative")
+            throw ExitCode.failure
 
         default:
-            printError("Unknown action: '\(action)'. Use 'enable', 'disable', or 'status'.")
+            printError("Unknown action: '\(action)'. Use 'status'.")
             throw ExitCode.failure
         }
-    }
-
-    private func writeAutoUpdate(
-        _ value: Bool,
-        snapshot: RuntimeSnapshot,
-        path: URL
-    ) throws {
-        var config = snapshot.config
-        if config.provider.autoUpdate == value && snapshot.configFileExists {
-            // Already in the desired state — no-op.
-            return
-        }
-        config.provider.autoUpdate = value
-        try ConfigManager.save(config, to: path)
     }
 }

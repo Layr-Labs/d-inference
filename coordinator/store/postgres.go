@@ -593,6 +593,40 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE releases DROP COLUMN IF EXISTS image_bridge_hash;
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		// Authoritative release rollout state. The transition table is append-only;
+		// policy mutation and audit insertion share one transaction.
+		`CREATE TABLE IF NOT EXISTS release_rollout_policies (
+			platform TEXT PRIMARY KEY,
+			backend TEXT NOT NULL DEFAULT '',
+			target_version TEXT NOT NULL,
+			previous_version TEXT NOT NULL DEFAULT '',
+			stage TEXT NOT NULL,
+			canary_se_identities JSONB NOT NULL DEFAULT '[]'::jsonb,
+			paused BOOLEAN NOT NULL DEFAULT FALSE,
+			pause_reason TEXT NOT NULL DEFAULT '',
+			desired_generation BIGINT NOT NULL,
+			revision BIGINT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL,
+			FOREIGN KEY (target_version, platform) REFERENCES releases(version, platform)
+		)`,
+		`CREATE TABLE IF NOT EXISTS release_rollout_transitions (
+			id BIGSERIAL PRIMARY KEY,
+			platform TEXT NOT NULL,
+			target_version TEXT NOT NULL,
+			action TEXT NOT NULL,
+			from_stage TEXT NOT NULL DEFAULT '',
+			to_stage TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			actor TEXT NOT NULL,
+			expected_revision BIGINT NOT NULL,
+			result_revision BIGINT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_release_rollout_transitions_platform
+		 ON release_rollout_transitions(platform, id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_release_rollout_transitions_revision
+		 ON release_rollout_transitions(platform, result_revision)`,
 
 		// Device authorization (RFC 8628-style)
 		`CREATE TABLE IF NOT EXISTS device_codes (
@@ -3842,17 +3876,27 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
+	command, err := s.pool.Exec(ctx,
 		`INSERT INTO releases (version, platform, backend, binary_hash, bundle_hash, metallib_hash, python_hash, runtime_hash, template_hashes, url, changelog, active, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, NOW())
-		 ON CONFLICT (version, platform) DO UPDATE SET
-		   backend = $3, binary_hash = $4, bundle_hash = $5, metallib_hash = $6, python_hash = $7, runtime_hash = $8, template_hashes = $9, url = $10, changelog = $11, active = TRUE`,
+		 ON CONFLICT (version, platform) DO UPDATE SET changelog = EXCLUDED.changelog, active = TRUE
+		 WHERE releases.backend IS NOT DISTINCT FROM EXCLUDED.backend
+		   AND releases.binary_hash IS NOT DISTINCT FROM EXCLUDED.binary_hash
+		   AND releases.bundle_hash IS NOT DISTINCT FROM EXCLUDED.bundle_hash
+		   AND releases.metallib_hash IS NOT DISTINCT FROM EXCLUDED.metallib_hash
+		   AND releases.python_hash IS NOT DISTINCT FROM EXCLUDED.python_hash
+		   AND releases.runtime_hash IS NOT DISTINCT FROM EXCLUDED.runtime_hash
+		   AND releases.template_hashes IS NOT DISTINCT FROM EXCLUDED.template_hashes
+		   AND releases.url IS NOT DISTINCT FROM EXCLUDED.url`,
 		release.Version, release.Platform, release.Backend, release.BinaryHash, release.BundleHash,
 		release.MetallibHash, release.PythonHash, release.RuntimeHash, release.TemplateHashes,
 		release.URL, release.Changelog,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set release: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return ErrReleaseArtifactImmutable
 	}
 	return nil
 }

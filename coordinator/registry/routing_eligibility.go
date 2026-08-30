@@ -10,30 +10,31 @@ import (
 type ProviderModelEligibilityReason string
 
 const (
-	EligibilityAllowed                ProviderModelEligibilityReason = "allowed"
-	EligibilityProviderOffline        ProviderModelEligibilityReason = "provider_offline"
-	EligibilityProviderUntrusted      ProviderModelEligibilityReason = "provider_untrusted"
-	EligibilityPrivateOnly            ProviderModelEligibilityReason = "private_only"
-	EligibilityTrustBelowMinimum      ProviderModelEligibilityReason = "trust_below_minimum"
-	EligibilityDeviceEvidenceMissing  ProviderModelEligibilityReason = "device_evidence_missing"
-	EligibilityDeviceEvidenceMismatch ProviderModelEligibilityReason = "device_evidence_mismatch"
-	EligibilityDeviceEvidenceExpired  ProviderModelEligibilityReason = "device_evidence_expired"
-	EligibilityRuntimeUnverified      ProviderModelEligibilityReason = "runtime_unverified"
-	EligibilityPrivacyUnavailable     ProviderModelEligibilityReason = "privacy_unavailable"
-	EligibilityChallengeStale         ProviderModelEligibilityReason = "challenge_stale"
-	EligibilityApplicationMissing     ProviderModelEligibilityReason = "application_evidence_missing"
-	EligibilityReleasePolicyStale     ProviderModelEligibilityReason = "release_policy_stale"
-	EligibilityProcessMissing         ProviderModelEligibilityReason = "process_evidence_missing"
-	EligibilityProcessExpired         ProviderModelEligibilityReason = "process_evidence_expired"
-	EligibilityCodeProofMissing       ProviderModelEligibilityReason = "code_proof_missing"
-	EligibilityMinimumVersion         ProviderModelEligibilityReason = "minimum_version"
-	EligibilityCatalogMissing         ProviderModelEligibilityReason = "catalog_missing"
-	EligibilityModelNotAdvertised     ProviderModelEligibilityReason = "model_not_advertised"
-	EligibilityModelHashMismatch      ProviderModelEligibilityReason = "model_hash_mismatch"
-	EligibilityCapabilityUnknown      ProviderModelEligibilityReason = "capability_unknown"
-	EligibilityCapabilityMissing      ProviderModelEligibilityReason = "capability_missing"
-	EligibilityDedicatedModel         ProviderModelEligibilityReason = "dedicated_model"
-	EligibilitySlotNotReady           ProviderModelEligibilityReason = "slot_not_ready"
+	EligibilityAllowed                 ProviderModelEligibilityReason = "allowed"
+	EligibilityProviderOffline         ProviderModelEligibilityReason = "provider_offline"
+	EligibilityProviderUntrusted       ProviderModelEligibilityReason = "provider_untrusted"
+	EligibilityPrivateOnly             ProviderModelEligibilityReason = "private_only"
+	EligibilityTrustBelowMinimum       ProviderModelEligibilityReason = "trust_below_minimum"
+	EligibilityDeviceEvidenceMissing   ProviderModelEligibilityReason = "device_evidence_missing"
+	EligibilityDeviceEvidenceMismatch  ProviderModelEligibilityReason = "device_evidence_mismatch"
+	EligibilityDeviceEvidenceExpired   ProviderModelEligibilityReason = "device_evidence_expired"
+	EligibilityRuntimeUnverified       ProviderModelEligibilityReason = "runtime_unverified"
+	EligibilityPrivacyUnavailable      ProviderModelEligibilityReason = "privacy_unavailable"
+	EligibilityChallengeStale          ProviderModelEligibilityReason = "challenge_stale"
+	EligibilityApplicationMissing      ProviderModelEligibilityReason = "application_evidence_missing"
+	EligibilityReleasePolicyStale      ProviderModelEligibilityReason = "release_policy_stale"
+	EligibilityProcessMissing          ProviderModelEligibilityReason = "process_evidence_missing"
+	EligibilityProcessExpired          ProviderModelEligibilityReason = "process_evidence_expired"
+	EligibilityCodeProofMissing        ProviderModelEligibilityReason = "code_proof_missing"
+	EligibilityMinimumVersion          ProviderModelEligibilityReason = "minimum_version"
+	EligibilityCatalogMissing          ProviderModelEligibilityReason = "catalog_missing"
+	EligibilityModelNotAdvertised      ProviderModelEligibilityReason = "model_not_advertised"
+	EligibilityModelHashMismatch       ProviderModelEligibilityReason = "model_hash_mismatch"
+	EligibilityCapabilityUnknown       ProviderModelEligibilityReason = "capability_unknown"
+	EligibilityCapabilityMissing       ProviderModelEligibilityReason = "capability_missing"
+	EligibilityDedicatedModel          ProviderModelEligibilityReason = "dedicated_model"
+	EligibilitySlotNotReady            ProviderModelEligibilityReason = "slot_not_ready"
+	EligibilityUpdateLifecycleNotReady ProviderModelEligibilityReason = "update_lifecycle_not_ready"
 )
 
 type eligibilityPurpose struct {
@@ -115,6 +116,12 @@ func (r *Registry) providerModelEligibilityLocked(
 	}
 	if p.Status == StatusUntrusted {
 		return deniedEligibility(EligibilityProviderUntrusted, result)
+	}
+	if p.RolloutApprovalRequired && !p.RolloutReleaseApproved {
+		return deniedEligibility(EligibilityReleasePolicyStale, result)
+	}
+	if p.UpdateLifecycleReported && !p.ReleaseUpdateReadyLocked() {
+		return deniedEligibility(EligibilityUpdateLifecycleNotReady, result)
 	}
 	if p.PrivateOnly && !purpose.allowPrivate {
 		return deniedEligibility(EligibilityPrivateOnly, result)
@@ -346,8 +353,8 @@ var providerModelEligibilityReasonVocabulary = []ProviderModelEligibilityReason{
 	EligibilityCodeProofMissing, EligibilityMinimumVersion,
 	EligibilityCatalogMissing, EligibilityModelNotAdvertised,
 	EligibilityModelHashMismatch, EligibilityCapabilityUnknown,
-	EligibilityCapabilityMissing,
-	EligibilityDedicatedModel, EligibilitySlotNotReady,
+	EligibilityCapabilityMissing, EligibilityDedicatedModel,
+	EligibilitySlotNotReady, EligibilityUpdateLifecycleNotReady,
 }
 
 // ProviderModelEligibilityReasonCounts is a low-cardinality operational

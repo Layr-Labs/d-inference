@@ -1,281 +1,425 @@
-/// ProviderLoop -- background self-update.
+/// ProviderLoop -- coordinator-authorized release updates.
 ///
-/// Periodically checks for a newer signed bundle, drains in-flight work, stages
-/// and commits the update, and manages the serving/draining phase transitions.
+/// Process-evidence-v1 providers never poll "latest" and never select a cohort.
+/// The coordinator supplies one exact target/generation; this file reconciles
+/// that authorization through the existing verified installer.
 
-import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
-#if canImport(os)
-import os
-#endif
 
 extension ProviderLoop {
-    // MARK: - Background Auto-Update
+    static let updateDrainTimeout: Duration = .seconds(120)
 
-    /// Initial delay before the first background update check (5 minutes).
-    /// Avoids slowing down startup; lets the provider stabilize first.
-    private static let autoUpdateInitialDelay: Duration = .seconds(300)
-
-    /// Interval between subsequent update checks (30 minutes).
-    private static let autoUpdateInterval: Duration = .seconds(1800)
-
-    /// How long to wait for in-flight requests to drain after installing a new
-    /// binary before force-cancelling them and restarting. Generous enough for
-    /// normal generations to finish; bounded so one stuck request can't block
-    /// updates forever.
-    private static let updateDrainTimeout: Duration = .seconds(120)
-
-    /// Start the background auto-update monitor. Checks the coordinator for a
-    /// newer release every 30 minutes (after an initial 5-minute delay). On a
-    /// new release it downloads + verifies + installs the binary *while still
-    /// serving*, then stops accepting new requests, drains in-flight work to
-    /// zero, and finally hot-swaps (restart). See `AutoUpdateController`.
-    ///
-    /// The monitor is disabled when:
-    ///   - `config.provider.autoUpdate` is false
-    ///   - `DARKBLOOM_NO_UPDATE_CHECK` env var is set
-    ///
-    /// Unlike the old behaviour, a busy provider is NOT skipped: the check and
-    /// download run concurrently with serving, and requests are only refused
-    /// once the new binary is safely installed.
-    ///
-    /// Failures are logged at warning level and never crash the provider.
-    internal func startAutoUpdateMonitor() {
-        autoUpdateTask?.cancel()
-
-        guard loopConfig.config.provider.autoUpdate else {
-            logger.info("Background auto-update disabled (auto_update=false)")
-            return
-        }
-        guard ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] == nil else {
-            logger.info("Background auto-update disabled (DARKBLOOM_NO_UPDATE_CHECK set)")
-            return
-        }
-
-        let coordinatorURL = loopConfig.coordinatorURL
-        let me = self
-        autoUpdateTask = Task.detached {
-            // Wait 5 minutes before first check.
-            try? await taskSleep( Self.autoUpdateInitialDelay)
-
-            while !Task.isCancelled {
-                await me.performAutoUpdateCheck(coordinatorURL: coordinatorURL)
-                // Sleep 30 minutes before next check.
-                try? await taskSleep( Self.autoUpdateInterval)
-            }
-        }
-        logger.info("Background auto-update monitor started (initial delay: 5m, interval: 30m)")
-    }
-
-    /// Perform a single background update cycle via `AutoUpdateController`.
-    /// The controller sequences: check → download/stage (while serving) →
-    /// drain → commit → restart. All side effects below are actor-isolated so
-    /// the phase transitions, staged-bundle handoff, and drain bookkeeping
-    /// stay race-free.
-    private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
-        let me = self
-        let logger = self.logger
-        let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
-
-        let deps = AutoUpdateController.Dependencies(
-            claimStart: { await me.claimUpdateStart(updater: updater) },
-            resumeServing: { await me.resumeServingAfterUpdate() },
-            check: {
-                guard let session = await me.activeUpdateSession() else {
-                    return .checkFailed(reason: "cross-process update lease was lost")
-                }
-                return await updater.checkForUpdate(session: session)
-            },
-            downloadVerifyStage: { release in
-                await me.stageUpdateBundle(release: release, updater: updater)
-            },
-            // Rollover jitter: random 0..update_jitter_seconds sleep between
-            // stage and drain so a fleet never restarts (and goes cold) in
-            // unison. Background auto-update only — the manual `darkbloom
-            // update` command and the startup update check bypass this
-            // controller entirely and stay immediate.
-            waitBeforeInstall: {
-                let delay = UpdateJitter.delay(maxSeconds: jitterMaxSeconds)
-                guard delay > .zero else { return }
-                let secs = Double(delay.components.seconds)
-                    + Double(delay.components.attoseconds) / 1e18
-                logger.info(
-                    "Auto-update: bundle staged; waiting \(String(format: "%.0f", secs))s rollover jitter before draining (update_jitter_seconds=\(jitterMaxSeconds))")
-                try? await taskSleep( delay)
-            },
-            beginDraining: { await me.beginUpdateDraining() },
-            waitForDrain: { timeout in await me.waitForInflightDrain(timeout: timeout) },
-            // Drain-timeout fallback. Cancels coordinator-routed work; any
-            // residual LOCAL stream is intentionally left for the immediately
-            // following restart to tear down (local reservations are released by
-            // the engine, which we no longer wait on past the timeout).
-            forceCancelInflight: { await me.cancelAllInflight() },
-            commitInstall: { await me.commitStagedUpdateBundle(updater: updater) },
-            prepareInstalledRestart: {
-                await me.prepareInstalledCandidateRestart(updater: updater)
-            },
-            restart: { try ProcessLifecycle.restartAfterUpdate() },
-            restartDidFail: {
-                try? updater.cancelPendingCandidateAttempt(
-                    operation: "background-restart-failure")
-            },
-            log: { logger.info("\($0)") }
-        )
-
-        let controller = AutoUpdateController(deps: deps, drainTimeout: Self.updateDrainTimeout)
-        let outcome = await controller.run()
-        switch outcome {
-        case .alreadyRunning:
-            logger.info("Auto-update: cycle already in progress; skipping this tick")
-        case .cancelled:
-            logger.info("Auto-update: cycle cancelled during the pre-install wait; nothing installed")
-        case .upToDate:
-            logger.info("Auto-update: already running latest version")
-        case .quarantined(let version):
-            logger.warning("Auto-update: v\(version) is quarantined after failed starts")
-        case .checkFailed(let reason):
-            logger.warning("Auto-update: check failed: \(reason)")
-        case .stageFailed(let reason):
-            logger.warning("Auto-update: download/stage failed: \(reason)")
-        case .commitFailed(let reason):
-            logger.warning("Auto-update: staged install failed: \(reason)")
-        case .restarted(let from, let to, let drained):
-            logger.info("Auto-update: restarting v\(from) -> v\(to) (drained=\(drained))")
-        case .restartFailed(let reason):
-            logger.warning("Auto-update: restart failed: \(reason)")
-        }
-    }
-
-    // MARK: - Auto-Update Phase Transitions
-
-    /// Atomically claim the update cycle. Returns `false` if a cycle is already
-    /// underway (re-entrancy guard for overlapping monitor ticks). On `true`,
-    /// enter the `.installing` phase — still serving while the new bundle
-    /// downloads and stages.
-    private func claimUpdateStart(updater: SelfUpdater) -> Bool {
-        guard updatePhase == .idle, !isShuttingDown else { return false }
+    internal func prepareUpdateLifecycleForRun() async throws {
         do {
-            let session = try updater.beginUpdateSession(
-                operation: "background-auto-update",
-                timeout: 0
-            )
-            try session.recover()
-            updateSession = session
+            updateLifecycle = try UpdateLifecycleReconciler(
+                record: try updateLifecycleStore.load())
         } catch {
-            logger.info("Auto-update: cross-process lease unavailable: \(error)")
+            updateLifecycleStateCorrupt = true
+            logger.error("Release update lifecycle state is unreadable; failing closed")
+            state.setUpdateLifecycle(state: .blocked, warmIntent: nil)
+            updateAdmissionClosed = true
+            return
+        }
+
+        let record = updateLifecycle.record
+        state.setUpdateLifecycle(
+            state: record.state,
+            warmIntent: record.reportedWarmIntent)
+
+        switch record.state {
+        case .serving:
+            updateAdmissionClosed = false
+        case .ready:
+            guard runningVersionMatches(record.command) else {
+                await blockAuthorizedUpdate(
+                    "ready release version does not match running application")
+                return
+            }
+            updateAdmissionClosed = false
+        case .drainingForUpdate, .installing:
+            updateAdmissionClosed = true
+            if record.state == .installing,
+               runningVersionMatches(record.command) {
+                try await transitionUpdateLifecycle(to: .reconnecting)
+            } else {
+                try await resumeAuthorizedInstallAfterCrash()
+            }
+        case .reconnecting, .applicationVerifying, .modelReloading:
+            updateAdmissionClosed = true
+            guard runningVersionMatches(record.command) else {
+                await blockAuthorizedUpdate(
+                    "installed candidate version does not match authorization")
+                return
+            }
+        case .blocked:
+            updateAdmissionClosed = true
+        }
+    }
+
+    internal var shouldDeferStartupPreloadForUpdate: Bool {
+        switch updateLifecycle.record.state {
+        case .reconnecting, .applicationVerifying, .modelReloading, .blocked:
+            return true
+        case .serving, .drainingForUpdate, .installing, .ready:
             return false
         }
-        updatePhase = .installing
-        return true
     }
 
-    private func activeUpdateSession() -> SelfUpdater.UpdateSession? {
-        updateSession
+    private func runningVersionMatches(
+        _ command: AuthorizedReleaseUpdate?
+    ) -> Bool {
+        guard let command,
+              let running = SemanticVersion(ProviderCore.version),
+              let target = SemanticVersion(command.version)
+        else { return false }
+        return running == target
     }
 
-    /// Return to normal serving after an update cycle that did not restart
-    /// (up-to-date, check/stage/commit failure, or restart failure): reopen
-    /// admission, drop any staged-but-uncommitted bundle, and replay the
-    /// desired-models state that was deferred during the drain so the
-    /// provider converges back onto the coordinator's current desired set.
-    private func resumeServingAfterUpdate() async {
-        updatePhase = .idle
-
-        if let staged = stagedUpdateBundle {
-            stagedUpdateBundle = nil
-            staged.discard()
+    internal func handleReleaseUpdate(_ command: AuthorizedReleaseUpdate) async {
+        guard !updateLifecycleStateCorrupt else {
+            logger.error("Refusing release_update while lifecycle state is corrupt")
+            return
         }
-        updateSession?.release()
-        updateSession = nil
+        guard !isShuttingDown else { return }
+        guard command.platform == "macos-arm64" else {
+            logger.warning("Refusing release_update for unsupported platform \(command.platform)")
+            return
+        }
+        if let backend = command.backend, backend != "mlx-swift" {
+            logger.warning("Refusing release_update for backend \(backend)")
+            return
+        }
+        guard !command.binaryHash.isEmpty, !command.bundleHash.isEmpty,
+              !command.url.isEmpty
+        else {
+            logger.warning("Refusing incomplete release_update authorization")
+            return
+        }
+        guard let artifactURL = URLComponents(string: command.url),
+              artifactURL.scheme == "https",
+              artifactURL.host != nil,
+              artifactURL.user == nil,
+              artifactURL.password == nil,
+              artifactURL.query == nil,
+              artifactURL.fragment == nil
+        else {
+            logger.warning("Refusing release_update with non-persistable artifact URL")
+            return
+        }
 
-        if let entries = deferredDesiredModels {
-            deferredDesiredModels = nil
-            if let send = outboundSend {
-                logger.info("Replaying desired_models deferred during update drain (\(entries.count) entr(ies))")
-                await reconcileDesiredModels(entries, send: send)
+        let intents = await captureWarmIntents(
+            desiredGeneration: command.desiredGeneration)
+        do {
+            let accepted = try updateLifecycle.authorize(
+                command,
+                currentVersion: ProviderCore.version,
+                warmIntents: intents)
+            guard accepted else {
+                logger.info(
+                    "Ignoring idempotent duplicate release_update generation \(command.desiredGeneration)")
+                return
+            }
+
+            // No suspension occurs between the successful topology revalidation
+            // above and closing admission here.
+            updateAdmissionClosed = true
+            try await transitionUpdateLifecycle(to: .drainingForUpdate)
+        } catch {
+            if updateLifecycle.record.command == command {
+                await blockAuthorizedUpdate(
+                    "authorized generation could not be persisted or published")
+            } else {
+                logger.warning("Refusing release_update: \(error)")
+            }
+            return
+        }
+
+        let drained = await waitForInflightDrain(timeout: Self.updateDrainTimeout)
+        if !drained {
+            await cancelAllInflight()
+        }
+        await installAuthorizedCommandAndRestart()
+    }
+
+    internal func handleUpdateConnectionEstablished() async {
+        coordinatorConnectionGeneration &+= 1
+        evidenceSentConnectionGeneration = nil
+        certifiedConnectionGeneration = nil
+        pendingCertifiedConnectionGeneration = nil
+        guard updateLifecycle.record.state == .reconnecting else { return }
+        do {
+            try await transitionUpdateLifecycle(to: .applicationVerifying)
+        } catch {
+            await blockAuthorizedUpdate("could not enter application verification")
+        }
+    }
+
+    internal func handleFreshApplicationCertification(
+        trustLevel: String,
+        status: String
+    ) async {
+        let lifecycleState = updateLifecycle.record.state
+        guard lifecycleState == .applicationVerifying ||
+                lifecycleState == .modelReloading ||
+                lifecycleState == .ready,
+              trustLevel == "hardware",
+              status == "online",
+              UpdateConnectionCertificationPolicy.acceptsEvidence(
+                  evidenceGeneration: evidenceSentConnectionGeneration,
+                  currentGeneration: coordinatorConnectionGeneration)
+        else { return }
+
+        let generation = coordinatorConnectionGeneration
+        certifiedConnectionGeneration = generation
+        if lifecycleState == .ready {
+            try? await publishCurrentUpdateLifecycle()
+            return
+        }
+        if updateWarmRestoreInProgress {
+            pendingCertifiedConnectionGeneration = generation
+            return
+        }
+        await finishWarmRestore(certifiedOn: generation)
+    }
+
+    private func finishWarmRestore(certifiedOn initialGeneration: UInt64) async {
+        updateWarmRestoreInProgress = true
+        defer { updateWarmRestoreInProgress = false }
+        var certificationGeneration = initialGeneration
+
+        while !isShuttingDown {
+            do {
+                if updateLifecycle.record.state == .applicationVerifying {
+                    try await transitionUpdateLifecycle(to: .modelReloading)
+                }
+                try await restoreWarmIntentsDeterministically()
+
+                if UpdateConnectionCertificationPolicy.canReportReady(
+                    restorationGeneration: certificationGeneration,
+                    certifiedGeneration: certifiedConnectionGeneration,
+                    currentGeneration: coordinatorConnectionGeneration) {
+                    try await transitionUpdateLifecycle(to: .ready)
+                    updateAdmissionClosed = false
+                    if let send = outboundSend,
+                       let entries = deferredDesiredModels.take() {
+                        await reconcileDesiredModels(entries, send: send)
+                    }
+                    return
+                }
+
+                guard let pending = pendingCertifiedConnectionGeneration,
+                      pending == coordinatorConnectionGeneration,
+                      pending == certifiedConnectionGeneration
+                else { return }
+                pendingCertifiedConnectionGeneration = nil
+                certificationGeneration = pending
+            } catch {
+                await blockAuthorizedUpdate(
+                    "application-certified warm restore failed")
+                return
             }
         }
     }
 
-    /// Enter the `.draining` phase: new requests are refused (503 reroute /
-    /// local queue-full) while in-flight work finishes ahead of the commit +
-    /// hot-swap.
-    private func beginUpdateDraining() {
-        updatePhase = .draining
+    private struct WarmTopologyIdentity: Equatable {
+        let modelId: String
+        let bridge: ObjectIdentifier
+        let modelHash: String?
+        let kvBackend: String
     }
 
-    /// Download, verify, and stage the release bundle while still serving.
-    /// Nothing under the live layout is touched; the staged bundle waits for
-    /// the post-drain commit.
-    private func stageUpdateBundle(
-        release: ReleaseInfo,
-        updater: SelfUpdater
-    ) async -> AutoUpdateController.StepOutcome {
-        switch await updater.downloadAndVerify(release: release) {
-        case .failure(let error):
-            return .failed("\(error)")
-        case .success(let tempFile):
-            defer { try? FileManager.default.removeItem(at: tempFile) }
-            guard let session = updateSession else {
-                return .failed("cross-process update lease was lost before staging")
+    private func warmTopologyIdentity() -> [WarmTopologyIdentity] {
+        modelSlots.keys.sorted().compactMap { modelId in
+            guard let slot = modelSlots[modelId],
+                  !modelsUnloading.contains(modelId)
+            else { return nil }
+            return WarmTopologyIdentity(
+                modelId: modelId,
+                bridge: ObjectIdentifier(slot.engineV2),
+                modelHash: liveModelHashes[modelId] ?? modelHashes[modelId],
+                kvBackend: slot.engineV2.kvBackendKind.rawValue)
+        }
+    }
+
+    internal func captureWarmIntents(
+        desiredGeneration: UInt64
+    ) async -> [WarmIntent] {
+        while true {
+            let topology = warmTopologyIdentity()
+            var intents: [WarmIntent] = []
+            var remainsValid = true
+            for identity in topology {
+                guard let slot = modelSlots[identity.modelId],
+                      ObjectIdentifier(slot.engineV2) == identity.bridge,
+                      !modelsUnloading.contains(identity.modelId)
+                else {
+                    remainsValid = false
+                    break
+                }
+                let mtp = await slot.engineV2.mtpStatusSnapshot()
+                intents.append(WarmIntent(
+                    modelId: identity.modelId,
+                    modelHash: identity.modelHash,
+                    slotId: identity.modelId,
+                    kvBackend: identity.kvBackend,
+                    kvQuantization: nil,
+                    mtpModelId: mtp.assistantModelID,
+                    desiredGeneration: desiredGeneration))
             }
-            switch updater.stageBundle(
-                from: tempFile,
-                release: release,
-                session: session
-            ) {
-            case .success(let staged):
-                stagedUpdateBundle = staged
-                return .completed
-            case .failure(let error):
-                return .failed("\(error)")
+            guard remainsValid, topology == warmTopologyIdentity() else {
+                continue
             }
+            return intents
         }
     }
 
-    /// Swap the staged bundle into the live layout. Runs strictly after the
-    /// drain: admission is closed and in-flight work has finished (or been
-    /// force-cancelled), so no request can observe the swap window.
-    private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
-        guard let staged = stagedUpdateBundle else {
-            return .failed("no staged update bundle to install")
+    private func resumeAuthorizedInstallAfterCrash() async throws {
+        guard updateLifecycle.record.command != nil else {
+            await blockAuthorizedUpdate(
+                "missing authorized command during crash resume")
+            return
         }
-        guard let session = updateSession else {
-            return .failed("cross-process update lease was lost before commit")
+        if updateLifecycle.record.state == .drainingForUpdate {
+            try await transitionUpdateLifecycle(to: .installing)
         }
-        stagedUpdateBundle = nil
-        let result = updater.commitStagedBundle(staged, session: session)
-        switch result {
-        case .success:
-            return .completed
-        case .failure(let error):
-            return .failed("\(error)")
-        }
+        await installAuthorizedCommandAndRestart()
     }
 
-    private func prepareInstalledCandidateRestart(
-        updater: SelfUpdater
-    ) -> AutoUpdateController.StepOutcome {
-        guard let session = updateSession else {
-            return .failed("cross-process update lease was lost before candidate restart")
+    private func installAuthorizedCommandAndRestart() async {
+        guard let command = updateLifecycle.record.command else {
+            await blockAuthorizedUpdate("missing authorized release")
+            return
         }
         do {
+            if updateLifecycle.record.state == .drainingForUpdate {
+                try await transitionUpdateLifecycle(to: .installing)
+            }
+            guard updateLifecycle.record.state == .installing else {
+                throw UpdateLifecycleError.invalidTransition(
+                    from: updateLifecycle.record.state, to: .installing)
+            }
+
+            let updater = SelfUpdater(coordinatorBaseURL: loopConfig.coordinatorURL)
+            let session = try updater.beginUpdateSession(
+                operation: "coordinator-authorized-release-update",
+                timeout: 0)
+            updateSession = session
+            defer {
+                updateSession?.release()
+                updateSession = nil
+            }
+            try session.recover()
+
+            let downloaded: URL
+            switch await updater.downloadAndVerify(release: command.releaseInfo) {
+            case .success(let file): downloaded = file
+            case .failure(let error): throw error
+            }
+            defer { try? FileManager.default.removeItem(at: downloaded) }
+
+            let staged: SelfUpdater.StagedBundle
+            switch updater.stageBundle(
+                from: downloaded,
+                release: command.releaseInfo,
+                session: session
+            ) {
+            case .success(let bundle): staged = bundle
+            case .failure(let error): throw error
+            }
+            stagedUpdateBundle = staged
+
+            switch updater.commitStagedBundle(staged, session: session) {
+            case .success:
+                stagedUpdateBundle = nil
+            case .failure(let error):
+                stagedUpdateBundle = nil
+                throw error
+            }
+
             try updater.prepareCandidateLaunch(
                 session: session,
-                baseline: LaunchAgent.launchSnapshot()
-            )
+                baseline: LaunchAgent.launchSnapshot())
+            try await transitionUpdateLifecycle(to: .reconnecting)
             session.release()
             updateSession = nil
-            return .completed
+            try ProcessLifecycle.restartAfterUpdate()
         } catch {
-            return .failed("\(error)")
+            stagedUpdateBundle?.discard()
+            stagedUpdateBundle = nil
+            await blockAuthorizedUpdate("verified install/reconnect failed")
+            logger.error("Coordinator-authorized release update blocked: \(error)")
         }
     }
 
+    private func restoreWarmIntentsDeterministically() async throws {
+        while let intent = updateLifecycle.record.warmIntents.first {
+            guard let modelId = intent.modelId else {
+                throw UpdateLifecycleError.corruptState
+            }
+            try await ensureModelLoaded(modelId: modelId)
+            guard let slot = modelSlots[modelId] else {
+                throw UpdateLifecycleError.corruptState
+            }
+            if let expectedHash = intent.modelHash,
+               liveModelHashes[modelId] != expectedHash {
+                throw UpdateError.hashMismatch(
+                    expected: expectedHash,
+                    got: liveModelHashes[modelId] ?? "missing")
+            }
+            if let expectedBackend = intent.kvBackend,
+               slot.engineV2.kvBackendKind.rawValue != expectedBackend {
+                throw UpdateError.replaceFailed(
+                    "restored KV backend mismatch for \(modelId)")
+            }
+            if let expectedMTP = intent.mtpModelId {
+                let mtp = await slot.engineV2.mtpStatusSnapshot()
+                guard mtp.assistantModelID == expectedMTP else {
+                    throw UpdateError.replaceFailed(
+                        "restored MTP model mismatch for \(modelId)")
+                }
+            }
+            try updateLifecycle.completeNextWarmIntent(intent)
+            try persistUpdateLifecycle()
+            try await publishCurrentUpdateLifecycle()
+        }
+    }
+
+    private func transitionUpdateLifecycle(
+        to lifecycleState: UpdateLifecycleState
+    ) async throws {
+        try updateLifecycle.transition(to: lifecycleState)
+        try persistUpdateLifecycle()
+        try await publishCurrentUpdateLifecycle()
+    }
+
+    private func publishCurrentUpdateLifecycle() async throws {
+        guard let coordinatorClient else { return }
+        while !isShuttingDown {
+            if await coordinatorClient.sendImmediateHeartbeat() { return }
+            try await taskSleep(.milliseconds(100))
+        }
+        throw UpdateError.replaceFailed(
+            "provider shut down before lifecycle transition was published")
+    }
+
+    private func persistUpdateLifecycle() throws {
+        try updateLifecycleStore.save(updateLifecycle.record)
+        state.setUpdateLifecycle(
+            state: updateLifecycle.record.state,
+            warmIntent: updateLifecycle.record.reportedWarmIntent)
+    }
+
+    private func blockAuthorizedUpdate(_ reason: String) async {
+        updateLifecycle.block()
+        updateAdmissionClosed = true
+        do {
+            try persistUpdateLifecycle()
+            try await publishCurrentUpdateLifecycle()
+        } catch {
+            state.setUpdateLifecycle(
+                state: .blocked,
+                warmIntent: updateLifecycle.record.reportedWarmIntent)
+        }
+        logger.error("Release update blocked: \(reason)")
+    }
 }

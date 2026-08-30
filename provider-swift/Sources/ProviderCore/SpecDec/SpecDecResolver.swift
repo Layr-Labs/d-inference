@@ -359,6 +359,7 @@ public struct SpecDecResolver: Sendable {
             directory: directory,
             source: .catalog,
             revision: reference.revision,
+            modelID: verification.manifest.modelID,
             artifactBytes: verification.artifactBytes,
             residentBytes: SpecDecLimits.residentEstimate(
                 artifactBytes: verification.artifactBytes),

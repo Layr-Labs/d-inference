@@ -780,6 +780,17 @@ func TestMDMSchedulerDuePagingCannotStarveLiveRowBehindDisconnectedPrefix(t *tes
 		jitter: func(time.Duration, time.Duration) time.Duration {
 			return time.Hour
 		},
+		execute: func(
+			ctx context.Context,
+			_ mdmLiveBinding,
+			_ store.VerificationTaskKind,
+			_ string,
+		) mdmSchedulerAttemptResult {
+			<-ctx.Done()
+			return mdmSchedulerAttemptResult{
+				outcome: store.VerificationOutcomeTransient,
+			}
+		},
 	})
 	for i := range 5 {
 		_, err := st.UpsertVerificationJob(context.Background(), store.VerificationJob{

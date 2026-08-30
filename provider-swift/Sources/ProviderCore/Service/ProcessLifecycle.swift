@@ -23,6 +23,16 @@ public enum ProcessLifecycle {
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 
+    /// True only when the PID file names a currently-live provider process.
+    /// Manual update uses this in addition to launchd state so a foreground
+    /// serving process can never be mistaken for a stopped provider.
+    public static func providerIsRunning(
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile()
+    ) -> Bool {
+        guard let pid = readPID(at: pidFile) else { return false }
+        return processIsAlive(pid)
+    }
+
     /// Acquire the single-instance lock. If an older provider is already
     /// running, send it SIGTERM, wait briefly, then SIGKILL if it didn't
     /// exit. Always writes our own PID to the file at the end.
@@ -148,15 +158,21 @@ public enum ProcessLifecycle {
 
         let argvStrings = [executablePath] + Array(CommandLine.arguments.dropFirst())
         let cStrings = argvStrings.compactMap { strdup($0) }
+        let environmentStrings = sanitizedEnvironmentForExec(
+            ProcessInfo.processInfo.environment)
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
+        let environmentCStrings = environmentStrings.compactMap { strdup($0) }
         defer {
-            for ptr in cStrings {
-                free(ptr)
-            }
+            for ptr in cStrings { free(ptr) }
+            for ptr in environmentCStrings { free(ptr) }
         }
 
         var argv: [UnsafeMutablePointer<CChar>?] = cStrings.map { $0 }
         argv.append(nil)
-        execv(executablePath, &argv)
+        var envp: [UnsafeMutablePointer<CChar>?] = environmentCStrings.map { $0 }
+        envp.append(nil)
+        execve(executablePath, &argv, &envp)
         throw NSError(
             domain: NSPOSIXErrorDomain,
             code: Int(errno),
@@ -169,6 +185,45 @@ public enum ProcessLifecycle {
             userInfo: [NSLocalizedDescriptionKey: "exec is only supported on Darwin"]
         )
         #endif
+    }
+
+    /// Secrets and connection/process certificates never cross an update exec.
+    /// The replacement process reloads durable credentials through the normal
+    /// startup path and creates a fresh hardened-process key.
+    static func sanitizedEnvironmentForExec(
+        _ environment: [String: String]
+    ) -> [String: String] {
+        let secretOrCertificateKeys: Set<String> = [
+            "DARKBLOOM_AUTH_TOKEN",
+            "DARKBLOOM_RELEASE_KEY",
+            "DARKBLOOM_API_KEY",
+            "DARKBLOOM_PROCESS_CERT",
+            "DARKBLOOM_PROCESS_EVIDENCE",
+            "DARKBLOOM_PROCESS_CERTIFICATE",
+            "DARKBLOOM_PROCESS_EVIDENCE_CERT",
+            "PROCESS_EVIDENCE_CERT",
+            "DARKBLOOM_ATTESTATION_CERTIFICATE",
+            "DARKBLOOM_ATTESTATION_CERT",
+            "PROCESS_CERTIFICATE",
+            "ATTESTATION_CERTIFICATE",
+            "DARKBLOOM_COORDINATOR_SESSION_ID",
+            "DARKBLOOM_CODE_CHALLENGE",
+            "API_KEY",
+            "COORDINATOR_SESSION_ID",
+            "CODE_CHALLENGE",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+            "GITHUB_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ]
+        return environment.filter { key, _ in
+            !secretOrCertificateKeys.contains(key.uppercased())
+        }
     }
 
     // MARK: - Launchd-Aware Restart

@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -121,6 +122,12 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetRelease(&release); err != nil {
+		if errors.Is(err, store.ErrReleaseArtifactImmutable) {
+			writeJSON(w, http.StatusConflict, errorResponse(
+				"release_artifact_immutable",
+				"release version/platform already names different artifact metadata"))
+			return
+		}
 		s.logger.Error("release: register failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save release"))
 		return
@@ -537,6 +544,20 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	}
 	if req.Platform == "" {
 		req.Platform = defaultReleasePlatform
+	}
+	policy, rolloutErr := s.store.GetReleaseRollout(r.Context(), req.Platform)
+	if rolloutErr != nil && !errors.Is(rolloutErr, store.ErrRolloutNotFound) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"rollout_policy_unavailable", "failed to verify active release rollout"))
+		return
+	}
+	if rolloutErr == nil && (policy.TargetVersion == req.Version ||
+		(policy.Stage != store.RolloutStage100 && policy.PreviousVersion == req.Version)) {
+		writeJSON(w, http.StatusConflict, errorResponse(
+			"release_in_rollout",
+			"cannot deactivate a release required by the active rollout",
+		))
+		return
 	}
 	if s.binaryHashEnforce && !req.Force {
 		releases, err := s.store.ListReleasesWithError()

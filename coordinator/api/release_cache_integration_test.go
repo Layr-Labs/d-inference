@@ -49,7 +49,7 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 	assertVersionEndpoint(t, apiServer.URL, "1.0.0")
 	_ = getReleaseBody(t, apiServer.URL+"/v1/runtime/manifest", http.StatusOK)
 
-	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "first")
+	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "stable", "first")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.1.0")
 	assertVersionEndpoint(t, apiServer.URL, "1.1.0")
 	assertRuntimeManifestContains(t, apiServer.URL, strings.Repeat("f", 64))
@@ -58,7 +58,7 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 		t.Fatalf("macOS mutation changed isolated Linux latest response\nbefore=%s\nafter=%s", linuxBefore, linuxAfter)
 	}
 
-	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "replacement")
+	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "stable", "replacement")
 	latest := getReleaseBody(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", http.StatusOK)
 	if !bytes.Contains(latest, []byte(`"changelog":"replacement"`)) {
 		t.Fatalf("replacement was hidden by latest-release cache: %s", latest)
@@ -68,7 +68,7 @@ func TestReleaseMutationsInvalidateImmediateReadsByPlatform(t *testing.T) {
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.0.0")
 	assertVersionEndpoint(t, apiServer.URL, "1.0.0")
 
-	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "reactivated")
+	registerReleaseForCacheTest(t, apiServer.URL, cdn.URL, artifacts, "1.1.0", "stable", "reactivated")
 	assertReleaseVersion(t, apiServer.URL+"/v1/releases/latest?platform=macos-arm64", "1.1.0")
 
 	deactivateReleaseForCacheTest(t, apiServer.URL, "1.1.0", defaultReleasePlatform)
@@ -93,10 +93,11 @@ func registerReleaseForCacheTest(
 	t *testing.T,
 	baseURL, cdnURL string,
 	artifacts *releaseArtifactSet,
-	version, changelog string,
+	version, artifactContent, changelog string,
 ) {
 	t.Helper()
-	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-"+changelog))
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(
+		t, []byte("provider-"+artifactContent))
 	path := "/releases/v" + version + "/darkbloom-bundle-macos-arm64.tar.gz"
 	artifacts.mu.Lock()
 	artifacts.bundles[path] = bundle

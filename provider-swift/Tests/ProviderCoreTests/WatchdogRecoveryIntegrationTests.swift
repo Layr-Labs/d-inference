@@ -79,8 +79,21 @@ struct WatchdogRecoveryIntegrationTests {
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
 
+        let candidateIdentity = ProcessIdentity(pid: 4242, startTimeMicros: 123)
+        let reusedPIDHeartbeat = DaemonState(
+            pid: 4242,
+            processIdentity: ProcessIdentity(pid: 4242, startTimeMicros: 999),
+            version: "2.0.0",
+            writtenAt: 190,
+            startedAt: 150)
+        let reusedPID = context.service.observeHealthyProvider(
+            providerRunning: true,
+            daemonState: reusedPIDHeartbeat,
+            now: 190)
+        #expect(reusedPID == .stabilizing(since: nil))
         let firstHeartbeat = DaemonState(
             pid: 4242,
+            processIdentity: candidateIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -92,6 +105,7 @@ struct WatchdogRecoveryIntegrationTests {
         )
         let secondHeartbeat = DaemonState(
             pid: 4242,
+            processIdentity: candidateIdentity,
             version: "2.0.0",
             writtenAt: 261,
             startedAt: 150
@@ -1006,8 +1020,10 @@ struct WatchdogRecoveryIntegrationTests {
         defer { context.fixture.cleanup() }
         defer { Task { await context.mock.shutdown() } }
 
+        let candidateIdentity = ProcessIdentity(pid: 4242, startTimeMicros: 123)
         let heartbeat = DaemonState(
             pid: 4242,
+            processIdentity: candidateIdentity,
             version: "2.0.0",
             writtenAt: 200,
             startedAt: 150
@@ -1351,17 +1367,22 @@ struct WatchdogRecoveryIntegrationTests {
         candidateStartupTimeoutSeconds: Double = 300,
         isPastTickDeadline: @escaping @Sendable () -> Bool = { false }
     ) -> WatchdogRecoveryService {
-        WatchdogRecoveryService(
+        let candidateIdentity = ProcessIdentity(pid: 4242, startTimeMicros: 123)
+        return WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
                 kickstartIfLoaded: {
                     restarts.increment()
                     return true
                 },
-                // Injected: tests must never shell out to the real
-                // `launchctl print` for the host's provider job.
+                // Candidate promotion must bind daemon state to the exact
+                // kernel process identity launchd currently owns.
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
+                processIdentity: { pid in
+                    pid == candidateIdentity.pid ? candidateIdentity : nil
+                },
+                providerProcessIdentity: { candidateIdentity },
                 isPastTickDeadline: isPastTickDeadline,
                 log: { _ in }
             ),

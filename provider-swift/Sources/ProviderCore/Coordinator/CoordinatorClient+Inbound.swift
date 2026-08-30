@@ -144,6 +144,11 @@ extension CoordinatorClient {
                 status: ts.status,
                 reason: ts.reason
             ))
+
+        case .releaseUpdate(let update):
+            logger.info(
+                "Received coordinator-authorized release_update: v\(update.version) generation=\(update.desiredGeneration)")
+            eventContinuation?.yield(.releaseUpdate(update.authorizedRelease))
         }
     }
 

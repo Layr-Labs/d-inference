@@ -14,7 +14,9 @@ public enum CoordinatorClientCodec {
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        updateLifecycleState: UpdateLifecycleState? = nil,
+        warmIntent: WarmIntent? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -65,7 +67,9 @@ public enum CoordinatorClientCodec {
             prefixCacheStatuses: prefixCacheStatuses,
             prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
-            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels
+            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels,
+            updateLifecycleState: updateLifecycleState,
+            warmIntent: warmIntent
         ))
     }
 
@@ -79,7 +83,9 @@ public enum CoordinatorClientCodec {
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        updateLifecycleState: UpdateLifecycleState? = nil,
+        warmIntent: WarmIntent? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -92,7 +98,9 @@ public enum CoordinatorClientCodec {
                 prefixCacheProtocol: prefixCacheProtocol,
                 prefixCacheV2Models: prefixCacheV2Models,
                 prefixCacheStatuses: prefixCacheStatuses,
-                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+                updateLifecycleState: updateLifecycleState,
+                warmIntent: warmIntent
             )
         )
     }
@@ -109,7 +117,9 @@ public enum CoordinatorClientCodec {
         prefixCacheProtocol: Int? = nil,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        updateLifecycleState: UpdateLifecycleState? = nil,
+        warmIntent: WarmIntent? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -123,7 +133,9 @@ public enum CoordinatorClientCodec {
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
             prefixCacheStatuses: prefixCacheStatuses,
-            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+            updateLifecycleState: updateLifecycleState,
+            warmIntent: warmIntent
         ))
     }
 

@@ -207,6 +207,9 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
         public var toolConstraintModels: [String]?
+        public var updateLifecycleState: UpdateLifecycleState?
+        public var warmIntent: WarmIntent?
+
 
         public init(
             hardware: HardwareInfo,
@@ -234,7 +237,9 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
             prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
-            toolConstraintModels: [String]? = nil
+            toolConstraintModels: [String]? = nil,
+            updateLifecycleState: UpdateLifecycleState? = nil,
+            warmIntent: WarmIntent? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -262,6 +267,9 @@ public enum ProviderMessage: Sendable, Equatable {
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
             self.toolConstraintProtocol = toolConstraintProtocol
             self.toolConstraintModels = toolConstraintModels
+            self.updateLifecycleState = updateLifecycleState
+            self.warmIntent = warmIntent
+
         }
     }
 
@@ -285,6 +293,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
+        public var updateLifecycleState: UpdateLifecycleState?
+        public var warmIntent: WarmIntent?
+
 
         public init(
             status: ProviderStatus,
@@ -298,7 +309,9 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+            updateLifecycleState: UpdateLifecycleState? = nil,
+            warmIntent: WarmIntent? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -312,6 +325,9 @@ public enum ProviderMessage: Sendable, Equatable {
             self.prefixCacheV2Models = prefixCacheV2Models
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
+            self.updateLifecycleState = updateLifecycleState
+            self.warmIntent = warmIntent
+
         }
     }
 
@@ -793,6 +809,9 @@ extension ProviderMessage: Codable {
         case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
+        case updateLifecycleState = "update_lifecycle_state"
+        case warmIntent = "warm_intent"
+
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -906,6 +925,9 @@ extension ProviderMessage: Codable {
             }
             try container.encodeIfPresent(
                 r.toolConstraintModels, forKey: .toolConstraintModels)
+            try container.encodeIfPresent(r.updateLifecycleState, forKey: .updateLifecycleState)
+            try container.encodeIfPresent(r.warmIntent, forKey: .warmIntent)
+
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -927,6 +949,9 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(h.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
+            try container.encodeIfPresent(h.updateLifecycleState, forKey: .updateLifecycleState)
+            try container.encodeIfPresent(h.warmIntent, forKey: .warmIntent)
+
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -1130,7 +1155,11 @@ extension ProviderMessage: Codable {
                 toolConstraintProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
-                    [String].self, forKey: .toolConstraintModels)
+                    [String].self, forKey: .toolConstraintModels),
+                updateLifecycleState: try container.decodeIfPresent(
+                    UpdateLifecycleState.self, forKey: .updateLifecycleState),
+                warmIntent: try container.decodeIfPresent(
+                    WarmIntent.self, forKey: .warmIntent)
             ))
 
         case .heartbeat:
@@ -1151,7 +1180,11 @@ extension ProviderMessage: Codable {
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(
                     [PrefixCacheDonationOutcomeCount].self,
-                    forKey: .prefixCacheDonationOutcomes)
+                    forKey: .prefixCacheDonationOutcomes),
+                updateLifecycleState: try container.decodeIfPresent(
+                    UpdateLifecycleState.self, forKey: .updateLifecycleState),
+                warmIntent: try container.decodeIfPresent(
+                    WarmIntent.self, forKey: .warmIntent)
             ))
 
         case .inferenceAccepted:
@@ -1358,6 +1391,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case prefetchModel(PrefetchModel)
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
+    case releaseUpdate(ReleaseUpdate)
+
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -1501,6 +1536,51 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.reason = reason
         }
     }
+    /// Coordinator-authorized release target. The provider never chooses a
+    /// cohort or substitutes another release.
+    public struct ReleaseUpdate: Sendable, Equatable {
+        public var version: String
+        public var platform: String
+        public var backend: String?
+        public var binaryHash: String
+        public var bundleHash: String
+        public var metallibHash: String?
+        public var url: String
+        public var desiredGeneration: UInt64
+
+        public init(
+            version: String,
+            platform: String,
+            backend: String? = nil,
+            binaryHash: String,
+            bundleHash: String,
+            metallibHash: String? = nil,
+            url: String,
+            desiredGeneration: UInt64
+        ) {
+            self.version = version
+            self.platform = platform
+            self.backend = backend
+            self.binaryHash = binaryHash
+            self.bundleHash = bundleHash
+            self.metallibHash = metallibHash
+            self.url = url
+            self.desiredGeneration = desiredGeneration
+        }
+
+        public var authorizedRelease: AuthorizedReleaseUpdate {
+            AuthorizedReleaseUpdate(
+                version: version,
+                platform: platform,
+                backend: backend,
+                binaryHash: binaryHash,
+                bundleHash: bundleHash,
+                metallibHash: metallibHash,
+                url: url,
+                desiredGeneration: desiredGeneration)
+        }
+    }
+
 }
 
 // MARK: - CoordinatorMessage Codable
@@ -1516,6 +1596,8 @@ extension CoordinatorMessage: Codable {
         case prefetchModel = "prefetch_model"
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
+        case releaseUpdate = "release_update"
+
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1540,6 +1622,12 @@ extension CoordinatorMessage: Codable {
         case trustLevel = "trust_level"
         case status, reason
         case models
+        case binaryHash = "binary_hash"
+        case bundleHash = "bundle_hash"
+        case metallibHash = "metallib_hash"
+        case url, platform, backend, version
+        case desiredGeneration = "desired_generation"
+
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1613,7 +1701,20 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+
+        case .releaseUpdate(let update):
+            try container.encode(TypeValue.releaseUpdate, forKey: .type)
+            try container.encode(update.version, forKey: .version)
+            try container.encode(update.platform, forKey: .platform)
+            try container.encodeIfPresent(update.backend, forKey: .backend)
+            try container.encode(update.binaryHash, forKey: .binaryHash)
+            try container.encode(update.bundleHash, forKey: .bundleHash)
+            try container.encodeIfPresent(update.metallibHash, forKey: .metallibHash)
+            try container.encode(update.url, forKey: .url)
+            try container.encode(update.desiredGeneration, forKey: .desiredGeneration)
         }
+
+
     }
 
     public init(from decoder: Decoder) throws {
@@ -1690,6 +1791,18 @@ extension CoordinatorMessage: Codable {
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
+            ))
+
+        case .releaseUpdate:
+            self = .releaseUpdate(ReleaseUpdate(
+                version: try container.decode(String.self, forKey: .version),
+                platform: try container.decode(String.self, forKey: .platform),
+                backend: try container.decodeIfPresent(String.self, forKey: .backend),
+                binaryHash: try container.decode(String.self, forKey: .binaryHash),
+                bundleHash: try container.decode(String.self, forKey: .bundleHash),
+                metallibHash: try container.decodeIfPresent(String.self, forKey: .metallibHash),
+                url: try container.decode(String.self, forKey: .url),
+                desiredGeneration: try container.decode(UInt64.self, forKey: .desiredGeneration)
             ))
         }
     }

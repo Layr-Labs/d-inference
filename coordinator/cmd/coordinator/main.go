@@ -772,6 +772,10 @@ func main() {
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
 
+	// Sample server-owned rollout health windows and apply CAS-protected
+	// automatic pauses. This loop never promotes a rollout.
+	go srv.StartReleaseRolloutHealthLoop(ctx)
+
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
 

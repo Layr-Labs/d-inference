@@ -104,6 +104,10 @@ type MemoryStore struct {
 
 	// Releases (provider binary versioning)
 	releases map[string]*Release // "version:platform" → Release
+	// Durable provider release rollout policy and immutable transition journal.
+	releaseRollouts             map[string]*ReleaseRolloutPolicy // platform → active policy
+	releaseRolloutTransitions   []ReleaseRolloutTransition
+	releaseRolloutTransitionSeq int64
 
 	// Provider fleet persistence
 	providerRecords    map[string]*ProviderRecord   // providerID → record
@@ -190,6 +194,8 @@ func NewMemory(scfg Config) *MemoryStore {
 		providerEarnings:              make([]ProviderEarning, 0),
 		providerPayouts:               make([]ProviderPayout, 0),
 		releases:                      make(map[string]*Release),
+		releaseRollouts:               make(map[string]*ReleaseRolloutPolicy),
+		releaseRolloutTransitions:     make([]ReleaseRolloutTransition, 0),
 		providerRecords:               make(map[string]*ProviderRecord),
 		reputationRecords:             make(map[string]*ReputationRecord),
 		serialToProviderID:            make(map[string]string),
@@ -2856,12 +2862,23 @@ func (s *MemoryStore) SetRelease(release *Release) error {
 	if release.Version == "" || release.Platform == "" {
 		return errors.New("version and platform are required")
 	}
+	key := releaseKey(release.Version, release.Platform)
+	if existing := s.releases[key]; existing != nil {
+		if !releaseArtifactEqual(existing, release) {
+			return ErrReleaseArtifactImmutable
+		}
+		r := *existing
+		r.Changelog = release.Changelog
+		r.Active = true
+		s.releases[key] = &r
+		return nil
+	}
 	r := *release
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now()
 	}
 	r.Active = true
-	s.releases[releaseKey(r.Version, r.Platform)] = &r
+	s.releases[key] = &r
 	return nil
 }
 

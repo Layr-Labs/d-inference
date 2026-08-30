@@ -49,9 +49,9 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/semverutil"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
-	"golang.org/x/mod/semver"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -267,6 +267,10 @@ type Server struct {
 	releaseTrustPolicy                atomic.Pointer[releaseTrustPolicySnapshot]
 	releaseTrustPolicyGeneration      atomic.Uint64
 	releaseInventoryEverConfigured    atomic.Bool
+	rolloutDispatchMu                 sync.Mutex
+	rolloutDispatchCancel             context.CancelFunc
+	rolloutDispatchDone               chan struct{}
+	rolloutHealth                     *rolloutHealthMonitor
 
 	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
 	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
@@ -776,6 +780,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		rolloutHealth:            newRolloutHealthMonitor(),
 	}
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
@@ -790,6 +795,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	reg.SetRolloutDisconnectObserver(func(identity string, generation uint64, state string) {
+		if s.rolloutHealth != nil {
+			s.rolloutHealth.recordProviderDisconnectState(
+				identity, generation, state, time.Now())
+		}
+	})
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -818,6 +829,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 }
 
 func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
+	s.reconcileConnectedProviderReleaseRollout(providerID)
 	provider := s.registry.GetProvider(providerID)
 	if provider == nil {
 		return
@@ -1797,25 +1809,16 @@ func semverGreater(a, b string) bool {
 		return false
 	}
 	if b == "" {
-		return true
+		_, valid := semverutil.Compare(a, "0.0.0")
+		return valid
 	}
-	av := a
-	if !strings.HasPrefix(av, "v") {
-		av = "v" + av
+	comparison, valid := semverutil.Compare(a, b)
+	if valid {
+		return comparison > 0
 	}
-	bv := b
-	if !strings.HasPrefix(bv, "v") {
-		bv = "v" + bv
-	}
-	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
-	switch {
-	case aValid && bValid:
-		return semver.Compare(av, bv) > 0
-	case aValid:
-		return true
-	default:
-		return false
-	}
+	_, aValid := semverutil.Compare(a, "0.0.0")
+	_, bValid := semverutil.Compare(b, "0.0.0")
+	return aValid && !bValid
 }
 
 // semverLess returns true if version a is less than version b.
@@ -2231,6 +2234,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/models/", s.handleAdminModelRegistryAction)
 	s.mux.HandleFunc("GET /v1/admin/releases", s.handleAdminListReleases)     // admin key or Privy admin
 	s.mux.HandleFunc("DELETE /v1/admin/releases", s.handleAdminDeleteRelease) // admin key or Privy admin
+	s.mux.HandleFunc("GET /v1/admin/release-rollout", s.handleAdminReleaseRolloutRead)
+	s.mux.HandleFunc("POST /v1/admin/release-rollout/promote", s.handleAdminReleaseRolloutPromote)
+	s.mux.HandleFunc("POST /v1/admin/release-rollout/pause", s.handleAdminReleaseRolloutPause)
+	s.mux.HandleFunc("POST /v1/admin/release-rollout/resume", s.handleAdminReleaseRolloutResume)
+	s.mux.HandleFunc("POST /v1/admin/release-rollout/evaluate", s.handleAdminReleaseRolloutEvaluate)
 
 	// Historical admin state export (DAR-70) — streams the TEE-sealed /data
 	// archive used for the completed EigenCloud migration. Always registered, but
@@ -2906,6 +2914,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		ctx = context.WithValue(ctx, rolloutHealthContextKey{}, &rolloutRequestHealthState{})
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(sw, r)
@@ -2917,6 +2926,9 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		route := r.Pattern
 		if route == "" {
 			route = "unmatched"
+		}
+		if s.rolloutHealth != nil {
+			s.rolloutHealth.recordDispatchHTTPOutcome(ctx, sw.status, time.Now())
 		}
 
 		// User correlation: if requireAuth attached an account, include

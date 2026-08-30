@@ -124,6 +124,8 @@ public enum CoordinatorEvent: Sendable {
     case desiredModels(entries: [CoordinatorMessage.DesiredModelEntry])
     /// Coordinator informs the provider of its current trust level and status.
     case trustStatus(trustLevel: String, status: String, reason: String)
+    /// Exact release and generation authorized by the coordinator rollout.
+    case releaseUpdate(AuthorizedReleaseUpdate)
 }
 
 

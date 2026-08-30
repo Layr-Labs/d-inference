@@ -1496,3 +1496,38 @@ func (s *mdmVerificationScheduler) registerMetrics() {
 		}
 	}
 }
+
+func (s *mdmVerificationScheduler) rolloutSaturation(allowed map[string]struct{}) float64 {
+	if s == nil || len(allowed) == 0 {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active, queued := 0, 0
+	for _, job := range s.jobs {
+		if _, ok := allowed[job.record.SEPubKey]; !ok {
+			continue
+		}
+		if job.running {
+			active++
+		} else {
+			queued++
+		}
+	}
+	maxTasks := len(allowed) * 2
+	activeDenominator := min(s.cfg.Workers, maxTasks)
+	queueDenominator := min(s.cfg.QueueCapacity, maxTasks)
+	ratio := 0.0
+	if activeDenominator > 0 {
+		ratio = float64(active) / float64(activeDenominator)
+	}
+	if queueDenominator > 0 {
+		if queueRatio := float64(queued) / float64(queueDenominator); queueRatio > ratio {
+			ratio = queueRatio
+		}
+	}
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
+}

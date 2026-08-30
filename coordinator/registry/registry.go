@@ -839,6 +839,18 @@ type Provider struct {
 	ProcessEvidenceVersion        string
 	processEvidenceChallenge      ProcessEvidenceChallengeState
 
+	// Mature release rollout state. UpdateLifecycleReported distinguishes v1
+	// providers from legacy providers that omit the additive field.
+	UpdateLifecycleReported       bool
+	UpdateLifecycleState          string
+	WarmIntent                    protocol.WarmIntent
+	UpdateDesiredGeneration       uint64
+	UpdateTargetVersion           string
+	updateLifecycleStep           uint8
+	updateApplicationEvidenceBase uint64
+	RolloutApprovalRequired       bool
+	RolloutReleaseApproved        bool
+
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
 	// only: it is surfaced as a verified proof (MDAVerified/MDACertChain/MDAResult)
@@ -2118,7 +2130,10 @@ type Registry struct {
 	loadModelSender               func(providerID, modelID string) error
 	prefetchModelSender           func(providerID, modelID string, priority int) error
 	desiredModelsSender           func(providerID string, entries []protocol.DesiredModelEntry) error
+	releaseUpdateSender           func(context.Context, string, protocol.ReleaseUpdateMessage) error
 	onRuntimeCapabilitiesPromoted func(providerID string)
+	onHardwareEvidenceGranted     func(providerID string)
+	rolloutDisconnectObserver     func(identity string, generation uint64, state string)
 
 	// onHardUntrust is an optional hook fired (off the registry locks) whenever a
 	// provider is HARD-untrusted (a non-recoverable security deroute). The api
@@ -3489,6 +3504,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
 		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
 		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		UpdateLifecycleReported:     msg.UpdateLifecycleState != nil,
+		UpdateLifecycleState:        lifecycleStateValue(msg.UpdateLifecycleState),
+		WarmIntent:                  cloneWarmIntent(msg.WarmIntent),
 		modelEvidenceGeneration:     1,
 		TrustLevel:                  TrustNone,
 		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
@@ -3755,6 +3773,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// loaded. Clear stale state so challenge checks never compare against a
 	// provider-injected identifier.
 	p.CurrentModel = currentModel
+	p.applyUpdateLifecycleReportLocked(msg.UpdateLifecycleState, msg.WarmIntent)
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -4631,8 +4650,12 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	var rolloutIdentity, rolloutState string
+	var rolloutGeneration uint64
+	var rolloutObserver func(identity string, generation uint64, state string)
 	var disconnectedModels []string
 	r.mu.Lock()
+	rolloutObserver = r.rolloutDisconnectObserver
 	p, ok := r.providers[id]
 	if ok {
 		delete(r.providers, id)
@@ -4644,6 +4667,11 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		if identity, valid := providerRolloutDisconnectIdentityLocked(p, time.Now()); valid {
+			rolloutIdentity = identity
+			rolloutGeneration = p.UpdateDesiredGeneration
+			rolloutState = p.UpdateLifecycleState
+		}
 		p.DeviceEvidence = DeviceEvidence{}
 		p.ApplicationEvidence = ApplicationEvidence{}
 		p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
@@ -4695,9 +4723,20 @@ func (r *Registry) Disconnect(id string) {
 				r.modelProviderDec(m.ID)
 			}
 		}
+		p.UpdateLifecycleState = ""
+		p.UpdateTargetVersion = ""
+		p.UpdateDesiredGeneration = 0
+		p.updateLifecycleStep = 0
+		p.updateApplicationEvidenceBase = 0
+		p.WarmIntent = protocol.WarmIntent{}
+		p.RolloutApprovalRequired = false
+		p.RolloutReleaseApproved = false
 		p.mu.Unlock()
 	}
 	r.mu.Unlock()
+	if rolloutObserver != nil && rolloutIdentity != "" {
+		rolloutObserver(rolloutIdentity, rolloutGeneration, rolloutState)
+	}
 
 	if !ok {
 		return
@@ -4917,6 +4956,14 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 		p.ApplicationEvidence = ApplicationEvidence{}
 		p.CodeAttested = false
 		p.FreshCodeAttested = false
+		p.RolloutApprovalRequired = false
+		p.RolloutReleaseApproved = false
+		p.UpdateLifecycleState = protocol.UpdateLifecycleBlocked
+		p.UpdateTargetVersion = ""
+		p.UpdateDesiredGeneration = 0
+		p.updateLifecycleStep = 0
+		p.updateApplicationEvidenceBase = 0
+		p.WarmIntent = protocol.WarmIntent{}
 	}
 	p.mu.Unlock()
 	r.mu.Unlock()

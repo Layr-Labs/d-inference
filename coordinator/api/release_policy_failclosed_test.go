@@ -1,24 +1,28 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 type releaseInventoryFailureStore struct {
 	*store.MemoryStore
-	mu              sync.Mutex
-	failReads       bool
-	emptyReads      bool
-	failAfterDelete bool
-	deleteCalls     int
+	mu               sync.Mutex
+	failReads        bool
+	emptyReads       bool
+	failRolloutReads bool
+	failAfterDelete  bool
+	deleteCalls      int
 }
 
 func (s *releaseInventoryFailureStore) ListReleasesWithError() ([]store.Release, error) {
@@ -33,6 +37,18 @@ func (s *releaseInventoryFailureStore) ListReleasesWithError() ([]store.Release,
 		return []store.Release{}, nil
 	}
 	return s.MemoryStore.ListReleasesWithError()
+}
+
+func (s *releaseInventoryFailureStore) GetReleaseRollout(
+	ctx context.Context, platform string,
+) (*store.ReleaseRolloutPolicy, error) {
+	s.mu.Lock()
+	fail := s.failRolloutReads
+	s.mu.Unlock()
+	if fail {
+		return nil, errors.New("simulated rollout policy read failure")
+	}
+	return s.MemoryStore.GetReleaseRollout(ctx, platform)
 }
 
 func (s *releaseInventoryFailureStore) DeleteRelease(version, platform string) error {
@@ -236,5 +252,102 @@ func TestReleaseDeactivationAdminPrecheckFailsClosedOnInventoryError(t *testing.
 	}
 	if releases := st.MemoryStore.ListReleases(); len(releases) != 1 || !releases[0].Active {
 		t.Fatalf("precheck failure changed release inventory: %+v", releases)
+	}
+}
+
+func TestV1RegistrationFailsClosedOnRolloutPolicyReadError(t *testing.T) {
+	st := &releaseInventoryFailureStore{
+		MemoryStore: store.NewMemory(store.Config{}), failRolloutReads: true,
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	state := protocol.UpdateLifecycleServing
+	provider := reg.Register("rollout-read-failure", nil, &protocol.RegisterMessage{
+		Version: "1.0.0", UpdateLifecycleState: &state,
+	})
+	provider.Mu().Lock()
+	provider.Version = "1.0.0"
+	provider.Mu().Unlock()
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, PublicKey: "se-read-failure", SerialNumber: "serial",
+	})
+	server := &Server{registry: reg, store: st, logger: logger}
+	server.reconcileProviderReleaseRollout(provider.ID, provider, &protocol.RegisterMessage{
+		Version: "1.0.0", UpdateLifecycleState: &state,
+	})
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	if !provider.RolloutApprovalRequired || provider.RolloutReleaseApproved {
+		t.Fatalf("rollout policy outage failed open: required=%v approved=%v",
+			provider.RolloutApprovalRequired, provider.RolloutReleaseApproved)
+	}
+}
+
+func TestV1RegistrationFailsClosedOnApprovedTargetInventoryError(t *testing.T) {
+	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
+	if err := st.SetRelease(testRelease("1.0.0", trHashA)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetRelease(testRelease("2.0.0", trHashB)); err != nil {
+		t.Fatal(err)
+	}
+	identity := rolloutIdentityInBucketRange(t, 0, 99)
+	if _, err := st.StartReleaseRollout(context.Background(), store.StartReleaseRolloutRequest{
+		Platform: defaultReleasePlatform, TargetVersion: "2.0.0",
+		CanarySEIdentities: []string{identity},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st.setFailReads(true)
+	logger := quietLogger()
+	reg := registry.New(logger)
+	state := protocol.UpdateLifecycleServing
+	warm := &protocol.WarmIntent{DesiredGeneration: 1}
+	provider := reg.Register("rollout-inventory-failure", nil, &protocol.RegisterMessage{
+		Version: "1.0.0", UpdateLifecycleState: &state, WarmIntent: warm,
+	})
+	provider.Mu().Lock()
+	provider.Version = "1.0.0"
+	provider.TrustLevel = registry.TrustHardware
+	provider.Attested = true
+	provider.DeviceEvidence = registry.DeviceEvidence{
+		SEPublicKey: identity, Serial: "serial", VerifiedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour), EvidenceGeneration: 1,
+	}
+	provider.Mu().Unlock()
+	provider.SetAttestationResult(&attestation.VerificationResult{
+		Valid: true, PublicKey: identity, SerialNumber: "serial",
+	})
+	server := &Server{registry: reg, store: st, logger: logger}
+	server.reconcileProviderReleaseRollout(provider.ID, provider, &protocol.RegisterMessage{
+		Version: "1.0.0", UpdateLifecycleState: &state, WarmIntent: warm,
+	})
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	if !provider.RolloutApprovalRequired || provider.RolloutReleaseApproved ||
+		provider.UpdateTargetVersion != "" {
+		t.Fatalf("target inventory outage failed open: required=%v approved=%v target=%q",
+			provider.RolloutApprovalRequired, provider.RolloutReleaseApproved,
+			provider.UpdateTargetVersion)
+	}
+}
+
+func TestReleaseDeactivationFailsClosedOnRolloutPolicyReadError(t *testing.T) {
+	st := &releaseInventoryFailureStore{
+		MemoryStore: store.NewMemory(store.Config{}), failRolloutReads: true,
+	}
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatal(err)
+	}
+	logger := quietLogger()
+	server := NewServer(registry.New(logger), st, ServerConfig{AdminKey: "admin-key"}, logger)
+	defer server.Close()
+	response := doReq(server, http.MethodDelete, "/v1/admin/releases", "Bearer admin-key",
+		`{"version":"2.0.0","platform":"macos-arm64"}`)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if releases := st.MemoryStore.ListReleases(); len(releases) != 1 || !releases[0].Active {
+		t.Fatalf("policy read error deactivated release: %+v", releases)
 	}
 }

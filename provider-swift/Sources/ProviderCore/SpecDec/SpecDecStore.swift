@@ -495,6 +495,7 @@ enum SpecDecStore {
                     directory: artifact.directory,
                     source: .catalog,
                     revision: reference.revision,
+                    modelID: verification.manifest.modelID,
                     sourceRevision: artifact.sourceRevision,
                     artifactBytes: verification.artifactBytes,
                     residentBytes: SpecDecLimits.residentEstimate(
@@ -504,6 +505,7 @@ enum SpecDecStore {
                 guard refreshed.artifactBytes == artifact.artifactBytes,
                     refreshed.residentBytes == artifact.residentBytes,
                     refreshed.revision == artifact.revision,
+                    refreshed.modelID == artifact.modelID,
                     refreshed.manifestSHA256 == artifact.manifestSHA256
                 else {
                     return .fallback(

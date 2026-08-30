@@ -18,19 +18,16 @@ import os
 extension ProviderLoop {
     // MARK: - Inference Request Handling
 
-    /// Whether the provider is draining for a hot-swap update and must refuse
-    /// new work. 503 is the documented no-fault reroute signal (the coordinator
-    /// routes elsewhere); local requests get a 503-equivalent queue-full. We
-    /// only drain AFTER the new bundle is staged and verified (`.installing`
-    /// still serves, and staging never touches the live layout), so this never
-    /// costs capacity for a failed update.
+    /// Whether a coordinator-authorized update has closed admission. Admission
+    /// remains closed from `draining_for_update` through fresh application
+    /// certification and deterministic warm reload; blocked is fail-closed.
     ///
     /// Both admission paths call this twice: a fast-path reject up front, and an
     /// authoritative re-check right before the request is registered/reserved —
     /// the early gate is stale across the `await` between them. Each helper is
     /// synchronous + actor-isolated, so the authoritative call is atomic with the
     /// registration that follows (no suspension in between).
-    internal var isDrainingForUpdate: Bool { updatePhase == .draining }
+    internal var isDrainingForUpdate: Bool { updateAdmissionClosed }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining.

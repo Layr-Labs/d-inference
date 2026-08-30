@@ -136,17 +136,17 @@ struct WatchdogCommandTests {
         #expect(restart.configOptions.config == "/tmp/custom.toml")
     }
 
-    @Test("manual quarantine override is explicit and parseable")
-    func manualOverrideParses() throws {
-        let command = try Darkbloom.parseAsRoot([
-            "update",
-            "--override-quarantine",
-        ])
-        guard let update = command as? Update else {
-            Issue.record("expected Update command")
-            return
+    @Test("manual quarantine override is retired")
+    func manualOverrideIsRejected() {
+        do {
+            _ = try Darkbloom.parseAsRoot([
+                "update",
+                "--override-quarantine",
+            ])
+            Issue.record("retired quarantine override was accepted")
+        } catch {
+            // Expected: rollout authorization has no local override.
         }
-        #expect(update.overrideQuarantine)
     }
 }
 

@@ -1,33 +1,26 @@
 package store
 
-import (
-	"fmt"
-	"strings"
-)
+import "github.com/eigeninference/d-inference/coordinator/semverutil"
+import "errors"
 
 func releaseVersionGreater(a, b string) bool {
 	if a == "" {
 		return false
 	}
 	if b == "" {
-		return true
+		_, ok := semverutil.Compare(a, "0.0.0")
+		return ok
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
-	}
-	return false
+	return semverutil.Greater(a, b)
+}
+
+var ErrReleaseArtifactImmutable = errors.New("release artifact metadata is immutable")
+
+func releaseArtifactEqual(a, b *Release) bool {
+	return a != nil && b != nil &&
+		a.Version == b.Version && a.Platform == b.Platform &&
+		a.Backend == b.Backend && a.BinaryHash == b.BinaryHash &&
+		a.BundleHash == b.BundleHash && a.MetallibHash == b.MetallibHash &&
+		a.PythonHash == b.PythonHash && a.RuntimeHash == b.RuntimeHash &&
+		a.TemplateHashes == b.TemplateHashes && a.URL == b.URL
 }

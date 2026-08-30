@@ -23,17 +23,15 @@ import TOMLKit
 public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
+    /// Legacy compatibility setting. Process-evidence-v1 rollout is always
+    /// coordinator-authorized and does not consult this local toggle.
     public var autoUpdate: Bool
     /// When true (default), the watchdog relaunches the provider ~5 min after a
     /// crash. `false` opts out while keeping the provider installed.
     public var autoRestart: Bool
-    /// Maximum random delay (seconds) inserted between staging a verified
-    /// background auto-update bundle and beginning the drain+restart. Staggers
-    /// fleet restarts after a release so every provider is not cold at once (the
-    /// first_chunk_timeout storm at rollover). The delay sits strictly AFTER the
-    /// download/verify security checks and the provider keeps serving while it
-    /// waits. 0 disables jitter. Manual (`darkbloom update`) and startup updates
-    /// are never jittered. Set `update_jitter_seconds` under `[provider]`.
+    /// Legacy compatibility setting for pre-v1 provider binaries. The v1
+    /// coordinator controls rollout stage/pause and sends exact generations;
+    /// the current provider never applies local release jitter.
     public var updateJitterSeconds: UInt64
 
     public init(

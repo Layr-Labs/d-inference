@@ -411,6 +411,18 @@ type ReleaseStore interface {
 
 	// DeleteRelease deactivates a release by version and platform.
 	DeleteRelease(version, platform string) error
+
+	// GetReleaseRollout returns the durable rollout policy for a platform.
+	GetReleaseRollout(ctx context.Context, platform string) (*ReleaseRolloutPolicy, error)
+	// StartReleaseRollout creates the canary stage for an active release. The
+	// expected revision is zero for the first policy and the current revision
+	// when replacing a completed policy with a newer release.
+	StartReleaseRollout(ctx context.Context, request StartReleaseRolloutRequest) (*ReleaseRolloutPolicy, error)
+	// TransitionReleaseRollout applies one CAS-protected promote/pause/resume
+	// operation and appends an immutable audit row in the same transaction.
+	TransitionReleaseRollout(ctx context.Context, request ReleaseRolloutTransitionRequest) (*ReleaseRolloutPolicy, error)
+	// ListReleaseRolloutTransitions returns the immutable audit journal oldest-first.
+	ListReleaseRolloutTransitions(ctx context.Context, platform string) ([]ReleaseRolloutTransition, error)
 }
 
 // UserStore manages consumer accounts linked to Privy identities, including

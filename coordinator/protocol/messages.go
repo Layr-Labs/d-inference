@@ -58,8 +58,21 @@ const (
 	TypePrefetchModel                  = "prefetch_model"
 	TypeDesiredModels                  = "desired_models"
 	TypeTrustStatus                    = "trust_status"
+	TypeReleaseUpdate                  = "release_update"
 	// Additive attestation capability/canonical transcript version.
 	ProcessEvidenceV1 = "process_evidence_v1"
+)
+
+// Update lifecycle values are frozen across coordinator/provider releases.
+const (
+	UpdateLifecycleServing              = "serving"
+	UpdateLifecycleDrainingForUpdate    = "draining_for_update"
+	UpdateLifecycleInstalling           = "installing"
+	UpdateLifecycleReconnecting         = "reconnecting"
+	UpdateLifecycleApplicationVerifying = "application_verifying"
+	UpdateLifecycleModelReloading       = "model_reloading"
+	UpdateLifecycleReady                = "ready"
+	UpdateLifecycleBlocked              = "blocked"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -100,6 +113,19 @@ type CPUCores struct {
 	Total       int `json:"total"`
 	Performance int `json:"performance"`
 	Efficiency  int `json:"efficiency"`
+}
+
+// WarmIntent is the provider's exact additive warm-model convergence intent.
+// Empty fields are omitted so legacy registration and heartbeat payloads retain
+// their deployed shape.
+type WarmIntent struct {
+	ModelID           string `json:"model_id,omitempty"`
+	ModelHash         string `json:"model_hash,omitempty"`
+	SlotID            string `json:"slot_id,omitempty"`
+	KVBackend         string `json:"kv_backend,omitempty"`
+	KVQuantization    string `json:"kv_quantization,omitempty"`
+	MTPModelID        string `json:"mtp_model_id,omitempty"`
+	DesiredGeneration uint64 `json:"desired_generation,omitempty"`
 }
 
 // Hardware describes the provider's machine capabilities.
@@ -204,6 +230,8 @@ type RegisterMessage struct {
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
 	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time forced-tool enforcement protocol version
 	ToolConstraintModels        []string                           `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
+	UpdateLifecycleState        *string                            `json:"update_lifecycle_state,omitempty"`
+	WarmIntent                  *WarmIntent                        `json:"warm_intent,omitempty"`
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
 	// pushes the E_K(nonce) code-identity challenge to, and which APNs environment
@@ -252,6 +280,8 @@ type HeartbeatMessage struct {
 	// empty snapshot/counter set from a current provider.
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
+	UpdateLifecycleState        *string                            `json:"update_lifecycle_state,omitempty"`
+	WarmIntent                  *WarmIntent                        `json:"warm_intent,omitempty"`
 
 	// APNs code-identity attestation (W5 Fix 2): a provider that only obtained
 	// its APNs device token AFTER registration (headless/late-token Mac) — or
@@ -689,6 +719,21 @@ type DesiredModelEntry struct {
 type DesiredModelsMessage struct {
 	Type   string              `json:"type"`
 	Models []DesiredModelEntry `json:"models"`
+}
+
+// ReleaseUpdateMessage is the only coordinator command that authorizes a
+// provider binary transition. It contains one approved target, never a release
+// inventory or downgrade candidate.
+type ReleaseUpdateMessage struct {
+	Type              string `json:"type"`
+	Version           string `json:"version"`
+	Platform          string `json:"platform"`
+	Backend           string `json:"backend,omitempty"`
+	BinaryHash        string `json:"binary_hash"`
+	BundleHash        string `json:"bundle_hash"`
+	MetallibHash      string `json:"metallib_hash,omitempty"`
+	URL               string `json:"url"`
+	DesiredGeneration uint64 `json:"desired_generation"`
 }
 
 // ModelsUpdateMessage is an authoritative, out-of-band update to the provider's

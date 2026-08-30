@@ -178,6 +178,11 @@ func Verify(signed SignedAttestation) VerificationResult {
 		result.Error = fmt.Sprintf("invalid public key: %v", err)
 		return result
 	}
+	// Collapse every accepted textual representation to one identity derived
+	// from the validated P-256 point bytes. Security-sensitive cohort, scheduler,
+	// and trust-reuse keys must never hash/provider-key on raw base64 text.
+	result.PublicKey = base64.StdEncoding.EncodeToString(
+		elliptic.Marshal(pubKey.Curve, pubKey.X, pubKey.Y))
 
 	// Decode signature from base64 (DER-encoded ECDSA)
 	sigBytes, err := base64.StdEncoding.DecodeString(signed.Signature)

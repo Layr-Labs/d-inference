@@ -367,16 +367,20 @@ public struct SelfUpdater: Sendable {
     private struct ArtifactVerificationPolicy {
         let codeSignaturePolicy: DarkbloomCodeSignature.Policy?
         let verifyRuntimeCapabilities: Bool
+        let requireAppBundle: Bool
 
         static let production = ArtifactVerificationPolicy(
             codeSignaturePolicy: .darkbloomProduction,
-            verifyRuntimeCapabilities: true)
+            verifyRuntimeCapabilities: true,
+            requireAppBundle: true)
         static let unverifiedTestFixture = ArtifactVerificationPolicy(
             codeSignaturePolicy: nil,
-            verifyRuntimeCapabilities: false)
+            verifyRuntimeCapabilities: false,
+            requireAppBundle: false)
         static let signedTestFixture = ArtifactVerificationPolicy(
             codeSignaturePolicy: .structuralForIsolatedTest,
-            verifyRuntimeCapabilities: true)
+            verifyRuntimeCapabilities: true,
+            requireAppBundle: false)
     }
 
     /// A release bundle that has been extracted and fully verified (hashes and
@@ -531,6 +535,9 @@ public struct SelfUpdater: Sendable {
             // to SIGKILL the process.
             let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
             let hasAppBundle = fm.fileExists(atPath: extractedApp.path)
+            try Self.verifyAppBundleRequirement(
+                hasAppBundle: hasAppBundle,
+                required: verification.requireAppBundle)
             if !hasAppBundle {
                 let canonicalBin = stagingRoot.appendingPathComponent("bin")
                 try fm.createDirectory(
@@ -597,6 +604,11 @@ public struct SelfUpdater: Sendable {
                         deep: true,
                         policy: signaturePolicy
                     )
+                    if verification.requireAppBundle {
+                        try Self.verifySignedAppVersion(
+                            app: extractedApp,
+                            claimedVersion: release.version)
+                    }
                     if verification.verifyRuntimeCapabilities {
                         try verifyRuntimeCapabilities(
                             app: extractedApp,
@@ -1180,6 +1192,7 @@ public struct SelfUpdater: Sendable {
     ) throws {
         #if canImport(Darwin)
         do {
+
             try DarkbloomCodeSignature.verify(
                 file,
                 deep: deep,
@@ -1189,6 +1202,46 @@ public struct SelfUpdater: Sendable {
             throw UpdateError.replaceFailed("\(label) code signature verification failed: \(error.localizedDescription)")
         }
         #endif
+    }
+    static func verifyAppBundleRequirement(
+        hasAppBundle: Bool,
+        required: Bool
+    ) throws {
+        guard !required || hasAppBundle else {
+            throw UpdateError.replaceFailed(
+                "coordinator-authorized releases require a signed Darkbloom.app bundle")
+        }
+    }
+
+    /// Bind rollout metadata to the version sealed by the app's deep code
+    /// signature. Both canonical bundle version keys must agree semantically
+    /// with the coordinator-authorized target.
+    static func verifySignedAppVersion(
+        app: URL,
+        claimedVersion: String
+    ) throws {
+        let plist = app.appendingPathComponent("Contents/Info.plist")
+        let data: Data
+        do {
+            data = try Data(contentsOf: plist)
+        } catch {
+            throw UpdateError.replaceFailed(
+                "signed Darkbloom.app Info.plist is unreadable")
+        }
+        guard let object = try? PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil),
+              let values = object as? [String: Any],
+              let bundleVersion = values["CFBundleVersion"] as? String,
+              let shortVersion = values["CFBundleShortVersionString"] as? String,
+              let claimed = SemanticVersion(claimedVersion),
+              let bundle = SemanticVersion(bundleVersion),
+              let short = SemanticVersion(shortVersion),
+              bundle == claimed,
+              short == claimed
+        else {
+            throw UpdateError.replaceFailed(
+                "signed Darkbloom.app version does not match authorized release")
+        }
     }
 
 }

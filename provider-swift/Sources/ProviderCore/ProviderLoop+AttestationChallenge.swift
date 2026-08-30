@@ -19,12 +19,12 @@ extension ProviderLoop {
         timestamp: String,
         send: SendHandle,
         processEvidenceContext: ProcessEvidenceResponseContext? = nil
-    ) async {
+    ) async -> Bool {
         logger.info(.attestationChallengeReceived)
 
         guard let builder = attestationBuilder else {
             logger.warning(.attestationIdentityUnavailable)
-            return
+            return false
         }
 
         do {
@@ -87,16 +87,18 @@ extension ProviderLoop {
             )))
 
             logger.info(.attestationResponseSent)
+            return true
         } catch {
             logger.error(.attestationSigningFailed)
             logger.error("Failed to sign attestation challenge: \(error)")
         }
+        return false
     }
 
     internal func handleProcessEvidenceChallenge(
         _ challenge: CoordinatorMessage.AttestationChallenge,
         send: SendHandle
-    ) async {
+    ) async -> Bool {
         let runtimeHashes = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
         guard challenge.processEvidenceVersion == ProcessEvidenceProtocol.version,
               let coordinatorSessionId = challenge.coordinatorSessionId,
@@ -109,7 +111,7 @@ extension ProviderLoop {
               !metallibHash.isEmpty
         else {
             logger.error("Rejected incomplete or unsupported process evidence challenge")
-            return
+            return false
         }
         let context = ProcessEvidenceResponseContext(
             version: ProcessEvidenceProtocol.version,
@@ -121,7 +123,7 @@ extension ProviderLoop {
             providerBackend: "mlx-swift",
             metallibHash: metallibHash
         )
-        await handleAttestationChallenge(
+        return await handleAttestationChallenge(
             nonce: challenge.nonce,
             timestamp: challenge.timestamp,
             send: send,

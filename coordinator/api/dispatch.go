@@ -1327,6 +1327,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
+			if s.rolloutHealth != nil {
+				s.rolloutHealth.recordDispatchQueueTimeout(d.r.Context(), time.Now())
+			}
 			retryAfter := s.estimateRetryAfter(d.model)
 			info := d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
@@ -3045,6 +3048,9 @@ func (d *dispatchState) run() {
 	s := d.s
 	w, r := d.w, d.r
 	d.preflightLegacyCacheBust()
+	if s.rolloutHealth != nil {
+		s.rolloutHealth.recordDispatchAdmission(r.Context(), time.Now())
+	}
 
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt

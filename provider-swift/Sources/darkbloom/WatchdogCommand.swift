@@ -143,8 +143,10 @@ struct Watchdog: AsyncParsableCommand {
                 current: state,
                 effectiveDownSince: downSince
             )
+            // Process-evidence-v1 recovery may restart/rollback a journaled
+            // candidate, but it never polls the legacy latest-release endpoint.
             let outcome = await recovery.recoverDownProvider(
-                autoUpdateEnabled: settings.autoUpdate,
+                autoUpdateEnabled: false,
                 inactiveProviderIdentity: providerIdentity,
                 providerProcessAlive: liveness.running,
                 crashLoopRestartCount: crashLoopCount,
@@ -184,7 +186,7 @@ struct Watchdog: AsyncParsableCommand {
                 // exactly what .inactiveCandidate means), so the process-alive
                 // grace below is a no-op; passed for call-site consistency.
                 let outcome = await recovery.recoverDownProvider(
-                    autoUpdateEnabled: settings.autoUpdate,
+                    autoUpdateEnabled: false,
                     inactiveProviderIdentity: providerIdentity,
                     providerProcessAlive: liveness.running,
                     now: now
@@ -198,7 +200,7 @@ struct Watchdog: AsyncParsableCommand {
                 Self.log(
                     "blocked-rollback candidate's retry backoff expired with no heartbeat — retrying restart/rollback (\(reason))")
                 let outcome = await recovery.recoverDownProvider(
-                    autoUpdateEnabled: settings.autoUpdate,
+                    autoUpdateEnabled: false,
                     inactiveProviderIdentity: providerIdentity,
                     providerProcessAlive: liveness.running,
                     now: now

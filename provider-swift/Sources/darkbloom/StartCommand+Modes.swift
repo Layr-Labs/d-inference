@@ -1,5 +1,5 @@
 // Start serving modes: --local standalone, launchd-foreground (coordinator +
-// optional unified local endpoint), startup auto-update, and scheduled windows.
+// optional unified local endpoint), and scheduled windows.
 import Foundation
 import ArgumentParser
 import ProviderCore
@@ -190,9 +190,6 @@ extension Start {
             )
         }
 
-        if config.provider.autoUpdate {
-            try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
-        }
 
         // ----- Process lifecycle: PID lock, legacy-artifact housekeeping, caffeinate. -----
         // Housekeeping runs once here, outside telemetry configuration and any
@@ -323,53 +320,6 @@ extension Start {
         await TelemetryClient.shared.shutdown()
     }
 
-    private func runStartupAutoUpdate(coordinatorURL: String) async throws {
-        if ProcessInfo.processInfo.environment["DARKBLOOM_NO_UPDATE_CHECK"] != nil {
-            return
-        }
-        print("Checking for provider update...")
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
-        switch await updater.update() {
-        case .alreadyUpToDate:
-            return
-        case .updated(let from, let to):
-            print("Updated provider: v\(from) -> v\(to). Restarting into new binary...")
-            do {
-                try updater.prepareCandidateLaunch(
-                    operation: "startup-update-exec"
-                )
-                try ProcessLifecycle.execCurrentProcess()
-            } catch {
-                try? updater.cancelPendingCandidateAttempt(
-                    operation: "startup-exec-failure")
-                throw error
-            }
-        case .restartRequired(let from, let to):
-            print("Provider v\(to) is already installed (running v\(from)); restarting into it...")
-            do {
-                try updater.prepareCandidateLaunch(
-                    operation: "startup-candidate-exec"
-                )
-                try ProcessLifecycle.execCurrentProcess()
-            } catch {
-                try? updater.cancelPendingCandidateAttempt(
-                    operation: "startup-exec-failure")
-                throw error
-            }
-        case .quarantined(let version, let reason):
-            printError("auto-update skipped: v\(version) is quarantined after failed starts (\(reason))")
-        case .busy(let reason):
-            printError("auto-update skipped: another update/recovery operation is active (\(reason))")
-        case .cancelled(let reason):
-            printError("auto-update cancelled: \(reason)")
-        case .downloadFailed(let reason):
-            printError("auto-update skipped: \(reason)")
-        case .hashMismatch(let expected, let got):
-            printError("auto-update skipped: bundle hash mismatch (expected \(expected), got \(got))")
-        case .replaceFailed(let reason):
-            printError("auto-update skipped: \(reason)")
-        }
-    }
 
     private enum ScheduledLoopResult {
         case loopEnded

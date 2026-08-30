@@ -18,6 +18,8 @@ public struct WatchdogRecoveryService: Sendable {
         public var launchSnapshot: @Sendable () -> ProviderLaunchSnapshot?
         public var providerStillLoaded: @Sendable () -> Bool
         public var processAlive: @Sendable (Int32) -> Bool
+        public var processIdentity: @Sendable (Int32) -> ProcessIdentity?
+        public var providerProcessIdentity: @Sendable () -> ProcessIdentity?
         public var terminateStaleLockOwner:
             @Sendable (UpdateProcessLock.Owner) -> Bool
         /// Safe-point tick budget check. Consulted ONLY between complete
@@ -63,6 +65,10 @@ public struct WatchdogRecoveryService: Sendable {
             },
             providerStillLoaded: @escaping @Sendable () -> Bool = { true },
             processAlive: @escaping @Sendable (Int32) -> Bool = daemonProcessAlive,
+            processIdentity: @escaping @Sendable (Int32) -> ProcessIdentity? = {
+                ProcessIdentity.read(pid: $0)
+            },
+            providerProcessIdentity: (@Sendable () -> ProcessIdentity?)? = nil,
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
@@ -78,6 +84,9 @@ public struct WatchdogRecoveryService: Sendable {
             self.launchSnapshot = launchSnapshot
             self.providerStillLoaded = providerStillLoaded
             self.processAlive = processAlive
+            self.processIdentity = processIdentity
+            self.providerProcessIdentity =
+                providerProcessIdentity ?? { launchSnapshot()?.process }
             self.terminateStaleLockOwner = terminateStaleLockOwner
             self.isPastTickDeadline = isPastTickDeadline
             self.tripKVBackendGuard = tripKVBackendGuard
@@ -621,11 +630,16 @@ public struct WatchdogRecoveryService: Sendable {
             var state = try session.readState()
             guard let candidate = state.candidate else { return .noCandidate }
             let freshMatchingHeartbeat: Bool
-            if let daemonState {
+            if let daemonState,
+               let recordedIdentity = daemonState.processIdentity {
+                let liveIdentity = deps.processIdentity(daemonState.pid)
+                let launchIdentity = deps.providerProcessIdentity()
                 freshMatchingHeartbeat = providerRunning
                     && daemonState.version == candidate.release.version
                     && !daemonState.isStale(now: now)
-                    && deps.processAlive(daemonState.pid)
+                    && recordedIdentity.pid == daemonState.pid
+                    && liveIdentity == recordedIdentity
+                    && launchIdentity == recordedIdentity
             } else {
                 freshMatchingHeartbeat = false
             }

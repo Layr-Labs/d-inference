@@ -133,6 +133,11 @@ public final class AtomicProviderStats: Sendable {
 
 /// Lock-free atomic wrapper using os_unfair_lock for shared mutable state
 /// accessed from both the heartbeat tick and the main event loop.
+public struct ProviderUpdateLifecycleSnapshot: Sendable, Equatable {
+    public let state: UpdateLifecycleState?
+    public let warmIntent: WarmIntent?
+}
+
 public final class ProviderState: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
     private var _inferenceActive: Bool = false
@@ -143,6 +148,9 @@ public final class ProviderState: @unchecked Sendable {
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
+    private var _updateLifecycleState: UpdateLifecycleState? = nil
+    private var _warmIntent: WarmIntent? = nil
+
 
     public init() {}
 
@@ -170,6 +178,24 @@ public final class ProviderState: @unchecked Sendable {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
     }
+    public func updateLifecycleSnapshot() -> ProviderUpdateLifecycleSnapshot {
+        lock.withLock {
+            ProviderUpdateLifecycleSnapshot(
+                state: _updateLifecycleState,
+                warmIntent: _warmIntent)
+        }
+    }
+
+    public func setUpdateLifecycle(
+        state: UpdateLifecycleState?,
+        warmIntent: WarmIntent?
+    ) {
+        lock.withLock {
+            _updateLifecycleState = state
+            _warmIntent = warmIntent
+        }
+    }
+
 
     func setPrefixCacheSnapshot(
         sources: [String: SSDPrefixCache],

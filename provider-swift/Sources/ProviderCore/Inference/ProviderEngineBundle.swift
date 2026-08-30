@@ -3,7 +3,7 @@ import MLXLLM
 import MLXLMCommon
 
 /// Read-only provider view of MTP activation and cumulative engine metrics.
-/// It deliberately contains no model, prompt, token-id, or controller state.
+/// It contains only bounded posture plus verified assistant identity.
 public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let configured: Bool
     public let active: Bool
@@ -13,6 +13,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let fallbackReason: MTPFallbackReason?
     public let assistantSource: SpecDecArtifactSource?
     public let assistantRevision: String?
+    public let assistantModelID: String?
     public let assistantSourceRevision: String?
     public let assistantArtifactBytes: UInt64
     public let assistantResidentBytes: UInt64
@@ -64,6 +65,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         }
         self.assistantSource = status.source
         self.assistantRevision = status.revision
+        self.assistantModelID = status.modelID
         self.assistantSourceRevision = status.sourceRevision
         self.assistantArtifactBytes = status.artifactBytes
         self.assistantResidentBytes = status.assistantBytes

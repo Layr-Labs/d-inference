@@ -25,6 +25,7 @@ extension CoordinatorClient {
         // than the immutable `config.models`, so a re-registration after a
         // verified prefetch carries the updated set.
         let prefixCache = state.prefixCacheV2Advertisement()
+        let updateLifecycle = state.updateLifecycleSnapshot()
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
             models: advertisedModelStore.models,
@@ -35,7 +36,9 @@ extension CoordinatorClient {
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            updateLifecycleState: updateLifecycle.state,
+            warmIntent: updateLifecycle.warmIntent
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -69,6 +72,7 @@ extension CoordinatorClient {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
+        let updateLifecycle = state.updateLifecycleSnapshot()
         let capacity = state.backendCapacity
         let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
@@ -106,7 +110,9 @@ extension CoordinatorClient {
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            updateLifecycleState: updateLifecycle.state,
+            warmIntent: updateLifecycle.warmIntent
         )
 
         do {
@@ -117,9 +123,51 @@ extension CoordinatorClient {
             return json
         } catch {
             recordEncodeFailure("heartbeat", error)
-            // Last resort: a valid idle heartbeat keeps the connection alive
-            // rather than shipping malformed bytes the coordinator would drop.
-            return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
+            var fallback: [String: Any] = [
+                "type": "heartbeat",
+                "status": "idle",
+                "stats": ["requests_served": 0, "tokens_generated": 0],
+                "system_metrics": [
+                    "memory_pressure": 0,
+                    "cpu_usage": 0,
+                    "thermal_state": "nominal",
+                ],
+            ]
+            if let lifecycleState = updateLifecycle.state {
+                fallback["update_lifecycle_state"] = lifecycleState.rawValue
+            }
+            if let warmIntent = updateLifecycle.warmIntent,
+               let data = try? JSONEncoder().encode(warmIntent),
+               let object = try? JSONSerialization.jsonObject(with: data) {
+                fallback["warm_intent"] = object
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: fallback),
+                  let json = String(data: data, encoding: .utf8)
+            else {
+                return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
+            }
+            return json
+        }
+    }
+
+    /// Publish a lifecycle transition immediately on the existing heartbeat
+    /// wire and await transport handoff, so consecutive states cannot collapse
+    /// into one periodic sample.
+    public func sendImmediateHeartbeat() async -> Bool {
+        guard let connection = nwConnection else { return false }
+        let json = buildHeartbeatJSON()
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(
+            identifier: "heartbeat-lifecycle",
+            metadata: [metadata])
+        return await withCheckedContinuation { continuation in
+            connection.send(
+                content: Data(json.utf8),
+                contentContext: context,
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    continuation.resume(returning: error == nil)
+                })
         }
     }
 

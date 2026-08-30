@@ -69,6 +69,11 @@ extension ProviderLoop {
         try await completeSecurityHardeningForProcess()
         try initializeProcessKeyAfterHardening()
 
+        // Restore the non-secret authorized update record before any preload or
+        // registration. Process-evidence-v1 startup never polls \"latest\".
+        try await prepareUpdateLifecycleForRun()
+
+
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
         // can perform the first normal cold target load. This never downloads
@@ -104,9 +109,11 @@ extension ProviderLoop {
         // after 90s, but the gate may defer for startup_preload_timeout_secs);
         // it is cancelled once the gate returns and the capacity loop takes over.
         writeDaemonState()
-        let preloadLivenessRefresh = startPreloadLivenessRefresh()
-        await runStartupPreloadGate()
-        preloadLivenessRefresh.cancel()
+        if !shouldDeferStartupPreloadForUpdate {
+            let preloadLivenessRefresh = startPreloadLivenessRefresh()
+            await runStartupPreloadGate()
+            preloadLivenessRefresh.cancel()
+        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -218,7 +225,7 @@ extension ProviderLoop {
         // timer.
         startIdleMonitor()
         startCapacityRefreshMonitor()
-        startAutoUpdateMonitor()
+        // Release rollout is coordinator-pushed; v1 providers never poll latest.
 
         logger.info(.coordinatorClientStarted)
 
@@ -230,9 +237,13 @@ extension ProviderLoop {
                 switch event {
                 case .connected:
                     logger.info(.coordinatorConnected)
+                    await handleUpdateConnectionEstablished()
 
                 case .disconnected:
                     logger.warning(.coordinatorDisconnected)
+                    evidenceSentConnectionGeneration = nil
+                    certifiedConnectionGeneration = nil
+                    pendingCertifiedConnectionGeneration = nil
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
                     await cancelAllInflight()
@@ -258,14 +269,22 @@ extension ProviderLoop {
                     await handleCancellation(requestId: requestId)
 
                 case .attestationChallenge(let nonce, let timestamp):
-                    await handleAttestationChallenge(
+                    _ = await handleAttestationChallenge(
                         nonce: nonce,
                         timestamp: timestamp,
                         send: send
                     )
 
                 case .processEvidenceChallenge(let challenge):
-                    await handleProcessEvidenceChallenge(challenge, send: send)
+                    let sent = await handleProcessEvidenceChallenge(challenge, send: send)
+                    if sent && (
+                        updateLifecycle.record.state == .applicationVerifying ||
+                        updateLifecycle.record.state == .modelReloading ||
+                        updateLifecycle.record.state == .ready
+                    ) {
+                        evidenceSentConnectionGeneration =
+                            coordinatorConnectionGeneration
+                    }
 
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
@@ -289,18 +308,26 @@ extension ProviderLoop {
 
                 case .desiredModels(let entries):
                     if isDrainingForUpdate {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
+                        // Desired state is declarative: retain only the latest
+                        // frame and reconcile it once certified ready.
+                        deferredDesiredModels.record(entries)
+                        logger.info(
+                            "Deferring desired_models while release update is not ready (\(entries.count) entr(ies))")
                     } else {
                         await reconcileDesiredModels(entries, send: send)
                     }
 
                 case .trustStatus(let trustLevel, let status, let reason):
                     handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+                    // Keep consuming connection events while model reload awaits;
+                    // a disconnect must invalidate proof before ready is reported.
+                    Task { [weak self] in
+                        await self?.handleFreshApplicationCertification(
+                            trustLevel: trustLevel, status: status)
+                    }
+
+                case .releaseUpdate(let update):
+                    await handleReleaseUpdate(update)
                 }
             }
         } onCancel: {
@@ -313,8 +340,7 @@ extension ProviderLoop {
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         capacityRefreshTask = nil
-        autoUpdateTask?.cancel()
-        autoUpdateTask = nil
+        // No provider-side release polling task exists for process-evidence-v1.
         // Cancel any scheduled desired-build prefetch retries before tearing
         // the prefetch subsystem down.
         for task in desiredPrefetchRetryTasks.values { task.cancel() }

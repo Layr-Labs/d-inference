@@ -55,6 +55,8 @@ struct SpecDecArtifact: Sendable, Equatable {
     let directory: URL
     let source: SpecDecArtifactSource
     let revision: String
+    /// Exact assistant model identity from its verified manifest, when present.
+    let modelID: String?
     /// Immutable upstream artifact provenance when local staging intentionally
     /// gives the load-security revision a content-derived `local-*` identity.
     /// This field is diagnostic only and never replaces local digest equality.
@@ -80,6 +82,7 @@ struct SpecDecArtifact: Sendable, Equatable {
         directory: URL,
         source: SpecDecArtifactSource,
         revision: String,
+        modelID: String? = nil,
         sourceRevision: String? = nil,
         artifactBytes: UInt64,
         residentBytes: UInt64,
@@ -92,6 +95,7 @@ struct SpecDecArtifact: Sendable, Equatable {
         self.directory = directory
         self.source = source
         self.revision = revision
+        self.modelID = modelID
         self.sourceRevision = sourceRevision
         self.artifactBytes = artifactBytes
         self.residentBytes = residentBytes
@@ -107,6 +111,7 @@ struct SpecDecArtifact: Sendable, Equatable {
             directory: directory,
             source: source,
             revision: revision,
+            modelID: modelID,
             sourceRevision: sourceRevision,
             artifactBytes: artifactBytes,
             residentBytes: residentBytes,
@@ -141,6 +146,7 @@ struct MTPActivationStatus: Sendable, Equatable {
     let source: SpecDecArtifactSource?
     let revision: String?
     let sourceRevision: String?
+    let modelID: String?
     let artifactBytes: UInt64
     let assistantBytes: UInt64
 
@@ -152,7 +158,8 @@ struct MTPActivationStatus: Sendable, Equatable {
         revision: String?,
         sourceRevision: String? = nil,
         artifactBytes: UInt64,
-        assistantBytes: UInt64
+        assistantBytes: UInt64,
+        modelID: String? = nil
     ) {
         self.configured = configured
         self.active = active
@@ -160,6 +167,7 @@ struct MTPActivationStatus: Sendable, Equatable {
         self.source = source
         self.revision = revision
         self.sourceRevision = sourceRevision
+        self.modelID = modelID
         self.artifactBytes = artifactBytes
         self.assistantBytes = assistantBytes
     }
@@ -167,28 +175,31 @@ struct MTPActivationStatus: Sendable, Equatable {
     static func disabled(_ reason: MTPFallbackReason, configured: Bool) -> Self {
         Self(
             configured: configured, active: false, reason: reason, source: nil,
-            revision: nil, sourceRevision: nil, artifactBytes: 0, assistantBytes: 0)
+            revision: nil, sourceRevision: nil, artifactBytes: 0, assistantBytes: 0,
+            modelID: nil)
     }
 
     static func candidate(_ artifact: SpecDecArtifact) -> Self {
         Self(
             configured: true, active: false, reason: nil, source: artifact.source,
             revision: artifact.revision, sourceRevision: artifact.sourceRevision,
-            artifactBytes: artifact.artifactBytes, assistantBytes: 0)
+            artifactBytes: artifact.artifactBytes, assistantBytes: 0,
+            modelID: artifact.modelID)
     }
 
     func activated(assistantBytes: UInt64) -> Self {
         Self(
             configured: configured, active: true, reason: nil, source: source,
             revision: revision, sourceRevision: sourceRevision,
-            artifactBytes: artifactBytes, assistantBytes: assistantBytes)
+            artifactBytes: artifactBytes, assistantBytes: assistantBytes,
+            modelID: modelID)
     }
 
     func fallingBack(_ reason: MTPFallbackReason) -> Self {
         Self(
             configured: configured, active: false, reason: reason, source: source,
             revision: revision, sourceRevision: sourceRevision,
-            artifactBytes: artifactBytes, assistantBytes: 0)
+            artifactBytes: artifactBytes, assistantBytes: 0, modelID: modelID)
     }
 }
 

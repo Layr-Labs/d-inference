@@ -471,6 +471,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 
+			// The coordinator alone selects the release cohort. Legacy providers
+			// omit lifecycle state and retain the deployed release behavior.
+			s.reconcileProviderReleaseRollout(providerID, provider, regMsg)
+
 			// Declaratively tell the provider the desired build per alias it
 			// already serves, so a fresh/reconnected provider converges without a
 			// separate catalog pull. Sent even when EMPTY: a provider that
@@ -565,6 +569,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 			s.registry.Heartbeat(providerID, hbMsg)
+			if s.rolloutHealth != nil {
+				s.rolloutHealth.recordProviderReady(s, provider, time.Now())
+			}
 			// Emit only from the accepted registry snapshot: malformed values
 			// have been clamped and slot model IDs constrained to this
 			// connection's coordinator-known inventory.

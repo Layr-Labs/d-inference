@@ -232,24 +232,23 @@ public actor ProviderLoop {
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
 
-    /// Phase of a graceful auto-update cycle. Drives admission: in `.draining`
-    /// we refuse new requests (503 reroute) so in-flight work can finish before
-    /// the hot-swap restart. See `AutoUpdateController`.
-    ///   - `.idle`:       normal serving (no update in progress)
-    ///   - `.installing`: a newer release is downloading/staging; STILL serving
-    ///   - `.draining`:   bundle staged; refusing new requests while in-flight
-    ///                    work finishes, then commit + restart
-    internal enum UpdatePhase: Sendable, Equatable {
-        case idle
-        case installing
-        case draining
-    }
-    internal var updatePhase: UpdatePhase = .idle
+    /// Coordinator-authorized release lifecycle and admission gate. The state
+    /// machine is persisted before every side effect and mirrored on every
+    /// registration/heartbeat.
+    /// Coordinator-authorized v1 lifecycle. The store contains artifact metadata
+    /// and warm intent only; credentials and process certificates never enter it.
+    internal var updateLifecycle = try! UpdateLifecycleReconciler()
+    internal var updateLifecycleStore = UpdateLifecycleStore()
+    internal var updateAdmissionClosed = false
+    internal var coordinatorConnectionGeneration: UInt64 = 0
+    internal var evidenceSentConnectionGeneration: UInt64?
+    internal var certifiedConnectionGeneration: UInt64?
+    internal var pendingCertifiedConnectionGeneration: UInt64?
+    internal var updateLifecycleStateCorrupt = false
+    internal var updateWarmRestoreInProgress = false
 
-    /// Verified update bundle staged on disk during `.installing`, awaiting the
-    /// post-drain commit. The live layout is untouched until the commit, so a
-    /// request can never observe a half-replaced bundle. Consumed by
-    /// `commitStagedUpdateBundle`; discarded by `resumeServingAfterUpdate`.
+    /// Verified update bundle staged by the authorized installer, awaiting the
+    /// atomic post-drain commit.
     internal var stagedUpdateBundle: SelfUpdater.StagedBundle?
     /// Kernel-owned cross-process lease held from update check through commit.
     /// It serializes this actor with watchdog, startup, and manual updater
@@ -257,12 +256,10 @@ public actor ProviderLoop {
     /// durable commit.
     internal var updateSession: SelfUpdater.UpdateSession?
 
-    /// Latest `desired_models` push received while update-draining. Normally
-    /// the restart makes it moot (registration gets fresh desired state), but
-    /// if the restart is aborted (commit/restart failure) the deferred state
-    /// is replayed by `resumeServingAfterUpdate` so the provider does not keep
-    /// serving from a desired set the coordinator has since changed.
-    internal var deferredDesiredModels: [CoordinatorMessage.DesiredModelEntry]?
+    /// Latest declarative model target received while update admission is
+    /// closed. Replayed exactly once after certified ready.
+    internal var deferredDesiredModels = DeferredDesiredModelsBuffer()
+
 
     /// Models remain tracked while their scheduler is tearing down so
     /// reentrant loads cannot start against memory that has not been freed yet.
@@ -462,10 +459,6 @@ public actor ProviderLoop {
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
 
-    /// Background task that periodically checks for provider updates and
-    /// applies them automatically. nil when auto-update is disabled or
-    /// before `run()` starts it.
-    internal var autoUpdateTask: Task<Void, Never>?
 
     /// Reacts to kernel memory pressure (reclaim MLX cache, mark an imminent
     /// OOM). Held for the loop's lifetime so the DispatchSource isn't
@@ -760,7 +753,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+MemoryProtection.swift    OOM surfacing + memory-pressure
     //   - ProviderLoop+IdleTimeout.swift         idle-timeout model unload
     //   - ProviderLoop+Capacity.swift            capacity refresh + updateAggregateCapacity
-    //   - ProviderLoop+AutoUpdate.swift          background self-update + phase transitions
+    //   - ProviderLoop+AutoUpdate.swift          authorized release lifecycle + warm restore
     //   - ProviderLoop+ModelLoading.swift        ensureModelLoaded/unload + memory admission
     //   - ProviderLoop+EngineV2.swift            ContinuousBatchingV2 slot wiring
     //   - ProviderLoop+EngineV2Liveness.swift    wedge self-recovery (drain → rebuild → swap)

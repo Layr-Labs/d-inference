@@ -240,6 +240,38 @@ func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 	}
 }
 
+func TestTTFTEnforcePrefersWithoutEstimateBasedShed(t *testing.T) {
+	previousMode := registry.TTFTAdmissionModeValue()
+	previousAlpha := registry.TTFTOccupancyAlpha()
+	t.Cleanup(func() {
+		registry.SetTTFTAdmissionMode(previousMode)
+		registry.SetTTFTOccupancyAlpha(previousAlpha)
+	})
+	registry.SetTTFTAdmissionMode(registry.TTFTAdmissionEnforce)
+	registry.SetTTFTOccupancyAlpha(50)
+
+	srv, _ := testServer(t)
+	srv.SetTTFTHardReject(true)
+	model := "enforce-no-shed-ttft-model"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	p := registerBuildsProvider(srv, "slow-enforce-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2
+	p.Mu().Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		strings.ReplaceAll(`{"model":"MODEL","messages":[{"role":"user","content":"hello"}],"max_tokens":16}`, "MODEL", model)))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests || strings.Contains(w.Body.String(), "TTFT target") {
+		t.Fatalf("enforce mode created an estimate-based shed: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.SetTTFTHardReject(true)

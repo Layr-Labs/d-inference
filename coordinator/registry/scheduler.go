@@ -2,7 +2,6 @@ package registry
 
 import (
 	"math"
-	"math/rand"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -196,6 +195,10 @@ type routingCandidate struct {
 	effectiveQueue int
 	breakdown      costBreakdown
 	effectiveTPS   float64 // Phase 4 load-scaled TPS used in this candidate's cost
+	// fitCapacityTokens is the candidate's structural token size class.
+	// It only breaks otherwise-equivalent ties; see capacity_fit.go.
+	fitCapacityTokens int64
+	fitKnown          bool
 	// capacityRejectRate is the pair's windowed capacity-503 rate
 	// (capacity_rate.go), captured at candidate build so the winning
 	// RoutingDecision can expose it. 0 when no rejects are in the window.
@@ -654,7 +657,12 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
-	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
+	// TTFTAdmissionEnforce uses MaxTTFTMs as a fail-open routing preference,
+	// not a rejection ceiling. Off/shadow preserve the legacy hard-reject
+	// behavior when the caller supplied a ceiling.
+	enforceTTFT := pr.MaxTTFTMs > 0 &&
+		!pr.RequiresVision &&
+		ttftAdmissionMode != TTFTAdmissionEnforce
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
@@ -806,12 +814,11 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		}
 	}
 
-	// Version-diverse retry (SOFT): when a previous attempt failed on a given
-	// binary version, prefer candidates running any OTHER version so a
-	// deterministic per-version bug (e.g. a chat-template render crash) cannot
-	// consume every retry on identical binaries. Diversity never fails closed:
-	// when every candidate runs the avoided version, keep the full pool rather
-	// than failing the request.
+	// Version-diverse retry (SOFT): the dispatcher populates AvoidVersion only
+	// after a version-sensitive fault (never capacity/deadline/client failures).
+	// Prefer another version so a deterministic binary bug cannot consume every
+	// retry on identical builds. Diversity never fails closed: when every
+	// candidate runs the avoided version, keep the full pool.
 	if pr.Traits.AvoidVersion != "" {
 		diverse := make([]*routingCandidate, 0, len(pool))
 		for _, c := range pool {
@@ -823,6 +830,12 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			pool = diverse
 		}
 	}
+
+	// Occupancy-aware first-content preference. Version diversity runs first
+	// because it now carries only evidence of a version-sensitive fault; among
+	// that viable pool, enforce mode keeps deadline-fitting candidates when
+	// possible and otherwise fails open to the best known chance.
+	pool = preferOccupancyDeadlineCandidates(pool, pr)
 
 	// Decode-floor quality preference (SOFT, Routing v2 W2): when a per-request
 	// decode floor is set, prefer candidates that would still deliver
@@ -872,7 +885,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 
 	winner := selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
 		return candidate.costMs
-	})
+	}, pr.RequestID)
 	r.logRoutingDecision(model, pr, winner, candidateCount)
 	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
 }
@@ -882,6 +895,7 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 func selectRoutingCandidate(
 	pool []*routingCandidate,
 	cost func(*routingCandidate) float64,
+	requestID string,
 ) *routingCandidate {
 	if len(pool) == 0 {
 		return nil
@@ -938,15 +952,15 @@ func selectRoutingCandidate(
 				best = append(best, candidate)
 			}
 		}
-		if len(best) > 1 {
-			return best[rand.Intn(len(best))]
-		}
-		return best[0]
+		equivalent = best
 	}
-	if len(equivalent) > 1 {
-		return equivalent[rand.Intn(len(equivalent))]
-	}
-	return winner
+
+	// Latency/load/cache policy has declared these candidates equivalent. A
+	// bounded structural-fit weight sends more small work to constrained
+	// machines without monopolizing a class; large requests still hard-filter
+	// to providers they fit. Rendezvous hashing keeps the split stable and
+	// allocation-free.
+	return selectCandidateByStructuralFit(equivalent, requestID)
 }
 
 func providerMatchesAllowedSerial(p *Provider, allowed map[string]struct{}) bool {
@@ -1537,6 +1551,8 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	if reqPrompt < 0 {
 		reqPrompt = 0
 	}
+	fitCapacityTokens, fitKnown := routingStructuralFit(
+		snap, int64(reqPrompt)+int64(reqMax))
 
 	// Absolute hardware-fit gate (cold-load only, both admission modes). A model
 	// whose footprint can never fit in this node's total memory must not be
@@ -1645,6 +1661,8 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 		costMs:             cost,
 		effectiveQueue:     effectiveQueue,
 		effectiveTPS:       effectiveTPS,
+		fitCapacityTokens:  fitCapacityTokens,
+		fitKnown:           fitKnown,
 		capacityRejectRate: capacityRejectRate,
 		breakdown: costBreakdown{
 			StateMs:        statePenalty,
@@ -1862,16 +1880,16 @@ func PrefillToDecodeRatio() float64 {
 	return prefillToDecodeRatio
 }
 
-// ttftOccupancyAlpha scales the Phase-0 occupancy term (see ttftOccupancyMs),
-// which is added ONLY inside occupancyAwareTTFTMsFromSnapshot — the shadow
-// evaluator's estimate — NEVER inside the live ttftMsFromSnapshot. It is the
+// ttftOccupancyAlpha scales the occupancy term (see ttftOccupancyMs), which is
+// added only inside occupancyAwareTTFTMsFromSnapshot — the shadow diagnostic and
+// enforce-mode soft preference — NEVER inside the hard-gate ttftMsFromSnapshot. It is the
 // decode-token-times of head-of-line wait charged per occupying peer, divided by
 // the per-request decode rate the new request would see. Because the term never
 // reaches ttftMsFromSnapshot, the routing cost's TTFTMs, the candidate-loop
-// MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha:
-// raising alpha changes only the shadow signal, not the live routing decision
-// (the HARD_REJECT safety invariant — see occupancyAwareTTFTMsFromSnapshot). 0
-// (the default) also makes ttftOccupancyMs itself a no-op. Configured once at
+// MaxTTFTMs ceiling, and the preflight bestTTFT are occupancy-free at ANY alpha.
+// Enforce mode may use the combined estimate to rank, but can never reject a
+// request; this separation is the HARD_REJECT safety invariant. 0 (the default)
+// also makes ttftOccupancyMs itself a no-op. Configured once at
 // startup via SetTTFTOccupancyAlpha (EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA),
 // read-only on routing paths thereafter, mirroring prefillToDecodeRatio.
 var ttftOccupancyAlpha = 0.0
@@ -2393,27 +2411,25 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	queuedPrefillMs := queuedPrefillTokensAhead(snap, reqPromptTokens) / prefillTPS * 1000.0
 	thisPrefillMs := float64(reqPromptTokens) / prefillTPS * 1000.0
 	firstDecodeMs := 1000.0 / effectiveTPS
-	// NOTE: the Phase-0 occupancy term (ttftOccupancyMs) is deliberately NOT added
-	// here. ttftMsFromSnapshot is the LIVE estimate consumed by the routing cost's
+	// NOTE: the occupancy term (ttftOccupancyMs) is deliberately NOT added here.
+	// ttftMsFromSnapshot is the estimate consumed by the routing cost's
 	// TTFTMs, the candidate-loop MaxTTFTMs ceiling, and the preflight bestTTFT — so
 	// it must stay occupancy-FREE regardless of EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA.
 	// The occupancy-aware estimate (base + occupancy term) lives in
-	// occupancyAwareTTFTMsFromSnapshot and is used ONLY by the shadow evaluator.
+	// occupancyAwareTTFTMsFromSnapshot and is used only for diagnostics and
+	// enforce-mode fail-open candidate preference.
 	return statePenalty + queuedPrefillMs + thisPrefillMs + firstDecodeMs
 }
 
 // occupancyAwareTTFTMsFromSnapshot is the occupancy-aware TTFT estimate: the base
-// estimate (ttftMsFromSnapshot — what the LIVE cost / MaxTTFTMs ceiling / bestTTFT
-// consume) PLUS the Phase-0 head-of-line occupancy term (ttftOccupancyMs, gated by
+// estimate (ttftMsFromSnapshot — what the cost / hard MaxTTFTMs ceiling / bestTTFT
+// consume) PLUS the head-of-line occupancy term (ttftOccupancyMs, gated by
 // EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA).
 //
-// It is used ONLY by the shadow evaluator today; a future enforce step will wire
-// it (against the verified ~10s base) into the live path. Keeping the occupancy
-// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the 5s ttftDeadline), so if the term leaked into
-// ttftMsFromSnapshot, raising alpha would tighten the live 5s ceiling and
-// over-shed ~2x (telemetry-db findings §2). The term may therefore only ever
-// reach the shadow estimate, never breakdown.TTFTMs.
+// Shadow compares it with the diagnostic deadline; enforce mode uses it only to
+// narrow the candidate pool against the request's remaining absolute budget.
+// Keeping the occupancy term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT:
+// raising alpha must never tighten a hard-reject ceiling and create false 429s.
 func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	base := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if base <= 0 {
@@ -2428,8 +2444,8 @@ func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int)
 // box's already-occupying work (the herd) clears enough for a newly admitted
 // request to emit its first token. The base estimate (ttftMsFromSnapshot) counts
 // only WAITING prefill and a single decode step, so it is flat in running
-// occupancy — exactly where the ~11s of "dark time" lives. It is added ONLY in
-// occupancyAwareTTFTMsFromSnapshot (the shadow estimate), never in the live
+// occupancy — exactly where the ~11s of "dark time" lives. It is added only in
+// occupancyAwareTTFTMsFromSnapshot (diagnostic/preference), never in the hard-gate
 // ttftMsFromSnapshot.
 //
 // The term reuses the occupancy the snapshot ALREADY carries
@@ -2444,9 +2460,8 @@ func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int)
 //
 // Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
 // occupancy is 0 (an idle box never pays the term, so route-to-idle is
-// preserved). The deadline this is gated against in the shadow evaluator is the
-// verified ~10s base, NOT the code's 5s internal budget; gating an occupancy
-// estimate fit to the 5s base over-sheds ~2x (telemetry-db findings §2).
+// preserved). Shadow uses the verified ~10s diagnostic base; enforce mode uses
+// the request's remaining absolute first-content budget and never sheds.
 func ttftOccupancyMs(snap routingSnapshot) float64 {
 	alpha := ttftOccupancyAlpha
 	if alpha <= 0 {

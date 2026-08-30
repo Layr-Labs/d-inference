@@ -44,7 +44,7 @@ The public wrapper `ReserveProvider` (`scheduler.go:199-205`) discards the decis
 | `ModelTooLargeRejections` | Providers whose memory can never fit the model (permanent) |
 | `VisionRejections` | Providers that serve the model only as a text-only build when vision is required |
 
-The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`scheduler.go:427-432`); ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice (`scheduler.go:448-458`).
+The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`coordinator/registry/scheduler.go`, `selectRoutingCandidate`). Ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then exact-cache benefit. Remaining equals use weighted rendezvous over structural token-budget size (or RAM when every ceiling is unknown); a constrained machine receives at most 1.5× an otherwise-equivalent larger machine's share (`coordinator/registry/capacity_fit.go`). This biases small requests toward small machines only inside the existing latency/load equivalence window, preserves large-request headroom, and cannot monopolize or starve a size class.
 
 After selection, `ReserveProviderEx` re-takes the provider lock and runs `providerCanAdmitLocked` (`scheduler.go:1029-1050`) to re-apply the routing gates and capacity/slot-state checks. If the provider's state changed between snapshot and reservation, the selection is rejected and the caller may retry.
 
@@ -106,6 +106,17 @@ The load-scaled fallback divides the static benchmark TPS by
 
 This chain is deliberately **load-inclusive**: it estimates what a request will
 actually experience right now, so an under-load EWMA is the *right* input.
+
+### Occupancy-aware first-content preference
+
+`EIGENINFERENCE_TTFT_ADMISSION_MODE=enforce` turns the existing occupancy shadow into a fail-open selection preference (`coordinator/registry/ttft_routing.go`). For text requests carrying a remaining absolute first-content budget:
+
+1. Keep every candidate with an unknown estimate.
+2. If any known candidate's occupancy-aware estimate fits the budget, keep all known fits.
+3. If every known candidate misses, keep the minimum known estimate.
+4. Apply the decode-floor preference and normal completion-cost selector.
+
+The preference cannot empty the pool and never creates a 429. In enforce mode the occupancy estimate is removed from both the preflight and per-candidate hard TTFT rejection paths; the provider's absolute deadline and atomic first-token admission remain authoritative (`coordinator/api/consumer.go`, `hardTTFTGateApplies`; `coordinator/registry/scheduler.go`, `scanCandidatesLocked`). `shadow` remains observational.
 
 ### Solo decode TPS (quality-concurrency cap)
 
@@ -196,7 +207,7 @@ A model is considered **resident** when the slot state is `running` or `idle`; o
 * **Self-route** (`pr.SelfRouteOnly`) — restricted to providers owned by the caller; never falls back to the public fleet (`scheduler.go:325-329`). Trust floor and private-only admission are relaxed for the owner's own machine (`scheduler.go:341`, `scheduler.go:598-648`).
 * **Prefer-owner** (`pr.PreferOwner`) — first tries owned candidates, then falls back to the public fleet (`scheduler.go:391-401`). Settlement is free only when the selected provider is owned by the caller (`coordinator/api/provider.go:1706-1733`).
 * **Coordinator-internal provider constraints** (`pr.AllowedProviderSerials`) — restrict candidates by attested hardware identity for isolated control-plane workflows. Consumer request bodies cannot set this field.
-* **Version-diverse retry** (`Traits.AvoidVersion`) — soft hint that prefers a different binary version after a failure, but never fails closed (`scheduler.go:409-419`).
+* **Version-diverse retry** (`Traits.AvoidVersion`) — soft hint set only after version-sensitive template, encryption, generation, or internal faults. Capacity, deadline, cancellation, client/media, tool-output, and model-local failures do not exclude the dominant fleet version (`coordinator/api/dispatch.go`, `versionSensitiveInferenceFailure`; `coordinator/registry/scheduler.go`, `scanCandidatesLocked`). The hint never fails closed when every candidate runs the same version.
 
 ## Metrics and observability
 

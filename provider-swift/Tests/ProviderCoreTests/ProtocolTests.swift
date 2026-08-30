@@ -1515,3 +1515,82 @@ private enum TestFailure: Error {
     case notJSONObject
     case unexpectedMessage
 }
+
+@Test func processEvidenceChallengeWireIsAdditiveAndSnakeCase() throws {
+    let legacy = CoordinatorMessage.attestationChallenge(.init(nonce: "n", timestamp: "t"))
+    let legacyObject = try jsonObject(JSONEncoder().encode(legacy))
+    #expect(legacyObject["process_evidence_version"] == nil)
+    #expect(legacyObject["coordinator_session_id"] == nil)
+    #expect(legacyObject["challenge_generation"] == nil)
+    #expect(legacyObject["challenge_expires_at"] == nil)
+
+    let v1 = CoordinatorMessage.attestationChallenge(.init(
+        nonce: "n",
+        timestamp: "t",
+        processEvidenceVersion: ProcessEvidenceProtocol.version,
+        coordinatorSessionId: "session",
+        challengeGeneration: "generation",
+        challengeExpiresAt: "2026-08-30T12:10:00Z"
+    ))
+    let encoded = try JSONEncoder().encode(v1)
+    let object = try jsonObject(encoded)
+    #expect(object["process_evidence_version"] as? String == "process_evidence_v1")
+    #expect(object["coordinator_session_id"] as? String == "session")
+    #expect(object["challenge_generation"] as? String == "generation")
+    #expect(object["challenge_expires_at"] as? String == "2026-08-30T12:10:00Z")
+    #expect(try JSONDecoder().decode(CoordinatorMessage.self, from: encoded) == v1)
+}
+
+@Test func processEvidenceResponseWireRoundTripsEveryBoundField() throws {
+    let response = ProviderMessage.attestationResponse(.init(
+        nonce: "n",
+        signature: "plain",
+        statusSignature: "status",
+        processEvidenceSignature: "process-evidence",
+        publicKey: "process-key",
+        processEvidenceVersion: ProcessEvidenceProtocol.version,
+        coordinatorSessionId: "session",
+        challengeGeneration: "generation",
+        challengeExpiresAt: "2026-08-30T12:10:00Z",
+        sePublicKey: "se-key",
+        serialNumber: "SERIAL",
+        providerVersion: "0.8.15",
+        providerPlatform: "macos-arm64",
+        providerBackend: "mlx-swift",
+        metallibHash: "metal",
+        rdmaDisabled: true,
+        sipEnabled: true,
+        secureBootEnabled: true,
+        binaryHash: "binary",
+        runtimeHash: "runtime",
+        templateHashes: ["mlx_metallib": "metal"]
+    ))
+    let encoded = try ProviderProtocolCodec.encodeProviderMessage(response)
+    let object = try jsonObject(encoded)
+    #expect(object["process_evidence_version"] as? String == "process_evidence_v1")
+    #expect(object["coordinator_session_id"] as? String == "session")
+    #expect(object["process_evidence_signature"] as? String == "process-evidence")
+    #expect(object["challenge_generation"] as? String == "generation")
+    #expect(object["challenge_expires_at"] as? String == "2026-08-30T12:10:00Z")
+    #expect(object["se_public_key"] as? String == "se-key")
+    #expect(object["serial_number"] as? String == "SERIAL")
+    #expect(object["provider_version"] as? String == "0.8.15")
+    #expect(object["provider_platform"] as? String == "macos-arm64")
+    #expect(object["provider_backend"] as? String == "mlx-swift")
+    #expect(object["metallib_hash"] as? String == "metal")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: encoded) == response)
+}
+
+@Test func processEvidenceRegistrationCapabilityMirrorsRawAttestationPath() throws {
+    let register = ProviderMessage.register(.init(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx-swift",
+        publicKey: "process-key",
+        processEvidenceVersion: ProcessEvidenceProtocol.version,
+        attestation: RawJSON(rawBytes: Data(#"{"attestation":{},"signature":"sig"}"#.utf8))
+    ))
+    let object = try jsonObject(
+        ProviderProtocolCodec.encodeProviderMessage(register))
+    #expect(object["process_evidence_version"] as? String == "process_evidence_v1")
+}

@@ -88,10 +88,11 @@ const (
 
 // pendingChallenge tracks an outstanding challenge sent to a provider.
 type pendingChallenge struct {
-	nonce      string
-	timestamp  string
-	sentAt     time.Time
-	responseCh chan *protocol.AttestationResponseMessage
+	nonce             string
+	timestamp         string
+	sentAt            time.Time
+	processEvidenceV1 bool
+	responseCh        chan *protocol.AttestationResponseMessage
 }
 
 // challengeTracker manages pending challenges for provider connections.
@@ -965,25 +966,53 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 		return
 	}
 
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-
+	now := time.Now().UTC()
+	timestamp := now.Format(time.RFC3339)
 	challenge := protocol.AttestationChallengeMessage{
 		Type:      protocol.TypeAttestationChallenge,
 		Nonce:     nonce,
 		Timestamp: timestamp,
 	}
+	useProcessEvidenceV1 := providerRequiresProcessEvidenceV1(provider)
+	if useProcessEvidenceV1 {
+		generation, err := generateChallengeGeneration()
+		if err != nil {
+			s.logger.Error("failed to generate process evidence generation",
+				"provider_id", providerID, "error", err)
+			return
+		}
+		expiresAt := now.Add(processEvidenceTTL)
+		expiresAtRaw := expiresAt.Format(time.RFC3339Nano)
+		state := registry.ProcessEvidenceChallengeState{
+			Version:              protocol.ProcessEvidenceV1,
+			CoordinatorSessionID: providerID,
+			ChallengeGeneration:  generation,
+			ExpiresAt:            expiresAt,
+			ExpiresAtRaw:         expiresAtRaw,
+		}
+		if !provider.BeginProcessEvidenceChallenge(state) {
+			s.processEvidenceMetric(processEvidenceRejected, processEvidenceReasonMissingChallenge)
+			return
+		}
+		challenge.ProcessEvidenceVersion = protocol.ProcessEvidenceV1
+		challenge.CoordinatorSessionID = providerID
+		challenge.ChallengeGeneration = generation
+		challenge.ChallengeExpiresAt = expiresAtRaw
+	}
 
 	data, err := json.Marshal(challenge)
 	if err != nil {
+		if useProcessEvidenceV1 {
+			provider.ClearProcessEvidenceChallenge()
+		}
 		s.logger.Error("failed to marshal challenge", "provider_id", providerID, "error", err)
 		return
 	}
 
 	pc := &pendingChallenge{
-		nonce:      nonce,
-		timestamp:  timestamp,
-		sentAt:     time.Now(),
-		responseCh: make(chan *protocol.AttestationResponseMessage, 1),
+		nonce: nonce, timestamp: timestamp, sentAt: now,
+		processEvidenceV1: useProcessEvidenceV1,
+		responseCh:        make(chan *protocol.AttestationResponseMessage, 1),
 	}
 	tracker.add(nonce, pc)
 
@@ -995,28 +1024,40 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 	if err := provider.WriteTextControl(writeCtx, data); err != nil {
 		s.logger.Error("failed to send challenge", "provider_id", providerID, "error", err)
 		tracker.remove(nonce)
+		if useProcessEvidenceV1 {
+			provider.ClearProcessEvidenceChallenge()
+			provider.ClearApplicationEvidence()
+		}
 		return
 	}
 	s.ddIncr("attestation.challenges_sent", nil)
-
 	s.logger.Debug("sent attestation challenge", "provider_id", providerID, "nonce", nonce[:8]+"...")
 
-	// Wait for response with timeout.
 	timeout := ChallengeResponseTimeout
 	select {
 	case <-ctx.Done():
 		tracker.remove(nonce)
+		if useProcessEvidenceV1 {
+			provider.ClearProcessEvidenceChallenge()
+		}
 		return
 	case resp := <-pc.responseCh:
 		tracker.remove(nonce)
 		if resp == nil {
-			// Channel closed without response
+			if useProcessEvidenceV1 {
+				provider.ClearProcessEvidenceChallenge()
+				provider.ClearApplicationEvidence()
+			}
 			s.handleTransientChallengeFailure(provider.Conn, providerID, "no response")
 			return
 		}
 		s.verifyChallengeResponse(providerID, provider, pc, resp)
 	case <-time.After(timeout):
 		tracker.remove(nonce)
+		if useProcessEvidenceV1 {
+			provider.ClearProcessEvidenceChallenge()
+			provider.ClearApplicationEvidence()
+		}
 		s.handleTransientChallengeFailure(provider.Conn, providerID, "timeout")
 	}
 }
@@ -1049,6 +1090,7 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // registration, the provider is marked untrusted immediately.
 func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
 	provider.ClearApplicationEvidence()
+	defer provider.ClearProcessEvidenceChallenge()
 	defer provider.SignalApplicationProofSettled()
 	// Verify the nonce matches.
 	if resp.Nonce != pc.nonce {
@@ -1070,16 +1112,15 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		return
 	}
 
-	// statusFieldsTrusted gates whether we treat resp.SIPEnabled,
-	// resp.BinaryHash etc. as authoritative. False means the provider
-	// signed only nonce+timestamp (legacy or downgrade), so the status
-	// fields are advisory and we must not act on them as if they were
-	// cryptographically bound.
+	// The plain nonce signature remains an independent liveness/SE-possession
+	// proof. process_evidence_v1 replaces only the legacy status canonical;
+	// once either side selects v1, no legacy verification fallback is allowed.
 	statusFieldsTrusted := false
+	var certifiedFact approvedReleaseTransitionFact
+	var certifiedEvidence registry.ApplicationEvidence
+	hasCertifiedEvidence := false
+	v1Selected := pc.processEvidenceV1 || responseCarriesProcessEvidence(resp)
 
-	// If the provider has an attested SE public key, verify the signature.
-	// Providers without attestation (TrustNone / Open Mode) skip crypto
-	// verification — their trust is already "none".
 	if provider.AttestationResult != nil && provider.AttestationResult.PublicKey != "" {
 		challengeData := pc.nonce + pc.timestamp
 		if err := attestation.VerifyChallengeSignature(
@@ -1088,83 +1129,89 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			challengeData,
 		); err != nil {
 			s.logger.Error("challenge signature verification failed",
-				"provider_id", providerID,
-				"error", err,
-			)
+				"provider_id", providerID, "error", err)
 			s.handleChallengeFailure(providerID, "signature verification failed: "+err.Error())
 			return
 		}
 
-		// Now verify the extended status signature if the provider sent
-		// one. Old providers (pre-v0.3.11) won't — log and continue with
-		// status fields untrusted. Mismatch is fatal: it means either
-		// tampering or the provider is signing a different canonical
-		// payload than this code expects.
-		statusInput := attestation.StatusCanonicalInput{
-			Nonce:     pc.nonce,
-			Timestamp: pc.timestamp,
-			// Legacy fleet compat only: old providers (< v0.6.31) sign
-			// hypervisor_active into the canonical status, so it must be
-			// carried into the reconstruction when reported. New providers
-			// omit it (nil). See attestation.StatusCanonicalInput.
-			HypervisorActive:  resp.HypervisorActive,
-			RDMADisabled:      resp.RDMADisabled,
-			SIPEnabled:        resp.SIPEnabled,
-			SecureBootEnabled: resp.SecureBootEnabled,
-			BinaryHash:        resp.BinaryHash,
-			ActiveModelHash:   resp.ActiveModelHash,
-			PythonHash:        resp.PythonHash,
-			RuntimeHash:       resp.RuntimeHash,
-			TemplateHashes:    resp.TemplateHashes,
-			ModelHashes:       resp.ModelHashes,
-		}
-		switch err := attestation.VerifyStatusSignature(
-			provider.AttestationResult.PublicKey,
-			resp.StatusSignature,
-			statusInput,
-		); err {
-		case nil:
+		if v1Selected {
+			fact, evidence, reason := s.verifyProcessEvidenceV1(
+				provider, pc, resp, time.Now().UTC())
+			if reason != processEvidenceReasonOK {
+				s.processEvidenceMetric(processEvidenceRejected, reason)
+				s.handleChallengeFailure(providerID, processEvidenceFailureMessage(reason))
+				return
+			}
+			statusInput := attestation.StatusCanonicalInput{
+				Nonce: pc.nonce, Timestamp: pc.timestamp,
+				HypervisorActive:  resp.HypervisorActive,
+				RDMADisabled:      resp.RDMADisabled,
+				SIPEnabled:        resp.SIPEnabled,
+				SecureBootEnabled: resp.SecureBootEnabled,
+				BinaryHash:        resp.BinaryHash,
+				ActiveModelHash:   resp.ActiveModelHash,
+				PythonHash:        resp.PythonHash,
+				RuntimeHash:       resp.RuntimeHash,
+				TemplateHashes:    resp.TemplateHashes,
+				ModelHashes:       resp.ModelHashes,
+			}
+			if err := attestation.VerifyStatusSignature(
+				provider.AttestationResult.PublicKey,
+				resp.StatusSignature,
+				statusInput,
+			); err != nil {
+				s.processEvidenceMetric(
+					processEvidenceRejected, processEvidenceReasonSignatureInvalid)
+				s.handleChallengeFailure(providerID,
+					"v1 status signature verification failed: "+err.Error())
+				return
+			}
 			statusFieldsTrusted = true
-		case attestation.ErrStatusSignatureMissing:
-			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
-			s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
-				"provider_id", providerID,
-			)
-		default:
-			// Instrumentation for the non-recovering status-sig lockout seen on
-			// a couple of nodes (cause unconfirmed). Because the plain challenge
-			// signature already verified above (we returned on its failure),
-			// reaching here isolates the status-sig / canonical path: log
-			// plain_sig_passed plus the Go canonical bytes and per-field lengths
-			// so a field-presence or canonicalization mismatch is diagnosable
-			// from logs alone, without shipping a new build to the affected box.
-			canonical, cerr := attestation.BuildStatusCanonical(statusInput)
-			canonicalB64 := ""
-			if cerr == nil {
-				canonicalB64 = base64.StdEncoding.EncodeToString(canonical)
+			certifiedFact = fact
+			certifiedEvidence = evidence
+			hasCertifiedEvidence = true
+			s.processEvidenceMetric(processEvidenceAcceptedV1, processEvidenceReasonOK)
+		} else {
+			statusInput := attestation.StatusCanonicalInput{
+				Nonce: pc.nonce, Timestamp: pc.timestamp,
+				HypervisorActive:  resp.HypervisorActive,
+				RDMADisabled:      resp.RDMADisabled,
+				SIPEnabled:        resp.SIPEnabled,
+				SecureBootEnabled: resp.SecureBootEnabled,
+				BinaryHash:        resp.BinaryHash,
+				ActiveModelHash:   resp.ActiveModelHash,
+				PythonHash:        resp.PythonHash,
+				RuntimeHash:       resp.RuntimeHash,
+				TemplateHashes:    resp.TemplateHashes,
+				ModelHashes:       resp.ModelHashes,
 			}
-			s.ddIncr("attestation.challenges", []string{"outcome:status_sig_failed"})
-			if s.metrics != nil {
-				s.metrics.IncCounter("attestation_status_sig_failed_total")
+			switch err := attestation.VerifyStatusSignature(
+				provider.AttestationResult.PublicKey,
+				resp.StatusSignature,
+				statusInput,
+			); err {
+			case nil:
+				statusFieldsTrusted = true
+			case attestation.ErrStatusSignatureMissing:
+				s.ddIncr("attestation.challenges", []string{"outcome:status_sig_missing"})
+				s.logger.Warn("provider sent no status_signature — status fields are advisory; upgrade provider to bind them",
+					"provider_id", providerID)
+			default:
+				s.ddIncr("attestation.challenges", []string{"outcome:status_sig_failed"})
+				if s.metrics != nil {
+					s.metrics.IncCounter("attestation_status_sig_failed_total")
+				}
+				s.handleChallengeFailure(providerID,
+					"status signature verification failed: "+err.Error())
+				return
 			}
-			s.logger.Error("status signature verification failed — possible tampering or canonical mismatch",
-				"provider_id", providerID,
-				"error", err,
-				"plain_sig_passed", true,
-				"go_canonical_b64", canonicalB64,
-				"go_canonical_len", len(canonical),
-				"canonical_build_err", cerr,
-				"status_sig_len", len(resp.StatusSignature),
-				"binary_hash_len", len(resp.BinaryHash),
-				"active_model_hash_len", len(resp.ActiveModelHash),
-				"python_hash_len", len(resp.PythonHash),
-				"runtime_hash_len", len(resp.RuntimeHash),
-				"template_hashes_count", len(resp.TemplateHashes),
-				"model_hashes_count", len(resp.ModelHashes),
-			)
-			s.handleChallengeFailure(providerID, "status signature verification failed: "+err.Error())
-			return
+			s.processEvidenceMetric(processEvidenceAcceptedLegacy, processEvidenceReasonLegacy)
 		}
+	} else if v1Selected {
+		s.processEvidenceMetric(processEvidenceRejected, processEvidenceReasonRegistrationInvalid)
+		s.handleChallengeFailure(providerID,
+			processEvidenceFailureMessage(processEvidenceReasonRegistrationInvalid))
+		return
 	}
 
 	// Status-field enforcement policy (asymmetric, by design):
@@ -1467,7 +1514,17 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	provider.Mu().Unlock()
 
 	releaseFact := approvedReleaseTransitionFact{}
-	if fact, evidence, ok := s.deriveApprovedReleaseTransition(
+	if v1Selected {
+		if !hasCertifiedEvidence ||
+			!provider.GrantApplicationEvidenceIfNotUntrusted(certifiedEvidence) {
+			s.processEvidenceMetric(processEvidenceRejected, processEvidenceReasonRegistrationInvalid)
+			s.handleChallengeFailure(providerID,
+				processEvidenceFailureMessage(processEvidenceReasonRegistrationInvalid))
+			return
+		}
+		releaseFact = certifiedFact
+		s.codeAttestMetric("certified_process_evidence")
+	} else if fact, evidence, ok := s.deriveApprovedReleaseTransition(
 		provider, resp, statusFieldsTrusted,
 	); ok && provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
 		releaseFact = fact

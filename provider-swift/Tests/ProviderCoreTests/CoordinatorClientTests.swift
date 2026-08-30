@@ -46,6 +46,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
     #expect(object["backend"] as? String == "mlx_swift_lm")
     #expect(object["version"] as? String == "0.4.0-swift-test")
     #expect(object["public_key"] as? String == "cHVibGlj")
+    #expect(object["process_evidence_version"] as? String == "process_evidence_v1")
     #expect(object["auth_token"] as? String == "device-token")
     #expect(object["encrypted_response_chunks"] as? Bool == true)
     #expect(object["prefix_cache_protocol"] as? Int == 1)
@@ -63,6 +64,7 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         throw ClientTestFailure.unexpectedMessage
     }
     #expect(register.attestation?.rawBytes == Data(rawAttestation.utf8))
+    #expect(register.processEvidenceVersion == ProcessEvidenceProtocol.version)
     #expect(register.runtimeHash == "runtimehash")
     #expect(register.templateHashes["chatml"] == "templatehash")
     #expect(register.privacyCapabilities?.textBackendInprocess == true)

@@ -166,6 +166,10 @@ public final class AttestationBuilder: @unchecked Sendable {
         self.identity = identity
     }
 
+    public var sePublicKeyBase64: String { identity.publicKeyBase64 }
+
+    public func currentSerialNumber() -> String? { detectSerialNumber() }
+
     /// Build an attestation blob from the current system state and sign it.
     ///
     /// The blob is JSON-encoded with .sortedKeys for deterministic output,
@@ -302,13 +306,14 @@ extension AttestationBuilder {
         binaryHash: String? = nil,
         activeModelHash: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
-        modelHashes: [String: String] = [:]
+        modelHashes: [String: String] = [:],
+        processEvidenceContext: ProcessEvidenceResponseContext? = nil
     ) throws -> ProviderMessage.AttestationResponse {
         let signature = try signChallenge(nonce: nonce, timestamp: timestamp)
-
         let rdmaDisabled = checkRDMADisabled()
         let sipEnabled = checkSIPEnabled()
         let secureBootEnabled = checkSecureBootEnabled()
+
         let statusData = try StatusCanonical.build(StatusCanonicalInput(
             nonce: nonce,
             timestamp: timestamp,
@@ -324,11 +329,66 @@ extension AttestationBuilder {
         ))
         let statusSignature = try identity.sign(statusData).base64EncodedString()
 
+        var serialNumber: String?
+        var processEvidenceSignature: String?
+        if let context = processEvidenceContext {
+            guard context.version == ProcessEvidenceProtocol.version,
+                  let serial = currentSerialNumber(), !serial.isEmpty,
+                  let signedBinaryHash = binaryHash, !signedBinaryHash.isEmpty,
+                  let runtimeHash = runtimeHashes?.runtimeHash, !runtimeHash.isEmpty,
+                  !context.coordinatorSessionId.isEmpty,
+                  !context.challengeGeneration.isEmpty,
+                  !context.challengeExpiresAt.isEmpty,
+                  !context.providerVersion.isEmpty,
+                  !context.providerPlatform.isEmpty,
+                  !context.providerBackend.isEmpty,
+                  !context.metallibHash.isEmpty
+            else {
+                throw NSError(
+                    domain: "ProviderCore.processEvidence",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "incomplete process_evidence_v1 transcript"])
+            }
+            serialNumber = serial
+            let processData = try ProcessEvidenceCanonical.buildV1(
+                ProcessEvidenceCanonicalInput(
+                    coordinatorNonce: nonce,
+                    coordinatorTimestamp: timestamp,
+                    coordinatorSessionId: context.coordinatorSessionId,
+                    challengeGeneration: context.challengeGeneration,
+                    evidenceExpiresAt: context.challengeExpiresAt,
+                    sePublicKey: identity.publicKeyBase64,
+                    serialNumber: serial,
+                    processPublicKey: providerPublicKey,
+                    binaryHash: signedBinaryHash,
+                    providerVersion: context.providerVersion,
+                    providerPlatform: context.providerPlatform,
+                    providerBackend: context.providerBackend,
+                    runtimeHash: runtimeHash,
+                    metallibHash: context.metallibHash,
+                    sipEnabled: sipEnabled,
+                    secureBootEnabled: secureBootEnabled
+                )
+            )
+            processEvidenceSignature = try identity.sign(processData).base64EncodedString()
+        }
+
         return ProviderMessage.AttestationResponse(
             nonce: nonce,
             signature: signature,
             statusSignature: statusSignature,
+            processEvidenceSignature: processEvidenceSignature,
             publicKey: providerPublicKey,
+            processEvidenceVersion: processEvidenceContext?.version,
+            coordinatorSessionId: processEvidenceContext?.coordinatorSessionId,
+            challengeGeneration: processEvidenceContext?.challengeGeneration,
+            challengeExpiresAt: processEvidenceContext?.challengeExpiresAt,
+            sePublicKey: processEvidenceContext == nil ? nil : identity.publicKeyBase64,
+            serialNumber: serialNumber,
+            providerVersion: processEvidenceContext?.providerVersion,
+            providerPlatform: processEvidenceContext?.providerPlatform,
+            providerBackend: processEvidenceContext?.providerBackend,
+            metallibHash: processEvidenceContext?.metallibHash,
             rdmaDisabled: rdmaDisabled,
             sipEnabled: sipEnabled,
             secureBootEnabled: secureBootEnabled,

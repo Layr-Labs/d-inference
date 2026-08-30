@@ -758,20 +758,52 @@ type DeviceEvidence struct {
 	RevocationGeneration uint64
 }
 
+// CertifiedProcessEvidence is a coordinator-owned immutable snapshot of a
+// successfully verified process_evidence_v1 transcript. It is connection-only:
+// no store row can create or restore it.
+type CertifiedProcessEvidence struct {
+	Version              string
+	SEPublicKey          string
+	Serial               string
+	ProcessPublicKey     string
+	BinaryHash           string
+	ProviderVersion      string
+	Platform             string
+	Backend              string
+	RuntimeHash          string
+	MetallibHash         string
+	CoordinatorSessionID string
+	ChallengeGeneration  string
+	ExpiresAt            time.Time
+	PolicyGeneration     uint64
+	VerifiedAt           time.Time
+}
+
+// ProcessEvidenceChallengeState is the one outstanding v1 transcript expected
+// from this live connection generation. It is never persisted.
+type ProcessEvidenceChallengeState struct {
+	Version              string
+	CoordinatorSessionID string
+	ChallengeGeneration  string
+	ExpiresAt            time.Time
+	ExpiresAtRaw         string
+}
+
 type ApplicationEvidence struct {
-	SEPublicKey        string
-	Serial             string
-	ProcessPublicKey   string
-	APNsToken          string
-	BinaryHash         string
-	Version            string
-	Platform           string
-	Backend            string
-	RuntimeHash        string
-	MetallibHash       string
-	VerifiedAt         time.Time
-	EvidenceGeneration uint64
-	PolicyGeneration   uint64
+	SEPublicKey              string
+	Serial                   string
+	ProcessPublicKey         string
+	APNsToken                string
+	BinaryHash               string
+	Version                  string
+	Platform                 string
+	Backend                  string
+	RuntimeHash              string
+	MetallibHash             string
+	VerifiedAt               time.Time
+	EvidenceGeneration       uint64
+	PolicyGeneration         uint64
+	CertifiedProcessEvidence CertifiedProcessEvidence
 }
 
 // Provider represents a connected provider agent.
@@ -800,6 +832,8 @@ type Provider struct {
 	DeviceEvidence                DeviceEvidence
 	ApplicationEvidence           ApplicationEvidence
 	applicationEvidenceGeneration uint64
+	ProcessEvidenceVersion        string
+	processEvidenceChallenge      ProcessEvidenceChallengeState
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
@@ -1006,6 +1040,18 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 			evidence.Serial != p.AttestationResult.SerialNumber {
 			return false
 		}
+		if p.ProcessEvidenceVersion == protocol.ProcessEvidenceV1 {
+			certificate := evidence.CertifiedProcessEvidence
+			if certificate.Version != protocol.ProcessEvidenceV1 ||
+				certificate.CoordinatorSessionID != p.ID ||
+				certificate.ProcessPublicKey != p.PublicKey ||
+				certificate.PolicyGeneration != r.releasePolicyGeneration ||
+				certificate.ChallengeGeneration == "" ||
+				!certificate.ExpiresAt.After(time.Now()) ||
+				!p.CodeAttested {
+				return false
+			}
+		}
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
@@ -1192,7 +1238,7 @@ func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvi
 // the claimant, not genuine Apple/APNs code identity.
 func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEvidence) bool {
 	p.mu.Lock()
-	if p.Status == StatusUntrusted ||
+	if (p.Status == StatusUntrusted && !p.untrustedRecoverable) ||
 		evidence.SEPublicKey == "" || evidence.Serial == "" ||
 		evidence.ProcessPublicKey == "" || evidence.APNsToken == "" ||
 		evidence.PolicyGeneration == 0 ||
@@ -1207,6 +1253,30 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 		p.mu.Unlock()
 		return false
 	}
+	certificate := evidence.CertifiedProcessEvidence
+	if p.ProcessEvidenceVersion == protocol.ProcessEvidenceV1 {
+		if certificate.Version != protocol.ProcessEvidenceV1 ||
+			certificate.SEPublicKey != evidence.SEPublicKey ||
+			certificate.Serial != evidence.Serial ||
+			certificate.ProcessPublicKey != evidence.ProcessPublicKey ||
+			certificate.BinaryHash != evidence.BinaryHash ||
+			certificate.ProviderVersion != evidence.Version ||
+			certificate.Platform != evidence.Platform ||
+			certificate.Backend != evidence.Backend ||
+			certificate.RuntimeHash != evidence.RuntimeHash ||
+			certificate.MetallibHash != evidence.MetallibHash ||
+			certificate.CoordinatorSessionID != p.ID ||
+			certificate.ChallengeGeneration == "" ||
+			certificate.PolicyGeneration != evidence.PolicyGeneration ||
+			certificate.VerifiedAt.IsZero() ||
+			!certificate.ExpiresAt.After(time.Now()) {
+			p.mu.Unlock()
+			return false
+		}
+	} else if certificate.Version != "" {
+		p.mu.Unlock()
+		return false
+	}
 	p.applicationEvidenceGeneration++
 	evidence.EvidenceGeneration = p.applicationEvidenceGeneration
 	p.ApplicationEvidence = evidence
@@ -1214,6 +1284,45 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 	p.SignalApplicationProofSettled()
 	p.reconcileRuntimeCapabilities()
 	return true
+}
+
+// BeginProcessEvidenceChallenge replaces the one expected v1 transcript for
+// this connection. The coordinator session must be this Provider's live ID.
+func (p *Provider) BeginProcessEvidenceChallenge(state ProcessEvidenceChallengeState) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.Status == StatusOffline ||
+		state.Version != protocol.ProcessEvidenceV1 ||
+		state.CoordinatorSessionID != p.ID ||
+		state.ChallengeGeneration == "" || state.ExpiresAtRaw == "" || state.ExpiresAt.IsZero() {
+		return false
+	}
+	p.processEvidenceChallenge = state
+	return true
+}
+
+// ConsumeProcessEvidenceChallenge atomically invalidates and returns the
+// outstanding transcript. Replays and responses from a superseded challenge
+// therefore observe an empty state.
+func (p *Provider) ConsumeProcessEvidenceChallenge() ProcessEvidenceChallengeState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state := p.processEvidenceChallenge
+	p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
+	return state
+}
+
+func (p *Provider) ClearProcessEvidenceChallenge() {
+	p.mu.Lock()
+	p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
+	p.mu.Unlock()
+}
+
+func (p *Provider) CertifiedProcessEvidenceSnapshot() (CertifiedProcessEvidence, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	certificate := p.ApplicationEvidence.CertifiedProcessEvidence
+	return certificate, certificate.Version == protocol.ProcessEvidenceV1
 }
 
 func (p *Provider) ApplicationEvidenceSnapshot() (ApplicationEvidence, bool) {
@@ -1519,6 +1628,7 @@ func (r *Registry) SetReleasePolicyGeneration(generation uint64, required bool) 
 	r.releasePolicyRequired = required
 	for _, provider := range r.providers {
 		provider.mu.Lock()
+		provider.processEvidenceChallenge = ProcessEvidenceChallengeState{}
 		provider.ApplicationEvidence = ApplicationEvidence{}
 		provider.RuntimeCapabilities = nil
 		provider.mu.Unlock()
@@ -3383,6 +3493,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		ReportedRuntimeCapabilities: normalizeRuntimeCapabilities(msg.RuntimeCapabilities, msg.Hardware),
 		RuntimeCapabilities:         nil,
 		PublicKey:                   pubKey,
+		ProcessEvidenceVersion:      msg.ProcessEvidenceVersion,
 		EncryptedResponseChunks:     msg.EncryptedResponseChunks,
 		PrivateOnly:                 msg.PrivateOnly,
 		APNsDeviceToken:             msg.APNsDeviceToken,
@@ -4529,6 +4640,9 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		p.ApplicationEvidence = ApplicationEvidence{}
+		p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
+		p.RuntimeCapabilities = nil
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
 		// cooldowns, health ejection) keys by the STABLE identity when one is
@@ -4790,6 +4904,7 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	if !recoverable && p.AttestationResult != nil {
 		seKey = p.AttestationResult.PublicKey
 	}
+	p.processEvidenceChallenge = ProcessEvidenceChallengeState{}
 	if !recoverable {
 		p.DeviceEvidence = DeviceEvidence{}
 		p.ApplicationEvidence = ApplicationEvidence{}

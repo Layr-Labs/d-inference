@@ -481,9 +481,26 @@ extension ProviderLoop {
         modelSlots[modelId]?.lastInferenceAt = .now
         syncWarmModelState()
 
-        // 7. Capture values for the spawned task
+        // 7. Capture values for the spawned task. A missing key is a lifecycle
+        // failure, never a reason to continue with plaintext or an ad-hoc key.
+        guard let kp = self.keyPair else {
+            if requestToModel.removeValue(forKey: requestId) != nil {
+                powerAssertion.release()
+                syncWarmModelState()
+                await updateAggregateCapacity()
+            }
+            await cancellationRegistry.finish(requestId: requestId)
+            logger.error("[\(requestId)] process key unavailable after hardening")
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    failure: InferenceFailure(
+                        code: .encryptionFailure, statusCode: 502)),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
         let responsePublicKeyData: Data = senderKey
-        let kp = self.keyPair
         let providerStats = self.stats
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer

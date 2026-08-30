@@ -152,3 +152,79 @@ func TestProviderMessageUnmarshalAttestationResponse(t *testing.T) {
 		t.Errorf("public_key = %q", resp.PublicKey)
 	}
 }
+
+func TestProcessEvidenceV1ChallengeWireAndLegacyOmission(t *testing.T) {
+	legacy, err := json.Marshal(AttestationChallengeMessage{
+		Type: TypeAttestationChallenge, Nonce: "n", Timestamp: "t",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyObject map[string]any
+	if err := json.Unmarshal(legacy, &legacyObject); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"process_evidence_version", "coordinator_session_id",
+		"challenge_generation", "challenge_expires_at",
+	} {
+		if _, ok := legacyObject[key]; ok {
+			t.Fatalf("legacy challenge unexpectedly encoded %q: %s", key, legacy)
+		}
+	}
+
+	v1 := AttestationChallengeMessage{
+		Type: TypeAttestationChallenge, Nonce: "n", Timestamp: "t",
+		ProcessEvidenceVersion: ProcessEvidenceV1,
+		CoordinatorSessionID:   "session", ChallengeGeneration: "generation",
+		ChallengeExpiresAt: "2026-08-30T12:10:00Z",
+	}
+	data, err := json.Marshal(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded AttestationChallengeMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded != v1 {
+		t.Fatalf("v1 challenge round trip mismatch: got %+v want %+v", decoded, v1)
+	}
+}
+
+func TestProcessEvidenceV1ResponseWireRoundTrip(t *testing.T) {
+	truth := true
+	v1 := AttestationResponseMessage{
+		Type: TypeAttestationResponse, Nonce: "n", Signature: "plain",
+		StatusSignature: "process", PublicKey: "process-key",
+		ProcessEvidenceVersion: ProcessEvidenceV1,
+		CoordinatorSessionID:   "session", ChallengeGeneration: "generation",
+		ChallengeExpiresAt:       "2026-08-30T12:10:00Z",
+		ProcessEvidenceSignature: "process",
+		SEPublicKey:              "se-key", SerialNumber: "SERIAL",
+		ProviderVersion: "0.8.15", ProviderPlatform: "macos-arm64",
+		ProviderBackend: "mlx-swift", MetallibHash: "metal",
+		SIPEnabled: &truth, SecureBootEnabled: &truth,
+	}
+	data, err := json.Marshal(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded AttestationResponseMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ProcessEvidenceVersion != ProcessEvidenceV1 ||
+		decoded.CoordinatorSessionID != v1.CoordinatorSessionID ||
+		decoded.ChallengeGeneration != v1.ChallengeGeneration ||
+		decoded.ChallengeExpiresAt != v1.ChallengeExpiresAt ||
+		decoded.PublicKey != v1.PublicKey ||
+		decoded.SEPublicKey != v1.SEPublicKey ||
+		decoded.SerialNumber != v1.SerialNumber ||
+		decoded.ProviderVersion != v1.ProviderVersion ||
+		decoded.ProviderPlatform != v1.ProviderPlatform ||
+		decoded.ProviderBackend != v1.ProviderBackend ||
+		decoded.MetallibHash != v1.MetallibHash {
+		t.Fatalf("v1 response round trip mismatch: %+v", decoded)
+	}
+}

@@ -95,6 +95,10 @@ public enum ProviderProtocolCodec {
         try fields.append(("backend", encodeValue(register.backend)))
         try appendIfPresent(register.version, key: "version", to: &fields)
         try appendIfPresent(register.publicKey, key: "public_key", to: &fields)
+        try appendIfPresent(
+            register.processEvidenceVersion,
+            key: "process_evidence_version",
+            to: &fields)
         if register.encryptedResponseChunks {
             try fields.append(("encrypted_response_chunks", encodeValue(true)))
         }

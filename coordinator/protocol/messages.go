@@ -58,6 +58,8 @@ const (
 	TypePrefetchModel                  = "prefetch_model"
 	TypeDesiredModels                  = "desired_models"
 	TypeTrustStatus                    = "trust_status"
+	// Additive attestation capability/canonical transcript version.
+	ProcessEvidenceV1 = "process_evidence_v1"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -189,6 +191,7 @@ type RegisterMessage struct {
 	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
 	PublicKey                   string                             `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	ProcessEvidenceVersion      string                             `json:"process_evidence_version,omitempty"`  // versioned live process transcript capability
 	EncryptedResponseChunks     bool                               `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
 	Attestation                 json.RawMessage                    `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
 	PrefillTPS                  float64                            `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
@@ -722,9 +725,13 @@ type PrefetchModelStatusMessage struct {
 // AttestationChallengeMessage is sent by the coordinator to challenge a provider
 // to prove it still holds its private key.
 type AttestationChallengeMessage struct {
-	Type      string `json:"type"`
-	Nonce     string `json:"nonce"`     // base64-encoded random 32-byte nonce
-	Timestamp string `json:"timestamp"` // ISO 8601 timestamp
+	Type                   string `json:"type"`
+	Nonce                  string `json:"nonce"`                              // base64-encoded random 32-byte nonce
+	Timestamp              string `json:"timestamp"`                          // ISO 8601 timestamp
+	ProcessEvidenceVersion string `json:"process_evidence_version,omitempty"` // absent for legacy challenge
+	CoordinatorSessionID   string `json:"coordinator_session_id,omitempty"`   // current WebSocket/provider generation
+	ChallengeGeneration    string `json:"challenge_generation,omitempty"`     // unpredictable per-challenge generation
+	ChallengeExpiresAt     string `json:"challenge_expires_at,omitempty"`     // exact RFC3339Nano evidence expiry
 }
 
 // CodeAttestationResumeChallenge proves possession of the cached registration
@@ -746,11 +753,22 @@ type CodeAttestationResumeChallenge struct {
 // which case the status fields are treated as advisory (not a basis for
 // trust upgrades).
 type AttestationResponseMessage struct {
-	Type            string `json:"type"`
-	Nonce           string `json:"nonce"`                      // echoed back from the challenge
-	Signature       string `json:"signature"`                  // base64-encoded signature of nonce+timestamp
-	StatusSignature string `json:"status_signature,omitempty"` // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
-	PublicKey       string `json:"public_key"`                 // base64-encoded public key
+	Type                     string `json:"type"`
+	Nonce                    string `json:"nonce"`                                // echoed back from the challenge
+	Signature                string `json:"signature"`                            // base64-encoded signature of nonce+timestamp
+	StatusSignature          string `json:"status_signature,omitempty"`           // base64-encoded signature of canonical status JSON (see attestation.BuildStatusCanonical)
+	ProcessEvidenceSignature string `json:"process_evidence_signature,omitempty"` // SE signature over process_evidence_v1 canonical bytes
+	PublicKey                string `json:"public_key"`                           // base64-encoded public key
+	ProcessEvidenceVersion   string `json:"process_evidence_version,omitempty"`
+	CoordinatorSessionID     string `json:"coordinator_session_id,omitempty"`
+	ChallengeGeneration      string `json:"challenge_generation,omitempty"`
+	ChallengeExpiresAt       string `json:"challenge_expires_at,omitempty"`
+	SEPublicKey              string `json:"se_public_key,omitempty"`
+	SerialNumber             string `json:"serial_number,omitempty"`
+	ProviderVersion          string `json:"provider_version,omitempty"`
+	ProviderPlatform         string `json:"provider_platform,omitempty"`
+	ProviderBackend          string `json:"provider_backend,omitempty"`
+	MetallibHash             string `json:"metallib_hash,omitempty"`
 	// HypervisorActive — legacy fleet compat only: old providers (< v0.6.31)
 	// sign hypervisor_active into the canonical status (see
 	// attestation.BuildStatusCanonical), so this field must keep decoding for

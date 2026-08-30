@@ -136,11 +136,14 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
 
 internal enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
+    case processKeyBeforeHardening
 
     var description: String {
         switch self {
         case .binaryHashUnavailable:
             return "provider binary hash could not be computed"
+        case .processKeyBeforeHardening:
+            return "process X25519 key generation attempted before security hardening"
         }
     }
 }
@@ -155,7 +158,9 @@ internal enum ProviderLoopError: Error, CustomStringConvertible {
 // `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
     internal let loopConfig: ProviderLoopConfig
-    internal let keyPair: NodeKeyPair
+    internal var keyPair: NodeKeyPair!
+    internal let nodeKeyFactory: @Sendable () -> NodeKeyPair
+    internal var securityHardeningCompleted = false
     internal let signer: (any AttestationSigner)?
     internal let attestationBuilder: AttestationBuilder?
     internal let stats: AtomicProviderStats
@@ -488,7 +493,8 @@ public actor ProviderLoop {
         purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        nodeKeyFactory: @escaping @Sendable () -> NodeKeyPair = NodeKeyPair.generate
     ) throws {
         self.loopConfig = config
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -524,7 +530,8 @@ public actor ProviderLoop {
         if purgeLegacyFiles {
             NodeKeyPair.purgeLegacyFiles()
         }
-        self.keyPair = NodeKeyPair.generate()
+        self.keyPair = nil
+        self.nodeKeyFactory = nodeKeyFactory
         self.signer = attestationSigner
         self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
         self.stats = AtomicProviderStats()

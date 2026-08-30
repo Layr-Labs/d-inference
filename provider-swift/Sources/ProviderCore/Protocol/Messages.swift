@@ -177,6 +177,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var backend: String
         public var version: String?
         public var publicKey: String?
+        public var processEvidenceVersion: String?
         public var encryptedResponseChunks: Bool
         public var walletAddress: String?
         public var attestation: RawJSON?
@@ -213,6 +214,7 @@ public enum ProviderMessage: Sendable, Equatable {
             backend: String,
             version: String? = nil,
             publicKey: String? = nil,
+            processEvidenceVersion: String? = nil,
             encryptedResponseChunks: Bool = false,
             walletAddress: String? = nil,
             attestation: RawJSON? = nil,
@@ -239,6 +241,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.backend = backend
             self.version = version
             self.publicKey = publicKey
+            self.processEvidenceVersion = processEvidenceVersion
             self.encryptedResponseChunks = encryptedResponseChunks
             self.walletAddress = walletAddress
             self.attestation = attestation
@@ -652,7 +655,18 @@ public enum ProviderMessage: Sendable, Equatable {
         public var nonce: String
         public var signature: String
         public var statusSignature: String?
+        public var processEvidenceSignature: String?
         public var publicKey: String
+        public var processEvidenceVersion: String?
+        public var coordinatorSessionId: String?
+        public var challengeGeneration: String?
+        public var challengeExpiresAt: String?
+        public var sePublicKey: String?
+        public var serialNumber: String?
+        public var providerVersion: String?
+        public var providerPlatform: String?
+        public var providerBackend: String?
+        public var metallibHash: String?
         public var rdmaDisabled: Bool?
         public var sipEnabled: Bool?
         public var secureBootEnabled: Bool?
@@ -667,7 +681,18 @@ public enum ProviderMessage: Sendable, Equatable {
             nonce: String,
             signature: String,
             statusSignature: String? = nil,
+            processEvidenceSignature: String? = nil,
             publicKey: String,
+            processEvidenceVersion: String? = nil,
+            coordinatorSessionId: String? = nil,
+            challengeGeneration: String? = nil,
+            challengeExpiresAt: String? = nil,
+            sePublicKey: String? = nil,
+            serialNumber: String? = nil,
+            providerVersion: String? = nil,
+            providerPlatform: String? = nil,
+            providerBackend: String? = nil,
+            metallibHash: String? = nil,
             rdmaDisabled: Bool? = nil,
             sipEnabled: Bool? = nil,
             secureBootEnabled: Bool? = nil,
@@ -681,7 +706,18 @@ public enum ProviderMessage: Sendable, Equatable {
             self.nonce = nonce
             self.signature = signature
             self.statusSignature = statusSignature
+            self.processEvidenceSignature = processEvidenceSignature
             self.publicKey = publicKey
+            self.processEvidenceVersion = processEvidenceVersion
+            self.coordinatorSessionId = coordinatorSessionId
+            self.challengeGeneration = challengeGeneration
+            self.challengeExpiresAt = challengeExpiresAt
+            self.sePublicKey = sePublicKey
+            self.serialNumber = serialNumber
+            self.providerVersion = providerVersion
+            self.providerPlatform = providerPlatform
+            self.providerBackend = providerBackend
+            self.metallibHash = metallibHash
             self.rdmaDisabled = rdmaDisabled
             self.sipEnabled = sipEnabled
             self.secureBootEnabled = secureBootEnabled
@@ -736,6 +772,7 @@ extension ProviderMessage: Codable {
         // Register
         case hardware, models, backend, version
         case publicKey = "public_key"
+        case processEvidenceVersion = "process_evidence_version"
         case encryptedResponseChunks = "encrypted_response_chunks"
         case walletAddress = "wallet_address"
         case attestation
@@ -783,6 +820,16 @@ extension ProviderMessage: Codable {
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
+        case processEvidenceSignature = "process_evidence_signature"
+        case coordinatorSessionId = "coordinator_session_id"
+        case challengeGeneration = "challenge_generation"
+        case challengeExpiresAt = "challenge_expires_at"
+        case sePublicKey = "se_public_key"
+        case serialNumber = "serial_number"
+        case providerVersion = "provider_version"
+        case providerPlatform = "provider_platform"
+        case providerBackend = "provider_backend"
+        case metallibHash = "metallib_hash"
         case rdmaDisabled = "rdma_disabled"
         case sipEnabled = "sip_enabled"
         case secureBootEnabled = "secure_boot_enabled"
@@ -823,6 +870,8 @@ extension ProviderMessage: Codable {
             try container.encode(r.backend, forKey: .backend)
             try container.encodeIfPresent(r.version, forKey: .version)
             try container.encodeIfPresent(r.publicKey, forKey: .publicKey)
+            try container.encodeIfPresent(
+                r.processEvidenceVersion, forKey: .processEvidenceVersion)
             if r.encryptedResponseChunks {
                 try container.encode(true, forKey: .encryptedResponseChunks)
             }
@@ -916,7 +965,23 @@ extension ProviderMessage: Codable {
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.signature, forKey: .signature)
             try container.encodeIfPresent(a.statusSignature, forKey: .statusSignature)
+            try container.encodeIfPresent(
+                a.processEvidenceSignature, forKey: .processEvidenceSignature)
             try container.encode(a.publicKey, forKey: .publicKey)
+            try container.encodeIfPresent(
+                a.processEvidenceVersion, forKey: .processEvidenceVersion)
+            try container.encodeIfPresent(
+                a.coordinatorSessionId, forKey: .coordinatorSessionId)
+            try container.encodeIfPresent(
+                a.challengeGeneration, forKey: .challengeGeneration)
+            try container.encodeIfPresent(
+                a.challengeExpiresAt, forKey: .challengeExpiresAt)
+            try container.encodeIfPresent(a.sePublicKey, forKey: .sePublicKey)
+            try container.encodeIfPresent(a.serialNumber, forKey: .serialNumber)
+            try container.encodeIfPresent(a.providerVersion, forKey: .providerVersion)
+            try container.encodeIfPresent(a.providerPlatform, forKey: .providerPlatform)
+            try container.encodeIfPresent(a.providerBackend, forKey: .providerBackend)
+            try container.encodeIfPresent(a.metallibHash, forKey: .metallibHash)
             try container.encodeIfPresent(a.rdmaDisabled, forKey: .rdmaDisabled)
             try container.encodeIfPresent(a.sipEnabled, forKey: .sipEnabled)
             try container.encodeIfPresent(a.secureBootEnabled, forKey: .secureBootEnabled)
@@ -1037,6 +1102,8 @@ extension ProviderMessage: Codable {
                 backend: try container.decode(String.self, forKey: .backend),
                 version: try container.decodeIfPresent(String.self, forKey: .version),
                 publicKey: try container.decodeIfPresent(String.self, forKey: .publicKey),
+                processEvidenceVersion: try container.decodeIfPresent(
+                    String.self, forKey: .processEvidenceVersion),
                 encryptedResponseChunks: try container.decodeIfPresent(Bool.self, forKey: .encryptedResponseChunks) ?? false,
                 walletAddress: try container.decodeIfPresent(String.self, forKey: .walletAddress),
                 attestation: try container.decodeIfPresent(RawJSON.self, forKey: .attestation),
@@ -1136,7 +1203,23 @@ extension ProviderMessage: Codable {
                 nonce: try container.decode(String.self, forKey: .nonce),
                 signature: try container.decode(String.self, forKey: .signature),
                 statusSignature: try container.decodeIfPresent(String.self, forKey: .statusSignature),
+                processEvidenceSignature: try container.decodeIfPresent(
+                    String.self, forKey: .processEvidenceSignature),
                 publicKey: try container.decode(String.self, forKey: .publicKey),
+                processEvidenceVersion: try container.decodeIfPresent(
+                    String.self, forKey: .processEvidenceVersion),
+                coordinatorSessionId: try container.decodeIfPresent(
+                    String.self, forKey: .coordinatorSessionId),
+                challengeGeneration: try container.decodeIfPresent(
+                    String.self, forKey: .challengeGeneration),
+                challengeExpiresAt: try container.decodeIfPresent(
+                    String.self, forKey: .challengeExpiresAt),
+                sePublicKey: try container.decodeIfPresent(String.self, forKey: .sePublicKey),
+                serialNumber: try container.decodeIfPresent(String.self, forKey: .serialNumber),
+                providerVersion: try container.decodeIfPresent(String.self, forKey: .providerVersion),
+                providerPlatform: try container.decodeIfPresent(String.self, forKey: .providerPlatform),
+                providerBackend: try container.decodeIfPresent(String.self, forKey: .providerBackend),
+                metallibHash: try container.decodeIfPresent(String.self, forKey: .metallibHash),
                 rdmaDisabled: try container.decodeIfPresent(Bool.self, forKey: .rdmaDisabled),
                 sipEnabled: try container.decodeIfPresent(Bool.self, forKey: .sipEnabled),
                 secureBootEnabled: try container.decodeIfPresent(Bool.self, forKey: .secureBootEnabled),
@@ -1317,9 +1400,25 @@ public enum CoordinatorMessage: Sendable, Equatable {
     public struct AttestationChallenge: Sendable, Equatable {
         public var nonce: String
         public var timestamp: String
-        public init(nonce: String, timestamp: String) {
+        public var processEvidenceVersion: String?
+        public var coordinatorSessionId: String?
+        public var challengeGeneration: String?
+        public var challengeExpiresAt: String?
+
+        public init(
+            nonce: String,
+            timestamp: String,
+            processEvidenceVersion: String? = nil,
+            coordinatorSessionId: String? = nil,
+            challengeGeneration: String? = nil,
+            challengeExpiresAt: String? = nil
+        ) {
             self.nonce = nonce
             self.timestamp = timestamp
+            self.processEvidenceVersion = processEvidenceVersion
+            self.coordinatorSessionId = coordinatorSessionId
+            self.challengeGeneration = challengeGeneration
+            self.challengeExpiresAt = challengeExpiresAt
         }
     }
 
@@ -1430,6 +1529,10 @@ extension CoordinatorMessage: Codable {
         case prefixCacheProtocol = "prefix_cache_protocol"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
+        case processEvidenceVersion = "process_evidence_version"
+        case coordinatorSessionId = "coordinator_session_id"
+        case challengeGeneration = "challenge_generation"
+        case challengeExpiresAt = "challenge_expires_at"
         case codeChallenge = "code_challenge"
         case verified, mismatches
         case modelId = "model_id"
@@ -1466,6 +1569,14 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.timestamp, forKey: .timestamp)
+            try container.encodeIfPresent(
+                a.processEvidenceVersion, forKey: .processEvidenceVersion)
+            try container.encodeIfPresent(
+                a.coordinatorSessionId, forKey: .coordinatorSessionId)
+            try container.encodeIfPresent(
+                a.challengeGeneration, forKey: .challengeGeneration)
+            try container.encodeIfPresent(
+                a.challengeExpiresAt, forKey: .challengeExpiresAt)
 
         case .codeAttestationResumeChallenge(let challenge):
             try container.encode(
@@ -1533,7 +1644,15 @@ extension CoordinatorMessage: Codable {
         case .attestationChallenge:
             self = .attestationChallenge(AttestationChallenge(
                 nonce: try container.decode(String.self, forKey: .nonce),
-                timestamp: try container.decode(String.self, forKey: .timestamp)
+                timestamp: try container.decode(String.self, forKey: .timestamp),
+                processEvidenceVersion: try container.decodeIfPresent(
+                    String.self, forKey: .processEvidenceVersion),
+                coordinatorSessionId: try container.decodeIfPresent(
+                    String.self, forKey: .coordinatorSessionId),
+                challengeGeneration: try container.decodeIfPresent(
+                    String.self, forKey: .challengeGeneration),
+                challengeExpiresAt: try container.decodeIfPresent(
+                    String.self, forKey: .challengeExpiresAt)
             ))
 
         case .codeAttestationResumeChallenge:

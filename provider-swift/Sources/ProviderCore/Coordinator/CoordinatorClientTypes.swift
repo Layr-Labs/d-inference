@@ -105,6 +105,7 @@ public enum CoordinatorEvent: Sendable {
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
+    case processEvidenceChallenge(CoordinatorMessage.AttestationChallenge)
     case codeAttestationResumeChallenge(EncryptedPayload)
     case runtimeOutdated(mismatches: [RuntimeMismatch])
     /// Coordinator-driven preload. Provider should eagerly load the model
@@ -140,6 +141,7 @@ public struct CoordinatorClientConfig: Sendable {
     /// Called for every WebSocket registration, including reconnects. Production
     /// re-signs a fresh timestamp while preserving the same bound claims.
     public let registrationAttestation: @Sendable () -> RawJSON?
+    public let processEvidenceVersion: String?
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
@@ -165,6 +167,7 @@ public struct CoordinatorClientConfig: Sendable {
         walletAddress: String? = nil,
         attestation: RawJSON? = nil,
         registrationAttestation: (@Sendable () -> RawJSON?)? = nil,
+        processEvidenceVersion: String? = ProcessEvidenceProtocol.version,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
@@ -183,6 +186,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.walletAddress = walletAddress
         self.attestation = attestation
         self.registrationAttestation = registrationAttestation ?? { attestation }
+        self.processEvidenceVersion = processEvidenceVersion
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
@@ -283,7 +287,18 @@ public struct AttestationResponsePayload: Sendable {
     public let nonce: String
     public let signature: String
     public let statusSignature: String?
+    public let processEvidenceSignature: String?
     public let publicKey: String
+    public let processEvidenceVersion: String?
+    public let coordinatorSessionId: String?
+    public let challengeGeneration: String?
+    public let challengeExpiresAt: String?
+    public let sePublicKey: String?
+    public let serialNumber: String?
+    public let providerVersion: String?
+    public let providerPlatform: String?
+    public let providerBackend: String?
+    public let metallibHash: String?
     public let rdmaDisabled: Bool?
     public let sipEnabled: Bool?
     public let secureBootEnabled: Bool?
@@ -298,7 +313,18 @@ public struct AttestationResponsePayload: Sendable {
         nonce: String,
         signature: String,
         statusSignature: String? = nil,
+        processEvidenceSignature: String? = nil,
         publicKey: String,
+        processEvidenceVersion: String? = nil,
+        coordinatorSessionId: String? = nil,
+        challengeGeneration: String? = nil,
+        challengeExpiresAt: String? = nil,
+        sePublicKey: String? = nil,
+        serialNumber: String? = nil,
+        providerVersion: String? = nil,
+        providerPlatform: String? = nil,
+        providerBackend: String? = nil,
+        metallibHash: String? = nil,
         rdmaDisabled: Bool? = nil,
         sipEnabled: Bool? = nil,
         secureBootEnabled: Bool? = nil,
@@ -312,7 +338,18 @@ public struct AttestationResponsePayload: Sendable {
         self.nonce = nonce
         self.signature = signature
         self.statusSignature = statusSignature
+        self.processEvidenceSignature = processEvidenceSignature
         self.publicKey = publicKey
+        self.processEvidenceVersion = processEvidenceVersion
+        self.coordinatorSessionId = coordinatorSessionId
+        self.challengeGeneration = challengeGeneration
+        self.challengeExpiresAt = challengeExpiresAt
+        self.sePublicKey = sePublicKey
+        self.serialNumber = serialNumber
+        self.providerVersion = providerVersion
+        self.providerPlatform = providerPlatform
+        self.providerBackend = providerBackend
+        self.metallibHash = metallibHash
         self.rdmaDisabled = rdmaDisabled
         self.sipEnabled = sipEnabled
         self.secureBootEnabled = secureBootEnabled

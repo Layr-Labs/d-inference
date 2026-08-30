@@ -66,7 +66,8 @@ extension ProviderLoop {
         }
 
         // 1. Apply security hardening
-        try await applySecurityHardening()
+        try await completeSecurityHardeningForProcess()
+        try initializeProcessKeyAfterHardening()
 
         // MTP catalog metadata is process-local. Give it one short, owned
         // prewarm before either startup preloads or the unified local endpoint
@@ -263,6 +264,9 @@ extension ProviderLoop {
                         send: send
                     )
 
+                case .processEvidenceChallenge(let challenge):
+                    await handleProcessEvidenceChallenge(challenge, send: send)
+
                 case .codeAttestationResumeChallenge(let challenge):
                     handleCodeChallenge(challenge, send: send)
 
@@ -359,6 +363,20 @@ extension ProviderLoop {
     }
 
     // MARK: - Security Hardening
+
+    internal func completeSecurityHardeningForProcess() async throws {
+        try await applySecurityHardening()
+        securityHardeningCompleted = true
+    }
+
+    internal func initializeProcessKeyAfterHardening() throws {
+        guard securityHardeningCompleted else {
+            throw ProviderLoopError.processKeyBeforeHardening
+        }
+        if keyPair == nil {
+            keyPair = nodeKeyFactory()
+        }
+    }
 
     private func applySecurityHardening() async throws {
         #if !DEBUG

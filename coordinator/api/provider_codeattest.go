@@ -327,6 +327,9 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 	}
 	provider.Mu().Unlock()
 	if changed {
+		provider.ClearProcessEvidenceChallenge()
+	}
+	if changed {
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 	}
 

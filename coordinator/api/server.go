@@ -1692,6 +1692,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		provider.RuntimeManifestChecked = false
 		provider.MetallibVerified = false
 		provider.RuntimeCapabilities = nil
+		provider.ApplicationEvidence = registry.ApplicationEvidence{}
 
 		if s.knownRuntimeManifest == nil {
 			// Manifest was withdrawn — keep the process proof, but deroute the

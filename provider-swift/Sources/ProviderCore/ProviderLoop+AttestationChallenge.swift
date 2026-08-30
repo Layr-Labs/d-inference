@@ -17,7 +17,8 @@ extension ProviderLoop {
     internal func handleAttestationChallenge(
         nonce: String,
         timestamp: String,
-        send: SendHandle
+        send: SendHandle,
+        processEvidenceContext: ProcessEvidenceResponseContext? = nil
     ) async {
         logger.info(.attestationChallengeReceived)
 
@@ -54,14 +55,26 @@ extension ProviderLoop {
                 binaryHash: binaryHash,
                 activeModelHash: activeModelHash,
                 runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loadedModelHashes
+                modelHashes: loadedModelHashes,
+                processEvidenceContext: processEvidenceContext
             )
 
             send.send(.attestationResponse(AttestationResponsePayload(
                 nonce: response.nonce,
                 signature: response.signature,
                 statusSignature: response.statusSignature,
+                processEvidenceSignature: response.processEvidenceSignature,
                 publicKey: response.publicKey,
+                processEvidenceVersion: response.processEvidenceVersion,
+                coordinatorSessionId: response.coordinatorSessionId,
+                challengeGeneration: response.challengeGeneration,
+                challengeExpiresAt: response.challengeExpiresAt,
+                sePublicKey: response.sePublicKey,
+                serialNumber: response.serialNumber,
+                providerVersion: response.providerVersion,
+                providerPlatform: response.providerPlatform,
+                providerBackend: response.providerBackend,
+                metallibHash: response.metallibHash,
                 rdmaDisabled: response.rdmaDisabled,
                 sipEnabled: response.sipEnabled,
                 secureBootEnabled: response.secureBootEnabled,
@@ -78,6 +91,42 @@ extension ProviderLoop {
             logger.error(.attestationSigningFailed)
             logger.error("Failed to sign attestation challenge: \(error)")
         }
+    }
+
+    internal func handleProcessEvidenceChallenge(
+        _ challenge: CoordinatorMessage.AttestationChallenge,
+        send: SendHandle
+    ) async {
+        let runtimeHashes = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
+        guard challenge.processEvidenceVersion == ProcessEvidenceProtocol.version,
+              let coordinatorSessionId = challenge.coordinatorSessionId,
+              let challengeGeneration = challenge.challengeGeneration,
+              let challengeExpiresAt = challenge.challengeExpiresAt,
+              let metallibHash = runtimeHashes?.templateHashes["mlx_metallib"],
+              !coordinatorSessionId.isEmpty,
+              !challengeGeneration.isEmpty,
+              !challengeExpiresAt.isEmpty,
+              !metallibHash.isEmpty
+        else {
+            logger.error("Rejected incomplete or unsupported process evidence challenge")
+            return
+        }
+        let context = ProcessEvidenceResponseContext(
+            version: ProcessEvidenceProtocol.version,
+            coordinatorSessionId: coordinatorSessionId,
+            challengeGeneration: challengeGeneration,
+            challengeExpiresAt: challengeExpiresAt,
+            providerVersion: ProviderCore.version,
+            providerPlatform: "macos-arm64",
+            providerBackend: "mlx-swift",
+            metallibHash: metallibHash
+        )
+        await handleAttestationChallenge(
+            nonce: challenge.nonce,
+            timestamp: challenge.timestamp,
+            send: send,
+            processEvidenceContext: context
+        )
     }
 
     // MARK: - Code-identity (APNs) challenge

@@ -92,10 +92,17 @@ extension CoordinatorClient {
 
         case .attestationChallenge(let challenge):
             logger.info(.attestationChallengeReceived)
-            eventContinuation?.yield(.attestationChallenge(
-                nonce: challenge.nonce,
-                timestamp: challenge.timestamp
-            ))
+            if challenge.processEvidenceVersion != nil ||
+                challenge.coordinatorSessionId != nil ||
+                challenge.challengeGeneration != nil ||
+                challenge.challengeExpiresAt != nil {
+                eventContinuation?.yield(.processEvidenceChallenge(challenge))
+            } else {
+                eventContinuation?.yield(.attestationChallenge(
+                    nonce: challenge.nonce,
+                    timestamp: challenge.timestamp
+                ))
+            }
 
         case .codeAttestationResumeChallenge(let challenge):
             eventContinuation?.yield(

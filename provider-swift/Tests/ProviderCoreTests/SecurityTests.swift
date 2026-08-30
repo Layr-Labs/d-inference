@@ -354,3 +354,74 @@ private final class PtraceRecorder: @unchecked Sendable {
         }
     }
 }
+
+@Test func processEvidenceCanonicalV1MatchesCoordinatorGoldenBytes() throws {
+    let input = ProcessEvidenceCanonicalInput(
+        coordinatorNonce: "nonce-v1",
+        coordinatorTimestamp: "2026-08-30T12:00:00Z",
+        coordinatorSessionId: "session-123",
+        challengeGeneration: "generation-abc",
+        evidenceExpiresAt: "2026-08-30T12:10:00Z",
+        sePublicKey: "se-public",
+        serialNumber: "SERIAL-1",
+        processPublicKey: "process-public",
+        binaryHash: "binary-hash",
+        providerVersion: "0.8.15",
+        providerPlatform: "macos-arm64",
+        providerBackend: "mlx-swift",
+        runtimeHash: "runtime-hash",
+        metallibHash: "metallib-hash",
+        sipEnabled: true,
+        secureBootEnabled: true
+    )
+    let canonical = try ProcessEvidenceCanonical.buildV1(input)
+    let expected = #"{"binary_hash":"binary-hash","challenge_generation":"generation-abc","coordinator_nonce":"nonce-v1","coordinator_session_id":"session-123","coordinator_timestamp":"2026-08-30T12:00:00Z","domain":"darkbloom.process_evidence","evidence_expires_at":"2026-08-30T12:10:00Z","metallib_hash":"metallib-hash","process_public_key":"process-public","provider_backend":"mlx-swift","provider_platform":"macos-arm64","provider_version":"0.8.15","runtime_hash":"runtime-hash","se_public_key":"se-public","secure_boot_enabled":true,"serial_number":"SERIAL-1","sip_enabled":true,"version":"process_evidence_v1"}"#
+    #expect(String(decoding: canonical, as: UTF8.self) == expected)
+}
+
+@Test func processEvidenceCanonicalV1PreservesNilAndFalse() throws {
+    var input = ProcessEvidenceCanonicalInput(
+        coordinatorNonce: "", coordinatorTimestamp: "", coordinatorSessionId: "",
+        challengeGeneration: "", evidenceExpiresAt: "", sePublicKey: "",
+        serialNumber: "", processPublicKey: "", binaryHash: "", providerVersion: "",
+        providerPlatform: "", providerBackend: "", runtimeHash: "", metallibHash: "",
+        sipEnabled: nil, secureBootEnabled: nil
+    )
+    let omitted = String(decoding: try ProcessEvidenceCanonical.buildV1(input), as: UTF8.self)
+    input.sipEnabled = false
+    let explicitFalse = String(
+        decoding: try ProcessEvidenceCanonical.buildV1(input), as: UTF8.self)
+    #expect(!omitted.contains("sip_enabled"))
+    #expect(explicitFalse.contains(#""sip_enabled":false"#))
+    #expect(omitted != explicitFalse)
+}
+
+@Test func processEvidenceCanonicalV1MutationMatrix() throws {
+    let base = ProcessEvidenceCanonicalInput(
+        coordinatorNonce: "n", coordinatorTimestamp: "t", coordinatorSessionId: "s",
+        challengeGeneration: "g", evidenceExpiresAt: "e", sePublicKey: "se",
+        serialNumber: "serial", processPublicKey: "pk", binaryHash: "bin",
+        providerVersion: "v", providerPlatform: "platform", providerBackend: "backend",
+        runtimeHash: "runtime", metallibHash: "metal", sipEnabled: true,
+        secureBootEnabled: true
+    )
+    let golden = try ProcessEvidenceCanonical.buildV1(base)
+    var variants: [ProcessEvidenceCanonicalInput] = []
+    var value = base; value.processPublicKey += "x"; variants.append(value)
+    value = base; value.sePublicKey += "x"; variants.append(value)
+    value = base; value.serialNumber += "x"; variants.append(value)
+    value = base; value.coordinatorNonce += "x"; variants.append(value)
+    value = base; value.coordinatorSessionId += "x"; variants.append(value)
+    value = base; value.challengeGeneration += "x"; variants.append(value)
+    value = base; value.evidenceExpiresAt += "x"; variants.append(value)
+    value = base; value.binaryHash += "x"; variants.append(value)
+    value = base; value.providerVersion += "x"; variants.append(value)
+    value = base; value.providerBackend += "x"; variants.append(value)
+    value = base; value.runtimeHash += "x"; variants.append(value)
+    value = base; value.metallibHash += "x"; variants.append(value)
+    value = base; value.sipEnabled = false; variants.append(value)
+    value = base; value.secureBootEnabled = false; variants.append(value)
+    for candidate in variants {
+        #expect(try ProcessEvidenceCanonical.buildV1(candidate) != golden)
+    }
+}

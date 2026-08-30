@@ -107,6 +107,23 @@ func buildSecurityInfoWebhook(udid, commandUUID string) []byte {
 	return body
 }
 
+func buildDeviceAttestationWebhook(udid, commandUUID string) []byte {
+	plist := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict>`+
+		`<key>CommandUUID</key><string>%s</string>`+
+		`<key>Status</key><string>Acknowledged</string>`+
+		`<key>DevicePropertiesAttestation</key><array>`+
+		`<data>AQ==</data></array></dict></plist>`, commandUUID)
+	body, _ := json.Marshal(map[string]any{
+		"topic": "mdm.Acknowledge",
+		"acknowledge_event": map[string]string{
+			"udid":        udid,
+			"status":      "Acknowledged",
+			"raw_payload": base64.StdEncoding.EncodeToString([]byte(plist)),
+		},
+	})
+	return body
+}
+
 // TestWebhookDropsUnsolicitedSecurityInfo is the core anti-forgery guarantee: a
 // SecurityInfo webhook whose CommandUUID was never issued by the coordinator is
 // dropped before any trust-upgrade callback runs. This is what stops an
@@ -115,7 +132,10 @@ func buildSecurityInfoWebhook(udid, commandUUID string) []byte {
 func TestWebhookDropsUnsolicitedSecurityInfo(t *testing.T) {
 	c := testClient()
 	var lateFired bool
-	c.SetOnLateSecurityInfo(func(udid string, info *SecurityInfoResponse) {
+	c.SetOnLateSecurityInfo(func(
+		udid, commandUUID string,
+		info *SecurityInfoResponse,
+	) {
 		lateFired = true
 	})
 
@@ -138,7 +158,12 @@ func TestWebhookDropsUnsolicitedSecurityInfo(t *testing.T) {
 func TestWebhookDropsUUIDForDifferentDevice(t *testing.T) {
 	c := testClient()
 	var fired bool
-	c.SetOnLateSecurityInfo(func(udid string, info *SecurityInfoResponse) { fired = true })
+	c.SetOnLateSecurityInfo(func(
+		udid, commandUUID string,
+		info *SecurityInfoResponse,
+	) {
+		fired = true
+	})
 
 	c.trackCommand("uuid-x", "UDID-REAL", time.Now())
 	// Same UUID but the webhook claims a different device.

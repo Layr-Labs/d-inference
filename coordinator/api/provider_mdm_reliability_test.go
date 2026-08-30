@@ -37,6 +37,8 @@ type fakeMDMServer struct {
 	// blocking 60s waiting for an Apple attestation webhook in the success test.
 	failMDARawCommand bool
 
+	mdaCommandUUID string
+
 	// failSecurityInfoCommand makes POST /v1/commands (the SecurityInfo enqueue)
 	// return a 500 so mdm.SendSecurityInfoCommand errors — simulating a transient
 	// MicroMDM transport failure. This must NOT hard-untrust an enrolled provider.
@@ -100,9 +102,20 @@ func (f *fakeMDMServer) handler() http.Handler {
 
 	// MDA raw-plist command (POST /v1/commands/{udid}).
 	mux.HandleFunc("POST /v1/commands/{udid}", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ := io.ReadAll(r.Body)
+		commandUUID := ""
+		if marker := strings.Index(string(body), "<key>CommandUUID</key>"); marker >= 0 {
+			rest := string(body)[marker:]
+			if start := strings.Index(rest, "<string>"); start >= 0 {
+				rest = rest[start+len("<string>"):]
+				if end := strings.Index(rest, "</string>"); end >= 0 {
+					commandUUID = rest[:end]
+				}
+			}
+		}
 		f.mu.Lock()
 		fail := f.failMDARawCommand
+		f.mdaCommandUUID = commandUUID
 		f.mu.Unlock()
 		if fail {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -127,6 +140,12 @@ func (f *fakeMDMServer) pushCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.pushedUDIDs)
+}
+
+func (f *fakeMDMServer) lastMDACommandUUID() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mdaCommandUUID
 }
 
 // securityInfoWebhook builds a MicroMDM acknowledge webhook body carrying a
@@ -158,6 +177,27 @@ func securityInfoWebhook(udid, commandUUID string, sipEnabled bool, secureBootFu
 	return body
 }
 
+func deviceAttestationWebhook(udid, commandUUID string, certChain ...[]byte) []byte {
+	var certs strings.Builder
+	for _, cert := range certChain {
+		fmt.Fprintf(&certs, "<data>%s</data>", base64.StdEncoding.EncodeToString(cert))
+	}
+	plist := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict>`+
+		`<key>CommandUUID</key><string>%s</string>`+
+		`<key>Status</key><string>Acknowledged</string>`+
+		`<key>DevicePropertiesAttestation</key><array>%s</array>`+
+		`</dict></plist>`, commandUUID, certs.String())
+	body, _ := json.Marshal(map[string]any{
+		"topic": "mdm.Acknowledge",
+		"acknowledge_event": map[string]string{
+			"udid":        udid,
+			"status":      "Acknowledged",
+			"raw_payload": base64.StdEncoding.EncodeToString([]byte(plist)),
+		},
+	})
+	return body
+}
+
 // mdmReliabilityServer builds a coordinator Server wired to a fake MicroMDM and
 // registers one provider holding a valid attestation result (serial + SIP +
 // SecureBoot + SE public key), at self_signed trust. It returns the server, the
@@ -168,6 +208,7 @@ func mdmReliabilityServer(t *testing.T, fake *fakeMDMServer) (*Server, *registry
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
 
 	ts := httptest.NewServer(fake.handler())
 	t.Cleanup(ts.Close)
@@ -198,6 +239,39 @@ func attestResultOf(p *registry.Provider) attestation.VerificationResult {
 	p.Mu().Lock()
 	defer p.Mu().Unlock()
 	return *p.AttestationResult
+}
+
+const lateSecurityInfoCommandUUID = "test-late-securityinfo-command"
+
+func bindLateSecurityInfoForTest(
+	t *testing.T,
+	srv *Server,
+	provider *registry.Provider,
+	udid string,
+) uint64 {
+	t.Helper()
+	generation := srv.mdmScheduler.Submit(
+		context.Background(), provider.ID, provider,
+		store.VerificationPriorityRecovery,
+	)
+	if generation == 0 {
+		t.Fatal("scheduler binding was not created")
+	}
+	srv.mdmScheduler.ChallengeSettled(provider, false)
+	seKey := provider.GetAttestationResult().PublicKey
+	key := verificationSchedulerKey(seKey, store.VerificationTaskSecurityInfo)
+	srv.mdmScheduler.mu.Lock()
+	job := srv.mdmScheduler.jobs[key]
+	if job == nil {
+		srv.mdmScheduler.mu.Unlock()
+		t.Fatal("scheduler job was not retained")
+	}
+	job.record.UDID = udid
+	job.callbackGen = generation
+	job.callbackUUID = lateSecurityInfoCommandUUID
+	srv.mdmScheduler.byUDID[udid] = key
+	srv.mdmScheduler.mu.Unlock()
+	return generation
 }
 
 // deliverWebhookWhenPushed waits until the fake server records a push (proving
@@ -338,6 +412,96 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	}
 	if got := p.GetMDMFailureReason(); got != "" {
 		t.Errorf("MDMFailureReason = %q, want empty after success", got)
+	}
+}
+
+func waitForMDACommand(t *testing.T, fake *fakeMDMServer) string {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if commandUUID := fake.lastMDACommandUUID(); commandUUID != "" && fake.pushCount() > 0 {
+			return commandUUID
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("MDA command was not issued")
+	return ""
+}
+
+func scheduledMDABinding(provider *registry.Provider) mdmLiveBinding {
+	return mdmLiveBinding{
+		providerID:       provider.ID,
+		provider:         provider,
+		attestation:      attestResultOf(provider),
+		generation:       1,
+		ctx:              context.Background(),
+		challengeSettled: true,
+		allowMDA:         true,
+	}
+}
+
+func TestExecuteScheduledMDARequestFailureIsTransient(t *testing.T) {
+	fake := &fakeMDMServer{failMDARawCommand: true}
+	srv, provider := mdmReliabilityServer(t, fake)
+
+	result := srv.executeScheduledVerification(
+		context.Background(), scheduledMDABinding(provider),
+		store.VerificationTaskMDA, "UDID-1",
+	)
+	if result.terminal || result.granted || result.outcome != store.VerificationOutcomeTransient {
+		t.Fatalf("request failure result = %+v, want transient retry", result)
+	}
+}
+
+func TestExecuteScheduledMDAWaiterOwnershipFailureIsTransient(t *testing.T) {
+	fake := &fakeMDMServer{}
+	srv, provider := mdmReliabilityServer(t, fake)
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := srv.mdmClient.RequestDeviceAttestation(
+			firstCtx, "UDID-1", "", time.Minute, nil,
+		)
+		firstDone <- err
+	}()
+	waitForMDACommand(t, fake)
+
+	result := srv.executeScheduledVerification(
+		context.Background(), scheduledMDABinding(provider),
+		store.VerificationTaskMDA, "UDID-1",
+	)
+	cancelFirst()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("original MDA waiter did not release after cancellation")
+	}
+	if result.terminal || result.granted || result.outcome != store.VerificationOutcomeTransient {
+		t.Fatalf("waiter ownership result = %+v, want transient retry", result)
+	}
+}
+
+func TestExecuteScheduledMDAReceivedInvalidProofIsTerminal(t *testing.T) {
+	fake := &fakeMDMServer{}
+	srv, provider := mdmReliabilityServer(t, fake)
+	resultCh := make(chan mdmSchedulerAttemptResult, 1)
+	go func() {
+		resultCh <- srv.executeScheduledVerification(
+			context.Background(), scheduledMDABinding(provider),
+			store.VerificationTaskMDA, "UDID-1",
+		)
+	}()
+	commandUUID := waitForMDACommand(t, fake)
+	srv.mdmClient.HandleWebhook(
+		deviceAttestationWebhook("UDID-1", commandUUID, []byte("not a DER certificate")),
+	)
+	select {
+	case result := <-resultCh:
+		if !result.terminal || result.granted || result.outcome != store.VerificationOutcomeInvalid {
+			t.Fatalf("invalid proof result = %+v, want terminal invalid", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("invalid MDA proof did not finish scheduler attempt")
 	}
 }
 
@@ -600,11 +764,15 @@ func TestApplyLateSecurityInfo_GrantsAndClears(t *testing.T) {
 	p.Mu().Lock()
 	p.AttestationResult.BinaryHash = strings.Repeat("a", 64)
 	p.Mu().Unlock()
+	bindLateSecurityInfoForTest(t, srv, p, "UDID-1")
 
-	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
-		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
-	})
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
 
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
 		t.Errorf("trust = %q, want hardware after late SecurityInfo", lvl)
@@ -624,14 +792,56 @@ func TestApplyLateSecurityInfo_SkipsUntrusted(t *testing.T) {
 	}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.registry.MarkUntrusted("prov-mdm") // hard deroute while MDM was in flight
+	bindLateSecurityInfoForTest(t, srv, p, "UDID-1")
 
-	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
-		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
-	})
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
 
 	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
 		t.Error("must NOT grant hardware to an untrusted provider via the late path")
+	}
+}
+
+func TestApplyLateSecurityInfo_OldConnectionCannotGrantNewUnchallengedConnection(t *testing.T) {
+	fake := &fakeMDMServer{
+		device: &mdm.DeviceInfo{
+			SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true,
+		},
+	}
+	srv, old := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background())
+	old.Mu().Lock()
+	old.AttestationResult.BinaryHash = strings.Repeat("a", 64)
+	old.Mu().Unlock()
+	bindLateSecurityInfoForTest(t, srv, old, "UDID-1")
+
+	replacement := schedulerTestProvider(t, srv, "prov-mdm-replacement", "se-pub-key-bytes")
+	replacement.Mu().Lock()
+	replacement.AttestationResult.SerialNumber = "SERIAL-1"
+	replacement.AttestationResult.BinaryHash = strings.Repeat("a", 64)
+	replacement.Mu().Unlock()
+	srv.mdmScheduler.Submit(
+		context.Background(), replacement.ID, replacement,
+		store.VerificationPriorityRecovery,
+	)
+
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
+	if trust := replacement.GetTrustLevel(); trust != registry.TrustSelfSigned {
+		t.Fatalf("old callback granted unchallenged replacement: %s", trust)
+	}
+	if rows, err := srv.store.ListProviderTrustReuse(context.Background()); err != nil || len(rows) != 0 {
+		t.Fatalf("old callback persisted replacement evidence: rows=%d err=%v", len(rows), err)
 	}
 }
 

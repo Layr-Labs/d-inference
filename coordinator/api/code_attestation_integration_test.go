@@ -126,6 +126,42 @@ func completeRoundTrip(t *testing.T, srv *Server, deliverTo *registry.Provider, 
 	return nil
 }
 
+func completeResumeRoundTrip(
+	t *testing.T,
+	srv *Server,
+	deliverTo *registry.Provider,
+	deliverID string,
+	kPriv [32]byte,
+	signKey *ecdsa.PrivateKey,
+	message protocol.CodeAttestationResumeChallenge,
+) error {
+	t.Helper()
+	if deliverTo.GetCodeAttested() || deliverTo.GetFreshCodeAttested() {
+		t.Fatal("cached evidence granted code trust before live resume proof")
+	}
+	recovered, err := e2e.DecryptWithPrivateKey(
+		&e2e.EncryptedPayload{
+			EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
+			Ciphertext:         message.CodeChallenge.Ciphertext,
+		},
+		kPriv,
+	)
+	if err != nil {
+		return err
+	}
+	nonce := string(recovered)
+	srv.handleCodeAttestationResponse(
+		deliverID,
+		deliverTo,
+		&protocol.CodeAttestationResponseMessage{
+			Type:      protocol.TypeCodeAttestationResponse,
+			Nonce:     nonce,
+			Signature: signSEOverString(t, signKey, nonce),
+		},
+	)
+	return nil
+}
+
 // TestCodeIdentityRoundTripEndToEnd is the correctness gate: the full crypto
 // round-trip — coordinator generates a nonce → real E_K(nonce) encrypt → genuine-
 // provider decrypt with K → Sign_SE over the recovered nonce → WS reply verified
@@ -176,9 +212,7 @@ func TestCodeIdentityRejectsWrongSEKey(t *testing.T) {
 }
 
 // TestCodeAttestLoopHealsDroppedPushWithBoundedRetry proves a single dropped push
-// doesn't strand a capable provider: the first push fails and the loop retries
-// (spaced by the per-device budget — NOT a fixed ticker) and attests, staying
-// within the push budget (bounded by maxAttempts).
+// doesn't strand a capable provider: the first push fails and the loop retries.
 func TestCodeAttestLoopHealsDroppedPushWithBoundedRetry(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -214,7 +248,8 @@ func TestCodeAttestLoopHealsDroppedPushWithBoundedRetry(t *testing.T) {
 // spends no APNs push, while K2 gets no code trust until one fresh challenge.
 func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	srv.codeAttestThrottle.retrySpacing = time.Millisecond
 	srv.codeAttestThrottle.retryJitter = 0
 
@@ -237,6 +272,9 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 		_ string,
 		message protocol.CodeAttestationResumeChallenge,
 	) error {
+		if current.GetCodeAttested() || current.GetFreshCodeAttested() {
+			t.Fatal("cached APNs evidence granted code trust before live process-key proof")
+		}
 		recovered, err := e2e.DecryptWithPrivateKey(
 			&e2e.EncryptedPayload{
 				EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
@@ -321,6 +359,20 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	p4.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
 	current, currentPriv = p4, kPrivNew
 	srv.codeAttestThrottle.backgroundPushCooldown = 0
+	// Simulate expiry of Apple's existing per-token push window without
+	// weakening production A-B-A cooldown retention.
+	budgetKey := codeAttestPushBudgetKey(
+		sePubB64, codeAttestTokenHash(p4.APNsDeviceToken),
+	)
+	srv.codeAttestThrottle.mu.Lock()
+	delete(srv.codeAttestThrottle.lastPush, budgetKey)
+	delete(srv.codeAttestThrottle.durableNextPush, budgetKey)
+	srv.codeAttestThrottle.mu.Unlock()
+	if err := st.DeleteCodeAttestPushBudget(
+		context.Background(), sePubB64,
+	); err != nil {
+		t.Fatalf("fresh process test could not expire durable cooldown: %v", err)
+	}
 	expectUntrustedAtFreshProcessPush = true
 	srv.codeAttestLoop(context.Background(), "p1", p4)
 	expectUntrustedAtFreshProcessPush = false
@@ -450,7 +502,7 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	}
 
 	// Token rotation after cache match but before resume creation invalidates the
-	// captured identity and falls through to a fresh APNs proof.
+	// captured loop; the heartbeat rearm's fresh loop earns a new APNs proof.
 	p9 := newCodeAttestProvider(kPubB64New, sePubB64)
 	p9.Version = "0.6.0"
 	p9.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
@@ -459,6 +511,9 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 		p9.Mu().Lock()
 		p9.APNsDeviceToken = "rotated-token"
 		p9.Mu().Unlock()
+		// Production token rotation synchronously supersedes the old loop before
+		// launching its replacement.
+		srv.codeAttestThrottle.beginLoop(sePubB64)
 		srv.codeResumeBeforeIdentityCheck = nil
 	}
 	srv.codeResumeSender = func(
@@ -466,6 +521,7 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	) error {
 		return errors.New("resume sender must not run after identity rotation")
 	}
+	srv.codeAttestLoop(context.Background(), "p1", p9)
 	srv.codeAttestLoop(context.Background(), "p1", p9)
 	if !p9.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 5 {
 		t.Fatalf("pre-record token rotation did not APNs-fallback: fresh=%v pushes=%d",
@@ -774,38 +830,5 @@ func TestCodeAttestLoopAlertModeUsesShortBudget(t *testing.T) {
 
 	if !provider.GetCodeAttested() {
 		t.Fatal("alert mode must retry on the short alert budget and heal within the deadline")
-	}
-}
-
-func TestReusableCodeAttestedGrantRechecksProcessIdentity(t *testing.T) {
-	provider := &registry.Provider{
-		PublicKey:       "K2",
-		APNsDeviceToken: "token",
-	}
-	if provider.GrantReusableCodeAttested("token", "K1") ||
-		provider.GetCodeAttested() {
-		t.Fatal("K1 proof granted code trust after the provider rotated to K2")
-	}
-	if provider.GrantReusableCodeAttested("old-token", "K2") ||
-		provider.GetCodeAttested() {
-		t.Fatal("old-token proof granted code trust after token rotation")
-	}
-	if provider.GrantReusableCodeAttested("token", "") ||
-		provider.GetCodeAttested() {
-		t.Fatal("empty process key granted reusable code trust")
-	}
-	if !provider.GrantReusableCodeAttested("token", "K2") ||
-		!provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
-		t.Fatal("exact process-bound reuse did not grant CodeAttested-only trust")
-	}
-
-	fresh := &registry.Provider{
-		PublicKey:         "K2",
-		APNsDeviceToken:   "token",
-		FreshCodeAttested: true,
-	}
-	if !fresh.GrantReusableCodeAttested("token", "K2") ||
-		!fresh.GetFreshCodeAttested() {
-		t.Fatal("reusable grant changed an existing FreshCodeAttested verdict")
 	}
 }

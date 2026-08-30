@@ -126,9 +126,25 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-update known binary hashes and runtime manifest from all active releases.
-	s.SyncBinaryHashes()
-	s.SyncRuntimeManifest()
+	// Auto-update known binary hashes and runtime manifest from all active
+	// releases. The release write has committed, but an inventory read failure
+	// leaves the newly published policy deny-all and is reported to the caller.
+	if err := s.SyncBinaryHashes(); err != nil {
+		s.invalidateReleaseCaches(release.Platform)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_policy_sync_failed",
+			"release was saved but release policy synchronization failed",
+		))
+		return
+	}
+	if err := s.SyncRuntimeManifest(); err != nil {
+		s.invalidateReleaseCaches(release.Platform)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_policy_sync_failed",
+			"release was saved but runtime policy synchronization failed",
+		))
+		return
+	}
 
 	// Invalidate cached version/manifest/release responses so providers and
 	// install.sh see the new release on the next request instead of waiting
@@ -486,7 +502,13 @@ func (s *Server) handleAdminListReleases(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	releases := s.store.ListReleases()
+	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		s.logger.Error("admin: release inventory read failed", "error", err)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_inventory_unavailable", "failed to read release inventory"))
+		return
+	}
 	if releases == nil {
 		releases = []store.Release{}
 	}
@@ -517,7 +539,14 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		req.Platform = defaultReleasePlatform
 	}
 	if s.binaryHashEnforce && !req.Force {
-		if release, ok := findReleaseForDeactivation(s.store.ListReleases(), req.Version, req.Platform); ok {
+		releases, err := s.store.ListReleasesWithError()
+		if err != nil {
+			s.logger.Error("admin: release deactivation precheck failed closed", "error", err)
+			writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+				"release_inventory_unavailable", "failed to read release inventory"))
+			return
+		}
+		if release, ok := findReleaseForDeactivation(releases, req.Version, req.Platform); ok {
 			if activeProviders := s.registry.CountProvidersByBinaryHash(release.BinaryHash); activeProviders > 0 {
 				writeJSON(w, http.StatusConflict, errorResponse(
 					"release_in_use",
@@ -533,9 +562,24 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Re-sync known hashes after deactivation.
-	s.SyncBinaryHashes()
-	s.SyncRuntimeManifest()
+	// Re-sync known hashes after deactivation. A read failure publishes a fresh
+	// deny-all generation and is surfaced even though deactivation committed.
+	if err := s.SyncBinaryHashes(); err != nil {
+		s.invalidateReleaseCaches(req.Platform)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_policy_sync_failed",
+			"release was deactivated but release policy synchronization failed",
+		))
+		return
+	}
+	if err := s.SyncRuntimeManifest(); err != nil {
+		s.invalidateReleaseCaches(req.Platform)
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+			"release_policy_sync_failed",
+			"release was deactivated but runtime policy synchronization failed",
+		))
+		return
+	}
 	s.invalidateReleaseCaches(req.Platform)
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)

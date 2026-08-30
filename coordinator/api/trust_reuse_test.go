@@ -347,26 +347,28 @@ func TestTrustReuseCacheInvalidate(t *testing.T) {
 }
 func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	srv, provider, clock := trustReuseFastSkipProvider(t)
+	processKey, processPrivate, sePrivate, sePublic := providerKeyMaterial(t)
 	provider.Mu().Lock()
+	provider.PublicKey = processKey
+	provider.AttestationResult.PublicKey = sePublic
 	provider.APNsDeviceToken = "token-current"
 	provider.Version = "0.8.15"
 	provider.ApplicationEvidence = registry.ApplicationEvidence{
-		SEPublicKey: "se-pub-key-bytes", Serial: "SERIAL-1",
-		ProcessPublicKey: provider.PublicKey, APNsToken: "token-current",
+		SEPublicKey: sePublic, Serial: "SERIAL-1",
+		ProcessPublicKey: processKey, APNsToken: "token-current",
 		BinaryHash: trHashB,
 		Version:    "0.8.15", Platform: "macos-arm64", Backend: "mlx-swift",
 		VerifiedAt:         (*clock)(),
 		EvidenceGeneration: 1,
 		PolicyGeneration:   1,
 	}
-	processKey := provider.PublicKey
 	provider.Mu().Unlock()
 	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
 		Generation: 1, Required: true,
 		ByBinaryHash: map[string][]approvedReleasePolicy{},
 	})
 	srv.trustReuseCache.recordTrust(
-		hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, (*clock)()))
+		hardwareReuseRecord(sePublic, "SERIAL-1", trHashA, (*clock)()))
 	resp := goodFastSkipResp()
 	resp.BinaryHash = trHashB
 	fact := approvedReleaseTransitionFact{
@@ -385,10 +387,18 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 			return nil
 		},
 	})
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		return completeResumeRoundTrip(
+			t, srv, provider, "prov-fs",
+			processPrivate, sePrivate, message,
+		)
+	}
 	// The no-new-push path is authorized only by this prior genuine APNs proof,
-	// bound to the same SE identity and current token.
+	// then completed by a live encrypted process-key possession challenge.
 	srv.codeAttestThrottle.recordAttestedForProcess(
-		"se-pub-key-bytes", "0.8.14", "token-current", processKey)
+		sePublic, "0.8.14", "token-current", processKey)
 	provider.SignalApplicationProofSettled()
 	srv.codeAttestLoopWithResume(context.Background(), "prov-fs", provider, true)
 	if pushes != 0 || !provider.GetCodeAttested() ||
@@ -420,7 +430,7 @@ func TestSelfReportedActiveHashAloneCannotGrantCodeIdentity(t *testing.T) {
 		Generation: 1, Required: true,
 		ByBinaryHash: map[string][]approvedReleasePolicy{},
 	})
-	if srv.tryCrossVersionReuse("prov-fs", provider) ||
+	if srv.tryCrossVersionReuse(context.Background(), "prov-fs", provider) ||
 		provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
 		t.Fatal("self-reported active hash bypassed genuine APNs proof")
 	}
@@ -909,41 +919,6 @@ func TestTrustReuseFastSkipFallsThrough(t *testing.T) {
 	}
 }
 
-// --- FIX 3: awaitTrustReuseGrant fast-path on the challenge-settled signal ---
-
-// TestAwaitTrustReuseGrantReturnsOnSettledSignal proves FIX 3: when the live
-// challenge settles WITHOUT a fast-skip grant, the settled signal makes
-// awaitTrustReuseGrant return promptly (false) instead of stalling the full
-// trustReuseGrantWait — so a non-fast-skip candidate proceeds to the full live MDM
-// verify without an up-to-10s delay.
-func TestAwaitTrustReuseGrantReturnsOnSettledSignal(t *testing.T) {
-	srv, p, _ := trustReuseFastSkipProvider(t)
-
-	// Mimic verifyChallengeResponse firing the signal after the fast-skip declined.
-	p.SignalChallengeSettled()
-
-	start := time.Now()
-	if srv.awaitTrustReuseGrant(context.Background(), p) {
-		t.Fatal("awaitTrustReuseGrant must return false when the challenge settled without a grant")
-	}
-	if elapsed := time.Since(start); elapsed >= trustReuseGrantWait {
-		t.Fatalf("settled signal must return well under the wait; took %s (>= %s)", elapsed, trustReuseGrantWait)
-	}
-}
-
-// TestAwaitTrustReuseGrantReturnsTrueOnHardware proves the success path: once the
-// fast-skip grants hardware, awaitTrustReuseGrant returns true so the
-// mdmVerificationLoop skips the live MDM round-trip.
-func TestAwaitTrustReuseGrantReturnsTrueOnHardware(t *testing.T) {
-	srv, p, _ := trustReuseFastSkipProvider(t)
-	if !p.GrantHardwareIfNotUntrusted() {
-		t.Fatal("precondition: grant should succeed")
-	}
-	if !srv.awaitTrustReuseGrant(context.Background(), p) {
-		t.Fatal("awaitTrustReuseGrant must return true once hardware is granted")
-	}
-}
-
 // --- FIX 5: hard-untrust hook is wired independent of store presence ---
 
 // TestSeedTrustReuseCacheWiresHookWithoutStore proves FIX 5: SeedTrustReuseCache
@@ -1061,11 +1036,15 @@ func TestApplyLateSecurityInfoCachesReuse(t *testing.T) {
 	p.Mu().Lock()
 	p.AttestationResult.BinaryHash = trHashA
 	p.Mu().Unlock()
+	bindLateSecurityInfoForTest(t, srv, p, "UDID-1")
 
-	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
-		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
-	})
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
 
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
 		t.Fatalf("late SecurityInfo must upgrade to hardware, got %q", lvl)
@@ -1127,11 +1106,15 @@ func TestApplyLateSecurityInfoSkipsWhenNoBinaryHash(t *testing.T) {
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.SeedTrustReuseCache(context.Background())
 	// mdmReliabilityServer leaves AttestationResult.BinaryHash empty.
+	bindLateSecurityInfoForTest(t, srv, p, "UDID-1")
 
-	srv.ApplyLateSecurityInfo("UDID-1", &mdm.SecurityInfoResponse{
-		SystemIntegrityProtectionEnabled: true,
-		SecureBootLevel:                  "full",
-	})
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
 
 	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
 		t.Fatalf("late SecurityInfo without binary evidence granted hardware: got %q", lvl)
@@ -1281,50 +1264,5 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("fast-skip grant must drain the queued request to the provider (FIX 3)")
-	}
-}
-
-// TestVerifyChallengeFastSkipMissSignalsSettled: when the fast-skip MISSES (no
-// reuse record), verifyChallengeResponse fires the challenge-settled signal so
-// the mdmVerificationLoop stops deferring and runs the full live MDM verify.
-// The provider stays self_signed.
-func TestVerifyChallengeFastSkipMissSignalsSettled(t *testing.T) {
-	logger := quietLogger()
-	st := store.NewMemory(store.Config{})
-	reg := registry.New(logger)
-	srv := NewServer(reg, st, ServerConfig{}, logger)
-	srv.mdmClient = dummyMDMClient()
-	srv.SeedTrustReuseCache(context.Background())
-
-	binHash := trHashA
-	pubKey := testPublicKeyB64()
-	regMsg := &protocol.RegisterMessage{
-		Type:                protocol.TypeRegister,
-		Hardware:            protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
-		Models:              []protocol.ModelInfo{{ID: "fast-skip-miss-model", ModelType: "chat", Quantization: "4bit"}},
-		Backend:             registry.BackendMLXSwift,
-		PublicKey:           pubKey,
-		PrivacyCapabilities: testPrivacyCaps(),
-		Attestation:         createTestAttestationJSONWithBinaryHash(t, pubKey, binHash),
-	}
-	p := reg.Register("prov-miss", nil, regMsg)
-	srv.verifyProviderAttestation("prov-miss", p, regMsg)
-	p.Mu().Lock()
-	p.AttestationResult.SerialNumber = "SER-MISS"
-	p.Mu().Unlock()
-
-	// No trust-reuse record seeded → fast-skip misses → no promotion.
-	nonce, ts := "nonce-miss", "2026-04-24T12:00:00Z"
-	srv.verifyChallengeResponse("prov-miss", p, &pendingChallenge{nonce: nonce, timestamp: ts},
-		fastSkipChallengeResp(t, nonce, ts, pubKey, binHash))
-
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
-		t.Fatalf("no reuse record → provider must stay self_signed, got %q", lvl)
-	}
-	select {
-	case <-p.ChallengeSettledChan():
-		// good — settled signal fired so the MDM loop proceeds to live verify.
-	default:
-		t.Fatal("a fast-skip miss must fire the challenge-settled signal")
 	}
 }

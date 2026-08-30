@@ -923,15 +923,6 @@ type Provider struct {
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
 
-	// challengeSettled is a per-connection buffered (cap 1) signal fired by the
-	// challenge path AFTER a challenge passes but the trust-reuse fast-skip did NOT
-	// grant hardware (DAR-326). It lets awaitTrustReuseGrant stop waiting
-	// immediately for a non-fast-skip provider instead of stalling up to
-	// trustReuseGrantWait before falling back to the full live MDM verify. Created
-	// fresh per Provider (so it never carries a stale signal across reconnects); a
-	// nil channel degrades safely to the timer-based wait.
-	challengeSettled chan struct{}
-
 	// applicationProofSettled broadcasts completion of the initial direct
 	// application proof attempt. APNs waits for it so approved reconnects and
 	// releases cannot race an unnecessary push.
@@ -1226,33 +1217,6 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 	return true
 }
 
-// GrantCodeIdentityFromReusableAPNsProof combines a caller-verified, current
-// genuine APNs proof with the exact fresh application evidence still installed
-// on this connection. This is the only no-new-push path allowed to set the code
-// flags for an approved transition.
-func (p *Provider) GrantCodeIdentityFromReusableAPNsProof(evidence ApplicationEvidence, expectedToken string) bool {
-	p.mu.Lock()
-	current := p.ApplicationEvidence
-	if p.Status == StatusUntrusted || expectedToken == "" ||
-		p.APNsDeviceToken != expectedToken ||
-		current.EvidenceGeneration == 0 ||
-		current.EvidenceGeneration != evidence.EvidenceGeneration ||
-		current.PolicyGeneration != evidence.PolicyGeneration ||
-		current.SEPublicKey != evidence.SEPublicKey ||
-		current.ProcessPublicKey != p.PublicKey ||
-		current.APNsToken != expectedToken ||
-		p.AttestationResult == nil ||
-		p.AttestationResult.PublicKey != current.SEPublicKey {
-		p.mu.Unlock()
-		return false
-	}
-	p.CodeAttested = true
-	p.FreshCodeAttested = true
-	p.mu.Unlock()
-	p.reconcileRuntimeCapabilities()
-	return true
-}
-
 func (p *Provider) ApplicationEvidenceSnapshot() (ApplicationEvidence, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1410,9 +1374,9 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.ChallengeVerifiedSIP = v
 }
 
-// SetCodeAttested records general APNs proof, including a valid cached reuse.
-// Cached reuse remains sufficient for unrelated models but never grants signed
-// protected runtime capabilities.
+// SetCodeAttested updates general code-proof state at validated call sites.
+// Persisted proof reuse never calls this with true: every new connection must
+// first complete a live encrypted process-key possession challenge.
 func (p *Provider) SetCodeAttested(v bool) {
 	p.mu.Lock()
 	p.CodeAttested = v
@@ -1422,26 +1386,6 @@ func (p *Provider) SetCodeAttested(v bool) {
 	}
 	p.mu.Unlock()
 	p.reconcileRuntimeCapabilities()
-}
-
-// GrantReusableCodeAttested atomically binds a cached same-version APNs proof
-// to the live token and registration X25519 process key. Unlike a live nonce
-// round-trip, cached reuse grants only general CodeAttested and deliberately
-// preserves the existing FreshCodeAttested state.
-func (p *Provider) GrantReusableCodeAttested(
-	expectedToken, expectedNodeKey string,
-) bool {
-	p.mu.Lock()
-	if expectedToken == "" || expectedNodeKey == "" ||
-		p.APNsDeviceToken != expectedToken ||
-		p.PublicKey != expectedNodeKey {
-		p.mu.Unlock()
-		return false
-	}
-	p.CodeAttested = true
-	p.mu.Unlock()
-	p.reconcileRuntimeCapabilities()
-	return true
 }
 
 // SetFreshCodeAttested records a nonce round-trip completed by this live
@@ -1625,44 +1569,6 @@ func (p *Provider) ChallengeShouldStop() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
-}
-
-// SignalChallengeSettled fires the per-connection "challenge settled without a
-// trust-reuse fast-skip grant" signal (non-blocking; buffered cap 1). The
-// mdmVerificationLoop's awaitTrustReuseGrant selects on it so a non-fast-skip
-// provider proceeds to the full live MDM verify immediately instead of stalling
-// the trust-reuse grace window (DAR-326). The channel is set once at construction
-// and never reassigned, so no lock is needed; a nil channel is a no-op.
-func (p *Provider) SignalChallengeSettled() {
-	if p.challengeSettled == nil {
-		return
-	}
-	select {
-	case p.challengeSettled <- struct{}{}:
-	default: // a prior signal is still buffered — one is enough to stop the wait
-	}
-}
-
-// ChallengeSettledChan returns the per-connection challenge-settled signal for
-// awaitTrustReuseGrant to select on. May be nil for a zero-value Provider (the
-// select then simply never fires that case and falls back to the timer).
-func (p *Provider) ChallengeSettledChan() <-chan struct{} {
-	return p.challengeSettled
-}
-
-// ResetChallengeSettled drains any buffered challenge-settled signal so a fresh
-// connection can never consume a stale one (DAR-326 FIX 4c). Register allocates a
-// fresh channel per connection, so this is also belt-and-suspenders that keeps the
-// connection-scoping invariant explicit and robust to any future Provider reuse.
-// Non-blocking; safe on a nil channel.
-func (p *Provider) ResetChallengeSettled() {
-	if p.challengeSettled == nil {
-		return
-	}
-	select {
-	case <-p.challengeSettled:
-	default:
-	}
 }
 
 func (p *Provider) SignalApplicationProofSettled() {
@@ -3507,15 +3413,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		LastHeartbeat:               time.Now(),
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),
-		challengeSettled:            make(chan struct{}, 1),
 		applicationProofSettled:     make(chan struct{}),
 		registry:                    r,
 	}
-
-	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
-	// freshly allocated above, and draining here makes the "no stale signal carries
-	// into a new connection" invariant explicit and robust to future Provider reuse.
-	p.ResetChallengeSettled()
 
 	r.mu.Lock()
 	if existing, exists := r.providers[id]; exists {

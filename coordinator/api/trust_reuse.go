@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -17,15 +19,15 @@ const (
 	maxHardwareProofTTL     = 24 * time.Hour
 )
 
-const (
-	trustReuseGrantWait = 10 * time.Second
-	trustReuseGrantPoll = 100 * time.Millisecond
-)
-
 const clockSkewTolerance = 2 * time.Minute
 const trustReuseDeleteAttempts = 3
+const (
+	trustSafetyJournalHealthReason = "trust_reuse_revocation_journal_unavailable"
+	trustSafetyReplayHealthReason  = "trust_reuse_revocation_replay_pending"
+)
 
 var trustReuseDeleteRetryBackoff = 200 * time.Millisecond
+var trustReuseReplayInitialBackoff = time.Second
 
 type trustReuseDecision string
 
@@ -46,6 +48,7 @@ const (
 	trustReuseReasonRecordedPostureBad   trustReuseReason = "recorded_posture_bad"
 	trustReuseReasonProofExpired         trustReuseReason = "hardware_proof_expired"
 	trustReuseReasonTransitionUnapproved trustReuseReason = "release_transition_unapproved"
+	trustReuseReasonRevocationSafety     trustReuseReason = "revocation_safety_latch"
 )
 
 type approvedReleaseTransitionFact struct {
@@ -343,6 +346,101 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 	return n
 }
 
+func (s *Server) latchTrustSafety(err error) {
+	if s == nil {
+		return
+	}
+	s.trustSafetyMu.Lock()
+	s.trustSafetySticky = true
+	s.trustSafetyMu.Unlock()
+	if s.logger != nil {
+		s.logger.Error("trust-reuse safety latch engaged",
+			"health_reason", trustSafetyJournalHealthReason,
+			"error", err,
+		)
+	}
+}
+
+func (s *Server) setTrustReplayBlocked(blocked bool) {
+	if s == nil {
+		return
+	}
+	s.trustSafetyMu.Lock()
+	s.trustSafetyReplayBlocked = blocked
+	s.trustSafetyMu.Unlock()
+}
+
+func (s *Server) trustSafetyStatus() (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	s.trustSafetyMu.RLock()
+	defer s.trustSafetyMu.RUnlock()
+	if s.trustSafetySticky {
+		return true, trustSafetyJournalHealthReason
+	}
+	if s.trustSafetyReplayBlocked {
+		return true, trustSafetyReplayHealthReason
+	}
+	return false, ""
+}
+
+func (s *Server) setPendingHardUntrustEntries(entries []hardUntrustJournalEntry) {
+	if s == nil {
+		return
+	}
+	pending := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		pending[entry.SEKeySHA256]++
+	}
+	s.trustSafetyMu.Lock()
+	s.pendingHardUntrustKeyHashes = pending
+	s.trustSafetyMu.Unlock()
+}
+
+func (s *Server) trustReuseIdentityPending(seKey string) bool {
+	if s == nil || seKey == "" {
+		return false
+	}
+	digest := hashSEPublicKey(seKey)
+	s.trustSafetyMu.RLock()
+	defer s.trustSafetyMu.RUnlock()
+	return s.pendingHardUntrustKeyHashes[digest] > 0
+}
+
+// InitializeTrustReuseJournal creates and validates the local durable journal.
+// Production calls this through SeedTrustReuseCache before the HTTP listener is
+// started.
+func (s *Server) InitializeTrustReuseJournal() error {
+	if s == nil || s.trustReuseJournal == nil {
+		return nil
+	}
+	if err := s.trustReuseJournal.Initialize(); err != nil {
+		s.latchTrustSafety(err)
+		return fmt.Errorf("initialize trust-reuse revocation journal: %w", err)
+	}
+	if fileJournal, ok := s.trustReuseJournal.(*fileHardUntrustJournal); ok {
+		s.trustAuthorityMu.Lock()
+		if s.trustAuthority == nil {
+			authority, lockErr := acquireTrustAuthorityLock(fileJournal.Path())
+			if lockErr != nil {
+				s.trustAuthorityMu.Unlock()
+				s.latchTrustSafety(lockErr)
+				return fmt.Errorf("acquire single trust authority: %w", lockErr)
+			}
+			s.trustAuthority = authority
+		}
+		s.trustAuthorityMu.Unlock()
+	}
+	entries, err := s.trustReuseJournal.Load()
+	if err != nil {
+		s.latchTrustSafety(err)
+		return fmt.Errorf("load trust-reuse revocation journal: %w", err)
+	}
+	s.setPendingHardUntrustEntries(entries)
+	return nil
+}
+
 // SeedTrustReuseCache wires durable invalidation on hard untrust, wires the store
 // into the trust-reuse cache, and seeds the cache from persisted records at
 // startup (DAR-326 Phase 0). This is what makes the reuse cache survive a
@@ -362,34 +460,108 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 // pass. SEC-004: a forged localhost MDM webhook that drove a grant would be
 // persisted + reseeded here (amplified across restarts); bounded by the
 // localhost-only webhook, fully mitigated by authenticating it (tracked separately).
-func (s *Server) SeedTrustReuseCache(ctx context.Context) {
+func (s *Server) SeedTrustReuseCache(ctx context.Context) error {
 	if s == nil || s.trustReuseCache == nil {
-		return
+		return nil
 	}
-	// Wire durable invalidation UNCONDITIONALLY — independent of store presence. A
-	// HARD untrust must always drop the in-memory record (and, when a store is
-	// wired, the persisted row too), so a hard-untrusted device cannot fast-skip on
-	// reconnect even under the memory-store fallback (FIX 5).
+	s.trustRevocationMu.Lock()
+	defer s.trustRevocationMu.Unlock()
 	if s.registry != nil {
 		s.registry.SetHardUntrustHook(s.invalidateTrustReuse)
 	}
-	// Persistence + startup seeding require a store; the in-memory reuse cache works
-	// identically with or without one.
-	if s.store == nil {
-		return
+	if err := s.InitializeTrustReuseJournal(); err != nil {
+		return err
 	}
-	// Wire the write-through path so future successful verifications are persisted.
+	if s.store == nil {
+		if s.trustReuseJournal != nil {
+			entries, err := s.trustReuseJournal.Load()
+			if err != nil {
+				s.latchTrustSafety(err)
+				return err
+			}
+			if len(entries) > 0 {
+				s.setTrustReplayBlocked(true)
+				return fmt.Errorf("trust-reuse revocation replay requires a durable store")
+			}
+		}
+		return nil
+	}
 	s.trustReuseCache.store = s.store
+
+	var journalEntries []hardUntrustJournalEntry
+	if s.trustReuseJournal != nil {
+		var err error
+		journalEntries, err = s.trustReuseJournal.Load()
+		if err != nil {
+			s.latchTrustSafety(err)
+			return fmt.Errorf("load trust-reuse revocation journal: %w", err)
+		}
+		s.setPendingHardUntrustEntries(journalEntries)
+	}
 
 	rows, err := s.store.ListProviderTrustReuse(ctx)
 	if err != nil {
+		if len(journalEntries) > 0 {
+			s.setTrustReplayBlocked(true)
+			return fmt.Errorf("list trust-reuse rows for revocation replay: %w", err)
+		}
 		s.logger.Warn("trust-reuse: failed to seed reuse cache from store", "error", err)
-		return
+		return nil
 	}
-	n := s.trustReuseCache.seed(rows)
+
+	excluded := make(map[int]struct{})
+	var replayErr error
+	for _, entry := range journalEntries {
+		matched := false
+		replayed := true
+		for index, row := range rows {
+			if row.SEPubKey == "" || hashSEPublicKey(row.SEPubKey) != entry.SEKeySHA256 {
+				continue
+			}
+			matched = true
+			excluded[index] = struct{}{}
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				s.store, row.SEPubKey, entry.RevocationID)
+			if err != nil {
+				replayed = false
+				if replayErr == nil {
+					replayErr = fmt.Errorf("replay hard-untrust revocation: %w", err)
+				}
+				continue
+			}
+			s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+		}
+		if !matched || !replayed {
+			continue
+		}
+		remaining, err := s.trustReuseJournal.Remove(entry)
+		if err != nil {
+			s.latchTrustSafety(err)
+			if replayErr == nil {
+				replayErr = fmt.Errorf("remove replayed trust-reuse revocation: %w", err)
+			}
+			continue
+		}
+		s.setPendingHardUntrustEntries(remaining)
+	}
+
+	seedRows := make([]store.ProviderTrustReuse, 0, len(rows))
+	for index, row := range rows {
+		if _, skip := excluded[index]; skip || s.trustReuseIdentityPending(row.SEPubKey) {
+			continue
+		}
+		seedRows = append(seedRows, row)
+	}
+	if replayErr != nil {
+		s.setTrustReplayBlocked(true)
+		return replayErr
+	}
+	s.setTrustReplayBlocked(false)
+	n := s.trustReuseCache.seed(seedRows)
 	if n > 0 {
 		s.logger.Info("trust-reuse: seeded reuse cache from persisted records (survives deploys)", "records", n)
 	}
+	return nil
 }
 
 // recordTrustReuse persists a reviewed, synchronous full MDM/MDA verification.
@@ -410,6 +582,9 @@ func (s *Server) recordLateTrustReuse(provider *registry.Provider, seKey, serial
 func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string, allowRecovery bool) bool {
 	if s == nil || s.trustReuseCache == nil || provider == nil ||
 		seKey == "" || serial == "" || binaryHash == "" {
+		return false
+	}
+	if blocked, _ := s.trustSafetyStatus(); blocked || s.trustReuseIdentityPending(seKey) {
 		return false
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
@@ -492,15 +667,9 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 	}
 	revocationEventID = uuid.NewString()
 	s.trustReuseCache.invalidateReuse(seKey, revocationEventID)
-	if st != nil {
-		authoritative, revokeErr := s.revokePersistedTrustReuseWithRetry(
-			st, seKey, revocationEventID)
-		if revokeErr != nil {
-			s.logger.Warn("trust-reuse: failed to preserve revocation after raced device-evidence write",
-				"error", revokeErr, "attempts", trustReuseDeleteAttempts)
-		} else {
-			s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
-		}
+	if err := s.persistHardUntrustRevocation(seKey, revocationEventID); err != nil {
+		s.logger.Warn("trust-reuse: failed to preserve revocation after raced device-evidence write",
+			"error", err, "attempts", trustReuseDeleteAttempts)
 	}
 	return false
 }
@@ -523,18 +692,122 @@ func (s *Server) invalidateTrustReuse(seKey string) {
 	}
 	revocationEventID := uuid.NewString()
 	s.trustReuseCache.invalidateReuse(seKey, revocationEventID)
+	if err := s.persistHardUntrustRevocation(seKey, revocationEventID); err != nil {
+		s.logger.Warn("trust-reuse: failed to revoke persisted reuse record on hard untrust",
+			"error", err, "attempts", trustReuseDeleteAttempts)
+	}
+}
+
+func (s *Server) persistHardUntrustRevocation(seKey, revocationEventID string) error {
+	s.trustRevocationMu.Lock()
+	defer s.trustRevocationMu.Unlock()
+	entry := newHardUntrustJournalEntry(seKey, revocationEventID)
+	journaled := false
+	var journalErr error
+	if s.trustReuseJournal != nil {
+		entries, err := s.trustReuseJournal.Append(entry)
+		if err != nil {
+			journalErr = fmt.Errorf("append hard-untrust revocation journal: %w", err)
+			s.latchTrustSafety(journalErr)
+		} else {
+			journaled = true
+			s.setPendingHardUntrustEntries(entries)
+		}
+	}
+
 	st := s.trustReuseCache.store
 	if st == nil {
-		return
+		if journaled {
+			s.setTrustReplayBlocked(true)
+		}
+		return journalErr
 	}
 	authoritative, err := s.revokePersistedTrustReuseWithRetry(
 		st, seKey, revocationEventID)
 	if err != nil {
-		s.logger.Warn("trust-reuse: failed to revoke persisted reuse record on hard untrust after retries",
-			"error", err, "attempts", trustReuseDeleteAttempts)
-		return
+		s.setTrustReplayBlocked(true)
+		if journaled {
+			s.scheduleHardUntrustReplay(seKey, entry)
+		}
+		return fmt.Errorf("revoke persisted trust reuse: %w", err)
 	}
 	s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+
+	if journaled {
+		remaining, err := s.trustReuseJournal.Remove(entry)
+		if err != nil {
+			cleanupErr := fmt.Errorf("remove durable hard-untrust journal entry: %w", err)
+			s.latchTrustSafety(cleanupErr)
+			return cleanupErr
+		}
+		s.setPendingHardUntrustEntries(remaining)
+		if len(remaining) == 0 {
+			s.setTrustReplayBlocked(false)
+		}
+	}
+	return journalErr
+}
+
+func (s *Server) scheduleHardUntrustReplay(
+	seKey string,
+	entry hardUntrustJournalEntry,
+) {
+	if s == nil || s.trustReplayCtx == nil ||
+		s.trustReuseJournal == nil || s.trustReuseCache == nil {
+		return
+	}
+	key := entry.SEKeySHA256 + "\x00" + entry.RevocationID
+	s.trustReplayMu.Lock()
+	if _, exists := s.trustReplayInFlight[key]; exists {
+		s.trustReplayMu.Unlock()
+		return
+	}
+	s.trustReplayInFlight[key] = struct{}{}
+	s.trustReplayMu.Unlock()
+
+	saferun.Go(s.logger, "trustReuseRevocationReplay", func() {
+		defer func() {
+			s.trustReplayMu.Lock()
+			delete(s.trustReplayInFlight, key)
+			s.trustReplayMu.Unlock()
+		}()
+		delay := trustReuseReplayInitialBackoff
+		for {
+			select {
+			case <-s.trustReplayCtx.Done():
+				return
+			case <-time.After(delay):
+			}
+
+			s.trustRevocationMu.Lock()
+			st := s.trustReuseCache.store
+			if st == nil {
+				s.trustRevocationMu.Unlock()
+				delay = min(delay*2, 30*time.Second)
+				continue
+			}
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				st, seKey, entry.RevocationID,
+			)
+			if err == nil {
+				s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+				remaining, removeErr := s.trustReuseJournal.Remove(entry)
+				if removeErr != nil {
+					s.latchTrustSafety(removeErr)
+					s.trustRevocationMu.Unlock()
+					return
+				}
+				s.setPendingHardUntrustEntries(remaining)
+				if len(remaining) == 0 {
+					s.setTrustReplayBlocked(false)
+				}
+				s.trustRevocationMu.Unlock()
+				return
+			}
+			s.trustRevocationMu.Unlock()
+			delay = min(delay*2, 30*time.Second)
+		}
+	})
 }
 
 // revokePersistedTrustReuseWithRetry reuses one stable event identity across all
@@ -590,6 +863,9 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
 		return false
 	}
+	if blocked, _ := s.trustSafetyStatus(); blocked {
+		return reject(trustReuseReasonRevocationSafety)
+	}
 	if s.mdmClient == nil {
 		return reject(trustReuseReasonNoDeviceEvidence)
 	}
@@ -610,6 +886,9 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	provider.Mu().Unlock()
 	if seKey == "" || serial == "" {
 		return reject(trustReuseReasonMissingIdentity)
+	}
+	if s.trustReuseIdentityPending(seKey) {
+		return reject(trustReuseReasonRevocationSafety)
 	}
 	freshBinaryHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
 	if err != nil {
@@ -693,43 +972,4 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		"mda_udid", result.Record.mdaUDID,
 	)
 	return true
-}
-
-// awaitTrustReuseGrant lets the mdmVerificationLoop briefly defer to the live SE
-// challenge's trust-reuse fast-skip before running the (herd-causing) live MDM
-// round-trip. It returns true if hardware is granted within trustReuseGrantWait
-// (by the fast-skip), false otherwise (challenge settled without
-// a grant / hard untrust / ctx done / timeout) — in which case the caller proceeds
-// to the full live MDM verify, unchanged. Only invoked for fast-skip candidates
-// (hasFreshRecord), so a first-ever / expired device is never delayed.
-//
-// DAR-326 FIX 3: the challenge-settled signal lets a candidate whose gates DON'T
-// pass proceed to the full live verify immediately instead of stalling the whole
-// trustReuseGrantWait — the timer is only the backstop for a slow/never-arriving
-// challenge.
-func (s *Server) awaitTrustReuseGrant(ctx context.Context, provider *registry.Provider) bool {
-	settled := provider.ChallengeSettledChan()
-	timer := time.NewTimer(trustReuseGrantWait)
-	defer timer.Stop()
-	ticker := time.NewTicker(trustReuseGrantPoll)
-	defer ticker.Stop()
-	for {
-		if provider.GetTrustLevel() == registry.TrustHardware {
-			return true
-		}
-		if provider.ChallengeShouldStop() {
-			return false
-		}
-		select {
-		case <-ctx.Done():
-			return false
-		case <-settled:
-			// The live challenge settled WITHOUT a fast-skip grant — stop waiting and
-			// fall through to the full live MDM verify now (no up-to-10s stall). Re-read
-			return provider.GetTrustLevel() == registry.TrustHardware
-		case <-timer.C:
-			return provider.GetTrustLevel() == registry.TrustHardware
-		case <-ticker.C:
-		}
-	}
 }

@@ -37,7 +37,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/apns"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
@@ -229,6 +228,7 @@ func main() {
 	// AppConfig; hand the validated value to the server instead of letting
 	// NewServer re-read the environment.
 	serverCfg := cfg.ServerConfig
+	serverCfg.DurableTrustReuse = cfg.StoreConfig.DatabaseURL != ""
 	serverCfg.MediaFetch = &cfg.MediaFetchCfg
 	// LIVE first-content deadline base — distinct from the shadow evaluator's
 	// base below. Validate and bind it to this Server instance before startup;
@@ -391,9 +391,16 @@ func main() {
 
 	// Server configuration applied from config.ServerConfig during NewServer().
 
-	// Sync known-good provider hashes from active releases in the store.
-	srv.SyncBinaryHashes()
-	srv.SyncRuntimeManifest()
+	// Sync known-good provider hashes from active releases in the store. Release
+	// inventory is a routing authority; an unreadable inventory must fail startup.
+	if err := srv.SyncBinaryHashes(); err != nil {
+		logger.Error("refusing to start: release policy inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		logger.Error("refusing to start: runtime release inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
 	if hashList := os.Getenv("EIGENINFERENCE_KNOWN_BINARY_HASHES"); hashList != "" {
 		hashes := strings.Split(hashList, ",")
 		srv.AddKnownBinaryHashes(hashes)
@@ -675,47 +682,15 @@ func main() {
 	if mdmCfg.URL != "" {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
-		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
-			// Parse + verify the Apple cert chain once (not per provider).
-			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-			if err != nil {
-				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-				return
-			}
-			if !mdaResult.Valid {
-				return
-			}
-			// Attach the proof only to a connection that currently holds hardware
-			// trust, atomically (trust check + writes under one lock). A late
-			// DevicePropertiesAttestation can arrive after the device reconnected as
-			// self_signed (RestoreProviderState caps it); attaching MDA to a
-			// self_signed provider is the drift this fix removes — and a separate
-			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
-			// is re-granted this connection.
-			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.SetMDAProofIfHardware(certChain, mdaResult) {
-					// Persist now so the late-arriving chain is durable for reuse on
-					// the next reconnect, rather than waiting on a throttled heartbeat.
-					reg.PersistProvider(p)
-					logger.Info("late MDA cert stored on provider",
-						"provider_id", p.ID,
-						"serial", mdaResult.DeviceSerial,
-						"udid", mdaResult.DeviceUDID,
-						"os_version", mdaResult.OSVersion,
-					)
-				}
-			})
-		})
+		mdmClient.SetOnMDA(srv.ApplyLateMDA)
 
-		// Register callback for late-arriving SecurityInfo responses. When APN
-		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
-		// wait may time out but the webhook arrives later. The Server method
-		// retroactively upgrades the matching self_signed provider — mirroring the
-		// synchronous success path (status guard + trust_status notification) so the
-		// two paths can't drift.
+		// Register callbacks for responses that arrive after the synchronous wait.
+		// The server accepts them only for the exact current scheduler command
+		// binding after the connection's phase-1 challenge has settled.
 		mdmClient.SetOnLateSecurityInfo(srv.ApplyLateSecurityInfo)
 
 		srv.SetMDMClient(mdmClient)
+		srv.StartMDMScheduler()
 		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
 		// top of the mandatory solicited-command (CommandUUID) gate: configure
 		// MicroMDM's command-webhook-url with ?token=<secret> and set this to
@@ -780,15 +755,16 @@ func main() {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
 
-	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire
-	// write-through + the hard-untrust invalidation hook). This lets a planned
-	// coordinator restart / blue-green swap skip a fleet-wide live MDM SecurityInfo
-	// + APNs re-verification herd: a reconnecting, recently-fully-verified provider
-	// is granted hardware from its record once a fresh live SE challenge re-proves
-	// identity + posture. Durable in prod (Postgres store; see the store selection
-	// above); a no-op only under the in-memory store fallback. Independent of the
-	// APNs attestor — MDM verification runs whenever an MDM client is configured.
-	srv.SeedTrustReuseCache(ctx)
+	// Seed durable trust reuse only after the fsync-backed hard-untrust journal is
+	// available and replayed. A pending or malformed journal must block startup;
+	// accepting providers before replay could resurrect a stale hardware row.
+	if err := srv.SeedTrustReuseCache(ctx); err != nil {
+		logger.Error("refusing to start: trust-reuse revocation journal is not safe",
+			"health_reason", "trust_reuse_revocation_journal_unavailable",
+			"error", err,
+		)
+		os.Exit(1)
+	}
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)

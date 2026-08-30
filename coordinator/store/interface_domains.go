@@ -398,8 +398,13 @@ type ReleaseStore interface {
 	// SetRelease adds or updates a release in the store.
 	SetRelease(release *Release) error
 
-	// ListReleases returns all releases, ordered by created_at descending.
+	// ListReleases is a convenience for non-authoritative tests and diagnostics;
+	// callers making policy decisions must use ListReleasesWithError.
 	ListReleases() []Release
+	// ListReleasesWithError returns the complete release inventory and preserves
+	// storage query, scan, and iteration failures for security-sensitive policy
+	// synchronization.
+	ListReleasesWithError() ([]Release, error)
 
 	// GetLatestRelease returns the latest active release for a platform.
 	GetLatestRelease(platform string) *Release
@@ -685,6 +690,22 @@ type ProviderStore interface {
 	// advances the durable generation and tombstones the row, regardless of stale
 	// coordinator state.
 	RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error)
+
+	// --- Bounded durable MDM/MDA verification scheduler ---
+
+	// UpsertVerificationJob creates or rebinds stable scheduler state. Existing
+	// pending/running/backoff timing and claims win over reconnect input.
+	UpsertVerificationJob(ctx context.Context, rec VerificationJob) (VerificationJob, error)
+	GetVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind) (*VerificationJob, error)
+	// ListDueVerificationJobs returns at most limit claimable due rows, ordered by
+	// priority and due time. Callers pass only free in-memory queue capacity.
+	ListDueVerificationJobs(ctx context.Context, now time.Time, limit int) ([]VerificationJob, error)
+	// ClaimVerificationJob atomically leases one due row. A non-expired claim
+	// owned by another coordinator cannot be stolen.
+	ClaimVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now, expiresAt time.Time) (VerificationJob, bool, error)
+	ReleaseVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now time.Time) error
+	CompleteVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error
+	RescheduleVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error
 
 	// --- Provider Log Reports ---
 

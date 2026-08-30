@@ -201,14 +201,16 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool     // emails that have admin access
-	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
+	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
+	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool // emails that have admin access
+	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	mdmScheduler                  *mdmVerificationScheduler
+	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
@@ -226,6 +228,18 @@ type Server struct {
 	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	trustReuseJournal             hardUntrustJournal
+	trustRevocationMu             sync.Mutex
+	trustSafetyMu                 sync.RWMutex
+	trustSafetySticky             bool
+	trustSafetyReplayBlocked      bool
+	pendingHardUntrustKeyHashes   map[string]int
+	trustAuthorityMu              sync.Mutex
+	trustAuthority                *trustAuthorityLock
+	trustReplayCtx                context.Context
+	trustReplayCancel             context.CancelFunc
+	trustReplayMu                 sync.Mutex
+	trustReplayInFlight           map[string]struct{}
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -242,6 +256,7 @@ type Server struct {
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
 	// missing or doesn't match are rejected.
 	// Auto-populated from active releases via SyncBinaryHashes().
+	releasePolicySyncMu               sync.Mutex
 	binaryHashPolicyMu                sync.RWMutex
 	knownBinaryHashes                 map[string]bool
 	manualKnownBinaryHashes           map[string]bool
@@ -251,6 +266,7 @@ type Server struct {
 	binaryHashPolicyConfigured        bool
 	releaseTrustPolicy                atomic.Pointer[releaseTrustPolicySnapshot]
 	releaseTrustPolicyGeneration      atomic.Uint64
+	releaseInventoryEverConfigured    atomic.Bool
 
 	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
 	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
@@ -753,12 +769,25 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		trustReuseCache:          newTrustReuseCacheWithTTL(cfg.HardwareProofTTL),
+		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+	}
+	if cfg.DurableTrustReuse {
+		journalPath := cfg.TrustReuseJournalPath
+		if strings.TrimSpace(journalPath) == "" {
+			journalPath = resolveTrustReuseRevocationJournalPath()
+		}
+		s.trustReuseJournal = newFileHardUntrustJournal(journalPath)
+		s.pendingHardUntrustKeyHashes = make(map[string]int)
+		s.trustReplayCtx, s.trustReplayCancel = context.WithCancel(
+			context.Background(),
+		)
+		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
 	s.registerDefaultGauges()
@@ -826,6 +855,12 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.trustReplayCancel != nil {
+		s.trustReplayCancel()
+	}
+	if s.mdmScheduler != nil {
+		s.mdmScheduler.Close()
+	}
 	if s.promptPreloader != nil {
 		s.promptPreloader.Close()
 	}
@@ -835,6 +870,12 @@ func (s *Server) Close() {
 	if s.routeTelemetry != nil {
 		s.routeTelemetry.close()
 	}
+	s.trustAuthorityMu.Lock()
+	if s.trustAuthority != nil {
+		_ = s.trustAuthority.Close()
+		s.trustAuthority = nil
+	}
+	s.trustAuthorityMu.Unlock()
 }
 
 // SetAdminKey configures the admin API key for admin-only endpoints.
@@ -1012,6 +1053,16 @@ func (s *Server) SetAdminEmails(emails []string) {
 // When set, providers are verified against MDM on registration.
 func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
+	if client != nil && s.mdmScheduler == nil {
+		s.mdmScheduler = newMDMVerificationScheduler(s, s.mdmSchedulerConfig, mdmSchedulerDeps{})
+	}
+}
+
+// StartMDMScheduler starts the single durable dispatcher and fixed worker pool.
+func (s *Server) StartMDMScheduler() {
+	if s.mdmScheduler != nil {
+		s.mdmScheduler.Start()
+	}
 }
 
 // SetCodeAttestor wires the APNs code-identity attestor (v0.6.0). When set, the
@@ -1303,16 +1354,43 @@ func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
-// Called at startup and after release changes.
-func (s *Server) SyncBinaryHashes() {
-	releases := s.store.ListReleases()
+// Called at startup and after release changes. An inventory read failure
+// publishes a fresh deny-all generation so stale application evidence cannot
+// remain routable.
+func (s *Server) SyncBinaryHashes() error {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+	releases, err := s.store.ListReleasesWithError()
 	hashes := make(map[string]bool)
 	generation := s.releaseTrustPolicyGeneration.Add(1)
+	everConfigured := s.releaseInventoryEverConfigured.Load()
+	if err == nil && len(releases) > 0 {
+		s.releaseInventoryEverConfigured.Store(true)
+		everConfigured = true
+	}
 	trustSnapshot := &releaseTrustPolicySnapshot{
 		Generation:   generation,
-		Required:     len(releases) > 0,
+		Required:     err != nil || everConfigured,
 		ByBinaryHash: make(map[string][]approvedReleasePolicy),
 	}
+	if err != nil {
+		s.releaseTrustPolicy.Store(trustSnapshot)
+		if s.registry != nil {
+			s.registry.SetReleasePolicyGeneration(
+				trustSnapshot.Generation, true)
+		}
+		s.binaryHashPolicyMu.Lock()
+		s.releaseKnownBinaryHashes = hashes
+		s.releaseBinaryHashPolicyConfigured = true
+		s.rebuildBinaryHashPolicyLocked()
+		s.binaryHashPolicyMu.Unlock()
+		s.logger.Error("release inventory unavailable; published deny-all release policy",
+			"generation", generation,
+			"error", err,
+		)
+		return fmt.Errorf("sync binary hashes: %w", err)
+	}
+
 	policyConfigured := false
 	for _, r := range releases {
 		if !r.Active {
@@ -1353,13 +1431,14 @@ func (s *Server) SyncBinaryHashes() {
 
 	s.binaryHashPolicyMu.Lock()
 	s.releaseKnownBinaryHashes = hashes
-	s.releaseBinaryHashPolicyConfigured = policyConfigured
+	s.releaseBinaryHashPolicyConfigured = policyConfigured || everConfigured
 	s.rebuildBinaryHashPolicyLocked()
 	knownHashCount := len(s.knownBinaryHashes)
 	effectivePolicyConfigured := s.binaryHashPolicyConfigured
 	s.binaryHashPolicyMu.Unlock()
 
 	s.logger.Info("binary hashes synced from releases", "known_hashes", knownHashCount, "policy_configured", effectivePolicyConfigured)
+	return nil
 }
 
 func (s *Server) deriveApprovedReleaseTransition(
@@ -1495,15 +1574,12 @@ func (s *Server) binaryHashPolicySnapshot() (bool, map[string]bool) {
 
 // SyncRuntimeManifest builds the runtime manifest from active releases.
 // Called after a release is registered to auto-update the expected hashes.
-func (s *Server) SyncRuntimeManifest() {
-	releases := s.store.ListReleases()
-
-	// Guard: if the store returns nil (e.g. Postgres timeout), do NOT nuke
-	// a previously-good manifest. A transient DB failure should not
-	// instantly deroute every provider on the network.
-	if releases == nil {
-		s.logger.Warn("SyncRuntimeManifest: ListReleases returned nil (DB timeout?), keeping existing manifest")
-		return
+func (s *Server) SyncRuntimeManifest() error {
+	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		s.logger.Warn("SyncRuntimeManifest: release inventory unavailable; keeping existing manifest",
+			"error", err)
+		return fmt.Errorf("sync runtime manifest: %w", err)
 	}
 
 	// Minimum provider version is set manually via EIGENINFERENCE_MIN_PROVIDER_VERSION
@@ -1579,17 +1655,18 @@ func (s *Server) SyncRuntimeManifest() {
 		// existing manifest if one exists.
 		if s.knownRuntimeManifest != nil {
 			s.logger.Warn("SyncRuntimeManifest: zero releases returned, keeping existing manifest")
-			return
+			return nil
 		}
 		s.knownRuntimeManifest = nil
 	}
 
 	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+	return nil
 }
 
 func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
-	// Note: the DB-timeout case (ListReleases returns nil) is already guarded
-	// in SyncRuntimeManifest — it returns early before reaching this function.
+	// Release-inventory errors are already guarded in SyncRuntimeManifest, which
+	// returns the error before reaching this function.
 	// A nil manifest here means releases exist but none carry runtime hashes,
 	// i.e. an intentional manifest withdrawal. Providers must be derouted.
 

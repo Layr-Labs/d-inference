@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,6 +36,11 @@ import (
 // commandUUIDRe extracts the CommandUUID from a MicroMDM device response plist
 // (<key>CommandUUID</key><string>…</string>), tolerating whitespace/newlines.
 var commandUUIDRe = regexp.MustCompile(`<key>CommandUUID</key>\s*<string>([^<]+)</string>`)
+
+// ErrWaiterAlreadyRegistered is returned when command ownership for a UDID is
+// already held by another live attempt. Overwriting a waiter could route a
+// response to the wrong verification job.
+var ErrWaiterAlreadyRegistered = errors.New("mdm waiter already registered")
 
 // parseCommandUUID returns the CommandUUID embedded in a device response plist,
 // or "" if absent.
@@ -53,15 +59,18 @@ type DeviceAttestationResponse struct {
 	CertChain [][]byte // DER-encoded certificates, leaf first
 }
 
-// OnMDACallback is called when a DevicePropertiesAttestation response arrives.
-// The UDID identifies the device; certChain is the DER-encoded Apple cert chain.
-type OnMDACallback func(udid string, certChain [][]byte)
+// OnMDACallback is called for a solicited DevicePropertiesAttestation response
+// with no active exact waiter. The recipient must revalidate current connection
+// and command ownership before applying the DER-encoded Apple cert chain.
+type OnMDACallback func(udid, commandUUID string, certChain [][]byte)
 
-// OnLateSecurityInfoCallback is called when a SecurityInfo response arrives
-// for a UDID with no active waiter (the original verification timed out).
-// This allows the coordinator to retroactively upgrade a self_signed provider
-// to hardware trust when APN delivery was slow.
-type OnLateSecurityInfoCallback func(udid string, info *SecurityInfoResponse)
+// OnLateSecurityInfoCallback is called when a solicited SecurityInfo response
+// arrives after its exact waiter has departed. The recipient must revalidate
+// current connection and command ownership before applying it.
+type OnLateSecurityInfoCallback func(
+	udid, commandUUID string,
+	info *SecurityInfoResponse,
+)
 
 // Client talks to the MicroMDM API.
 type Client struct {
@@ -69,13 +78,12 @@ type Client struct {
 	apiKey  string
 	client  *http.Client
 	logger  *slog.Logger
-	// Per-UDID one-shot channels for webhook response dispatch.
-	// A goroutine calling WaitForSecurityInfo or WaitForDeviceAttestation
-	// registers a channel here; HandleWebhook delivers to it or drops if
-	// nobody is waiting — no shared buffer, no saturation, no busy-spin.
+	// Per-UDID exclusive waiters retain the exact issued CommandUUID. A late
+	// response from an older attempt can never satisfy a newer waiter for the
+	// same device.
 	waitMu         sync.Mutex
-	secInfoWaiters map[string]chan *SecurityInfoResponse
-	attestWaiters  map[string]chan *DeviceAttestationResponse
+	secInfoWaiters map[string]securityInfoWaiter
+	attestWaiters  map[string]deviceAttestationWaiter
 	// Callback for MDA certs that arrive after the initial wait times out.
 	onMDA OnMDACallback
 	// Callback for SecurityInfo responses that arrive after the waiter timed out.
@@ -96,6 +104,19 @@ type Client struct {
 type outstandingCommand struct {
 	udid     string
 	issuedAt time.Time
+}
+
+type securityInfoWaiter struct {
+	commandUUID string
+	ch          chan *SecurityInfoResponse
+	early       map[string]*SecurityInfoResponse
+}
+
+const maxEarlySecurityInfoResponses = 4
+
+type deviceAttestationWaiter struct {
+	commandUUID string
+	ch          chan *DeviceAttestationResponse
 }
 
 // outstandingCommandTTL bounds how long an issued command UUID stays valid for
@@ -125,8 +146,8 @@ func NewClient(baseURL, apiKey string, logger *slog.Logger) *Client {
 		apiKey:         apiKey,
 		client:         httpClient,
 		logger:         logger,
-		secInfoWaiters: make(map[string]chan *SecurityInfoResponse),
-		attestWaiters:  make(map[string]chan *DeviceAttestationResponse),
+		secInfoWaiters: make(map[string]securityInfoWaiter),
+		attestWaiters:  make(map[string]deviceAttestationWaiter),
 		outstanding:    make(map[string]outstandingCommand),
 	}
 }
@@ -297,27 +318,34 @@ func (c *Client) LookupDevice(ctx context.Context, serialNumber string) (*Device
 // SendSecurityInfoCommand sends a SecurityInfo command to a device by UDID.
 // Returns the command UUID for tracking the response.
 func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (string, error) {
+	return c.sendSecurityInfoCommand(ctx, udid, nil)
+}
+
+func (c *Client) sendSecurityInfoCommand(
+	ctx context.Context,
+	udid string,
+	onIssued func(string) bool,
+) (string, error) {
 	const requestType = "SecurityInfo"
 	if err := assertReadOnlyCommand(requestType); err != nil {
 		return "", err
 	}
 	body, _ := json.Marshal(map[string]string{
-		"udid":         udid,
-		"request_type": requestType,
+		"udid": udid, "request_type": requestType,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+"/v1/commands", bytes.NewReader(body),
+	)
 	if err != nil {
 		return "", err
 	}
 	req.SetBasicAuth("micromdm", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("mdm send command failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	var result struct {
 		Payload struct {
 			CommandUUID string `json:"command_uuid"`
@@ -326,17 +354,15 @@ func (c *Client) SendSecurityInfoCommand(ctx context.Context, udid string) (stri
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", fmt.Errorf("mdm command response decode failed: %w", err)
 	}
-
+	if result.Payload.CommandUUID == "" {
+		return "", errors.New("mdm command response missing command UUID")
+	}
 	c.trackCommand(result.Payload.CommandUUID, udid, time.Now())
-
-	// Do NOT push explicitly here. MicroMDM's structured POST /v1/commands already
-	// schedules the command AND sends the APNs push to wake the device, so an extra
-	// GET /push/{udid} would be a SECOND push per attempt — wasted MDM/APNs push
-	// budget, the pressure this change exists to reduce. (The MDA path uses the raw
-	// POST /v1/commands/{udid} endpoint, which does NOT auto-push, so it pushes
-	// explicitly — that asymmetry is correct, not a bug.) The fast-device webhook
-	// race is handled by registering the SecurityInfo waiter BEFORE this call in
-	// VerifyProvider, so the auto-push's response always finds a waiter.
+	if onIssued != nil && !onIssued(result.Payload.CommandUUID) {
+		c.consumeCommand(result.Payload.CommandUUID, time.Now())
+		return "", errors.New("mdm SecurityInfo waiter ownership changed before command issue")
+	}
+	// Structured /v1/commands already sends exactly one MicroMDM APNs push.
 	return result.Payload.CommandUUID, nil
 }
 
@@ -373,18 +399,23 @@ func (c *Client) SendDeviceAttestationCommand(ctx context.Context, udid string, 
 	if len(nonce) > 0 {
 		nonceStr = nonce[0]
 	}
-	return c.sendDeviceAttestationWithNonce(ctx, udid, nonceStr)
+	return c.sendDeviceAttestationWithNonce(ctx, udid, nonceStr, nil)
 }
 
-// sendDeviceAttestationWithNonce sends a raw plist DeviceInformation command
-// with DeviceAttestationNonce. MicroMDM's structured API doesn't support this
-// field, so we bypass it with the raw command endpoint: POST /v1/commands/{udid}.
-func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce string) (string, error) {
+func (c *Client) sendDeviceAttestationWithNonce(
+	ctx context.Context,
+	udid, nonce string,
+	onIssued func(string) bool,
+) (string, error) {
 	// DevicePropertiesAttestation is requested via a DeviceInformation command.
 	if err := assertReadOnlyCommand("DeviceInformation"); err != nil {
 		return "", err
 	}
 	cmdUUID := uuid.New().String()
+	if onIssued != nil && !onIssued(cmdUUID) {
+		return "", errors.New("mdm device attestation waiter ownership changed before command issue")
+	}
+	c.trackCommand(cmdUUID, udid, time.Now())
 
 	// Build nonce XML if provided
 	nonceXML := ""
@@ -414,6 +445,7 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/commands/"+udid, bytes.NewReader([]byte(plist)))
 	if err != nil {
+		c.consumeCommand(cmdUUID, time.Now())
 		return "", err
 	}
 	req.SetBasicAuth("micromdm", c.apiKey)
@@ -421,16 +453,16 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 
 	resp, err := c.client.Do(req)
 	if err != nil {
+		c.consumeCommand(cmdUUID, time.Now())
 		return "", fmt.Errorf("mdm send DeviceInformation with nonce failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
+		c.consumeCommand(cmdUUID, time.Now())
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("mdm raw command failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
-
-	c.trackCommand(cmdUUID, udid, time.Now())
 
 	// Push to trigger device check-in (best-effort; command is already queued).
 	// The raw POST /v1/commands/{udid} endpoint does NOT auto-push (unlike the
@@ -440,37 +472,77 @@ func (c *Client) sendDeviceAttestationWithNonce(ctx context.Context, udid, nonce
 	return cmdUUID, nil
 }
 
-// WaitForDeviceAttestation waits for a DevicePropertiesAttestation response.
-// It returns early if ctx is cancelled (e.g. the provider disconnected), so a
-// teardown isn't blocked for the full timeout.
-func (c *Client) WaitForDeviceAttestation(ctx context.Context, udid string, timeout time.Duration) (*DeviceAttestationResponse, error) {
+func (c *Client) registerDeviceAttestationWaiter(
+	udid string,
+) (<-chan *DeviceAttestationResponse, func(string) bool, func(), error) {
 	ch := make(chan *DeviceAttestationResponse, 1)
-
 	c.waitMu.Lock()
-	c.attestWaiters[udid] = ch
+	if _, exists := c.attestWaiters[udid]; exists {
+		c.waitMu.Unlock()
+		return nil, nil, nil, fmt.Errorf("%w: device attestation", ErrWaiterAlreadyRegistered)
+	}
+	c.attestWaiters[udid] = deviceAttestationWaiter{ch: ch}
 	c.waitMu.Unlock()
-
-	defer func() {
+	bind := func(commandUUID string) bool {
 		c.waitMu.Lock()
-		// Identity-guarded delete (parity with registerSecurityInfoWaiter): only
-		// remove our own channel. With two overlapping connections for the same
-		// device (same UDID), an unconditional delete could drop a later waiter's
-		// live channel and route its Apple attestation response to the late
-		// callback instead.
-		if cur, ok := c.attestWaiters[udid]; ok && cur == ch {
+		defer c.waitMu.Unlock()
+		cur, ok := c.attestWaiters[udid]
+		if !ok || cur.ch != ch || cur.commandUUID != "" || commandUUID == "" {
+			return false
+		}
+		cur.commandUUID = commandUUID
+		c.attestWaiters[udid] = cur
+		return true
+	}
+	release := func() {
+		c.waitMu.Lock()
+		if cur, ok := c.attestWaiters[udid]; ok && cur.ch == ch {
 			delete(c.attestWaiters, udid)
 		}
 		c.waitMu.Unlock()
-	}()
+	}
+	return ch, bind, release, nil
+}
 
+func awaitDeviceAttestation(ctx context.Context, ch <-chan *DeviceAttestationResponse, _ string, timeout time.Duration) (*DeviceAttestationResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("device attestation wait cancelled for %s: %w", udid, ctx.Err())
+		return nil, fmt.Errorf("device attestation wait cancelled: %w", ctx.Err())
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout waiting for DevicePropertiesAttestation from %s", udid)
+		return nil, errors.New("timeout waiting for DevicePropertiesAttestation")
 	}
+}
+
+// RequestDeviceAttestation installs the waiter and exact command observer before
+// the raw command becomes visible to a device.
+func (c *Client) RequestDeviceAttestation(
+	ctx context.Context,
+	udid, nonce string,
+	timeout time.Duration,
+	observeCommand func(udid, commandUUID string),
+) (*DeviceAttestationResponse, error) {
+	ch, bind, release, err := c.registerDeviceAttestationWaiter(udid)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	bindObservedCommand := func(commandUUID string) bool {
+		if !bind(commandUUID) {
+			return false
+		}
+		if observeCommand != nil {
+			observeCommand(udid, commandUUID)
+		}
+		return true
+	}
+	if _, err := c.sendDeviceAttestationWithNonce(
+		ctx, udid, nonce, bindObservedCommand,
+	); err != nil {
+		return nil, err
+	}
+	return awaitDeviceAttestation(ctx, ch, udid, timeout)
 }
 
 // HandleWebhook processes a MicroMDM webhook payload and extracts
@@ -492,7 +564,6 @@ func (c *Client) HandleWebhook(body []byte) {
 
 	c.logger.Info("mdm webhook parsed",
 		"topic", webhook.Topic,
-		"udid", webhook.Event.UDID,
 		"status", webhook.Event.Status,
 		"has_payload", webhook.Event.RawPayload != "",
 	)
@@ -508,73 +579,82 @@ func (c *Client) HandleWebhook(body []byte) {
 		return
 	}
 
+	hasSecInfo := bytes.Contains(plistData, []byte("SecurityInfo"))
+	hasDeviceAttest := bytes.Contains(plistData, []byte("DevicePropertiesAttestation"))
+
 	// SOLICITED-RESPONSE GATE. Only honor a response whose CommandUUID matches a
-	// command the coordinator actually issued. The webhook endpoint is otherwise
-	// unauthenticated; without this, anyone who can reach it could POST a forged
-	// "SIP=true" SecurityInfo (or an attestation) and drive a self_signed
-	// provider to hardware trust. Because command UUIDs are random and never
-	// exposed, an attacker cannot match an in-flight command. Unsolicited or
-	// stale responses are dropped here, before any waiter or trust-upgrade
-	// callback runs.
+	// command the coordinator issued. The structured SecurityInfo endpoint may
+	// auto-push before returning its generated UUID; during that narrow window
+	// buffer one bounded response on the already-exclusive waiter and deliver it
+	// only after the returned UUID binds exactly.
 	cmdUUID := parseCommandUUID(plistData)
 	trackedUDID, solicited := c.consumeCommand(cmdUUID, time.Now())
 	if !solicited {
-		c.logger.Warn("mdm webhook dropped: unsolicited or unknown CommandUUID",
-			"udid", webhook.Event.UDID,
-			"command_uuid", cmdUUID,
-		)
+		if hasSecInfo {
+			secInfo := parseSecurityInfoPlist(plistData)
+			if secInfo != nil {
+				secInfo.UDID = webhook.Event.UDID
+				if c.bufferEarlySecurityInfo(
+					secInfo.UDID, cmdUUID, secInfo,
+				) {
+					c.logger.Info("mdm SecurityInfo buffered until command UUID binding")
+					return
+				}
+			}
+		}
+		c.logger.Warn("mdm webhook dropped: unsolicited or unknown command")
 		return
 	}
 	// Defense in depth: the response's device must be the one we addressed.
-	if trackedUDID != "" && webhook.Event.UDID != "" && trackedUDID != webhook.Event.UDID {
-		c.logger.Warn("mdm webhook dropped: CommandUUID/UDID mismatch",
-			"command_uuid", cmdUUID,
-			"webhook_udid", webhook.Event.UDID,
-			"command_udid", trackedUDID,
-		)
+	if trackedUDID != "" && webhook.Event.UDID != "" &&
+		trackedUDID != webhook.Event.UDID {
+		c.logger.Warn("mdm webhook dropped: command/device mismatch")
 		return
 	}
-
-	// Log what the plist contains. The raw preview is kept at Debug only: it
-	// echoes the device response verbatim, which includes the CommandUUID — and
-	// UUID secrecy is what the solicited-command gate relies on, so it must not
-	// be emitted at Info where it could leak the gate's secret to anyone with
-	// log access.
-	hasSecInfo := bytes.Contains(plistData, []byte("SecurityInfo"))
-	hasDeviceAttest := bytes.Contains(plistData, []byte("DevicePropertiesAttestation"))
 	c.logger.Info("mdm webhook plist content",
 		"size", len(plistData),
 		"has_security_info", hasSecInfo,
 		"has_device_attestation", hasDeviceAttest,
 	)
-	c.logger.Debug("mdm webhook plist preview", "preview", string(plistData[:min(len(plistData), 2000)]))
 
 	// Parse the plist for SecurityInfo
 	secInfo := parseSecurityInfoPlist(plistData)
 	if secInfo != nil {
 		secInfo.UDID = webhook.Event.UDID
 		c.logger.Info("mdm SecurityInfo received",
-			"udid", secInfo.UDID,
 			"sip", secInfo.SystemIntegrityProtectionEnabled,
 			"secure_boot", secInfo.SecureBootLevel,
 			"auth_root_volume", secInfo.AuthenticatedRootVolumeEnabled,
 		)
 		c.waitMu.Lock()
-		ch, waiting := c.secInfoWaiters[secInfo.UDID]
-		if waiting {
+		waiter, waiting := c.secInfoWaiters[secInfo.UDID]
+		buffered := false
+		owned := waiting && waiter.commandUUID == cmdUUID
+		if waiting && waiter.commandUUID == "" {
+			if waiter.early == nil {
+				waiter.early = make(map[string]*SecurityInfoResponse)
+			}
+			if _, exists := waiter.early[cmdUUID]; exists ||
+				len(waiter.early) < maxEarlySecurityInfoResponses {
+				waiter.early[cmdUUID] = secInfo
+				c.secInfoWaiters[secInfo.UDID] = waiter
+				buffered = true
+			}
+		} else if owned {
 			delete(c.secInfoWaiters, secInfo.UDID)
 		}
 		c.waitMu.Unlock()
-		if waiting {
-			ch <- secInfo
+		if buffered {
+			c.logger.Info("mdm SecurityInfo buffered until waiter UUID binding")
+		} else if owned {
+			waiter.ch <- secInfo
+		} else if waiting {
+			c.logger.Warn("mdm SecurityInfo dropped: response belongs to an older command")
 		} else if c.onLateSecInfo != nil {
-			// No active waiter — the synchronous verification timed out.
-			// Invoke the late-arrival callback so the coordinator can
-			// retroactively upgrade the provider to hardware trust.
-			c.logger.Info("mdm SecurityInfo arrived late (no waiter), invoking callback", "udid", secInfo.UDID)
-			c.onLateSecInfo(secInfo.UDID, secInfo)
+			c.logger.Info("mdm SecurityInfo arrived late; invoking callback")
+			c.onLateSecInfo(secInfo.UDID, cmdUUID, secInfo)
 		} else {
-			c.logger.Debug("mdm SecurityInfo dropped (no waiter, no callback)", "udid", secInfo.UDID)
+			c.logger.Debug("mdm SecurityInfo dropped: no waiter or callback")
 		}
 	}
 
@@ -586,83 +666,136 @@ func (c *Client) HandleWebhook(body []byte) {
 			CertChain: attestCerts,
 		}
 		c.logger.Info("mdm DevicePropertiesAttestation received",
-			"udid", resp.UDID,
 			"cert_count", len(resp.CertChain),
 		)
 		c.waitMu.Lock()
-		ch, waiting := c.attestWaiters[resp.UDID]
-		if waiting {
+		waiter, waiting := c.attestWaiters[resp.UDID]
+		owned := waiting && waiter.commandUUID == cmdUUID
+		unbound := waiting && waiter.commandUUID == ""
+		if owned {
 			delete(c.attestWaiters, resp.UDID)
 		}
 		c.waitMu.Unlock()
-		if waiting {
-			ch <- resp
+		if owned {
+			waiter.ch <- resp
+		} else if unbound && c.onMDA != nil {
+			// The new raw command has not been published yet. Preserve the
+			// response as late work for its exact prior scheduler generation;
+			// never let it consume the replacement's unbound waiter.
+			c.onMDA(resp.UDID, cmdUUID, resp.CertChain)
+		} else if waiting {
+			c.logger.Warn("mdm attestation dropped: response belongs to an older command")
 		} else if c.onMDA != nil {
-			c.onMDA(resp.UDID, resp.CertChain)
+			c.onMDA(resp.UDID, cmdUUID, resp.CertChain)
 		} else {
-			c.logger.Debug("mdm attestation response dropped (no waiter, no callback)", "udid", resp.UDID)
+			c.logger.Debug("mdm attestation response dropped: no waiter or callback")
 		}
 	}
 }
 
-// registerSecurityInfoWaiter installs a one-shot waiter for a UDID's SecurityInfo
-// response and returns the channel plus a release func to deregister it. Callers
-// that send the command themselves MUST register the waiter BEFORE sending /
-// pushing — otherwise a fast device can have its webhook arrive (and consume the
-// tracked CommandUUID) before the waiter exists, so the response is dropped to the
-// late-callback path and the in-flight verifier waits the full timeout.
-func (c *Client) registerSecurityInfoWaiter(udid string) (<-chan *SecurityInfoResponse, func()) {
+func (c *Client) bufferEarlySecurityInfo(
+	udid, commandUUID string,
+	resp *SecurityInfoResponse,
+) bool {
+	if udid == "" || commandUUID == "" || resp == nil {
+		return false
+	}
+	c.waitMu.Lock()
+	defer c.waitMu.Unlock()
+	waiter, ok := c.secInfoWaiters[udid]
+	if !ok || waiter.commandUUID != "" {
+		return false
+	}
+	if waiter.early == nil {
+		waiter.early = make(map[string]*SecurityInfoResponse)
+	}
+	if _, exists := waiter.early[commandUUID]; !exists &&
+		len(waiter.early) >= maxEarlySecurityInfoResponses {
+		return false
+	}
+	waiter.early[commandUUID] = resp
+	c.secInfoWaiters[udid] = waiter
+	return true
+}
+
+// registerSecurityInfoWaiter installs exclusive one-shot command ownership for
+// a UDID. It rejects overlap rather than replacing a live attempt's channel.
+func (c *Client) registerSecurityInfoWaiter(
+	udid string,
+) (<-chan *SecurityInfoResponse, func(string) bool, func(), error) {
 	ch := make(chan *SecurityInfoResponse, 1)
 	c.waitMu.Lock()
-	c.secInfoWaiters[udid] = ch
+	if _, exists := c.secInfoWaiters[udid]; exists {
+		c.waitMu.Unlock()
+		return nil, nil, nil, fmt.Errorf("%w: SecurityInfo", ErrWaiterAlreadyRegistered)
+	}
+	c.secInfoWaiters[udid] = securityInfoWaiter{ch: ch}
 	c.waitMu.Unlock()
-	return ch, func() {
+	bind := func(commandUUID string) bool {
 		c.waitMu.Lock()
-		// Only delete our own channel — HandleWebhook may already have delivered
-		// and removed it, and a later waiter could have registered a new one.
-		if cur, ok := c.secInfoWaiters[udid]; ok && cur == ch {
+		cur, ok := c.secInfoWaiters[udid]
+		if !ok || cur.ch != ch || cur.commandUUID != "" || commandUUID == "" {
+			c.waitMu.Unlock()
+			return false
+		}
+		cur.commandUUID = commandUUID
+		early := cur.early[commandUUID]
+		if early != nil {
+			delete(c.secInfoWaiters, udid)
+		} else {
+			c.secInfoWaiters[udid] = cur
+		}
+		c.waitMu.Unlock()
+		if early != nil {
+			c.consumeCommand(commandUUID, time.Now())
+			ch <- early
+		}
+		return true
+	}
+	release := func() {
+		c.waitMu.Lock()
+		if cur, ok := c.secInfoWaiters[udid]; ok && cur.ch == ch {
 			delete(c.secInfoWaiters, udid)
 		}
 		c.waitMu.Unlock()
 	}
+	return ch, bind, release, nil
 }
 
 // awaitSecurityInfo blocks on a previously-registered waiter channel until the
 // response arrives, ctx is cancelled, or the timeout elapses.
-func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
+func awaitSecurityInfo(ctx context.Context, ch <-chan *SecurityInfoResponse, _ string, timeout time.Duration) (*SecurityInfoResponse, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("SecurityInfo wait cancelled for %s: %w", udid, ctx.Err())
+		return nil, fmt.Errorf("SecurityInfo wait cancelled: %w", ctx.Err())
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout waiting for SecurityInfo from %s", udid)
+		return nil, errors.New("timeout waiting for SecurityInfo")
 	}
-}
-
-// WaitForSecurityInfo registers a waiter and blocks for the response. Use this
-// when the SecurityInfo command was (or will be) sent elsewhere. VerifyProvider
-// instead registers the waiter explicitly before sending, to close the
-// fast-device webhook race.
-func (c *Client) WaitForSecurityInfo(ctx context.Context, udid string, timeout time.Duration) (*SecurityInfoResponse, error) {
-	ch, release := c.registerSecurityInfoWaiter(udid)
-	defer release()
-	return awaitSecurityInfo(ctx, ch, udid, timeout)
 }
 
 // VerifyProvider performs the full MDM verification flow for a provider.
-//
-//  1. Look up device by serial number
-//  2. Verify it's enrolled
-//  3. Send SecurityInfo command
-//  4. Wait for and parse response
-//  5. Cross-check against attestation
 func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attestationSIP, attestationSecureBoot bool) (*VerificationResult, error) {
-	result := &VerificationResult{
-		SerialNumber: serialNumber,
-	}
+	return c.VerifyProviderWithUDIDObserver(
+		ctx, serialNumber, attestationSIP, attestationSecureBoot,
+		nil, nil,
+	)
+}
 
-	// Step 1: Look up device
+// VerifyProviderWithUDIDObserver publishes transport identity in two phases:
+// enrolled UDID after the exclusive waiter exists, then exact command UUID after
+// MicroMDM returns and binds it.
+func (c *Client) VerifyProviderWithUDIDObserver(
+	ctx context.Context,
+	serialNumber string,
+	attestationSIP, attestationSecureBoot bool,
+	observeUDID func(string),
+	observeCommand func(udid, commandUUID string),
+) (*VerificationResult, error) {
+	result := &VerificationResult{SerialNumber: serialNumber}
+
+	// Step 1: Look up device.
 	device, err := c.LookupDevice(ctx, serialNumber)
 	if err != nil {
 		result.Error = fmt.Sprintf("device lookup failed: %v", err)
@@ -687,11 +820,30 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 	// otherwise install the waiter; registering first guarantees the webhook finds
 	// it and the in-flight verifier sees the response (instead of timing out and
 	// relying on the late callback).
-	ch, release := c.registerSecurityInfoWaiter(device.UDID)
+	ch, bind, release, err := c.registerSecurityInfoWaiter(device.UDID)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
 	defer release()
+	if observeUDID != nil && result.UDID != "" {
+		observeUDID(result.UDID)
+	}
+	bindObservedCommand := func(commandUUID string) bool {
+		if !bind(commandUUID) {
+			return false
+		}
+		if observeCommand != nil {
+			observeCommand(device.UDID, commandUUID)
+		}
+		return true
+	}
 
-	// Step 3: Send SecurityInfo command (enqueues + pushes the device).
-	if _, err = c.SendSecurityInfoCommand(ctx, device.UDID); err != nil {
+	// Step 3: send once, binding this waiter to the exact issued UUID before the
+	// issued-command gate can dispatch a fast webhook.
+	if _, err = c.sendSecurityInfoCommand(
+		ctx, device.UDID, bindObservedCommand,
+	); err != nil {
 		result.Error = fmt.Sprintf("failed to send SecurityInfo command: %v", err)
 		return result, nil
 	}

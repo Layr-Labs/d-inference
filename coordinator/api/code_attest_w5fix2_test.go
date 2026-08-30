@@ -271,16 +271,16 @@ func TestClearChallengeDropsOutstanding(t *testing.T) {
 	}
 }
 
-// TestSeededReuseSkipsRePush proves W5 Fix 2 (2b): a persisted attestation seeded
-// at startup (i.e. after a deploy) lets a fresh connection from the same device +
-// version inherit the proof WITHOUT a push — avoiding the post-deploy push storm.
+// TestSeededReuseSkipsRePush proves a persisted attestation seeded after deploy
+// avoids another APNs push, while the fresh connection still proves possession
+// of the persisted row's exact process private key over the live WebSocket.
 func TestSeededReuseSkipsRePush(t *testing.T) {
 	logger := quietLogger()
 	st := store.NewMemory(store.Config{})
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	fastBudgets(srv)
 
-	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 
 	// A genuine attestation persisted before the (simulated) deploy.
 	if err := st.UpsertCodeAttestation(context.Background(), store.CodeAttestation{
@@ -294,14 +294,23 @@ func TestSeededReuseSkipsRePush(t *testing.T) {
 		t.Fatal("seeded reuse must NOT push (would be the post-deploy storm this fix prevents)")
 		return nil
 	}})
-	srv.SeedCodeAttestCache(context.Background())
-
 	provider := newCodeAttestProvider(kPubB64, sePubB64)
 	provider.Version = "0.6.0"
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		return completeResumeRoundTrip(
+			t, srv, provider, "p1", kPriv, seKey, message,
+		)
+	}
+	srv.SeedCodeAttestCache(context.Background())
+
+	// Provider is constructed before seeding so the live resume handler can
+	// prove its exact node private key without spending APNs budget.
 	srv.codeAttestLoop(context.Background(), "p1", provider)
 
-	if !provider.GetCodeAttested() {
-		t.Fatal("a fresh post-deploy connection must inherit the seeded attestation (reuse)")
+	if !provider.GetCodeAttested() || !provider.GetFreshCodeAttested() {
+		t.Fatal("seeded proof did not complete the live process-key resume")
 	}
 }
 
@@ -498,7 +507,7 @@ func TestCrossVersionReuseAboveFloorSameProcessKeyReuses(t *testing.T) {
 	fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
-	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14") // bumped, above floor
 	seedFreshProcessAttestation(
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey)
@@ -509,6 +518,13 @@ func TestCrossVersionReuseAboveFloorSameProcessKeyReuses(t *testing.T) {
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		return completeResumeRoundTrip(
+			t, srv, provider, "p1", kPriv, seKey, message,
+		)
+	}
 	srv.codeAttestLoop(context.Background(), "p1", provider)
 
 	if atomic.LoadInt32(&pushes) != 0 {
@@ -638,7 +654,7 @@ func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing
 	fastBudgets(srv)
 	srv.minProviderVersion = "0.6.0"
 
-	kPubB64, _, _, sePubB64 := providerKeyMaterial(t)
+	kPubB64, kPriv, seKey, sePubB64 := providerKeyMaterial(t)
 	provider := crossVersionProvider(kPubB64, sePubB64, "0.6.14")
 	seedFreshProcessAttestation(
 		srv, sePubB64, "0.6.13", provider.APNsDeviceToken, provider.PublicKey)
@@ -648,11 +664,18 @@ func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing
 		atomic.AddInt32(&pushes, 1)
 		return nil
 	}})
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		return completeResumeRoundTrip(
+			t, srv, provider, "p1", kPriv, seKey, message,
+		)
+	}
 
 	srv.codeAttestLoop(context.Background(), "p1", provider)
 
 	if !provider.GetCodeAttested() || !provider.GetFreshCodeAttested() {
-		t.Fatal("exact-key application evidence must reuse the genuine APNs proof")
+		t.Fatal("exact-key application evidence did not complete live resume proof")
 	}
 	if got := atomic.LoadInt32(&pushes); got != 0 {
 		t.Fatalf("exact-key transition reuse sent %d new APNs pushes, want 0", got)
@@ -690,7 +713,7 @@ func TestCrossVersionReuseChangedProcessKeyForcesFreshAPNsChallenge(t *testing.T
 	k2 := crossVersionProvider(k2Pub, sePub, "0.6.14")
 	armCrossVersionApplicationEvidence(t, srv, k2, sePub)
 
-	if srv.tryCrossVersionReuse("k2", k2) {
+	if srv.tryCrossVersionReuse(context.Background(), "k2", k2) {
 		t.Fatal("K2 reused K1's process-bound APNs proof")
 	}
 	if k2.GetCodeAttested() || k2.GetFreshCodeAttested() {
@@ -744,7 +767,7 @@ func TestCrossVersionReuseUsesLiveTokenNotCaptured(t *testing.T) {
 	}})
 
 	// Directly exercise the grant decision: it must refuse on the live (new) token.
-	if srv.tryCrossVersionReuse("p1", provider) {
+	if srv.tryCrossVersionReuse(context.Background(), "p1", provider) {
 		t.Fatal("cross-version reuse must NOT grant on a record bound to a token different from the LIVE provider token")
 	}
 	if provider.GetCodeAttested() {

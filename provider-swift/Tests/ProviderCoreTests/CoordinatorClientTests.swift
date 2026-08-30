@@ -292,7 +292,8 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
             usage: UsageInfo(promptTokens: 10, completionTokens: 20),
             stopSequence: "<END>",
             seSignature: "sig",
-            responseHash: "hash"
+            responseHash: "hash",
+            receipt: #"{"v":2}"#
         ))
     )
     #expect(complete == .inferenceComplete(ProviderMessage.InferenceComplete(
@@ -300,7 +301,8 @@ private final class RegistrationAttestationSequence: @unchecked Sendable {
         usage: UsageInfo(promptTokens: 10, completionTokens: 20),
         stopSequence: "<END>",
         seSignature: "sig",
-        responseHash: "hash"
+        responseHash: "hash",
+        receipt: #"{"v":2}"#
     )))
 
     let lookup = try CoordinatorClientCodec.encodeOutboundMessageString(.prefixCacheLookup(

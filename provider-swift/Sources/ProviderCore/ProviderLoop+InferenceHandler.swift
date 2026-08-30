@@ -487,6 +487,12 @@ extension ProviderLoop {
         let providerStats = self.stats
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
+        // Receipt bindings, captured before the task: the digest of the
+        // exact decrypted request bytes (which bind every sampling parameter)
+        // and the verified aggregate weight hash of the serving model ("" when
+        // the model has no live verified hash — the receipt says so honestly).
+        let requestBodySHA256 = sha256Hex(decryptedData)
+        let receiptModelWeightHash = liveModelHashes[modelId] ?? ""
         let log = self.logger
         let tokenizer = slot.tokenizer
         // Read modelType from the loaded SLOT, not advertisedModels: the latter
@@ -1154,12 +1160,21 @@ extension ProviderLoop {
             // Update state
             await me.updateAggregateCapacity()
 
-            // Send completion
-            let attestation = computeResponseAttestation(
+            // Send completion, sealed as a receipt: response_hash becomes
+            // the receipt hash and se_signature signs it — the v1
+            // signing contract unchanged, now binding model weights, the
+            // exact request bytes, and the response digest.
+            let attestation = computeReceiptAttestation(
                 identity: signingIdentity,
-                requestId: requestId,
-                completionTokens: UInt64(max(completionTokens, 0)),
-                responseBody: fullResponseText
+                receipt: InferenceReceipt(
+                    completionTokens: max(completionTokens, 0),
+                    modelId: modelId,
+                    modelWeightHash: receiptModelWeightHash,
+                    promptTokens: max(promptTokens, 0),
+                    requestId: requestId,
+                    requestSha256: requestBodySHA256,
+                    responseSha256: sha256Hex(Data(fullResponseText.utf8))
+                )
             )
             let cacheResult = remoteCache.scope == nil ? nil : v2UsageSignal.lookupResult
             let usageInfo = UsageInfo(
@@ -1178,7 +1193,8 @@ extension ProviderLoop {
                     usage: usageInfo,
                     stopSequence: v2UsageSignal.matchedStopSequence,
                     seSignature: attestation.signature,
-                    responseHash: attestation.hash),
+                    responseHash: attestation.address,
+                    receipt: attestation.receipt),
                 fallbackFailure: .policy,
                 send: send)
 

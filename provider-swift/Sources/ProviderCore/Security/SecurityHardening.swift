@@ -351,29 +351,12 @@ public func collectSecurityPosture() -> SecurityPosture {
 }
 
 // MARK: - Response Attestation
-
-/// Compute a SHA-256 hash and optional Secure Enclave signature over an
-/// inference response, for coordinator verification.
-///
-/// The hash covers `requestId:completionTokens:responseBody`.
-public func computeResponseAttestation(
-    identity: (any AttestationSigner)?,
-    requestId: String,
-    completionTokens: UInt64,
-    responseBody: String
-) -> (hash: String, signature: String?) {
-    let signData = "\(requestId):\(completionTokens):\(responseBody)"
-    let responseHash = sha256Hex(Data(signData.utf8))
-
-    var signature: String?
-    if let identity {
-        if let sigData = try? identity.sign(Data(responseHash.utf8)) {
-            signature = sigData.base64EncodedString()
-        }
-    }
-
-    return (responseHash, signature)
-}
+//
+// The v1 response attestation (SHA-256 over "requestId:completionTokens:
+// responseBody", SE-signed) has been superseded by the inference receipt
+// (Security/InferenceReceipt.swift), which keeps the identical signing
+// contract but binds the model weight hash, the exact request bytes, and
+// the response digest. See computeReceiptAttestation.
 
 // MARK: - System Volume Hash
 

@@ -335,19 +335,25 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
+        /// Canonical inference receipt JSON (InferenceReceipt). When present,
+        /// `responseHash` is the receipt hash and `seSignature` signs that
+        /// hash. Digests only, never plaintext.
+        public var receipt: String?
 
         public init(
             requestId: String,
             usage: UsageInfo,
             stopSequence: String? = nil,
             seSignature: String? = nil,
-            responseHash: String? = nil
+            responseHash: String? = nil,
+            receipt: String? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
+            self.receipt = receipt
         }
     }
 
@@ -773,6 +779,7 @@ extension ProviderMessage: Codable {
         case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
+        case receipt
         // InferenceError
         case error
         case failureCode = "failure_code"
@@ -898,6 +905,7 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            try container.encodeIfPresent(c.receipt, forKey: .receipt)
 
         case .inferenceError(let e):
             try container.encode(TypeValue.inferenceError, forKey: .type)
@@ -1105,7 +1113,8 @@ extension ProviderMessage: Codable {
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash)
+                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
+                receipt: try container.decodeIfPresent(String.self, forKey: .receipt)
             ))
 
         case .inferenceError:

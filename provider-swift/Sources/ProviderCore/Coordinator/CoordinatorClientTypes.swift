@@ -221,7 +221,8 @@ public enum OutboundMessage: Sendable {
         usage: UsageInfo,
         stopSequence: String?,
         seSignature: String?,
-        responseHash: String?
+        responseHash: String?,
+        receipt: String?
     )
     case inferenceError(
         requestId: String,

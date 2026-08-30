@@ -143,14 +143,16 @@ public enum CoordinatorClientCodec {
             let usage,
             let stopSequence,
             let seSignature,
-            let responseHash
+            let responseHash,
+            let receipt
         ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 stopSequence: stopSequence,
                 seSignature: seSignature,
-                responseHash: responseHash
+                responseHash: responseHash,
+                receipt: receipt
             ))
 
         case .inferenceError(let requestId, let failure):

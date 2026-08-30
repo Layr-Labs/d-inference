@@ -218,6 +218,14 @@ type PendingRequest struct {
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
 	SESignature    string    // SE signature over response hash
 	ResponseHash   string    // SHA-256 of response data
+	// Receipt is the provider's canonical inference receipt JSON (see
+	// coordinator/receipt). Empty for older providers. Digests only.
+	Receipt string
+	// DispatchedBodySHA256 is the SHA-256 of the exact plaintext body the
+	// coordinator sealed for the serving provider — the bytes the provider
+	// decrypts and the receipt's request_sha256 must match. Set at the
+	// encrypt sites; empty when the coordinator never saw plaintext.
+	DispatchedBodySHA256 string
 	// MetadataDetails asks chat-completions writers to include the same
 	// consumer-safe provider/attestation/timing details already returned in
 	// X-Provider-* / X-Timing headers in the JSON body. Opt-in so default
@@ -2763,6 +2771,33 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 	}
 	_, ok := r.modelCatalog[model]
 	return ok
+}
+
+// ReceiptContext returns the provider's attested Secure Enclave public key
+// and its registered weight hash for modelID, for receipt verification at
+// inference completion. An empty string means "unknown — skip that check".
+// The weight hash read here has already been cross-checked against the model
+// catalog at registration, so a receipt matching it is transitively bound to
+// the catalog's expected weights.
+func (r *Registry) ReceiptContext(providerID, modelID string) (sePublicKey, weightHash string) {
+	r.mu.RLock()
+	p, ok := r.providers[providerID]
+	r.mu.RUnlock()
+	if !ok {
+		return "", ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.AttestationResult != nil {
+		sePublicKey = p.AttestationResult.PublicKey
+	}
+	for i := range p.Models {
+		if p.Models[i].ID == modelID {
+			weightHash = p.Models[i].WeightHash
+			break
+		}
+	}
+	return sePublicKey, weightHash
 }
 
 // UpdateModelWeightHashes replaces stored per-model weight hashes from a

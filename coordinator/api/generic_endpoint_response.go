@@ -122,6 +122,9 @@ func genericFinishReason(reason string, usage protocol.UsageInfo, maxTokens int)
 }
 
 func addResponseProof(response map[string]any, pr *registry.PendingRequest) {
+	if pr.Receipt != "" {
+		response["receipt"] = pr.Receipt
+	}
 	if pr.SESignature == "" {
 		return
 	}

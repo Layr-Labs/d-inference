@@ -208,6 +208,7 @@ type Server struct {
 	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	receipts                      *receiptCache       // inference receipts by hash for GET /v1/receipts/{address}
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -733,6 +734,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		trustReuseCache:          newTrustReuseCache(),
+		receipts:                 newReceiptCache(),
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
@@ -1868,6 +1870,10 @@ func (s *Server) routes() {
 	// Attestation status — public, no auth needed. Raw device identity and MDA
 	// certificates remain coordinator-private because the leaf embeds serial/UDID.
 	s.mux.HandleFunc("GET /v1/providers/attestation", s.handleProviderAttestation)
+
+	// Receipt lookup — public, no auth needed: digests + signature only,
+	// never prompt/response content (see coordinator/receipt).
+	s.mux.HandleFunc("GET /v1/receipts/{address}", s.handleGetReceipt)
 
 	// Capacity snapshot — no auth needed. Upstream routers poll this.
 	s.mux.HandleFunc("GET /v1/models/capacity", s.handleModelsCapacity)

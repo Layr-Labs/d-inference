@@ -489,6 +489,9 @@ func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 		snap["se_signature"] = e.pr.SESignature
 		snap["response_hash"] = e.pr.ResponseHash
 	}
+	if e.pr.Receipt != "" {
+		snap["receipt"] = e.pr.Receipt
+	}
 	e.emit(eventType, map[string]any{"response": snap})
 }
 

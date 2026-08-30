@@ -194,7 +194,8 @@ struct ChunkSenderTests {
             usage: UsageInfo(promptTokens: 0, completionTokens: 0),
             stopSequence: nil,
             seSignature: nil,
-            responseHash: nil))
+            responseHash: nil,
+            receipt: nil))
 
         let events = order.events()
         // The terminal MUST be last: chunks were flushed to the wire first.

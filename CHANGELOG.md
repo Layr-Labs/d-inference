@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **Inference receipts** — Every completed inference seals a canonical
+  receipt binding the model (aggregate weight hash), the exact decrypted
+  request bytes (and therefore every sampling parameter), and the response
+  digest. `response_hash` becomes the receipt's SHA-256 hash; `se_signature`
+  keeps its existing contract (Secure Enclave signature over
+  `response_hash`); one new optional `receipt` field carries the record, so
+  older providers and consumers are unaffected. The coordinator checks the
+  receipt against the body it sealed, the provider's registered weight hash,
+  and the attested key, then serves receipt and verdict at public
+  `GET /v1/receipts/{hash}` (digests only, never prompt or response
+  content). A well formed, correctly signed receipt over a lie is refuted by
+  those cross checks (integration tested). Canonical encoding is byte
+  identical across Go (`coordinator/receipt`) and Swift
+  (`ProviderCore/Security/InferenceReceipt.swift`), pinned by independently
+  generated golden vectors (`fixtures/receipts/receipt_vectors.json`).
+  Spec: `docs/architecture/receipts.md`.
+
 ## Release candidate v0.8.15 (not shipped; 2026-08-28)
 
 - **Exact Qwen3.8 dense VLM artifact** — Providers serve

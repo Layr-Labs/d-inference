@@ -72,7 +72,11 @@ type ChatCompletionResponse struct {
 	Usage        ChatCompletionUsage     `json:"usage"`
 	SESignature  string                  `json:"se_signature,omitempty"`
 	ResponseHash string                  `json:"response_hash,omitempty"`
-	Metadata     *ChatCompletionMetadata `json:"metadata,omitempty"`
+	// Receipt is the provider's canonical inference receipt JSON: when
+	// present, ResponseHash is its SHA-256 hash and SESignature signs that
+	// hash. Digests only (see coordinator/receipt).
+	Receipt  string                  `json:"receipt,omitempty"`
+	Metadata *ChatCompletionMetadata `json:"metadata,omitempty"`
 }
 
 // RequestTimingDetails is the X-Timing latency decomposition, in microseconds.
@@ -163,6 +167,9 @@ type ResponsesResponse struct {
 	Usage             ResponsesUsage             `json:"usage"`
 	SESignature       string                     `json:"se_signature,omitempty"`
 	ResponseHash      string                     `json:"response_hash,omitempty"`
+	// Receipt: canonical inference receipt JSON; ResponseHash is its hash
+	// (see coordinator/receipt).
+	Receipt string `json:"receipt,omitempty"`
 }
 
 // ── GET /v1/models ───────────────────────────────────────────────────

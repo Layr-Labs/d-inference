@@ -1966,6 +1966,10 @@ func (s *Server) handleCompleteAt(
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
+	pr.Receipt = msg.Receipt
+	if msg.Receipt != "" {
+		s.recordReceipt(providerID, pr, msg)
+	}
 	pr.MatchedStopSequence = allowedMatchedStopSequence(
 		pr.RequestedStopSequences, msg.StopSequence)
 	if msg.StopSequence != "" && pr.MatchedStopSequence == "" {

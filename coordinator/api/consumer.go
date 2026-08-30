@@ -31,6 +31,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/receipt"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -1046,6 +1047,9 @@ func (s *Server) dispatchOneProvider(
 		cleanupPending()
 		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
 	}
+	// Receipt binding: the digest of the exact plaintext bytes this
+	// provider will decrypt; its receipt's request_sha256 must match.
+	pr.DispatchedBodySHA256 = receipt.SHA256Hex(sealedBody)
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
 	}
@@ -2225,12 +2229,15 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 							pendingUsage["se_signature"] = pr.SESignature
 							pendingUsage["response_hash"] = pr.ResponseHash
 						}
+						if pr.Receipt != "" {
+							pendingUsage["receipt"] = pr.Receipt
+						}
 						attachChatCompletionMetadata(pendingUsage, pr)
 						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
 							fmt.Fprintf(w, "%s\n\n", out)
 							flusher.Flush()
 						}
-					} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
+					} else if pr.SESignature != "" || pr.Receipt != "" || hasChatCompletionMetadata(pr) {
 						// No held usage chunk to ride on: emit the signature and/or
 						// opt-in metadata as a fully-shaped chat.completion.chunk
 						// (id/object/created/model/choices) so strict decoders parse
@@ -2240,6 +2247,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 						if pr.SESignature != "" {
 							event["se_signature"] = pr.SESignature
 							event["response_hash"] = pr.ResponseHash
+						}
+						if pr.Receipt != "" {
+							event["receipt"] = pr.Receipt
 						}
 						attachChatCompletionMetadata(event, pr)
 						sigEvent, _ := json.Marshal(event)
@@ -2560,6 +2570,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									respObj := chatCompletionToResponses(
 										chatResp, consumerModel(pr), pr.SESignature,
 										pr.ResponseHash, pr.Traits)
+									respObj.Receipt = pr.Receipt
 									s.noteInferenceSuccess(pr)
 									writeJSON(w, http.StatusOK, respObj)
 									return
@@ -2576,6 +2587,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 							if pr.SESignature != "" {
 								obj["se_signature"] = pr.SESignature
 								obj["response_hash"] = pr.ResponseHash
+							}
+							if pr.Receipt != "" {
+								obj["receipt"] = pr.Receipt
 							}
 							if isChatCompletionsConsumer(pr) {
 								attachChatCompletionMetadata(obj, pr)
@@ -2604,15 +2618,18 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 					}
 					var resp any
 					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(
+						rr := buildResponsesResponse(
 							pr.RequestID, consumerModel(pr), msg, usage,
 							pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
 							pr.Traits)
+						rr.Receipt = pr.Receipt
+						resp = rr
 					} else if pr.ConsumerEndpoint == completionsEndpoint ||
 						pr.ConsumerEndpoint == messagesEndpoint {
 						resp = buildGenericEndpointResponse(pr, msg, usage)
 					} else {
 						chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						chatResp.Receipt = pr.Receipt
 						applyChatCompletionMetadataToResponse(&chatResp, pr)
 						resp = chatResp
 					}

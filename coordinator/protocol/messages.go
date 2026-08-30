@@ -534,6 +534,14 @@ type InferenceCompleteMessage struct {
 	StopSequence string    `json:"stop_sequence,omitempty"` // Exact caller-authored stop string matched by the engine
 	SESignature  string    `json:"se_signature,omitempty"`  // SE-signed response hash
 	ResponseHash string    `json:"response_hash,omitempty"` // SHA-256 of response data
+	// Receipt is the canonical inference receipt JSON (receipt.Receipt) for
+	// this inference. When present, ResponseHash is the receipt hash
+	// (SHA-256 of the receipt bytes) and SESignature signs that address —
+	// the v1 signing contract unchanged, now over a record that binds the
+	// model weight hash, the exact request bytes (and therefore every
+	// sampling parameter), and the response digest. Digests only; never
+	// carries prompt or response plaintext. Absent on older providers.
+	Receipt string `json:"receipt,omitempty"`
 }
 
 // InferenceErrorMessage signals an error during inference.

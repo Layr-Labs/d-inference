@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/receipt"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -1468,6 +1469,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		}
 		d.timing.EncryptedAt = time.Now()
 		d.pr.SessionPrivKey = &sessionKeys.PrivateKey
+		// Receipt binding: digest of the exact plaintext bytes this
+		// provider will decrypt (queued-path seal site).
+		d.pr.DispatchedBodySHA256 = receipt.SHA256Hex(sealedBody)
 		// pr.ReservedMicroUSD was already set in the struct literal and may
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
 		// Bound the provider write by the request-absolute first-token clock:

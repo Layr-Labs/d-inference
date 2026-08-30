@@ -161,6 +161,13 @@ end = "08:00"
 - `backend.enabled_models` — if non-empty, only these models are advertised.
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
+- `backend.startup_preload_timeout_secs` — seconds to wait for the model to
+  load into GPU memory on startup (default 120). Large models (20 GB+) can
+  take 3–4 minutes to load, so bump this to 300 if your model fails to warm:
+  ```toml
+  [backend]
+  startup_preload_timeout_secs = 300
+  ```
 - `backend.max_model_slots` — maximum resident models at once (default 3).
 - `config_version` — schema version of this file, written automatically on
   first start after upgrading. It only dates the file, so the provider can

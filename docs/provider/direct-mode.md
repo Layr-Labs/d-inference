@@ -30,6 +30,13 @@ darkbloom start --local-endpoint                 # coordinator + local on :8000
 darkbloom start --local-endpoint --port 8080 --bind 100.x.y.z
 ```
 
+> **Which flag should I use?**
+> - Use `--local` if you only need a private local API (no coordinator, no
+>   earnings, works offline). Ideal for testing or personal use.
+> - Use `--local-endpoint` if you want to **earn** from the public fleet
+>   **and** keep a local endpoint on the same Mac. The model loads once and
+>   serves both the coordinator and your local requests.
+
 `--local` runs the OpenAI server **only** (no coordinator connection).
 `--local-endpoint` runs it **alongside** the coordinator connection. Both mint a
 persistent bearer token (`~/.darkbloom/local_token`, `0600`); `--local` also

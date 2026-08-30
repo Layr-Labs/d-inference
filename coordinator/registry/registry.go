@@ -2902,6 +2902,8 @@ func (r *Registry) providerServesOwnedRoutableModelLocked(p *Provider, model str
 	return false
 }
 
+const qwen3VL30BA3BInstructModelID = "qwen3-vl-30b-a3b-instruct"
+
 // providerServesVisionModelLocked reports whether the provider advertises the
 // model as a vision-capable (VLM) build — required to route image/video requests
 // so the media is actually perceived rather than silently dropped. allowOffCatalog
@@ -2920,14 +2922,18 @@ func (r *Registry) providerServesVisionModelLocked(p *Provider, model string, al
 			continue
 		}
 		if allowOffCatalog {
-			if r.modelServableForOwnerLocked(p, m) {
-				return true
+			if !r.modelServableForOwnerLocked(p, m) {
+				continue
 			}
+		} else if !r.providerModelAllowedByCatalogLocked(p, m) {
 			continue
 		}
-		if r.providerModelAllowedByCatalogLocked(p, m) {
-			return true
+		if model == qwen3VL30BA3BInstructModelID &&
+			strings.EqualFold(strings.TrimSpace(p.Hardware.ChipFamily), "M5") {
+			// This concrete VLM produces incorrect visual inference on M5.
+			return false
 		}
+		return true
 	}
 	return false
 }

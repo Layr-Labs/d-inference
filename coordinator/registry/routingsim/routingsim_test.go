@@ -2,10 +2,31 @@ package routingsim_test
 
 import (
 	"testing"
+	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/registry/routingsim"
 )
+
+func TestTTFTDeadlineUsesExactModelPolicy(t *testing.T) {
+	const promptTokens = 321
+	if got, want := routingsim.TTFTDeadline(
+		"ordinary-model", promptTokens,
+	), 5*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("ordinary deadline = %v, want %v", got, want)
+	}
+	if got, want := routingsim.TTFTDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 4*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("Qwen3-VL deadline = %v, want %v", got, want)
+	}
+	if got, want := routingsim.TTFTDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID+"-preview", promptTokens,
+	), 5*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("lookalike deadline = %v, want %v", got, want)
+	}
+}
 
 const (
 	simModel        = "mlx-community/Qwen3.5-9B-Instruct-4bit"

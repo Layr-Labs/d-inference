@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -144,8 +145,15 @@ func TestRunningCoordinatorUsesProductionFirstContentDeadline(t *testing.T) {
 
 	const promptTokens = 1_234
 	want := ProductionFirstContentDeadlineBase + promptTokens*time.Millisecond
-	if got := suite.Coordinator.Server.FirstContentDeadline(promptTokens); got != want {
+	if got := suite.Coordinator.Server.FirstContentDeadline("ordinary-e2e-model", promptTokens); got != want {
 		t.Fatalf("running E2E server deadline = %v, want %v", got, want)
+	}
+	qwenWant := modelpolicy.Qwen3VL30BA3BInstructCoordinatorFirstContentBase +
+		promptTokens*time.Millisecond
+	if got := suite.Coordinator.Server.FirstContentDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	); got != qwenWant {
+		t.Fatalf("running E2E Qwen3-VL deadline = %v, want %v", got, qwenWant)
 	}
 }
 

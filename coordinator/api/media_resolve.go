@@ -138,8 +138,8 @@ func scanRemoteMediaRefs(parsed map[string]any) remoteMediaScan {
 // mediaFetchInferenceReserve is leftover first-content time kept for the
 // provider after the coordinator inlines remote media. The mediafetch defaults
 // (15s/file, 25s total) are larger than the production first-content clock
-// (9s + 1ms/token), so an unbounded fetch can expire the clock before the
-// provider starts — the video-url eval failed as
+// (ordinary 9s base; shorter for exact model policies), so an unbounded fetch
+// can expire the clock before the provider starts — the video-url eval failed as
 // "timeout waiting for first response (backup)" after a successful fetch.
 const mediaFetchInferenceReserve = 5 * time.Second
 
@@ -177,9 +177,13 @@ type mediaResolveMeta struct {
 	publicModel           string
 	stream                bool
 	estimatedPromptTokens int
-	requestedMaxTokens    int
-	hasTools              bool
-	requiresVision        bool
+	// firstContentDeadline is the request-local duration pinned before media,
+	// admission, alias fallback, and dispatch. Production callers always set it;
+	// zero retains the focused-test fallback to the server policy.
+	firstContentDeadline time.Duration
+	requestedMaxTokens   int
+	hasTools             bool
+	requiresVision       bool
 	// selfRoute (exclusive X-Darkbloom-Route: self) skips the balance
 	// reservation, so the monetary cost gate that otherwise precedes a fetch is
 	// absent. ownerAccountID is the caller's owned-provider set. resolveRemoteMedia
@@ -237,7 +241,10 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	start := time.Now()
 	resolveCtx := r.Context()
 	if receivedAt := timingReceivedAt(timing); !receivedAt.IsZero() {
-		deadline := s.FirstContentDeadline(meta.estimatedPromptTokens)
+		deadline := meta.firstContentDeadline
+		if deadline <= 0 {
+			deadline = s.FirstContentDeadline(meta.model, meta.estimatedPromptTokens)
+		}
 		budget, bound := mediaFetchBudget(receivedAt, deadline)
 		if bound && budget <= 0 {
 			s.logger.Warn("remote media rejected", "code", "media_fetch_timeout", "status", http.StatusRequestTimeout)

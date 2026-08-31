@@ -2,6 +2,12 @@ import Foundation
 import ProviderCore
 
 enum SchedulerPrefillDecisionEvaluator {
+    // This evaluator accepts only qwen3_5_moe identities (see
+    // validModelIdentity / SchedulerPrefillDecisionMetadata.inspectModel), whose
+    // upstream deadline uses the standard 10s base. Qwen3-VL is deliberately
+    // insufficient evidence here. If the identity gate is widened to
+    // qwen3_vl_moe, select its model-specific 5s upstream threshold in the same
+    // change; otherwise this report would grade the wrong SLA.
     static let thresholds = SchedulerPrefillDecisionReport.EvaluationThresholds(
         minimumLiveIterations: SchedulerPrefillDecisionReport.minimumLiveIterations,
         minimumThroughputRatio: 0.95,

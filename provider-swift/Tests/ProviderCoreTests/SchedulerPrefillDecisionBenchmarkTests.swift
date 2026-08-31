@@ -754,6 +754,27 @@ struct SchedulerPrefillDecisionEvaluatorTests {
                 modelDirectory: directory,
                 expectedSnapshotAggregateSHA256: mislabeledHash)
         }
+
+        // Qwen3-VL has a shorter upstream first-content SLA than this
+        // qwen3_5_moe-only evaluator. Keep it outside the evidence set until
+        // the evaluator also selects model-specific deadline thresholds.
+        try Data(
+            """
+            {
+              "model_type": "qwen3_vl_moe",
+              "architectures": ["Qwen3VLMoeForConditionalGeneration"]
+            }
+            """.utf8
+        ).write(to: directory.appendingPathComponent("config.json"))
+        let qwenVLHash = try #require(WeightHasher.computeHash(
+            snapshotDir: directory,
+            modelID: "fixture-qwen3-vl"))
+        #expect(throws: SchedulerPrefillDecisionError.self) {
+            _ = try SchedulerPrefillDecisionMetadata.inspectModel(
+                operatorModelID: "qwen3-vl-30b-a3b-instruct",
+                modelDirectory: directory,
+                expectedSnapshotAggregateSHA256: qwenVLHash)
+        }
     }
 }
 

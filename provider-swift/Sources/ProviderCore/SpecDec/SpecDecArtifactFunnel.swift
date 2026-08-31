@@ -156,7 +156,8 @@ actor SpecDecArtifactFunnel {
         }
         if Self.isQwen35Target(modelType: request.modelType),
             let directory = request.modelDirectory,
-            SpecDecStore.declaresInlineArtifact(directory: directory)
+            SpecDecStore.inlineDeclarationProbe(directory: directory)
+                .mayDeclareEmbeddedArtifact
         {
             switch SpecDecStore.inspectInlineArtifact(directory: directory) {
             case .failure:

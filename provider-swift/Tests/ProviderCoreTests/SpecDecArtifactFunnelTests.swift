@@ -682,3 +682,97 @@ struct SpecDecArtifactFunnelTests {
         await funnel.shutdown()
     }
 }
+
+// MARK: - Inline declaration probe (tri-state)
+
+private func makeQwenTarget(configJSON: String) throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-probe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(configJSON.utf8).write(to: root.appendingPathComponent("config.json"))
+    return root
+}
+
+/// A config that parses fine but exceeds `SpecDecLimits.maximumConfigBytes`
+/// (1 MiB inspection cap) while staying under the probe's loose bound.
+private func oversizedConfigJSON(declaring: Bool) -> String {
+    let padding = String(repeating: "x", count: 2 * 1024 * 1024)
+    let inline = declaring
+        ? #""mtplx_mtp":{"included":true,"prefix":"mtp."},"mtplx_mtp_quantization":{},"#
+        : ""
+    return #"{"model_type":"qwen3_5","#
+        + inline
+        + #""text_config":{"model_type":"qwen3_5_text"},"_pad":""# + padding + #""}"#
+}
+
+@Suite("Inline declaration probe")
+struct InlineDeclarationProbeTests {
+    @Test("declared, absent, and undeterminable are distinguished")
+    func triState() throws {
+        let declared = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":true}}"#)
+        defer { try? FileManager.default.removeItem(at: declared) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: declared) == .declared)
+
+        let explicitFalse = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":false}}"#)
+        defer { try? FileManager.default.removeItem(at: explicitFalse) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: explicitFalse) == .absent)
+
+        let noDeclaration = try makeQwenTarget(configJSON: #"{"model_type":"qwen3_5"}"#)
+        defer { try? FileManager.default.removeItem(at: noDeclaration) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: noDeclaration) == .absent)
+        #expect(
+            !SpecDecStore.InlineDeclarationProbe.absent.mayDeclareEmbeddedArtifact)
+
+        let unparseable = try makeQwenTarget(configJSON: "not json {")
+        defer { try? FileManager.default.removeItem(at: unparseable) }
+        #expect(
+            SpecDecStore.inlineDeclarationProbe(directory: unparseable) == .undeterminable)
+        #expect(
+            SpecDecStore.InlineDeclarationProbe.undeterminable.mayDeclareEmbeddedArtifact)
+
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-probe-missing-\(UUID().uuidString)")
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: missing) == .undeterminable)
+    }
+
+    @Test("an oversized declared config is not misread as absent and inspection rejects it loudly")
+    func oversizedDeclaredSurfacesInvalid() async throws {
+        let directory = try makeQwenTarget(configJSON: oversizedConfigJSON(declaring: true))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: directory) == .declared)
+        // Inspection keeps its strict DoS cap and names the reason.
+        let inspection = SpecDecStore.inspectInlineArtifact(directory: directory)
+        guard case .failure = inspection else {
+            Issue.record("oversized config must fail inline inspection")
+            return
+        }
+
+        // End to end: an enabled prepare must report inline_artifact_invalid,
+        // never config_disabled, for a declared-but-uninspectable head.
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-probe-store-\(UUID().uuidString)", isDirectory: true)
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(storeRoot: store), catalog: nil)
+        let prepared = await funnel.prepare(.init(
+            modelId: "local/oversized-declared",
+            modelType: "qwen3_5",
+            enabled: true,
+            localPath: nil,
+            modelDirectory: directory,
+            allowDownload: false,
+            environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+        await funnel.shutdown()
+        try? FileManager.default.removeItem(at: store)
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .inlineArtifactInvalid)
+    }
+
+    @Test("an oversized config without a declaration still reads as absent")
+    func oversizedUndeclaredStaysAbsent() throws {
+        let directory = try makeQwenTarget(configJSON: oversizedConfigJSON(declaring: false))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: directory) == .absent)
+    }
+}

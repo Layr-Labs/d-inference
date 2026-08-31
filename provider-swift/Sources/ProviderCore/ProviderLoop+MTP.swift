@@ -46,7 +46,8 @@ extension ProviderLoop {
         allowDownload: Bool = true
     ) async -> SpecDecPreparation {
         let embeddedDeclared = modelDirectory.map {
-            SpecDecStore.declaresInlineArtifact(directory: $0)
+            SpecDecStore.inlineDeclarationProbe(directory: $0)
+                .mayDeclareEmbeddedArtifact
         } ?? false
         let prepared = await specDecFunnel.prepare(
             .init(

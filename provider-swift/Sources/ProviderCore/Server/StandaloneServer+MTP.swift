@@ -12,7 +12,8 @@ extension StandaloneServer {
         // `EigenLabs/Qwen3.8-27B-MTP-4bit` head pinned by revision) was
         // removed when the 27B moved to the embedded artifact.
         let embeddedDeclared = modelDirectory.map {
-            SpecDecStore.declaresInlineArtifact(directory: $0)
+            SpecDecStore.inlineDeclarationProbe(directory: $0)
+                .mayDeclareEmbeddedArtifact
         } ?? false
         return await specDecFunnel.prepare(
             .init(

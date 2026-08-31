@@ -11,12 +11,16 @@ extension StandaloneServer {
         // The previous `StandaloneQwen38MTPResolver` (external
         // `EigenLabs/Qwen3.8-27B-MTP-4bit` head pinned by revision) was
         // removed when the 27B moved to the embedded artifact.
+        let embeddedDeclared = modelDirectory.map {
+            SpecDecStore.declaresInlineArtifact(directory: $0)
+        } ?? false
         return await specDecFunnel.prepare(
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: config.mtpMode.enablesMTP(
-                    forModelType: modelInfo.modelType),
+                    forModelType: modelInfo.modelType,
+                    embeddedArtifactDeclared: embeddedDeclared),
                 localPath: config.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 // `darkbloom start --local` is coordinator-independent and

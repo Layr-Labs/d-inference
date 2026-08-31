@@ -30,7 +30,7 @@ struct MTPConfigKeyTests {
     }
 
 
-    @Test("absent mode defaults on for the Qwen3.5 family by model type")
+    @Test("absent mode defaults on for embedded Qwen3.5-family heads only")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -43,9 +43,15 @@ struct MTPConfigKeyTests {
 
         #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtp == false)
-        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5"))
-        #expect(config.backend.mtpMode.enablesMTP(forModelType: "qwen3_5_moe"))
-        #expect(!config.backend.mtpMode.enablesMTP(forModelType: nil))
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5", embeddedArtifactDeclared: true))
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5_moe", embeddedArtifactDeclared: true))
+        // No embedded declaration → auto never asks, even for Qwen.
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5", embeddedArtifactDeclared: false))
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: nil, embeddedArtifactDeclared: true))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -110,20 +116,13 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("automatic mode uses Qwen3.5-family model types; explicit modes ignore them")
+    @Test("automatic mode requires an embedded head AND a Qwen3.5-family model type")
     func targetPolicy() {
-        // Family ids with their checkpoint model_types. Every one of these
-        // must draft under `.auto` when the funnel can find an artifact —
-        // including the embedded 27B that used to resolve through the
-        // external-head pin.
-        let familyModelTypes = [
-            // Qwen 3.5/3.6 35B MoE (embedded or catalog heads)
-            "qwen3_5_moe",
-            // Qwen 3.5 dense (embedded heads: the 9B, the 27B)
-            "qwen3_5",
-        ]
-        // Non-family types stay off under `.auto` — Gemma and GPT-OSS keep
-        // their explicit opt-in, and no model_type means no automatic decision.
+        // Embedded (mtplx_mtp-declaring) checkpoints of the Qwen 3.5 family —
+        // dense (9B, 27B) and MoE (3.5/3.6 35B) — self-activate under `auto`.
+        // The family gate is hardcoded to Qwen for now and widens only when
+        // another family actually ships embedded artifacts.
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5"]
         let nonFamilyModelTypes: [String?] = [
             "gemma4",
             "gemma4_text",
@@ -135,22 +134,36 @@ struct MTPConfigKeyTests {
 
         for modelType in familyModelTypes {
             #expect(
-                MTPMode.auto.enablesMTP(forModelType: modelType),
-                "family model_type must draft under auto: \(modelType)")
-            #expect(MTPMode.on.enablesMTP(forModelType: modelType))
-            #expect(!MTPMode.off.enablesMTP(forModelType: modelType))
+                MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true),
+                "embedded family checkpoint must draft under auto: \(modelType)")
+            // Without the embedded declaration, auto never asks — no catalog
+            // lookup, no prefetch. Separately published assistants need `on`.
+            #expect(
+                !MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: false),
+                "family checkpoint without an embedded head stays target-only: \(modelType)")
+            #expect(MTPMode.on.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: false))
+            #expect(!MTPMode.off.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: true))
         }
         for modelType in nonFamilyModelTypes {
             #expect(
-                !MTPMode.auto.enablesMTP(forModelType: modelType),
+                !MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true),
                 "non-family model_type must not draft under auto: \(modelType ?? "nil")")
-            #expect(MTPMode.on.enablesMTP(forModelType: modelType))
-            #expect(!MTPMode.off.enablesMTP(forModelType: modelType))
+            #expect(MTPMode.on.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: false))
+            #expect(!MTPMode.off.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: true))
         }
         // Model-type matching is case/whitespace-insensitive like every other
         // model_type comparison in the funnel.
-        #expect(MTPMode.auto.enablesMTP(forModelType: " QWEN3_5_MOE "))
-        #expect(MTPMode.auto.enablesMTP(forModelType: "Qwen3_5"))
+        #expect(MTPMode.auto.enablesMTP(
+            forModelType: " QWEN3_5_MOE ", embeddedArtifactDeclared: true))
+        #expect(MTPMode.auto.enablesMTP(
+            forModelType: "Qwen3_5", embeddedArtifactDeclared: true))
     }
 
     @Test("provider and standalone configs use the same target decision")
@@ -159,9 +172,13 @@ struct MTPConfigKeyTests {
         let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
 
         for modelType in ["qwen3_5_moe", "qwen3_5", "gemma4", nil] as [String?] {
-            #expect(
-                backend.mtpMode.enablesMTP(forModelType: modelType)
-                    == standalone.mtpMode.enablesMTP(forModelType: modelType))
+            for embedded in [true, false] {
+                #expect(
+                    backend.mtpMode.enablesMTP(
+                        forModelType: modelType, embeddedArtifactDeclared: embedded)
+                        == standalone.mtpMode.enablesMTP(
+                            forModelType: modelType, embeddedArtifactDeclared: embedded))
+            }
         }
     }
 

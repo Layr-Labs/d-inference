@@ -7,17 +7,20 @@ extension ProviderLoop {
     /// preload or unified-local request can construct a target slot. This does
     /// not download assistant bytes and is bounded/fail-open; every ordinary
     /// load remains a local-only catalog-cache/artifact-cache consultation.
+    ///
+    /// Only `mtp_mode = "on"` prewarms: catalog metadata exists to pair
+    /// separately published assistants, and `auto` activates only embedded
+    /// heads, which resolve from the checkpoint itself without any catalog.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
-        guard backend.mtpMode != .off,
+        guard backend.mtpMode == .on,
             backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
             SpecDecArtifactFunnel.killSwitchEnabled(
                 environment: ProcessInfo.processInfo.environment),
             let modelId = advertisedModels.values
                 .filter({
-                    (SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
-                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType))
-                        && backend.mtpMode.enablesMTP(forModelType: $0.modelType)
+                    SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
+                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType)
                 })
                 .map(\.id)
                 .sorted()
@@ -42,12 +45,16 @@ extension ProviderLoop {
         modelDirectory: URL? = nil,
         allowDownload: Bool = true
     ) async -> SpecDecPreparation {
+        let embeddedDeclared = modelDirectory.map {
+            SpecDecStore.declaresInlineArtifact(directory: $0)
+        } ?? false
         let prepared = await specDecFunnel.prepare(
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
-                    forModelType: modelInfo.modelType),
+                    forModelType: modelInfo.modelType,
+                    embeddedArtifactDeclared: embeddedDeclared),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 allowDownload: allowDownload,

@@ -69,39 +69,43 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` enables MTP, by `model_type`, for the Qwen 3.5 family — dense
-/// `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B embedded heads) and `qwen3_5_moe`
-/// (Qwen3.5/3.6 35B-A3B). Every Qwen MTP artifact now ships EMBEDDED in its
-/// target checkpoint (`mtplx_mtp` in config.json), so the pairing travels
-/// with the weights and no model-id pin is needed; the #700-era
-/// `automaticTargetModelID` pin existed only to gate the 27B's then-separate
-/// head and was removed with that resolution path.
+/// `auto` turns MTP on for checkpoints that DECLARE an embedded head
+/// (`mtplx_mtp.included = true` in config.json) and belong to the Qwen 3.5
+/// family — dense `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B) and `qwen3_5_moe`
+/// (Qwen3.5/3.6 35B-A3B). The family gate is deliberately hardcoded to Qwen
+/// for now: it widens only when another family actually ships embedded
+/// artifacts. A Qwen checkpoint WITHOUT an embedded head is not asked about
+/// at all under `auto` — no catalog lookup, no prefetch, a plain
+/// config-disabled fallback — because embedded is the one automatic
+/// mechanism; separately published assistants (and `mtp_drafter_path`
+/// overrides) require an explicit `mtp_mode = "on"`.
 ///
-/// Family coverage alone never activates anything: artifact inspection
-/// (`SpecDecStore`), catalog/spec-dec resolution, and the process-wide kill
-/// switch remain enforced by `SpecDecArtifactFunnel`, so a family checkpoint
-/// with no MTP artifact falls back to target-only with a recorded reason.
+/// The declaration alone never activates anything: full artifact inspection
+/// and the process-wide kill switch remain enforced by
+/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
+/// target-only with a recorded reason.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
-    /// `model_type` values whose checkpoints may carry MTP artifacts. Kept in
-    /// sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel stays the
-    /// single authority on which models it will *resolve*; this set only
-    /// decides which ones `auto` is willing to *ask about*.
+    /// `model_type` values whose embedded heads self-activate under `auto`.
+    /// Kept in sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel
+    /// stays the single authority on which models it will *resolve*; this set
+    /// only decides which ones `auto` is willing to *ask about*.
     static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
 
-    func enablesMTP(forModelType modelType: String?) -> Bool {
+    func enablesMTP(forModelType modelType: String?, embeddedArtifactDeclared: Bool) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            guard let raw = modelType?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased(), !raw.isEmpty
+            guard embeddedArtifactDeclared,
+                let raw = modelType?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased(), !raw.isEmpty
             else { return false }
             return Self.automaticQwen35ModelTypes.contains(raw)
         }
@@ -204,8 +208,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var startupSelftestFailClosed: Bool
     /// MTP (multi-token prediction / speculative decoding) policy
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
-    /// Automatic mode activates the exact production Qwen3.8 target plus
-    /// Qwen3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) by model_type.
+    /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
+    /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`).
     /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
     /// absent. Serialization emits only `mtp_mode`.
     ///

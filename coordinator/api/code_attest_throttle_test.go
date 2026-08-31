@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -292,7 +293,7 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 	if th.allowPush(se, false) {
 		t.Fatal("precondition: a push within the cooldown must be blocked")
 	}
-	if !th.clearPushBudget(se) {
+	if !th.clearPushBudget(context.Background(), se) {
 		t.Fatal("the first budget reset must be honored")
 	}
 	if !th.allowPush(se, false) {
@@ -303,7 +304,7 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 	// throttled, so a provider flooding token changes can't spam APNs.
 	th.recordPush(se)          // consume the budget again
 	cur = cur.Add(time.Minute) // still within budgetClearCooldown
-	if th.clearPushBudget(se) {
+	if th.clearPushBudget(context.Background(), se) {
 		t.Fatal("a second budget reset within budgetClearCooldown must be throttled")
 	}
 	if th.allowPush(se, false) {
@@ -312,7 +313,7 @@ func TestCodeAttestThrottleClearPushBudget(t *testing.T) {
 
 	// Once budgetClearCooldown elapses, a reset is honored again.
 	cur = cur.Add(th.budgetClearCooldown)
-	if !th.clearPushBudget(se) {
+	if !th.clearPushBudget(context.Background(), se) {
 		t.Fatal("a reset after budgetClearCooldown must be honored")
 	}
 	if !th.allowPush(se, false) {

@@ -264,8 +264,13 @@ func TestMemoryCodeAttestPushAdmissionIsAtomicAndRestartSeedable(t *testing.T) {
 		t.Fatalf("atomic admissions = %d, want 1", admitted.Load())
 	}
 	rows, err := st.ListCodeAttestPushBudgets(ctx)
-	if err != nil || len(rows) != 1 || !rows[0].NextPushAt.Equal(now.Add(20*time.Minute)) {
+	if err != nil || len(rows) != 2 { // token row + admission-floor sentinel
 		t.Fatalf("persisted budget = %+v, err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if !row.NextPushAt.Equal(now.Add(20 * time.Minute)) {
+			t.Fatalf("persisted budget window = %+v", row)
+		}
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, "se", "token-hash", now.Add(time.Minute),
@@ -273,11 +278,22 @@ func TestMemoryCodeAttestPushAdmissionIsAtomicAndRestartSeedable(t *testing.T) {
 	); err != nil || ok {
 		t.Fatalf("same-token cooldown was bypassed: ok=%v err=%v", ok, err)
 	}
+	// A NOVEL token inside the admission floor must wait (Codex P1)...
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, "se", "rotated-token-hash", now.Add(time.Minute),
+		now.Add(21*time.Minute),
+	); err != nil || ok {
+		t.Fatalf("novel token bypassed the admission floor: ok=%v err=%v", ok, err)
+	}
+	// ...unless a genuine rotation lifted the floor.
+	if err := st.ClearCodeAttestPushFloor(ctx, "se"); err != nil {
+		t.Fatal(err)
+	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, "se", "rotated-token-hash", now.Add(time.Minute),
 		now.Add(21*time.Minute),
 	); err != nil || !ok {
-		t.Fatalf("new token did not get its independent budget: ok=%v err=%v", ok, err)
+		t.Fatalf("rotated token was not admitted after floor clear: ok=%v err=%v", ok, err)
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, "se", "rotated-token-hash", now.Add(2*time.Minute),
@@ -292,7 +308,7 @@ func TestMemoryCodeAttestPushAdmissionIsAtomicAndRestartSeedable(t *testing.T) {
 		t.Fatalf("token A cooldown was forgotten after A-B-A rotation: ok=%v err=%v", ok, err)
 	}
 	rows, err = st.ListCodeAttestPushBudgets(ctx)
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 3 { // two token rows + re-raised floor sentinel
 		t.Fatalf("per-token budgets = %+v, err=%v", rows, err)
 	}
 }
@@ -332,11 +348,22 @@ func TestPostgresCodeAttestPushAdmissionIsAtomic(t *testing.T) {
 	if admitted.Load() != 1 {
 		t.Fatalf("Postgres atomic admissions = %d, want 1", admitted.Load())
 	}
+	// A novel token inside the admission floor waits (Codex P1); a genuine
+	// rotation lifts the floor and admits it promptly.
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		context.Background(), seKey, "rotated-token-hash",
+		now.Add(time.Minute), now.Add(21*time.Minute),
+	); err != nil || ok {
+		t.Fatalf("Postgres novel token bypassed the admission floor: ok=%v err=%v", ok, err)
+	}
+	if err := st.ClearCodeAttestPushFloor(context.Background(), seKey); err != nil {
+		t.Fatal(err)
+	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		context.Background(), seKey, "rotated-token-hash",
 		now.Add(time.Minute), now.Add(21*time.Minute),
 	); err != nil || !ok {
-		t.Fatalf("Postgres new-token budget was not independent: ok=%v err=%v", ok, err)
+		t.Fatalf("Postgres rotated token was not admitted after floor clear: ok=%v err=%v", ok, err)
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		context.Background(), seKey, "token-hash",
@@ -344,4 +371,82 @@ func TestPostgresCodeAttestPushAdmissionIsAtomic(t *testing.T) {
 	); err != nil || ok {
 		t.Fatalf("Postgres token A cooldown was forgotten after A-B-A rotation: ok=%v err=%v", ok, err)
 	}
+}
+
+type codeAttestPushBudgetTestStore interface {
+	ReserveCodeAttestPushBudget(
+		ctx context.Context, seKey, tokenHash string,
+		now, nextPushAt time.Time,
+	) (bool, error)
+	ClearCodeAttestPushFloor(ctx context.Context, seKey string) error
+	ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAttestPushBudget, error)
+}
+
+// exerciseCodeAttestPushBudgetFloorAndCap proves the Codex P1 store contract:
+// novel tokens are paced by the per-SE-key admission floor, rows per key stay
+// capped under token churn, and a floor clear (genuine rotation) admits
+// exactly the next novel token promptly.
+func exerciseCodeAttestPushBudgetFloorAndCap(
+	t *testing.T, st codeAttestPushBudgetTestStore, seKey string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	step := 20 * time.Minute
+	at := time.Now().UTC()
+	for i := range 2 * CodeAttestPushBudgetMaxTokenRows {
+		hash := fmt.Sprintf("hash-%02d", i)
+		if ok, err := st.ReserveCodeAttestPushBudget(
+			ctx, seKey, hash, at, at.Add(step),
+		); err != nil || !ok {
+			t.Fatalf("floor-paced novel admission %d: ok=%v err=%v", i, ok, err)
+		}
+		if ok, err := st.ReserveCodeAttestPushBudget(
+			ctx, seKey, hash+"-burst", at.Add(time.Minute),
+			at.Add(time.Minute).Add(step),
+		); err != nil || ok {
+			t.Fatalf("burst novel token bypassed the floor at %d: ok=%v err=%v", i, ok, err)
+		}
+		at = at.Add(step)
+	}
+	rows, err := st.ListCodeAttestPushBudgets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenRows, floorRows := 0, 0
+	for _, row := range rows {
+		if row.SEPubKey != seKey {
+			continue
+		}
+		if row.TokenHash == "" {
+			floorRows++
+		} else {
+			tokenRows++
+		}
+	}
+	if tokenRows > CodeAttestPushBudgetMaxTokenRows || floorRows != 1 {
+		t.Fatalf("budget rows unbounded: tokens=%d floors=%d", tokenRows, floorRows)
+	}
+	if err := st.ClearCodeAttestPushFloor(ctx, seKey); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "rotated-hash", at.Add(time.Minute),
+		at.Add(time.Minute).Add(step),
+	); err != nil || !ok {
+		t.Fatalf("cleared floor did not admit the rotated token: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMemoryCodeAttestPushBudgetFloorAndCap(t *testing.T) {
+	exerciseCodeAttestPushBudgetFloorAndCap(
+		t, NewMemory(Config{}),
+		fmt.Sprintf("floor-memory-%d", time.Now().UnixNano()),
+	)
+}
+
+func TestPostgresCodeAttestPushBudgetFloorAndCap(t *testing.T) {
+	exerciseCodeAttestPushBudgetFloorAndCap(
+		t, testPostgresStore(t),
+		fmt.Sprintf("floor-postgres-%d", time.Now().UnixNano()),
+	)
 }

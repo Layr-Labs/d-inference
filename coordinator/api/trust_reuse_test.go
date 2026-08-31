@@ -488,6 +488,9 @@ func TestSelfReportedActiveHashAloneCannotGrantCodeIdentity(t *testing.T) {
 	provider.RuntimeManifestChecked = true
 	provider.MetallibVerified = true
 	provider.Mu().Unlock()
+	// The grant now validates its policy generation against the registry's
+	// live generation atomically; publish generation 1 first.
+	srv.registry.SetReleasePolicyGeneration(1, true, nil)
 	evidence := registry.ApplicationEvidence{
 		SEPublicKey: "se-pub-key-bytes", Serial: "SERIAL-1",
 		ProcessPublicKey: provider.PublicKey, APNsToken: "token-current",

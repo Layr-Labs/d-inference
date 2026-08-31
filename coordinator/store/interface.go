@@ -966,12 +966,27 @@ type CodeAttestation struct {
 // prevents a coordinator restart or blue-green overlap from forgetting a push
 // already spent for one Secure Enclave identity. TokenHash distinguishes a real
 // APNs token rotation without persisting another copy of the token.
+//
+// The row with TokenHash == "" is the per-SE-key ADMISSION FLOOR: the earliest
+// instant a push to a NOVEL (previously unbudgeted) token may be admitted.
+// Every admitted push raises it, so a device's first-ever token pushes
+// immediately while a churn of fabricated fresh tokens is paced at the same
+// per-device budget as a single token (Codex P1). A genuine mid-connection
+// rotation clears it via ClearCodeAttestPushFloor (itself throttled by the
+// api-layer budgetClearCooldown), preserving prompt re-challenge (Codex #9).
 type CodeAttestPushBudget struct {
 	SEPubKey   string
-	TokenHash  string
+	TokenHash  string // "" = per-SE-key admission-floor sentinel, not a token row
 	NextPushAt time.Time
 	UpdatedAt  time.Time
 }
+
+// CodeAttestPushBudgetMaxTokenRows caps durable per-token budget rows kept per
+// Secure Enclave key. Admission keeps the most recently used rows; an evicted
+// token that returns (deep A-B-A) is treated as novel and paced by the
+// admission floor instead of its exact historical cooldown. Bounds table growth
+// and the startup seed map against unbounded token fabrication.
+const CodeAttestPushBudgetMaxTokenRows = 8
 
 // ProviderTrustReuse is durable device evidence, not a credential. A row can
 // only avoid a redundant MDM round-trip after a fresh registration-bound

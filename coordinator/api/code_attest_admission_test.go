@@ -104,7 +104,7 @@ func TestCodeAttestTokenRotationSerializesBudgetResetWithReservation(t *testing.
 
 	rotated := make(chan uint64, 1)
 	go func() {
-		rotated <- th.rotateLoopAndClearPushBudget("se-rotate")
+		rotated <- th.rotateLoopAndClearPushBudget(context.Background(), "se-rotate")
 	}()
 	select {
 	case <-rotated:
@@ -142,8 +142,13 @@ func TestCodeAttestZeroCooldownStillMakesValidDurableReservation(t *testing.T) {
 		t.Fatal("zero cooldown produced an invalid durable reservation window")
 	}
 	rows, err := st.ListCodeAttestPushBudgets(context.Background())
-	if err != nil || len(rows) != 1 || !rows[0].NextPushAt.After(now) {
+	if err != nil || len(rows) != 2 { // token row + admission-floor sentinel
 		t.Fatalf("zero-cooldown durable reservation = %+v, err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if !row.NextPushAt.After(now) {
+			t.Fatalf("zero cooldown produced a non-future reservation window: %+v", row)
+		}
 	}
 }
 
@@ -311,7 +316,12 @@ func TestCodeAttestPushCooldownSurvivesCoordinatorRestart(t *testing.T) {
 	}
 }
 
-func TestCodeAttestNewTokenUsesIndependentBudgetAfterRestart(t *testing.T) {
+// Codex P1 (durable half): the novel-token admission floor survives a
+// coordinator restart, so a reconnect churn of fabricated tokens cannot mint
+// immediate pushes against a fresh instance. The novel token waits out the
+// seeded floor, then admits; the old token stays on its own exact cooldown
+// (A-B-A retention).
+func TestCodeAttestNovelTokenAfterRestartWaitsForSeededFloor(t *testing.T) {
 	st := store.NewMemory(store.Config{})
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	if ok, err := st.ReserveCodeAttestPushBudget(
@@ -325,14 +335,15 @@ func TestCodeAttestNewTokenUsesIndependentBudgetAfterRestart(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	t.Cleanup(srv.Close)
-	srv.codeAttestThrottle.now = func() time.Time { return now.Add(time.Minute) }
+	cur := now.Add(time.Minute)
+	srv.codeAttestThrottle.now = func() time.Time { return cur }
 	srv.SeedCodeAttestCache(context.Background())
 	generation := srv.codeAttestThrottle.beginLoop("se-rotated-after-restart")
-	if !srv.codeAttestThrottle.tryReservePush(
+	if srv.codeAttestThrottle.tryReservePush(
 		context.Background(), "se-rotated-after-restart",
 		"new-token", false, generation,
 	) {
-		t.Fatal("seeded old-token cooldown blocked a new token after restart")
+		t.Fatal("novel token bypassed the seeded per-device admission floor after restart")
 	}
 	oldGeneration := srv.codeAttestThrottle.beginLoop(
 		"se-rotated-after-restart",
@@ -341,7 +352,17 @@ func TestCodeAttestNewTokenUsesIndependentBudgetAfterRestart(t *testing.T) {
 		context.Background(), "se-rotated-after-restart",
 		"old-token", false, oldGeneration,
 	) {
-		t.Fatal("new-token reservation erased the old-token cooldown after restart")
+		t.Fatal("restart forgot the old token's exact cooldown")
+	}
+	cur = now.Add(21 * time.Minute)
+	lateGeneration := srv.codeAttestThrottle.beginLoop(
+		"se-rotated-after-restart",
+	)
+	if !srv.codeAttestThrottle.tryReservePush(
+		context.Background(), "se-rotated-after-restart",
+		"new-token", false, lateGeneration,
+	) {
+		t.Fatal("novel token stayed blocked after the seeded floor elapsed")
 	}
 }
 
@@ -350,20 +371,21 @@ func TestCodeAttestNovelTokenChurnHonorsPerDeviceFloor(t *testing.T) {
 	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	th.now = func() time.Time { return cur }
 	th.budgetClearCooldown = 10 * time.Minute
+	th.backgroundPushCooldown = 10 * time.Minute
 	genA := th.beginLoop("se-token-churn")
 	if !th.tryReservePush(
 		context.Background(), "se-token-churn", "token-a", false, genA,
 	) {
 		t.Fatal("initial token was not admitted")
 	}
-	genB := th.rotateLoopAndClearPushBudget("se-token-churn")
+	genB := th.rotateLoopAndClearPushBudget(context.Background(), "se-token-churn")
 	if !th.tryReservePush(
 		context.Background(), "se-token-churn", "token-b", false, genB,
 	) {
 		t.Fatal("first genuine token rotation was not admitted")
 	}
 	cur = cur.Add(time.Minute)
-	genC := th.rotateLoopAndClearPushBudget("se-token-churn")
+	genC := th.rotateLoopAndClearPushBudget(context.Background(), "se-token-churn")
 	if th.tryReservePush(
 		context.Background(), "se-token-churn", "token-c", false, genC,
 	) {
@@ -388,14 +410,14 @@ func TestCodeAttestLocalBudgetPreservesABACooldown(t *testing.T) {
 	) {
 		t.Fatal("initial token A was not admitted")
 	}
-	genB := th.rotateLoopAndClearPushBudget("se-aba")
+	genB := th.rotateLoopAndClearPushBudget(context.Background(), "se-aba")
 	if !th.tryReservePush(
 		context.Background(), "se-aba", "token-b", false, genB,
 	) {
 		t.Fatal("token B did not receive an independent budget")
 	}
 	cur = cur.Add(2 * time.Minute)
-	genA = th.rotateLoopAndClearPushBudget("se-aba")
+	genA = th.rotateLoopAndClearPushBudget(context.Background(), "se-aba")
 	if th.tryReservePush(
 		context.Background(), "se-aba", "token-a", false, genA,
 	) {
@@ -410,7 +432,7 @@ func TestCodeAttestTokenRotationInvalidatesLoopAndProofNotDeviceEvidence(t *test
 	th.recordAttestedForProcess("se", "1.0", "old-token", "process")
 	oldGeneration := th.beginLoop("se")
 	th.invalidateReuse("se")
-	newGeneration := th.rotateLoopAndClearPushBudget("se")
+	newGeneration := th.rotateLoopAndClearPushBudget(context.Background(), "se")
 	if th.loopCurrent("se", oldGeneration) {
 		t.Fatal("token rotation did not invalidate prior loop generation")
 	}
@@ -433,5 +455,104 @@ func TestCodeAttestTokenRotationInvalidatesLoopAndProofNotDeviceEvidence(t *test
 	rows, err := st.ListProviderTrustReuse(context.Background())
 	if err != nil || len(rows) != 1 || rows[0].SEPubKey != "se" {
 		t.Fatalf("device evidence changed during token rotation: %+v, %v", rows, err)
+	}
+}
+
+// Codex P1 acceptance: a provider reconnecting rapidly with a fresh fabricated
+// APNs token per registration (beginLoop path — no rotation allowance) gets
+// exactly ONE immediate push; every further novel token is paced by the
+// per-SE-key admission floor, and both durable rows and in-memory budget maps
+// stay bounded.
+func TestCodeAttestReconnectTokenChurnPacedByAdmissionFloor(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	th := newCodeAttestThrottle()
+	th.store = st
+	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	th.now = func() time.Time { return cur }
+	const se = "se-reconnect-churn"
+	ctx := context.Background()
+
+	admitted := 0
+	for i := range 20 {
+		generation := th.beginLoop(se)
+		if th.tryReservePush(
+			ctx, se, fmt.Sprintf("fabricated-token-%d", i), false, generation,
+		) {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("rapid reconnect churn admissions = %d, want 1 immediate push", admitted)
+	}
+	rows, err := st.ListCodeAttestPushBudgets(ctx)
+	if err != nil || len(rows) != 2 { // one token row + the floor sentinel
+		t.Fatalf("token churn minted durable budget rows: %+v, err=%v", rows, err)
+	}
+
+	// Once the floor elapses, exactly one more novel token is admitted.
+	cur = cur.Add(th.backgroundPushCooldown)
+	admitted = 0
+	for i := range 5 {
+		generation := th.beginLoop(se)
+		if th.tryReservePush(
+			ctx, se, fmt.Sprintf("late-token-%d", i), false, generation,
+		) {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("post-floor churn admissions = %d, want 1", admitted)
+	}
+
+	// Long-run floor-paced churn keeps durable rows and in-memory maps bounded.
+	for i := range 3 * store.CodeAttestPushBudgetMaxTokenRows {
+		cur = cur.Add(th.backgroundPushCooldown)
+		generation := th.beginLoop(se)
+		if !th.tryReservePush(
+			ctx, se, fmt.Sprintf("slow-token-%d", i), false, generation,
+		) {
+			t.Fatalf("floor-spaced push %d was denied", i)
+		}
+	}
+	rows, err = st.ListCodeAttestPushBudgets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenRows := 0
+	for _, row := range rows {
+		if row.TokenHash != "" {
+			tokenRows++
+		}
+	}
+	if tokenRows > store.CodeAttestPushBudgetMaxTokenRows ||
+		len(rows) > store.CodeAttestPushBudgetMaxTokenRows+1 {
+		t.Fatalf("durable budget rows unbounded: tokens=%d total=%d", tokenRows, len(rows))
+	}
+	th.mu.Lock()
+	inMemory := len(th.lastPush) + len(th.durableNextPush)
+	th.mu.Unlock()
+	if inMemory > 2*store.CodeAttestPushBudgetMaxTokenRows {
+		t.Fatalf("in-memory budget maps unbounded: %d entries", inMemory)
+	}
+}
+
+// A genuine (heartbeat-rotation) budget clear lifts the DURABLE admission floor
+// too, so the rotated token is challenged promptly even against the durable
+// gate — preserving Codex #9 while the floor blocks registration churn.
+func TestCodeAttestGenuineRotationClearsDurableFloor(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	th := newCodeAttestThrottle()
+	th.store = st
+	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	th.now = func() time.Time { return cur }
+	const se = "se-genuine-rotation"
+
+	generation := th.beginLoop(se)
+	if !th.tryReservePush(context.Background(), se, "token-a", false, generation) {
+		t.Fatal("initial token was not admitted")
+	}
+	rotated := th.rotateLoopAndClearPushBudget(context.Background(), se)
+	if !th.tryReservePush(context.Background(), se, "token-b", false, rotated) {
+		t.Fatal("genuinely rotated token was blocked by the durable admission floor")
 	}
 }

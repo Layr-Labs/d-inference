@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,7 @@ type codeAttestPushBudgetStore interface {
 		seKey, tokenHash string,
 		now, nextPushAt time.Time,
 	) (bool, error)
+	ClearCodeAttestPushFloor(ctx context.Context, seKey string) error
 }
 
 // codeAttestThrottle keeps APNs code-identity pushes within Apple's background-
@@ -74,8 +76,19 @@ type codeAttestThrottle struct {
 	loopTokens             map[string]string
 	durableNextPush        map[string]time.Time
 	novelTokenBlockedUntil map[string]time.Time
-	reservationLocks       map[string]*codeAttestReservationLock
-	reuseWindow            time.Duration
+	// novelPushFloor is the per-SE-key admission floor for NOVEL tokens: every
+	// admitted push raises it, so a device's first token pushes immediately but
+	// a reconnect churn of fabricated fresh tokens is paced at the same
+	// per-device budget as one token (Codex P1). Cleared only by an honored
+	// (budgetClearCooldown-throttled) genuine rotation. Mirrors the durable
+	// TokenHash=="" sentinel row so the floor survives restarts.
+	novelPushFloor map[string]time.Time
+	// budgetTokenOrder tracks per-SE-key token budget entries in recency order
+	// so lastPush/durableNextPush stay bounded under token churn (newest
+	// store.CodeAttestPushBudgetMaxTokenRows kept, matching the durable cap).
+	budgetTokenOrder map[string][]string
+	reservationLocks map[string]*codeAttestReservationLock
+	reuseWindow      time.Duration
 
 	// Push budget (the hard background-push rate-limit backstop) is mode-aware:
 	// allowPush picks the cooldown by delivery mode.
@@ -157,6 +170,8 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		loopTokens:             make(map[string]string),
 		durableNextPush:        make(map[string]time.Time),
 		novelTokenBlockedUntil: make(map[string]time.Time),
+		novelPushFloor:         make(map[string]time.Time),
+		budgetTokenOrder:       make(map[string][]string),
 		reservationLocks:       make(map[string]*codeAttestReservationLock),
 		reuseWindow:            30 * time.Minute,
 		backgroundPushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
@@ -287,15 +302,21 @@ func (t *codeAttestThrottle) beginLoopReservationHeld(seKey string) uint64 {
 
 // rotateLoopAndClearPushBudget makes token-rotation ownership and budget reset
 // one per-device operation. An old loop cannot reserve the just-cleared budget
-// between the generation change and the new loop taking ownership.
-func (t *codeAttestThrottle) rotateLoopAndClearPushBudget(seKey string) uint64 {
+// between the generation change and the new loop taking ownership. An honored
+// (unthrottled) reset also clears the durable novel-token admission floor so
+// the rotated token is challenged promptly across restarts and peers.
+func (t *codeAttestThrottle) rotateLoopAndClearPushBudget(
+	ctx context.Context, seKey string,
+) uint64 {
 	if seKey == "" {
 		return 0
 	}
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
 	generation := t.beginLoopReservationHeld(seKey)
-	t.clearPushBudgetReservationHeld(seKey)
+	if t.clearPushBudgetReservationHeld(seKey) {
+		t.clearDurablePushFloorReservationHeld(ctx, seKey)
+	}
 	return generation
 }
 
@@ -389,12 +410,25 @@ func (t *codeAttestThrottle) reservePush(
 	budgetKey := codeAttestPushBudgetKey(seKey, tokenHash)
 	_, seenLastPush := t.lastPush[budgetKey]
 	_, seenDurablePush := t.durableNextPush[budgetKey]
-	if blockedUntil := t.novelTokenBlockedUntil[seKey]; blockedUntil.After(now) && !seenLastPush && !seenDurablePush {
+	novelToken := !seenLastPush && !seenDurablePush
+	if blockedUntil := t.novelTokenBlockedUntil[seKey]; blockedUntil.After(now) && novelToken {
 		t.mu.Unlock()
 		unlockReservation()
 		return nil, false
 	} else if !blockedUntil.IsZero() && !blockedUntil.After(now) {
 		delete(t.novelTokenBlockedUntil, seKey)
+	}
+	// Per-SE-key admission floor: a token this device never budgeted may only
+	// push once the floor from the LAST push (to any token) has elapsed. The
+	// first-ever token has no floor and admits immediately; a reconnect churn
+	// of fabricated fresh tokens is paced like a single token (Codex P1).
+	if floor, ok := t.novelPushFloor[seKey]; ok && novelToken {
+		if floor.After(now) {
+			t.mu.Unlock()
+			unlockReservation()
+			return nil, false
+		}
+		delete(t.novelPushFloor, seKey)
 	}
 	if last, ok := t.lastPush[budgetKey]; ok &&
 		now.Sub(last) < cooldown {
@@ -432,8 +466,31 @@ func (t *codeAttestThrottle) reservePush(
 	}
 	t.lastPush[budgetKey] = now
 	t.durableNextPush[budgetKey] = next
+	if next.After(t.novelPushFloor[seKey]) {
+		t.novelPushFloor[seKey] = next
+	}
+	t.noteBudgetTokenReservationHeld(seKey, tokenHash)
 	t.mu.Unlock()
 	return unlockReservation, true
+}
+
+// noteBudgetTokenReservationHeld (t.mu held) tracks per-SE-key token budget
+// entries in recency order and evicts the oldest beyond the durable cap, so
+// lastPush/durableNextPush cannot grow unboundedly under token churn. An
+// evicted token that returns falls back to the admission floor.
+func (t *codeAttestThrottle) noteBudgetTokenReservationHeld(seKey, tokenHash string) {
+	order := t.budgetTokenOrder[seKey]
+	if i := slices.Index(order, tokenHash); i >= 0 {
+		order = append(order[:i], order[i+1:]...)
+	}
+	order = append(order, tokenHash)
+	for len(order) > store.CodeAttestPushBudgetMaxTokenRows {
+		evictedKey := codeAttestPushBudgetKey(seKey, order[0])
+		delete(t.lastPush, evictedKey)
+		delete(t.durableNextPush, evictedKey)
+		order = order[1:]
+	}
+	t.budgetTokenOrder[seKey] = order
 }
 
 func (t *codeAttestThrottle) tryReservePush(
@@ -460,13 +517,17 @@ func (t *codeAttestThrottle) tryReservePush(
 // per device, so a provider that floods token changes in heartbeats cannot reset
 // the budget every time and spam APNs beyond the per-device budget. Returns
 // whether the budget was actually cleared (false = the reset was throttled).
-func (t *codeAttestThrottle) clearPushBudget(seKey string) bool {
+func (t *codeAttestThrottle) clearPushBudget(ctx context.Context, seKey string) bool {
 	if seKey == "" {
 		return false
 	}
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
-	return t.clearPushBudgetReservationHeld(seKey)
+	cleared := t.clearPushBudgetReservationHeld(seKey)
+	if cleared {
+		t.clearDurablePushFloorReservationHeld(ctx, seKey)
+	}
+	return cleared
 }
 
 func (t *codeAttestThrottle) clearPushBudgetReservationHeld(seKey string) bool {
@@ -479,6 +540,11 @@ func (t *codeAttestThrottle) clearPushBudgetReservationHeld(seKey string) bool {
 	}
 	t.lastBudgetClear[seKey] = t.now()
 	delete(t.novelTokenBlockedUntil, seKey)
+	// An honored rotation lifts the novel-token admission floor: the freshly
+	// registered token must be challengeable immediately (Codex #9). The reset
+	// itself is budgetClearCooldown-throttled, so floor lifting cannot be
+	// flooded into unbounded novel-token admissions.
+	delete(t.novelPushFloor, seKey)
 	// Composite (SE, token-hash) entries intentionally survive rotation. They
 	// preserve A-B-A cooldowns; a genuinely new token has no composite entry and
 	// therefore receives its independent budget. Only pre-composite legacy keys
@@ -486,6 +552,22 @@ func (t *codeAttestThrottle) clearPushBudgetReservationHeld(seKey string) bool {
 	delete(t.lastPush, seKey)
 	delete(t.durableNextPush, seKey)
 	return true
+}
+
+// clearDurablePushFloorReservationHeld mirrors an honored floor clear to the
+// durable store (reservation lock held, t.mu NOT held). Best-effort: on store
+// failure the durable floor stays, which only DELAYS the rotated token's push
+// until the floor elapses — it never weakens the rate limit (fail-closed).
+func (t *codeAttestThrottle) clearDurablePushFloorReservationHeld(
+	ctx context.Context, seKey string,
+) {
+	t.mu.Lock()
+	st, ok := t.store.(codeAttestPushBudgetStore)
+	t.mu.Unlock()
+	if !ok {
+		return
+	}
+	_ = st.ClearCodeAttestPushFloor(ctx, seKey)
 }
 
 func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
@@ -755,17 +837,31 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 		if err != nil {
 			s.logger.Warn("code-attest: failed to seed durable push budgets", "error", err)
 		} else {
-			s.codeAttestThrottle.mu.Lock()
+			th := s.codeAttestThrottle
+			th.mu.Lock()
 			for _, budget := range budgets {
-				if budget.SEPubKey != "" &&
-					budget.NextPushAt.After(s.codeAttestThrottle.now()) {
-					key := codeAttestPushBudgetKey(
-						budget.SEPubKey, budget.TokenHash,
-					)
-					s.codeAttestThrottle.durableNextPush[key] = budget.NextPushAt
+				if budget.SEPubKey == "" ||
+					!budget.NextPushAt.After(th.now()) {
+					continue
 				}
+				if budget.TokenHash == "" {
+					// Sentinel row: the per-SE-key novel-token admission floor
+					// (also the shape of legacy pre-composite rows, whose
+					// per-SE budget means exactly this). Codex P1.
+					if budget.NextPushAt.After(th.novelPushFloor[budget.SEPubKey]) {
+						th.novelPushFloor[budget.SEPubKey] = budget.NextPushAt
+					}
+					continue
+				}
+				key := codeAttestPushBudgetKey(
+					budget.SEPubKey, budget.TokenHash,
+				)
+				th.durableNextPush[key] = budget.NextPushAt
+				th.noteBudgetTokenReservationHeld(
+					budget.SEPubKey, budget.TokenHash,
+				)
 			}
-			s.codeAttestThrottle.mu.Unlock()
+			th.mu.Unlock()
 		}
 	}
 }

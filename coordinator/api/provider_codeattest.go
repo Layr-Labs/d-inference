@@ -339,7 +339,7 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		s.codeAttestThrottle.invalidateReuse(seKey)
 		s.codeAttestThrottle.clearChallenge(seKey)
 		s.codeAttestThrottle.clearResumeChallenges(providerID)
-		loopGeneration = s.codeAttestThrottle.rotateLoopAndClearPushBudget(seKey)
+		loopGeneration = s.codeAttestThrottle.rotateLoopAndClearPushBudget(ctx, seKey)
 		s.invalidatePersistedCodeAttestation(seKey)
 		s.codeAttestMetric("rearm_token_changed")
 		s.logger.Info("code-attest: APNs device token changed; forcing re-challenge")

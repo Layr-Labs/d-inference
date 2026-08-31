@@ -760,15 +760,26 @@ type DeviceEvidence struct {
 }
 
 type ApplicationEvidence struct {
-	SEPublicKey        string
-	Serial             string
-	ProcessPublicKey   string
-	APNsToken          string
-	BinaryHash         string
-	Version            string
-	Platform           string
-	Backend            string
-	RuntimeHash        string
+	SEPublicKey      string
+	Serial           string
+	ProcessPublicKey string
+	// APNsToken binds the evidence to the provider's APNs device token when it
+	// has one. It MAY be empty: tokenless (legacy/headless) providers with a
+	// valid signed challenge still earn application evidence — APNs token
+	// possession is enforced exclusively by the APNs code-identity gate.
+	APNsToken   string
+	BinaryHash  string
+	Version     string
+	Platform    string
+	Backend     string
+	RuntimeHash string
+	// PythonHash and TemplateHashes retain the release-specific runtime facts
+	// the challenge proved, so a policy refresh can re-prove EVERY
+	// releaseRuntimeMatches input against the new snapshot instead of assuming
+	// them unchanged. TemplateHashes is never mutated after the grant (the
+	// struct is copied by value; the map is shared read-only).
+	PythonHash         string
+	TemplateHashes     map[string]string
 	MetallibHash       string
 	VerifiedAt         time.Time
 	EvidenceGeneration uint64
@@ -1004,7 +1015,8 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 		if evidence.EvidenceGeneration == 0 ||
 			evidence.PolicyGeneration != r.releasePolicyGeneration ||
 			evidence.ProcessPublicKey != p.PublicKey ||
-			evidence.APNsToken == "" ||
+			// Tokenless providers pass with matching empty tokens; APNs token
+			// possession is enforced only by the code-identity gate below.
 			evidence.APNsToken != p.APNsDeviceToken ||
 			evidence.Version != p.Version ||
 			evidence.Backend != p.Backend ||
@@ -1198,11 +1210,34 @@ func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvi
 // release/runtime fact from a fresh signed process challenge. It deliberately
 // does not set either code-attestation flag: self-measured hashes authenticate
 // the claimant, not genuine Apple/APNs code identity.
+//
+// The evidence's policy generation is validated against the registry's live
+// release-policy generation ATOMICALLY with the install (registry read-lock
+// held across the provider-lock critical section, matching
+// SetReleasePolicyGeneration's r.mu → p.mu order). This closes the
+// clear/derive/grant race: a challenge that derived evidence from the OLD
+// policy snapshot must not install it after a generation sweep — the sweep
+// never saw that evidence, so the provider would otherwise idle un-kicked with
+// stale-generation, unroutable evidence until the periodic ticker. A grant
+// carrying a non-current generation is refused and the provider receives the
+// same immediate out-of-band re-challenge kick a sweep invalidation triggers.
+//
+// An APNs device token is deliberately NOT required: tokenless
+// (legacy/headless) providers with a valid signed challenge still earn
+// application evidence. Token possession is enforced exclusively by the APNs
+// code-identity gate; when the provider does hold a token, the evidence must
+// still be bound to it.
 func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEvidence) bool {
+	r := p.registry
+	if r != nil {
+		r.mu.RLock()
+	}
+	staleGeneration := r != nil && evidence.PolicyGeneration != r.releasePolicyGeneration
 	p.mu.Lock()
-	if p.Status == StatusUntrusted ||
+	if staleGeneration ||
+		p.Status == StatusUntrusted ||
 		evidence.SEPublicKey == "" || evidence.Serial == "" ||
-		evidence.ProcessPublicKey == "" || evidence.APNsToken == "" ||
+		evidence.ProcessPublicKey == "" ||
 		evidence.PolicyGeneration == 0 ||
 		p.PublicKey != evidence.ProcessPublicKey ||
 		p.APNsDeviceToken != evidence.APNsToken ||
@@ -1213,12 +1248,23 @@ func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEv
 		p.AttestationResult.SerialNumber != evidence.Serial ||
 		!p.RuntimeVerified || !p.RuntimeManifestChecked || !p.MetallibVerified {
 		p.mu.Unlock()
+		if r != nil {
+			r.mu.RUnlock()
+		}
+		if staleGeneration {
+			// Same recovery path as a sweep invalidation: re-verify now
+			// instead of leaving the provider unroutable until the next tick.
+			p.RequestImmediateChallenge()
+		}
 		return false
 	}
 	p.applicationEvidenceGeneration++
 	evidence.EvidenceGeneration = p.applicationEvidenceGeneration
 	p.ApplicationEvidence = evidence
 	p.mu.Unlock()
+	if r != nil {
+		r.mu.RUnlock()
+	}
 	p.SignalApplicationProofSettled()
 	p.reconcileRuntimeCapabilities()
 	return true
@@ -1525,8 +1571,10 @@ func (r *Registry) SetCodeAttestationPolicy(configured bool, deadline time.Time)
 // Evidence the new policy no longer approves (or that no predicate can vouch
 // for) is removed synchronously, and those provider IDs are returned so the
 // caller can trigger an immediate re-challenge instead of waiting for the
-// periodic ticker. A concurrently completing old challenge can only install
-// the old generation and remains ineligible.
+// periodic ticker. A concurrently completing old challenge cannot install
+// evidence at all: GrantApplicationEvidenceIfNotUntrusted refuses any grant
+// whose generation is not current (atomically, under the same registry lock)
+// and kicks that provider for an immediate re-challenge.
 func (r *Registry) SetReleasePolicyGeneration(
 	generation uint64, required bool,
 	stillApproved func(ApplicationEvidence) bool,

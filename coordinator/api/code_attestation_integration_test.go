@@ -367,6 +367,7 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	srv.codeAttestThrottle.mu.Lock()
 	delete(srv.codeAttestThrottle.lastPush, budgetKey)
 	delete(srv.codeAttestThrottle.durableNextPush, budgetKey)
+	delete(srv.codeAttestThrottle.novelPushFloor, sePubB64)
 	srv.codeAttestThrottle.mu.Unlock()
 	if err := st.DeleteCodeAttestPushBudget(
 		context.Background(), sePubB64,

@@ -3237,7 +3237,7 @@ func (s *MemoryStore) ReserveCodeAttestPushBudget(
 	seKey, tokenHash string,
 	now, nextPushAt time.Time,
 ) (bool, error) {
-	if seKey == "" || !nextPushAt.After(now) {
+	if seKey == "" || tokenHash == "" || !nextPushAt.After(now) {
 		return false, errors.New("store: invalid code attest push reservation")
 	}
 	s.mu.Lock()
@@ -3247,11 +3247,79 @@ func (s *MemoryStore) ReserveCodeAttestPushBudget(
 	if ok && current.NextPushAt.After(now) {
 		return false, nil
 	}
+	floorKey := codeAttestPushBudgetMapKey(seKey, "")
+	if !ok {
+		// Novel token: admission must additionally clear the per-SE-key floor,
+		// so fabricating fresh tokens cannot mint fresh budgets (Codex P1).
+		if floor, has := s.codeAttestPushBudgets[floorKey]; has &&
+			floor.NextPushAt.After(now) {
+			return false, nil
+		}
+	}
 	s.codeAttestPushBudgets[key] = CodeAttestPushBudget{
 		SEPubKey: seKey, TokenHash: tokenHash,
 		NextPushAt: nextPushAt, UpdatedAt: now,
 	}
+	// Every admitted push raises the admission floor for novel tokens.
+	if floor, has := s.codeAttestPushBudgets[floorKey]; !has ||
+		nextPushAt.After(floor.NextPushAt) {
+		s.codeAttestPushBudgets[floorKey] = CodeAttestPushBudget{
+			SEPubKey: seKey, NextPushAt: nextPushAt, UpdatedAt: now,
+		}
+	}
+	s.pruneCodeAttestPushBudgetsLocked(seKey)
 	return true, nil
+}
+
+// ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
+// a genuinely rotated token can be challenged promptly. Per-token cooldown rows
+// are untouched (A-B-A retention). Callers throttle how often this runs.
+func (s *MemoryStore) ClearCodeAttestPushFloor(_ context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	s.mu.Lock()
+	delete(s.codeAttestPushBudgets, codeAttestPushBudgetMapKey(seKey, ""))
+	s.mu.Unlock()
+	return nil
+}
+
+// pruneCodeAttestPushBudgetsLocked keeps the newest
+// CodeAttestPushBudgetMaxTokenRows token rows (never the floor sentinel) for
+// one SE key, bounding growth under token churn.
+func (s *MemoryStore) pruneCodeAttestPushBudgetsLocked(seKey string) {
+	prefix := seKey + "\x00"
+	floorKey := codeAttestPushBudgetMapKey(seKey, "")
+	type row struct {
+		key string
+		rec CodeAttestPushBudget
+	}
+	var rows []row
+	for key, rec := range s.codeAttestPushBudgets {
+		if key != floorKey && strings.HasPrefix(key, prefix) {
+			rows = append(rows, row{key, rec})
+		}
+	}
+	for len(rows) > CodeAttestPushBudgetMaxTokenRows {
+		oldest := 0
+		for i, candidate := range rows {
+			if codeAttestPushBudgetOlder(candidate.rec, rows[oldest].rec) {
+				oldest = i
+			}
+		}
+		delete(s.codeAttestPushBudgets, rows[oldest].key)
+		rows[oldest] = rows[len(rows)-1]
+		rows = rows[:len(rows)-1]
+	}
+}
+
+// codeAttestPushBudgetOlder matches the Postgres prune order
+// (updated_at DESC, token_hash DESC keeps newest).
+func codeAttestPushBudgetOlder(a, b CodeAttestPushBudget) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.Before(b.UpdatedAt)
+	}
+	return a.TokenHash < b.TokenHash
 }
 
 // --- Provider trust-reuse cache (DAR-326 Phase 0) ---

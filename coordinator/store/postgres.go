@@ -5137,22 +5137,49 @@ func (s *PostgresStore) ReserveCodeAttestPushBudget(
 	seKey, tokenHash string,
 	now, nextPushAt time.Time,
 ) (bool, error) {
-	if seKey == "" || !nextPushAt.After(now) {
+	if seKey == "" || tokenHash == "" || !nextPushAt.After(now) {
 		return false, errors.New("store: invalid code attest push reservation")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// Token row = per-token cooldown (A-B-A retention). Sentinel row
+	// (token_hash = '') = per-SE-key admission floor: a NOVEL token (no row) is
+	// only admitted once the floor has elapsed, so fabricated fresh tokens
+	// cannot mint fresh budgets (Codex P1). Every admission raises the floor.
 	var admitted bool
 	err := s.pool.QueryRow(ctx,
-		`WITH admitted AS (
+		`WITH floor_blocked AS (
+			SELECT 1 FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = ''
+			   AND next_push_at > $3
+			   AND NOT EXISTS (
+				SELECT 1 FROM code_attest_push_budgets
+				 WHERE se_pubkey = $1 AND token_hash = $2
+			   )
+		),
+		admitted AS (
 			INSERT INTO code_attest_push_budgets (
 				se_pubkey, token_hash, next_push_at, updated_at
-			) VALUES ($1, $2, $4, $3)
+			)
+			SELECT $1, $2, $4, $3
+			 WHERE NOT EXISTS (SELECT 1 FROM floor_blocked)
 			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
 				next_push_at = EXCLUDED.next_push_at,
 				updated_at = EXCLUDED.updated_at
 			WHERE code_attest_push_budgets.next_push_at <= $3
 			RETURNING 1
+		),
+		floor_raised AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3 FROM admitted
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = GREATEST(
+					code_attest_push_budgets.next_push_at,
+					EXCLUDED.next_push_at
+				),
+				updated_at = EXCLUDED.updated_at
 		)
 		SELECT EXISTS (SELECT 1 FROM admitted)`,
 		seKey, tokenHash, now, nextPushAt,
@@ -5160,7 +5187,42 @@ func (s *PostgresStore) ReserveCodeAttestPushBudget(
 	if err != nil {
 		return false, fmt.Errorf("store: reserve code attest push budget: %w", err)
 	}
+	if admitted {
+		// Bound rows per SE key: keep the newest token rows plus the floor
+		// sentinel. Best-effort — a failure only delays GC to the next push.
+		if _, err := s.pool.Exec(ctx,
+			`DELETE FROM code_attest_push_budgets
+			  WHERE se_pubkey = $1 AND token_hash <> ''
+			    AND token_hash NOT IN (
+				SELECT token_hash FROM code_attest_push_budgets
+				 WHERE se_pubkey = $1 AND token_hash <> ''
+				 ORDER BY updated_at DESC, token_hash DESC
+				 LIMIT $2
+			    )`,
+			seKey, CodeAttestPushBudgetMaxTokenRows,
+		); err != nil {
+			return true, nil
+		}
+	}
 	return admitted, nil
+}
+
+// ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
+// a genuinely rotated token can be challenged promptly. Per-token cooldown rows
+// are untouched (A-B-A retention). Callers throttle how often this runs.
+func (s *PostgresStore) ClearCodeAttestPushFloor(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM code_attest_push_budgets
+		  WHERE se_pubkey = $1 AND token_hash = ''`, seKey,
+	); err != nil {
+		return fmt.Errorf("store: clear code attest push floor: %w", err)
+	}
+	return nil
 }
 
 // --- Durable provider device evidence ---

@@ -134,7 +134,15 @@ jobs:
                  "the kill switch degrades paged silently and voids this gate"
             exit 1
           fi
+          # NonStreamingInference leads the gate (it precedes the others in
+          # source order): the first inference on a runner-cold provider pays
+          # the one-time Metal/graph warm-up, and a pathologically slow first
+          # prefill sample would otherwise seed GreedyDeterminism's isolated
+          # prefill EWMA so low that first-content deadline admission refuses
+          # its second attempt (master's broad regex lane absorbed this cost
+          # in whichever test happened to run first).
           expected_tests=(
+            TestIntegration_NonStreamingInference
             TestIntegration_GreedyDeterminism
             TestIntegration_BillingAccounting
             TestIntegration_ConcurrentRequests
@@ -147,7 +155,7 @@ jobs:
                "kv_backend=$DARKBLOOM_TESTBED_EXPECT_KV_BACKEND."
           paged_log="$RUNNER_TEMP/paged-integration.log"
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run '^(TestIntegration_GreedyDeterminism|TestIntegration_BillingAccounting|TestIntegration_ConcurrentRequests|TestIntegration_ProviderMetadata)$' \
+            -run '^(TestIntegration_NonStreamingInference|TestIntegration_GreedyDeterminism|TestIntegration_BillingAccounting|TestIntegration_ConcurrentRequests|TestIntegration_ProviderMetadata)$' \
             2>&1 | tee "$paged_log"
           for test_name in "${expected_tests[@]}"; do
             run_count=$(grep -c "^=== RUN   ${test_name}$" "$paged_log" || true)

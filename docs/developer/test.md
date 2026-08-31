@@ -26,15 +26,21 @@ cd coordinator && go test -race ./...
 ```
 
 Coordinator CI has a more exact package split. It first races the fast E2E
-testbed helpers, then races every Go package except the top-level system E2E
-package:
+testbed helpers, then runs the hermetic root-e2e policy tests by exact name
+(pure-logic tests in the excluded system E2E package that must not depend on
+the approval-gated workflows for their only execution: the four
+`TestBenchmark*` suite-config/control/saturation policy tests plus
+`TestQwen38GatePolicy` and `TestQwen38ExpectedBuiltKVBackend`, each with an
+executed-count tripwire), then races every Go package except the top-level
+system E2E package:
 
 ```bash
 go test -race ./e2e/testbed/...
+go test -race ./e2e/ -run '^(TestBenchmarkSuiteConfig…|TestQwen38…)$'  # exact list in ci.yml
 go test -race $(go list ./... | grep -vxF 'github.com/eigeninference/d-inference/e2e')
 ```
 
-The second selector still includes `coordinator/internal/e2e` and all E2E
+The last selector still includes `coordinator/internal/e2e` and all E2E
 helper subpackages. CI supplies a Postgres 16 service through `DATABASE_URL`
 ([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)).
 

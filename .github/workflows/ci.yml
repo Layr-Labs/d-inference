@@ -41,6 +41,32 @@ jobs:
           go-version-file: go.mod
       - name: Run fast E2E testbed tests with race detector
         run: go test -race ./e2e/testbed/...
+      - name: Run hermetic root-e2e policy tests with race detector
+        run: |
+          # The root e2e package is excluded from the race gate below (its
+          # integration tests need real providers), but these policy tests are
+          # pure logic and must not depend on the approval-gated benchmark and
+          # integration workflows for their only execution. Exact selector +
+          # executed-count tripwires, matching the other explicit lanes.
+          expected_tests=(
+            TestBenchmarkSuiteConfigPrewarmsResolvedBackend
+            TestBenchmarkSuiteConfigPreservesExpectedBackendEnvironment
+            TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture
+            TestBenchmarkCapacitySaturationPolicy
+            TestQwen38GatePolicy
+            TestQwen38ExpectedBuiltKVBackend
+          )
+          selector="^($(IFS='|'; echo "${expected_tests[*]}"))$"
+          policy_log=$(mktemp)
+          trap 'rm -f "$policy_log"' EXIT
+          go test -race ./e2e/ -count=1 -v -run "$selector" 2>&1 | tee "$policy_log"
+          for test_name in "${expected_tests[@]}"; do
+            run_count=$(grep -c "^=== RUN   ${test_name}$" "$policy_log" || true)
+            if [ "$run_count" -lt 1 ]; then
+              echo "::error::hermetic root-e2e policy lane did not execute ${test_name}"
+              exit 1
+            fi
+          done
       - name: Run coordinator tests with race detector
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable

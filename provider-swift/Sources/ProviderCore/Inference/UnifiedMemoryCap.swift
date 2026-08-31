@@ -149,7 +149,42 @@ public enum UnifiedMemoryCap {
         // (3.28) with 0.7 margin. Full data:
         // docs/reports/2026-08-30-activation-floor-measurements.md.
         "qwen3.6-35b-a3b-vl-mtp-mxfp8": 4 * 1024 * 1024 * 1024,
+        // Same architecture family (qwen3_5_moe hybrid trunk), measured
+        // 2026-08-31 stock v2 B=8: byte-identical profile to qwen3.6
+        // (3.28 @500tok; same saturating envelope). 4.0 also pre-covers the
+        // family's inline-MTP default (#777) with the measured allowance.
+        "qwen3.5-35b-a3b": 4 * 1024 * 1024 * 1024,
     ]
+
+    /// Measured post-load MLX residency (bytes, +~2% slack) for TEXT-ONLY
+    /// catalog models, replacing the scanner's disk×1.2 padding in the load
+    /// gate's weights term. The padding overshoots real residency badly on
+    /// large artifacts (gemma-8bit: 24.97 GiB measured vs ~31.3 padded —
+    /// the padding alone made its 36 GB tier arithmetically unserveable).
+    /// Keyed by catalog id, EXACT match; unmeasured ids keep the padded
+    /// estimate. Vision-capable models are deliberately ABSENT: a text-only
+    /// bench residency under-counts their towers.
+    ///
+    /// Mirrored by coordinator/registry/servability.go
+    /// (`servabilityMeasuredResidentGiB`); the tables MUST move in the same
+    /// commit, exactly like ``measuredActivationFloorsBytes``. Measured
+    /// 2026-08-30/31 (docs/reports/2026-08-30-activation-floor-measurements.md).
+    static let measuredResidentWeightsBytes: [String: UInt64] = [
+        // measured 11.25 GiB active (mlx-community/gpt-oss-20b-MXFP4-Q8)
+        "gpt-oss-20b": 23 * 1024 * 1024 * 1024 / 2,  // 11.5 GiB
+        // measured 24.97 GiB active (gemma-4-26b-a4b-it-8bit; both catalog
+        // ids serve the same artifact)
+        "gemma-4-26b": 51 * 1024 * 1024 * 1024 / 2,  // 25.5 GiB
+        "gemma-4-26b-8bit": 51 * 1024 * 1024 * 1024 / 2,
+    ]
+
+    /// The load gate's weights figure (GB) for a model: measured residency
+    /// when the catalog id is in the table, the caller's padded estimate
+    /// otherwise.
+    public static func loadGateWeightsGb(modelId: String, estimatedGb: Double) -> Double {
+        guard let measured = measuredResidentWeightsBytes[modelId] else { return estimatedGb }
+        return Double(measured) / (1024.0 * 1024.0 * 1024.0)
+    }
 
     /// The activation floor for a SERVING SET of models: the max of each
     /// member's measured floor, with ``defaultActivationReserveBytes`` for any

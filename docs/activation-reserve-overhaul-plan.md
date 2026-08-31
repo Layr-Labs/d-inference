@@ -64,6 +64,33 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
 
 ## Phase 3 — measured-weights estimate + default retune → follow-up PR(s)
 
+**Status 2026-08-31: 3a SHIPPED (this branch); 3b partially shipped (qwen3.5
+floor) with the default retune explicitly DEFERRED; 3c resolved by discovery.**
+
+- 3a ✅ `measuredResidentWeightsBytes` (provider) + `servabilityMeasuredResidentGiB`
+  (coordinator) with the same 0.8.16 version gate, threaded through the load
+  gate, pending-load reservation, startup preload, doctor, cold estimate, AND
+  the cold-load admit gate (`reportedFreeForLoadAdmits` — without which the
+  gemma-8bit 36 GB tier stayed dead through routing). Text-only models only
+  (gpt-oss 11.5, gemma-4-26b/-8bit 25.5); vision models keep the padded
+  estimate until a vision-inclusive residency measurement exists.
+- 3b ◐ qwen3.5-35b-a3b → 4.0 GiB floor in both tables (measured 2026-08-31,
+  byte-identical family profile to qwen3.6). **The default retune 5.5 → ~4.5 is
+  DEFERRED, deliberately**: its only beneficiaries are unmeasured models, and
+  today's unmeasured set is exactly the vision-capable models
+  (gemma-4-26b-qat-4bit, qwen3-vl) whose activation peaks a text-only bench
+  cannot vouch for — lowering their fallback is the wrong-results direction.
+  Gate: vision-inclusive B=8 measurement (bench work), then move the default
+  both sides in one commit. Both currently-5.5 models fit their tiers at 5.5.
+- 3c ✅ resolved by discovery: `qwen3_vl_moe` has NO CBv2 adapter
+  (`EngineV2SupportedModels` — gpt_oss/gemma4/gemma4_text/qwen3_5_moe only), so
+  every v0.7.5+ provider drops `qwen3-vl-30b-a3b-instruct` at advertise time.
+  The catalog entry is dark fleet-wide; its real blocker is an engine adapter,
+  not memory arithmetic. Flagged as a catalog/ops decision (remove or build the
+  adapter).
+
+### Original phase text (for context)
+
 3a. **Measured resident weights per artifact** (new lever from the sweep): the
     disk×1.2 / catalog×1.1176 padding overshoots real residency (~6 GiB phantom
     need on gemma-8bit → its 36 GB tier is arithmetically dead today: 31.3 + floor

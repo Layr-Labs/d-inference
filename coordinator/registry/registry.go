@@ -4486,7 +4486,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		// so the warming planner can't send a load_model the provider then
 		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
 		// they time out. Legacy providers (no report) fall through to the static gate.
-		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
 			return 0, false
 		}
 	}

@@ -139,7 +139,8 @@ extension ProviderLoop {
                 StartupPreloader.Candidate(
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
-                        weightsGb: info.estimatedMemoryGb,
+                        weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                            modelId: id, estimatedGb: info.estimatedMemoryGb),
                         headroomGb: loadHeadroomGb)))
         }
         return plan

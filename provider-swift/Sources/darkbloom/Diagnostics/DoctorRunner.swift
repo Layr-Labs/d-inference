@@ -108,8 +108,15 @@ enum DoctorRunner {
             // absent and doctor would silently diagnose a different (fitting) one
             // instead of flagging the one that will never load.
             let allModels = ModelScanner.scanAllModels(hardwareInfo: hw)
+            // Measured residency replaces the disk×1.2 padding for measured
+            // text-only models — the same figure the daemon's load gate now
+            // uses, so the doctor's "needs ~X GB" cannot overstate it.
+            let doctorWeightGb = { (m: ModelInfo) -> Double in
+                UnifiedMemoryCap.loadGateWeightsGb(
+                    modelId: m.id, estimatedGb: m.estimatedMemoryGb)
+            }
             let alternatives = allModels.map {
-                ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
+                ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: doctorWeightGb($0))
             }
             // The daemon's load gate holds the max activation floor over its
             // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
@@ -131,7 +138,7 @@ enum DoctorRunner {
                 : daemonBasis.map(\.id).filter(enabled.contains)
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
-                    modelID: targetID, weightGb: target.estimatedMemoryGb,
+                    modelID: targetID, weightGb: doctorWeightGb(target),
                     usableGb: usableGb, alternatives: alternatives,
                     servingSetIDs: servingSetIDs.isEmpty ? nil : servingSetIDs))
             } else if !alternatives.isEmpty {

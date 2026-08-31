@@ -124,6 +124,45 @@ var servabilityModelActivationFloorsGB = map[string]float64{
 	// inline-MTP allowance + slack. Mirrors the provider table's entry —
 	// same commit, same basis note.
 	"qwen3.6-35b-a3b-vl-mtp-mxfp8": 4.0,
+	// Same qwen3_5_moe family, measured 2026-08-31: byte-identical B=8
+	// profile to qwen3.6. Mirrors the provider entry — same commit.
+	"qwen3.5-35b-a3b": 4.0,
+}
+
+// servabilityMeasuredResidentGiB mirrors the provider's measured resident
+// weights table (UnifiedMemoryCap.measuredResidentWeightsBytes); the two
+// MUST move in the same commit, exactly like the activation-floor pair.
+// Keys are catalog ids, EXACT match. Values are the measured post-load MLX
+// residency (GiB, +~2% slack) of TEXT-ONLY models on the current engine
+// (2026-08-30/31 sweep) — the disk×1.2 padding they replace overshoots real
+// residency badly on large artifacts (gemma-8bit: 24.97 measured vs ~31.3
+// padded — the padding alone made its 36 GB tier arithmetically
+// unserveable). Vision-capable models are deliberately ABSENT: their
+// text-only bench residency under-counts the vision tower, so they keep the
+// padded estimate until a vision-inclusive measurement exists.
+var servabilityMeasuredResidentGiB = map[string]float64{
+	"gpt-oss-20b":      11.5, // measured 11.25 active
+	"gemma-4-26b":      25.5, // measured 24.97 active (same artifact as -8bit)
+	"gemma-4-26b-8bit": 25.5,
+}
+
+// servabilityColdWeightsGiB is the weights term of the cold-load "needs"
+// arithmetic for the given provider binary and model: the measured resident
+// figure for ≥perModel binaries when the model is in the mirrored table,
+// the catalog-padded conversion otherwise. Same version-gated mirror shape
+// (and the same fail-open direction reasoning) as servabilityActivationFloor:
+// an unreported/older binary gates its loads with the padded estimate, so
+// the mirror must charge it the same.
+func servabilityColdWeightsGiB(version, modelID string, catalogSizeGB float64) float64 {
+	padded := catalogSizeGB * coldLoadCatalogGBToMemGiB
+	if version == "" ||
+		CompareVersions(version, servabilityPerModelFloorMinVersion) < 0 {
+		return padded
+	}
+	if measured, ok := servabilityMeasuredResidentGiB[modelID]; ok {
+		return measured
+	}
+	return padded
 }
 
 // servabilityActivationFloor selects the activation reserve the given
@@ -246,8 +285,8 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
 	}
-	paddedWeightsGB := modelSizeGB * coldLoadCatalogGBToMemGiB
-	postLoadGB := servabilityCapFraction*totalMemoryGB - paddedWeightsGB
+	weightsGB := servabilityColdWeightsGiB(providerVersion, modelID, modelSizeGB)
+	postLoadGB := servabilityCapFraction*totalMemoryGB - weightsGB
 	if postLoadGB <= 0 {
 		return 0
 	}

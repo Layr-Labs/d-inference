@@ -458,6 +458,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(
         UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["qwen3.6-35b-a3b-vl-mtp-mxfp8"])
             == 4 * gib)
+    // qwen3.5-35b: same family, measured byte-identical B=8 profile → same floor.
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["qwen3.5-35b-a3b"]) == 4 * gib)
     // Set max over two MEASURED models takes the larger measured floor…
     #expect(
         UnifiedMemoryCap.activationFloorBytes(
@@ -521,4 +524,23 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     // No model context → the flat default (regression).
     #expect(UnifiedMemoryCap.loadHeadroomBytes()
         == UnifiedMemoryCap.defaultActivationReserveBytes + UnifiedMemoryCap.minimumLoadKVBytes)
+}
+
+// MARK: - Measured resident weights (mirror of servabilityMeasuredResidentGiB)
+
+@Test func measuredResidentWeightsOverridePaddedEstimates() {
+    // Measured text-only models take the measured figure regardless of the
+    // scanner's padded estimate…
+    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gpt-oss-20b", estimatedGb: 13.5) == 11.5)
+    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gemma-4-26b-8bit", estimatedGb: 31.3) == 25.5)
+    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gemma-4-26b", estimatedGb: 31.3) == 25.5)
+    // …and unmeasured / vision-capable models keep the padded estimate (a
+    // text-only bench residency under-counts vision towers, so the qwens and
+    // qat-4bit are deliberately absent).
+    #expect(
+        UnifiedMemoryCap.loadGateWeightsGb(
+            modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", estimatedGb: 23.8) == 23.8)
+    #expect(
+        UnifiedMemoryCap.loadGateWeightsGb(
+            modelId: "gemma-4-26b-qat-4bit", estimatedGb: 17.4) == 17.4)
 }

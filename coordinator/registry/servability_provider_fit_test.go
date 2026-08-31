@@ -67,7 +67,7 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 		availableOnDisk: true,
 		binaryVersion:   "0.8.0",
 	}
-	if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); !reported || !admit {
+	if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB, snap.binaryVersion, snap.model); !reported || !admit {
 		t.Fatalf("precondition: weight-only cold gate must admit (admit=%v, reported=%v)", admit, reported)
 	}
 

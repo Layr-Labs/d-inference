@@ -611,6 +611,7 @@ func TestServabilityActivationFloorPerModel(t *testing.T) {
 		{"0.8.15", "gpt-oss-20b", 5.5},                                            // last flat-floor release actually shipped
 		{servabilityPerModelFloorMinVersion, "gpt-oss-20b", 3.5},                  // measured floor
 		{servabilityPerModelFloorMinVersion, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 4.0}, // measured (decomposed basis)
+		{servabilityPerModelFloorMinVersion, "qwen3.5-35b-a3b", 4.0},              // same family, measured 2026-08-31
 		{servabilityPerModelFloorMinVersion, "gemma-4-26b", 5.5},                  // unmeasured → flat
 		{servabilityPerModelFloorMinVersion, "", 5.5},                             // unknown model → flat
 		{"0.9.0", "gpt-oss-20b", 3.5},                                             // later releases keep the table
@@ -628,18 +629,66 @@ func TestServabilityActivationFloorPerModel(t *testing.T) {
 // per-model floor. Same roomy node as TestColdTokenBudgetEstimate (total=64,
 // size=12, kvpt=400000, postLoadB = 47447529062.4):
 //
-//	gpt-oss-20b @ perModel: (47447529062.4 - 3.5*2^30)/400000 = 109223.58
-//	unmeasured  @ perModel: (47447529062.4 - 5.5*2^30)/400000 = 103854.87
+//	gpt-oss-20b @ perModel (MEASURED weights 11.5 GiB + measured floor 3.5):
+//	  (0.9*64 - 11.5)*2^30 = 49499480063.6... exact: 46.1*2^30 = 49499498086.4
+//	  (49499498086.4 - 3758096384)/400000 = 114353.50
+//	unmeasured-in-both-tables @ perModel (padded weights + flat floor):
+//	  (47447529062.4 - 5.5*2^30)/400000 = 103854.87
 func TestColdTokenBudgetEstimatePerModelFloor(t *testing.T) {
 	v := servabilityPerModelFloorMinVersion
-	if got := coldTokenBudgetEstimate(64, 12, 400000, v, "gpt-oss-20b"); got != int64(109223) {
-		t.Fatalf("per-model gpt-oss estimate = %d, want 109223", got)
+	if got := coldTokenBudgetEstimate(64, 12, 400000, v, "gpt-oss-20b"); got != int64(114353) {
+		t.Fatalf("per-model gpt-oss estimate = %d, want 114353 (measured weights + floor)", got)
 	}
-	if got := coldTokenBudgetEstimate(64, 12, 400000, v, "gemma-4-26b"); got != int64(103854) {
-		t.Fatalf("per-model unmeasured estimate = %d, want 103854 (flat floor)", got)
+	// gemma-4-26b-qat-4bit sits in NEITHER table (vision-capable → no measured
+	// residency; no measured activation floor): padded weights + flat floor.
+	if got := coldTokenBudgetEstimate(64, 12, 400000, v, "gemma-4-26b-qat-4bit"); got != int64(103854) {
+		t.Fatalf("per-model dual-unmeasured estimate = %d, want 103854 (padded + flat floor)", got)
 	}
-	// A pre-perModel binary holds the FLAT reserve even for a measured model.
+	// A pre-perModel binary holds the FLAT reserve AND padded weights even for
+	// a measured model.
 	if got := coldTokenBudgetEstimate(64, 12, 400000, "0.8.10", "gpt-oss-20b"); got != int64(103854) {
-		t.Fatalf("pre-perModel gpt-oss estimate = %d, want 103854 (flat floor)", got)
+		t.Fatalf("pre-perModel gpt-oss estimate = %d, want 103854 (padded + flat floor)", got)
+	}
+}
+
+// TestServabilityColdWeightsPerModel pins the (version, model)-gated weights
+// term: measured resident GiB for ≥perModel binaries on measured text-only
+// models, the catalog-padded conversion otherwise. Vision-capable models are
+// deliberately absent from the measured table (text-only bench residency
+// under-counts their towers) and must keep the padded figure.
+func TestServabilityColdWeightsPerModel(t *testing.T) {
+	v := servabilityPerModelFloorMinVersion
+	padded := func(sz float64) float64 { return sz * coldLoadCatalogGBToMemGiB }
+	cases := []struct {
+		version, model string
+		catalogSizeGB  float64
+		want           float64
+	}{
+		{"", "gemma-4-26b-8bit", 28.0, padded(28.0)},            // unreported → padded
+		{"0.8.15", "gemma-4-26b-8bit", 28.0, padded(28.0)},      // flat-era binary → padded
+		{v, "gemma-4-26b-8bit", 28.0, 25.5},                     // measured residency
+		{v, "gemma-4-26b", 28.0, 25.5},                          // same artifact, 36 GB tier id
+		{v, "gpt-oss-20b", 12.1, 11.5},                          // measured residency
+		{v, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 21.3, padded(21.3)}, // vision-capable → padded
+		{v, "unknown-model", 10.0, padded(10.0)},                // unmeasured → padded
+	}
+	for _, tc := range cases {
+		if got := servabilityColdWeightsGiB(tc.version, tc.model, tc.catalogSizeGB); got != tc.want {
+			t.Fatalf("servabilityColdWeightsGiB(%q, %q, %v) = %v, want %v",
+				tc.version, tc.model, tc.catalogSizeGB, got, tc.want)
+		}
+	}
+
+	// The measured figure unblocks the tier the padding killed: gemma-8bit on
+	// a 36 GB box. Padded: 0.9*36 − 31.29 = 1.10 GB post-load — the floor
+	// never fits → budget 0. Measured: 0.9*36 − 25.5 = 6.9 GB post-load —
+	// with the 3.5-and-below floors inapplicable (unmeasured model → flat
+	// activation floor 5.5 for this fixture id is deliberately not the
+	// point here; use gpt-oss which has both entries measured):
+	if got := coldTokenBudgetEstimate(36, 28, 400000, "0.8.15", "gemma-4-26b-8bit"); got != 0 {
+		t.Fatalf("flat-era gemma-8bit@36 estimate = %d, want 0 (padded weights bust the box)", got)
+	}
+	if got := coldTokenBudgetEstimate(36, 28, 400000, v, "gemma-4-26b-8bit"); got <= 0 {
+		t.Fatalf("perModel gemma-8bit@36 estimate = %d, want > 0 (measured residency fits)", got)
 	}
 }

@@ -329,7 +329,8 @@ extension ProviderLoop {
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
             let targetWeightsGb = Self.loadGateWeightsGb(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                estimatedWeightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                    modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
                 extraWeightBytes: 0)
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: targetWeightsGb,
@@ -358,7 +359,8 @@ extension ProviderLoop {
             // Includes `extraWeightBytes` (the drafter): those bytes land in
             // mlxUsed during this load window just like the target's.
             let pendingLoadBytes = Self.pendingLoadReservationBytes(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                estimatedWeightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                    modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
                 extraWeightBytes: extraWeightBytes)
             await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 
@@ -1012,7 +1014,8 @@ extension ProviderLoop {
         // that may be rejected. The accepted load path performs the real
         // preparation (and any prefetch) itself.
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: modelInfo.estimatedMemoryGb,
+            weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
             headroomGb: loadHeadroomGb)
 
         // Sample live memory FIRST — this is the only suspension point in the

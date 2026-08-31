@@ -1533,11 +1533,20 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
+// binaryVersion and modelID select the weights figure THAT provider's own
+// load gate uses for THAT model (servabilityColdWeightsGiB): measured
+// residency for ≥perModel binaries on measured text-only models, the padded
+// conversion otherwise. Without this the admit gate stays padded while the
+// provider gates with the measured figure — strictly TIGHTER than the gate
+// it mirrors, and the padding alone kept e.g. gemma-8bit's 36 GB tier from
+// ever being routed a cold load its providers could take.
+func reportedFreeForLoadAdmits(
+	catalogSizeGB float64, freeForLoadGB *float64, binaryVersion, modelID string,
+) (admit bool, reported bool) {
 	if freeForLoadGB == nil || catalogSizeGB <= 0 {
 		return false, false
 	}
-	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
+	return servabilityColdWeightsGiB(binaryVersion, modelID, catalogSizeGB) <= *freeForLoadGB, true
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.
@@ -1642,7 +1651,7 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB, snap.binaryVersion, snap.model); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old

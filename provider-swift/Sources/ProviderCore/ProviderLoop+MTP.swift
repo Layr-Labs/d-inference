@@ -7,17 +7,20 @@ extension ProviderLoop {
     /// preload or unified-local request can construct a target slot. This does
     /// not download assistant bytes and is bounded/fail-open; every ordinary
     /// load remains a local-only catalog-cache/artifact-cache consultation.
+    ///
+    /// Only `mtp_mode = "on"` prewarms: catalog metadata exists to pair
+    /// separately published assistants, and `auto` activates only embedded
+    /// heads, which resolve from the checkpoint itself without any catalog.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
-        guard backend.mtpMode != .off,
+        guard backend.mtpMode == .on,
             backend.mtpDrafterPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
             SpecDecArtifactFunnel.killSwitchEnabled(
                 environment: ProcessInfo.processInfo.environment),
             let modelId = advertisedModels.values
                 .filter({
-                    (SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
-                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType))
-                        && backend.mtpMode.enablesMTP(forModelID: $0.id)
+                    SpecDecArtifactFunnel.isGemma4Target(modelType: $0.modelType)
+                        || SpecDecArtifactFunnel.isQwen35Target(modelType: $0.modelType)
                 })
                 .map(\.id)
                 .sorted()
@@ -42,14 +45,19 @@ extension ProviderLoop {
         modelDirectory: URL? = nil,
         allowDownload: Bool = true
     ) async -> SpecDecPreparation {
+        let inlineDeclaration = modelDirectory.map {
+            SpecDecStore.inlineDeclarationProbe(directory: $0)
+        } ?? .absent
         let prepared = await specDecFunnel.prepare(
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
-                    forModelID: modelId),
+                    forModelType: modelInfo.modelType,
+                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
+                inlineDeclaration: inlineDeclaration,
                 allowDownload: allowDownload,
                 environment: ProcessInfo.processInfo.environment))
         let reason = prepared.status.reason?.rawValue ?? "ready"
@@ -69,6 +77,10 @@ extension ProviderLoop {
         targetRequiredGb: Double
     ) async -> SpecDecPreparation {
         guard let artifact = preparation.artifact else { return preparation }
+        // Inline assistants ride the target checkpoint's own shards, already
+        // counted by the scanner in targetRequiredGb — no additional charge
+        // (SpecDecArtifact.additionalWeightBytes).
+        guard artifact.additionalWeightBytes > 0 else { return preparation }
         guard Self.assistantMemoryFits(
             availableGb: await availableMemoryGb(),
             targetRequiredGb: targetRequiredGb,

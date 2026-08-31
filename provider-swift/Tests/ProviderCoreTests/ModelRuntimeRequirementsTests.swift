@@ -258,3 +258,21 @@ struct ProviderRuntimeCapabilityTests {
         }
     }
 }
+
+@Suite("Embedded Qwen3.8 build inherits the target's hardware invariant")
+struct EmbeddedQwen38RuntimeRequirementsTests {
+    @Test("the embedded-MTP build id carries the same M5 + NAX requirement")
+    func embeddedBuildGated() {
+        for modelID in ModelRuntimeRequirements.qwen38ConcreteModelIDs {
+            #expect(
+                ModelRuntimeRequirements.requiredCapabilities(for: modelID)
+                    == [.appleM5, .mlxNAX],
+                "every concrete Qwen3.8 build must keep the invariant: \(modelID)")
+            #expect(!ModelRuntimeRequirements.isEligible(modelID: modelID, available: []))
+            #expect(ModelRuntimeRequirements.isEligible(
+                modelID: modelID, available: [.appleM5, .mlxNAX]))
+        }
+        #expect(ModelRuntimeRequirements.qwen38ConcreteModelIDs
+            .contains("EigenLabs/Qwen3.8-27B-4bit-mtp"))
+    }
+}

@@ -122,6 +122,13 @@ private final class QwenPrefixCacheConstructionProbe: @unchecked Sendable {
 
 @Suite("Qwen VLM target-only extraction", .serialized)
 struct QwenVLMTargetExtractionTests {
+    init() {
+        // The tiny synthetic modules here still evaluate MLX arrays, so the
+        // GPU library must sit beside the active test runner like every
+        // other MLX-touching suite (LiveInferenceFixtures.swift:89).
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+    }
+
     @Test("Qwen config decodes through MLXLLM and target skeleton omits inline MTP")
     func qwenConfigBuildsTargetOnlySkeleton() throws {
         let previousMTPState = _qwen35MTPEnabled

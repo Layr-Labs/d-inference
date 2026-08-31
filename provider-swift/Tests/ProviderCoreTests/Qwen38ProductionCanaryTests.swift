@@ -38,8 +38,14 @@ struct Qwen38ProductionCanaryTests {
             Qwen38ProductionCanary.assistantRevision
                 == "329261c5e0b3f9c233485e682cb3b67b88c20a55")
         #expect(fixture.modelDirectory.lastPathComponent == Qwen38ProductionCanary.targetRevision)
+        // Separate-head targets carry no embedded declaration, so `auto`
+        // leaves them target-only; the localPath override needs `on`.
+        #expect(!MTPMode.auto.enablesMTP(
+            forModelType: Qwen38ProductionCanary.modelType,
+            embeddedArtifactDeclared: false))
         #expect(MTPMode.auto.enablesMTP(
-            forModelID: Qwen38ProductionCanary.targetModelID))
+            forModelType: Qwen38ProductionCanary.modelType,
+            embeddedArtifactDeclared: true))
         #expect(fixture.assistantLayerCount == 1)
 
         var liveBundle: ProviderEngineBundle?

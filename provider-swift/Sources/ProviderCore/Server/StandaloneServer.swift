@@ -1301,7 +1301,13 @@ public actor StandaloneServer {
                     // that loads can actually serve (matches the runtime KV gate).
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
-            if let artifact = mtpPreparation.artifact {
+            // Inline assistants ride the target checkpoint's own shards,
+            // already counted in estimatedMemoryGb -> targetRequiredGb; only
+            // separately staged assistants add bytes on top
+            // (SpecDecArtifact.additionalWeightBytes).
+            if let artifact = mtpPreparation.artifact,
+                artifact.additionalWeightBytes > 0
+            {
                 if !ProviderLoop.assistantMemoryFits(
                     availableGb: await availableMemoryGb(),
                     targetRequiredGb: targetRequiredGb,
@@ -1313,7 +1319,7 @@ public actor StandaloneServer {
                         "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantMemoryUnavailable.rawValue) assistant_bytes=\(artifact.residentBytes)")
                 }
             }
-            let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
+            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
 
             // Keep incoming weights visible to the process-wide KV ledger while

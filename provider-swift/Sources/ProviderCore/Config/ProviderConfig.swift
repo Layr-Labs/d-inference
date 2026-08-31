@@ -69,26 +69,45 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` preserves the distinction between an absent setting and an explicit
-/// rollback. It defaults MTP on only for the exact production Qwen3.8 target;
-/// every other model retains the historical absent-config default of off.
-/// Artifact validation and the process-wide kill switch remain enforced by
-/// `SpecDecArtifactFunnel`.
+/// `auto` turns MTP on for checkpoints that DECLARE an embedded head
+/// (`mtplx_mtp.included = true` in config.json) and belong to the Qwen 3.5
+/// family — dense `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B) and `qwen3_5_moe`
+/// (Qwen3.5/3.6 35B-A3B). The family gate is deliberately hardcoded to Qwen
+/// for now: it widens only when another family actually ships embedded
+/// artifacts. A Qwen checkpoint WITHOUT an embedded head is not asked about
+/// at all under `auto` — no catalog lookup, no prefetch, a plain
+/// config-disabled fallback — because embedded is the one automatic
+/// mechanism; separately published assistants (and `mtp_drafter_path`
+/// overrides) require an explicit `mtp_mode = "on"`.
+///
+/// The declaration alone never activates anything: full artifact inspection
+/// and the process-wide kill switch remain enforced by
+/// `SpecDecArtifactFunnel`, so a declared-but-invalid head falls back to
+/// target-only with a recorded reason.
 public enum MTPMode: String, Sendable, Equatable, Codable {
     case auto
     case on
     case off
 
-    static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
+    /// `model_type` values whose embedded heads self-activate under `auto`.
+    /// Kept in sync with `SpecDecArtifactFunnel.isQwen35Target` — the funnel
+    /// stays the single authority on which models it will *resolve*; this set
+    /// only decides which ones `auto` is willing to *ask about*.
+    static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
 
-    func enablesMTP(forModelID modelID: String) -> Bool {
+    func enablesMTP(forModelType modelType: String?, embeddedArtifactDeclared: Bool) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            return modelID == Self.automaticTargetModelID
+            guard embeddedArtifactDeclared,
+                let raw = modelType?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased(), !raw.isEmpty
+            else { return false }
+            return Self.automaticQwen35ModelTypes.contains(raw)
         }
     }
 }
@@ -189,7 +208,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var startupSelftestFailClosed: Bool
     /// MTP (multi-token prediction / speculative decoding) policy
     /// (`mtp_mode` under `[backend]`, default `"auto"` — beta id `mtp`).
-    /// Automatic mode activates only the exact production Qwen3.8 target.
+    /// Automatic mode activates Qwen3.5-family checkpoints (`qwen3_5`,
+    /// `qwen3_5_moe`) that declare an embedded head (`mtplx_mtp`).
     /// The legacy `mtp = true|false` key is accepted only when `mtp_mode` is
     /// absent. Serialization emits only `mtp_mode`.
     ///

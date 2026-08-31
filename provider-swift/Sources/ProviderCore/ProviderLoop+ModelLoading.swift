@@ -338,7 +338,7 @@ extension ProviderLoop {
             // fits; otherwise this load continues target-only.
             mtpPreparation = await admitSpecDecIfMemoryAllows(
                 mtpPreparation, targetRequiredGb: requiredGb)
-            let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
+            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 

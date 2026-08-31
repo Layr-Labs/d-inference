@@ -70,8 +70,13 @@ struct Qwen38ProductionCanaryFixture: @unchecked Sendable {
         let preparation = await funnel.prepare(.init(
             modelId: Qwen38ProductionCanary.targetModelID,
             modelType: Qwen38ProductionCanary.modelType,
-            enabled: MTPMode.auto.enablesMTP(
-                forModelID: Qwen38ProductionCanary.targetModelID),
+            // The canary exercises the explicit localPath override, which is an
+            // `mtp_mode = "on"` scenario: `auto` activates only embedded
+            // (mtplx_mtp-declaring) checkpoints, and this synthetic target
+            // deliberately carries no embedded head.
+            enabled: MTPMode.on.enablesMTP(
+                forModelType: Qwen38ProductionCanary.modelType,
+                embeddedArtifactDeclared: false),
             localPath: assistantDirectory.path,
             modelDirectory: modelDirectory,
             allowDownload: false,

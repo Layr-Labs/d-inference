@@ -138,6 +138,14 @@ public struct ModelRuntimeIneligibleError: Error, LocalizedError, Sendable, Equa
 /// the concrete Qwen build eligible. Matching is deliberately case-sensitive.
 public enum ModelRuntimeRequirements {
     public static let qwen38ConcreteModelID = "EigenLabs/Qwen3.8-27B-4bit"
+    /// Every concrete Qwen3.8-27B build carrying the same target bytes. The
+    /// embedded-MTP publication is the pinned target plus its inline head, so
+    /// it inherits the target's hardware invariant verbatim — a new build id
+    /// must never dodge the gate by renaming.
+    public static let qwen38ConcreteModelIDs: Set<String> = [
+        qwen38ConcreteModelID,
+        "EigenLabs/Qwen3.8-27B-4bit-mtp",
+    ]
     public static let qwen38RequiredCapabilities: Set<ProviderRuntimeCapability> = [
         .appleM5, .mlxNAX,
     ]
@@ -147,7 +155,7 @@ public enum ModelRuntimeRequirements {
         catalogRequirements: [ProviderRuntimeCapability]? = nil
     ) -> Set<ProviderRuntimeCapability> {
         var required = Set(catalogRequirements ?? [])
-        if modelID == qwen38ConcreteModelID {
+        if qwen38ConcreteModelIDs.contains(modelID) {
             required.formUnion(qwen38RequiredCapabilities)
         }
         return required

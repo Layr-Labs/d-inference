@@ -115,33 +115,43 @@ describe("EarningsHistory drill-down log", () => {
     expect(screen.queryByText(/Page 1/)).toBeNull();
   });
 
-  it("resets to page 1 when the time range changes", () => {
-    renderResponse(manyRowsResponse(PAGE_SIZE * 2 + 4));
+  it("clamps the page when the rows shrink under it", () => {
+    const big = manyRowsResponse(PAGE_SIZE * 2 + 4);
+    const { rerender } = render(
+      <EarningsHistory
+        earnings={big.earnings}
+        totalJobs={big.count}
+        recentCount={big.recent_count}
+      />,
+    );
     fireEvent.click(screen.getByText(QWEN_SHORT));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
-    expect(screen.getByText(/Page 2 of 3/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Filter by time range"), {
-      target: { value: "7" },
-    });
-    expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    expect(screen.getByText(/Page 3 of 3/)).toBeInTheDocument();
+    // Upstream filters narrow the rows to a single page.
+    rerender(
+      <EarningsHistory
+        earnings={big.earnings.slice(0, PAGE_SIZE)}
+        totalJobs={big.count}
+        recentCount={big.recent_count}
+      />,
+    );
+    expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
+    expect(screen.queryByText(/Page \d/)).toBeNull();
   });
 
-  it("drops out-of-range jobs from the summaries when the range narrows", () => {
-    renderResponse(makeScenario("TYPICAL"));
-    // Sum the per-model "N jobs" figures across the summary rows.
-    const totalJobs = () =>
-      screen
-        .getAllByText(/\d{1,6} jobs ·/)
-        .reduce(
-          (sum, el) => sum + Number(/(\d{1,6}) jobs/.exec(el.textContent!)![1]),
-          0,
-        );
-    expect(totalJobs()).toBe(40);
-    fireEvent.change(screen.getByLabelText("Filter by time range"), {
-      target: { value: "7" },
-    });
-    const filtered = totalJobs();
-    expect(filtered).toBeGreaterThan(0);
-    expect(filtered).toBeLessThan(40);
+  it("shows the filtered empty copy when filters removed every row", () => {
+    const s = makeScenario("EMPTY");
+    render(
+      <EarningsHistory
+        earnings={[]}
+        totalJobs={s.count}
+        recentCount={s.recent_count}
+        filteredOut
+      />,
+    );
+    expect(
+      screen.getByText("No earnings match the current filters"),
+    ).toBeInTheDocument();
   });
 });

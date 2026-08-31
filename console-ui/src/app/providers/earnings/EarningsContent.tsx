@@ -16,10 +16,11 @@ import {
   useStripePayouts,
 } from "@/components/payouts";
 import { PayoutSetupModal } from "./PayoutSetupModal";
-import { useEarningsData } from "./useEarningsData";
-import { perDayTotals } from "./aggregate";
+import { EARNINGS_FIXTURE_ACTIVE, useEarningsData } from "./useEarningsData";
+import { filterByDays, perDayTotals, perModelSummary } from "./aggregate";
 import { BalanceHero } from "./BalanceHero";
 import { SummaryStats } from "./SummaryStats";
+import { ActivityFilterBar } from "./ActivityFilterBar";
 import { EarningsChart } from "./EarningsChart";
 import { EarningsHistory } from "./EarningsHistory";
 import { ErrorState, LoadingSkeleton, SignedOutState } from "./states";
@@ -28,6 +29,16 @@ export default function EarningsContent() {
   const { ready, authenticated, login } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const [setupOpen, setSetupOpen] = useState(false);
+  // Global activity filters: "" means all models; range 0 = all time. They
+  // narrow both the chart and the recent-activity list. Clock snapshot is
+  // refreshed when the range changes (react-hooks/purity).
+  const [filterModel, setFilterModel] = useState("");
+  const [filterRange, setFilterRange] = useState(0);
+  const [filterNow, setFilterNow] = useState(() => Date.now());
+  const selectRange = (days: number) => {
+    setFilterNow(Date.now());
+    setFilterRange(days);
+  };
   const { data, loading, error, unauthorized, refetch } =
     useEarningsData(authenticated);
 
@@ -44,7 +55,9 @@ export default function EarningsContent() {
       trackEvent("provider_withdraw_failed", { surface: "provider_earnings" }),
   });
 
-  if (!authenticated) {
+  // Dev-only fixture preview skips the sign-in wall so the page can be
+  // exercised locally without a Privy session.
+  if (!authenticated && !EARNINGS_FIXTURE_ACTIVE) {
     return <SignedOutState ready={ready} onLogin={login} />;
   }
   if (loading) {
@@ -61,7 +74,14 @@ export default function EarningsContent() {
   }
 
   const earnings = data.earnings;
-  const days = perDayTotals(earnings);
+  const allModels = perModelSummary(earnings).map((s) => s.model);
+  // Fall back to "all" if a refetch drops the selected model from the data.
+  const activeModel = allModels.includes(filterModel) ? filterModel : "";
+  const inRange = filterByDays(earnings, filterRange, filterNow);
+  const filteredEarnings = activeModel
+    ? inRange.filter((e) => e.model === activeModel)
+    : inRange;
+  const days = perDayTotals(filteredEarnings);
   // Older coordinators may omit the withdrawable split; treat it all as withdrawable.
   const withdrawableMicro =
     data.withdrawable_balance_micro_usd ?? data.available_balance_micro_usd;
@@ -84,6 +104,9 @@ export default function EarningsContent() {
         </p>
       </div>
 
+      {/* Lifetime KPI cards (unfiltered — server-side totals) */}
+      <SummaryStats totalMicro={totalMicro} jobs={totalJobs} />
+
       {/* Balance hero — the CTA carries the whole payout flow (link/withdraw) */}
       <BalanceHero
         totalBalanceMicro={totalBalanceMicro}
@@ -103,18 +126,23 @@ export default function EarningsContent() {
         </div>
       )}
 
-      {/* Trend + lifetime stats */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <EarningsChart days={days} />
-        </div>
-        <SummaryStats totalMicro={totalMicro} jobs={totalJobs} />
-      </div>
+      {/* Global filters: drive both the chart and the activity list */}
+      <ActivityFilterBar
+        models={allModels}
+        selectedModel={activeModel}
+        onSelectModel={setFilterModel}
+        rangeDays={filterRange}
+        onSelectRange={selectRange}
+      />
+
+      {/* Earnings + demand trend */}
+      <EarningsChart days={days} />
 
       <EarningsHistory
-        earnings={earnings}
+        earnings={filteredEarnings}
         totalJobs={totalJobs}
         recentCount={recentCount}
+        filteredOut={earnings.length > 0}
       />
 
       {/* Payout setup modal (link bank / finish or fix Stripe onboarding) */}

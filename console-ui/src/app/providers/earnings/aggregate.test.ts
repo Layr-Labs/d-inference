@@ -18,8 +18,24 @@ describe("perDayTotals", () => {
     ];
     const days = perDayTotals(rows);
     expect(days.map((d) => d.micro)).toEqual([150, 0, 70]);
+    expect(days.map((d) => d.jobs)).toEqual([2, 0, 1]);
     expect(days[0].day).toBe("2025-05-01");
     expect(days[2].day).toBe(DAY3);
+  });
+
+  it("counts base_reward money but not its jobs (demand)", () => {
+    const days = perDayTotals([
+      makeEarning({ id: 1, amount_micro_usd: 70, created_at: DAY3_AT_9 }),
+      makeEarning({
+        id: 2,
+        model: "base_reward",
+        amount_micro_usd: 500,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        created_at: DAY3_AT_9,
+      }),
+    ]);
+    expect(days).toEqual([{ day: DAY3, micro: 570, jobs: 1 }]);
   });
 
   it("skips rows with unparseable dates", () => {
@@ -27,7 +43,7 @@ describe("perDayTotals", () => {
       makeEarning({ id: 1, created_at: "not-a-date" }),
       makeEarning({ id: 2, amount_micro_usd: 70, created_at: DAY3_AT_9 }),
     ]);
-    expect(days).toEqual([{ day: DAY3, micro: 70 }]);
+    expect(days).toEqual([{ day: DAY3, micro: 70, jobs: 1 }]);
   });
 
   it("caps the zero-fill window at two years and keeps the newest day", () => {
@@ -37,7 +53,7 @@ describe("perDayTotals", () => {
       makeEarning({ id: 2, amount_micro_usd: 70, created_at: DAY3_AT_9 }),
     ]);
     expect(days).toHaveLength(731);
-    expect(days[days.length - 1]).toEqual({ day: DAY3, micro: 70 });
+    expect(days[days.length - 1]).toEqual({ day: DAY3, micro: 70, jobs: 1 });
   });
 });
 

@@ -25,6 +25,9 @@ function fixtureScenario(): ScenarioName | undefined {
 
 const FIXTURE_SCENARIO = fixtureScenario();
 
+/** True when the dev-only fixture preview is active (never in production). */
+export const EARNINGS_FIXTURE_ACTIVE = FIXTURE_SCENARIO !== undefined;
+
 export interface EarningsData {
   data: EarningsResponse | null;
   loading: boolean;
@@ -75,8 +78,9 @@ export function useEarningsData(authenticated: boolean): EarningsData {
     }
   }, [getAuthHeaders]);
 
-  // Poll only while the tab is visible (perf F6).
-  useVisiblePolling(refetch, 30_000, authenticated);
+  // Poll only while the tab is visible (perf F6). Fixture mode "polls" too so
+  // the preview renders even without a signed-in session.
+  useVisiblePolling(refetch, 30_000, authenticated || EARNINGS_FIXTURE_ACTIVE);
 
   return { data, loading, error, unauthorized, refetch };
 }

@@ -1,6 +1,7 @@
 // Pure display formatters for the earnings page. No React, no fetch.
 
 import { microToUsd } from "@/lib/format/currency";
+import { BASE_REWARD_MODEL } from "./aggregate";
 
 /** Per-job amounts are sub-cent; always show full 6-decimal precision. */
 export function formatMicroExact(micro: number): string {
@@ -40,6 +41,7 @@ export function formatTokens(n: number): string {
  * different orgs ship the same short name so rows stay distinguishable.
  */
 export function modelLabel(model: string, allModels: string[]): string {
+  if (model === BASE_REWARD_MODEL) return "Base reward";
   const short = model.split("/").pop() || model;
   const collision = allModels.some(
     (m) => m !== model && (m.split("/").pop() || m) === short,

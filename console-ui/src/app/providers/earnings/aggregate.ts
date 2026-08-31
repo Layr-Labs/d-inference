@@ -2,10 +2,19 @@
 
 import type { Earning } from "./types";
 
+/**
+ * Sentinel model id the coordinator writes for base-reward (floor draw)
+ * credits. Real money, but not organic demand: it earns into the chart's
+ * earnings line yet is excluded from the jobs/demand series.
+ */
+export const BASE_REWARD_MODEL = "base_reward";
+
 export interface DayBucket {
   /** YYYY-MM-DD in local time. */
   day: string;
   micro: number;
+  /** Number of earning rows (jobs served) that day — the demand series. */
+  jobs: number;
 }
 
 function localDay(d: Date): string {
@@ -23,12 +32,15 @@ const MAX_BUCKETS = 731;
  * first and last day so the trend chart doesn't skip quiet days.
  */
 export function perDayTotals(earnings: Earning[]): DayBucket[] {
-  const sums = new Map<string, number>();
+  const sums = new Map<string, { micro: number; jobs: number }>();
   for (const e of earnings) {
     const d = new Date(e.created_at);
     if (Number.isNaN(d.getTime())) continue;
     const day = localDay(d);
-    sums.set(day, (sums.get(day) ?? 0) + e.amount_micro_usd);
+    const s = sums.get(day) ?? { micro: 0, jobs: 0 };
+    s.micro += e.amount_micro_usd;
+    if (e.model !== BASE_REWARD_MODEL) s.jobs += 1;
+    sums.set(day, s);
   }
   if (sums.size === 0) return [];
   const days = [...sums.keys()].sort();
@@ -43,7 +55,8 @@ export function perDayTotals(earnings: Earning[]): DayBucket[] {
   const out: DayBucket[] = [];
   let day = start;
   do {
-    out.push({ day, micro: sums.get(day) ?? 0 });
+    const s = sums.get(day);
+    out.push({ day, micro: s?.micro ?? 0, jobs: s?.jobs ?? 0 });
     cursor.setDate(cursor.getDate() + 1);
     day = localDay(cursor);
   } while (day <= lastDay);
@@ -78,6 +91,13 @@ export function perModelSummary(earnings: Earning[]): ModelSummary[] {
   }
   return [...byModel.values()].sort((a, b) => b.micro - a.micro);
 }
+
+/** Shared look-back options for the chart and the activity log. */
+export const TIME_RANGES = [
+  { label: "Last 7 days", days: 7 },
+  { label: "Last 30 days", days: 30 },
+  { label: "All time", days: 0 },
+];
 
 /**
  * Rows within a look-back window of `days` ending at `now`. `days` 0 keeps

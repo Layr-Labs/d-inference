@@ -17,14 +17,14 @@ export function LoadingSkeleton() {
         <SkeletonBlock className="h-6 w-48" />
         <SkeletonBlock className="h-4 w-64" />
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <SkeletonBlock className="h-[220px] lg:col-span-2" />
-        <SkeletonBlock className="h-[220px]" />
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <SkeletonBlock className="h-24" />
+        <SkeletonBlock className="h-24" />
+        <SkeletonBlock className="h-24" />
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <SkeletonBlock className="h-64 lg:col-span-2" />
-        <SkeletonBlock className="h-64" />
-      </div>
+      <SkeletonBlock className="h-[180px]" />
+      <SkeletonBlock className="h-8 w-full" />
+      <SkeletonBlock className="h-64" />
       <SkeletonBlock className="h-72" />
     </div>
   );

@@ -2,51 +2,41 @@
 
 // Recent-activity shell. Default view is one summary row per model; clicking
 // a model drills into its log, paginated at PAGE_SIZE rows. All client-side
-// over the rows the API already returned.
+// over rows already filtered upstream (ActivityFilterBar owns model/time).
 
 import { useMemo, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Earning } from "./types";
-import { filterByDays, perModelSummary } from "./aggregate";
+import { perModelSummary } from "./aggregate";
 import { modelLabel } from "./format";
 import { EarningsRow } from "./EarningsRow";
 import { ModelSummaryList } from "./ModelSummaryList";
 
 export const PAGE_SIZE = 10;
 
-const RANGES = [
-  { label: "Last 7 days", days: 7 },
-  { label: "Last 30 days", days: 30 },
-  { label: "All time", days: 0 },
-];
-
 export function EarningsHistory({
   earnings,
   totalJobs,
   recentCount,
+  filteredOut = false,
 }: {
+  /** Rows already narrowed by the global model/time filters. */
   earnings: Earning[];
   totalJobs: number;
   recentCount: number;
+  /** True when there ARE earnings, just none matching the current filters. */
+  filteredOut?: boolean;
 }) {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [days, setDays] = useState(0);
-  // Snapshot the clock outside render (react-hooks/purity); refreshed whenever
-  // the look-back window changes, which is when it matters.
-  const [now, setNow] = useState(() => Date.now());
 
-  const inRange = useMemo(
-    () => filterByDays(earnings, days, now),
-    [earnings, days, now],
-  );
-  const summaries = useMemo(() => perModelSummary(inRange), [inRange]);
+  const summaries = useMemo(() => perModelSummary(earnings), [earnings]);
   const allModelIds = summaries.map((s) => s.model);
 
   const modelRows = useMemo(
     () =>
-      selectedModel ? inRange.filter((e) => e.model === selectedModel) : [],
-    [inRange, selectedModel],
+      selectedModel ? earnings.filter((e) => e.model === selectedModel) : [],
+    [earnings, selectedModel],
   );
   const pageCount = Math.max(1, Math.ceil(modelRows.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -59,42 +49,20 @@ export function EarningsHistory({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-3 mb-3">
-        {selectedModel ? (
-          <>
-            <button
-              onClick={() => setSelectedModel(null)}
-              className="flex items-center gap-1 text-sm text-text-secondary hover:text-text-primary transition-colors"
-            >
-              <ArrowLeft size={14} />
-              All models
-            </button>
-            <h3 className="text-sm font-semibold font-mono text-text-primary truncate max-w-[18rem]">
-              {modelLabel(selectedModel, allModelIds)}
-            </h3>
-          </>
-        ) : (
-          <h3 className="text-sm font-semibold text-text-primary">
-            Recent activity
+      {selectedModel && (
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <button
+            onClick={() => setSelectedModel(null)}
+            className="flex items-center gap-1 text-sm text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <ArrowLeft size={14} />
+            All models
+          </button>
+          <h3 className="text-sm font-semibold font-mono text-text-primary truncate max-w-[18rem]">
+            {modelLabel(selectedModel, allModelIds)}
           </h3>
-        )}
-        <select
-          aria-label="Filter by time range"
-          value={days}
-          onChange={(e) => {
-            setNow(Date.now());
-            setDays(Number(e.target.value));
-            setPage(1);
-          }}
-          className="ml-auto text-xs rounded-lg border border-border-default bg-bg-secondary text-text-secondary px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-brand"
-        >
-          {RANGES.map((r) => (
-            <option key={r.days} value={r.days}>
-              {r.label}
-            </option>
-          ))}
-        </select>
-      </div>
+        </div>
+      )}
       {totalJobs > recentCount && (
         <p className="text-xs text-text-tertiary mb-3">
           Showing the latest {recentCount} of{" "}
@@ -107,7 +75,7 @@ export function EarningsHistory({
           <ModelSummaryList summaries={summaries} onSelect={openModel} />
         )}
         {!selectedModel && summaries.length === 0 && (
-          <EmptyCopy filtered={earnings.length > 0} />
+          <EmptyCopy filtered={filteredOut} />
         )}
       </div>
       {selectedModel && modelRows.length > PAGE_SIZE && (

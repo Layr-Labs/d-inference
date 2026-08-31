@@ -165,17 +165,18 @@ public enum BetaFeatures {
         BetaFeature(
             id: "mtp",
             title: "Multi-token prediction (speculative decoding)",
-            summary: "Force MTP on for supported CBv2 targets; the exact Qwen3.8 production target defaults on automatically.",
+            summary: "Force MTP on for supported CBv2 targets; Qwen checkpoints with an embedded head default on automatically.",
             details: """
-            Automatic mode enables the separate MTP artifact only for \
-            EigenLabs/Qwen3.8-27B-4bit after immutable artifact validation; \
-            every other model remains off when config is absent. Enabling this \
-            beta writes an explicit on override for supported targets; disabling \
-            it writes the explicit off rollback. DARKBLOOM_CBV2_MTP=0 remains \
-            the final process-wide kill switch. Resolution and load are \
-            fail-open to target-only decode. Catalog assistants come from the \
-            target's spec_dec pointer, or set mtp_drafter_path under [backend] \
-            to an immutable local assistant directory.
+            Automatic mode enables MTP for Qwen 3.5-family checkpoints \
+            (qwen3_5, qwen3_5_moe) whose config.json declares an embedded \
+            head (mtplx_mtp), after full artifact validation; checkpoints \
+            without an embedded head remain target-only when config is \
+            absent. Enabling this beta writes an explicit on override for \
+            supported targets — required for separately published catalog \
+            assistants and mtp_drafter_path overrides; disabling it writes \
+            the explicit off rollback. DARKBLOOM_CBV2_MTP=0 remains the \
+            final process-wide kill switch. Resolution and load are \
+            fail-open to target-only decode.
             """,
             requiresRestart: true,
             configAddress: (section: "backend", key: "mtp_mode"),

@@ -440,3 +440,67 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         physicalBytes: 128 * gib, currentResidentWeightBytes: .max,
         candidateWeightBytes: .max, minimumKVBytes: .max, activationReserveBytes: .max))
 }
+
+// MARK: - Per-model activation floors (measured table)
+
+@Test func activationFloorUsesMeasuredValueForSingleMeasuredModel() {
+    // gpt-oss-20b's worst measured B=8 activation peak is 3.20 GiB compiled
+    // (2.56 eager; same sweep that sized the 5.5 GiB default off gemma-4's
+    // 5.05/5.34); its floor is 3.5 GiB = 3.20 + slack.
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["gpt-oss-20b"]) == 7 * gib / 2)
+}
+
+@Test func activationFloorFallsBackToDefaultForUnmeasuredModels() {
+    let def = UnifiedMemoryCap.defaultActivationReserveBytes
+    // Unmeasured model → the flat default.
+    #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["gemma-4-26b"]) == def)
+    // Empty set = open world (no declared serving set) → the flat default.
+    #expect(UnifiedMemoryCap.activationFloorBytes(forModelIDs: []) == def)
+    // A set containing ANY unmeasured model takes the max — the reserve must
+    // cover every model that can run, so one unmeasured member pins the default.
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["gpt-oss-20b", "gemma-4-26b"]) == def)
+}
+
+@Test func resolvedReserveUsesModelSetFloor() {
+    // Single measured model → its measured floor, not the flat default.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: [:], modelIDs: ["gpt-oss-20b"]) == 7 * gib / 2)
+    // nil modelIDs → the pre-existing flat behavior (regression).
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: [:])
+        == UnifiedMemoryCap.defaultActivationReserveBytes)
+}
+
+@Test func envReserveIsRaiseOnlyAgainstTheModelSetFloor() {
+    // env 2 < the 3.5 GiB gpt-oss floor → the floor wins. Raise-only holds for
+    // the SET floor for the same reason it holds for the flat default: a stale
+    // low env value must not silently recreate the B=8 activation OOM.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "2"],
+        modelIDs: ["gpt-oss-20b"]) == 7 * gib / 2)
+    // env 4 > the 3.5 GiB floor → env wins for the measured set…
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"],
+        modelIDs: ["gpt-oss-20b"]) == 4 * gib)
+    // …while the SAME env value still cannot dip below the default for an
+    // unmeasured set (unchanged raise-only semantics there).
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"],
+        modelIDs: ["gemma-4-26b"]) == UnifiedMemoryCap.defaultActivationReserveBytes)
+    // Explicit (tests) still beats everything, below the floor included.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: 1 * gib, env: [:], modelIDs: ["gpt-oss-20b"]) == 1 * gib)
+}
+
+@Test func loadHeadroomUsesModelSetFloor() {
+    // gpt-oss-only serving set: headroom = 3.5 GiB floor + 1 GiB min
+    // serveable KV = 4.5 GiB — down from the flat 5.5 + 1 = 6.5 GiB that made
+    // the catalog's own 24 GB tier unserveable (needs 13.5 + 6.5 = 20.0 GB
+    // while macOS can never leave that much reclaimable).
+    #expect(UnifiedMemoryCap.loadHeadroomBytes(modelIDs: ["gpt-oss-20b"])
+        == 7 * gib / 2 + UnifiedMemoryCap.minimumLoadKVBytes)
+    // No model context → the flat default (regression).
+    #expect(UnifiedMemoryCap.loadHeadroomBytes()
+        == UnifiedMemoryCap.defaultActivationReserveBytes + UnifiedMemoryCap.minimumLoadKVBytes)
+}

@@ -370,12 +370,17 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	return p, decision
 }
 
-const reservationScanAttempts = 2
+type reservationCommitOutcome uint8
+
+const (
+	reservationCommitted reservationCommitOutcome = iota
+	reservationNeedsRescan
+	reservationCandidateRejected
+)
 
 type providerReservationScan struct {
 	selected     *routingCandidate
 	candidates   candidateScan
-	shadow       ttftShadowEval
 	cacheTracker *cacheRoutingTracker
 	cacheMode    string
 }
@@ -385,9 +390,8 @@ type providerReservationScan struct {
 // additionally retains a bounded DispatchPlan of provisional alternates drawn
 // from the SAME scan that picked the winner — the plan is a byproduct of the
 // one existing pass, never a second scan — and is nil whenever no provider is
-// reserved. Selection and reservation are byte-for-byte identical in both
-// modes; wantPlan=false skips plan construction entirely so legacy callers
-// pay nothing.
+// reserved. Selection and reservation are identical in both modes;
+// wantPlan=false skips plan construction entirely so legacy callers pay nothing.
 //
 // In-flight token-budget ledger: the reservation itself IS the debit. Expensive
 // fleet scans share r.mu for reading; the winner is then re-snapshotted and
@@ -402,9 +406,10 @@ type providerReservationScan struct {
 // set; the budget clamp remains the stale-optimistic backstop.
 //
 // The two-phase boundary preserves the canonical r.mu → p.mu order. A changed
-// provider identity, cache configuration, gate, deadline, or capacity snapshot
-// rejects the optimistic commit and permits one fresh shared scan.
-
+// ranking or cache configuration requests a fresh shared scan. A candidate that
+// became ineligible is excluded from this request's later scans, so reservation
+// keeps progressing through untried providers until the scan truthfully finds
+// none. The request-absolute first-content clock bounds the loop.
 func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bool, excludeIDs ...string) (*Provider, RoutingDecision, *DispatchPlan) {
 	if pr == nil || pr.RequestID == "" {
 		return nil, RoutingDecision{Model: model}, nil
@@ -416,33 +421,37 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		pr.RequestedMaxTokens = defaultRequestedMaxTokens
 	}
 
+	excluded := append([]string(nil), excludeIDs...)
 	var last providerReservationScan
-	for range reservationScanAttempts {
-		last = r.scanProviderReservation(model, pr, excludeIDs...)
+	for pr.RefreshFirstContentBudget(time.Now()) {
+		last = r.scanProviderReservation(model, pr, excluded...)
 		if last.selected == nil {
 			return nil, routingDecisionForFailedScan(model, last.candidates), nil
 		}
 
-		provider, candidate, committed := r.commitProviderReservation(model, pr, last)
-		if !committed {
+		provider, candidate, outcome := r.commitProviderReservation(
+			model, pr, last, excluded...)
+		switch outcome {
+		case reservationNeedsRescan:
 			continue
+		case reservationCandidateRejected:
+			excluded = append(excluded, last.selected.provider.ID)
+			continue
+		case reservationCommitted:
+			decision := routingDecisionForCandidate(
+				model, provider, candidate, last.candidates)
+			r.currentTTFTShadow(
+				model, pr, candidate, excluded...).applyTo(&decision)
+			var plan *DispatchPlan
+			if wantPlan {
+				// The scan pool is immutable value snapshots plus provider
+				// identities. Plan consumption revalidates both before use.
+				plan = newDispatchPlan(model, last.candidates, last.selected)
+			}
+			return provider, decision, plan
 		}
-
-		decision := routingDecisionForCandidate(model, provider, candidate, last.candidates)
-		last.shadow.applyTo(&decision)
-		var plan *DispatchPlan
-		if wantPlan {
-			// The scan pool is an immutable collection of value snapshots plus
-			// provider identities. Plan consumption revalidates both the live map
-			// identity and every admission gate before reserving an alternate.
-			plan = newDispatchPlan(model, last.candidates, last.selected)
-		}
-		return provider, decision, plan
 	}
 
-	// A concurrent commit changed the selected provider after both optimistic
-	// scans. Surface the last truthful fleet-wide scan rather than reserving from
-	// stale state; the caller's normal queue/429 path remains authoritative.
 	return nil, routingDecisionForFailedScan(model, last.candidates), nil
 }
 
@@ -482,7 +491,6 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 		pr.CacheSelectionMode = ""
 	}
 	selected, candidates := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
-	shadow := r.evaluateTTFTShadowLocked(model, pr, selected, candidates)
 	if r.reservationAfterScan != nil {
 		// Test-only deterministic barrier. Production never configures this hook.
 		r.reservationAfterScan(model)
@@ -490,7 +498,6 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	result := providerReservationScan{
 		selected:     selected,
 		candidates:   candidates,
-		shadow:       shadow,
 		cacheTracker: r.cacheRouting,
 		cacheMode:    r.cacheRoutingMode,
 	}
@@ -501,27 +508,46 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 // commitProviderReservation is the short serialized phase. It repeats the full
 // current-state capacity chain before adding the pending debit, so concurrent
 // scans cannot double-spend a provider's shared cross-model token pool.
-func (r *Registry) commitProviderReservation(model string, pr *PendingRequest, scan providerReservationScan) (*Provider, *routingCandidate, bool) {
+func (r *Registry) commitProviderReservation(
+	model string,
+	pr *PendingRequest,
+	scan providerReservationScan,
+	excludeIDs ...string,
+) (*Provider, *routingCandidate, reservationCommitOutcome) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Cache routing reconfiguration after the shared scan invalidates its cost
 	// ordering. Retry from a new scan rather than committing a stale discount.
 	if r.cacheRouting != scan.cacheTracker || r.cacheRoutingMode != scan.cacheMode {
-		return nil, nil, false
+		return nil, nil, reservationNeedsRescan
 	}
 	selected := scan.selected
 	if selected == nil || selected.provider == nil {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 	p := selected.provider
 	if current, ok := r.providers[p.ID]; !ok || current != p {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
+	}
+
+	// A breaker bypass is valid only while breaker-open providers remain the
+	// sole route. Re-run the normal pass at commit time; this rare emergency path
+	// may scan under the write lock so a newly healthy provider cannot race the
+	// fail-open decision.
+	if scan.candidates.ignoreProviderBreaker {
+		normalWinner, normal := r.selectBestCandidateScanLocked(
+			model, pr, false, excludeIDs...)
+		if normalWinner != nil || !shouldBypassBreakerFailOpen(
+			normalWinner, normal.breakerRejected,
+			normal.capacityRejections, normal.ttftRejections) {
+			return nil, nil, reservationNeedsRescan
+		}
 	}
 
 	owned := providerOwnedBy(p, pr.OwnerAccountID)
 	if pr.SelfRouteOnly && !owned {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 	if len(pr.AllowedProviderSerials) > 0 {
 		allowed := make(map[string]struct{}, len(pr.AllowedProviderSerials))
@@ -529,39 +555,49 @@ func (r *Registry) commitProviderReservation(model string, pr *PendingRequest, s
 			allowed[serial] = struct{}{}
 		}
 		if !providerMatchesAllowedSerial(p, allowed) {
-			return nil, nil, false
+			return nil, nil, reservationCandidateRejected
 		}
 	}
 	relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 	snapshot, ok := r.snapshotProviderLockedEx(
 		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 	if pr.RequiresVision {
 		p.mu.Lock()
 		servesVision := r.providerServesVisionModelLocked(p, model, relaxTrust)
 		p.mu.Unlock()
 		if !servesVision {
-			return nil, nil, false
+			return nil, nil, reservationCandidateRejected
 		}
 	}
 	candidate, _, ok := r.buildCandidateWithReason(snapshot, pr)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 	if pr.MaxTTFTMs > 0 && !pr.RequiresVision && snapshot.hasBackendCapacity &&
 		candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 	r.applyCacheRoutingDiscount(p, model, pr, snapshot, candidate)
+
+	// Another reservation changed this winner after the shared scan. Re-scan the
+	// fleet so cost ranking observes that debit instead of herding the whole scan
+	// cohort onto the formerly-cheapest provider.
+	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
+		snapshot.totalPending != selected.snapshot.totalPending ||
+		candidate.effectiveQueue != selected.effectiveQueue ||
+		candidate.costMs != selected.costMs {
+		return nil, nil, reservationNeedsRescan
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !r.providerCanAdmitLockedEx(
 		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
-		return nil, nil, false
+		return nil, nil, reservationCandidateRejected
 	}
 
 	pr.ProviderID = p.ID
@@ -585,7 +621,29 @@ func (r *Registry) commitProviderReservation(model string, pr *PendingRequest, s
 		pr.CacheSelectionEstimatedTTFTSavedMs = candidate.cacheEstimatedTTFTSavedMs
 		pr.CacheSelectionSelected = true
 	}
-	return p, candidate, true
+	return p, candidate, reservationCommitted
+}
+
+// currentTTFTShadow recomputes the observational signal from the winner's
+// commit-time pre-reserve snapshot and a fresh, shared-lock candidate pool. It
+// runs after the pending debit is committed, so concurrent reservations cannot
+// leave occupancy and idle-alternative telemetry pinned to the original scan.
+func (r *Registry) currentTTFTShadow(
+	model string,
+	pr *PendingRequest,
+	winner *routingCandidate,
+	excludeIDs ...string,
+) ttftShadowEval {
+	if TTFTAdmissionModeValue() == TTFTAdmissionOff || winner == nil || pr == nil {
+		return ttftShadowEval{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var current candidateScan
+	if snapshotOccupancy(winner.snapshot) > 0 {
+		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
+	}
+	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
 }
 
 func routingDecisionForFailedScan(model string, scan candidateScan) RoutingDecision {

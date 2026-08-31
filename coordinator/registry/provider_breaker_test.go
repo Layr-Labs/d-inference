@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -466,6 +467,51 @@ func TestReserveProviderExNodeHealthBreakerFailsOpen(t *testing.T) {
 	if decision.CandidateCount != 1 {
 		t.Fatalf("CandidateCount=%d, want 1 (bad still quarantined, good recovered)", decision.CandidateCount)
 	}
+}
+
+// TestReservationCommitRevalidatesBreakerFailOpen proves a stale fail-open scan
+// cannot commit a breaker-open provider after a healthy route recovers. The
+// normal-breaker pass is repeated inside the serialized commit before the bypass
+// is honored.
+func TestReservationCommitRevalidatesBreakerFailOpen(t *testing.T) {
+	reg := New(testLogger())
+	model := "breaker-commit-revalidate"
+	bad := makeSchedulerProvider(t, reg, "bad", model, 200)
+	good := makeSchedulerProvider(t, reg, "good", model, 50)
+	good.mu.Lock()
+	good.Status = StatusUntrusted
+	good.mu.Unlock()
+	for range providerBreakerConsecTrip {
+		reg.RecordProviderOutcome(bad.ID, false, 503, "internal error")
+	}
+
+	scanned := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	reg.reservationAfterScan = func(string) {
+		once.Do(func() {
+			close(scanned)
+			<-release
+		})
+	}
+	selected := make(chan *Provider, 1)
+	go func() {
+		p, _ := reg.ReserveProviderEx(model, &PendingRequest{
+			RequestID: "breaker-commit", Model: model, RequestedMaxTokens: 128,
+		})
+		selected <- p
+	}()
+	<-scanned
+	good.mu.Lock()
+	good.Status = StatusOnline
+	good.mu.Unlock()
+	close(release)
+
+	winner := <-selected
+	if winner == nil || winner.ID != good.ID {
+		t.Fatalf("winner=%v, want newly healthy provider %q instead of stale fail-open %q", winner, good.ID, bad.ID)
+	}
+	winner.RemovePending("breaker-commit")
 }
 
 // The PUBLIC PREFLIGHT (QuickCapacityCheck) must fail open on the node-health

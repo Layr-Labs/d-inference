@@ -3,7 +3,9 @@ package registry
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // planTestProvider registers a token-budget provider whose routing cost is
@@ -378,6 +380,67 @@ func TestConcurrentReservationsCannotDoubleSpendReportedBudget(t *testing.T) {
 	}
 	if wins != 1 {
 		t.Fatalf("wins=%d, want exactly 1 of two concurrent reservations against one budget", wins)
+	}
+}
+
+// TestConcurrentPrimaryScansRerankUntilUntriedCapacity proves a scan cohort
+// cannot herd onto the same stale cheapest provider or stop after a fixed retry
+// count. Three requests first select p00 from the same empty snapshot; commits
+// must then observe prior debits and spread across p00, p01, and p02.
+func TestConcurrentPrimaryScansRerankUntilUntriedCapacity(t *testing.T) {
+	reg := New(testLogger())
+	model := "primary-rerank-model"
+	for i := range 3 {
+		p := planTestProvider(t, reg, fmt.Sprintf("p%02d", i), model, int64(i)*400)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].MaxConcurrency = 1
+		p.mu.Unlock()
+	}
+
+	arrived := make(chan struct{}, 3)
+	release := make(chan struct{})
+	var initialScans atomic.Int32
+	reg.reservationAfterScan = func(string) {
+		if initialScans.Add(1) > 3 {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}
+
+	selected := make([]*Provider, 3)
+	var wg sync.WaitGroup
+	for i := range selected {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			selected[i], _, _ = reg.ReserveProviderWithPlan(
+				model, planTestRequest(fmt.Sprintf("primary-rerank-%d", i), 100, 100))
+		}()
+	}
+	for range 3 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("primary scans serialized instead of reaching the shared-scan barrier")
+		}
+	}
+	close(release)
+	wg.Wait()
+
+	winners := make(map[string]bool, 3)
+	for i, p := range selected {
+		if p == nil {
+			t.Fatalf("request %d returned nil while an untried provider remained", i)
+		}
+		winners[p.ID] = true
+	}
+	if len(winners) != 3 {
+		t.Fatalf("winner set=%v, want one request on each of p00, p01, and p02", winners)
+	}
+	for i, p := range selected {
+		p.RemovePending(fmt.Sprintf("primary-rerank-%d", i))
 	}
 }
 

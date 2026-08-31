@@ -229,6 +229,14 @@ public actor ProviderLoop {
     /// reports `.alreadyAvailable` and the verified-insert path would undo
     /// the fail-closed local un-advertisement.
     internal var retiringModels: Set<String> = []
+    /// Weight hash that FAILED the load self-test, by model id — persistent
+    /// (unlike the `retiringModels` tombstone, which only covers the
+    /// retirement's own window): a prefetch verification whose scan/hash
+    /// suspension spans an ENTIRE retirement would otherwise observe no
+    /// tombstone and re-advertise the failed build, which could then reload
+    /// and serve without re-passing the self-test (ABA). A verified build
+    /// with a DIFFERENT hash is genuinely new bytes and clears the entry.
+    internal var failedSelfTestHashes: [String: String] = [:]
     /// Monotonic sequence for activation-reserve pushes into `kvBudget`.
     /// Every push is stamped under THIS actor's isolation, so the epoch
     /// order equals the true serving-set mutation order — the budget actor

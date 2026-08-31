@@ -241,6 +241,24 @@ extension ProviderLoop {
             logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
             return
         }
+        // Fail-closed against the self-test verdict, ABA-proof: the
+        // detached scan/hash above can span an ENTIRE retirement (insert
+        // AND removal of its tombstone), so the tombstone checks below
+        // cannot catch that interleaving alone. The failed-hash record
+        // persists: the same bytes that failed the self-test are refused
+        // here no matter how the suspensions interleave; different bytes
+        // are a genuinely new build and clear the record.
+        if let failedHash = failedSelfTestHashes[modelId] {
+            guard failedHash != hash else {
+                desiredSwapDrop.removeValue(forKey: modelId)
+                logger.warning(
+                    "Prefetch verified \(modelId) but this exact build "
+                        + "(weight_hash=\(hash.prefix(16))) previously failed its load "
+                        + "self-test; not re-advertising")
+                return
+            }
+            failedSelfTestHashes.removeValue(forKey: modelId)
+        }
         // Architecture-derived supported set (v0.7.5): a prefetched build
         // whose family has no CBv2 adapter can never serve — advertising it
         // would invite requests that always refuse. Keep the previous build
@@ -315,6 +333,22 @@ extension ProviderLoop {
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
             await coordinatorClient.advertiseModel(info)
+            // Retirement interleaving in the two client awaits above removes
+            // the LOCAL advertisement; the client add we just made would then
+            // be the only copy — and the retirement's post-drain reconnect
+            // would register a build the loop no longer serves (persistent
+            // false routing). Undo the client add and skip the live
+            // announcement. No suspension sits between this check and the
+            // sync `outboundSend` below, so the announcement cannot race
+            // past it.
+            guard advertisedModels[modelId] != nil, !retiringModels.contains(modelId)
+            else {
+                await coordinatorClient.unadvertiseModel(modelId)
+                logger.warning(
+                    "Prefetch announcement for \(modelId) aborted: retirement removed it "
+                        + "mid-announce; client store restored")
+                return
+            }
         }
         // Push the authoritative ModelInfo (incl. the just-computed weight hash)
         // to the coordinator out-of-band so it can cross-check the build against

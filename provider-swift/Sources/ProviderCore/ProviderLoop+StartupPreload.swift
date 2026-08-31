@@ -305,6 +305,15 @@ extension ProviderLoop {
         // failed model, undoing the fail-closed removal below.
         retiringModels.insert(modelId)
         defer { retiringModels.remove(modelId) }
+        // Durable fail-closed mark, keyed by the bytes that failed: the
+        // tombstone above dies with this function, but a prefetch whose
+        // scan/hash suspension spans this whole retirement must STILL
+        // refuse to re-advertise the same weights (`applyVerifiedPrefetch`
+        // checks this map). A future build with a different hash clears it
+        // there and gets its chance.
+        if let failedHash = liveModelHashes[modelId] ?? modelHashes[modelId] {
+            failedSelfTestHashes[modelId] = failedHash
+        }
         // Un-advertise BEFORE unloading so unloadModel's own
         // refresh-then-regrow runs against the SHRUNKEN serving set — with
         // the old order the regrow was sized under the retiring model's

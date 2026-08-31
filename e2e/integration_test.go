@@ -681,10 +681,29 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 	models := []string{modelA, modelB, modelA}
 	var providerID string
 	for _, model := range models {
-		resp := postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
-		respBody, err := io.ReadAll(resp.Body)
-		require.NoError(t, err, "model %s", model)
-		resp.Body.Close()
+		// Request-absolute first-content deadlines (#704) bound how long
+		// dispatch waits for the provider, so a request that lands while the
+		// provider is still cold-loading or hot-swapping the requested model
+		// receives a prompt capacity 429 instead of blocking until the load
+		// finishes. That is the production contract — clients retry on 429 —
+		// so the smoke retries within a bounded window and then holds the
+		// final status to the same 200 assertion as before.
+		var resp *http.Response
+		var respBody []byte
+		swapDeadline := time.Now().Add(4 * time.Minute)
+		for {
+			resp = postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
+			var err error
+			respBody, err = io.ReadAll(resp.Body)
+			require.NoError(t, err, "model %s", model)
+			require.NoError(t, resp.Body.Close(), "model %s", model)
+			if resp.StatusCode != http.StatusTooManyRequests || time.Now().After(swapDeadline) {
+				break
+			}
+			t.Logf("model %s: capacity 429 while the provider loads/swaps; retrying: %s",
+				model, strings.TrimSpace(string(respBody[:min(len(respBody), 300)])))
+			time.Sleep(2 * time.Second)
+		}
 		require.Equal(t, http.StatusOK, resp.StatusCode, "model %s body: %s", model, string(respBody[:min(len(respBody), 500)]))
 
 		currentProviderID := resp.Header.Get("X-Provider-Id")

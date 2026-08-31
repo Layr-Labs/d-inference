@@ -4770,6 +4770,12 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// Dedupe in SQL: many session UUIDs can map to the same physical
+	// machine (one row per reconnect). Pick the most-recent row per
+	// stable identity (serial → SE key → id) so we don't return tens
+	// of thousands of historical rows for accounts with churny providers.
+	// MemoryStore applies the same identity dedupe; the shared provider
+	// store contract pins the parity.
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
@@ -4780,8 +4786,19 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
 			registered_at, last_seen, public_key
-		 FROM providers
-		 WHERE account_id = $1
+		 FROM (
+			SELECT DISTINCT ON (
+				COALESCE(NULLIF(serial_number, ''),
+				         NULLIF(se_public_key, ''),
+				         id)
+			) *
+			FROM providers
+			WHERE account_id = $1
+			ORDER BY COALESCE(NULLIF(serial_number, ''),
+			                  NULLIF(se_public_key, ''),
+			                  id),
+			         last_seen DESC
+		 ) deduped
 		 ORDER BY last_seen DESC`,
 		accountID,
 	)

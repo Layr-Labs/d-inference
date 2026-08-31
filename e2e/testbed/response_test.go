@@ -63,10 +63,16 @@ func TestLoadGeneratorStreamingMeasuresContentAndFullDrain(t *testing.T) {
 	assert.Equal(t, []time.Duration{request.TTFT}, run.result.ProfileRun.TTFTs)
 }
 
-func TestLoadGeneratorUsesXTimingForStreamingTTFTFallback(t *testing.T) {
+func TestLoadGeneratorRejectsContentFreeStreamDespiteXTiming(t *testing.T) {
+	// A 200 SSE response that only ever carries boilerplate (role deltas,
+	// [DONE]) is a failed generation. A positive provider_us in X-Timing may
+	// fill the TTFT metric, but it must never let the empty stream count as a
+	// success — otherwise a fleet of providers emitting nothing would pass the
+	// streaming benchmark's success threshold.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Timing", `{"parse_us":1,"reserve_us":2,"media_fetch_us":3,"route_us":4,"queue_us":5,"encrypt_us":6,"dispatch_us":7,"provider_us":8}`)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
 		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(server.Close)
@@ -80,9 +86,16 @@ func TestLoadGeneratorUsesXTimingForStreamingTTFTFallback(t *testing.T) {
 		MinimumSuccesses:  1,
 	}).Run()
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "no content event")
 	require.Len(t, result.RequestResults, 1)
-	assert.Equal(t, 8*time.Microsecond, result.RequestResults[0].TTFT)
+	request := result.RequestResults[0]
+	require.Error(t, request.Error)
+	assert.ErrorContains(t, request.Error, "no content event")
+	// The X-Timing fallback still fills the TTFT metric on the failed result.
+	assert.Equal(t, 8*time.Microsecond, request.TTFT)
+	assert.Equal(t, 0, result.SuccessCount)
+	assert.Equal(t, 1, result.ErrorCount)
 }
 
 func TestLoadGeneratorUsesObservedStreamingTTFTWithValidXTiming(t *testing.T) {

@@ -68,9 +68,13 @@ func decodeResponse(resp *http.Response, requestStart time.Time, streaming bool,
 			strings.TrimSpace(string(body)),
 		))
 	}
-	if resp.StatusCode == http.StatusOK && streaming && result.TTFT <= 0 && timingErr == nil {
+	if resp.StatusCode == http.StatusOK && streaming && observedTTFT <= 0 {
+		// A stream that never carries a content-bearing event is a failed
+		// generation even when X-Timing advertises a positive provider
+		// duration; the fallback above only fills the TTFT metric, it must
+		// never turn an empty stream into a success.
 		responseErrors = append(responseErrors, errors.New(
-			"streaming response contained no content event and X-Timing had no positive pre-first-chunk duration",
+			"streaming response contained no content event",
 		))
 	}
 	result.Error = errors.Join(responseErrors...)

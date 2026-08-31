@@ -67,11 +67,13 @@ func testProviderRecordStoreContract(t *testing.T, st Store) {
 	if err != nil || len(all) != 3 {
 		t.Fatalf("list provider records = %+v err=%v", all, err)
 	}
+	// Both backends dedupe by stable identity (serial → SE key → id): the two
+	// same-serial session rows collapse to the most-recent one, so a churny
+	// machine's reconnect history never inflates the account listing.
 	accountRecords, err := st.ListProvidersByAccount(ctx, accountA)
-	if err != nil || len(accountRecords) != 2 ||
-		accountRecords[0].ID != newID ||
-		accountRecords[1].ID != oldID {
-		t.Fatalf("account provider records = %+v err=%v", accountRecords, err)
+	if err != nil || len(accountRecords) != 1 || accountRecords[0].ID != newID {
+		t.Fatalf("account provider records = %+v err=%v, want deduped most-recent %q",
+			accountRecords, err, newID)
 	}
 	if empty, err := st.ListProvidersByAccount(ctx, ""); err != nil || len(empty) != 0 {
 		t.Fatalf("empty-account provider records = %+v err=%v", empty, err)

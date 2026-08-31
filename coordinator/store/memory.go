@@ -3016,16 +3016,35 @@ func (s *MemoryStore) ListProvidersByAccount(_ context.Context, accountID string
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	records := make([]ProviderRecord, 0)
+	// Dedupe by stable identity (serial → SE key → id), keeping the
+	// most-recent row per physical machine: many session UUIDs can map to
+	// the same machine (one row per reconnect). PostgresStore applies the
+	// same dedupe in SQL; the shared provider store contract pins the parity.
+	latestByIdentity := make(map[string]*ProviderRecord)
 	for _, p := range s.providerRecords {
-		if p.AccountID == accountID {
-			cp := *p
-			if p.Location != nil {
-				loc := *p.Location
-				cp.Location = &loc
-			}
-			records = append(records, cp)
+		if p.AccountID != accountID {
+			continue
 		}
+		identity := p.SerialNumber
+		if identity == "" {
+			identity = p.SEPublicKey
+		}
+		if identity == "" {
+			identity = p.ID
+		}
+		if existing, ok := latestByIdentity[identity]; ok && !p.LastSeen.After(existing.LastSeen) {
+			continue
+		}
+		latestByIdentity[identity] = p
+	}
+	records := make([]ProviderRecord, 0, len(latestByIdentity))
+	for _, p := range latestByIdentity {
+		cp := *p
+		if p.Location != nil {
+			loc := *p.Location
+			cp.Location = &loc
+		}
+		records = append(records, cp)
 	}
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].LastSeen.After(records[j].LastSeen)

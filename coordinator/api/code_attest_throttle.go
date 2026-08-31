@@ -134,10 +134,11 @@ type codeAttestReservationLock struct {
 }
 
 type codeAttestRecord struct {
-	at      time.Time
-	version string
-	token   string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
-	nodeKey string // registration X25519 process key ("" = legacy non-reusable row)
+	at         time.Time
+	version    string
+	token      string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
+	nodeKey    string // registration X25519 process key ("" = legacy non-reusable row)
+	binaryHash string // SE-attested binary identity the proof was earned under ("" = legacy row; never authorizes a transition resume)
 }
 
 // codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
@@ -217,31 +218,41 @@ func (t *codeAttestThrottle) reuseAttestation(
 }
 
 // reuseAttestationForTransition supplies the genuine Apple/APNs half of an
-// approved release transition. Version may differ, and — unlike same-version
+// approved release transition, returning the SE-attested binary identity the
+// cached proof was earned under. Version may differ, and — unlike same-version
 // reuseAttestation — the cached proof's process key may differ from the current
 // one: the provider generates a fresh ephemeral NodeKeyPair on every process
 // start, so requiring key equality here would push the whole fleet on every
 // routine upgrade/restart and strand providers behind the durable APNs floor
 // while queued requests expire. The proof must still be fresh, bound to the
-// same SE identity and exact current non-empty token, and must itself carry a
-// process-key binding (a legacy unbound row never authorizes a transition).
+// same SE identity and exact current non-empty token, must itself carry a
+// process-key binding, and must record WHICH binary earned it (a legacy
+// unbound or identity-less row never authorizes a transition). The CALLER
+// (tryCrossVersionReuse) then decides whether that recorded identity — same
+// binary, or an APPROVED active predecessor of the current release — may
+// transition; a proof earned by a deactivated/unknown release falls through to
+// a real APNs challenge (Codex 05:55Z P1).
 // SECURITY: this only authorizes SENDING a live encrypted resume challenge to
 // the CURRENT registration process key; possession of that new key is proven
 // solely by decrypting E_K(nonce), and the SE signature over the recovered
 // nonce is still verified — the cached record never grants trust by itself.
 func (t *codeAttestThrottle) reuseAttestationForTransition(
 	seKey, token string,
-) bool {
+) (string, bool) {
 	if seKey == "" || token == "" {
-		return false
+		return "", false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
-	return ok &&
-		r.token == token &&
-		r.nodeKey != "" &&
-		t.now().Sub(r.at) < t.reuseWindow
+	if !ok ||
+		r.token != token ||
+		r.nodeKey == "" ||
+		r.binaryHash == "" ||
+		t.now().Sub(r.at) >= t.reuseWindow {
+		return "", false
+	}
+	return r.binaryHash, true
 }
 
 // pushCooldown returns the per-device push budget for the active delivery mode.
@@ -589,7 +600,7 @@ func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
 }
 
 func (t *codeAttestThrottle) recordAttestedForProcess(
-	seKey, version, token, nodeKey string,
+	seKey, version, token, nodeKey, binaryHash string,
 ) {
 	if seKey == "" {
 		return
@@ -597,6 +608,7 @@ func (t *codeAttestThrottle) recordAttestedForProcess(
 	t.mu.Lock()
 	t.attested[seKey] = codeAttestRecord{
 		at: t.now(), version: version, token: token, nodeKey: nodeKey,
+		binaryHash: binaryHash,
 	}
 	t.mu.Unlock()
 }
@@ -645,6 +657,7 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 		t.attested[r.SEPubKey] = codeAttestRecord{
 			at: r.AttestedAt, version: r.Version,
 			token: r.APNsToken, nodeKey: r.NodePublicKey,
+			binaryHash: r.BinaryHash,
 		}
 		n++
 	}
@@ -981,7 +994,7 @@ func (t *codeAttestThrottle) expireResumeChallenge(
 // Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
 // reads. SECURITY: writes only AFTER the full nonce-match + SE-signature
 // verification — never from an unverified heartbeat token.
-func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey string) {
+func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey, binaryHash string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -999,6 +1012,7 @@ func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey string) {
 			AttestedAt:    at,
 			APNsToken:     token,
 			NodePublicKey: nodeKey,
+			BinaryHash:    binaryHash,
 		}); err != nil {
 			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
 		}

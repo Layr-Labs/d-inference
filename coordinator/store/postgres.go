@@ -987,12 +987,17 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			version TEXT NOT NULL DEFAULT '',
 			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			apns_token TEXT NOT NULL DEFAULT '',
-			node_public_key TEXT NOT NULL DEFAULT ''
+			node_public_key TEXT NOT NULL DEFAULT '',
+			binary_hash TEXT NOT NULL DEFAULT ''
 		)`,
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS node_public_key TEXT NOT NULL DEFAULT ''`,
+		// Attested binary identity (Codex 05:55Z P1): additive; a pre-existing
+		// row's empty hash marks a legacy identity-less proof, which never
+		// authorizes a release-transition resume (real APNs challenge instead).
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
 		// Durable APNs admission state is deliberately separate from successful
 		// attestation evidence. Spending a push budget never creates trust.
 		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
@@ -5009,7 +5014,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -5020,7 +5025,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 		var rec CodeAttestation
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
-			&rec.APNsToken, &rec.NodePublicKey,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
@@ -5041,13 +5046,13 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO code_attestations (
-			se_pubkey, version, attested_at, apns_token, node_public_key
-		 ) VALUES ($1, $2, $3, $4, $5)
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash
+		 ) VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
 			version = $2, attested_at = $3,
-			apns_token = $4, node_public_key = $5`,
+			apns_token = $4, node_public_key = $5, binary_hash = $6`,
 		rec.SEPubKey, rec.Version, rec.AttestedAt,
-		rec.APNsToken, rec.NodePublicKey,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)

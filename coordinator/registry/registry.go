@@ -1216,11 +1216,13 @@ func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvi
 // held across the provider-lock critical section, matching
 // SetReleasePolicyGeneration's r.mu → p.mu order). This closes the
 // clear/derive/grant race: a challenge that derived evidence from the OLD
-// policy snapshot must not install it after a generation sweep — the sweep
-// never saw that evidence, so the provider would otherwise idle un-kicked with
-// stale-generation, unroutable evidence until the periodic ticker. A grant
-// carrying a non-current generation is refused and the provider receives the
-// same immediate out-of-band re-challenge kick a sweep invalidation triggers.
+// policy snapshot must not install it after a generation sweep — the sweep's
+// kick (if any) may already have been consumed by an in-flight challenge, and
+// non-required sweeps kick nobody, so the provider would otherwise idle
+// un-kicked with stale-generation, unroutable evidence until the periodic
+// ticker. A grant carrying a non-current generation is refused and the
+// provider receives the same immediate out-of-band re-challenge kick a sweep
+// invalidation triggers.
 //
 // An APNs device token is deliberately NOT required: tokenless
 // (legacy/headless) providers with a valid signed challenge still earn
@@ -1568,17 +1570,26 @@ func (r *Registry) SetCodeAttestationPolicy(configured bool, deadline time.Time)
 // reports as valid under the NEW policy is carried forward at the new
 // generation — a routine release registration must not deroute the whole fleet
 // of healthy, still-approved providers for up to a challenge interval.
-// Evidence the new policy no longer approves (or that no predicate can vouch
-// for) is removed synchronously, and those provider IDs are returned so the
-// caller can trigger an immediate re-challenge instead of waiting for the
-// periodic ticker. A concurrently completing old challenge cannot install
-// evidence at all: GrantApplicationEvidenceIfNotUntrusted refuses any grant
-// whose generation is not current (atomically, under the same registry lock)
-// and kicks that provider for an immediate re-challenge.
+// Evidence not carried forward is removed synchronously.
+//
+// When the new policy is REQUIRED, the returned slice holds every connected
+// provider that was NOT carried forward — including providers that held no
+// evidence at all (e.g. the first activation of a required policy over a fleet
+// that never needed evidence before). The caller must kick each one for an
+// immediate re-challenge; otherwise the fleet idles unroutable until the
+// periodic ticker, whose interval outlives the request queue. Carried-forward
+// providers are never returned, so already-current providers get no duplicate
+// kick. When the new policy is NOT required, nothing is returned: evidence is
+// not a routing gate, so the periodic ticker is soon enough.
+//
+// A concurrently completing old challenge cannot install evidence at all:
+// GrantApplicationEvidenceIfNotUntrusted refuses any grant whose generation is
+// not current (atomically, under the same registry lock) and kicks that
+// provider for an immediate re-challenge.
 func (r *Registry) SetReleasePolicyGeneration(
 	generation uint64, required bool,
 	stillApproved func(ApplicationEvidence) bool,
-) (invalidated []string) {
+) (needChallenge []string) {
 	r.mu.Lock()
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
@@ -1590,16 +1601,15 @@ func (r *Registry) SetReleasePolicyGeneration(
 			provider.mu.Unlock()
 			continue
 		}
-		hadEvidence := evidence.EvidenceGeneration != 0
 		provider.ApplicationEvidence = ApplicationEvidence{}
 		provider.RuntimeCapabilities = nil
 		provider.mu.Unlock()
-		if hadEvidence {
-			invalidated = append(invalidated, id)
+		if required {
+			needChallenge = append(needChallenge, id)
 		}
 	}
 	r.mu.Unlock()
-	return invalidated
+	return needChallenge
 }
 
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the

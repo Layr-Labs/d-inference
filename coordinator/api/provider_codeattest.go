@@ -68,11 +68,16 @@ func (s *Server) codeAttestMetric(outcome string) {
 // a fresh ephemeral NodeKeyPair every process start) with CURRENT generation-
 // bound application evidence (a fresh SE-signed challenge attesting this exact
 // process key and approved binary) only to authorize a live encrypted resume
-// challenge to the current process key. Decrypting that challenge is the sole
-// possession proof for the new key; the persisted proof never grants code
-// trust by itself. This is what lets a routine upgrade/restart re-attest over
-// the live WebSocket instead of falling to a fresh APNs push behind the
-// durable per-device floor while queued requests expire (Codex 05:33Z #1).
+// challenge to the current process key. The cached proof must additionally
+// have been EARNED by the same binary this process now runs, or by an APPROVED
+// active predecessor of the current release (the exact approved-transition
+// derivation) — a proof earned by a since-deactivated or unknown release falls
+// through to a real APNs challenge under the durable floor (Codex 05:55Z P1).
+// Decrypting that challenge is the sole possession proof for the new key; the
+// persisted proof never grants code trust by itself. This is what lets a
+// routine upgrade/restart re-attest over the live WebSocket instead of falling
+// to a fresh APNs push behind the durable per-device floor while queued
+// requests expire (Codex 05:33Z #1).
 func (s *Server) tryCrossVersionReuse(
 	ctx context.Context,
 	providerID string,
@@ -94,8 +99,19 @@ func (s *Server) tryCrossVersionReuse(
 	if nodeKey == "" || evidence.ProcessPublicKey != nodeKey {
 		return false
 	}
-	if !s.codeAttestThrottle.reuseAttestationForTransition(
-		evidence.SEPublicKey, evidence.APNsToken) {
+	cachedBinaryHash, ok := s.codeAttestThrottle.reuseAttestationForTransition(
+		evidence.SEPublicKey, evidence.APNsToken)
+	if !ok {
+		return false
+	}
+	// Bind the proof to the binary that earned it: same binary as the current
+	// approved identity, or an APPROVED active predecessor of the current
+	// release. Legacy identity-less records already failed above.
+	if cachedBinaryHash != evidence.BinaryHash &&
+		!approvedTransitionPredecessor(
+			snapshot, cachedBinaryHash,
+			evidence.Platform, evidence.Backend, evidence.Version,
+		) {
 		return false
 	}
 	if !s.sendCodeIdentityResumeChallenge(
@@ -107,6 +123,31 @@ func (s *Server) tryCrossVersionReuse(
 	s.codeAttestMetric("resume_sent_approved_release")
 	s.logger.Info("code-attest: current approved release authorized a live process-key resume challenge")
 	return true
+}
+
+// approvedTransitionPredecessor reports whether fromHash names an ACTIVE
+// release row that the current release identity (platform/backend/version) may
+// transition from. This is the single approved-transition derivation — the
+// same per-candidate rule deriveApprovedReleaseTransition applies when
+// building ApprovedFromBinaryHashes: same platform, backend-compatible (a
+// legacy empty row backend matches any), and non-downgrade (the current
+// version is not below the predecessor's). A hash absent from the ACTIVE
+// inventory — e.g. a deactivated release — is never an approved predecessor.
+func approvedTransitionPredecessor(
+	snapshot *releaseTrustPolicySnapshot,
+	fromHash, platform, backend, version string,
+) bool {
+	if snapshot == nil || fromHash == "" || platform == "" {
+		return false
+	}
+	for _, candidate := range snapshot.ByBinaryHash[fromHash] {
+		if candidate.Platform == platform &&
+			(candidate.Backend == backend || candidate.Backend == "") &&
+			!semverLess(version, candidate.Version) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) codeAttestLoop(
@@ -622,9 +663,16 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	}
 
 	provider.Mu().Lock()
-	var sePubKey string
+	var sePubKey, attestedBinaryHash string
 	if provider.AttestationResult != nil {
 		sePubKey = provider.AttestationResult.PublicKey
+		// The SE-signed application challenge measured this binary; retain it
+		// on the cached APNs proof so a later release-transition resume is
+		// bound to the binary that EARNED the proof (Codex 05:55Z P1). A
+		// missing/unparseable hash leaves it empty — an identity-less record
+		// that never authorizes a transition (fail-closed).
+		attestedBinaryHash, _ = normalizeSHA256Hex(
+			provider.AttestationResult.BinaryHash, "attested binary_hash")
 	}
 	version := provider.Version
 	apnsToken := provider.APNsDeviceToken
@@ -673,10 +721,11 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	}
 	if apnsProof {
 		s.codeAttestThrottle.recordAttestedForProcess(
-			sePubKey, version, apnsToken, nodeKey)
-		// Persist the SE+token+process-key binding. Reuse still requires a live
-		// encrypted nonce PoP before protected capabilities are restored.
-		s.persistCodeAttestation(sePubKey, version, apnsToken, nodeKey)
+			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
+		// Persist the SE+token+process-key+binary binding. Reuse still requires
+		// a live encrypted nonce PoP before protected capabilities are restored.
+		s.persistCodeAttestation(
+			sePubKey, version, apnsToken, nodeKey, attestedBinaryHash)
 		// The APNs challenge was atomically consumed after signature verification.
 	}
 	s.codeAttestMetric("attested")

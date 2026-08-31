@@ -436,7 +436,11 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	provider.Mu().Unlock()
 	srv.releaseTrustPolicy.Store(&releaseTrustPolicySnapshot{
 		Generation: 1, Required: true,
-		ByBinaryHash: map[string][]approvedReleasePolicy{},
+		// Release A (trHashA, 0.8.14) stays ACTIVE: the cached APNs proof
+		// earned under it may authorize the B transition resume below.
+		ByBinaryHash: map[string][]approvedReleasePolicy{
+			trHashA: {{Version: "0.8.14", Platform: "macos-arm64", Backend: "mlx-swift"}},
+		},
 	})
 	srv.trustReuseCache.recordTrust(
 		hardwareReuseRecord(sePublic, "SERIAL-1", trHashA, (*clock)()))
@@ -469,7 +473,7 @@ func TestApprovedTransitionGrantsWithoutMDMOrAPNs(t *testing.T) {
 	// The no-new-push path is authorized only by this prior genuine APNs proof,
 	// then completed by a live encrypted process-key possession challenge.
 	srv.codeAttestThrottle.recordAttestedForProcess(
-		sePublic, "0.8.14", "token-current", processKey)
+		sePublic, "0.8.14", "token-current", processKey, trHashA)
 	provider.SignalApplicationProofSettled()
 	srv.codeAttestLoopWithResume(context.Background(), "prov-fs", provider, true)
 	if pushes != 0 || !provider.GetCodeAttested() ||

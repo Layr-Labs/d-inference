@@ -1454,7 +1454,7 @@ func TestMDMSchedulerFleet1500LifecycleSimulation(t *testing.T) {
 	// cannot grant an unapproved binary.
 	th := newCodeAttestThrottle()
 	th.now = func() time.Time { return now }
-	th.recordAttestedForProcess("fleet-se-app", "1.0", "token", "process-a")
+	th.recordAttestedForProcess("fleet-se-app", "1.0", "token", "process-a", trHashA)
 	if !th.reuseAttestation("fleet-se-app", "1.0", "token", "process-a") {
 		t.Fatal("valid exact process proof was not reusable")
 	}

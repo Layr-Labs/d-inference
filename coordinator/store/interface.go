@@ -960,6 +960,7 @@ type CodeAttestation struct {
 	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
 	APNsToken     string    `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
 	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
+	BinaryHash    string    `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
 }
 
 // CodeAttestPushBudget is durable APNs admission metadata, not evidence. It

@@ -1449,25 +1449,27 @@ func (s *Server) SyncBinaryHashes() error {
 	s.releaseTrustPolicy.Store(trustSnapshot)
 	if s.registry != nil {
 		// Evidence still approved under the NEW snapshot is carried forward at
-		// the new generation; only actually-invalidated providers lose their
-		// evidence, and those are re-challenged immediately instead of waiting
-		// for the periodic ticker (whose interval outlives the request queue).
-		invalidated := s.registry.SetReleasePolicyGeneration(
+		// the new generation. For a REQUIRED policy the registry returns every
+		// provider NOT carried forward — including providers that held no
+		// evidence at all (first required activation over a cold fleet) — and
+		// each one is re-challenged immediately instead of waiting for the
+		// periodic ticker (whose interval outlives the request queue).
+		needChallenge := s.registry.SetReleasePolicyGeneration(
 			trustSnapshot.Generation, trustSnapshot.Required,
 			func(evidence registry.ApplicationEvidence) bool {
 				return releaseEvidenceStillApproved(trustSnapshot, evidence)
 			})
-		for _, providerID := range invalidated {
+		for _, providerID := range needChallenge {
 			if provider := s.registry.GetProvider(providerID); provider != nil {
 				provider.RequestImmediateChallenge()
 			}
 		}
-		if len(invalidated) > 0 {
-			s.logger.Info("release policy refresh invalidated application evidence; re-challenging immediately",
+		if len(needChallenge) > 0 {
+			s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
 				"generation", trustSnapshot.Generation,
-				"providers", len(invalidated),
+				"providers", len(needChallenge),
 			)
-			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(invalidated))})
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
 		}
 	}
 
@@ -1613,14 +1615,12 @@ func (s *Server) deriveApprovedReleaseTransition(
 	}
 
 	approvedFrom := make(map[string]struct{})
-	for binaryHash, candidates := range snapshot.ByBinaryHash {
-		for _, candidate := range candidates {
-			if candidate.Platform == current.Platform &&
-				(candidate.Backend == current.Backend || candidate.Backend == "") &&
-				!semverLess(current.Version, candidate.Version) {
-				approvedFrom[binaryHash] = struct{}{}
-				break
-			}
+	for binaryHash := range snapshot.ByBinaryHash {
+		if approvedTransitionPredecessor(
+			snapshot, binaryHash,
+			current.Platform, current.Backend, current.Version,
+		) {
+			approvedFrom[binaryHash] = struct{}{}
 		}
 	}
 	metallibHash, _ := normalizeSHA256Hex(

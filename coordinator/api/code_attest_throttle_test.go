@@ -35,7 +35,7 @@ func TestCodeAttestThrottleBudgetAndReuse(t *testing.T) {
 		t.Fatal("a background push after the cooldown should be allowed")
 	}
 
-	th.recordAttestedForProcess(se, "0.6.0", "token", nodeKey)
+	th.recordAttestedForProcess(se, "0.6.0", "token", nodeKey, "hash-a")
 	if !th.reuseAttestation(se, "0.6.0", "token", nodeKey) {
 		t.Fatal("should reuse a fresh proof bound to the same version, token, and process key")
 	}
@@ -57,7 +57,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 	th.now = func() time.Time { return cur }
 	const se, nodeKey = "se-key-1", "node-key-1"
 
-	th.recordAttestedForProcess(se, "0.6.0", "tokA", nodeKey)
+	th.recordAttestedForProcess(se, "0.6.0", "tokA", nodeKey, "hash-a")
 	if !th.reuseAttestation(se, "0.6.0", "tokA", nodeKey) {
 		t.Fatal("same token and process key must reuse")
 	}
@@ -86,7 +86,7 @@ func TestCodeAttestThrottleTokenBinding(t *testing.T) {
 
 func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	th := newCodeAttestThrottle()
-	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
 	if !th.reuseAttestation(
 		"se", "0.8.17", "token", "node-key-A",
 	) {
@@ -121,32 +121,58 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 }
 
 // TestCodeAttestThrottleTransitionProcessKeyBinding: a transition proof is
-// bound to the SE identity and exact APNs token — NOT to the current process
-// key, which rotates on every provider restart. Possession of the new key is
-// proven by decrypting the resume challenge, not by this cache lookup. A
-// rotated token, empty inputs, or a legacy record without any process-key
-// binding still refuse.
+// bound to the SE identity, exact APNs token, and the binary identity that
+// earned it — NOT to the current process key, which rotates on every provider
+// restart. Possession of the new key is proven by decrypting the resume
+// challenge, not by this cache lookup. A rotated token, empty inputs, or a
+// legacy record without a process-key or binary-identity binding still refuse.
 func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	th := newCodeAttestThrottle()
-	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
+	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "hash-a")
 
-	if !th.reuseAttestationForTransition("se", "token") {
-		t.Fatal("same SE identity + token should authorize a transition resume challenge")
+	if hash, ok := th.reuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
+		t.Fatalf("same SE identity + token should authorize a transition resume challenge with the earned identity, got %q ok=%v", hash, ok)
 	}
-	if th.reuseAttestationForTransition("se", "rotated-token") {
+	if _, ok := th.reuseAttestationForTransition("se", "rotated-token"); ok {
 		t.Fatal("rotated token reused a transition APNs proof")
 	}
-	if th.reuseAttestationForTransition("se", "") {
+	if _, ok := th.reuseAttestationForTransition("se", ""); ok {
 		t.Fatal("empty token reused a transition APNs proof")
 	}
-	if th.reuseAttestationForTransition("", "token") {
+	if _, ok := th.reuseAttestationForTransition("", "token"); ok {
 		t.Fatal("empty SE key reused a transition APNs proof")
 	}
 
 	legacy := newCodeAttestThrottle()
 	legacy.recordAttested("se", "0.8.17", "token")
-	if legacy.reuseAttestationForTransition("se", "token") {
+	if _, ok := legacy.reuseAttestationForTransition("se", "token"); ok {
 		t.Fatal("proof without a cached process-key binding reused for a transition")
+	}
+
+	// A legacy identity-less record (process-key bound, but earned before
+	// binary-identity binding — e.g. seeded from a pre-migration durable row)
+	// never authorizes a transition resume; it must fall through to a real
+	// APNs challenge (Codex 05:55Z P1).
+	identityless := newCodeAttestThrottle()
+	identityless.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A", "")
+	if _, ok := identityless.reuseAttestationForTransition("se", "token"); ok {
+		t.Fatal("identity-less cached proof authorized a transition resume")
+	}
+	seeded := newCodeAttestThrottle()
+	seeded.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A",
+	}})
+	if _, ok := seeded.reuseAttestationForTransition("se", "token"); ok {
+		t.Fatal("seeded pre-migration row without a binary identity authorized a transition resume")
+	}
+	seededWithHash := newCodeAttestThrottle()
+	seededWithHash.seed([]store.CodeAttestation{{
+		SEPubKey: "se", Version: "0.8.17", AttestedAt: time.Now(),
+		APNsToken: "token", NodePublicKey: "node-key-A", BinaryHash: "hash-a",
+	}})
+	if hash, ok := seededWithHash.reuseAttestationForTransition("se", "token"); !ok || hash != "hash-a" {
+		t.Fatalf("persisted binary identity did not survive seed: %q ok=%v", hash, ok)
 	}
 }
 

@@ -1496,9 +1496,18 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	releaseFact := approvedReleaseTransitionFact{}
 	if fact, evidence, ok := s.deriveApprovedReleaseTransition(
 		provider, resp, statusFieldsTrusted,
-	); ok && provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
-		releaseFact = fact
-		s.codeAttestMetric("direct_application_proof")
+	); ok {
+		if provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+			releaseFact = fact
+			s.codeAttestMetric("direct_application_proof")
+		} else {
+			// Derivation succeeded but installation lost a race (policy
+			// generation refresh or identity/token change between derive and
+			// grant). The derive-side "granted" counter alone would make this
+			// look successful; the distinct outcome keeps shadow-rollout
+			// counters honest. The grant path already kicks a re-challenge.
+			s.recordReleaseEvidenceOutcome("grant_lost_race")
+		}
 	}
 
 	// Challenge passed. Refresh stored per-model weight hashes BEFORE

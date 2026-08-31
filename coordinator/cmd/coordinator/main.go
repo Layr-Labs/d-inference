@@ -407,6 +407,45 @@ func main() {
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
 	}
+	// Release-policy routing gate mode. SHADOW (default): application evidence
+	// is derived, granted, swept, and counted (release_evidence.outcome metrics
+	// + /v1/stats application_evidence_providers) but NEVER blocks routing —
+	// identical routing behavior to the pre-release-policy coordinator. ENFORCE:
+	// the routing chokepoint requires generation-current evidence. Enforcement
+	// must only be enabled after a shadow deployment shows evidence coverage
+	// near the connected fleet size (2026-08-31: enforcing an unproven evidence
+	// predicate zeroed network capacity twice).
+	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
+	case "enforce":
+		// A restarted coordinator boots with an EMPTY provider registry: zero
+		// evidence exists until reconnected providers complete their first
+		// challenge. Enforcing from the first request would 429 the whole
+		// fleet for minutes — so enforcement always waits out a boot grace
+		// (default 20m ≈ four challenge cycles) during which routing behaves
+		// exactly like shadow while evidence coverage rebuilds.
+		// The override is RAISE-ONLY, mirroring DARKBLOOM_ACTIVATION_RESERVE_GB:
+		// a shorter grace recreates the empty-registry 429 interval the grace
+		// exists to prevent, so values below the default clamp up to it.
+		const minEnforceGrace = 20 * time.Minute
+		grace := minEnforceGrace
+		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= minEnforceGrace {
+				grace = d
+			} else if err == nil {
+				logger.Warn("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE below the 20m minimum; clamping up", "value", v)
+			} else {
+				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
+			}
+		}
+		reg.SetReleasePolicyEnforcement(true)
+		reg.SetReleasePolicyEnforceAfter(time.Now().Add(grace))
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route after the boot grace",
+			"boot_grace", grace.String())
+	case "", "shadow":
+		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
+	default:
+		logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode", "value", mode)
+	}
 	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
 	// (APNs code-identity attestation is the real signal). Set this to re-enable
 	// the legacy derouting-on-mismatch behavior (rollback only).

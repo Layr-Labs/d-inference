@@ -759,6 +759,13 @@ type DeviceEvidence struct {
 	RevocationGeneration uint64
 }
 
+// ApplicationEvidence proves this connection's process runs an active approved
+// release: the SE-signed challenge binary hash matched an active release row
+// for the provider's version/platform/backend, and the runtime metallib hash
+// matched that release. Deliberately NO python/runtime/per-family-template
+// facts: mlx-swift providers never report them (python is gone; family
+// template hashes were CI fabrications no provider could echo — requiring
+// them made evidence underivable fleet-wide, 2026-08-31 incident).
 type ApplicationEvidence struct {
 	SEPublicKey      string
 	Serial           string
@@ -767,19 +774,11 @@ type ApplicationEvidence struct {
 	// has one. It MAY be empty: tokenless (legacy/headless) providers with a
 	// valid signed challenge still earn application evidence — APNs token
 	// possession is enforced exclusively by the APNs code-identity gate.
-	APNsToken   string
-	BinaryHash  string
-	Version     string
-	Platform    string
-	Backend     string
-	RuntimeHash string
-	// PythonHash and TemplateHashes retain the release-specific runtime facts
-	// the challenge proved, so a policy refresh can re-prove EVERY
-	// releaseRuntimeMatches input against the new snapshot instead of assuming
-	// them unchanged. TemplateHashes is never mutated after the grant (the
-	// struct is copied by value; the map is shared read-only).
-	PythonHash         string
-	TemplateHashes     map[string]string
+	APNsToken          string
+	BinaryHash         string
+	Version            string
+	Platform           string
+	Backend            string
 	MetallibHash       string
 	VerifiedAt         time.Time
 	EvidenceGeneration uint64
@@ -1009,6 +1008,15 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
+	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+}
+
+// providerSupportsPrivateTextModeLocked is the chokepoint body with the
+// evidence gate explicit: enforceEvidence=false is the SHADOW/baseline surface
+// (used live in shadow mode and by ApplicationEvidenceModelCoverage to compute
+// the per-model flip criterion); enforceEvidence=true additionally requires
+// generation-current application evidence. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -1021,25 +1029,15 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 		return false
 	}
 	// A configured release policy makes current active-release application
-	// evidence mandatory independently of the APNs rollout deadline. The APNs
-	// proof establishes genuine Apple code identity; this generation-bound fact
-	// establishes that the live binary/runtime is still active and approved.
-	if r.releasePolicyRequired {
-		evidence := p.ApplicationEvidence
-		if evidence.EvidenceGeneration == 0 ||
-			evidence.PolicyGeneration != r.releasePolicyGeneration ||
-			evidence.ProcessPublicKey != p.PublicKey ||
-			// Tokenless providers pass with matching empty tokens; APNs token
-			// possession is enforced only by the code-identity gate below.
-			evidence.APNsToken != p.APNsDeviceToken ||
-			evidence.Version != p.Version ||
-			evidence.Backend != p.Backend ||
-			evidence.BinaryHash == "" ||
-			p.AttestationResult == nil ||
-			evidence.SEPublicKey != p.AttestationResult.PublicKey ||
-			evidence.Serial != p.AttestationResult.SerialNumber {
-			return false
-		}
+	// evidence mandatory independently of the APNs rollout deadline — but only
+	// once enforcement is switched on AND past any enforce-after delay. In
+	// shadow (the default) the predicate is still evaluated and counted
+	// (ApplicationEvidenceModelCoverage, CountProvidersWithCurrentApplicationEvidence)
+	// so operators prove coverage BEFORE anything can be derouted.
+	if r.releasePolicyRequired &&
+		enforceEvidence &&
+		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
+		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
@@ -1607,6 +1605,7 @@ func (r *Registry) SetReleasePolicyGeneration(
 	r.mu.Lock()
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
+	enforced := r.releasePolicyEnforcedLocked()
 	for id, provider := range r.providers {
 		provider.mu.Lock()
 		evidence := provider.ApplicationEvidence
@@ -1616,7 +1615,14 @@ func (r *Registry) SetReleasePolicyGeneration(
 			continue
 		}
 		provider.ApplicationEvidence = ApplicationEvidence{}
-		provider.RuntimeCapabilities = nil
+		// Capability invalidation is an ENFORCE-mode consequence: capabilities
+		// gate capability-required catalog models, so clearing them in shadow
+		// would let evidence bookkeeping remove real capacity — exactly what
+		// shadow mode promises not to do. The re-challenge kicked below
+		// re-reconciles capabilities within one challenge round-trip anyway.
+		if enforced {
+			provider.RuntimeCapabilities = nil
+		}
 		provider.mu.Unlock()
 		if required {
 			needChallenge = append(needChallenge, id)
@@ -1624,6 +1630,133 @@ func (r *Registry) SetReleasePolicyGeneration(
 	}
 	r.mu.Unlock()
 	return needChallenge
+}
+
+// providerHoldsCurrentApplicationEvidenceLocked reports whether p holds
+// generation-current application evidence bound to its live identity: current
+// policy generation, this connection's process key, the current APNs token
+// (tokenless providers pass with matching empty tokens; token possession is
+// enforced only by the code-identity gate), the registered version/backend,
+// and the registration-attested SE identity. Caller must hold r.mu; provider
+// fields are read without p.mu, matching the routing chokepoint's semantics.
+func (r *Registry) providerHoldsCurrentApplicationEvidenceLocked(p *Provider) bool {
+	evidence := p.ApplicationEvidence
+	return evidence.EvidenceGeneration != 0 &&
+		evidence.PolicyGeneration == r.releasePolicyGeneration &&
+		evidence.ProcessPublicKey == p.PublicKey &&
+		evidence.APNsToken == p.APNsDeviceToken &&
+		evidence.Version == p.Version &&
+		evidence.Backend == p.Backend &&
+		evidence.BinaryHash != "" &&
+		p.AttestationResult != nil &&
+		evidence.SEPublicKey == p.AttestationResult.PublicKey &&
+		evidence.Serial == p.AttestationResult.SerialNumber
+}
+
+// SetReleasePolicyEnforcement switches the release-policy routing gate between
+// SHADOW (false, default: evidence derived/granted/swept and counted but never
+// blocks routing) and ENFORCE (true: the routing chokepoint requires current
+// evidence once any configured enforce-after delay has passed). Thread-safe.
+func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
+	r.mu.Lock()
+	r.releasePolicyEnforced = enforced
+	r.mu.Unlock()
+}
+
+// SetReleasePolicyEnforceAfter defers enforcement until t (zero = immediate).
+// Set at startup so a restart into enforce mode keeps routing like shadow
+// until the reconnected fleet has completed its first challenge cycles and
+// re-earned evidence. Thread-safe.
+func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
+	r.mu.Lock()
+	r.releasePolicyEnforceAfter = t
+	r.mu.Unlock()
+}
+
+// releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
+// now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforced &&
+		!time.Now().Before(r.releasePolicyEnforceAfter)
+}
+
+// ReleasePolicyEnforced reports whether missing application evidence currently
+// blocks routing. Thread-safe.
+func (r *Registry) ReleasePolicyEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.releasePolicyEnforcedLocked()
+}
+
+// ModelEvidenceCoverage is the per-model shadow→enforce acceptance record:
+// Routable counts providers passing every routing gate EXCEPT the evidence
+// gate for that catalog-allowed model; WithEvidence counts the subset also
+// holding generation-current application evidence. Enforcement is safe for a
+// model only when WithEvidence ≈ Routable.
+type ModelEvidenceCoverage struct {
+	Routable     int `json:"routable"`
+	WithEvidence int `json:"with_evidence"`
+}
+
+// ApplicationEvidenceModelCoverage computes ModelEvidenceCoverage for every
+// catalog-allowed model advertised by a connected provider, using the same
+// liveness surface as public capacity with the evidence gate bypassed — so the
+// flip criterion cannot be masked by fleet-wide averages hiding one model
+// family's uncovered providers. Thread-safe.
+func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCoverage {
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ModelEvidenceCoverage)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		baseline := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			!p.PrivateOnly &&
+			trustRank(p.TrustLevel) >= trustRank(r.MinTrustLevel) &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextModeLocked(p, false) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		holds := baseline && r.providerHoldsCurrentApplicationEvidenceLocked(p)
+		if baseline {
+			for _, model := range p.Models {
+				if !r.providerModelAllowedByCatalogLocked(p, model) {
+					continue
+				}
+				coverage := out[model.ID]
+				coverage.Routable++
+				if holds {
+					coverage.WithEvidence++
+				}
+				out[model.ID] = coverage
+			}
+		}
+		p.mu.Unlock()
+	}
+	return out
+}
+
+// CountProvidersWithCurrentApplicationEvidence returns (holding, connected):
+// how many currently connected providers hold generation-current application
+// evidence, and the total connected count. This is the shadow-mode acceptance
+// instrument: enforcement must not be enabled until holding is near connected.
+// Thread-safe.
+func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	holding := 0
+	for _, provider := range r.providers {
+		// Evidence and token fields are written under p.mu by challenge and
+		// APNs handlers that do not hold r.mu; lock each provider so this
+		// flip-criterion counter never reads a torn record.
+		provider.mu.Lock()
+		holds := r.providerHoldsCurrentApplicationEvidenceLocked(provider)
+		provider.mu.Unlock()
+		if holds {
+			holding++
+		}
+	}
+	return holding, len(r.providers)
 }
 
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
@@ -1972,6 +2105,22 @@ type Registry struct {
 	// derived from the current generation; APNs identity alone is insufficient.
 	releasePolicyGeneration uint64
 	releasePolicyRequired   bool
+	// releasePolicyEnforced gates whether missing/stale application evidence
+	// actually blocks routing. false = SHADOW: evidence is still derived,
+	// granted, swept, and counted (CountProvidersWithCurrentApplicationEvidence)
+	// but a provider without it keeps routing exactly like the pre-release-policy
+	// coordinator. true = ENFORCE: evidence is mandatory at the routing
+	// chokepoint. A brand-new global trust gate MUST prove fleet compatibility
+	// in shadow before it is allowed to deroute anything (2026-08-31 incident:
+	// an unprovable evidence predicate zeroed network capacity twice).
+	releasePolicyEnforced bool
+	// releasePolicyEnforceAfter delays enforcement past process start: a
+	// coordinator restarted with enforcement configured boots with an EMPTY
+	// in-memory registry (zero evidence), so enforcing from the first request
+	// would 429 every reconnecting provider until its first challenge —
+	// recreating the exact transient the shadow rollout exists to prevent.
+	// Zero means enforce immediately (tests, in-process flips).
+	releasePolicyEnforceAfter time.Time
 
 	modelCatalog map[string]CatalogEntry
 

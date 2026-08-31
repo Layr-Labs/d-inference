@@ -388,7 +388,10 @@ func exerciseCodeAttestPushDistinctNovelTokenRace(
 	t.Helper()
 	ctx := context.Background()
 	for iter := range iterations {
-		now := time.Now().UTC()
+		// Truncate to Postgres timestamptz precision: Linux clocks carry
+		// nanoseconds, pgx encodes microseconds, and the round-trip Equal
+		// below fails only on CI otherwise (macOS clocks tick in µs).
+		now := time.Now().UTC().Truncate(time.Microsecond)
 		seKey := fmt.Sprintf("%s-%d-%d", prefix, now.UnixNano(), iter)
 		hashes := []string{"novel-token-a", "novel-token-b"}
 		if iter%2 == 1 { // both orderings
@@ -558,7 +561,9 @@ func exerciseCodeAttestPushFloorClearCooldownIsDurable(
 	t.Helper()
 	ctx := context.Background()
 	cooldown := 20 * time.Minute
-	now := time.Now().UTC()
+	// µs-truncated for lossless Postgres round-trip equality (see the novel
+	// token race exercise).
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, seKey, "hash-a", now, now.Add(cooldown),
 	); err != nil || !ok {

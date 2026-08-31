@@ -237,33 +237,45 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
 	codeAttestationEnforced := s.registry.CodeAttestationEnforced()
 
+	// --- Release-policy application-evidence coverage (the shadow→enforce
+	// acceptance instrument: enforcement is safe only once holding ≈ connected
+	// fleet-wide AND with_evidence ≈ routable for EVERY model, so one model
+	// family's uncovered providers cannot hide inside a healthy average) ---
+	evidenceProviders, evidenceConnected := s.registry.CountProvidersWithCurrentApplicationEvidence()
+	evidenceModels := s.registry.ApplicationEvidenceModelCoverage()
+	releasePolicyEnforced := s.registry.ReleasePolicyEnforced()
+
 	// --- Network utilization (demand/capacity across warm-serving + token-budget axes) ---
 	util := s.registry.NetworkUtilizationSnapshot()
 
 	resp := map[string]any{
-		"total_requests":             totalRequests,
-		"total_prompt_tokens":        totalPromptTokens,
-		"total_completion_tokens":    totalCompletionTokens,
-		"total_tokens":               totalTokens,
-		"last_24h_requests":          last24h.Requests,
-		"last_24h_prompt_tokens":     last24h.PromptTokens,
-		"last_24h_completion_tokens": last24h.CompletionTokens,
-		"last_24h_total_tokens":      last24h.PromptTokens + last24h.CompletionTokens,
-		"location_window_hours":      24,
-		"avg_tokens_per_request":     avgTokens,
-		"active_providers":           len(providers),
-		"active_power_watts":         activePowerWatts,
-		"code_attested_providers":    codeAttestedProviders,
-		"code_attestation_enforced":  codeAttestationEnforced,
-		"total_gpu_cores":            totalGPUCores,
-		"total_cpu_cores":            totalCPUCores,
-		"total_memory_gb":            totalMemoryGB,
-		"total_bandwidth_gbs":        totalBandwidthGB,
-		"network_capacity_tps":       util.CapacityTPS,
-		"network_utilization":        util.Public(),
-		"providers":                  providers,
-		"models":                     models,
-		"time_series":                timeSeries,
+		"total_requests":                 totalRequests,
+		"total_prompt_tokens":            totalPromptTokens,
+		"total_completion_tokens":        totalCompletionTokens,
+		"total_tokens":                   totalTokens,
+		"last_24h_requests":              last24h.Requests,
+		"last_24h_prompt_tokens":         last24h.PromptTokens,
+		"last_24h_completion_tokens":     last24h.CompletionTokens,
+		"last_24h_total_tokens":          last24h.PromptTokens + last24h.CompletionTokens,
+		"location_window_hours":          24,
+		"avg_tokens_per_request":         avgTokens,
+		"active_providers":               len(providers),
+		"active_power_watts":             activePowerWatts,
+		"code_attested_providers":        codeAttestedProviders,
+		"code_attestation_enforced":      codeAttestationEnforced,
+		"application_evidence_providers": evidenceProviders,
+		"application_evidence_connected": evidenceConnected,
+		"release_policy_enforced":        releasePolicyEnforced,
+		"application_evidence_models":    evidenceModels,
+		"total_gpu_cores":                totalGPUCores,
+		"total_cpu_cores":                totalCPUCores,
+		"total_memory_gb":                totalMemoryGB,
+		"total_bandwidth_gbs":            totalBandwidthGB,
+		"network_capacity_tps":           util.CapacityTPS,
+		"network_utilization":            util.Public(),
+		"providers":                      providers,
+		"models":                         models,
+		"time_series":                    timeSeries,
 
 		// Location analytics (privacy-floored).
 		"provider_locations":                 providerLocations,

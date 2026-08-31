@@ -311,9 +311,14 @@ extension ProviderLoop {
         // refuse to re-advertise the same weights (`applyVerifiedPrefetch`
         // checks this map). A future build with a different hash clears it
         // there and gets its chance.
-        if let failedHash = liveModelHashes[modelId] ?? modelHashes[modelId] {
-            failedSelfTestHashes[modelId] = failedHash
-        }
+        // ALWAYS mark, even when no reliable hash is known ("" = unknown
+        // bytes failed): the recorded map hash can be absent or stale (the
+        // scanner keeps a previous hash when recomputation fails), and a
+        // stale H1 recorded while H2 actually failed would let a prefetch
+        // of H2 sail past the record. The sentinel refuses every same-id
+        // build until a daemon restart — conservative, fail-closed.
+        failedSelfTestHashes[modelId] =
+            liveModelHashes[modelId] ?? modelHashes[modelId] ?? ""
         // Un-advertise BEFORE unloading so unloadModel's own
         // refresh-then-regrow runs against the SHRUNKEN serving set — with
         // the old order the regrow was sized under the retiring model's

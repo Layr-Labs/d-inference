@@ -189,6 +189,17 @@ extension ProviderLoop {
     /// The scan + weight-hash computation run OFF the actor (`Task.detached`,
     /// utility priority) so hashing a multi-GB build never blocks inference or
     /// the event loop; only the small dictionary writes happen on the actor.
+    /// True when the durable failed-self-test record refuses this (id, hash)
+    /// pair: same bytes that failed, or the "" sentinel (bytes unknown —
+    /// refuse every same-id build until restart). Checked at EVERY guard in
+    /// `applyVerifiedPrefetch`, not just the first: a retirement completing
+    /// entirely inside any of the suspensions sets the record after an
+    /// earlier check already passed.
+    private func selfTestRecordRefuses(modelId: String, hash: String) -> Bool {
+        guard let failed = failedSelfTestHashes[modelId] else { return false }
+        return failed.isEmpty || failed == hash
+    }
+
     func applyVerifiedPrefetch(modelId: String) async {
         guard ModelRuntimeRequirements.isEligible(
             modelID: modelId, available: loopConfig.runtimeCapabilities)
@@ -248,17 +259,19 @@ extension ProviderLoop {
         // persists: the same bytes that failed the self-test are refused
         // here no matter how the suspensions interleave; different bytes
         // are a genuinely new build and clear the record.
-        if let failedHash = failedSelfTestHashes[modelId] {
-            guard failedHash != hash else {
-                desiredSwapDrop.removeValue(forKey: modelId)
-                logger.warning(
-                    "Prefetch verified \(modelId) but this exact build "
-                        + "(weight_hash=\(hash.prefix(16))) previously failed its load "
-                        + "self-test; not re-advertising")
-                return
-            }
-            failedSelfTestHashes.removeValue(forKey: modelId)
+        guard !selfTestRecordRefuses(modelId: modelId, hash: hash) else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            logger.warning(
+                "Prefetch verified \(modelId) but this build "
+                    + "(weight_hash=\(hash.prefix(16))) is refused by the failed "
+                    + "self-test record; not re-advertising")
+            return
         }
+        // A different-hash build clears the record only at the ADVERTISE
+        // point below, not here: a verify that passes this check but is
+        // then refused by a later guard must leave the record standing, or
+        // an operator byte-rollback afterwards would sneak the failed build
+        // past a fresh verify.
         // Architecture-derived supported set (v0.7.5): a prefetched build
         // whose family has no CBv2 adapter can never serve — advertising it
         // would invite requests that always refuse. Keep the previous build
@@ -295,12 +308,14 @@ extension ProviderLoop {
             UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
                     + Array(modelsLoading) + [modelId]))
-        // Re-check the tombstone AFTER the push's suspension: retirement can
-        // insert it during that await, and inserting past it would
-        // re-advertise the failed build the retirement just removed. (The
-        // pushed raise is harmless — epoch-ordered; retirement's own
-        // refresh, initiated after, carries a newer epoch.)
-        guard !retiringModels.contains(modelId) else {
+        // Re-check the tombstone AND the durable record AFTER the push's
+        // suspension: a retirement can run — or fully complete — during
+        // that await; the tombstone catches an in-progress one and the
+        // record catches a completed one. (The pushed raise is harmless —
+        // epoch-ordered; retirement's own refresh carries a newer epoch.)
+        guard !retiringModels.contains(modelId),
+            !selfTestRecordRefuses(modelId: modelId, hash: hash)
+        else {
             // The pre-insert push above already raised the budget for an id
             // that will now never join the set — recompute without it, or
             // the phantom raise stands until the next unrelated mutation.
@@ -309,6 +324,10 @@ extension ProviderLoop {
                 "Prefetch verified \(modelId) but retirement began during the reserve push; not advertising")
             return
         }
+        // A different-hash build reaching the actual advertise clears the
+        // failed-self-test record (same-hash builds were refused above; the
+        // clear deliberately does NOT happen at the check, see there).
+        failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
@@ -324,7 +343,10 @@ extension ProviderLoop {
         // interleaving in the refresh suspension above removes the local
         // advertisement — announcing then would diverge the client store
         // from the loop's (the fail-closed removal must win).
-        guard !retiringModels.contains(modelId), advertisedModels[modelId] != nil else {
+        guard !retiringModels.contains(modelId),
+            !selfTestRecordRefuses(modelId: modelId, hash: hash),
+            advertisedModels[modelId] != nil
+        else {
             logger.warning(
                 "Prefetch verified \(modelId) but retirement removed it before announcement; not advertising")
             return
@@ -344,9 +366,17 @@ extension ProviderLoop {
             guard advertisedModels[modelId] != nil, !retiringModels.contains(modelId)
             else {
                 await coordinatorClient.unadvertiseModel(modelId)
+                // The store rollback cannot retract a registration the
+                // reconnect loop already encoded from the transiently-stale
+                // store (retirement's own reconnect can fire while we sat in
+                // the client awaits above). Force one more reconnect so the
+                // coordinator's registered inventory converges on the
+                // corrected store — rare double-race path; the disruption is
+                // bounded and correctness-restoring.
+                await coordinatorClient.forceReconnect()
                 logger.warning(
                     "Prefetch announcement for \(modelId) aborted: retirement removed it "
-                        + "mid-announce; client store restored")
+                        + "mid-announce; client store restored and re-registered")
                 return
             }
         }

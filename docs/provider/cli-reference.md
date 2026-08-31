@@ -282,15 +282,17 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | Default-off Gemma 4 MTP code path; uses a valid local `mtp_drafter_path` or a verified catalog `spec_dec` artifact. The current production catalog publishes one for `gemma-4-26b-qat-4bit` |
+| `mtp` | MTP policy. Default `auto` drafts automatically for Qwen 3.5-family checkpoints that embed their head (`mtplx_mtp` in `config.json`); explicit on additionally enables catalog `spec_dec` assistants and local `mtp_drafter_path` overrides; explicit off is the rollback |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
 state. The durable locked write and restart instruction are implemented in
 `provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`. See
 [Beta Features](beta-features.md) for the full guide. `darkbloom beta list` also
-accepts `--json`. Installing a provider release does not enable MTP, and local
-parity results are not a blanket M1-M3/unknown-chip certification.
+accepts `--json`. Under the default `auto` mode a served checkpoint that embeds its MTP head
+drafts without any beta toggle; checkpoints without an embedded declaration
+stay target-only. Local parity results are not a blanket M1-M3/unknown-chip
+certification.
 The published assistant metadata is visible in the
 [public production catalog](https://api.darkbloom.dev/v1/models/catalog?type=text)
 under `gemma-4-26b-qat-4bit.metadata.spec_dec`.

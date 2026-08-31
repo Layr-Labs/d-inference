@@ -423,10 +423,16 @@ func main() {
 		// fleet for minutes — so enforcement always waits out a boot grace
 		// (default 20m ≈ four challenge cycles) during which routing behaves
 		// exactly like shadow while evidence coverage rebuilds.
-		grace := 20 * time.Minute
+		// The override is RAISE-ONLY, mirroring DARKBLOOM_ACTIVATION_RESERVE_GB:
+		// a shorter grace recreates the empty-registry 429 interval the grace
+		// exists to prevent, so values below the default clamp up to it.
+		const minEnforceGrace = 20 * time.Minute
+		grace := minEnforceGrace
 		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			if d, err := time.ParseDuration(v); err == nil && d >= minEnforceGrace {
 				grace = d
+			} else if err == nil {
+				logger.Warn("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE below the 20m minimum; clamping up", "value", v)
 			} else {
 				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
 			}

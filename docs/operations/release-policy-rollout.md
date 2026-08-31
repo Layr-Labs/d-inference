@@ -81,7 +81,7 @@ provider's reported `mlx_metallib` — nothing else. The gate has two modes via
 | `/v1/models/capacity` | all expected models present; routable counts near baseline (shadow cannot zero this) |
 | `/v1/stats` `application_evidence_connected` | ≈ pre-swap `active_providers` |
 | `/v1/stats` `application_evidence_providers` | climbing toward connected; ≥90% within ~20 min |
-| `/v1/stats` `application_evidence_models` | for EVERY model: `with_evidence` ≈ `routable` (per-model criterion — a small family's uncovered providers must not hide inside the fleet average) |
+| `/v1/stats` `application_evidence_models` | for EVERY model: `with_evidence` ≈ `routable` (per-model criterion — a small family's uncovered providers must not hide inside the fleet average). The denominator is the advertised-catalog surface, not full dispatch: a small persistent gap can be providers dispatch already excludes (e.g. the dedicated-model rule). Before treating a stable gap as a blocker, confirm via `release_evidence.outcome` that the uncovered providers have a benign typed reason. |
 | Datadog `release_evidence.outcome` | `granted` dominates; every other reason explained (`version_floor` stragglers, `no_active_release` dev builds) |
 | Real inference | succeeds on every model family |
 

@@ -1742,11 +1742,17 @@ func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCo
 // instrument: enforcement must not be enabled until holding is near connected.
 // Thread-safe.
 func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	holding := 0
 	for _, provider := range r.providers {
-		if r.providerHoldsCurrentApplicationEvidenceLocked(provider) {
+		// Evidence and token fields are written under p.mu by challenge and
+		// APNs handlers that do not hold r.mu; lock each provider so this
+		// flip-criterion counter never reads a torn record.
+		provider.mu.Lock()
+		holds := r.providerHoldsCurrentApplicationEvidenceLocked(provider)
+		provider.mu.Unlock()
+		if holds {
 			holding++
 		}
 	}

@@ -261,10 +261,12 @@ extension ProviderLoop {
         // Raise the runtime KV reserve for the grown serving set BEFORE the
         // build joins `advertisedModels` (and so before it is announced or
         // loadable) — a decode step of the new model must never run against a
-        // reserve resolved without it.
-        await kvBudget.setActivationReserveBytes(
+        // reserve resolved without it. Epoch-stamped, so a concurrent
+        // refresh's stale value cannot land after this one.
+        await pushActivationReserve(
             UnifiedMemoryCap.resolvedActivationReserveBytes(
-                modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys) + [modelId]))
+                modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+                    + Array(modelsLoading) + [modelId]))
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
@@ -309,8 +311,12 @@ extension ProviderLoop {
         await coordinatorClient?.unadvertiseModel(buildID)
         syncWarmModelState()
         // The shrunken set may carry a lower measured floor; let the runtime
-        // KV budget relax to it. (Raising happened on the add side.)
+        // KV budget relax to it. (Raising happened on the add side.) Then
+        // regrow surviving engines — their grants were sized under the
+        // dropped build's floor, and grant clamps are min(granted, current),
+        // so nothing else would ever hand the difference back.
         await refreshActivationReserve()
+        await resliceGrowSurvivors()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 

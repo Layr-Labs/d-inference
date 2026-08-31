@@ -27,6 +27,8 @@ public actor GlobalKVCacheBudget {
     /// loadable.
     private let capFraction: Double?
     private var activationReserveBytes: UInt64?
+    /// Highest owner epoch applied via `setActivationReserveBytes(_:epoch:)`.
+    private var lastActivationReserveEpoch: UInt64 = 0
     /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
     /// the live KV gate just as the load gate holds it back, so runtime KV can't
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
@@ -181,7 +183,20 @@ public actor GlobalKVCacheBudget {
     /// raise must land BEFORE the added model becomes loadable so a decode
     /// step of the new model can never run against the smaller reserve.
     /// Passing nil restores the flat default resolution.
-    public func setActivationReserveBytes(_ bytes: UInt64?) {
+    ///
+    /// `epoch`: the owner's monotonic push sequence, stamped under the
+    /// owner's actor isolation. Cross-actor jobs from different tasks are
+    /// not FIFO, so two concurrent set mutations can deliver their pushes
+    /// out of order — a stale value landing last would leave the budget
+    /// admitting against a reserve the serving set no longer resolves to.
+    /// A push whose epoch is not newer than the last applied one is
+    /// DISCARDED. nil (tests/simple callers) applies unconditionally and
+    /// leaves the recorded epoch untouched.
+    public func setActivationReserveBytes(_ bytes: UInt64?, epoch: UInt64? = nil) {
+        if let epoch {
+            guard epoch > lastActivationReserveEpoch else { return }
+            lastActivationReserveEpoch = epoch
+        }
         activationReserveBytes = bytes
     }
 

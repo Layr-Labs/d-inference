@@ -299,11 +299,18 @@ extension ProviderLoop {
     /// preload finished inside the gate) both are nil and the `run()` filter
     /// handles it with no extra traffic.
     private func retireModelAfterFailedSelfTest(modelId: String) async {
-        await unloadModel(modelId)
+        // Un-advertise BEFORE unloading so unloadModel's own
+        // refresh-then-regrow runs against the SHRUNKEN serving set — with
+        // the old order the regrow was sized under the retiring model's
+        // floor and survivors stayed under-granted until the next lifecycle
+        // event (grant clamps are min(granted, current); heartbeats cannot
+        // heal upward).
         advertisedModels.removeValue(forKey: modelId)
-        // The shrunken set may carry a lower measured activation floor; let
-        // the runtime KV budget relax to it.
+        await unloadModel(modelId)
+        // Cold retirement (the model never held a slot): unloadModel
+        // no-ops, so relax the reserve and regrow survivors here.
         await refreshActivationReserve()
+        await resliceGrowSurvivors()
         if let client = coordinatorClient {
             await client.unadvertiseModel(modelId)
             await client.forceReconnect()

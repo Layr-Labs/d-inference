@@ -391,3 +391,38 @@ private func makeAuditBudget(
     await budget.setActivationReserveBytes(11 * gib / 2)
     #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
 }
+
+@Test func globalKVCacheBudgetDiscardsStaleEpochReservePushes() async {
+    // Cross-actor pushes from concurrent set mutations are not FIFO: a
+    // stale relax computed before a raise can be DELIVERED after it. The
+    // owner stamps every push with a monotonic epoch (incremented under
+    // its own actor isolation = true mutation order); the budget must
+    // discard a push whose epoch is not newer than the last applied.
+    //
+    // Same 8 GiB box as above: 5.5 GiB reserve rejects a 1 GiB
+    // reservation, 3.5 GiB admits it.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 7 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    // Newer epoch applies: raise to 5.5 at epoch 2 → reject.
+    await budget.setActivationReserveBytes(11 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Stale epoch 1 (the relax computed BEFORE the raise, delivered after)
+    // is discarded — the raise stands.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 1)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Equal epoch is likewise discarded (not-newer).
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // A genuinely newer relax applies.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 3)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    // nil-epoch (test/simple callers) stays unconditional and does not
+    // disturb the recorded epoch: apply 5.5 unconditionally…
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // …and epoch 4 still applies afterwards.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 4)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+}

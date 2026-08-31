@@ -112,16 +112,23 @@ enum DoctorRunner {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
             // The daemon's load gate holds the max activation floor over its
-            // WHOLE serving set (scan ∩ enabled_models; everything scanned
-            // when the filter is empty) — mirror that basis so this verdict
-            // cannot pass a target the daemon would still gate at a larger
-            // co-enabled model's floor. Alternatives keep their solo floors:
-            // each models `enabled_models = [candidate]`.
+            // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
+            // the raw scan: the daemon selects from the memory-filtered
+            // scan (`scanModels`) and then drops unsupported families
+            // (`ProviderLoop.init`), so a cached too-large or unadapted
+            // model can never advertise and must not pin this verdict's
+            // floor (it would falsely FAIL a target the daemon serves at a
+            // lower floor). `allModels` (unfiltered) stays the basis for
+            // TARGET diagnosis above, so a too-large configured model is
+            // still flagged rather than silently skipped. Alternatives keep
+            // their solo floors: each models `enabled_models = [candidate]`.
+            let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
+                .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
             let enabled = snapshot.config.backend.enabledModels
             let servingSetIDs: [String] =
                 enabled.isEmpty
-                ? allModels.map(\.id)
-                : allModels.map(\.id).filter(enabled.contains)
+                ? daemonBasis.map(\.id)
+                : daemonBasis.map(\.id).filter(enabled.contains)
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,

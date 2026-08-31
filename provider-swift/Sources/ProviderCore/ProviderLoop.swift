@@ -223,6 +223,13 @@ public actor ProviderLoop {
     /// eviction decisions and overcommit memory.
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     internal var modelsLoading: Set<String> = []
+    /// Monotonic sequence for activation-reserve pushes into `kvBudget`.
+    /// Every push is stamped under THIS actor's isolation, so the epoch
+    /// order equals the true serving-set mutation order — the budget actor
+    /// discards a stale push that lands after a newer one (cross-actor
+    /// jobs from different tasks are not FIFO, so pushed values alone are
+    /// not linearizable).
+    internal var activationReserveEpoch: UInt64 = 0
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

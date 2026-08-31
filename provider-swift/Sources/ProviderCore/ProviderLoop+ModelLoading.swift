@@ -866,7 +866,14 @@ extension ProviderLoop {
     /// only after the retired slot actually unloads.
     var resolvedActivationReserveBytes: UInt64 {
         UnifiedMemoryCap.resolvedActivationReserveBytes(
-            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys))
+            // In-flight loads (modelsLoading) are part of the basis: a
+            // hard-swap can drop a high-floor model from advertisedModels
+            // while its load is still running (it is in neither advertised
+            // nor modelSlots during that window), and a relax computed then
+            // would size admission and grants below the reserve the model
+            // decodes under once it installs.
+            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+                + Array(modelsLoading))
     }
 
     /// Headroom (GB) reserved above the weights at load time. Must be at least
@@ -888,7 +895,16 @@ extension ProviderLoop {
     /// against a reserve resolved without it; for a removal it lets the
     /// reserve relax back to the remaining set's floor.
     func refreshActivationReserve() async {
-        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
+        await pushActivationReserve(resolvedActivationReserveBytes)
+    }
+
+    /// Stamp and push a resolved reserve into the KV budget actor. The
+    /// epoch increments under ProviderLoop's isolation, so pushes carry the
+    /// true mutation order and the budget can discard one that arrives
+    /// stale (see `activationReserveEpoch`).
+    func pushActivationReserve(_ bytes: UInt64) async {
+        activationReserveEpoch += 1
+        await kvBudget.setActivationReserveBytes(bytes, epoch: activationReserveEpoch)
     }
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {

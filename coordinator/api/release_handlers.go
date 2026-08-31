@@ -128,7 +128,8 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-update known binary hashes and runtime manifest from all active
 	// releases. The release write has committed, but an inventory read failure
-	// leaves the newly published policy deny-all and is reported to the caller.
+	// retains the last-known-good policy and is reported to the caller so the
+	// registration is retried until a sync converges on the new inventory.
 	if err := s.SyncBinaryHashes(); err != nil {
 		s.invalidateReleaseCaches(release.Platform)
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
@@ -562,8 +563,10 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Re-sync known hashes after deactivation. A read failure publishes a fresh
-	// deny-all generation and is surfaced even though deactivation committed.
+	// Re-sync known hashes after deactivation. A read failure retains the
+	// last-known-good policy (still containing the deactivated hash until a
+	// successful sync converges) and is surfaced even though deactivation
+	// committed, so the admin retries.
 	if err := s.SyncBinaryHashes(); err != nil {
 		s.invalidateReleaseCaches(req.Platform)
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse(

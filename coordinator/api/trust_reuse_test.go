@@ -325,6 +325,77 @@ func TestApprovedReleaseTransitionDerivedFromActiveRuntimePolicy(t *testing.T) {
 	}
 }
 
+// TestApprovedReleaseTransitionMatchesEmptyBackendRelease is the review
+// finding-4 regression: an ACTIVE release row persisted with an empty backend
+// (the migration added the column with an empty default and registration
+// accepts an omitted backend) must not leave providers permanently unroutable.
+// An empty release backend matches the provider-reported backend, and the
+// derived fact/evidence is stamped with the provider's backend so routing's
+// evidence.Backend == provider.Backend check holds. An exact-backend row is
+// preferred when both exist.
+func TestApprovedReleaseTransitionMatchesEmptyBackendRelease(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	legacy := store.Release{Version: "0.8.15", Platform: "macos-arm64", Backend: "",
+		BinaryHash: trHashA, MetallibHash: trHashC, Active: true}
+	if err := st.SetRelease(&legacy); err != nil {
+		t.Fatalf("set legacy release: %v", err)
+	}
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes: %v", err)
+	}
+	processKey := testPublicKeyB64()
+	p := srv.registry.Register("legacy-release-proof", nil, &protocol.RegisterMessage{
+		Backend: "mlx-swift", Version: "0.8.15",
+		PublicKey: processKey, APNsDeviceToken: "token-current",
+	})
+	p.Mu().Lock()
+	p.Version = "0.8.15"
+	p.RuntimeVerified = true
+	p.RuntimeManifestChecked = true
+	p.MetallibVerified = true
+	p.AttestationResult = &attestation.VerificationResult{
+		Valid: true, PublicKey: "se", SerialNumber: "SER",
+		BinaryHash: trHashA,
+	}
+	p.Mu().Unlock()
+	resp := &protocol.AttestationResponseMessage{
+		BinaryHash: trHashA, SIPEnabled: trBoolPtr(true),
+		SecureBootEnabled: trBoolPtr(true),
+		TemplateHashes:    map[string]string{"mlx_metallib": trHashC},
+	}
+	fact, evidence, ok := srv.deriveApprovedReleaseTransition(p, resp, true)
+	if !ok || !fact.Approved {
+		t.Fatalf("legacy empty-backend release rejected: fact=%+v ok=%v", fact, ok)
+	}
+	if fact.Backend != "mlx-swift" || evidence.Backend != "mlx-swift" {
+		t.Fatalf("empty release backend must be stamped with the provider backend, got fact=%q evidence=%q",
+			fact.Backend, evidence.Backend)
+	}
+	if _, fromSelf := fact.ApprovedFromBinaryHashes[trHashA]; !fromSelf {
+		t.Fatal("empty-backend release must participate in approved-from set")
+	}
+	// The carried-forward predicate agrees: the evidence remains approved
+	// across a policy rebuild of the same inventory.
+	if !releaseEvidenceStillApproved(srv.releaseTrustPolicy.Load(), evidence) {
+		t.Fatal("evidence from an empty-backend release must survive a policy rebuild")
+	}
+
+	// A row with an explicit matching backend is preferred over the wildcard.
+	exact := store.Release{Version: "0.8.15", Platform: "macos-arm64", Backend: "mlx-swift",
+		BinaryHash: trHashA, MetallibHash: trHashC, Active: true}
+	if err := st.SetRelease(&exact); err != nil {
+		t.Fatalf("set exact release: %v", err)
+	}
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if _, evidence, ok := srv.deriveApprovedReleaseTransition(p, resp, true); !ok || evidence.Backend != "mlx-swift" {
+		t.Fatalf("exact-backend release must still match: evidence=%+v ok=%v", evidence, ok)
+	}
+}
+
 // TestTrustReuseCacheInvalidate proves invalidateReuse drops the record so the
 // next reconnect cannot fast-skip. Mirrors the code-attest invalidate behavior.
 func TestTrustReuseCacheInvalidate(t *testing.T) {
@@ -1076,32 +1147,95 @@ func TestTrustReuseFastSkipRequiresMDMConfigured(t *testing.T) {
 	}
 }
 
-// --- Round 2 FIX 1: empty-seKey / empty-binaryHash guard ---
+// --- Round 2 FIX 1 (revised, review finding 2): empty-seKey guard vs optional hash ---
 
-// TestRecordTrustReuseRejectsEmptyInputs proves FIX 1: recordTrustReuse is a hard
-// no-op for an empty seKey or empty binaryHash — no in-memory entry, no persisted
-// row (an empty-key row would poison the cache/store; an empty binary hash can
-// never satisfy the read gate).
-func TestRecordTrustReuseRejectsEmptyInputs(t *testing.T) {
+// TestRecordTrustReuseRejectsEmptyIdentity: recordTrustReuse is a hard no-op
+// for an empty seKey (an empty-key row would poison the cache/store). An empty
+// BINARY hash is different — it is an optional self-report; see
+// TestRecordTrustReuseGrantsDeviceTrustWithoutBinaryHash.
+func TestRecordTrustReuseRejectsEmptyIdentity(t *testing.T) {
 	srv, st := trustReuseServer(t)
 	srv.SeedTrustReuseCache(context.Background())
 	p := newTrustReuseProvider(t, srv, "prov-empty", "se-empty", "SER-E")
 
-	srv.recordTrustReuse(p, "", "SER-E", trHashA, true, true, "udid")    // empty seKey
-	srv.recordTrustReuse(p, "se-empty", "SER-E", "", true, true, "udid") // empty binaryHash
-
+	if srv.recordTrustReuse(p, "", "SER-E", trHashA, true, true, "udid") {
+		t.Fatal("empty seKey must not grant")
+	}
+	if srv.recordTrustReuse(p, "se-empty", "", trHashA, true, true, "udid") {
+		t.Fatal("empty serial must not grant")
+	}
 	if srv.trustReuseCache.hasFreshRecord("se-empty", "SER-E") {
-		t.Fatal("empty seKey/binaryHash must not record in-memory")
+		t.Fatal("empty identity must not record in-memory")
 	}
 	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
-		t.Fatalf("empty seKey/binaryHash must not persist, got %d rows", len(rows))
+		t.Fatalf("empty identity must not persist, got %d rows", len(rows))
 	}
 }
 
-// TestApplyLateSecurityInfoSkipsWhenNoBinaryHash proves a late callback without
-// durable binary evidence fails closed: it neither grants hardware nor caches an
+// TestRecordTrustReuseGrantsDeviceTrustWithoutBinaryHash is the review
+// finding-2 regression: the self-reported application binary hash is OPTIONAL,
+// and a provider omitting it has still fully proven its DEVICE (SE identity +
+// live MDM posture). The synchronous full-verification path must grant
+// hardware trust — while remaining fail-closed on the reuse side: no
+// unbindable (hashless) reuse row is persisted or cached, so every reconnect
+// re-runs the full live verification.
+func TestRecordTrustReuseGrantsDeviceTrustWithoutBinaryHash(t *testing.T) {
+	srv, st := trustReuseServer(t)
+	srv.SeedTrustReuseCache(context.Background())
+	p := newTrustReuseProvider(t, srv, "prov-hashless", "se-hashless", "SER-H")
+
+	if !srv.recordTrustReuse(p, "se-hashless", "SER-H", "", true, true, "udid-h") {
+		t.Fatal("omitting the optional binary hash must not block device trust")
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("hashless full verification granted %q, want hardware", lvl)
+	}
+	if srv.trustReuseCache.hasFreshRecord("se-hashless", "SER-H") {
+		t.Fatal("hashless grant must not cache an unbindable reuse record")
+	}
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("hashless grant must not persist reuse rows, got %d", len(rows))
+	}
+	// An INVALID (non-empty) self-report is still refused outright.
+	p2 := newTrustReuseProvider(t, srv, "prov-badhash", "se-badhash", "SER-B")
+	if srv.recordTrustReuse(p2, "se-badhash", "SER-B", "not-a-hash", true, true, "udid-b") {
+		t.Fatal("an invalid non-empty binary hash must not grant")
+	}
+}
+
+// TestRecordLateTrustReuseWithoutBinaryHashRespectsTombstone: the late path has
+// no revocation-recovery authority — a tombstoned identity stays untrusted even
+// when the (hashless) grant would bypass the store CAS. The synchronous
+// full-verification path retains its recovery authority for the live grant.
+func TestRecordLateTrustReuseWithoutBinaryHashRespectsTombstone(t *testing.T) {
+	srv, st := trustReuseServer(t)
+	srv.SeedTrustReuseCache(context.Background())
+	p := newTrustReuseProvider(t, srv, "prov-ts", "se-ts", "SER-T")
+	srv.trustReuseCache.invalidateReuse("se-ts", "tombstone-event")
+
+	if srv.recordLateTrustReuse(p, "se-ts", "SER-T", "", true, true, "udid-t") {
+		t.Fatal("late hashless grant must refuse a tombstoned identity")
+	}
+	if lvl := p.GetTrustLevel(); lvl == registry.TrustHardware {
+		t.Fatal("tombstoned identity gained hardware trust via the late path")
+	}
+	if !srv.recordTrustReuse(p, "se-ts", "SER-T", "", true, true, "udid-t") {
+		t.Fatal("synchronous full verification retains live recovery authority")
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("post-recovery trust = %q, want hardware", lvl)
+	}
+	if rows, _ := st.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("hashless paths must never persist reuse rows, got %d", len(rows))
+	}
+}
+
+// TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing (review
+// finding 2, late MDM path): a late SecurityInfo callback for a provider that
+// never self-reported a binary hash still upgrades the live connection to
+// hardware — the device proof is complete — while persisting/caching no
 // unbindable reuse record.
-func TestApplyLateSecurityInfoSkipsWhenNoBinaryHash(t *testing.T) {
+func TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing(t *testing.T) {
 	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
 	srv, p := mdmReliabilityServer(t, fake)
 	srv.SeedTrustReuseCache(context.Background())
@@ -1116,11 +1250,14 @@ func TestApplyLateSecurityInfoSkipsWhenNoBinaryHash(t *testing.T) {
 		},
 	)
 
-	if lvl := p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
-		t.Fatalf("late SecurityInfo without binary evidence granted hardware: got %q", lvl)
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Fatalf("late SecurityInfo without optional binary hash must still grant hardware, got %q", lvl)
 	}
 	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
 		t.Fatalf("no reuse record may be cached without a binary hash, got %d rows", len(rows))
+	}
+	if srv.trustReuseCache.hasFreshRecord("se-pub-key-bytes", "SERIAL-1") {
+		t.Fatal("hashless late grant must not cache an unbindable reuse record")
 	}
 }
 

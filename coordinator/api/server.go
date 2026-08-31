@@ -1355,41 +1355,63 @@ func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 }
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
-// Called at startup and after release changes. An inventory read failure
-// publishes a fresh deny-all generation so stale application evidence cannot
-// remain routable.
+// Called at startup and after release changes.
+//
+// An inventory read failure is an OPERATIONAL condition, not a security signal:
+// with a previously published policy the last-known-good snapshot is retained
+// untouched (mirroring SyncRuntimeManifest's nil handling) so a store hiccup
+// can never deroute a healthy fleet. Only a cold start with no prior snapshot
+// publishes a deny-all generation — there is nothing known-good to retain, and
+// startup refuses to proceed on the returned error.
 func (s *Server) SyncBinaryHashes() error {
 	s.releasePolicySyncMu.Lock()
 	defer s.releasePolicySyncMu.Unlock()
 	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		if last := s.releaseTrustPolicy.Load(); last != nil {
+			s.logger.Error("release inventory unavailable; retaining last-known-good release policy",
+				"generation", last.Generation,
+				"error", err,
+			)
+			s.ddIncr("release_policy.sync_failure", []string{"outcome:retained_last_known_good"})
+			return fmt.Errorf("sync binary hashes: %w", err)
+		}
+		// Cold start: no last-known-good policy exists. Publish deny-all so a
+		// half-started coordinator cannot route on an unknown inventory.
+		generation := s.releaseTrustPolicyGeneration.Add(1)
+		trustSnapshot := &releaseTrustPolicySnapshot{
+			Generation:   generation,
+			Required:     true,
+			ByBinaryHash: make(map[string][]approvedReleasePolicy),
+		}
+		s.releaseTrustPolicy.Store(trustSnapshot)
+		if s.registry != nil {
+			s.registry.SetReleasePolicyGeneration(trustSnapshot.Generation, true, nil)
+		}
+		s.binaryHashPolicyMu.Lock()
+		s.releaseKnownBinaryHashes = make(map[string]bool)
+		s.releaseBinaryHashPolicyConfigured = true
+		s.rebuildBinaryHashPolicyLocked()
+		s.binaryHashPolicyMu.Unlock()
+		s.logger.Error("release inventory unavailable at cold start; published deny-all release policy",
+			"generation", generation,
+			"error", err,
+		)
+		s.ddIncr("release_policy.sync_failure", []string{"outcome:cold_start_deny_all"})
+		return fmt.Errorf("sync binary hashes: %w", err)
+	}
+
 	hashes := make(map[string]bool)
 	generation := s.releaseTrustPolicyGeneration.Add(1)
 	everConfigured := s.releaseInventoryEverConfigured.Load()
-	if err == nil && len(releases) > 0 {
+	if len(releases) > 0 {
 		s.releaseInventoryEverConfigured.Store(true)
 		everConfigured = true
 	}
 	trustSnapshot := &releaseTrustPolicySnapshot{
 		Generation:   generation,
-		Required:     err != nil || everConfigured,
+		Required:     everConfigured,
 		ByBinaryHash: make(map[string][]approvedReleasePolicy),
-	}
-	if err != nil {
-		s.releaseTrustPolicy.Store(trustSnapshot)
-		if s.registry != nil {
-			s.registry.SetReleasePolicyGeneration(
-				trustSnapshot.Generation, true)
-		}
-		s.binaryHashPolicyMu.Lock()
-		s.releaseKnownBinaryHashes = hashes
-		s.releaseBinaryHashPolicyConfigured = true
-		s.rebuildBinaryHashPolicyLocked()
-		s.binaryHashPolicyMu.Unlock()
-		s.logger.Error("release inventory unavailable; published deny-all release policy",
-			"generation", generation,
-			"error", err,
-		)
-		return fmt.Errorf("sync binary hashes: %w", err)
 	}
 
 	policyConfigured := false
@@ -1426,8 +1448,27 @@ func (s *Server) SyncBinaryHashes() error {
 	}
 	s.releaseTrustPolicy.Store(trustSnapshot)
 	if s.registry != nil {
-		s.registry.SetReleasePolicyGeneration(
-			trustSnapshot.Generation, trustSnapshot.Required)
+		// Evidence still approved under the NEW snapshot is carried forward at
+		// the new generation; only actually-invalidated providers lose their
+		// evidence, and those are re-challenged immediately instead of waiting
+		// for the periodic ticker (whose interval outlives the request queue).
+		invalidated := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range invalidated {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(invalidated) > 0 {
+			s.logger.Info("release policy refresh invalidated application evidence; re-challenging immediately",
+				"generation", trustSnapshot.Generation,
+				"providers", len(invalidated),
+			)
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(invalidated))})
+		}
 	}
 
 	s.binaryHashPolicyMu.Lock()
@@ -1440,6 +1481,42 @@ func (s *Server) SyncBinaryHashes() error {
 
 	s.logger.Info("binary hashes synced from releases", "known_hashes", knownHashCount, "policy_configured", effectivePolicyConfigured)
 	return nil
+}
+
+// releaseEvidenceStillApproved reports whether previously granted application
+// evidence remains approved under a freshly built release-policy snapshot: the
+// same binary hash still maps to an active release with the same version,
+// platform, backend, and runtime/metallib hashes. Any mismatch or ambiguity
+// fails closed (evidence is invalidated and the provider re-challenged).
+func releaseEvidenceStillApproved(
+	snapshot *releaseTrustPolicySnapshot,
+	evidence registry.ApplicationEvidence,
+) bool {
+	if evidence.BinaryHash == "" || evidence.MetallibHash == "" {
+		return false
+	}
+	for _, candidate := range snapshot.ByBinaryHash[evidence.BinaryHash] {
+		if candidate.Version != evidence.Version ||
+			candidate.Platform != evidence.Platform ||
+			candidate.Platform == "" {
+			continue
+		}
+		// Legacy release rows may carry an empty backend (the column was added
+		// with an empty default); treat it as matching the evidence backend,
+		// mirroring deriveApprovedReleaseTransition.
+		if candidate.Backend != "" && candidate.Backend != evidence.Backend {
+			continue
+		}
+		if candidate.RuntimeHash != "" && !strings.EqualFold(candidate.RuntimeHash, evidence.RuntimeHash) {
+			continue
+		}
+		expectedMetallib, err := normalizeSHA256Hex(candidate.MetallibHash, "release.metallib_hash")
+		if err != nil || expectedMetallib != evidence.MetallibHash {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Server) deriveApprovedReleaseTransition(
@@ -1483,6 +1560,13 @@ func (s *Server) deriveApprovedReleaseTransition(
 		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
 	}
 
+	// Legacy release rows can carry an empty backend: the migration added the
+	// column with an empty default and registration accepts an omitted backend.
+	// Such rows MUST NOT leave providers permanently unroutable — an empty
+	// backend matches the provider-reported backend (an exact match is
+	// preferred when both exist), and the derived fact/evidence is stamped with
+	// the provider-reported backend so routing's evidence.Backend == p.Backend
+	// check keeps holding.
 	var current approvedReleasePolicy
 	found := false
 	for _, candidate := range snapshot.ByBinaryHash[freshHash] {
@@ -1493,6 +1577,17 @@ func (s *Server) deriveApprovedReleaseTransition(
 			break
 		}
 	}
+	if !found {
+		for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+			if candidate.Version == version && candidate.Backend == "" &&
+				candidate.Platform != "" {
+				current = candidate
+				current.Backend = backend
+				found = true
+				break
+			}
+		}
+	}
 	if !found || !releaseRuntimeMatches(current, resp) {
 		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
 	}
@@ -1501,7 +1596,7 @@ func (s *Server) deriveApprovedReleaseTransition(
 	for binaryHash, candidates := range snapshot.ByBinaryHash {
 		for _, candidate := range candidates {
 			if candidate.Platform == current.Platform &&
-				candidate.Backend == current.Backend &&
+				(candidate.Backend == current.Backend || candidate.Backend == "") &&
 				!semverLess(current.Version, candidate.Version) {
 				approvedFrom[binaryHash] = struct{}{}
 				break

@@ -388,7 +388,9 @@ func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *t
 		t.Fatal("current release evidence should authorize the routing contribution")
 	}
 
-	reg.SetReleasePolicyGeneration(2, true)
+	if invalidated := reg.SetReleasePolicyGeneration(2, true, nil); len(invalidated) != 1 || invalidated[0] != provider.ID {
+		t.Fatalf("policy refresh must report the deverified provider for immediate re-challenge, got %v", invalidated)
+	}
 	if reg.providerSupportsPrivateTextLocked(provider) {
 		t.Fatal("policy refresh retained stale release-derived routing authority")
 	}
@@ -397,5 +399,65 @@ func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *t
 	}
 	if !provider.GetCodeAttested() {
 		t.Fatal("policy refresh destroyed independent genuine APNs proof")
+	}
+}
+
+// TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence is the
+// upgrade-storm regression at the registry layer: a policy refresh whose
+// predicate vouches for the existing evidence (same approved hash) must NOT
+// clear it — the evidence is re-stamped at the new generation and the provider
+// stays routable with no re-challenge round-trip.
+func TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence(t *testing.T) {
+	reg := &Registry{
+		providers:               make(map[string]*Provider),
+		releasePolicyGeneration: 1,
+		releasePolicyRequired:   true,
+	}
+	provider := &Provider{
+		ID: "provider", PublicKey: "process-key", Backend: BackendMLXSwift,
+		Version: "0.8.15", APNsDeviceToken: "token",
+		EncryptedResponseChunks: true,
+		RuntimeManifestChecked:  true, ChallengeVerifiedSIP: true,
+		CodeAttested: true,
+		AttestationResult: &attestation.VerificationResult{
+			Valid: true, PublicKey: "se-key", SerialNumber: "SERIAL",
+		},
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
+		},
+		ApplicationEvidence: ApplicationEvidence{
+			SEPublicKey: "se-key", Serial: "SERIAL",
+			ProcessPublicKey: "process-key", APNsToken: "token",
+			BinaryHash: "hash", Version: "0.8.15", Backend: BackendMLXSwift,
+			EvidenceGeneration: 1, PolicyGeneration: 1,
+		},
+	}
+	reg.providers[provider.ID] = provider
+
+	invalidated := reg.SetReleasePolicyGeneration(2, true,
+		func(evidence ApplicationEvidence) bool { return evidence.BinaryHash == "hash" })
+	if len(invalidated) != 0 {
+		t.Fatalf("still-approved evidence must not be invalidated, got %v", invalidated)
+	}
+	evidence, ok := provider.ApplicationEvidenceSnapshot()
+	if !ok || evidence.PolicyGeneration != 2 {
+		t.Fatalf("carried-forward evidence not re-stamped at new generation: %+v ok=%v", evidence, ok)
+	}
+	if !reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("still-approved provider must remain routable across the policy refresh")
+	}
+
+	// The same refresh with a predicate that rejects the hash clears + reports it.
+	invalidated = reg.SetReleasePolicyGeneration(3, true,
+		func(evidence ApplicationEvidence) bool { return false })
+	if len(invalidated) != 1 || invalidated[0] != provider.ID {
+		t.Fatalf("no-longer-approved evidence must be invalidated + reported, got %v", invalidated)
+	}
+	if reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("invalidated provider must not remain routable")
 	}
 }

@@ -69,6 +69,51 @@ func TestTrustReuseJournalPathPrecedence(t *testing.T) {
 	}
 }
 
+// TestCloseJournalLockPropagatesCloseError (review finding 5): withProcessLock
+// must surface a lock-file Close failure through its named return when the
+// guarded operation itself succeeded — and must never mask an earlier error.
+func TestCloseJournalLockPropagatesCloseError(t *testing.T) {
+	open := func() *os.File {
+		f, err := os.CreateTemp(t.TempDir(), "journal-lock")
+		if err != nil {
+			t.Fatalf("create temp lock: %v", err)
+		}
+		return f
+	}
+
+	// Successful close leaves a nil error untouched.
+	var err error
+	closeJournalLock(open(), &err)
+	if err != nil {
+		t.Fatalf("clean close must not set an error, got %v", err)
+	}
+
+	// A Close failure (already-closed file) is propagated when fn succeeded.
+	f := open()
+	_ = f.Close()
+	err = nil
+	closeJournalLock(f, &err)
+	if err == nil || !strings.Contains(err.Error(), "close trust-reuse journal lock") {
+		t.Fatalf("close failure was swallowed, got %v", err)
+	}
+
+	// An earlier error from the guarded operation wins over the close error.
+	f = open()
+	_ = f.Close()
+	earlier := errors.New("guarded operation failed")
+	err = earlier
+	closeJournalLock(f, &err)
+	if !errors.Is(err, earlier) {
+		t.Fatalf("close failure masked the earlier error, got %v", err)
+	}
+
+	// End-to-end: the happy path through withProcessLock still returns nil.
+	journal := newFileHardUntrustJournal(filepath.Join(t.TempDir(), "revocations.jsonl"))
+	if err := journal.withProcessLock(func() error { return nil }); err != nil {
+		t.Fatalf("withProcessLock happy path: %v", err)
+	}
+}
+
 func TestTrustAuthorityRejectsConcurrentCoordinator(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coordinator", trustReuseJournalFilename)
 	st := store.NewMemory(store.Config{})

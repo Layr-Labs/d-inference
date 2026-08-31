@@ -254,7 +254,7 @@ func (j *fileHardUntrustJournal) Remove(entry hardUntrustJournalEntry) ([]hardUn
 	return remaining, err
 }
 
-func (j *fileHardUntrustJournal) withProcessLock(fn func() error) error {
+func (j *fileHardUntrustJournal) withProcessLock(fn func() error) (err error) {
 	hardUntrustJournalProcessMu.Lock()
 	defer hardUntrustJournalProcessMu.Unlock()
 
@@ -262,7 +262,9 @@ func (j *fileHardUntrustJournal) withProcessLock(fn func() error) error {
 	if err != nil {
 		return fmt.Errorf("open trust-reuse journal lock: %w", err)
 	}
-	defer lock.Close()
+	// A failed Close on the lock file can mask a lost flock release; surface it
+	// when the guarded operation itself succeeded.
+	defer closeJournalLock(lock, &err)
 	if err := os.Chmod(j.lockPath, 0o600); err != nil {
 		return fmt.Errorf("secure trust-reuse journal lock permissions: %w", err)
 	}
@@ -279,6 +281,15 @@ func (j *fileHardUntrustJournal) withProcessLock(fn func() error) error {
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
 	return fn()
+}
+
+// closeJournalLock closes the journal lock file and propagates the Close error
+// through the caller's named return when no earlier error is already being
+// returned — a swallowed Close failure could mask a lost flock release.
+func closeJournalLock(lock *os.File, err *error) {
+	if closeErr := lock.Close(); closeErr != nil && *err == nil {
+		*err = fmt.Errorf("close trust-reuse journal lock: %w", closeErr)
+	}
 }
 
 func (j *fileHardUntrustJournal) loadUnlocked() ([]hardUntrustJournalEntry, error) {

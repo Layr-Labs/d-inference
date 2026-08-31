@@ -943,6 +943,15 @@ func (s *Server) challengeLoop(ctx context.Context, providerID string, provider 
 				return
 			}
 			s.sendChallenge(ctx, providerID, provider, tracker)
+		case <-provider.ImmediateChallengeChan():
+			// Out-of-band kick (e.g. a release-policy refresh invalidated this
+			// provider's application evidence): re-challenge now so a healthy
+			// provider is re-verified and routable again well before the next
+			// periodic tick.
+			if provider.ChallengeShouldStop() {
+				return
+			}
+			s.sendChallenge(ctx, providerID, provider, tracker)
 		}
 	}
 }

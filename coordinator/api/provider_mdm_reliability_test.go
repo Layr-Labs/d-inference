@@ -415,6 +415,40 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	}
 }
 
+// TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHash (review finding 2,
+// synchronous path): the self-reported binary hash is OPTIONAL — a provider
+// omitting it that passes the full live MDM SecurityInfo check must still be
+// upgraded to hardware trust. Only the durable reuse record requires the hash,
+// so nothing is persisted or cached and every reconnect re-runs the full
+// verification.
+func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHash(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID:       "cmd-ok",
+		failMDARawCommand: true,
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background())
+	// mdmReliabilityServer leaves AttestationResult.BinaryHash empty.
+
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome != mdmVerifyGranted {
+		t.Errorf("outcome = %v, want mdmVerifyGranted for a hashless provider", outcome)
+	}
+	if lvl := p.GetTrustLevel(); lvl != registry.TrustHardware {
+		t.Errorf("trust = %q, want %q for a hashless provider passing full MDM", lvl, registry.TrustHardware)
+	}
+	if rows, _ := srv.store.ListProviderTrustReuse(context.Background()); len(rows) != 0 {
+		t.Fatalf("hashless grant must not persist reuse rows, got %d", len(rows))
+	}
+	if srv.trustReuseCache.hasFreshRecord("se-pub-key-bytes", "SERIAL-1") {
+		t.Fatal("hashless grant must not cache an unbindable reuse record")
+	}
+}
+
 func waitForMDACommand(t *testing.T, fake *fakeMDMServer) string {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

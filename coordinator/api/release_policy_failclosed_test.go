@@ -58,7 +58,8 @@ func testRelease(version, hash string) *store.Release {
 	return &store.Release{
 		Version: version, Platform: defaultReleasePlatform, Backend: registry.BackendMLXSwift,
 		BinaryHash: hash, BundleHash: strings.Repeat("f", 64),
-		URL: "https://releases.example/" + version + ".tar.gz",
+		MetallibHash: trHashC,
+		URL:          "https://releases.example/" + version + ".tar.gz",
 	}
 }
 
@@ -75,14 +76,22 @@ func grantReleaseEvidenceForTest(t *testing.T, provider *registry.Provider, gene
 	if !provider.GrantApplicationEvidenceIfNotUntrusted(registry.ApplicationEvidence{
 		SEPublicKey: "se-release", Serial: "SER-RELEASE",
 		ProcessPublicKey: provider.PublicKey, APNsToken: "apns-token",
-		BinaryHash: binaryHash, Version: "2.0.0", Backend: registry.BackendMLXSwift,
+		BinaryHash: binaryHash, Version: "2.0.0", Platform: defaultReleasePlatform,
+		Backend: registry.BackendMLXSwift, MetallibHash: trHashC,
 		PolicyGeneration: generation,
 	}) {
 		t.Fatal("failed to grant release evidence test precondition")
 	}
 }
 
-func TestSyncBinaryHashesInventoryFailurePublishesDenyAllAndDeroutesConnectedProvider(t *testing.T) {
+// TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy is the
+// incident-class regression (review finding 1): a failed/timed-out store
+// ListReleases is a routine OPERATIONAL event and must NOT be re-interpreted
+// as a change in the approved release set. With a previously published policy,
+// SyncBinaryHashes keeps the last-known-good snapshot untouched (mirroring
+// SyncRuntimeManifest's handling), surfaces the error to the caller, and a
+// healthy connected provider stays routable throughout the outage.
+func TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy(t *testing.T) {
 	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
 	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
 		t.Fatalf("SetRelease: %v", err)
@@ -107,19 +116,24 @@ func TestSyncBinaryHashesInventoryFailurePublishesDenyAllAndDeroutesConnectedPro
 
 	st.setFailReads(true)
 	if err := srv.SyncBinaryHashes(); err == nil {
-		t.Fatal("inventory failure must be returned to startup/handler caller")
+		t.Fatal("inventory failure must still be surfaced to the caller")
 	}
-	failed := srv.releaseTrustPolicy.Load()
-	if failed == nil || !failed.Required || len(failed.ByBinaryHash) != 0 || failed.Generation <= snapshot.Generation {
-		t.Fatalf("failed-read policy is not a fresh deny-all generation: %+v", failed)
+	retained := srv.releaseTrustPolicy.Load()
+	if retained == nil || !retained.Required ||
+		retained.Generation != snapshot.Generation ||
+		len(retained.ByBinaryHash[trHashA]) != 1 {
+		t.Fatalf("read failure did not retain the last-known-good policy: %+v", retained)
 	}
-	if _, ok := provider.ApplicationEvidenceSnapshot(); ok {
-		t.Fatal("inventory failure did not clear connected application evidence")
+	if _, ok := provider.ApplicationEvidenceSnapshot(); !ok {
+		t.Fatal("operational inventory failure cleared connected application evidence")
 	}
-	if routed := findRoutableProvider(reg, model); routed != nil {
-		t.Fatalf("provider remained routable after release inventory failure: %s", routed.ID)
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("healthy provider was derouted by a release inventory read failure")
 	}
 
+	// Recovery converges back onto the exact active inventory and — because the
+	// provider's evidence is still approved under it — carries the evidence
+	// forward at the new generation with no re-challenge round-trip.
 	st.setFailReads(false)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("recovery SyncBinaryHashes: %v", err)
@@ -128,9 +142,82 @@ func TestSyncBinaryHashesInventoryFailurePublishesDenyAllAndDeroutesConnectedPro
 	if recovered == nil || !recovered.Required || len(recovered.ByBinaryHash) != 1 || len(recovered.ByBinaryHash[trHashA]) != 1 {
 		t.Fatalf("recovered release policy did not restore exact active inventory: %+v", recovered)
 	}
-	grantReleaseEvidenceForTest(t, provider, recovered.Generation, trHashA)
+	if evidence, ok := provider.ApplicationEvidenceSnapshot(); !ok || evidence.PolicyGeneration != recovered.Generation {
+		t.Fatalf("recovery did not carry still-approved evidence forward: %+v ok=%v", evidence, ok)
+	}
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
-		t.Fatalf("provider did not recover after fresh evidence on recovered generation: %#v", routed)
+		t.Fatalf("provider did not stay routable across the recovery sync: %#v", routed)
+	}
+}
+
+// TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable is the
+// upgrade-storm regression (review finding 3): registering an ADDITIONAL
+// release advances the policy generation, but a connected provider whose
+// evidence is still approved under the new snapshot must stay routable (its
+// evidence is re-stamped, not cleared, and no re-challenge is requested).
+// Deactivating the provider's release then genuinely invalidates it — its
+// evidence is cleared synchronously AND an immediate out-of-band re-challenge
+// is requested instead of waiting for the periodic ticker.
+func TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable(t *testing.T) {
+	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("initial SyncBinaryHashes: %v", err)
+	}
+	snapshot := srv.releaseTrustPolicy.Load()
+
+	const model = "release-storm-model"
+	provider := makeRoutableProvider(t, reg, "storm-provider", model)
+	grantReleaseEvidenceForTest(t, provider, snapshot.Generation, trHashA)
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatalf("provider was not routable before release registration: %#v", routed)
+	}
+
+	if err := st.SetRelease(testRelease("2.1.0", trHashB)); err != nil {
+		t.Fatalf("SetRelease 2.1.0: %v", err)
+	}
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes after registration: %v", err)
+	}
+	next := srv.releaseTrustPolicy.Load()
+	if next.Generation <= snapshot.Generation {
+		t.Fatalf("registration did not advance the generation: %d -> %d", snapshot.Generation, next.Generation)
+	}
+	evidence, ok := provider.ApplicationEvidenceSnapshot()
+	if !ok || evidence.PolicyGeneration != next.Generation {
+		t.Fatalf("still-approved evidence was not carried forward: %+v ok=%v", evidence, ok)
+	}
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("routine release registration derouted a healthy, still-approved provider")
+	}
+	select {
+	case <-provider.ImmediateChallengeChan():
+		t.Fatal("still-approved provider must not be re-challenged out of band")
+	default:
+	}
+
+	// Deactivate the provider's release: NOW its evidence is genuinely stale.
+	if err := st.MemoryStore.DeleteRelease("2.0.0", defaultReleasePlatform); err != nil {
+		t.Fatalf("DeleteRelease: %v", err)
+	}
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes after deactivation: %v", err)
+	}
+	if _, ok := provider.ApplicationEvidenceSnapshot(); ok {
+		t.Fatal("deactivating the provider's release must clear its evidence")
+	}
+	if routed := findRoutableProvider(reg, model); routed != nil {
+		t.Fatalf("provider with deactivated release remained routable: %s", routed.ID)
+	}
+	select {
+	case <-provider.ImmediateChallengeChan():
+	default:
+		t.Fatal("invalidated provider must be re-challenged immediately, not on the next tick")
 	}
 }
 
@@ -176,7 +263,13 @@ func TestStartupReleaseSyncContractReturnsInventoryReadFailure(t *testing.T) {
 	}
 }
 
-func TestReleaseDeactivationReadFailureReturnsFailureAfterCommitWithoutPermissivePolicy(t *testing.T) {
+// TestReleaseDeactivationReadFailureRetainsPolicyAndSurfacesError: the
+// deactivation commits, but the follow-up inventory read fails. The handler
+// surfaces 503 (so the admin retries), and the policy stays at the
+// last-known-good snapshot — still containing the just-deactivated hash until
+// a successful sync converges — rather than swinging the whole fleet through a
+// deny-all generation on a transient store hiccup.
+func TestReleaseDeactivationReadFailureRetainsPolicyAndSurfacesError(t *testing.T) {
 	st := &releaseInventoryFailureStore{
 		MemoryStore:     store.NewMemory(store.Config{}),
 		failAfterDelete: true,
@@ -189,6 +282,7 @@ func TestReleaseDeactivationReadFailureReturnsFailureAfterCommitWithoutPermissiv
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
+	committed := srv.releaseTrustPolicy.Load()
 
 	response := doReq(srv, http.MethodDelete, "/v1/admin/releases", "Bearer admin-key",
 		`{"version":"2.0.0","platform":"macos-arm64"}`)
@@ -200,8 +294,10 @@ func TestReleaseDeactivationReadFailureReturnsFailureAfterCommitWithoutPermissiv
 		t.Fatalf("release deactivation did not commit before read failure: %+v", releases)
 	}
 	failed := srv.releaseTrustPolicy.Load()
-	if failed == nil || !failed.Required || len(failed.ByBinaryHash) != 0 {
-		t.Fatalf("deactivation read failure published permissive policy: %+v", failed)
+	if failed == nil || !failed.Required ||
+		failed.Generation != committed.Generation ||
+		len(failed.ByBinaryHash[trHashA]) != 1 {
+		t.Fatalf("deactivation read failure did not retain last-known-good policy: %+v", failed)
 	}
 
 	st.setFailReads(false)
@@ -210,7 +306,7 @@ func TestReleaseDeactivationReadFailureReturnsFailureAfterCommitWithoutPermissiv
 	}
 	recovered := srv.releaseTrustPolicy.Load()
 	if recovered == nil || !recovered.Required || len(recovered.ByBinaryHash) != 0 {
-		t.Fatalf("recovery did not restore exact inactive inventory semantics: %+v", recovered)
+		t.Fatalf("recovery did not converge onto exact inactive inventory: %+v", recovered)
 	}
 }
 

@@ -581,11 +581,20 @@ func (s *Server) recordLateTrustReuse(provider *registry.Provider, seKey, serial
 
 func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string, allowRecovery bool) bool {
 	if s == nil || s.trustReuseCache == nil || provider == nil ||
-		seKey == "" || serial == "" || binaryHash == "" {
+		seKey == "" || serial == "" {
 		return false
 	}
 	if blocked, _ := s.trustSafetyStatus(); blocked || s.trustReuseIdentityPending(seKey) {
 		return false
+	}
+	if binaryHash == "" {
+		// The self-reported binary hash is OPTIONAL (v0.6.0: drift telemetry).
+		// A provider omitting it has still fully proven its DEVICE (SE identity
+		// + live MDM posture), so hardware trust is granted for this connection.
+		// Only the durable reuse record and its cache entry require the hash —
+		// a hashless row could never satisfy the read gate, so nothing is
+		// persisted or cached (fail-closed: no unbindable reuse rows).
+		return s.grantDeviceTrustWithoutReuseRecord(provider, seKey, serial, allowRecovery)
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
 	if err != nil {
@@ -672,6 +681,41 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 			"error", err, "attempts", trustReuseDeleteAttempts)
 	}
 	return false
+}
+
+// grantDeviceTrustWithoutReuseRecord grants hardware trust from a completed
+// live device verification for a provider that did not self-report a binary
+// hash. No reuse row is persisted or cached — every reconnect re-runs the full
+// live verification. Revocation stays authoritative: the late path
+// (allowRecovery=false) refuses a tombstoned identity outright (a tombstone
+// remains a tombstone), while the synchronous full-verification path retains
+// its recovery authority for the live grant but — having no store CAS to run —
+// leaves any durable tombstone in place, so reuse and late callbacks for the
+// identity remain blocked.
+func (s *Server) grantDeviceTrustWithoutReuseRecord(provider *registry.Provider, seKey, serial string, allowRecovery bool) bool {
+	if !allowRecovery && s.trustReuseCache.isRevoked(seKey) {
+		return false
+	}
+	epoch := provider.HardUntrustEpoch()
+	if provider.ChallengeShouldStop() {
+		return false
+	}
+	revocationGeneration, _ := s.trustReuseCache.revocationState(seKey)
+	granted := provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(
+		registry.DeviceEvidence{
+			SEPublicKey:          seKey,
+			Serial:               serial,
+			VerifiedAt:           s.trustReuseCache.now(),
+			EvidenceGeneration:   1,
+			RevocationGeneration: revocationGeneration,
+		},
+		epoch,
+	)
+	if granted {
+		s.logger.Info("trust-reuse: hardware trust granted without reuse record (no self-reported binary hash)",
+			"serial", serial)
+	}
+	return granted
 }
 
 // invalidateTrustReuse drops a device's reuse record in-memory and installs a

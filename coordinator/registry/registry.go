@@ -929,6 +929,13 @@ type Provider struct {
 	applicationProofSettled chan struct{}
 	applicationProofOnce    sync.Once
 
+	// challengeKick coalesces requests for an immediate out-of-band attestation
+	// challenge (e.g. after a release-policy refresh invalidated this provider's
+	// application evidence) so the connection's challenge loop re-verifies now
+	// instead of waiting out the periodic ticker. Buffered(1); nil on bare test
+	// Providers, where both endpoints degrade to no-ops.
+	challengeKick chan struct{}
+
 	// untrustEpoch is bumped on every HARD untrust of this provider (DAR-326
 	// FIX A). The trust-reuse write-through (api.recordTrustReuse) captures it at
 	// grant time and re-checks it immediately before persisting; a bump in between
@@ -1511,20 +1518,40 @@ func (r *Registry) SetCodeAttestationPolicy(configured bool, deadline time.Time)
 }
 
 // SetReleasePolicyGeneration atomically publishes the active-release policy
-// generation used by routing and synchronously removes every connected
-// provider's release-derived application evidence. A concurrently completing
-// old challenge can only install the old generation and remains ineligible.
-func (r *Registry) SetReleasePolicyGeneration(generation uint64, required bool) {
+// generation used by routing. Existing application evidence that stillApproved
+// reports as valid under the NEW policy is carried forward at the new
+// generation — a routine release registration must not deroute the whole fleet
+// of healthy, still-approved providers for up to a challenge interval.
+// Evidence the new policy no longer approves (or that no predicate can vouch
+// for) is removed synchronously, and those provider IDs are returned so the
+// caller can trigger an immediate re-challenge instead of waiting for the
+// periodic ticker. A concurrently completing old challenge can only install
+// the old generation and remains ineligible.
+func (r *Registry) SetReleasePolicyGeneration(
+	generation uint64, required bool,
+	stillApproved func(ApplicationEvidence) bool,
+) (invalidated []string) {
 	r.mu.Lock()
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
-	for _, provider := range r.providers {
+	for id, provider := range r.providers {
 		provider.mu.Lock()
+		evidence := provider.ApplicationEvidence
+		if evidence.EvidenceGeneration != 0 && stillApproved != nil && stillApproved(evidence) {
+			provider.ApplicationEvidence.PolicyGeneration = generation
+			provider.mu.Unlock()
+			continue
+		}
+		hadEvidence := evidence.EvidenceGeneration != 0
 		provider.ApplicationEvidence = ApplicationEvidence{}
 		provider.RuntimeCapabilities = nil
 		provider.mu.Unlock()
+		if hadEvidence {
+			invalidated = append(invalidated, id)
+		}
 	}
 	r.mu.Unlock()
+	return invalidated
 }
 
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
@@ -1580,6 +1607,23 @@ func (p *Provider) SignalApplicationProofSettled() {
 
 func (p *Provider) ApplicationProofSettledChan() <-chan struct{} {
 	return p.applicationProofSettled
+}
+
+// RequestImmediateChallenge asks this connection's challenge loop to send an
+// out-of-band attestation challenge now instead of waiting for the next
+// periodic tick. Non-blocking; concurrent requests coalesce. No-op on bare
+// test Providers without a kick channel.
+func (p *Provider) RequestImmediateChallenge() {
+	select {
+	case p.challengeKick <- struct{}{}:
+	default:
+	}
+}
+
+// ImmediateChallengeChan is the challenge loop's receive side of
+// RequestImmediateChallenge. Nil (never ready) on bare test Providers.
+func (p *Provider) ImmediateChallengeChan() <-chan struct{} {
+	return p.challengeKick
 }
 
 // HardUntrustEpoch returns the current hard-untrust epoch (thread-safe). It is
@@ -3414,6 +3458,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),
 		applicationProofSettled:     make(chan struct{}),
+		challengeKick:               make(chan struct{}, 1),
 		registry:                    r,
 	}
 

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -332,5 +335,164 @@ func TestReleaseDeactivationAdminPrecheckFailsClosedOnInventoryError(t *testing.
 	}
 	if releases := st.MemoryStore.ListReleases(); len(releases) != 1 || !releases[0].Active {
 		t.Fatalf("precheck failure changed release inventory: %+v", releases)
+	}
+}
+
+// TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease is the
+// register-path convergence regression: SetRelease commits and GET
+// /v1/releases/latest immediately distributes the saved release, so a transient
+// post-mutation inventory-read failure must NOT strand the trust policy on the
+// pre-registration snapshot (providers installing the new release could never
+// earn evidence and — with no background resync — would stay unroutable
+// indefinitely). The handler must converge the policy from the committed
+// mutation itself: registration succeeds atomically, the new release is
+// authorized, the previous release set and still-approved connected evidence
+// are carried forward, and recovery rebuilds the same set from the exact
+// inventory.
+func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *testing.T) {
+	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	srv.SetReleaseKey("release-key")
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("initial SyncBinaryHashes: %v", err)
+	}
+	before := srv.releaseTrustPolicy.Load()
+
+	const model = "register-converge-model"
+	provider := makeRoutableProvider(t, reg, "register-converge-provider", model)
+	grantReleaseEvidenceForTest(t, provider, before.Generation, trHashA)
+	provider.Mu().Lock()
+	provider.TemplateHashes = map[string]string{"mlx_metallib": trHashC}
+	provider.Mu().Unlock()
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatalf("provider was not routable before registration: %#v", routed)
+	}
+
+	bundle, binaryHash, bundleHash := buildReleaseBundleForTest(t, []byte("provider-2.1.0"))
+	const artifactPath = "/releases/v2.1.0/darkbloom-bundle-macos-arm64.tar.gz"
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != artifactPath {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(bundle)
+	}))
+	defer cdn.Close()
+	srv.SetR2CDNURL(cdn.URL)
+
+	// Inventory reads fail for the whole request: the release write and the
+	// artifact download still succeed, but every post-mutation re-read fails.
+	st.setFailReads(true)
+	body := fmt.Sprintf(
+		`{"version":"2.1.0","platform":"macos-arm64","backend":"mlx-swift","binary_hash":%q,"bundle_hash":%q,"metallib_hash":%q,"url":%q,"changelog":"converge"}`,
+		binaryHash, bundleHash, trHashC, cdn.URL+artifactPath)
+	response := doReq(srv, http.MethodPost, "/v1/releases", "Bearer release-key", body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("registration must remain atomic once the release committed: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
+
+	converged := srv.releaseTrustPolicy.Load()
+	if converged == nil || !converged.Required || converged.Generation <= before.Generation {
+		t.Fatalf("policy did not advance with the committed registration: before=%+v after=%+v", before, converged)
+	}
+	if entries := converged.ByBinaryHash[binaryHash]; len(entries) != 1 || entries[0].Version != "2.1.0" {
+		t.Fatalf("policy does not authorize the committed release: %+v", converged.ByBinaryHash)
+	}
+	if len(converged.ByBinaryHash[trHashA]) != 1 {
+		t.Fatalf("convergence dropped the previous release set: %+v", converged.ByBinaryHash)
+	}
+
+	// THE invariant: whatever /v1/releases/latest distributes must be
+	// authorized by the live policy snapshot.
+	latest := doReq(srv, http.MethodGet, "/v1/releases/latest?platform=macos-arm64", "", "")
+	if latest.Code != http.StatusOK {
+		t.Fatalf("latest release status = %d body=%s", latest.Code, latest.Body.String())
+	}
+	var latestRelease store.Release
+	if err := json.Unmarshal(latest.Body.Bytes(), &latestRelease); err != nil {
+		t.Fatalf("decode latest release: %v", err)
+	}
+	if latestRelease.Version != "2.1.0" {
+		t.Fatalf("latest release = %q, want the committed 2.1.0", latestRelease.Version)
+	}
+	if len(converged.ByBinaryHash[latestRelease.BinaryHash]) == 0 {
+		t.Fatalf("latest serves a release the policy cannot authorize: hash=%s policy=%+v",
+			latestRelease.BinaryHash, converged.ByBinaryHash)
+	}
+
+	// The runtime manifest converged with the committed release too.
+	if srv.knownRuntimeManifest == nil || srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"] != trHashC {
+		t.Fatalf("runtime manifest did not converge with the committed release: %+v", srv.knownRuntimeManifest)
+	}
+
+	// Routine registration during the outage must not deroute the approved fleet.
+	if evidence, ok := provider.ApplicationEvidenceSnapshot(); !ok || evidence.PolicyGeneration != converged.Generation {
+		t.Fatalf("still-approved evidence was not carried forward: %+v ok=%v", evidence, ok)
+	}
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("routine registration during an inventory outage derouted a healthy, still-approved provider")
+	}
+
+	// Recovery rebuilds the identical authorized set from the exact inventory.
+	st.setFailReads(false)
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("recovery SyncBinaryHashes: %v", err)
+	}
+	recovered := srv.releaseTrustPolicy.Load()
+	if len(recovered.ByBinaryHash[trHashA]) != 1 || len(recovered.ByBinaryHash[binaryHash]) != 1 {
+		t.Fatalf("recovery did not converge onto the full inventory: %+v", recovered.ByBinaryHash)
+	}
+}
+
+// TestAdminDeleteReleaseInUseProtectionHoldsUnderEvidenceGating: the
+// application-evidence routing gate requires active releases regardless of the
+// legacy binaryHashEnforce flag (default false). A force=false delete of a
+// release still backing connected providers must therefore be refused — under
+// the old flag-gated precheck it would deactivate the release and the follow-up
+// sync would clear the providers' evidence and deroute them. force=true keeps
+// its explicit override semantics.
+func TestAdminDeleteReleaseInUseProtectionHoldsUnderEvidenceGating(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{AdminKey: "admin-key"}, logger)
+	// Legacy self-reported enforcement stays at its default (false); the
+	// evidence gate goes live through the published release policy.
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes: %v", err)
+	}
+	if snapshot := srv.releaseTrustPolicy.Load(); snapshot == nil || !snapshot.Required {
+		t.Fatalf("release policy must be live: %+v", snapshot)
+	}
+
+	provider := makeRoutableProvider(t, reg, "delete-inuse-provider", "delete-inuse-model")
+	provider.SetAttestationResult(&attestation.VerificationResult{Valid: true, BinaryHash: trHashA})
+
+	response := doReq(srv, http.MethodDelete, "/v1/admin/releases", "Bearer admin-key",
+		`{"version":"2.0.0","platform":"macos-arm64"}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("in-use force=false delete = %d, want %d; body=%s",
+			response.Code, http.StatusConflict, response.Body.String())
+	}
+	if releases := st.ListReleases(); len(releases) != 1 || !releases[0].Active {
+		t.Fatalf("refused delete must not deactivate the release: %+v", releases)
+	}
+
+	forced := doReq(srv, http.MethodDelete, "/v1/admin/releases", "Bearer admin-key",
+		`{"version":"2.0.0","platform":"macos-arm64","force":true}`)
+	if forced.Code != http.StatusOK {
+		t.Fatalf("force=true delete = %d, want %d; body=%s", forced.Code, http.StatusOK, forced.Body.String())
+	}
+	if latest := st.GetLatestRelease(defaultReleasePlatform); latest != nil {
+		t.Fatalf("force=true delete did not deactivate the release: %+v", latest)
 	}
 }

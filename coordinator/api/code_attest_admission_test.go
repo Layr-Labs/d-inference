@@ -556,3 +556,87 @@ func TestCodeAttestGenuineRotationClearsDurableFloor(t *testing.T) {
 		t.Fatal("genuinely rotated token was blocked by the durable admission floor")
 	}
 }
+
+// Codex 06:36Z P1: the genuine-rotation floor clear is throttled by a DURABLE
+// cooldown, not just the process-local lastBudgetClear map. A coordinator
+// restart (fresh throttle over the same store) whose durable state records a
+// recent clear must NOT clear the floor again — otherwise a provider could
+// reconnect with one token and heartbeat another once per deploy for an
+// immediate push. After the cooldown elapses, rotation clears work again.
+func TestCodeAttestRotationClearCooldownSurvivesRestart(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	const se = "se-restart-rotation"
+	ctx := context.Background()
+
+	first := newCodeAttestThrottle()
+	first.store = st
+	first.now = func() time.Time { return now }
+	generation := first.beginLoop(se)
+	if !first.tryReservePush(ctx, se, "token-a", false, generation) {
+		t.Fatal("initial token was not admitted")
+	}
+	// Genuine rotation: honored immediately (quiet period), spends the durable
+	// clear budget, and the rotated token pushes right away (Codex #9 UX).
+	rotated := first.rotateLoopAndClearPushBudget(ctx, se)
+	if !first.tryReservePush(ctx, se, "token-b", false, rotated) {
+		t.Fatal("genuinely rotated token was not admitted")
+	}
+
+	// RESTART: a fresh throttle over the SAME store one minute later has an
+	// empty lastBudgetClear map, but the durable last-clear is recent.
+	cur := now.Add(time.Minute)
+	second := newCodeAttestThrottle()
+	second.store = st
+	second.now = func() time.Time { return cur }
+	rotatedAfterRestart := second.rotateLoopAndClearPushBudget(ctx, se)
+	if second.tryReservePush(ctx, se, "token-c", false, rotatedAfterRestart) {
+		t.Fatal("restart re-granted the rotation floor clear within the durable cooldown")
+	}
+
+	// Once the durable cooldown elapses, a rotation clear is honored again.
+	cur = now.Add(second.budgetClearCooldown + time.Minute)
+	lateRotation := second.rotateLoopAndClearPushBudget(ctx, se)
+	if !second.tryReservePush(ctx, se, "token-c", false, lateRotation) {
+		t.Fatal("rotation clear stayed blocked after the durable cooldown elapsed")
+	}
+}
+
+// Codex 06:36Z P1 (blue-green half): two live throttle instances over one
+// store share the durable clear budget — only one rotation clear is honored
+// within the window, and the loser's novel token stays paced.
+func TestCodeAttestRotationClearAdmitsOnceAcrossPeers(t *testing.T) {
+	st := store.NewMemory(store.Config{})
+	cur := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	const se = "se-blue-green-rotation"
+	ctx := context.Background()
+
+	blue := newCodeAttestThrottle()
+	blue.store = st
+	blue.now = func() time.Time { return cur }
+	green := newCodeAttestThrottle()
+	green.store = st
+	green.now = func() time.Time { return cur }
+
+	generation := blue.beginLoop(se)
+	if !blue.tryReservePush(ctx, se, "token-a", false, generation) {
+		t.Fatal("initial token was not admitted")
+	}
+	cur = cur.Add(time.Minute)
+	clearedBlue := blue.clearPushBudget(ctx, se)
+	clearedGreen := green.clearPushBudget(ctx, se)
+	if !clearedBlue || clearedGreen {
+		t.Fatalf("rotation clears across peers = blue:%v green:%v, want exactly the first",
+			clearedBlue, clearedGreen)
+	}
+	// The loser's novel token stays blocked for the rest of the window...
+	greenGeneration := green.beginLoop(se)
+	if green.tryReservePush(ctx, se, "token-b", false, greenGeneration) {
+		t.Fatal("throttled peer still minted an immediate novel-token push")
+	}
+	// ...and the shared durable cooldown governs both peers going forward.
+	cur = cur.Add(green.budgetClearCooldown)
+	if !green.clearPushBudget(ctx, se) {
+		t.Fatal("peer rotation clear stayed blocked after the shared cooldown elapsed")
+	}
+}

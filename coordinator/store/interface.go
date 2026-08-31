@@ -973,8 +973,16 @@ type CodeAttestation struct {
 // Every admitted push raises it, so a device's first-ever token pushes
 // immediately while a churn of fabricated fresh tokens is paced at the same
 // per-device budget as a single token (Codex P1). A genuine mid-connection
-// rotation clears it via ClearCodeAttestPushFloor (itself throttled by the
-// api-layer budgetClearCooldown), preserving prompt re-challenge (Codex #9).
+// rotation clears it via ClearCodeAttestPushFloor, preserving prompt
+// re-challenge (Codex #9).
+//
+// The sentinel additionally records LastClearAt — the DURABLE instant of the
+// last honored rotation clear. ClearCodeAttestPushFloor compare-and-sets on it,
+// clearing only when the previous durable clear is at least the caller's
+// cooldown old, so the anti-abuse spacing between rotation clears survives
+// coordinator restarts and blue-green overlap (a fresh instance's empty
+// process-local throttle map can no longer grant one free floor clear per
+// deploy).
 //
 // Novel-token admission is SERIALIZED on the sentinel: an implementation must
 // atomically create-or-advance the sentinel first and admit the token row only
@@ -988,6 +996,10 @@ type CodeAttestPushBudget struct {
 	TokenHash  string // "" = per-SE-key admission-floor sentinel, not a token row
 	NextPushAt time.Time
 	UpdatedAt  time.Time
+	// LastClearAt is meaningful only on the TokenHash=="" sentinel: the instant
+	// of the last honored rotation floor clear (zero = never cleared). Kept
+	// when the floor is re-raised by later admissions.
+	LastClearAt time.Time
 }
 
 // CodeAttestPushBudgetMaxTokenRows caps durable per-token budget rows kept per

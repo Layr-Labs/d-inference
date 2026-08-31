@@ -22,9 +22,6 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
-	// HardwareProofTTL controls reuse of a full MDM/MDA device proof. It is
-	// always clamped to the reviewed [1h,24h] policy interval.
-	HardwareProofTTL time.Duration
 	// DurableTrustReuse enables the fsync-backed local hard-untrust journal.
 	// Production enables it when the coordinator uses its durable Postgres store.
 	DurableTrustReuse     bool
@@ -83,7 +80,6 @@ func ReadServerConfig() ServerConfig {
 		AdminEmails:           ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:            os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 		ServiceReservations:   env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
-		HardwareProofTTL:      hardwareProofTTLFromEnv(),
 		TrustReuseJournalPath: resolveTrustReuseRevocationJournalPath(),
 		MDMScheduler:          readMDMSchedulerConfig(),
 		BaseRewards: BaseRewardsConfig{
@@ -94,18 +90,6 @@ func ReadServerConfig() ServerConfig {
 			AccountCapFrac: env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_ACCOUNT_CAP", 0), // 0 = per-machine (no per-account cap)
 		},
 	}
-}
-
-func hardwareProofTTLFromEnv() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(env.EnvPrefix + "_HARDWARE_PROOF_TTL"))
-	if raw == "" {
-		return defaultHardwareProofTTL
-	}
-	parsed, err := time.ParseDuration(raw)
-	if err != nil {
-		return defaultHardwareProofTTL
-	}
-	return clampHardwareProofTTL(parsed)
 }
 
 func readMDMSchedulerConfig() MDMSchedulerConfig {

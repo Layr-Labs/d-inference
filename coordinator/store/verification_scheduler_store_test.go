@@ -286,8 +286,10 @@ func TestMemoryCodeAttestPushAdmissionIsAtomicAndRestartSeedable(t *testing.T) {
 		t.Fatalf("novel token bypassed the admission floor: ok=%v err=%v", ok, err)
 	}
 	// ...unless a genuine rotation lifted the floor.
-	if err := st.ClearCodeAttestPushFloor(ctx, "se"); err != nil {
-		t.Fatal(err)
+	if last, cleared, err := st.ClearCodeAttestPushFloor(
+		ctx, "se", now.Add(time.Minute), 20*time.Minute,
+	); err != nil || !cleared || !last.Equal(now.Add(time.Minute)) {
+		t.Fatalf("first floor clear was not honored: last=%v cleared=%v err=%v", last, cleared, err)
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, "se", "rotated-token-hash", now.Add(time.Minute),
@@ -356,8 +358,10 @@ func TestPostgresCodeAttestPushAdmissionIsAtomic(t *testing.T) {
 	); err != nil || ok {
 		t.Fatalf("Postgres novel token bypassed the admission floor: ok=%v err=%v", ok, err)
 	}
-	if err := st.ClearCodeAttestPushFloor(context.Background(), seKey); err != nil {
-		t.Fatal(err)
+	if _, cleared, err := st.ClearCodeAttestPushFloor(
+		context.Background(), seKey, now.Add(time.Minute), 20*time.Minute,
+	); err != nil || !cleared {
+		t.Fatalf("Postgres floor clear was not honored: cleared=%v err=%v", cleared, err)
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		context.Background(), seKey, "rotated-token-hash",
@@ -464,7 +468,10 @@ type codeAttestPushBudgetTestStore interface {
 		ctx context.Context, seKey, tokenHash string,
 		now, nextPushAt time.Time,
 	) (bool, error)
-	ClearCodeAttestPushFloor(ctx context.Context, seKey string) error
+	ClearCodeAttestPushFloor(
+		ctx context.Context, seKey string,
+		now time.Time, cooldown time.Duration,
+	) (time.Time, bool, error)
 	ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAttestPushBudget, error)
 }
 
@@ -512,8 +519,10 @@ func exerciseCodeAttestPushBudgetFloorAndCap(
 	if tokenRows > CodeAttestPushBudgetMaxTokenRows || floorRows != 1 {
 		t.Fatalf("budget rows unbounded: tokens=%d floors=%d", tokenRows, floorRows)
 	}
-	if err := st.ClearCodeAttestPushFloor(ctx, seKey); err != nil {
-		t.Fatal(err)
+	if _, cleared, err := st.ClearCodeAttestPushFloor(
+		ctx, seKey, at, 20*time.Minute,
+	); err != nil || !cleared {
+		t.Fatalf("floor clear was not honored: cleared=%v err=%v", cleared, err)
 	}
 	if ok, err := st.ReserveCodeAttestPushBudget(
 		ctx, seKey, "rotated-hash", at.Add(time.Minute),
@@ -534,5 +543,137 @@ func TestPostgresCodeAttestPushBudgetFloorAndCap(t *testing.T) {
 	exerciseCodeAttestPushBudgetFloorAndCap(
 		t, testPostgresStore(t),
 		fmt.Sprintf("floor-postgres-%d", time.Now().UnixNano()),
+	)
+}
+
+// exerciseCodeAttestPushFloorClearCooldownIsDurable proves the Codex 06:36Z P1
+// store contract: the rotation floor clear is compare-and-set on the sentinel's
+// durable last-clear instant. The store methods hold no per-caller state, so a
+// second clear within the cooldown models a coordinator restart or blue-green
+// peer exactly — it must be refused even though the caller "forgot" the first
+// clear, and honored again only once the durable cooldown has elapsed.
+func exerciseCodeAttestPushFloorClearCooldownIsDurable(
+	t *testing.T, st codeAttestPushBudgetTestStore, seKey string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	cooldown := 20 * time.Minute
+	now := time.Now().UTC()
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "hash-a", now, now.Add(cooldown),
+	); err != nil || !ok {
+		t.Fatalf("initial admission: ok=%v err=%v", ok, err)
+	}
+	// First genuine rotation (never cleared before) is honored immediately.
+	clearAt := now.Add(time.Minute)
+	if last, cleared, err := st.ClearCodeAttestPushFloor(
+		ctx, seKey, clearAt, cooldown,
+	); err != nil || !cleared || !last.Equal(clearAt) {
+		t.Fatalf("first clear: last=%v cleared=%v err=%v", last, cleared, err)
+	}
+	// The rotated token spends the lifted floor and re-raises it.
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "hash-b", now.Add(2*time.Minute),
+		now.Add(2*time.Minute).Add(cooldown),
+	); err != nil || !ok {
+		t.Fatalf("rotated token after clear: ok=%v err=%v", ok, err)
+	}
+	// A restarted/peer instance retrying the clear within the cooldown is
+	// refused and told the durable last-clear instant.
+	if last, cleared, err := st.ClearCodeAttestPushFloor(
+		ctx, seKey, now.Add(3*time.Minute), cooldown,
+	); err != nil || cleared || !last.Equal(clearAt) {
+		t.Fatalf("in-window clear was not refused: last=%v cleared=%v err=%v", last, cleared, err)
+	}
+	// ...and the refused clear left the re-raised floor intact: a novel token
+	// stays blocked.
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "hash-c", now.Add(4*time.Minute),
+		now.Add(4*time.Minute).Add(cooldown),
+	); err != nil || ok {
+		t.Fatalf("refused clear still admitted a novel token: ok=%v err=%v", ok, err)
+	}
+	// Once the durable cooldown elapses, the next rotation clear is honored.
+	lateClear := clearAt.Add(cooldown)
+	if last, cleared, err := st.ClearCodeAttestPushFloor(
+		ctx, seKey, lateClear, cooldown,
+	); err != nil || !cleared || !last.Equal(lateClear) {
+		t.Fatalf("post-cooldown clear: last=%v cleared=%v err=%v", last, cleared, err)
+	}
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "hash-c", lateClear.Add(time.Minute),
+		lateClear.Add(time.Minute).Add(cooldown),
+	); err != nil || !ok {
+		t.Fatalf("novel token blocked after honored post-cooldown clear: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMemoryCodeAttestPushFloorClearCooldownIsDurable(t *testing.T) {
+	exerciseCodeAttestPushFloorClearCooldownIsDurable(
+		t, NewMemory(Config{}),
+		fmt.Sprintf("clear-cooldown-memory-%d", time.Now().UnixNano()),
+	)
+}
+
+func TestPostgresCodeAttestPushFloorClearCooldownIsDurable(t *testing.T) {
+	exerciseCodeAttestPushFloorClearCooldownIsDurable(
+		t, testPostgresStore(t),
+		fmt.Sprintf("clear-cooldown-postgres-%d", time.Now().UnixNano()),
+	)
+}
+
+// exerciseCodeAttestPushFloorClearRace: two coordinators (blue-green overlap)
+// racing the same rotation clear admit exactly one within the window — the
+// durable CAS, not process-local state, is the arbiter.
+func exerciseCodeAttestPushFloorClearRace(
+	t *testing.T, st codeAttestPushBudgetTestStore, seKey string,
+) {
+	t.Helper()
+	ctx := context.Background()
+	cooldown := 20 * time.Minute
+	now := time.Now().UTC()
+	if ok, err := st.ReserveCodeAttestPushBudget(
+		ctx, seKey, "hash-a", now, now.Add(cooldown),
+	); err != nil || !ok {
+		t.Fatalf("initial admission: ok=%v err=%v", ok, err)
+	}
+	var honored atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, cleared, err := st.ClearCodeAttestPushFloor(
+				ctx, seKey, now.Add(time.Minute), cooldown,
+			)
+			if err != nil {
+				t.Errorf("clear: %v", err)
+				return
+			}
+			if cleared {
+				honored.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if honored.Load() != 1 {
+		t.Fatalf("concurrent rotation clears honored = %d, want 1", honored.Load())
+	}
+}
+
+func TestMemoryCodeAttestPushFloorClearRaceAdmitsExactlyOne(t *testing.T) {
+	exerciseCodeAttestPushFloorClearRace(
+		t, NewMemory(Config{}),
+		fmt.Sprintf("clear-race-memory-%d", time.Now().UnixNano()),
+	)
+}
+
+func TestPostgresCodeAttestPushFloorClearRaceAdmitsExactlyOne(t *testing.T) {
+	exerciseCodeAttestPushFloorClearRace(
+		t, testPostgresStore(t),
+		fmt.Sprintf("clear-race-postgres-%d", time.Now().UnixNano()),
 	)
 }

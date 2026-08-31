@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -197,7 +198,7 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 	}
 
 	record.State = store.VerificationStatePending
-	record.NextAttemptAt = now.Add(s.deps.jitter(s.cfg.InitialSpreadMin, s.cfg.InitialSpreadMax))
+	record.NextAttemptAt = now.Add(s.initialSpread(record.Priority))
 	record.UpdatedAt = now
 	updated, err := s.store.UpsertVerificationJob(s.ctx, *record)
 	if err != nil {
@@ -210,6 +211,21 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 	}
 	s.mu.Unlock()
 	s.signal()
+}
+
+// initialSpread is the delay before the first attempt once the phase-1
+// challenge settles. First/expired work backs a provider with no usable trust
+// grant — client requests routed to it queue against the 120s dispatch
+// deadline — so it becomes due essentially immediately, with at most a tiny
+// jitter (never past mdmFirstVerifySpreadMax) to de-synchronise mass expiry.
+// Refresh and recovery work still holds a valid grant and keeps the full
+// configured spread so routine releases and coordinator restarts never
+// stampede MDM.
+func (s *mdmVerificationScheduler) initialSpread(priority store.VerificationPriority) time.Duration {
+	if priority == store.VerificationPriorityFirstOrExpired {
+		return s.deps.jitter(0, min(s.cfg.InitialSpreadMax, mdmFirstVerifySpreadMax))
+	}
+	return s.deps.jitter(s.cfg.InitialSpreadMin, s.cfg.InitialSpreadMax)
 }
 
 func (s *mdmVerificationScheduler) Unbind(seKey string, generation uint64) {

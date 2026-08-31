@@ -559,15 +559,28 @@ func TestTrustReuseCacheSeed(t *testing.T) {
 	}
 }
 
-func TestHardwareProofTTLPolicy(t *testing.T) {
-	if got := newTrustReuseCache().reuseWindow; got != defaultHardwareProofTTL {
-		t.Fatalf("default TTL = %s, want %s", got, defaultHardwareProofTTL)
+// TestTrustReuseWindowFromEnv proves the freshness window is configurable via
+// EIGENINFERENCE_TRUST_REUSE_WINDOW and falls back to the reviewed 10-minute
+// default otherwise (Threat-Model T-036: the window must not span a SIP-disable
+// reboot cycle).
+func TestTrustReuseWindowFromEnv(t *testing.T) {
+	if got := newTrustReuseCache().reuseWindow; got != defaultTrustReuseWindow {
+		t.Fatalf("default window = %s, want %s", got, defaultTrustReuseWindow)
 	}
-	if got := newTrustReuseCacheWithTTL(30 * time.Minute).reuseWindow; got != time.Hour {
-		t.Fatalf("low TTL = %s, want 1h clamp", got)
+	if defaultTrustReuseWindow != 10*time.Minute {
+		t.Fatalf("reviewed default window = %s, want 10m", defaultTrustReuseWindow)
 	}
-	if got := newTrustReuseCacheWithTTL(48 * time.Hour).reuseWindow; got != 24*time.Hour {
-		t.Fatalf("high TTL = %s, want 24h clamp", got)
+	t.Setenv("EIGENINFERENCE_TRUST_REUSE_WINDOW", "45m")
+	if got := newTrustReuseCache().reuseWindow; got != 45*time.Minute {
+		t.Fatalf("env window = %s, want 45m", got)
+	}
+	t.Setenv("EIGENINFERENCE_TRUST_REUSE_WINDOW", "garbage")
+	if got := newTrustReuseCache().reuseWindow; got != defaultTrustReuseWindow {
+		t.Fatalf("invalid env window = %s, want default %s", got, defaultTrustReuseWindow)
+	}
+	t.Setenv("EIGENINFERENCE_TRUST_REUSE_WINDOW", "-5m")
+	if got := newTrustReuseCache().reuseWindow; got != defaultTrustReuseWindow {
+		t.Fatalf("negative env window = %s, want default %s", got, defaultTrustReuseWindow)
 	}
 }
 
@@ -581,18 +594,28 @@ func trustReuseServer(t *testing.T) (*Server, store.Store) {
 	return srv, st
 }
 
-func TestHardwareProofTTLConfigClampsEnvironment(t *testing.T) {
-	t.Setenv("EIGENINFERENCE_HARDWARE_PROOF_TTL", "30m")
-	if got := ReadServerConfig().HardwareProofTTL; got != time.Hour {
-		t.Fatalf("low env TTL = %s, want 1h", got)
+// TestTrustReuseWindowIgnoresRetiredTTLKnob proves the retired
+// EIGENINFERENCE_HARDWARE_PROOF_TTL knob cannot widen the fast-skip freshness
+// window: a record older than the reviewed 10-minute window never fast-skips,
+// regardless of any TTL-style environment value.
+func TestTrustReuseWindowIgnoresRetiredTTLKnob(t *testing.T) {
+	t.Setenv("EIGENINFERENCE_HARDWARE_PROOF_TTL", "24h")
+	cur := time.Unix(1_700_000_000, 0)
+	c := newTrustReuseCache()
+	c.now = func() time.Time { return cur }
+	if c.reuseWindow != defaultTrustReuseWindow {
+		t.Fatalf("window = %s, want reviewed default %s (retired TTL knob must be ignored)",
+			c.reuseWindow, defaultTrustReuseWindow)
 	}
-	t.Setenv("EIGENINFERENCE_HARDWARE_PROOF_TTL", "48h")
-	if got := ReadServerConfig().HardwareProofTTL; got != 24*time.Hour {
-		t.Fatalf("high env TTL = %s, want 24h", got)
+	se, serial := "se-ttl-knob", "SER-TTL"
+	c.recordTrust(hardwareReuseRecord(se, serial, trHashA, cur.Add(-11*time.Minute)))
+	if c.hasFreshRecord(se, serial) {
+		t.Fatal("a record older than 10m must not be a fast-skip candidate")
 	}
-	t.Setenv("EIGENINFERENCE_HARDWARE_PROOF_TTL", "6h")
-	if got := ReadServerConfig().HardwareProofTTL; got != 6*time.Hour {
-		t.Fatalf("valid env TTL = %s, want 6h", got)
+	if result := c.decideTrustReuse(trustReuseInput{
+		SEPubKey: se, Serial: serial, FreshBinaryHash: trHashA,
+	}); result.Decision != "" || result.Reason != trustReuseReasonProofExpired {
+		t.Fatalf("decision = %q reason = %q, want expired", result.Decision, result.Reason)
 	}
 }
 
@@ -1484,7 +1507,7 @@ func TestApprovedTransitionAdvancesDurableBinaryIdentity(t *testing.T) {
 
 	// Blue-green deploy: a fresh coordinator seeded from the SAME store must
 	// reuse on B and refuse the retired A.
-	restarted := newTrustReuseCacheWithTTL(defaultHardwareProofTTL)
+	restarted := newTrustReuseCacheWithWindow(defaultTrustReuseWindow)
 	restarted.now = *clock
 	restarted.seed(rows)
 	if _, ok := restarted.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashB); !ok {

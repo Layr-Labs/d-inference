@@ -769,7 +769,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
-		trustReuseCache:          newTrustReuseCacheWithTTL(cfg.HardwareProofTTL),
+		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
@@ -1485,6 +1485,98 @@ func (s *Server) SyncBinaryHashes() error {
 	return nil
 }
 
+// convergeReleasePolicyWithCommittedRelease folds an already-committed release
+// registration into the in-memory release trust policy when the post-mutation
+// inventory read failed. GET /v1/releases/latest serves the committed row
+// straight from the store, so retaining the pre-registration snapshot would
+// distribute a release the policy can never authorize — providers installing it
+// could never earn evidence and, with no background resync, would stay
+// unroutable indefinitely. The merged snapshot is exactly what a successful
+// rebuild over "last-known-good inventory + this row" publishes: entries for
+// the same version/platform are replaced, everything else is carried forward
+// (so still-approved evidence survives and routine registration never deroutes
+// the fleet), and the newly saved release is immediately authorized. The next
+// successful sync rebuilds from the exact inventory.
+func (s *Server) convergeReleasePolicyWithCommittedRelease(release *store.Release, cause error) {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+
+	normalized, err := normalizeSHA256Hex(release.BinaryHash, "release.binary_hash")
+	if err != nil {
+		// Unreachable for the register handler (the hash was validated before
+		// the row committed), and a full rebuild would skip such a row too.
+		s.logger.Error("committed release has invalid binary hash; policy not converged",
+			"version", release.Version, "platform", release.Platform, "error", err)
+		return
+	}
+
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	s.releaseInventoryEverConfigured.Store(true)
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     true,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
+	if last := s.releaseTrustPolicy.Load(); last != nil {
+		for hash, policies := range last.ByBinaryHash {
+			for _, policy := range policies {
+				if policy.Version == release.Version && policy.Platform == release.Platform {
+					continue // replaced by this registration
+				}
+				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
+			}
+		}
+	}
+	templates := make(map[string]string)
+	for _, pair := range strings.Split(release.TemplateHashes, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			templates[parts[0]] = parts[1]
+		}
+	}
+	trustSnapshot.ByBinaryHash[normalized] = append(
+		trustSnapshot.ByBinaryHash[normalized],
+		approvedReleasePolicy{
+			Version: release.Version, Platform: release.Platform, Backend: release.Backend,
+			BinaryHash: normalized, MetallibHash: release.MetallibHash,
+			PythonHash: release.PythonHash, RuntimeHash: release.RuntimeHash,
+			TemplateHashes: templates,
+		})
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		needChallenge := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range needChallenge {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(needChallenge) > 0 {
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
+		}
+	}
+	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
+	for hash := range trustSnapshot.ByBinaryHash {
+		hashes[hash] = true
+	}
+	s.binaryHashPolicyMu.Lock()
+	s.releaseKnownBinaryHashes = hashes
+	s.releaseBinaryHashPolicyConfigured = true
+	s.rebuildBinaryHashPolicyLocked()
+	s.binaryHashPolicyMu.Unlock()
+
+	s.logger.Warn("release inventory unreadable after registration; converged policy from the committed release",
+		"version", release.Version,
+		"platform", release.Platform,
+		"generation", generation,
+		"error", cause,
+	)
+	s.ddIncr("release_policy.sync_failure", []string{"outcome:converged_from_mutation"})
+}
+
 // releaseEvidenceStillApproved reports whether previously granted application
 // evidence remains approved under a freshly built release-policy snapshot: the
 // same binary hash still maps to an active release with the same version,
@@ -1783,6 +1875,70 @@ func (s *Server) SyncRuntimeManifest() error {
 
 	s.revalidateConnectedProvidersAgainstRuntimePolicy()
 	return nil
+}
+
+// convergeRuntimeManifestWithCommittedRelease folds an already-committed
+// release registration into the runtime manifest when the post-mutation
+// inventory read failed, so a transient store hiccup cannot leave the manifest
+// rejecting the runtime facts of the release that /v1/releases/latest is
+// already distributing. Hash sets are additive, exactly like a full rebuild
+// (which unions every active release); template hashes are overwritten by the
+// new release, matching the rebuild's newest-release-wins ordering for a
+// freshly registered latest release. The next successful sync rebuilds from
+// the exact inventory.
+func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Release, cause error) {
+	merged := &RuntimeManifest{
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
+	}
+	if existing := s.knownRuntimeManifest; existing != nil {
+		for hash := range existing.PythonHashes {
+			merged.PythonHashes[hash] = true
+		}
+		for hash := range existing.RuntimeHashes {
+			merged.RuntimeHashes[hash] = true
+		}
+		for name, hash := range existing.TemplateHashes {
+			merged.TemplateHashes[name] = hash
+		}
+	}
+	contributed := false
+	if release.PythonHash != "" {
+		merged.PythonHashes[release.PythonHash] = true
+		contributed = true
+	}
+	if release.RuntimeHash != "" {
+		merged.RuntimeHashes[release.RuntimeHash] = true
+		contributed = true
+	}
+	if release.TemplateHashes != "" {
+		for _, pair := range strings.Split(release.TemplateHashes, ",") {
+			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(parts) == 2 {
+				merged.TemplateHashes[parts[0]] = parts[1]
+				contributed = true
+			}
+		}
+	}
+	if release.MetallibHash != "" {
+		if normalized, err := normalizeSHA256Hex(release.MetallibHash, "release.metallib_hash"); err == nil {
+			merged.TemplateHashes["mlx_metallib"] = normalized
+			contributed = true
+		}
+	}
+	if !contributed {
+		// The committed release carries no runtime facts; a full rebuild would
+		// republish the union of the remaining releases — the current manifest.
+		return
+	}
+	s.knownRuntimeManifest = merged
+	s.logger.Warn("release inventory unreadable after registration; converged runtime manifest from the committed release",
+		"version", release.Version,
+		"platform", release.Platform,
+		"error", cause,
+	)
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
 }
 
 func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {

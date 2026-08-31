@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -13,11 +14,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const (
-	defaultHardwareProofTTL = time.Hour
-	minHardwareProofTTL     = time.Hour
-	maxHardwareProofTTL     = 24 * time.Hour
-)
+// defaultTrustReuseWindow is how long a successful FULL live MDM verification is
+// honored for a NEW connection from the same device — without re-running the live
+// MDM SecurityInfo round-trip — provided a fresh live SE challenge re-proves the
+// SAME identity, binary, and good posture. It bounds the staleness of the MDM
+// proof. Kept SHORT (Threat-Model #3): the reuse must not be able to span a
+// SIP-disable reboot cycle (where a box reboots into Recovery, disables SIP, and
+// reconnects), so a window comfortably under a realistic reboot+reconnect is used.
+// Overridable via EIGENINFERENCE_TRUST_REUSE_WINDOW.
+const defaultTrustReuseWindow = 10 * time.Minute
 
 const clockSkewTolerance = 2 * time.Minute
 const trustReuseDeleteAttempts = 3
@@ -105,29 +110,35 @@ type trustReuseRecord struct {
 	revokedAt                  *time.Time
 }
 
-func clampHardwareProofTTL(d time.Duration) time.Duration {
-	if d == 0 {
-		return defaultHardwareProofTTL
-	}
-	if d < minHardwareProofTTL {
-		return minHardwareProofTTL
-	}
-	if d > maxHardwareProofTTL {
-		return maxHardwareProofTTL
-	}
-	return d
-}
-
 func newTrustReuseCache() *trustReuseCache {
-	return newTrustReuseCacheWithTTL(defaultHardwareProofTTL)
+	return newTrustReuseCacheWithWindow(trustReuseWindowFromEnv())
 }
 
-func newTrustReuseCacheWithTTL(ttl time.Duration) *trustReuseCache {
+// newTrustReuseCacheWithWindow pins the fast-skip freshness window verbatim.
+// Tests use it to model a specific deployment window; production goes through
+// newTrustReuseCache, i.e. the reviewed 10-minute default (Threat-Model #3 /
+// T-036: must not span a SIP-disable reboot cycle) or the operator's
+// EIGENINFERENCE_TRUST_REUSE_WINDOW override.
+func newTrustReuseCacheWithWindow(window time.Duration) *trustReuseCache {
+	if window <= 0 {
+		window = defaultTrustReuseWindow
+	}
 	return &trustReuseCache{
 		records:     make(map[string]trustReuseRecord),
-		reuseWindow: clampHardwareProofTTL(ttl),
+		reuseWindow: window,
 		now:         time.Now,
 	}
+}
+
+// trustReuseWindowFromEnv reads EIGENINFERENCE_TRUST_REUSE_WINDOW (a Go duration,
+// e.g. "45m"), falling back to defaultTrustReuseWindow when unset/invalid.
+func trustReuseWindowFromEnv() time.Duration {
+	if v := os.Getenv("EIGENINFERENCE_TRUST_REUSE_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultTrustReuseWindow
 }
 
 func (c *trustReuseCache) decideTrustReuse(input trustReuseInput) trustReuseResult {

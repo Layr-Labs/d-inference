@@ -1030,6 +1030,12 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_code_attest_push_budgets_due
 			ON code_attest_push_budgets(next_push_at)`,
+		// Durable rotation-clear cooldown (Codex 06:36Z P1): the sentinel row
+		// records the last honored floor clear so restart/blue-green peers
+		// share one anti-abuse clear budget. NULL = never cleared (legacy rows
+		// and fresh sentinels clear immediately, preserving genuine-rotation UX).
+		`ALTER TABLE code_attest_push_budgets
+			ADD COLUMN IF NOT EXISTS last_clear_at TIMESTAMPTZ`,
 
 		// Durable provider device evidence. The legacy binary_hash/verified_at
 		// columns remain accepted during migration, but application proof is never
@@ -5077,7 +5083,7 @@ func (s *PostgresStore) ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAt
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, token_hash, next_push_at, updated_at
+		`SELECT se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
 		   FROM code_attest_push_budgets`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attest push budgets: %w", err)
@@ -5086,10 +5092,15 @@ func (s *PostgresStore) ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAt
 	var out []CodeAttestPushBudget
 	for rows.Next() {
 		var rec CodeAttestPushBudget
+		var lastClear *time.Time
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.TokenHash, &rec.NextPushAt, &rec.UpdatedAt,
+			&lastClear,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attest push budget: %w", err)
+		}
+		if lastClear != nil {
+			rec.LastClearAt = *lastClear
 		}
 		out = append(out, rec)
 	}
@@ -5235,20 +5246,57 @@ func (s *PostgresStore) ReserveCodeAttestPushBudget(
 
 // ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
 // a genuinely rotated token can be challenged promptly. Per-token cooldown rows
-// are untouched (A-B-A retention). Callers throttle how often this runs.
-func (s *PostgresStore) ClearCodeAttestPushFloor(ctx context.Context, seKey string) error {
+// are untouched (A-B-A retention). The clear is compare-and-set on the
+// sentinel's durable last_clear_at: it is honored only when the previous
+// durable clear is at least cooldown old (NULL = never cleared → honored), so
+// the anti-abuse spacing between rotation clears holds across coordinator
+// restarts and blue-green peers — not just within one process. The sentinel row
+// is kept (next_push_at=now lifts the floor; last_clear_at=now starts the next
+// cooldown). Returns the durable last-clear instant (now when honored, the
+// pre-statement one when throttled) and whether the clear was honored.
+func (s *PostgresStore) ClearCodeAttestPushFloor(
+	ctx context.Context, seKey string, now time.Time, cooldown time.Duration,
+) (time.Time, bool, error) {
 	if seKey == "" {
-		return nil
+		return time.Time{}, false, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM code_attest_push_budgets
-		  WHERE se_pubkey = $1 AND token_hash = ''`, seKey,
-	); err != nil {
-		return fmt.Errorf("store: clear code attest push floor: %w", err)
+	var (
+		cleared   bool
+		lastClear time.Time
+	)
+	// The outer SELECT sees the pre-statement snapshot (data-modifying CTE
+	// semantics); when the CAS wins the caller's last-clear is `now`, so the
+	// snapshot value is only reported on the throttled path. COALESCE covers
+	// the no-sentinel / never-cleared cases conservatively with `now`.
+	err := s.pool.QueryRow(ctx,
+		`WITH cleared AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
+			) VALUES ($1, '', $2, $2, $2)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at,
+				last_clear_at = EXCLUDED.last_clear_at
+			WHERE code_attest_push_budgets.last_clear_at IS NULL
+			   OR code_attest_push_budgets.last_clear_at <= $3
+			RETURNING 1
+		)
+		SELECT EXISTS (SELECT 1 FROM cleared),
+		       COALESCE((
+			SELECT last_clear_at FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = ''
+		       ), $2)`,
+		seKey, now, now.Add(-cooldown),
+	).Scan(&cleared, &lastClear)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: clear code attest push floor: %w", err)
 	}
-	return nil
+	if cleared {
+		lastClear = now
+	}
+	return lastClear, cleared, nil
 }
 
 // --- Durable provider device evidence ---

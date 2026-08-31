@@ -15,13 +15,19 @@ import (
 
 const (
 	mdmSchedulerDispatchInterval = time.Second
-	mdmSchedulerCleanupTimeout   = 5 * time.Second
-	mdmRetryFirstMin             = 2 * time.Minute
-	mdmRetryFirstMax             = 4 * time.Minute
-	mdmRetrySecondMin            = 6 * time.Minute
-	mdmRetrySecondMax            = 12 * time.Minute
-	mdmRetrySteadyMin            = 15 * time.Minute
-	mdmRetrySteadyMax            = 30 * time.Minute
+	// mdmFirstVerifySpreadMax caps the initial spread for first/expired
+	// SecurityInfo work. A provider in this state has no valid trust grant, so
+	// a client request routed to it is already burning the 120s dispatch-queue
+	// deadline (plus up to 90s of verification wait). The tiny jitter only
+	// de-synchronises mass expiry; it must stay well inside that deadline.
+	mdmFirstVerifySpreadMax    = 5 * time.Second
+	mdmSchedulerCleanupTimeout = 5 * time.Second
+	mdmRetryFirstMin           = 2 * time.Minute
+	mdmRetryFirstMax           = 4 * time.Minute
+	mdmRetrySecondMin          = 6 * time.Minute
+	mdmRetrySecondMax          = 12 * time.Minute
+	mdmRetrySteadyMin          = 15 * time.Minute
+	mdmRetrySteadyMax          = 30 * time.Minute
 )
 
 type mdmSchedulerTimer interface {

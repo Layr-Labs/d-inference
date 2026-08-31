@@ -33,7 +33,12 @@ type codeAttestPushBudgetStore interface {
 		seKey, tokenHash string,
 		now, nextPushAt time.Time,
 	) (bool, error)
-	ClearCodeAttestPushFloor(ctx context.Context, seKey string) error
+	ClearCodeAttestPushFloor(
+		ctx context.Context,
+		seKey string,
+		now time.Time,
+		cooldown time.Duration,
+	) (time.Time, bool, error)
 }
 
 // codeAttestThrottle keeps APNs code-identity pushes within Apple's background-
@@ -334,9 +339,7 @@ func (t *codeAttestThrottle) rotateLoopAndClearPushBudget(
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
 	generation := t.beginLoopReservationHeld(seKey)
-	if t.clearPushBudgetReservationHeld(seKey) {
-		t.clearDurablePushFloorReservationHeld(ctx, seKey)
-	}
+	t.clearPushBudgetReservationHeld(ctx, seKey)
 	return generation
 }
 
@@ -535,35 +538,73 @@ func (t *codeAttestThrottle) tryReservePush(
 //
 // Anti-DoS: the reset is itself throttled to at most once per budgetClearCooldown
 // per device, so a provider that floods token changes in heartbeats cannot reset
-// the budget every time and spam APNs beyond the per-device budget. Returns
-// whether the budget was actually cleared (false = the reset was throttled).
+// the budget every time and spam APNs beyond the per-device budget. The cooldown
+// is DURABLE (Codex 06:36Z P1): with a budget store wired, the clear is
+// compare-and-set on the sentinel's persisted last-clear instant, so a
+// coordinator restart (empty lastBudgetClear map) or a blue-green peer cannot
+// grant one extra floor clear per deploy. Returns whether the budget was
+// actually cleared (false = the reset was throttled).
 func (t *codeAttestThrottle) clearPushBudget(ctx context.Context, seKey string) bool {
 	if seKey == "" {
 		return false
 	}
 	unlockReservation := t.lockPushReservation(seKey)
 	defer unlockReservation()
-	cleared := t.clearPushBudgetReservationHeld(seKey)
-	if cleared {
-		t.clearDurablePushFloorReservationHeld(ctx, seKey)
-	}
-	return cleared
+	return t.clearPushBudgetReservationHeld(ctx, seKey)
 }
 
-func (t *codeAttestThrottle) clearPushBudgetReservationHeld(seKey string) bool {
+// clearPushBudgetReservationHeld runs the full throttled clear (reservation
+// lock held, t.mu NOT held across the store call). Admission order: the cheap
+// process-local cooldown first, then the durable compare-and-set — the durable
+// verdict is authoritative and is mirrored locally either way, so a throttled
+// peer's flood settles into the local fast path without further store traffic.
+// Fail-closed: on store error nothing is cleared; the rotated token is only
+// DELAYED until the floor elapses — the rate limit never weakens.
+func (t *codeAttestThrottle) clearPushBudgetReservationHeld(
+	ctx context.Context, seKey string,
+) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	now := t.now()
 	if last, ok := t.lastBudgetClear[seKey]; ok &&
-		t.now().Sub(last) < t.budgetClearCooldown {
+		now.Sub(last) < t.budgetClearCooldown {
 		t.novelTokenBlockedUntil[seKey] = last.Add(t.budgetClearCooldown)
+		t.mu.Unlock()
 		return false
 	}
-	t.lastBudgetClear[seKey] = t.now()
+	st, hasDurable := t.store.(codeAttestPushBudgetStore)
+	cooldown := t.budgetClearCooldown
+	t.mu.Unlock()
+
+	if hasDurable {
+		lastClear, cleared, err := st.ClearCodeAttestPushFloor(
+			ctx, seKey, now, cooldown,
+		)
+		if err != nil {
+			return false
+		}
+		if !cleared {
+			// Another instance (or a pre-restart clear) already spent this
+			// window. Mirror the durable verdict locally so the next flood
+			// attempt short-circuits without a store round-trip.
+			t.mu.Lock()
+			if lastClear.After(t.lastBudgetClear[seKey]) {
+				t.lastBudgetClear[seKey] = lastClear
+			}
+			if blocked := lastClear.Add(cooldown); blocked.After(t.novelTokenBlockedUntil[seKey]) {
+				t.novelTokenBlockedUntil[seKey] = blocked
+			}
+			t.mu.Unlock()
+			return false
+		}
+	}
+
+	t.mu.Lock()
+	t.lastBudgetClear[seKey] = now
 	delete(t.novelTokenBlockedUntil, seKey)
 	// An honored rotation lifts the novel-token admission floor: the freshly
 	// registered token must be challengeable immediately (Codex #9). The reset
-	// itself is budgetClearCooldown-throttled, so floor lifting cannot be
-	// flooded into unbounded novel-token admissions.
+	// itself is budgetClearCooldown-throttled — durably when a store is wired —
+	// so floor lifting cannot be flooded into unbounded novel-token admissions.
 	delete(t.novelPushFloor, seKey)
 	// Composite (SE, token-hash) entries intentionally survive rotation. They
 	// preserve A-B-A cooldowns; a genuinely new token has no composite entry and
@@ -571,23 +612,8 @@ func (t *codeAttestThrottle) clearPushBudgetReservationHeld(seKey string) bool {
 	// are safe to clear here.
 	delete(t.lastPush, seKey)
 	delete(t.durableNextPush, seKey)
-	return true
-}
-
-// clearDurablePushFloorReservationHeld mirrors an honored floor clear to the
-// durable store (reservation lock held, t.mu NOT held). Best-effort: on store
-// failure the durable floor stays, which only DELAYS the rotated token's push
-// until the floor elapses — it never weakens the rate limit (fail-closed).
-func (t *codeAttestThrottle) clearDurablePushFloorReservationHeld(
-	ctx context.Context, seKey string,
-) {
-	t.mu.Lock()
-	st, ok := t.store.(codeAttestPushBudgetStore)
 	t.mu.Unlock()
-	if !ok {
-		return
-	}
-	_ = st.ClearCodeAttestPushFloor(ctx, seKey)
+	return true
 }
 
 func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
@@ -862,17 +888,27 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 			th := s.codeAttestThrottle
 			th.mu.Lock()
 			for _, budget := range budgets {
-				if budget.SEPubKey == "" ||
-					!budget.NextPushAt.After(th.now()) {
+				if budget.SEPubKey == "" {
 					continue
 				}
 				if budget.TokenHash == "" {
 					// Sentinel row: the per-SE-key novel-token admission floor
 					// (also the shape of legacy pre-composite rows, whose
-					// per-SE budget means exactly this). Codex P1.
-					if budget.NextPushAt.After(th.novelPushFloor[budget.SEPubKey]) {
+					// per-SE budget means exactly this). Codex P1. Its
+					// LastClearAt seeds the rotation-clear cooldown, so a
+					// restart cannot re-grant a floor clear the previous
+					// instance already spent (Codex 06:36Z P1) — even when the
+					// floor itself has already elapsed.
+					if budget.LastClearAt.After(th.lastBudgetClear[budget.SEPubKey]) {
+						th.lastBudgetClear[budget.SEPubKey] = budget.LastClearAt
+					}
+					if budget.NextPushAt.After(th.now()) &&
+						budget.NextPushAt.After(th.novelPushFloor[budget.SEPubKey]) {
 						th.novelPushFloor[budget.SEPubKey] = budget.NextPushAt
 					}
+					continue
+				}
+				if !budget.NextPushAt.After(th.now()) {
 					continue
 				}
 				key := codeAttestPushBudgetKey(

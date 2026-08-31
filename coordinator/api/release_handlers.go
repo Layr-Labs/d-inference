@@ -127,24 +127,19 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-update known binary hashes and runtime manifest from all active
-	// releases. The release write has committed, but an inventory read failure
-	// retains the last-known-good policy and is reported to the caller so the
-	// registration is retried until a sync converges on the new inventory.
+	// releases. The release row has already committed and GET /v1/releases/latest
+	// serves straight from the store, so a transient inventory-read failure must
+	// not strand the policy on the pre-registration snapshot: providers would
+	// install a release the policy can never authorize and — with no background
+	// resync — stay unroutable indefinitely. When the post-mutation re-read
+	// fails, converge the in-memory policy from the committed mutation itself;
+	// registration stays atomic and successful for the caller, and the next
+	// successful sync rebuilds from the full inventory.
 	if err := s.SyncBinaryHashes(); err != nil {
-		s.invalidateReleaseCaches(release.Platform)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
-			"release_policy_sync_failed",
-			"release was saved but release policy synchronization failed",
-		))
-		return
+		s.convergeReleasePolicyWithCommittedRelease(&release, err)
 	}
 	if err := s.SyncRuntimeManifest(); err != nil {
-		s.invalidateReleaseCaches(release.Platform)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
-			"release_policy_sync_failed",
-			"release was saved but runtime policy synchronization failed",
-		))
-		return
+		s.convergeRuntimeManifestWithCommittedRelease(&release, err)
 	}
 
 	// Invalidate cached version/manifest/release responses so providers and
@@ -539,7 +534,20 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	if req.Platform == "" {
 		req.Platform = defaultReleasePlatform
 	}
-	if s.binaryHashEnforce && !req.Force {
+	// In-use protection guards BOTH code-identity gates: the legacy
+	// self-reported binaryHash allowlist (binaryHashEnforce, default false) and
+	// the application-evidence routing gate, which requires active releases
+	// whenever a release inventory has ever been published (snapshot.Required).
+	// Gating the precheck on the legacy flag alone would let an ordinary
+	// force=false delete deactivate a release that still backs connected
+	// providers' evidence — the follow-up sync would clear their evidence and
+	// deroute them. force=true remains the explicit override for intentional
+	// pulls of a compromised release.
+	inUseProtectionActive := s.binaryHashEnforce
+	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil && snapshot.Required {
+		inUseProtectionActive = true
+	}
+	if inUseProtectionActive && !req.Force {
 		releases, err := s.store.ListReleasesWithError()
 		if err != nil {
 			s.logger.Error("admin: release deactivation precheck failed closed", "error", err)

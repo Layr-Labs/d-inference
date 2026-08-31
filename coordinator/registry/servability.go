@@ -115,7 +115,15 @@ const (
 // reroute) — both absorbed by the dispatch retry machinery, and the warm
 // report replaces the estimate once the slot loads.
 var servabilityModelActivationFloorsGB = map[string]float64{
+	// Raw peak-over-resident @500-token B=8 basis (July 2026 sweep;
+	// compiled 3.20 + slack — the current engine measures 2.63 raw).
 	"gpt-oss-20b": 3.5,
+	// Decomposed basis (2026-08-30 sweep, served artifact 73a03825):
+	// non-KV transient saturates ~3.3 GiB across 500→8k prompts (the raw
+	// figure's growth is cell KV, which the token budget accounts) + ~0.4
+	// inline-MTP allowance + slack. Mirrors the provider table's entry —
+	// same commit, same basis note.
+	"qwen3.6-35b-a3b-vl-mtp-mxfp8": 4.0,
 }
 
 // servabilityActivationFloor selects the activation reserve the given

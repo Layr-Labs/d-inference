@@ -604,15 +604,17 @@ func TestServabilityActivationFloorPerModel(t *testing.T) {
 		version, model string
 		want           float64
 	}{
-		{"", "gpt-oss-20b", 3.0},                                 // unreported → legacy floor
-		{"0.7.12", "gpt-oss-20b", 3.0},                           // legacy binary → legacy floor
-		{"0.8.0", "gpt-oss-20b", 5.5},                            // flat-floor binary, measured model
-		{"0.8.10", "gpt-oss-20b", 5.5},                           // flat-floor release
-		{"0.8.15", "gpt-oss-20b", 5.5},                           // last flat-floor release actually shipped
-		{servabilityPerModelFloorMinVersion, "gpt-oss-20b", 3.5}, // measured floor
-		{servabilityPerModelFloorMinVersion, "gemma-4-26b", 5.5}, // unmeasured → flat
-		{servabilityPerModelFloorMinVersion, "", 5.5},            // unknown model → flat
-		{"0.9.0", "gpt-oss-20b", 3.5},                            // later releases keep the table
+		{"", "gpt-oss-20b", 3.0},                                                  // unreported → legacy floor
+		{"0.7.12", "gpt-oss-20b", 3.0},                                            // legacy binary → legacy floor
+		{"0.8.0", "gpt-oss-20b", 5.5},                                             // flat-floor binary, measured model
+		{"0.8.10", "gpt-oss-20b", 5.5},                                            // flat-floor release
+		{"0.8.15", "gpt-oss-20b", 5.5},                                            // last flat-floor release actually shipped
+		{servabilityPerModelFloorMinVersion, "gpt-oss-20b", 3.5},                  // measured floor
+		{servabilityPerModelFloorMinVersion, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 4.0}, // measured (decomposed basis)
+		{servabilityPerModelFloorMinVersion, "gemma-4-26b", 5.5},                  // unmeasured → flat
+		{servabilityPerModelFloorMinVersion, "", 5.5},                             // unknown model → flat
+		{"0.9.0", "gpt-oss-20b", 3.5},                                             // later releases keep the table
+		{"0.8.10", "qwen3.6-35b-a3b-vl-mtp-mxfp8", 5.5},                           // flat-floor binary even for a measured model
 	}
 	for _, tc := range cases {
 		if got := servabilityActivationFloor(tc.version, tc.model); got != tc.want {

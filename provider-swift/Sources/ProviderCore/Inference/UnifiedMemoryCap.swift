@@ -131,8 +131,24 @@ public enum UnifiedMemoryCap {
     /// same commit — see the doc comment on ``defaultActivationReserveBytes``.
     static let measuredActivationFloorsBytes: [String: UInt64] = [
         // Measured B=8 activation peak: 2.56 GiB eager, 3.20 GiB compiled
-        // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack.
-        "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2
+        // (fused SDPA, head_dim 64). 3.5 = 3.20 + 0.30 slack. Basis: raw
+        // peak-over-resident at 500-token prompts (the July 2026 sweep's
+        // convention; the compiled path was removed in v0.8.0 — the
+        // current-engine raw figure is 2.63, so 3.5 keeps ~0.9 margin).
+        "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2,
+        // Measured 2026-08-30 on the served artifact (hub 73a03825), v2
+        // contiguous B=8 at L ∈ {500, 4k, 8k} — stock route, which a code
+        // trace confirmed is production's live route. Basis differs from
+        // gpt-oss above (documented so the table stays honest): the raw
+        // peak-over-resident GROWS with prompt length (3.28 @500 → 4.87
+        // @8k) but the growth is the contiguous cell's own KV (~25 KB/tok/
+        // seq, separately accounted by the KV budget in production); the
+        // non-KV transient SATURATES at ~3.3 GiB. 4.0 = 3.3 saturated
+        // + ~0.4 inline-MTP k=2 allowance (measured at B=1: 0.78 stock vs
+        // 1.18 MTP) + slack. It also bounds the raw-500 stock figure
+        // (3.28) with 0.7 margin. Full data:
+        // docs/reports/2026-08-30-activation-floor-measurements.md.
+        "qwen3.6-35b-a3b-vl-mtp-mxfp8": 4 * 1024 * 1024 * 1024,
     ]
 
     /// The activation floor for a SERVING SET of models: the max of each

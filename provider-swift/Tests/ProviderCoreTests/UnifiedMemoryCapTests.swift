@@ -451,6 +451,24 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["gpt-oss-20b"]) == 7 * gib / 2)
 }
 
+@Test func activationFloorUsesMeasuredQwen36Value() {
+    // qwen3.6: decomposed-basis floor (see the table's doc comment) — 4.0
+    // GiB = ~3.3 saturated non-KV envelope + MTP allowance + slack,
+    // measured 2026-08-30 on the served artifact.
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(forModelIDs: ["qwen3.6-35b-a3b-vl-mtp-mxfp8"])
+            == 4 * gib)
+    // Set max over two MEASURED models takes the larger measured floor…
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(
+            forModelIDs: ["gpt-oss-20b", "qwen3.6-35b-a3b-vl-mtp-mxfp8"]) == 4 * gib)
+    // …and any unmeasured member still pins the flat default.
+    #expect(
+        UnifiedMemoryCap.activationFloorBytes(
+            forModelIDs: ["qwen3.6-35b-a3b-vl-mtp-mxfp8", "gemma-4-26b"])
+            == UnifiedMemoryCap.defaultActivationReserveBytes)
+}
+
 @Test func activationFloorFallsBackToDefaultForUnmeasuredModels() {
     let def = UnifiedMemoryCap.defaultActivationReserveBytes
     // Unmeasured model → the flat default.

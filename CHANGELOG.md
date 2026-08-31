@@ -5,13 +5,13 @@
 - **Per-model activation floors + measured resident weights** — the flat
   5.5 GiB activation reserve is now resolved per serving set from measured
   per-model floors (gpt-oss-20b: 3.5 GiB — its 24 GB catalog tier goes from
-  arithmetically unserveable to reachable, #653/#683), and the load gate's
-  weights figure uses measured MLX residency for measured text-only
-  artifacts (gpt-oss-20b: 11.5 GiB vs the 13.5 padded estimate). The
-  coordinator mirrors both tables per (binary version, model) —
-  `servabilityActivationFloor` / `servabilityColdWeightsGiB`, gated at
-  0.8.16 — across the cold token-budget estimate AND the cold-load admit
-  gate. Vision-capable models (the qwens, the gemma VLM builds) keep the
+  arithmetically unserveable to reachable, #653/#683), and the coordinator's
+  POST-load token-budget estimate uses measured MLX residency for measured
+  text-only artifacts (gpt-oss-20b: 11.5 GiB steady vs the 13.5 padded
+  estimate) via `servabilityColdWeightsGiB`, version-gated at 0.8.16.
+  ADMIT-time gates — provider load gate and the coordinator's cold-load
+  admit — deliberately keep the padded disk×1.2 figure: it covers the load
+  transient (shard staging), which steady residency does not. Vision-capable models (the qwens, the gemma VLM builds) keep the
   flat floor and padded weights until vision-inclusive measurements exist;
   measured text baselines and the full sweep live in
   `docs/reports/2026-08-30-activation-floor-measurements.md`.

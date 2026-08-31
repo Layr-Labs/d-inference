@@ -517,23 +517,3 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.loadHeadroomBytes()
         == UnifiedMemoryCap.defaultActivationReserveBytes + UnifiedMemoryCap.minimumLoadKVBytes)
 }
-
-// MARK: - Measured resident weights (mirror of servabilityMeasuredResidentGiB)
-
-@Test func measuredResidentWeightsOverridePaddedEstimates() {
-    // The measured text-only model takes the measured figure regardless of
-    // the scanner's padded estimate…
-    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gpt-oss-20b", estimatedGb: 13.5) == 11.5)
-    // …and every model whose artifact carries a vision tower keeps the
-    // padded estimate (the bench's forced-LLM residency under-counts the
-    // tower production's VLMModelFactory load materializes): the gemma
-    // VLM builds and the qwens are deliberately absent.
-    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gemma-4-26b-8bit", estimatedGb: 31.3) == 31.3)
-    #expect(UnifiedMemoryCap.loadGateWeightsGb(modelId: "gemma-4-26b", estimatedGb: 31.3) == 31.3)
-    #expect(
-        UnifiedMemoryCap.loadGateWeightsGb(
-            modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8", estimatedGb: 23.8) == 23.8)
-    #expect(
-        UnifiedMemoryCap.loadGateWeightsGb(
-            modelId: "gemma-4-26b-qat-4bit", estimatedGb: 17.4) == 17.4)
-}

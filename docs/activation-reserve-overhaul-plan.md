@@ -76,16 +76,17 @@ does NOT fit at 5.5 (23.8 + 5.5 + 1.0 = 30.3 > 28.8 cap) — the re-tier to
 36 remains REQUIRED**; and **gemma-8bit's 36 GB tier remains blocked at
 padded weights** until the provider-path (VLM) residency measurement lands.
 
-- 3a ✅ (narrowed per PR review) `measuredResidentWeightsBytes` (provider) +
-  `servabilityMeasuredResidentGiB` (coordinator), same 0.8.16 gate, threaded
-  through the load gate, startup preload, doctor, cold estimate, AND the
-  cold-load admit gate (`reportedFreeForLoadAdmits`). **gpt-oss only**: the
-  gemma-8bit artifact carries `vision_config` (model_type gemma4 → production
-  loads the tower via VLMModelFactory), so the bench's forced-LLM 24.97 GiB
-  under-counts its true residency — the gemma entries and their 36 GB tier
-  unblock are gated on a provider-path (VLM) residency measurement. The
-  pending-load reservation keeps the PADDED figure even for measured models
-  (it guards the load transient, which steady residency does not cover).
+- 3a ✅ (narrowed TWICE per PR review, final shape) measured post-load
+  residency lives ONLY in the coordinator's `servabilityMeasuredResidentGiB`
+  (gpt-oss only; canonical values from the report) feeding ONLY
+  `coldTokenBudgetEstimate` — the POST-load token-budget arithmetic. Every
+  ADMIT-time gate (provider load gate, pending-load reservation, startup
+  preload, doctor, `reportedFreeForLoadAdmits`) deliberately keeps the
+  padded disk×1.2 figure: the LOAD TRANSIENT (shard staging) exceeds steady
+  residency, which is exactly what the padding was sized for. Consequences:
+  the gemma-8bit 36 GB tier unblock now requires a measured LOAD-PEAK (not
+  just steady residency) through the provider's VLM path — recorded as the
+  follow-up gate; and there is no provider-side weights table by design.
 - 3b ◐ (narrowed per PR review) the qwen3.5/3.6 floor entries are DEFERRED
   along with the default retune, all behind the same gate: **vision-inclusive
   measurement**. The qwens are vision-capable and the tower transient rides

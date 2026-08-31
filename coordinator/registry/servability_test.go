@@ -687,10 +687,22 @@ func TestServabilityColdWeightsPerModel(t *testing.T) {
 	if got := coldTokenBudgetEstimate(36, 28, 400000, v, "gemma-4-26b-8bit"); got != 0 {
 		t.Fatalf("perModel gemma-8bit@36 estimate = %d, want 0 (still padded pending VLM-path measurement)", got)
 	}
-	// The measured text-only model DOES take the measured figure: gpt-oss on
-	// a 24 GB box gains the difference (padded 13.53 vs measured 11.5).
+	// The measured text-only model DOES take the measured figure in the
+	// POST-load estimate: gpt-oss on a 24 GB box gains the difference
+	// (padded 13.53 vs measured 11.5).
 	if got, want := coldTokenBudgetEstimate(24, 12.1, 400000, v, "gpt-oss-20b"),
 		coldTokenBudgetEstimate(24, 12.1, 400000, "0.8.15", "gpt-oss-20b"); got <= want {
 		t.Fatalf("perModel gpt-oss@24 estimate = %d, want > flat-era %d (measured weights + floor)", got, want)
+	}
+	// The ADMIT gate, by contrast, charges the PADDED figure for EVERY
+	// binary and model — the load transient exceeds steady residency, so
+	// a measured-weights admit would over-admit loads that OOM mid-staging.
+	free := 12.0 // fits measured 11.5, NOT padded 13.53
+	if admit, reported := reportedFreeForLoadAdmits(12.1, &free, v, "gpt-oss-20b"); !reported || admit {
+		t.Fatalf("admit gate = (%v, %v), want (false, true): padded transient figure must govern admits", admit, reported)
+	}
+	roomy := 14.0 // fits padded 13.53
+	if admit, reported := reportedFreeForLoadAdmits(12.1, &roomy, v, "gpt-oss-20b"); !reported || !admit {
+		t.Fatalf("admit gate = (%v, %v), want (true, true)", admit, reported)
 	}
 }

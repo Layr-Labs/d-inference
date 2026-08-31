@@ -139,8 +139,7 @@ extension ProviderLoop {
                 StartupPreloader.Candidate(
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
-                        weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
-                            modelId: id, estimatedGb: info.estimatedMemoryGb),
+                        weightsGb: info.estimatedMemoryGb,
                         headroomGb: loadHeadroomGb)))
         }
         return plan
@@ -155,8 +154,7 @@ extension ProviderLoop {
     internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
         guard let info = advertisedModels[modelId] else { return nil }
         return ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
-                modelId: modelId, estimatedGb: info.estimatedMemoryGb),
+            weightsGb: info.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
     }
 

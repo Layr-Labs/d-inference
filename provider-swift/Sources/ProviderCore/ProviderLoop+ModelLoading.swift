@@ -345,9 +345,13 @@ extension ProviderLoop {
             // load a model it could actually serve. `availableMemoryGb` now
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
+            // Deliberately the PADDED estimate (disk×1.2), not the measured
+            // steady residency: the ADMIT decision covers the LOAD TRANSIENT
+            // (shard staging exceeds the post-load figure), which is exactly
+            // what the padding was sized for. Measured residency informs only
+            // the coordinator's POST-load token-budget estimate.
             let targetWeightsGb = Self.loadGateWeightsGb(
-                estimatedWeightsGb: UnifiedMemoryCap.loadGateWeightsGb(
-                    modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: targetWeightsGb,
@@ -1057,9 +1061,8 @@ extension ProviderLoop {
         // must not schedule catalog or artifact prefetch work for requests
         // that may be rejected. The accepted load path performs the real
         // preparation (and any prefetch) itself.
-        let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
-                modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
+        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: loadHeadroomGb)
 
         // Sample live memory FIRST — this is the only suspension point in the
@@ -1068,6 +1071,13 @@ extension ProviderLoop {
         // atomically with respect to this actor: nothing can mutate slots
         // between the reads and the verdict, so there is no TOCTOU window.
         let available = await availableMemoryGb()
+        // Recompute the requirement after the suspension too: a concurrent
+        // verified prefetch can have RAISED the serving-set floor while we
+        // awaited memory (measured-only set + unmeasured advertise), and
+        // admitting against the stale lower figure is accepted-then-503.
+        requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: modelInfo.estimatedMemoryGb,
+            headroomGb: loadHeadroomGb)
 
         // Re-check BOTH verdicts after the suspension: retirement may have
         // begun (reject fast — do not send inference_accepted for a build

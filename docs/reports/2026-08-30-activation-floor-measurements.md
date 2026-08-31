@@ -228,9 +228,12 @@ current-production posture).
 **32 GB tier verdict (Outcome B leaning)**: with a best-case honest floor ≈ 4.0
 (non-KV 3.3 + MTP 0.5 + slack), needs = 23.8 + 4.0 + 1.0 = 28.8 = exactly the
 0.9×32 cap, leaving <4 GiB for macOS + the provider — not honestly serveable.
-Recommend `min_ram_gb` 32 → 36 for `qwen3.6-35b-a3b-vl-mtp-mxfp8` (at 36: 3.6 GiB
-cap margin, ~7 GiB OS headroom), with the measured floor entry still landing (it
-meaningfully widens the 36 GB tier vs the flat 5.5).
+Recommend `min_ram_gb` 32 → 36 for `qwen3.6-35b-a3b-vl-mtp-mxfp8` (at 36: fits at
+the shipped 5.5 default, 30.3 ≤ 32.4, with ~2 GiB cap margin). The measured 4.0
+floor entry is DEFERRED — the shipped tables carry gpt-oss only, because the
+qwens are vision-capable and the tower transient rides this reserve; the entry
+returns with a vision-inclusive measurement (and would then widen the 36 GB
+tier further).
 
 ### Bonus finding (explorer trace, separate from memory work)
 
@@ -286,8 +289,10 @@ measured. Only text-only artifacts (gpt-oss) carry measured floors/residency.
 3. **PR #683's numbers are confirmed valid on the current engine**: gpt-oss measured
    2.63 by the same convention its 3.5 floor was derived under (July compiled 3.20
    no longer exists as a path; 3.5 now carries ~0.9 GiB extra margin). The catalog id
-   `gpt-oss-20b` exact-matches its table key. Its `servabilityPerModelFloorMinVersion
-   = "0.8.11"` placeholder must be bumped (release train is at 0.8.15).
+   `gpt-oss-20b` exact-matches its table key. The release gate SHIPPED:
+   `servabilityPerModelFloorMinVersion = "0.8.16"` with `ProviderCore.version` and
+   `LatestProviderVersion` bumped to 0.8.16 in the same tree (the 0.8.11 placeholder
+   and the 0.8.15-era coupling caveat recorded earlier in this report are resolved).
 4. **L-decomposition validates the hybrid formula+measurement model**: the growing
    term in peak−active is analytic KV (measured slopes 22 KB/tok/seq gemma,
    48 gpt-oss — both explained by layer KV math), while the non-KV transient

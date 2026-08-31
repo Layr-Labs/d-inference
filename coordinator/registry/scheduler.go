@@ -1533,20 +1533,21 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-// binaryVersion and modelID select the weights figure THAT provider's own
-// load gate uses for THAT model (servabilityColdWeightsGiB): measured
-// residency for ≥perModel binaries on measured text-only models, the padded
-// conversion otherwise. Without this the admit gate stays padded while the
-// provider gates with the measured figure — strictly TIGHTER than the gate
-// it mirrors, and the padding alone kept e.g. gemma-8bit's 36 GB tier from
-// ever being routed a cold load its providers could take.
+// The PADDED conversion on purpose, for every binary and model: this
+// mirrors the provider's ADMIT gate, which deliberately charges the
+// disk×1.2 load-transient figure (shard staging exceeds steady residency).
+// Measured post-load residency (servabilityMeasuredResidentGiB) informs
+// only coldTokenBudgetEstimate — the POST-load arithmetic. binaryVersion
+// and modelID are accepted for parity with that estimate's selection and
+// for future load-peak measurements; today they are deliberately unused.
 func reportedFreeForLoadAdmits(
 	catalogSizeGB float64, freeForLoadGB *float64, binaryVersion, modelID string,
 ) (admit bool, reported bool) {
+	_, _ = binaryVersion, modelID
 	if freeForLoadGB == nil || catalogSizeGB <= 0 {
 		return false, false
 	}
-	return servabilityColdWeightsGiB(binaryVersion, modelID, catalogSizeGB) <= *freeForLoadGB, true
+	return catalogSizeGB*coldLoadCatalogGBToMemGiB <= *freeForLoadGB, true
 }
 
 // freeMemoryAdmits returns true when the provider has enough headroom.

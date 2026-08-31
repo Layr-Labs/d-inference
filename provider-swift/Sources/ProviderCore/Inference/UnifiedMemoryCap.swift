@@ -145,40 +145,6 @@ public enum UnifiedMemoryCap {
         // docs/reports/2026-08-30-activation-floor-measurements.md.
     ]
 
-    /// Measured post-load MLX residency (bytes, +~2% slack) for TEXT-ONLY
-    /// catalog models, replacing the scanner's disk×1.2 padding in the load
-    /// gate's weights term. The padding overshoots real residency badly on
-    /// large artifacts (gemma-8bit: 24.97 GiB measured vs ~31.3 padded —
-    /// the padding alone made its 36 GB tier arithmetically unserveable).
-    /// Keyed by catalog id, EXACT match; unmeasured ids keep the padded
-    /// estimate. Vision-capable models are deliberately ABSENT: a text-only
-    /// bench residency under-counts their towers.
-    ///
-    /// Mirrored by coordinator/registry/servability.go
-    /// (`servabilityMeasuredResidentGiB`); the tables MUST move in the same
-    /// commit, exactly like ``measuredActivationFloorsBytes``. Measured
-    /// 2026-08-30/31 (docs/reports/2026-08-30-activation-floor-measurements.md).
-    static let measuredResidentWeightsBytes: [String: UInt64] = [
-        // measured 11.25 GiB active (mlx-community/gpt-oss-20b-MXFP4-Q8;
-        // model_type gpt_oss — no VLM wrapper, so the bench's LLM-factory
-        // load IS the production load path)
-        "gpt-oss-20b": 23 * 1024 * 1024 * 1024 / 2  // 11.5 GiB
-        // gemma-4-26b/-8bit (measured 24.97 text-path) are deliberately
-        // ABSENT: the artifact carries vision_config (model_type gemma4),
-        // so production loads it through VLMModelFactory with the tower —
-        // the bench's forced-LLM residency under-counts it. They keep the
-        // padded estimate until a provider-path (VLM) residency is
-        // measured; the 36 GB tier unblock moves behind that measurement.
-    ]
-
-    /// The load gate's weights figure (GB) for a model: measured residency
-    /// when the catalog id is in the table, the caller's padded estimate
-    /// otherwise.
-    public static func loadGateWeightsGb(modelId: String, estimatedGb: Double) -> Double {
-        guard let measured = measuredResidentWeightsBytes[modelId] else { return estimatedGb }
-        return Double(measured) / (1024.0 * 1024.0 * 1024.0)
-    }
-
     /// The activation floor for a SERVING SET of models: the max of each
     /// member's measured floor, with ``defaultActivationReserveBytes`` for any
     /// unmeasured member — the reserve must cover every model that can run a

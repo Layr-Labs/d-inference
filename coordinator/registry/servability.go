@@ -130,17 +130,20 @@ var servabilityModelActivationFloorsGB = map[string]float64{
 	// sizes. Mirrors the provider table's absence — same commit.
 }
 
-// servabilityMeasuredResidentGiB mirrors the provider's measured resident
-// weights table (UnifiedMemoryCap.measuredResidentWeightsBytes); the two
-// MUST move in the same commit, exactly like the activation-floor pair.
-// Keys are catalog ids, EXACT match. Values are the measured post-load MLX
-// residency (GiB, +~2% slack) of TEXT-ONLY models on the current engine
-// (2026-08-30/31 sweep) — the disk×1.2 padding they replace overshoots real
-// residency badly on large artifacts (gemma-8bit: 24.97 measured vs ~31.3
-// padded — the padding alone made its 36 GB tier arithmetically
-// unserveable). Vision-capable models are deliberately ABSENT: their
-// text-only bench residency under-counts the vision tower, so they keep the
-// padded estimate until a vision-inclusive measurement exists.
+// servabilityMeasuredResidentGiB is the CANONICAL measured post-load MLX
+// residency table (GiB, +~2% slack; TEXT-ONLY artifacts, current engine,
+// 2026-08-30/31 sweep — docs/reports/2026-08-30-activation-floor-measurements.md).
+// It feeds ONLY coldTokenBudgetEstimate — the POST-load token-budget
+// arithmetic, where steady residency is the physically correct weights
+// term (the estimate converges to the provider's own warm
+// active_token_budget_max, which reflects steady residency). It must NOT
+// feed any ADMIT-time gate: the provider's load gate deliberately charges
+// the padded disk×1.2 figure because the LOAD TRANSIENT (shard staging)
+// exceeds steady residency — see reportedFreeForLoadAdmits. There is no
+// provider-side twin by design (the provider holds no load-time measured
+// constant); the mirror obligation here is to the measured physical truth
+// in the report, re-measured per engine release. Vision-capable models are
+// deliberately ABSENT: text-only bench residency under-counts the tower.
 var servabilityMeasuredResidentGiB = map[string]float64{
 	// measured 11.25 active; model_type gpt_oss has no VLM wrapper, so the
 	// bench's LLM-factory load IS the production load path.
@@ -151,13 +154,14 @@ var servabilityMeasuredResidentGiB = map[string]float64{
 	// residency. Padded until a provider-path (VLM) measurement exists.
 }
 
-// servabilityColdWeightsGiB is the weights term of the cold-load "needs"
-// arithmetic for the given provider binary and model: the measured resident
-// figure for ≥perModel binaries when the model is in the mirrored table,
-// the catalog-padded conversion otherwise. Same version-gated mirror shape
-// (and the same fail-open direction reasoning) as servabilityActivationFloor:
-// an unreported/older binary gates its loads with the padded estimate, so
-// the mirror must charge it the same.
+// servabilityColdWeightsGiB is the weights term of the POST-LOAD
+// token-budget arithmetic (coldTokenBudgetEstimate) for the given provider
+// binary and model: measured steady residency for ≥perModel binaries on
+// measured models, the catalog-padded conversion otherwise. Version-gated
+// like servabilityActivationFloor so pre-perModel binaries — whose warm
+// reports the estimate converges to under the OLD arithmetic — keep the
+// padded prediction. ADMIT-time gates never call this (see
+// reportedFreeForLoadAdmits: the load transient needs the padding).
 func servabilityColdWeightsGiB(version, modelID string, catalogSizeGB float64) float64 {
 	padded := catalogSizeGB * coldLoadCatalogGBToMemGiB
 	if version == "" ||

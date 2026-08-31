@@ -38,24 +38,29 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
 
 ## Phase 2 — qwen3.6 B=8 measurement → qwen floor entry (or tier correction)
 
-Unblocks (or honestly re-tiers) the 32 GB qwen3.6 tier: needs floor ≤ 4.0
-(23.8 padded + floor + 1.0 ≤ 28.8 cap), and even then leaves <4 GiB for macOS on a
-32 GiB box — the measurement decides between a floor entry and `min_ram_gb: 36`.
+**Status 2026-08-30 night: measurement COMPLETE; both outcomes apply.**
 
-1. Fix the bench-harness SIGTRAP: stock `--mode perf` traps at the first v2 warmup
-   cell for the `qwen3_5_moe` family (`libs/mlx-swift-lm`, own worktree — submodule
-   changes are a separate PR in that repo). Campaign mode (same `makeV2Engine`, same
-   hooks, near-identical scheduler config) works at B=1, so the delta is narrow:
-   task-group submission or synthetic-prompt shape.
-2. Measure qwen3.6-35b B=8 on the served artifact (hub rev 73a03825, verified
-   identical to the catalog's `hub_revision`; "mxfp8" in the id names the inline-MTP
-   head quant): 500-token AND ≥4k-token cells (the sweep showed short-prompt cells
-   under-measure the saturated envelope), MTP k=2 active (production posture).
-3. Outcome A (saturated envelope ≤ ~3.5–4.0): add
-   `qwen3.6-35b-a3b-vl-mtp-mxfp8` to `measuredActivationFloorsBytes` +
-   `servabilityModelActivationFloorsGB` in one commit (the #683 contract).
-   Outcome B (> 4.0): propose the catalog `min_ram_gb` 32 → 36 correction instead
-   (runtime catalog data — an ops change, documented, not code).
+1. ✅ Root-caused the "SIGTRAP": an Index-out-of-range in the bench's **v2-paged**
+   cache wiring only (dense per-storage `pagedCaches[index]` fed the hybrid trunk's
+   sparse MODEL layer index from `newCacheV2`), masked as a whole-family failure by
+   the buffered perf table. Stock contiguous runs fine — and a code trace confirmed
+   the bench's stock profile IS production's live route (optimized lanes are
+   bench-only or env-gated OFF; MTP decode disabled under stock — PR #777 unmerged).
+   Fix committed on `fix/qwen35-stock-bench-trap` (mlx-swift-lm worktree; separate
+   PR in that repo). **The production factory carries the identical subscript**
+   (`EngineV2Factory+Production.swift:965`) — reachability check pending; fix it in
+   the same shape if reachable, defensively if not.
+2. ✅ Measured on the served artifact (hub 73a03825), v2 contiguous, current engine:
+   B=8 = 3.28 GiB @ 500 tok; raw 4.06 @ 4k, 4.87 @ 8k; decomposed non-KV envelope
+   **~3.3 GiB, saturated** (hybrid trunk — no composed-attention blow-up). MTP delta
+   ≈ +0.4 GiB (B=1-measured; a B=8 MTP figure needs the campaign B=N harness
+   extension — do with the harness PR).
+3. **Both outcomes**: (a) add the floor entry
+   `qwen3.6-35b-a3b-vl-mtp-mxfp8 → 4.0 GiB` (non-KV 3.3 + MTP allowance + slack;
+   convention note required — see conclusions in the measurement report) to both
+   tables in one commit — it meaningfully widens the 36 GB tier (needs 30.3 → 28.8);
+   AND (b) recommend the catalog correction `min_ram_gb` 32 → 36 (ops change): even
+   at floor 4.0 the 32 GiB box retains <4 GiB for macOS — not honestly serveable.
 
 ## Phase 3 — measured-weights estimate + default retune → follow-up PR(s)
 

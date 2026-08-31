@@ -191,10 +191,53 @@ the production decode posture for this model). Decode 148.6 tok/s.
   vision tower never being materialized in a text-only run). The campaign report
   prints no `gpuActive`, so the B=1 transient delta cannot be split out exactly; it
   is bounded small (≲1 GiB), consistent with the other models' B=1 cells.
-- **No B=8 memory figure exists for this model yet.** The stock perf matrix (the only
-  B=8 path) SIGTRAPs on the `qwen3_5_moe` family in this tree (see harness gaps), and
-  campaign mode is single-request by design (`--batches 8` accepted but ignored).
-  A table-grade qwen floor is blocked on that harness fix.
+- **RESOLVED — the B=8 matrix runs after all.** The "SIGTRAP" was an
+  Index-out-of-range in the bench's **v2-paged** cache wiring only (dense per-storage
+  `pagedCaches[index]` subscripted with the hybrid trunk's sparse MODEL layer index
+  from `newCacheV2`), and the buffered perf table meant the already-successful
+  contiguous cells were discarded when the paged engine construction trapped.
+  `--engines v2` alone completes. Fix committed on
+  `fix/qwen35-stock-bench-trap` in the mlx-swift-lm worktree (model→storage index
+  mapping; graceful `backendIneligible` on a miss). **The production factory has the
+  identical subscript shape** (`EngineV2Factory+Production.swift:965`) —
+  reachability for hybrids under investigation.
+
+### qwen3.6-35b — stock B-matrix + L-probes (served artifact, v2 contiguous)
+
+Raw: `benchmarks/reports/qwen36-35b-actfloor-stock-v2only-2026-08-30.md`,
+`qwen36-35b-L{4000,8000}-2026-08-30.md`. Production-representativeness confirmed by
+code trace: the bench's stock profile IS the production route (the row-owned/
+direct-expert-reduction lanes are bench-only or env-gated default-OFF; MTP decode is
+disabled under stock and PR #777 — embedded MTP by default — is unmerged).
+
+| cell | active | peak | peak−active | est. cell KV (~25 KB/tok/seq) | non-KV |
+|---|---|---|---|---|---|
+| v2 B=1 (500) | 18.17 | 18.95 | 0.78 | — | — |
+| v2 B=2 | 18.17 | 19.40 | 1.23 | — | — |
+| v2 B=4 | 18.17 | 20.00 | 1.83 | — | — |
+| **v2 B=8 (500)** | 18.17 | 21.45 | **3.28** | ~0.11 | ~3.2 |
+| v2 B=8 L=4000 | 18.17 | 22.23 | 4.06 | ~0.80 | ~3.3 |
+| v2 B=8 L=8000 | 18.17 | 23.04 | 4.87 | ~1.60 | **~3.3 (saturated)** |
+
+The hybrid linear-attention trunk saturates immediately (no composed-attention
+prefill blow-up); the growing term is the 10 full-attention layers' KV. MTP delta
+measured at B=1 only: stock 0.78 vs campaign MTP-k2 1.18 → ≈ +0.4 GiB (a measured
+MTP-active B=8 needs the campaign B=N harness extension; #777-relevant, not
+current-production posture).
+
+**32 GB tier verdict (Outcome B leaning)**: with a best-case honest floor ≈ 4.0
+(non-KV 3.3 + MTP 0.5 + slack), needs = 23.8 + 4.0 + 1.0 = 28.8 = exactly the
+0.9×32 cap, leaving <4 GiB for macOS + the provider — not honestly serveable.
+Recommend `min_ram_gb` 32 → 36 for `qwen3.6-35b-a3b-vl-mtp-mxfp8` (at 36: 3.6 GiB
+cap margin, ~7 GiB OS headroom), with the measured floor entry still landing (it
+meaningfully widens the 36 GB tier vs the flat 5.5).
+
+### Bonus finding (explorer trace, separate from memory work)
+
+`MLX_QWEN_DIRECT_EXPERT_REDUCTION` is documented as default-ON
+(`docs/reports/2026-08-21-qwen-prefill-retained-optimizations.md:45`) but shipped
+opt-in (unset → false, `SwitchLayers.swift:260`) — a retained, benchmarked prefill
+optimization that is dark in production. Perf, not memory; flagged for follow-up.
 
 ### Measurement-validity notes
 

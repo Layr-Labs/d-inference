@@ -258,6 +258,16 @@ extension ProviderLoop {
         // build can be held resident alongside the model currently being served
         // during a zero-downtime migration -- bounded by the configured hard
         // cap (`configuredMaxModelSlots`).
+        // A tombstoned id is mid-retirement (failed self-test, unload
+        // draining): its resident slot makes prefetchPreCheck report
+        // `.alreadyAvailable`, and re-advertising here would undo the
+        // fail-closed removal — the retired build must stay dark until the
+        // retirement completes and a FUTURE prefetch re-verifies it.
+        guard !retiringModels.contains(modelId) else {
+            logger.warning(
+                "Prefetch verified \(modelId) but it is mid-retirement; not re-advertising")
+            return
+        }
         // Raise the runtime KV reserve for the grown serving set BEFORE the
         // build joins `advertisedModels` (and so before it is announced or
         // loadable) — a decode step of the new model must never run against a

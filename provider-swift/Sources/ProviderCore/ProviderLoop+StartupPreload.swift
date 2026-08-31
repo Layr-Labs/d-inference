@@ -299,22 +299,31 @@ extension ProviderLoop {
     /// preload finished inside the gate) both are nil and the `run()` filter
     /// handles it with no extra traffic.
     private func retireModelAfterFailedSelfTest(modelId: String) async {
+        // Tombstone for the whole retirement, including the unload drain:
+        // with the slot still resident, a concurrent same-id prefetch sees
+        // `.alreadyAvailable` and its verified-insert would re-advertise the
+        // failed model, undoing the fail-closed removal below.
+        retiringModels.insert(modelId)
+        defer { retiringModels.remove(modelId) }
         // Un-advertise BEFORE unloading so unloadModel's own
         // refresh-then-regrow runs against the SHRUNKEN serving set — with
         // the old order the regrow was sized under the retiring model's
         // floor and survivors stayed under-granted until the next lifecycle
         // event (grant clamps are min(granted, current); heartbeats cannot
-        // heal upward).
+        // heal upward). The COORDINATOR un-advertisement also goes first:
+        // leaving it until after the drain kept routing new requests here,
+        // which fastAdmissionReject accepts (resident slot), parks behind
+        // the drain, and then 404s at the advertised guard.
         advertisedModels.removeValue(forKey: modelId)
+        if let client = coordinatorClient {
+            await client.unadvertiseModel(modelId)
+            await client.forceReconnect()
+        }
         await unloadModel(modelId)
         // Cold retirement (the model never held a slot): unloadModel
         // no-ops, so relax the reserve and regrow survivors here.
         await refreshActivationReserve()
         await resliceGrowSurvivors()
-        if let client = coordinatorClient {
-            await client.unadvertiseModel(modelId)
-            await client.forceReconnect()
-        }
     }
 
     // MARK: - Self-test decode (the serving path)

@@ -223,6 +223,12 @@ public actor ProviderLoop {
     /// eviction decisions and overcommit memory.
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     internal var modelsLoading: Set<String> = []
+    /// Models being retired (failed self-test) — a tombstone held across the
+    /// retirement's unload drain. Prefetch must not re-advertise a tombstoned
+    /// id: with the slot still resident during the drain, `prefetchPreCheck`
+    /// reports `.alreadyAvailable` and the verified-insert path would undo
+    /// the fail-closed local un-advertisement.
+    internal var retiringModels: Set<String> = []
     /// Monotonic sequence for activation-reserve pushes into `kvBudget`.
     /// Every push is stamped under THIS actor's isolation, so the epoch
     /// order equals the true serving-set mutation order — the budget actor

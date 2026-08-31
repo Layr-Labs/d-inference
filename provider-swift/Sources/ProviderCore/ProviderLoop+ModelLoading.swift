@@ -304,6 +304,15 @@ extension ProviderLoop {
         // resident. Declared out here so the catch can release it on any path.
         let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
+        // The insert happens AFTER the specDecPreparation suspension above —
+        // a hard swap during that await can have dropped this model from
+        // advertisedModels and pushed a RELAXED reserve while it was in
+        // neither basis set. The direct load/probe math below resolves the
+        // floor live (and now sees this id via modelsLoading), but the KV
+        // budget actor holds the pushed value — re-push so runtime admission
+        // carves the floor this load re-pins. Epoch-stamped: a stale
+        // concurrent relax cannot land over it.
+        await refreshActivationReserve()
         do {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -689,11 +698,19 @@ extension ProviderLoop {
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
+            // A FAILED load can be the last thing keeping a dropped
+            // high-floor id in the basis (advertised entry hard-swapped away
+            // mid-load): without a relax here the budget and survivor grants
+            // stay pinned at the dead model's floor indefinitely (grant
+            // clamps are min(granted, current) — nothing else hands the
+            // difference back). No-op when the floor didn't move.
+            await refreshActivationReserve()
             // Release the pending-load reservation on every failure path (no-op
             // if it was never placed, or already released on the success path).
             await kvBudget.release(requestID: pendingLoadID)
             // Release pool buffers a failed load left behind (same wedge as unload).
             MLX.Memory.clearCache()
+            await resliceGrowSurvivors()
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }

@@ -64,8 +64,15 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
 
 ## Phase 3 — measured-weights estimate + default retune → follow-up PR(s)
 
-**Status 2026-08-31: 3a SHIPPED (this branch); 3b partially shipped (qwen3.5
-floor) with the default retune explicitly DEFERRED; 3c resolved by discovery.**
+**Status 2026-08-31 (final, post-review): 3a shipped NARROWED (gpt-oss-only
+residency); 3b fully DEFERRED (both qwen floors + the default retune, all
+behind vision-inclusive measurement); 3c resolved by discovery.**
+
+Tier truth at the shipped tables: gpt-oss@24 fits (measured floor+weights);
+qwen3.5@36 and gemma-qat4@36 fit at the 5.5 default; **qwen3.6's 32 GB tier
+does NOT fit at 5.5 (23.8 + 5.5 + 1.0 = 30.3 > 28.8 cap) — the re-tier to
+36 remains REQUIRED**; and **gemma-8bit's 36 GB tier remains blocked at
+padded weights** until the provider-path (VLM) residency measurement lands.
 
 - 3a ✅ (narrowed per PR review) `measuredResidentWeightsBytes` (provider) +
   `servabilityMeasuredResidentGiB` (coordinator), same 0.8.16 gate, threaded
@@ -82,8 +89,9 @@ floor) with the default retune explicitly DEFERRED; 3c resolved by discovery.**
   measurement**. The qwens are vision-capable and the tower transient rides
   the reserve — text-decode evidence (~3.3 GiB envelope, measured both
   models) must not lower it. The measured data stands in the report as the
-  text-decode baseline; the 32 GB qwen tier verdict (re-tier to 36) is
-  unchanged. Every deferred model fits its tier at the 5.5 default.
+  text-decode baseline; the 32 GB qwen3.6 tier verdict is unchanged and
+  still REQUIRED: it does not fit at the 5.5 default (30.3 > 28.8 cap) —
+  re-tier to 36. qwen3.5@36 and qat-4bit@36 do fit at 5.5.
 - 3c ✅ resolved by discovery, then partially superseded: at review time
   `qwen3_vl_moe` had no CBv2 adapter, so every v0.7.5+ provider drops
   `qwen3-vl-30b-a3b-instruct` at advertise time (dark fleet-wide). The

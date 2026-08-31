@@ -1296,7 +1296,12 @@ public actor StandaloneServer {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
             let targetRequiredGb = ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: modelInfo.estimatedMemoryGb,
+                    // Measured residency for measured text-only models —
+                    // same per-model constant the fleet load gate uses (the
+                    // FLOOR stays flat here by design; the weights figure
+                    // has no serving-set semantics to differ on).
+                    weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                        modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
                     // Cap-aware: activation reserve + min serveable KV, so a model
                     // that loads can actually serve (matches the runtime KV gate).
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))

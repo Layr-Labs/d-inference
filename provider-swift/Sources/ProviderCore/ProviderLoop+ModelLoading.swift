@@ -203,21 +203,17 @@ extension ProviderLoop {
             throw CancellationError()
         }
 
-        // A model mid-retirement (failed its load self-test; drain and
-        // coordinator un-advertisement in flight) must not accept NEW work
-        // through the resident-slot fast path below — the 404 the
-        // retirement promises only lands after the drain. "slot" in the
-        // message maps this to 503 via loadErrorStatusCode: transient, the
-        // coordinator reroutes to a provider whose build passed.
-        guard !retiringModels.contains(modelId) else {
-            throw InferenceError.invalidModelDirectory(
-                "Model '\(modelId)' slot is retiring after a failed self-test")
-        }
+        try throwIfRetiring(modelId)
 
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
             if isShuttingDown { throw CancellationError() }
         }
+        // Retirement can begin during any of the suspensions above/below —
+        // the entry guard alone does not cover a request that was already
+        // parked when the tombstone landed. Re-check before every
+        // resident-slot return.
+        try throwIfRetiring(modelId)
 
         if modelSlots[modelId] != nil {
             return
@@ -233,6 +229,10 @@ extension ProviderLoop {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
             }
+            // Same rule after the loading-waiter resume: the load we waited
+            // on may have FAILED its self-test and begun retiring while we
+            // were parked.
+            try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
             try await ensureModelLoaded(
                 modelId: modelId, allowEviction: allowEviction)
@@ -1011,6 +1011,21 @@ extension ProviderLoop {
     /// ``evictUntilAvailable`` WITHOUT loading anything and is deliberately
     /// conservative: anything that *could* succeed (including via eviction of
     /// an idle model) is admitted and left for the post-accept load path.
+    /// A model mid-retirement (failed its load self-test; drain and
+    /// coordinator un-advertisement in flight) must not accept NEW work —
+    /// the 404 the retirement promises only lands after the drain. "slot"
+    /// in the message maps to 503 via loadErrorStatusCode: transient, the
+    /// coordinator reroutes to a provider whose build passed. Callers
+    /// re-invoke this after EVERY actor suspension that precedes a
+    /// resident-slot return: the tombstone can land while a request is
+    /// parked on a waiter or a memory sample.
+    internal func throwIfRetiring(_ modelId: String) throws {
+        guard !retiringModels.contains(modelId) else {
+            throw InferenceError.invalidModelDirectory(
+                "Model '\(modelId)' slot is retiring after a failed self-test")
+        }
+    }
+
     internal func fastAdmissionReject(modelId: String) async -> Bool {
         // Mid-retirement (failed self-test, drain in flight): the resident
         // slot LOOKS serviceable but serving it would hand out a build that
@@ -1048,8 +1063,13 @@ extension ProviderLoop {
         // between the reads and the verdict, so there is no TOCTOU window.
         let available = await availableMemoryGb()
 
-        // Re-check residency after the suspension: the model may have been
-        // loaded by a concurrent request while we were awaiting memory.
+        // Re-check BOTH verdicts after the suspension: retirement may have
+        // begun (reject fast — do not send inference_accepted for a build
+        // that failed its self-test), or the model may have been loaded by
+        // a concurrent request while we were awaiting memory.
+        if retiringModels.contains(modelId) {
+            return true
+        }
         if modelSlots[modelId] != nil {
             return false
         }
@@ -1066,6 +1086,9 @@ extension ProviderLoop {
         if available < requiredGb && !hasEvictable {
             MLX.Memory.clearCache()
             let retried = await availableMemoryGb()
+            if retiringModels.contains(modelId) {  // retirement began mid-retry
+                return true
+            }
             if modelSlots[modelId] != nil {  // a concurrent load won the race
                 return false
             }

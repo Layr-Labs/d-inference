@@ -102,13 +102,23 @@ jobs:
               / ".cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit"
           )
           revision = os.environ["EXACT_CACHE_MODEL_REVISION"]
-          selected = model_root / "snapshots" / revision
+          snapshots = model_root / "snapshots"
+          selected = snapshots / revision
           if not selected.is_dir():
               raise SystemExit(f"pinned exact-cache snapshot missing: {selected}")
           ref = model_root / "refs" / "main"
           ref.parent.mkdir(parents=True, exist_ok=True)
           ref.write_text(revision + "\n")
-          print(f"Pinned exact-cache ref {ref} -> {revision}")
+          # The ref pins what HF tooling resolves, but the Swift provider's
+          # ModelScanner.findLatestSnapshot picks the snapshot directory with
+          # the newest mtime and never reads refs/ — so on a warm runner with
+          # more than one snapshot the mtimes must agree with the ref, or the
+          # provider loads a different revision than the manifest describes.
+          for entry in snapshots.iterdir():
+              if entry.is_dir():
+                  os.utime(entry, (0, 0))
+          os.utime(selected)
+          print(f"Pinned exact-cache ref {ref} -> {revision} (and snapshot mtimes)")
           PY
 
       # BLOCKING PAGED GATE. The tests here are the retained one-provider

@@ -384,14 +384,24 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 		}
 	}
 
-	assertReport := tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
-	t.Logf("\n%s", assertReport.SummaryTable())
-	for _, assertion := range assertReport.Results {
-		if !assertion.Passed {
-			t.Logf("FAILED: %s — %s", assertion.Name, assertion.Message)
+	var assertReport *tbassert.AssertionReport
+	if saturated {
+		// An accepted capacity boundary has zero 200s, so aggregate holds no
+		// parse/reserve/encrypt/dispatch samples; evaluating the overhead
+		// thresholds would fail every segment as missing rather than measure
+		// anything. The isolated control request already proved the
+		// coordinator serves this posture.
+		t.Logf("skipping coordinator overhead thresholds: cell accepted as saturated (no successful-request timing samples)")
+	} else {
+		assertReport = tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
+		t.Logf("\n%s", assertReport.SummaryTable())
+		for _, assertion := range assertReport.Results {
+			if !assertion.Passed {
+				t.Logf("FAILED: %s — %s", assertion.Name, assertion.Message)
+			}
 		}
+		require.True(t, assertReport.Passed, "coordinator overhead thresholds failed")
 	}
-	require.True(t, assertReport.Passed, "coordinator overhead thresholds failed")
 
 	benchmarkMarkdownMu.Lock()
 	benchmarkMarkdown.WriteString(fmt.Sprintf("## %s\n\n", name))
@@ -410,7 +420,11 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 	benchmarkMarkdown.WriteString("\n")
 	benchmarkMarkdown.WriteString(result.SummaryMarkdown())
 	benchmarkMarkdown.WriteString("\n")
-	benchmarkMarkdown.WriteString(assertReport.SummaryMarkdown())
+	if assertReport != nil {
+		benchmarkMarkdown.WriteString(assertReport.SummaryMarkdown())
+	} else {
+		benchmarkMarkdown.WriteString("_Coordinator overhead thresholds skipped: cell accepted as a saturated capacity boundary (no successful-request timing samples)._\n")
+	}
 	benchmarkMarkdown.WriteString("\n\n")
 	benchmarkMarkdownMu.Unlock()
 }

@@ -287,6 +287,162 @@ func TestMDMSchedulerFirstOrExpiredDispatchesBeforeRefreshSpread(t *testing.T) {
 	}
 }
 
+// TestFailedFastSkipPromotesRefreshToImmediateDue (Codex P1): a job classified
+// refresh at submit (hasFreshRecord looked good) whose fast-skip then DECLINES
+// must not settle onto the refresh spread — the provider holds no usable trust
+// grant while a routed client request burns the 120s dispatch-queue deadline.
+// The production read path calls PromoteFailedFastSkip before the settle, and
+// the durable row must come out first/expired and due within
+// mdmFirstVerifySpreadMax even under worst-case jitter.
+func TestFailedFastSkipPromotesRefreshToImmediateDue(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{
+		Workers: 1, QueueCapacity: 8,
+		InitialSpreadMin: time.Minute, InitialSpreadMax: 20 * time.Minute,
+	}, mdmSchedulerDeps{
+		now: func() time.Time { return now },
+		// Worst-case draw: whatever range the scheduler requests, take its top.
+		jitter: func(_, maximum time.Duration) time.Duration { return maximum },
+	})
+
+	p := schedulerTestProvider(t, srv, "miss", "se-miss")
+	sch.Submit(context.Background(), p.ID, p, store.VerificationPriorityRefresh)
+	sch.PromoteFailedFastSkip(p)
+	sch.ChallengeSettled(p, false)
+
+	rec, err := st.GetVerificationJob(context.Background(), "se-miss", store.VerificationTaskSecurityInfo)
+	if err != nil || rec == nil {
+		t.Fatalf("promoted job not persisted: %+v, %v", rec, err)
+	}
+	if rec.Priority != store.VerificationPriorityFirstOrExpired {
+		t.Fatalf("priority = %q after failed fast-skip, want promoted first/expired", rec.Priority)
+	}
+	if due := rec.NextAttemptAt.Sub(now); due > mdmFirstVerifySpreadMax {
+		t.Fatalf("failed fast-skip settle due %s out, must be within %s", due, mdmFirstVerifySpreadMax)
+	}
+}
+
+// TestContinuityMissPromotesRefreshSubmitToImmediateDue: the continuity path
+// widens what counts as a reuse candidate, so the submit-time classification
+// can be refresh purely on a continuity-covered record. If the gap outgrows
+// the reconnect allowance between submit and challenge, the fast-skip declines
+// and the promotion must still land the live verification on immediate
+// first/expired scheduling — mirroring the production sequence
+// (verificationSubmitPriority → Submit → failed fast-skip →
+// PromoteFailedFastSkip → ChallengeSettled).
+func TestContinuityMissPromotesRefreshSubmitToImmediateDue(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{
+		Workers: 1, QueueCapacity: 8,
+		InitialSpreadMin: time.Minute, InitialSpreadMax: 20 * time.Minute,
+	}, mdmSchedulerDeps{
+		now:    func() time.Time { return now },
+		jitter: func(_, maximum time.Duration) time.Duration { return maximum },
+	})
+	srv.mdmClient = dummyMDMClient()
+	cur := now
+	srv.trustReuseCache.now = func() time.Time { return cur }
+
+	p := schedulerTestProvider(t, srv, "cont-miss", "se-cont-miss")
+	// Stale window, continuity-covered 60s ago → a reuse candidate at submit.
+	srv.trustReuseCache.recordTrust(coveredReuseRecord(
+		"se-cont-miss", "serial-cont-miss", trHashA,
+		cur.Add(-20*time.Minute), cur.Add(-60*time.Second)))
+	priority := srv.verificationSubmitPriority("se-cont-miss", "serial-cont-miss")
+	if priority != store.VerificationPriorityRefresh {
+		t.Fatalf("submit priority = %q, want refresh for a continuity candidate", priority)
+	}
+	sch.Submit(context.Background(), p.ID, p, priority)
+
+	// The measured gap outgrows the allowance before the challenge settles.
+	cur = cur.Add(2 * time.Minute)
+	resp := &protocol.AttestationResponseMessage{
+		BinaryHash: trHashA,
+		SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+	}
+	if srv.tryTrustReuseFastSkip(p.ID, p, resp, true) {
+		t.Fatal("outgrown continuity gap must decline the fast-skip")
+	}
+	sch.PromoteFailedFastSkip(p)
+	sch.ChallengeSettled(p, false)
+
+	rec, err := st.GetVerificationJob(context.Background(), "se-cont-miss", store.VerificationTaskSecurityInfo)
+	if err != nil || rec == nil {
+		t.Fatalf("promoted job not persisted: %+v, %v", rec, err)
+	}
+	if rec.Priority != store.VerificationPriorityFirstOrExpired {
+		t.Fatalf("priority = %q after continuity miss, want promoted first/expired", rec.Priority)
+	}
+	if due := rec.NextAttemptAt.Sub(now); due > mdmFirstVerifySpreadMax {
+		t.Fatalf("continuity-miss settle due %s out, must be within %s", due, mdmFirstVerifySpreadMax)
+	}
+}
+
+// TestMDMSchedulerReservedUrgentWorkerSlot proves the urgent reservation:
+// long-running refresh MDA attempts may fill every general worker slot but
+// never the reserved one, and a first/expired SecurityInfo job dispatches
+// immediately through the reserved slot while the MDA attempts stay blocked.
+func TestMDMSchedulerReservedUrgentWorkerSlot(t *testing.T) {
+	releaseMDA := make(chan struct{})
+	var mdaActive atomic.Int32
+	urgentExecuted := make(chan struct{}, 1)
+	execute := func(ctx context.Context, binding mdmLiveBinding, kind store.VerificationTaskKind, _ string) mdmSchedulerAttemptResult {
+		if kind == store.VerificationTaskMDA {
+			mdaActive.Add(1)
+			select {
+			case <-releaseMDA:
+			case <-ctx.Done():
+			}
+			mdaActive.Add(-1)
+			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeSuccess, granted: true, terminal: true}
+		}
+		if binding.attestation.PublicKey == "se-urgent" {
+			urgentExecuted <- struct{}{}
+			return mdmSchedulerAttemptResult{outcome: store.VerificationOutcomeInvalid, terminal: true}
+		}
+		return mdmSchedulerAttemptResult{
+			outcome: store.VerificationOutcomeSuccess, granted: true, terminal: true,
+			udid: "udid-" + binding.attestation.PublicKey,
+		}
+	}
+	srv, _, sch := newSchedulerTestServer(t, MDMSchedulerConfig{
+		Workers: 3, QueueCapacity: 16, InitialSpreadMax: time.Nanosecond,
+	}, mdmSchedulerDeps{
+		jitter:   func(time.Duration, time.Duration) time.Duration { return 0 },
+		execute:  execute,
+		reuseMDA: func(mdmLiveBinding) bool { return false },
+	})
+
+	// Three refresh providers: each SecurityInfo grant enqueues a blocked
+	// refresh MDA attempt. General capacity is Workers-1 = 2, so at most two
+	// MDA attempts may run; further refresh work must stay queued because it
+	// can never occupy the reserved urgent slot.
+	for i := range 3 {
+		p := schedulerTestProvider(t, srv, fmt.Sprintf("routine-%d", i), fmt.Sprintf("se-routine-%d", i))
+		sch.Submit(context.Background(), p.ID, p, store.VerificationPriorityRefresh)
+		sch.ChallengeSettled(p, false)
+	}
+	waitSchedulerCondition(t, func() bool { return mdaActive.Load() == 2 }, "refresh MDA attempts did not fill the general worker slots")
+	time.Sleep(50 * time.Millisecond)
+	if got := mdaActive.Load(); got != 2 {
+		t.Fatalf("refresh MDA attempts occupied %d workers, general capacity is 2", got)
+	}
+
+	urgent := schedulerTestProvider(t, srv, "urgent", "se-urgent")
+	sch.Submit(context.Background(), urgent.ID, urgent, store.VerificationPriorityFirstOrExpired)
+	sch.ChallengeSettled(urgent, false)
+	select {
+	case <-urgentExecuted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first/expired SecurityInfo never dispatched; refresh work starved the reserved slot")
+	}
+	if got := mdaActive.Load(); got != 2 {
+		t.Fatalf("reserved slot leaked to refresh work while urgent ran: %d MDA attempts active", got)
+	}
+	close(releaseMDA)
+	waitSchedulerCondition(t, func() bool { return mdaActive.Load() == 0 }, "blocked MDA attempts did not drain")
+}
+
 func TestMDMSchedulerObserveAttemptUDIDDoesNotDeadlock(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	srv, st, sch := newSchedulerTestServer(t, MDMSchedulerConfig{

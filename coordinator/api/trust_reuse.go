@@ -21,8 +21,28 @@ import (
 // proof. Kept SHORT (Threat-Model #3): the reuse must not be able to span a
 // SIP-disable reboot cycle (where a box reboots into Recovery, disables SIP, and
 // reconnects), so a window comfortably under a realistic reboot+reconnect is used.
+// Tightened from 10m to 5m once connection-continuity reuse (see
+// trustReuseReconnectGapFromEnv) started covering the legitimate operational
+// reconnect cases, so the pure wall-clock staleness bound can be stricter.
 // Overridable via EIGENINFERENCE_TRUST_REUSE_WINDOW.
-const defaultTrustReuseWindow = 10 * time.Minute
+const defaultTrustReuseWindow = 5 * time.Minute
+
+// Connection-continuity reuse (the "continuity" decision): a provider that was
+// live-verified, stayed continuously connected and hardware-trusted (the
+// coordinator advances a durable ContinuousCoverageUntil watermark while it
+// observes the live SE-challenged connection), and reconnects after a
+// coordinator-MEASURED offline gap of at most the reconnect-gap allowance may
+// reuse its device evidence even when HardwareProofVerifiedAt has fallen out
+// of the wall-clock window. SECURITY INVARIANT (Threat-Model T-036):
+// SIP/Secure Boot can only change in RecoveryOS; entering and leaving Recovery
+// on Apple Silicon (One True Recovery: manual power-button entry, credentialed
+// csrutil/bputil, two boot transitions) takes >= ~3 minutes and drops any
+// WebSocket, so a contiguous coordinator-measured offline gap <= 120s cannot
+// span a posture flip. The gap is never provider-claimed. The 120s ceiling is
+// therefore a HARD security bound: EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
+// values above it clamp DOWN (with a warning), never up.
+const defaultTrustReuseReconnectGap = 90 * time.Second
+const maxTrustReuseReconnectGap = 120 * time.Second
 
 const clockSkewTolerance = 2 * time.Minute
 const trustReuseDeleteAttempts = 3
@@ -39,6 +59,12 @@ type trustReuseDecision string
 const (
 	trustReuseDecisionSameBinary                trustReuseDecision = "same_binary"
 	trustReuseDecisionApprovedReleaseTransition trustReuseDecision = "approved_release_transition"
+	// Continuity decisions admit via the connection-continuity premise (the
+	// wall-clock window is stale but the coordinator-measured offline gap is
+	// within the reconnect-gap allowance). Distinct labels keep both premises
+	// observable in logs/metrics.
+	trustReuseDecisionContinuity                  trustReuseDecision = "continuity"
+	trustReuseDecisionContinuityReleaseTransition trustReuseDecision = "continuity_release_transition"
 )
 
 type trustReuseReason string
@@ -83,6 +109,7 @@ type trustReuseStore interface {
 	ListProviderTrustReuse(ctx context.Context) ([]store.ProviderTrustReuse, error)
 	UpsertProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) (store.ProviderTrustReuseWriteResult, error)
 	RecoverProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) (store.ProviderTrustReuseWriteResult, error)
+	AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error
 	RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (store.ProviderTrustReuse, error)
 }
 
@@ -90,9 +117,10 @@ type trustReuseCache struct {
 	mu      sync.Mutex
 	records map[string]trustReuseRecord
 
-	reuseWindow time.Duration
-	now         func() time.Time
-	store       trustReuseStore
+	reuseWindow  time.Duration
+	reconnectGap time.Duration
+	now          func() time.Time
+	store        trustReuseStore
 }
 
 type trustReuseRecord struct {
@@ -103,6 +131,7 @@ type trustReuseRecord struct {
 	secureBootFull             bool
 	mdaUDID                    string
 	hardwareProofVerifiedAt    time.Time
+	continuousCoverageUntil    time.Time
 	applicationProofVerifiedAt *time.Time
 	evidenceGeneration         uint64
 	revocationGeneration       uint64
@@ -116,17 +145,20 @@ func newTrustReuseCache() *trustReuseCache {
 
 // newTrustReuseCacheWithWindow pins the fast-skip freshness window verbatim.
 // Tests use it to model a specific deployment window; production goes through
-// newTrustReuseCache, i.e. the reviewed 10-minute default (Threat-Model #3 /
+// newTrustReuseCache, i.e. the reviewed 5-minute default (Threat-Model #3 /
 // T-036: must not span a SIP-disable reboot cycle) or the operator's
-// EIGENINFERENCE_TRUST_REUSE_WINDOW override.
+// EIGENINFERENCE_TRUST_REUSE_WINDOW override. The continuity reconnect-gap
+// allowance always comes from the (hard-clamped) environment default.
 func newTrustReuseCacheWithWindow(window time.Duration) *trustReuseCache {
 	if window <= 0 {
 		window = defaultTrustReuseWindow
 	}
+	gap, _ := trustReuseReconnectGapFromEnv()
 	return &trustReuseCache{
-		records:     make(map[string]trustReuseRecord),
-		reuseWindow: window,
-		now:         time.Now,
+		records:      make(map[string]trustReuseRecord),
+		reuseWindow:  window,
+		reconnectGap: gap,
+		now:          time.Now,
 	}
 }
 
@@ -139,6 +171,28 @@ func trustReuseWindowFromEnv() time.Duration {
 		}
 	}
 	return defaultTrustReuseWindow
+}
+
+// trustReuseReconnectGapFromEnv reads EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
+// (a Go duration), falling back to defaultTrustReuseReconnectGap when
+// unset/invalid, and hard-clamps the result into [0, maxTrustReuseReconnectGap].
+// The 120s ceiling is the RecoveryOS-physics security bound (see the constant
+// docs above): values above it clamp DOWN, reported via the second return so
+// the caller can log a warning. A zero allowance disables continuity reuse.
+func trustReuseReconnectGapFromEnv() (time.Duration, bool) {
+	gap := defaultTrustReuseReconnectGap
+	if v := os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			gap = d
+		}
+	}
+	if gap < 0 {
+		gap = 0
+	}
+	if gap > maxTrustReuseReconnectGap {
+		return maxTrustReuseReconnectGap, true
+	}
+	return gap, false
 }
 
 func (c *trustReuseCache) decideTrustReuse(input trustReuseInput) trustReuseResult {
@@ -163,25 +217,60 @@ func (c *trustReuseCache) decideTrustReuse(input trustReuseInput) trustReuseResu
 	if !r.sipEnabled || !r.secureBootFull {
 		return trustReuseResult{Reason: trustReuseReasonRecordedPostureBad}
 	}
-	if age := c.now().Sub(r.hardwareProofVerifiedAt); age < -clockSkewTolerance || age >= c.reuseWindow {
+	continuity, freshOK := c.freshnessLocked(r)
+	if !freshOK {
 		return trustReuseResult{Reason: trustReuseReasonProofExpired}
 	}
 	if r.lastVerifiedBinaryHash == input.FreshBinaryHash {
+		decision := trustReuseDecisionSameBinary
+		if continuity {
+			decision = trustReuseDecisionContinuity
+		}
 		return trustReuseResult{
-			Decision: trustReuseDecisionSameBinary,
+			Decision: decision,
 			Reason:   trustReuseReasonAllowed,
 			Record:   r,
 		}
 	}
 	if _, approvedFrom := input.ReleaseTransition.ApprovedFromBinaryHashes[r.lastVerifiedBinaryHash]; input.ReleaseTransition.Approved && approvedFrom &&
 		input.ReleaseTransition.BinaryHash == input.FreshBinaryHash {
+		decision := trustReuseDecisionApprovedReleaseTransition
+		if continuity {
+			decision = trustReuseDecisionContinuityReleaseTransition
+		}
 		return trustReuseResult{
-			Decision: trustReuseDecisionApprovedReleaseTransition,
+			Decision: decision,
 			Reason:   trustReuseReasonAllowed,
 			Record:   r,
 		}
 	}
 	return trustReuseResult{Reason: trustReuseReasonTransitionUnapproved}
+}
+
+// freshnessLocked evaluates the two admission premises against the caller's
+// record. ok is true when either holds; continuity reports that the record was
+// admitted by the connection-continuity premise (wall-clock window stale, but
+// the coordinator-measured offline gap now-ContinuousCoverageUntil is within
+// the reconnect-gap allowance). A hardware proof dated in the FUTURE beyond
+// skew tolerance is corrupt/forged and never admits via either premise.
+// Caller holds c.mu.
+func (c *trustReuseCache) freshnessLocked(r trustReuseRecord) (continuity, ok bool) {
+	now := c.now()
+	age := now.Sub(r.hardwareProofVerifiedAt)
+	if age < -clockSkewTolerance {
+		return false, false
+	}
+	if age < c.reuseWindow {
+		return false, true
+	}
+	if c.reconnectGap <= 0 || r.continuousCoverageUntil.IsZero() {
+		return false, false
+	}
+	gap := now.Sub(r.continuousCoverageUntil)
+	if gap < -clockSkewTolerance || gap > c.reconnectGap {
+		return false, false
+	}
+	return true, true
 }
 
 func (c *trustReuseCache) reuseTrust(seKey, serial, freshBinaryHash string, facts ...approvedReleaseTransitionFact) (trustReuseRecord, bool) {
@@ -206,8 +295,8 @@ func (c *trustReuseCache) hasFreshRecord(seKey, serial string) bool {
 		r.trustLevel != string(registry.TrustHardware) {
 		return false
 	}
-	age := c.now().Sub(r.hardwareProofVerifiedAt)
-	return age >= -clockSkewTolerance && age < c.reuseWindow
+	_, ok = c.freshnessLocked(r)
+	return ok
 }
 
 func trustReuseRecordFromStore(rec store.ProviderTrustReuse) trustReuseRecord {
@@ -220,10 +309,46 @@ func trustReuseRecordFromStore(rec store.ProviderTrustReuse) trustReuseRecord {
 		mdaUDID:                    rec.MDAUDID,
 		hardwareProofVerifiedAt:    rec.HardwareProofVerifiedAt,
 		applicationProofVerifiedAt: rec.ApplicationProofVerifiedAt,
+		continuousCoverageUntil:    coverageFromStore(rec.ContinuousCoverageUntil),
 		evidenceGeneration:         rec.EvidenceGeneration,
 		revocationGeneration:       rec.RevocationGeneration,
 		revocationEventID:          rec.RevocationEventID,
 		revokedAt:                  rec.RevokedAt,
+	}
+}
+
+func coverageFromStore(until *time.Time) time.Time {
+	if until == nil {
+		return time.Time{}
+	}
+	return *until
+}
+
+func coverageToStore(until time.Time) *time.Time {
+	if until.IsZero() {
+		return nil
+	}
+	return &until
+}
+
+// advanceCoverage moves the in-memory continuity watermark forward for the
+// given identities. Mirrors the store's monotonic guard: never backward, never
+// on a tombstoned or non-hardware record.
+func (c *trustReuseCache) advanceCoverage(seKeys []string, until time.Time) {
+	if until.IsZero() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, seKey := range seKeys {
+		r, ok := c.records[seKey]
+		if !ok || r.revokedAt != nil ||
+			r.trustLevel != string(registry.TrustHardware) ||
+			!until.After(r.continuousCoverageUntil) {
+			continue
+		}
+		r.continuousCoverageUntil = until
+		c.records[seKey] = r
 	}
 }
 
@@ -321,10 +446,19 @@ func (c *trustReuseCache) installAuthoritativeTrustReuse(rec store.ProviderTrust
 	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
 }
 
+// seed installs persisted rows into the cache at startup. Every keyed row is
+// RETAINED — including rows whose freshness has lapsed — because a row's
+// RevocationGeneration is durable CAS state, not just reuse evidence: dropping
+// an expired row for a previously-revoked-then-recovered device would make the
+// next full live MDM grant submit expected generation zero, lose the recovery
+// CAS against the durable row, and be misclassified as a transient failure
+// (Codex P1). Staleness never grants anything: decideTrustReuse and
+// hasFreshRecord re-run the freshness/continuity gates on every read, so a
+// retained expired/future-dated row is pure generation state. The return value
+// counts only rows currently admissible for reuse (logging).
 func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
 	n := 0
 	for _, row := range rows {
 		if row.SEPubKey == "" {
@@ -343,15 +477,11 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 				continue
 			}
 		}
-		if incoming.revokedAt == nil {
-			age := now.Sub(incoming.hardwareProofVerifiedAt)
-			if age < -clockSkewTolerance || age >= c.reuseWindow {
-				continue
-			}
-		}
 		c.records[row.SEPubKey] = incoming
 		if incoming.revokedAt == nil {
-			n++
+			if _, admissible := c.freshnessLocked(incoming); admissible {
+				n++
+			}
 		}
 	}
 	return n
@@ -646,8 +776,12 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 		MDAUDID:                    udid,
 		HardwareProofVerifiedAt:    now,
 		ApplicationProofVerifiedAt: applicationVerifiedAt,
-		RevocationGeneration:       expectedRevocationGeneration,
-		RevocationEventID:          revocationEventID,
+		// A full live verification anchors the continuity chain: coverage
+		// starts at the verification instant and is advanced only while the
+		// coordinator observes this connection live and hardware-trusted.
+		ContinuousCoverageUntil: coverageToStore(now),
+		RevocationGeneration:    expectedRevocationGeneration,
+		RevocationEventID:       revocationEventID,
 	}
 	epoch := provider.HardUntrustEpoch()
 	if provider.ChallengeShouldStop() {
@@ -698,6 +832,7 @@ func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey
 		epoch,
 	)
 	if granted {
+		s.markTrustCoverage(seKey, provider.ID)
 		return true
 	}
 	if provider.HardUntrustEpoch() == epoch {
@@ -763,6 +898,9 @@ func (s *Server) invalidateTrustReuse(seKey string) {
 	if s == nil || s.trustReuseCache == nil || seKey == "" {
 		return
 	}
+	// Hard untrust ends the continuity chain immediately and without a final
+	// coverage write: the durable tombstone wins and coverage never resurrects.
+	s.dropTrustCoverage(seKey)
 	revocationEventID := uuid.NewString()
 	s.trustReuseCache.invalidateReuse(seKey, revocationEventID)
 	if err := s.persistHardUntrustRevocation(seKey, revocationEventID); err != nil {
@@ -981,7 +1119,8 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		return reject(result.Reason)
 	}
 	record := result.Record
-	if result.Decision == trustReuseDecisionApprovedReleaseTransition {
+	if result.Decision == trustReuseDecisionApprovedReleaseTransition ||
+		result.Decision == trustReuseDecisionContinuityReleaseTransition {
 		evidence, ok := provider.ApplicationEvidenceSnapshot()
 		if !ok || evidence.BinaryHash != freshBinaryHash ||
 			evidence.Version != fact.Version ||
@@ -1001,6 +1140,12 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		at := evidence.VerifiedAt
 		record.applicationProofVerifiedAt = &at
 	}
+	// Every valid reuse grant (window-fresh OR continuity) re-anchors the
+	// continuity chain at the grant instant: a continuity fast-skip is itself
+	// proof of a normal-OS boot (the live SE challenge just ran), so chained
+	// sub-allowance gaps each extend coverage. The hardware-proof timestamp is
+	// NEVER advanced by reuse — only a full live MDM verification moves it.
+	record.continuousCoverageUntil = s.trustReuseCache.now()
 	epoch := provider.HardUntrustEpoch()
 	rec := store.ProviderTrustReuse{
 		SEPubKey:                   seKey,
@@ -1012,6 +1157,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		MDAUDID:                    record.mdaUDID,
 		HardwareProofVerifiedAt:    record.hardwareProofVerifiedAt,
 		ApplicationProofVerifiedAt: record.applicationProofVerifiedAt,
+		ContinuousCoverageUntil:    coverageToStore(record.continuousCoverageUntil),
 		EvidenceGeneration:         record.evidenceGeneration,
 		RevocationGeneration:       record.revocationGeneration,
 		RevocationEventID:          record.revocationEventID,
@@ -1046,6 +1192,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	}, epoch) {
 		return reject(trustReuseReasonRevoked)
 	}
+	s.markTrustCoverage(seKey, providerID)
 	provider.SetMDMFailureReason("")
 	s.sendTrustStatus(provider, registry.TrustHardware, "online", string(result.Decision))
 	s.registry.PersistProvider(provider)
@@ -1056,4 +1203,182 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		"mda_udid", result.Record.mdaUDID,
 	)
 	return true
+}
+
+// --- Connection-continuity coverage tracking ---
+//
+// The coordinator advances a durable ContinuousCoverageUntil watermark for
+// every provider it currently observes connected AND hardware-trusted on a
+// live SE-challenged connection anchored at a full live verification or a
+// valid reuse grant. Writes are batched (one upsert pass every
+// trustCoverageWriteInterval — no per-provider goroutines) plus exact-time
+// sweeps on provider disconnect and graceful coordinator shutdown. A
+// coordinator crash simply leaves the last periodic write standing, so the
+// measured gap is only ever OVER-estimated (fail-safe: continuity refuses,
+// full live verification runs).
+
+// trustCoverageWriteInterval is the batched periodic coverage-write cadence.
+// Also the crash slack: after a coordinator crash the watermark lags the true
+// disconnect by at most one interval, which the 90s reconnect allowance and
+// the 120s security ceiling both comfortably absorb without ever admitting a
+// RecoveryOS round-trip (>= ~3 minutes).
+const trustCoverageWriteInterval = 30 * time.Second
+
+// markTrustCoverage registers seKey as covered by providerID's live
+// connection. Called only from grant paths that just proved the connection
+// (full live verification or a reuse grant behind a fresh SE challenge).
+func (s *Server) markTrustCoverage(seKey, providerID string) {
+	if s == nil || seKey == "" || providerID == "" {
+		return
+	}
+	s.trustCoverageMu.Lock()
+	if s.trustCoverage == nil {
+		s.trustCoverage = make(map[string]string)
+	}
+	s.trustCoverage[seKey] = providerID
+	s.trustCoverageMu.Unlock()
+}
+
+// dropTrustCoverage ends coverage for an identity WITHOUT a final write
+// (hard untrust: the tombstone wins, coverage never resurrects).
+func (s *Server) dropTrustCoverage(seKey string) {
+	if s == nil || seKey == "" {
+		return
+	}
+	s.trustCoverageMu.Lock()
+	delete(s.trustCoverage, seKey)
+	s.trustCoverageMu.Unlock()
+}
+
+// trustCoverageValid reports whether the covered connection is still worth a
+// coverage write: provider present, not (recoverably or hard) untrusted, still
+// hardware-trusted, and still bound to the same SE identity. allowOffline is
+// set by the disconnect/shutdown sweeps, where the socket being gone is the
+// event being stamped rather than a reason to skip the stamp.
+func (s *Server) trustCoverageValid(seKey, providerID string, allowOffline bool) bool {
+	if s.registry == nil {
+		return false
+	}
+	p := s.registry.GetProvider(providerID)
+	if p == nil {
+		return false
+	}
+	switch p.GetStatus() {
+	case registry.StatusUntrusted:
+		return false
+	case registry.StatusOffline:
+		if !allowOffline {
+			return false
+		}
+	}
+	if p.GetTrustLevel() != registry.TrustHardware {
+		return false
+	}
+	ar := p.GetAttestationResult()
+	return ar != nil && ar.PublicKey == seKey
+}
+
+// persistTrustCoverage advances the watermark for the given identities in the
+// cache and, when a store is wired, durably in one batched pass. A store blip
+// only under-advances the durable watermark (fail-safe).
+func (s *Server) persistTrustCoverage(seKeys []string, until time.Time) {
+	if len(seKeys) == 0 || s.trustReuseCache == nil {
+		return
+	}
+	s.trustReuseCache.advanceCoverage(seKeys, until)
+	st := s.trustReuseCache.store
+	if st == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := st.AdvanceProviderTrustReuseCoverage(ctx, seKeys, until)
+	cancel()
+	if err != nil && s.logger != nil {
+		s.logger.Warn("trust-reuse: failed to persist continuity coverage",
+			"error", err, "providers", len(seKeys))
+	}
+}
+
+// sweepTrustCoverage performs one batched periodic coverage pass: every entry
+// still observed live and hardware-trusted is advanced to now; entries that
+// lost trust or vanished without hitting the disconnect hook are dropped
+// without a write (their watermark stays at the previous pass — gap
+// over-estimated, fail-safe). Returns the number of identities advanced.
+func (s *Server) sweepTrustCoverage() int {
+	if s == nil || s.trustReuseCache == nil {
+		return 0
+	}
+	now := s.trustReuseCache.now()
+	var covered []string
+	s.trustCoverageMu.Lock()
+	for seKey, providerID := range s.trustCoverage {
+		if s.trustCoverageValid(seKey, providerID, false) {
+			covered = append(covered, seKey)
+		} else {
+			delete(s.trustCoverage, seKey)
+		}
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(covered, now)
+	return len(covered)
+}
+
+// stopTrustCoverageForProvider ends coverage for a disconnecting connection,
+// stamping the EXACT coordinator-observed disconnect time so the measured
+// reconnect gap starts at zero rather than at the last periodic pass.
+func (s *Server) stopTrustCoverageForProvider(providerID string) {
+	if s == nil || providerID == "" || s.trustReuseCache == nil {
+		return
+	}
+	now := s.trustReuseCache.now()
+	var ended []string
+	s.trustCoverageMu.Lock()
+	for seKey, id := range s.trustCoverage {
+		if id != providerID {
+			continue
+		}
+		if s.trustCoverageValid(seKey, providerID, true) {
+			ended = append(ended, seKey)
+		}
+		delete(s.trustCoverage, seKey)
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(ended, now)
+}
+
+// finalTrustCoverageSweep is the graceful coordinator-shutdown sweep: it
+// persists the exact shutdown instant for every still-covered provider so a
+// short deploy (gap under the reconnect allowance) reconnects into a
+// continuity fast-skip on the next coordinator instead of a fleet-wide live
+// MDM herd. Clears the tracker; only Server.Close calls this.
+func (s *Server) finalTrustCoverageSweep() {
+	if s == nil || s.trustReuseCache == nil {
+		return
+	}
+	now := s.trustReuseCache.now()
+	var ended []string
+	s.trustCoverageMu.Lock()
+	for seKey, providerID := range s.trustCoverage {
+		if s.trustCoverageValid(seKey, providerID, true) {
+			ended = append(ended, seKey)
+		}
+		delete(s.trustCoverage, seKey)
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(ended, now)
+}
+
+// trustCoverageLoop drives the batched periodic coverage writes until the
+// server closes. One goroutine for the whole fleet.
+func (s *Server) trustCoverageLoop() {
+	ticker := time.NewTicker(trustCoverageWriteInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.trustCoverageCtx.Done():
+			return
+		case <-ticker.C:
+			s.sweepTrustCoverage()
+		}
+	}
 }

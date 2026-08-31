@@ -15,6 +15,14 @@ import (
 
 const (
 	mdmSchedulerDispatchInterval = time.Second
+	// mdmSchedulerReservedUrgentWorkers holds back worker capacity that only
+	// first/expired SecurityInfo attempts may occupy. A provider in that state
+	// has no usable trust grant, so routed client requests are already burning
+	// the 120s dispatch-queue deadline; long-running refresh MDA attempts (up
+	// to 60s each) must never be able to occupy every worker and starve it.
+	// Urgent work may still use general capacity; the reservation only caps
+	// refresh/recovery work at Workers-1 when Workers > 1.
+	mdmSchedulerReservedUrgentWorkers = 1
 	// mdmFirstVerifySpreadMax caps the initial spread for first/expired
 	// SecurityInfo work. A provider in this state has no valid trust grant, so
 	// a client request routed to it is already burning the 120s dispatch-queue
@@ -70,6 +78,12 @@ type mdmLiveBinding struct {
 	ctx              context.Context
 	challengeSettled bool
 	allowMDA         bool
+	// promoteFirstOrExpired marks that this connection's trust-reuse fast-skip
+	// DECLINED, so a refresh-classified SecurityInfo job must settle as
+	// first/expired (immediate due) — the submit-time hasFreshRecord
+	// classification was optimistic and the provider holds no usable trust
+	// grant while client requests burn the 120s dispatch-queue deadline.
+	promoteFirstOrExpired bool
 }
 
 type mdmScheduledJob struct {
@@ -116,6 +130,7 @@ type mdmVerificationScheduler struct {
 	generation    atomic.Uint64
 	byUDID        map[string]string
 	active        map[store.VerificationTaskKind]int
+	activeUrgent  int
 	dueScanOffset int
 }
 
@@ -159,6 +174,23 @@ func newMDMVerificationScheduler(s *Server, cfg MDMSchedulerConfig, deps mdmSche
 
 func verificationSchedulerKey(seKey string, kind store.VerificationTaskKind) string {
 	return seKey + "\x00" + string(kind)
+}
+
+// isUrgentVerification reports whether a job may occupy the reserved urgent
+// worker capacity: only first/expired SecurityInfo work qualifies.
+func isUrgentVerification(rec store.VerificationJob) bool {
+	return rec.Kind == store.VerificationTaskSecurityInfo &&
+		rec.Priority == store.VerificationPriorityFirstOrExpired
+}
+
+// reservedUrgentSlots is the worker capacity held back for urgent work. A
+// single-worker pool cannot be partitioned without starving refresh entirely,
+// so the reservation only applies when more than one worker exists.
+func (s *mdmVerificationScheduler) reservedUrgentSlots() int {
+	if s.cfg.Workers <= mdmSchedulerReservedUrgentWorkers {
+		return 0
+	}
+	return mdmSchedulerReservedUrgentWorkers
 }
 
 func (s *mdmVerificationScheduler) Start() {

@@ -110,6 +110,31 @@ func (s *mdmVerificationScheduler) makeQueueRoomLocked(priority store.Verificati
 	return false
 }
 
+// PromoteFailedFastSkip re-classifies this connection's SecurityInfo work as
+// first/expired after the trust-reuse fast-skip DECLINED (Codex P1). The
+// submit-time classification (hasFreshRecord → refresh spread) was optimistic:
+// the read gate refused the record — a deactivated predecessor transition, a
+// continuity gap outgrown between submit and challenge, a posture/serial
+// mismatch — so the provider holds NO usable trust grant while routed client
+// requests burn the 120s dispatch-queue deadline. The subsequent
+// ChallengeSettled(provider, false) then computes the immediate first/expired
+// due time and persists the promoted priority. Recovery work keeps its
+// preserved due semantics and is not promoted.
+func (s *mdmVerificationScheduler) PromoteFailedFastSkip(provider *registry.Provider) {
+	if s == nil || provider == nil {
+		return
+	}
+	result := provider.GetAttestationResult()
+	if result == nil || result.PublicKey == "" {
+		return
+	}
+	s.mu.Lock()
+	if binding := s.bindings[result.PublicKey]; binding != nil && binding.provider == provider {
+		binding.promoteFirstOrExpired = true
+	}
+	s.mu.Unlock()
+}
+
 // ChallengeSettled gates all SecurityInfo work on the current connection's
 // phase-1 challenge. A fast-skip completes the durable row before any worker or
 // MDM command is consumed.
@@ -164,6 +189,7 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 		return
 	}
 	binding.challengeSettled = true
+	promote := binding.promoteFirstOrExpired
 	generation := binding.generation
 	job := s.jobs[key]
 	var record *store.VerificationJob
@@ -197,6 +223,9 @@ func (s *mdmVerificationScheduler) ChallengeSettled(provider *registry.Provider,
 		return
 	}
 
+	if promote && record.Priority == store.VerificationPriorityRefresh {
+		record.Priority = store.VerificationPriorityFirstOrExpired
+	}
 	record.State = store.VerificationStatePending
 	record.NextAttemptAt = now.Add(s.initialSpread(record.Priority))
 	record.UpdatedAt = now

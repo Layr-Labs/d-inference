@@ -206,6 +206,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if s.codeAttestThrottle != nil {
 			s.codeAttestThrottle.clearResumeChallenges(providerID)
 		}
+		// End connection-continuity coverage with the EXACT coordinator-
+		// observed disconnect time (before registry.Disconnect tears the
+		// provider down), so the measured reconnect gap starts here rather
+		// than at the last periodic coverage pass.
+		s.stopTrustCoverageForProvider(providerID)
 		s.registry.Disconnect(providerID)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
@@ -489,10 +494,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// goroutine is created for this provider.
 			if s.mdmScheduler != nil {
 				if ar := provider.GetAttestationResult(); ar != nil && ar.Valid {
-					priority := store.VerificationPriorityFirstOrExpired
-					if s.trustReuseCache.hasFreshRecord(ar.PublicKey, ar.SerialNumber) {
-						priority = store.VerificationPriorityRefresh
-					}
+					priority := s.verificationSubmitPriority(ar.PublicKey, ar.SerialNumber)
 					schedulerSEKey = ar.PublicKey
 					schedulerGeneration = s.mdmScheduler.Submit(loopCtx, providerID, provider, priority)
 				}
@@ -1555,13 +1557,32 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 				s.registry.DrainQueuedRequestsForProvider(provider)
 			})
 		} else {
-			// Fast-skip missed. Settle the scheduler's challenge gate; durable
-			// due time, priority, and retry stage decide when SecurityInfo runs.
+			// Fast-skip missed. The submit-time refresh classification (a
+			// fresh-looking or continuity-covered record) is now known to be
+			// optimistic — the read gate refused it — so promote the job to
+			// first/expired before settling: the live MDM attempt must start
+			// inside the 120s dispatch-queue deadline, not on the refresh
+			// spread. Durable due time, priority, and retry stage then decide
+			// when SecurityInfo runs.
 			if s.mdmScheduler != nil {
+				s.mdmScheduler.PromoteFailedFastSkip(provider)
 				s.mdmScheduler.ChallengeSettled(provider, false)
 			}
 		}
 	}
+}
+
+// verificationSubmitPriority classifies this connection's durable SecurityInfo
+// submission. A record currently admissible for the fast-skip — via window
+// freshness OR connection continuity — schedules as a routine refresh (full
+// spread); anything else is first/expired (immediate due). The classification
+// is optimistic: if the fast-skip later DECLINES despite it, the read path
+// promotes the job back to first/expired (PromoteFailedFastSkip).
+func (s *Server) verificationSubmitPriority(seKey, serial string) store.VerificationPriority {
+	if s.trustReuseCache.hasFreshRecord(seKey, serial) {
+		return store.VerificationPriorityRefresh
+	}
+	return store.VerificationPriorityFirstOrExpired
 }
 
 // applyChallengeRuntimePolicy first records the exact signed runtime identity,

@@ -1064,6 +1064,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_generation BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_event_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+		// Coordinator-measured continuous-liveness watermark (connection
+		// continuity trust reuse). Written only by the coordinator; NULL for
+		// pre-migration rows means "no continuity evidence" (fail-safe).
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
 		`UPDATE provider_trust_reuse
 		 SET hardware_proof_verified_at = verified_at
 		 WHERE hardware_proof_verified_at IS NULL`,
@@ -5309,6 +5313,7 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 		`SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
 		        sip_enabled, secure_boot_full, mda_udid,
 		        hardware_proof_verified_at, application_proof_verified_at,
+		        continuous_coverage_until,
 		        evidence_generation, revocation_generation,
 		        revocation_event_id, revoked_at
 		   FROM provider_trust_reuse`)
@@ -5325,6 +5330,7 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 			&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
 			&rec.SecureBootFull, &rec.MDAUDID,
 			&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+			&rec.ContinuousCoverageUntil,
 			&rec.EvidenceGeneration, &rec.RevocationGeneration,
 			&rec.RevocationEventID, &rec.RevokedAt,
 		); err != nil {
@@ -5352,9 +5358,10 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec Provid
 				se_pubkey, serial, trust_level, binary_hash,
 				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
 				verified_at, hardware_proof_verified_at,
-				application_proof_verified_at, evidence_generation,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
 				revocation_generation, revocation_event_id, revoked_at)
-			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,1,$10,$11,NULL)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
 			 ON CONFLICT (se_pubkey) DO UPDATE SET
 				serial = EXCLUDED.serial,
 				trust_level = EXCLUDED.trust_level,
@@ -5366,6 +5373,9 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec Provid
 				verified_at = EXCLUDED.verified_at,
 				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
 				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
 				evidence_generation = provider_trust_reuse.evidence_generation + 1
 			 WHERE provider_trust_reuse.revoked_at IS NULL
 			   AND provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
@@ -5381,7 +5391,7 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec Provid
 		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
 		rec.MDAUDID, rec.HardwareProofVerifiedAt,
 		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
-		rec.RevocationEventID,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
 	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
 	if err != nil {
 		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: upsert provider trust reuse: %w", err)
@@ -5403,9 +5413,10 @@ func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec Provi
 				se_pubkey, serial, trust_level, binary_hash,
 				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
 				verified_at, hardware_proof_verified_at,
-				application_proof_verified_at, evidence_generation,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
 				revocation_generation, revocation_event_id, revoked_at)
-			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,1,$10,$11,NULL)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
 			 ON CONFLICT (se_pubkey) DO UPDATE SET
 				serial = EXCLUDED.serial,
 				trust_level = EXCLUDED.trust_level,
@@ -5417,6 +5428,9 @@ func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec Provi
 				verified_at = EXCLUDED.verified_at,
 				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
 				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
 				evidence_generation = provider_trust_reuse.evidence_generation + 1,
 				revoked_at = NULL
 			 WHERE provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
@@ -5432,7 +5446,7 @@ func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec Provi
 		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
 		rec.MDAUDID, rec.HardwareProofVerifiedAt,
 		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
-		rec.RevocationEventID,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
 	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
 	if err != nil {
 		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: recover provider trust reuse: %w", err)
@@ -5457,6 +5471,7 @@ func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, rev
 			 ON CONFLICT (se_pubkey) DO UPDATE SET
 				trust_level = '',
 				revoked_at = NOW(),
+				continuous_coverage_until = NULL,
 				revocation_generation = provider_trust_reuse.revocation_generation + 1,
 				revocation_event_id = EXCLUDED.revocation_event_id
 			 WHERE provider_trust_reuse.revocation_event_id
@@ -5464,12 +5479,14 @@ func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, rev
 			 RETURNING se_pubkey, serial, trust_level,
 				last_verified_binary_hash, sip_enabled, secure_boot_full,
 				mda_udid, hardware_proof_verified_at,
-				application_proof_verified_at, evidence_generation,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
 				revocation_generation, revocation_event_id, revoked_at
 		)
 		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
 		       sip_enabled, secure_boot_full, mda_udid,
 		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
 		       evidence_generation, revocation_generation,
 		       revocation_event_id, revoked_at
 		  FROM revoked
@@ -5477,6 +5494,7 @@ func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, rev
 		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
 		       sip_enabled, secure_boot_full, mda_udid,
 		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
 		       evidence_generation, revocation_generation,
 		       revocation_event_id, revoked_at
 		  FROM provider_trust_reuse
@@ -5488,6 +5506,7 @@ func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, rev
 		&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
 		&rec.SecureBootFull, &rec.MDAUDID,
 		&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+		&rec.ContinuousCoverageUntil,
 		&rec.EvidenceGeneration, &rec.RevocationGeneration,
 		&rec.RevocationEventID, &rec.RevokedAt,
 	)
@@ -5495,6 +5514,28 @@ func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, rev
 		return ProviderTrustReuse{}, fmt.Errorf("store: revoke provider trust reuse: %w", err)
 	}
 	return rec, nil
+}
+
+func (s *PostgresStore) AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error {
+	if len(seKeys) == 0 || until.IsZero() {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// One batched pass; GREATEST keeps the watermark monotonic and a
+	// tombstoned/non-hardware row is never touched (revocation wins).
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_trust_reuse
+		    SET continuous_coverage_until = GREATEST(continuous_coverage_until, $2::timestamptz)
+		  WHERE se_pubkey = ANY($1)
+		    AND revoked_at IS NULL
+		    AND trust_level = 'hardware'`,
+		seKeys, until)
+	if err != nil {
+		return fmt.Errorf("store: advance provider trust reuse coverage: %w", err)
+	}
+	return nil
 }
 
 // --- Bounded durable MDM/MDA verification scheduler ---

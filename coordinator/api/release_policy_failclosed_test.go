@@ -66,10 +66,10 @@ func testRelease(version, hash string) *store.Release {
 	}
 }
 
-func grantReleaseEvidenceForTest(t *testing.T, provider *registry.Provider, generation uint64, binaryHash string) {
+func grantReleaseEvidenceForTest(t *testing.T, provider *registry.Provider, generation uint64, version, binaryHash string) {
 	t.Helper()
 	provider.Mu().Lock()
-	provider.Version = "2.0.0"
+	provider.Version = version
 	provider.APNsDeviceToken = "apns-token"
 	provider.MetallibVerified = true
 	provider.AttestationResult = &attestation.VerificationResult{
@@ -79,7 +79,7 @@ func grantReleaseEvidenceForTest(t *testing.T, provider *registry.Provider, gene
 	if !provider.GrantApplicationEvidenceIfNotUntrusted(registry.ApplicationEvidence{
 		SEPublicKey: "se-release", Serial: "SER-RELEASE",
 		ProcessPublicKey: provider.PublicKey, APNsToken: "apns-token",
-		BinaryHash: binaryHash, Version: "2.0.0", Platform: defaultReleasePlatform,
+		BinaryHash: binaryHash, Version: version, Platform: defaultReleasePlatform,
 		Backend: registry.BackendMLXSwift, MetallibHash: trHashC,
 		PolicyGeneration: generation,
 	}) {
@@ -112,7 +112,7 @@ func TestSyncBinaryHashesInventoryFailureRetainsLastKnownGoodPolicy(t *testing.T
 
 	const model = "release-failclosed-model"
 	provider := makeRoutableProvider(t, reg, "release-provider", model)
-	grantReleaseEvidenceForTest(t, provider, snapshot.Generation, trHashA)
+	grantReleaseEvidenceForTest(t, provider, snapshot.Generation, "2.0.0", trHashA)
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
 		t.Fatalf("provider was not routable before inventory failure: %#v", routed)
 	}
@@ -176,7 +176,7 @@ func TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable(t *testin
 
 	const model = "release-storm-model"
 	provider := makeRoutableProvider(t, reg, "storm-provider", model)
-	grantReleaseEvidenceForTest(t, provider, snapshot.Generation, trHashA)
+	grantReleaseEvidenceForTest(t, provider, snapshot.Generation, "2.0.0", trHashA)
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
 		t.Fatalf("provider was not routable before release registration: %#v", routed)
 	}
@@ -266,50 +266,134 @@ func TestStartupReleaseSyncContractReturnsInventoryReadFailure(t *testing.T) {
 	}
 }
 
-// TestReleaseDeactivationReadFailureRetainsPolicyAndSurfacesError: the
-// deactivation commits, but the follow-up inventory read fails. The handler
-// surfaces 503 (so the admin retries), and the policy stays at the
-// last-known-good snapshot — still containing the just-deactivated hash until
-// a successful sync converges — rather than swinging the whole fleet through a
-// deny-all generation on a transient store hiccup.
-func TestReleaseDeactivationReadFailureRetainsPolicyAndSurfacesError(t *testing.T) {
+// TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation
+// is the emergency-pull convergence regression: a force=true delete of a
+// compromised release commits, but the post-mutation inventory read fails.
+// Retaining the pre-deactivation snapshot and returning 503 would keep the
+// compromised release authorized indefinitely — there is no background resync,
+// so its providers would keep routing until an admin happened to retry. The
+// handler must converge from the committed deactivation itself: the pulled
+// release is unauthorized immediately, the connected provider running it is
+// invalidated AND kicked for an immediate re-challenge, other releases and
+// their still-approved evidence are carried forward, the response surfaces a
+// warning, and recovery rebuilds the same set from the exact inventory.
+func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(t *testing.T) {
 	st := &releaseInventoryFailureStore{
 		MemoryStore:     store.NewMemory(store.Config{}),
 		failAfterDelete: true,
 	}
 	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
-		t.Fatalf("SetRelease: %v", err)
+		t.Fatalf("SetRelease 2.0.0: %v", err)
+	}
+	if err := st.SetRelease(testRelease("2.1.0", trHashB)); err != nil {
+		t.Fatalf("SetRelease 2.1.0: %v", err)
 	}
 	logger := quietLogger()
-	srv := NewServer(registry.New(logger), st, ServerConfig{AdminKey: "admin-key"}, logger)
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{AdminKey: "admin-key"}, logger)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
 	}
-	committed := srv.releaseTrustPolicy.Load()
+	before := srv.releaseTrustPolicy.Load()
 
+	const compromisedModel = "pulled-release-model"
+	const survivorModel = "survivor-release-model"
+	compromised := makeRoutableProvider(t, reg, "compromised-provider", compromisedModel)
+	grantReleaseEvidenceForTest(t, compromised, before.Generation, "2.0.0", trHashA)
+	survivor := makeRoutableProvider(t, reg, "survivor-provider", survivorModel)
+	grantReleaseEvidenceForTest(t, survivor, before.Generation, "2.1.0", trHashB)
+	for _, p := range []*registry.Provider{compromised, survivor} {
+		p.Mu().Lock()
+		p.TemplateHashes = map[string]string{"mlx_metallib": trHashC}
+		p.Mu().Unlock()
+	}
+	if routed := findRoutableProvider(reg, compromisedModel); routed == nil || routed.ID != compromised.ID {
+		t.Fatalf("compromised-release provider was not routable before the pull: %#v", routed)
+	}
+	if routed := findRoutableProvider(reg, survivorModel); routed == nil || routed.ID != survivor.ID {
+		t.Fatalf("survivor provider was not routable before the pull: %#v", routed)
+	}
+
+	// force=true emergency pull; every post-mutation inventory re-read fails.
 	response := doReq(srv, http.MethodDelete, "/v1/admin/releases", "Bearer admin-key",
-		`{"version":"2.0.0","platform":"macos-arm64"}`)
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("deactivation response = %d, want 503; body=%s", response.Code, response.Body.String())
+		`{"version":"2.0.0","platform":"macos-arm64","force":true}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("deactivation must stay atomic once committed: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode deactivation response: %v", err)
+	}
+	if warning, _ := decoded["warning"].(string); warning == "" {
+		t.Fatalf("post-mutation sync failure must surface a warning: %v", decoded)
 	}
 	releases := st.MemoryStore.ListReleases()
-	if len(releases) != 1 || releases[0].Active {
-		t.Fatalf("release deactivation did not commit before read failure: %+v", releases)
+	if len(releases) != 2 {
+		t.Fatalf("unexpected release inventory after pull: %+v", releases)
 	}
-	failed := srv.releaseTrustPolicy.Load()
-	if failed == nil || !failed.Required ||
-		failed.Generation != committed.Generation ||
-		len(failed.ByBinaryHash[trHashA]) != 1 {
-		t.Fatalf("deactivation read failure did not retain last-known-good policy: %+v", failed)
+	for _, release := range releases {
+		if release.Version == "2.0.0" && release.Active {
+			t.Fatalf("release deactivation did not commit before read failure: %+v", releases)
+		}
 	}
 
+	converged := srv.releaseTrustPolicy.Load()
+	if converged == nil || !converged.Required || converged.Generation <= before.Generation {
+		t.Fatalf("policy did not advance with the committed deactivation: before=%+v after=%+v", before, converged)
+	}
+	// THE invariant: the compromised release is unauthorized immediately, no
+	// admin retry required.
+	if len(converged.ByBinaryHash[trHashA]) != 0 {
+		t.Fatalf("retained snapshot still authorizes the deactivated release: %+v", converged.ByBinaryHash)
+	}
+	if len(converged.ByBinaryHash[trHashB]) != 1 {
+		t.Fatalf("convergence dropped a release the pull did not touch: %+v", converged.ByBinaryHash)
+	}
+
+	// The affected provider is invalidated and kicked immediately.
+	if _, ok := compromised.ApplicationEvidenceSnapshot(); ok {
+		t.Fatal("pulling the release must clear the affected provider's evidence")
+	}
+	if routed := findRoutableProvider(reg, compromisedModel); routed != nil {
+		t.Fatalf("provider running the pulled release remained routable: %s", routed.ID)
+	}
+	select {
+	case <-compromised.ImmediateChallengeChan():
+	default:
+		t.Fatal("invalidated provider must be re-challenged immediately, not on the next tick")
+	}
+
+	// The untouched fleet is carried forward, not derouted or re-challenged.
+	if evidence, ok := survivor.ApplicationEvidenceSnapshot(); !ok || evidence.PolicyGeneration != converged.Generation {
+		t.Fatalf("still-approved evidence was not carried forward: %+v ok=%v", evidence, ok)
+	}
+	if routed := findRoutableProvider(reg, survivorModel); routed == nil || routed.ID != survivor.ID {
+		t.Fatal("emergency pull during an inventory outage derouted a healthy, still-approved provider")
+	}
+	select {
+	case <-survivor.ImmediateChallengeChan():
+		t.Fatal("still-approved provider must not be re-challenged out of band")
+	default:
+	}
+
+	// The runtime manifest converged from the retained snapshot: the shared
+	// metallib survives via the remaining 2.1.0 release.
+	if srv.knownRuntimeManifest == nil || srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"] != trHashC {
+		t.Fatalf("runtime manifest did not converge with the committed deactivation: %+v", srv.knownRuntimeManifest)
+	}
+
+	// Recovery rebuilds the identical authorized set from the exact inventory.
 	st.setFailReads(false)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("recovery SyncBinaryHashes: %v", err)
 	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		t.Fatalf("recovery SyncRuntimeManifest: %v", err)
+	}
 	recovered := srv.releaseTrustPolicy.Load()
-	if recovered == nil || !recovered.Required || len(recovered.ByBinaryHash) != 0 {
-		t.Fatalf("recovery did not converge onto exact inactive inventory: %+v", recovered)
+	if recovered == nil || len(recovered.ByBinaryHash[trHashA]) != 0 || len(recovered.ByBinaryHash[trHashB]) != 1 {
+		t.Fatalf("recovery did not converge onto the exact inventory: %+v", recovered)
 	}
 }
 
@@ -365,7 +449,7 @@ func TestRegisterReleaseInventoryFailureConvergesPolicyWithCommittedRelease(t *t
 
 	const model = "register-converge-model"
 	provider := makeRoutableProvider(t, reg, "register-converge-provider", model)
-	grantReleaseEvidenceForTest(t, provider, before.Generation, trHashA)
+	grantReleaseEvidenceForTest(t, provider, before.Generation, "2.0.0", trHashA)
 	provider.Mu().Lock()
 	provider.TemplateHashes = map[string]string{"mlx_metallib": trHashC}
 	provider.Mu().Unlock()

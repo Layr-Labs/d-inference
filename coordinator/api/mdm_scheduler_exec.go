@@ -57,6 +57,14 @@ func (s *mdmVerificationScheduler) dispatchDueRows() {
 	for _, count := range s.active {
 		available -= count
 	}
+	// Of the free slots, hold back any unused reserved urgent capacity so
+	// refresh/recovery work can never occupy the last worker while urgent
+	// first/expired SecurityInfo work may still arrive.
+	reservedFree := s.reservedUrgentSlots() - s.activeUrgent
+	if reservedFree < 0 {
+		reservedFree = 0
+	}
+	generalAvailable := available - reservedFree
 	candidates := make([]candidate, 0, available)
 	if available > 0 {
 		for key, job := range s.jobs {
@@ -89,10 +97,21 @@ func (s *mdmVerificationScheduler) dispatchDueRows() {
 		}
 		return candidates[i].rec.NextAttemptAt.Before(candidates[j].rec.NextAttemptAt)
 	})
-	if len(candidates) > available {
-		candidates = candidates[:available]
+	selected := candidates[:0]
+	for _, c := range candidates {
+		if available <= 0 {
+			break
+		}
+		if !isUrgentVerification(c.rec) {
+			if generalAvailable <= 0 {
+				continue
+			}
+			generalAvailable--
+		}
+		available--
+		selected = append(selected, c)
 	}
-	for _, candidate := range candidates {
+	for _, candidate := range selected {
 		s.claimAndDispatch(candidate.key, now)
 	}
 }
@@ -132,6 +151,9 @@ func (s *mdmVerificationScheduler) claimAndDispatch(key string, now time.Time) {
 	job.running = true
 	job.attemptCancel = cancel
 	s.active[rec.Kind]++
+	if isUrgentVerification(claimed) {
+		s.activeUrgent++
+	}
 	work := mdmSchedulerWork{
 		key: key, job: claimed, binding: *binding,
 		ctx: attemptCtx, cancel: cancel, stopAfter: stopAfter,
@@ -170,6 +192,9 @@ func (s *mdmVerificationScheduler) finishAttempt(work mdmSchedulerWork, result m
 	binding := s.bindings[work.job.SEPubKey]
 	if s.active[work.job.Kind] > 0 {
 		s.active[work.job.Kind]--
+	}
+	if isUrgentVerification(work.job) && s.activeUrgent > 0 {
+		s.activeUrgent--
 	}
 	if job != nil {
 		job.running = false

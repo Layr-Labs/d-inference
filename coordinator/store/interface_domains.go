@@ -684,6 +684,13 @@ type ProviderStore interface {
 	// the durable generation, so a raced hard-untrust wins.
 	RecoverProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error)
 
+	// AdvanceProviderTrustReuseCoverage batch-advances the coordinator-measured
+	// continuous-coverage watermark for the given identities in one write pass.
+	// Monotonic and fail-safe: it never moves a watermark backward, and it
+	// skips tombstoned or non-hardware rows entirely (a revocation tombstone
+	// wins; coverage never resurrects evidence).
+	AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error
+
 	// RevokeProviderTrustReuse atomically installs one durable hard-untrust event.
 	// Retrying the same non-empty event ID returns the authoritative existing row
 	// unchanged, including after an ambiguous commit. A different event ID always

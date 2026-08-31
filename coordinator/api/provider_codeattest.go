@@ -329,7 +329,14 @@ func (s *Server) codeAttestLoopForGeneration(
 //   - First token on a previously token-less provider: record the token and arm
 //     the normal loop. A genuine, same-version recent attestation may still be
 //     reused — that is a real prior proof for this Secure-Enclave identity, not
-//     the token.
+//     the token. But application evidence EARNED while token-less carries an
+//     empty APNsToken, and the routing gate binds evidence.APNsToken to the
+//     provider's current token — so installing the first token strands any such
+//     evidence (unroutable until the 5-minute ticker re-proves it). The
+//     empty→non-empty transition is therefore a rotation for the EVIDENCE
+//     lifecycle only: clear the stale evidence and kick the ordinary challenge
+//     loop (no reuse invalidation, no code-flag reset, no extra APNs push —
+//     evidence regenerates over the live WebSocket).
 //   - CHANGED token: a material change to the device's identity-binding inputs.
 //     Reset CodeAttested (fail-closed — deroute until re-proven) AND force a real
 //     challenge with NO reuse bypass (invalidateReuse), so the new token cannot
@@ -369,6 +376,12 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 	if provider.AttestationResult != nil {
 		seKey = provider.AttestationResult.PublicKey
 	}
+	// True whenever installing newTok leaves held application evidence bound to
+	// a different (possibly empty) token: a genuine rotation always does; a
+	// first token does iff evidence was earned token-less.
+	evidenceStale := changed ||
+		(provider.ApplicationEvidence.EvidenceGeneration != 0 &&
+			provider.ApplicationEvidence.APNsToken != newTok)
 	if changed {
 		// Token rotation invalidates the application/process half and both code
 		// flags, but never the independent device evidence.
@@ -376,9 +389,15 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 		provider.CodeAttested = false
 		provider.FreshCodeAttested = false
 		provider.RuntimeCapabilities = nil
+	} else if evidenceStale {
+		// First token, token-less evidence: clear only the evidence half —
+		// code-attest state and the reuse cache are untouched (the prior proof
+		// is real; the token never granted it).
+		provider.ApplicationEvidence = registry.ApplicationEvidence{}
+		provider.RuntimeCapabilities = nil
 	}
 	provider.Mu().Unlock()
-	if changed {
+	if evidenceStale {
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
 		// The cleared application evidence is regenerated only by the ordinary
 		// challenge loop; without a kick the provider stays unroutable until the

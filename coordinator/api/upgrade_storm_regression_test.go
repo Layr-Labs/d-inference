@@ -404,3 +404,324 @@ func TestUpgradeStormDueVerificationStaysBoundedAndDurable(t *testing.T) {
 		}
 	}
 }
+
+// seedContinuityFleetAndShutdown stands up "coordinator instance 1": a fleet
+// of upgradeStormFleetSize providers connected and hardware-trusted whose last
+// FULL live verification is proofAge old (STALE against the 5m window), each
+// with a durable trust-reuse row and live continuity coverage. It then closes
+// the server gracefully, so the shutdown sweep persists the exact shutdown
+// instant (base) as every row's continuous_coverage_until.
+func seedContinuityFleetAndShutdown(t *testing.T, st store.Store, base time.Time, proofAge time.Duration) {
+	t.Helper()
+	logger := quietLogger()
+	srv1 := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	srv1.trustReuseCache.now = func() time.Time { return base }
+	if err := srv1.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("instance 1 seed: %v", err)
+	}
+	for i := range upgradeStormFleetSize {
+		id := fmt.Sprintf("restart-%d", i)
+		seKey := fmt.Sprintf("se-restart-%d", i)
+		serial := fmt.Sprintf("SER-RESTART-%d", i)
+		p := srv1.registry.Register(id, nil, &protocol.RegisterMessage{
+			Type: protocol.TypeRegister, Backend: registry.BackendMLXSwift,
+			Version: "0.8.15", PublicKey: testPublicKeyB64(),
+			Models: []protocol.ModelInfo{
+				{ID: "restart-model", ModelType: "chat", Quantization: "4bit"},
+			},
+		})
+		p.Mu().Lock()
+		p.TrustLevel = registry.TrustHardware
+		p.AttestationResult = &attestation.VerificationResult{
+			Valid: true, SerialNumber: serial,
+			SIPEnabled: true, SecureBootEnabled: true,
+			PublicKey: seKey, BinaryHash: trHashA,
+		}
+		p.Mu().Unlock()
+		rec := hardwareReuseRecord(seKey, serial, trHashA, base.Add(-proofAge))
+		if res, err := st.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil || !res.Applied {
+			t.Fatalf("%s: persist reuse row: applied=%v err=%v", id, res.Applied, err)
+		}
+		srv1.trustReuseCache.recordTrust(rec)
+		srv1.markTrustCoverage(seKey, id)
+	}
+	srv1.Close() // graceful shutdown → final coverage sweep at base
+
+	rows, err := st.ListProviderTrustReuse(context.Background())
+	if err != nil || len(rows) != upgradeStormFleetSize {
+		t.Fatalf("rows after shutdown = %d (%v), want %d", len(rows), err, upgradeStormFleetSize)
+	}
+	for _, row := range rows {
+		if row.ContinuousCoverageUntil == nil || !row.ContinuousCoverageUntil.Equal(base) {
+			t.Fatalf("%s: shutdown sweep coverage = %v, want %s",
+				row.SEPubKey, row.ContinuousCoverageUntil, base)
+		}
+	}
+}
+
+// registerRestartFleet registers the reconnecting fleet (same SE identities,
+// same binary A, self_signed until re-admitted) on a fresh coordinator.
+func registerRestartFleet(t *testing.T, srv *Server) []upgradeStormProvider {
+	t.Helper()
+	providers := make([]upgradeStormProvider, 0, upgradeStormFleetSize)
+	for i := range upgradeStormFleetSize {
+		id := fmt.Sprintf("restart-%d", i)
+		seKey := fmt.Sprintf("se-restart-%d", i)
+		serial := fmt.Sprintf("SER-RESTART-%d", i)
+		p := srv.registry.Register(id, nil, &protocol.RegisterMessage{
+			Type: protocol.TypeRegister, Backend: registry.BackendMLXSwift,
+			Version: "0.8.15", PublicKey: testPublicKeyB64(),
+			Models: []protocol.ModelInfo{
+				{ID: "restart-model", ModelType: "chat", Quantization: "4bit"},
+			},
+		})
+		p.Mu().Lock()
+		p.TrustLevel = registry.TrustSelfSigned
+		p.AttestationResult = &attestation.VerificationResult{
+			Valid: true, SerialNumber: serial,
+			SIPEnabled: true, SecureBootEnabled: true,
+			PublicKey: seKey, BinaryHash: trHashA,
+		}
+		p.Mu().Unlock()
+		providers = append(providers, upgradeStormProvider{
+			id: id, seKey: seKey, serial: serial, p: p,
+		})
+	}
+	return providers
+}
+
+// TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm is the coordinator
+// deploy/restart scenario the continuity premise exists for. A fleet of 25
+// providers with STALE wall-clock windows (last full live verification 30m
+// ago) but coverage persisted by the graceful-shutdown sweep reconnects to a
+// FRESH Server over the SAME store within 60s. Asserts:
+//
+//  1. ZERO MicroMDM requests across a full dispatcher tick — the entire fleet
+//     re-admits through the continuity fast-skip;
+//  2. every provider returns to hardware trust, durable scheduler row
+//     completed as "reused", nobody hard-untrusted;
+//  3. the admitting decision is the distinct "continuity" label.
+//
+// The 5m-gap counterpart below proves the same fleet BEYOND the reconnect
+// allowance declines the fast path for every provider and falls back to the
+// bounded durable scheduler wave (Scenario B behavior).
+func TestCoordinatorRestartContinuityReconnectAvoidsMDMStorm(t *testing.T) {
+	fake := &fakeMDMServer{
+		device: &mdm.DeviceInfo{
+			SerialNumber: "SERIAL-RESTART", UDID: "UDID-RESTART",
+			EnrollmentStatus: true,
+		},
+		commandUUID: "cmd-restart-storm",
+	}
+	var securityInfoPosts, totalMDMRequests atomic.Int64
+	inner := fake.handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		totalMDMRequests.Add(1)
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/commands" {
+			securityInfoPosts.Add(1)
+		}
+		inner.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	base := time.Unix(1_700_000_000, 0)
+	seedContinuityFleetAndShutdown(t, st, base, 30*time.Minute)
+
+	// Coordinator instance 2 over the SAME store, 60 seconds after shutdown —
+	// well inside the 90s reconnect allowance, far outside the 5m window.
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
+	srv.trustReuseCache.now = func() time.Time { return base.Add(60 * time.Second) }
+	sch := newMDMVerificationScheduler(srv, MDMSchedulerConfig{
+		Workers: 12, QueueCapacity: 128,
+		InitialSpreadMin: 0, InitialSpreadMax: time.Nanosecond,
+	}, mdmSchedulerDeps{
+		jitter: func(minimum, _ time.Duration) time.Duration { return minimum },
+	})
+	srv.mdmScheduler = sch
+	srv.SetMDMClient(mdm.NewClient(ts.URL, "test-key", logger))
+	if err := srv.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("instance 2 seed: %v", err)
+	}
+
+	providers := registerRestartFleet(t, srv)
+
+	// The near-simultaneous reconnect surge, mirroring the live path: the
+	// submit priority classification, the fast-skip, and the challenge settle.
+	errCh := make(chan error, upgradeStormFleetSize)
+	var wg sync.WaitGroup
+	for _, fp := range providers {
+		wg.Add(1)
+		go func(fp upgradeStormProvider) {
+			defer wg.Done()
+			resp := &protocol.AttestationResponseMessage{
+				BinaryHash: trHashA,
+				SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+			}
+			priority := srv.verificationSubmitPriority(fp.seKey, fp.serial)
+			if priority != store.VerificationPriorityRefresh {
+				errCh <- fmt.Errorf("%s: submit priority = %q, want refresh (continuity candidate)", fp.id, priority)
+				return
+			}
+			if gen := sch.Submit(
+				context.Background(), fp.id, fp.p, priority,
+			); gen == 0 {
+				errCh <- fmt.Errorf("%s: scheduler submission rejected", fp.id)
+				return
+			}
+			granted := srv.tryTrustReuseFastSkip(fp.id, fp.p, resp, true)
+			sch.ChallengeSettled(fp.p, granted)
+			if !granted {
+				errCh <- fmt.Errorf(
+					"%s: continuity fast path declined — provider left waiting on a live MDM round-trip",
+					fp.id,
+				)
+			}
+		}(fp)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	// Both premises observable: with the window stale, the admitting decision
+	// for this fleet is the distinct continuity label.
+	if result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
+		SEPubKey: providers[0].seKey, Serial: providers[0].serial,
+		FreshBinaryHash: trHashA,
+	}); result.Decision != trustReuseDecisionContinuity {
+		t.Fatalf("decision = %q, want %q", result.Decision, trustReuseDecisionContinuity)
+	}
+
+	for _, fp := range providers {
+		if lvl := fp.p.GetTrustLevel(); lvl != registry.TrustHardware {
+			t.Fatalf("%s: trust = %q, want hardware via continuity", fp.id, lvl)
+		}
+		if status := fp.p.GetStatus(); status == registry.StatusUntrusted {
+			t.Fatalf("%s: provider hard-untrusted by a coordinator restart", fp.id)
+		}
+		if epoch := fp.p.HardUntrustEpoch(); epoch != 0 {
+			t.Fatalf("%s: hard-untrust epoch advanced to %d during restart", fp.id, epoch)
+		}
+		job, err := st.GetVerificationJob(
+			context.Background(), fp.seKey, store.VerificationTaskSecurityInfo)
+		if err != nil || job == nil {
+			t.Fatalf("%s: durable scheduler row missing: %v", fp.id, err)
+		}
+		if job.State != store.VerificationStateCompleted ||
+			job.LastOutcome != store.VerificationOutcomeReused {
+			t.Fatalf("%s: scheduler row state=%q outcome=%q, want completed/reused",
+				fp.id, job.State, job.LastOutcome)
+		}
+	}
+
+	// Zero-traffic watch window covering a full dispatcher tick: any provider
+	// that silently fell through to live verification would issue its
+	// SecurityInfo command here thanks to the near-zero initial spread.
+	deadline := time.Now().Add(1200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if n := totalMDMRequests.Load(); n != 0 {
+			t.Fatalf(
+				"coordinator-restart reconnect produced %d MicroMDM requests (%d SecurityInfo commands); want 0",
+				n, securityInfoPosts.Load(),
+			)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if n := securityInfoPosts.Load(); n != 0 {
+		t.Fatalf("SecurityInfo storm: %d POST /v1/commands, want 0", n)
+	}
+}
+
+// TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave: the same
+// shutdown-swept fleet reconnecting after a 5-MINUTE gap (beyond the 90s
+// allowance AND the 5m window) must decline the fast path for every provider
+// and fall back to the durable scheduler — the bounded wave whose worker-bound
+// and retry-state properties Scenario B
+// (TestUpgradeStormDueVerificationStaysBoundedAndDurable) pins. With the
+// fast-skip declined, the promoted (first/expired) live verification is due
+// immediately rather than parked on the refresh spread.
+func TestCoordinatorRestartBeyondAllowanceFallsBackToSchedulerWave(t *testing.T) {
+	logger := quietLogger()
+	st := store.NewMemory(store.Config{})
+	base := time.Unix(1_700_000_000, 0)
+	seedContinuityFleetAndShutdown(t, st, base, 30*time.Minute)
+
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
+	reconnectAt := base.Add(5 * time.Minute)
+	srv.trustReuseCache.now = func() time.Time { return reconnectAt }
+	// Wide spread + worst-case jitter: only the failed-fast-skip PROMOTION can
+	// make the declined fleet due quickly; execution stays parked so the wave
+	// itself (bounded workers, retry rows) remains Scenario B's property.
+	sch := newMDMVerificationScheduler(srv, MDMSchedulerConfig{
+		Workers: 4, QueueCapacity: 128,
+		InitialSpreadMin: time.Hour, InitialSpreadMax: 2 * time.Hour,
+	}, mdmSchedulerDeps{
+		now:    func() time.Time { return reconnectAt },
+		jitter: func(_, maximum time.Duration) time.Duration { return maximum },
+	})
+	srv.mdmScheduler = sch
+	srv.mdmClient = dummyMDMClient() // satisfy the fast-skip "MDM configured" gate
+	if err := srv.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	providers := registerRestartFleet(t, srv)
+	for _, fp := range providers {
+		// The gap outgrew the allowance while the coordinator was down, but
+		// the seeded record is retained generation state — the submit-time
+		// classification sees no admissible record and the settle path must
+		// leave the fleet on immediate first/expired work either way.
+		if gen := sch.Submit(
+			context.Background(), fp.id, fp.p,
+			srv.verificationSubmitPriority(fp.seKey, fp.serial),
+		); gen == 0 {
+			t.Fatalf("%s: scheduler submission rejected", fp.id)
+		}
+		resp := &protocol.AttestationResponseMessage{
+			BinaryHash: trHashA,
+			SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+		}
+		if srv.tryTrustReuseFastSkip(fp.id, fp.p, resp, true) {
+			t.Fatalf("%s: a 5m gap must not continuity fast-skip", fp.id)
+		}
+		sch.PromoteFailedFastSkip(fp.p)
+		sch.ChallengeSettled(fp.p, false)
+		if lvl := fp.p.GetTrustLevel(); lvl != registry.TrustSelfSigned {
+			t.Fatalf("%s: trust = %q after declined fast path, want self_signed", fp.id, lvl)
+		}
+		if status := fp.p.GetStatus(); status == registry.StatusUntrusted {
+			t.Fatalf("%s: staleness must never hard-untrust", fp.id)
+		}
+		job, err := st.GetVerificationJob(
+			context.Background(), fp.seKey, store.VerificationTaskSecurityInfo)
+		if err != nil || job == nil {
+			t.Fatalf("%s: durable scheduler row missing: %v", fp.id, err)
+		}
+		if job.State == store.VerificationStateCompleted ||
+			job.LastOutcome == store.VerificationOutcomeReused {
+			t.Fatalf("%s: scheduler row state=%q outcome=%q — must be waiting on a REAL verification",
+				fp.id, job.State, job.LastOutcome)
+		}
+		if job.Priority != store.VerificationPriorityFirstOrExpired {
+			t.Fatalf("%s: scheduler priority = %q, want first/expired", fp.id, job.Priority)
+		}
+		if due := job.NextAttemptAt.Sub(reconnectAt); due > mdmFirstVerifySpreadMax {
+			t.Fatalf("%s: live verification due %s out, must be within %s of the declined fast-skip",
+				fp.id, due, mdmFirstVerifySpreadMax)
+		}
+	}
+	if result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
+		SEPubKey: providers[0].seKey, Serial: providers[0].serial,
+		FreshBinaryHash: trHashA,
+	}); result.Decision != "" || result.Reason != trustReuseReasonProofExpired {
+		t.Fatalf("decision = %q reason = %q, want expired rejection", result.Decision, result.Reason)
+	}
+}

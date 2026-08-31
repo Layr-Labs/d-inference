@@ -156,6 +156,91 @@ func TestMemoryProviderTrustReuseRoundTripRevocationEvents(t *testing.T) {
 	providerTrustReuseRoundTrip(t, NewMemory(Config{}))
 }
 
+// providerTrustReuseCoverageAdvance pins the continuity-watermark contract:
+// batched advance touches only live hardware rows, is monotonic, and a
+// revocation tombstone clears the watermark and blocks any later advance
+// (coverage never resurrects).
+func providerTrustReuseCoverageAdvance(t *testing.T, st Store) {
+	t.Helper()
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Second)
+
+	hw := ProviderTrustReuse{
+		SEPubKey: "se-cov-hw", Serial: "SER-HW", TrustLevel: "hardware",
+		LastVerifiedBinaryHash: "hash-a", SIPEnabled: true, SecureBootFull: true,
+		HardwareProofVerifiedAt: base,
+	}
+	soft := ProviderTrustReuse{
+		SEPubKey: "se-cov-soft", Serial: "SER-SOFT", TrustLevel: "self_signed",
+		LastVerifiedBinaryHash: "hash-a", HardwareProofVerifiedAt: base,
+	}
+	for _, rec := range []ProviderTrustReuse{hw, soft} {
+		if res, err := st.UpsertProviderTrustReuse(ctx, rec, 0); err != nil || !res.Applied {
+			t.Fatalf("upsert %s: applied=%v err=%v", rec.SEPubKey, res.Applied, err)
+		}
+	}
+
+	coverage := func(seKey string) *time.Time {
+		t.Helper()
+		rows, err := st.ListProviderTrustReuse(ctx)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		for _, row := range rows {
+			if row.SEPubKey == seKey {
+				return row.ContinuousCoverageUntil
+			}
+		}
+		t.Fatalf("row %s missing", seKey)
+		return nil
+	}
+
+	mark := base.Add(30 * time.Second)
+	if err := st.AdvanceProviderTrustReuseCoverage(
+		ctx, []string{"se-cov-hw", "se-cov-soft", "se-cov-absent"}, mark); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if got := coverage("se-cov-hw"); got == nil || !got.Equal(mark) {
+		t.Fatalf("hardware coverage = %v, want %s", got, mark)
+	}
+	if got := coverage("se-cov-soft"); got != nil {
+		t.Fatalf("non-hardware row advanced to %v, want untouched", got)
+	}
+
+	// Monotonic: a stale (earlier) batch write never moves the watermark back.
+	if err := st.AdvanceProviderTrustReuseCoverage(
+		ctx, []string{"se-cov-hw"}, base.Add(10*time.Second)); err != nil {
+		t.Fatalf("backward advance: %v", err)
+	}
+	if got := coverage("se-cov-hw"); got == nil || !got.Equal(mark) {
+		t.Fatalf("watermark moved backward to %v, want %s", got, mark)
+	}
+
+	// A revocation tombstone clears the watermark and wins over any later
+	// advance: coverage never resurrects.
+	if _, err := st.RevokeProviderTrustReuse(ctx, "se-cov-hw", "evt-cov-1"); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if got := coverage("se-cov-hw"); got != nil {
+		t.Fatalf("tombstoned row kept coverage %v, want cleared", got)
+	}
+	if err := st.AdvanceProviderTrustReuseCoverage(
+		ctx, []string{"se-cov-hw"}, mark.Add(time.Minute)); err != nil {
+		t.Fatalf("post-revoke advance: %v", err)
+	}
+	if got := coverage("se-cov-hw"); got != nil {
+		t.Fatalf("coverage resurrected on a tombstone: %v", got)
+	}
+}
+
+func TestMemoryProviderTrustReuseCoverageAdvance(t *testing.T) {
+	providerTrustReuseCoverageAdvance(t, NewMemory(Config{}))
+}
+
+func TestPostgresProviderTrustReuseCoverageAdvance(t *testing.T) {
+	providerTrustReuseCoverageAdvance(t, testPostgresStore(t))
+}
+
 func TestPostgresProviderTrustReuseRoundTripRevocationEvents(t *testing.T) {
 	providerTrustReuseRoundTrip(t, testPostgresStore(t))
 }

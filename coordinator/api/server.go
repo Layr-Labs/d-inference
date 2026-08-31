@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -240,6 +241,13 @@ type Server struct {
 	trustReplayCancel             context.CancelFunc
 	trustReplayMu                 sync.Mutex
 	trustReplayInFlight           map[string]struct{}
+	// Connection-continuity coverage tracker: seKey → providerID of the live
+	// covered connection. Advanced by the batched trustCoverageLoop and the
+	// disconnect/shutdown sweeps (see trust_reuse.go).
+	trustCoverageMu     sync.Mutex
+	trustCoverage       map[string]string
+	trustCoverageCtx    context.Context
+	trustCoverageCancel context.CancelFunc
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -778,6 +786,16 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
 	}
+	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
+		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
+			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
+			"allowance", maxTrustReuseReconnectGap,
+			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
+		)
+	}
+	s.trustCoverage = make(map[string]string)
+	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
+	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
 	if cfg.DurableTrustReuse {
 		journalPath := cfg.TrustReuseJournalPath
 		if strings.TrimSpace(journalPath) == "" {
@@ -856,6 +874,15 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
+	// then persist the exact shutdown instant for every covered provider so a
+	// short deploy reconnects into the continuity fast-skip on the next
+	// coordinator instead of a fleet-wide live MDM herd. A crash skips this —
+	// the last periodic write stands and the gap is over-estimated (fail-safe).
+	if s.trustCoverageCancel != nil {
+		s.trustCoverageCancel()
+	}
+	s.finalTrustCoverageSweep()
 	if s.trustReplayCancel != nil {
 		s.trustReplayCancel()
 	}
@@ -1577,6 +1604,82 @@ func (s *Server) convergeReleasePolicyWithCommittedRelease(release *store.Releas
 	s.ddIncr("release_policy.sync_failure", []string{"outcome:converged_from_mutation"})
 }
 
+// convergeReleasePolicyWithCommittedDeactivation folds an already-committed
+// release deactivation into the in-memory release trust policy when the
+// post-mutation inventory read failed. Retaining the pre-deactivation snapshot
+// would keep authorizing the deactivated release indefinitely — there is no
+// background resync, so in a force=true emergency pull of a compromised
+// release the affected providers would keep routing until an admin retried.
+// The merged snapshot is exactly what a successful rebuild over
+// "last-known-good inventory minus this row" publishes: entries for the
+// deactivated version/platform are dropped, everything else is carried forward
+// (so still-approved evidence survives and pulling one release never deroutes
+// the rest of the fleet), and providers whose evidence rested on the
+// deactivated release are invalidated and kicked for an immediate
+// re-challenge. The next successful sync rebuilds from the exact inventory.
+func (s *Server) convergeReleasePolicyWithCommittedDeactivation(version, platform string, cause error) {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+
+	last := s.releaseTrustPolicy.Load()
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	// Deactivation never un-configures the inventory: once releases have been
+	// published the evidence gate stays required, exactly as a full rebuild
+	// over the remaining (possibly empty) release set would keep it.
+	required := s.releaseInventoryEverConfigured.Load()
+	if last != nil && last.Required {
+		required = true
+	}
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     required,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
+	if last != nil {
+		for hash, policies := range last.ByBinaryHash {
+			for _, policy := range policies {
+				if policy.Version == version && policy.Platform == platform {
+					continue // removed by this deactivation
+				}
+				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
+			}
+		}
+	}
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		needChallenge := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range needChallenge {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(needChallenge) > 0 {
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
+		}
+	}
+	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
+	for hash := range trustSnapshot.ByBinaryHash {
+		hashes[hash] = true
+	}
+	s.binaryHashPolicyMu.Lock()
+	s.releaseKnownBinaryHashes = hashes
+	s.releaseBinaryHashPolicyConfigured = len(hashes) > 0 || required
+	s.rebuildBinaryHashPolicyLocked()
+	s.binaryHashPolicyMu.Unlock()
+
+	s.logger.Warn("release inventory unreadable after deactivation; converged policy from the committed deactivation",
+		"version", version,
+		"platform", platform,
+		"generation", generation,
+		"error", cause,
+	)
+	s.ddIncr("release_policy.sync_failure", []string{"outcome:converged_from_mutation"})
+}
+
 // releaseEvidenceStillApproved reports whether previously granted application
 // evidence remains approved under a freshly built release-policy snapshot: the
 // same binary hash still maps to an active release with the same version,
@@ -1936,6 +2039,71 @@ func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Rele
 	s.logger.Warn("release inventory unreadable after registration; converged runtime manifest from the committed release",
 		"version", release.Version,
 		"platform", release.Platform,
+		"error", cause,
+	)
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+}
+
+// convergeRuntimeManifestWithCommittedDeactivation folds an already-committed
+// release deactivation into the runtime manifest when the post-mutation
+// inventory read failed. Unlike registration (where the new release's facts
+// are simply unioned in), deactivation cannot blindly subtract the pulled
+// release's hashes — another active release may share them — so the manifest
+// is rebuilt from the live release trust snapshot, which at this point already
+// excludes the deactivated version/platform (SyncBinaryHashes either succeeded
+// or was converged from the same committed deactivation first). Hash sets are
+// unioned and template hashes applied newest-release-wins, mirroring the full
+// rebuild's ordering. Active releases whose binary hash failed normalization
+// are absent from the snapshot and thus from this approximation; the next
+// successful sync rebuilds from the exact inventory.
+func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(version, platform string, cause error) {
+	merged := &RuntimeManifest{
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
+	}
+	hasAny := false
+	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
+		policies := make([]approvedReleasePolicy, 0, len(snapshot.ByBinaryHash))
+		for _, entries := range snapshot.ByBinaryHash {
+			policies = append(policies, entries...)
+		}
+		sort.SliceStable(policies, func(i, j int) bool {
+			return semverGreater(policies[j].Version, policies[i].Version)
+		})
+		for _, policy := range policies {
+			if policy.PythonHash != "" {
+				merged.PythonHashes[policy.PythonHash] = true
+				hasAny = true
+			}
+			if policy.RuntimeHash != "" {
+				merged.RuntimeHashes[policy.RuntimeHash] = true
+				hasAny = true
+			}
+			for name, hash := range policy.TemplateHashes {
+				merged.TemplateHashes[name] = hash
+				hasAny = true
+			}
+			if policy.MetallibHash != "" {
+				if normalized, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash"); err == nil {
+					merged.TemplateHashes["mlx_metallib"] = normalized
+					hasAny = true
+				}
+			}
+		}
+	}
+	if !hasAny {
+		// The deactivated row committed, so releases exist(ed) but none of the
+		// remaining authorized ones carry runtime facts: explicit withdrawal,
+		// exactly like the full rebuild's "releases exist but none have
+		// hashes" branch. Providers proving the pulled release's facts must
+		// not keep passing the manifest gate.
+		merged = nil
+	}
+	s.knownRuntimeManifest = merged
+	s.logger.Warn("release inventory unreadable after deactivation; converged runtime manifest from the retained policy snapshot",
+		"version", version,
+		"platform", platform,
 		"error", cause,
 	)
 	s.revalidateConnectedProvidersAgainstRuntimePolicy()

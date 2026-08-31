@@ -3419,6 +3419,27 @@ func (s *MemoryStore) RecoverProviderTrustReuse(_ context.Context, rec ProviderT
 	}, nil
 }
 
+func (s *MemoryStore) AdvanceProviderTrustReuseCoverage(_ context.Context, seKeys []string, until time.Time) error {
+	if len(seKeys) == 0 || until.IsZero() {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, seKey := range seKeys {
+		rec, ok := s.providerTrustReuse[seKey]
+		if !ok || rec.RevokedAt != nil || rec.TrustLevel != "hardware" {
+			continue
+		}
+		if rec.ContinuousCoverageUntil != nil && !until.After(*rec.ContinuousCoverageUntil) {
+			continue
+		}
+		u := until
+		rec.ContinuousCoverageUntil = &u
+		s.providerTrustReuse[seKey] = rec
+	}
+	return nil
+}
+
 func (s *MemoryStore) RevokeProviderTrustReuse(_ context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error) {
 	if seKey == "" || revocationEventID == "" {
 		return ProviderTrustReuse{}, nil
@@ -3431,6 +3452,7 @@ func (s *MemoryStore) RevokeProviderTrustReuse(_ context.Context, seKey, revocat
 	}
 	rec.SEPubKey = seKey
 	rec.TrustLevel = ""
+	rec.ContinuousCoverageUntil = nil
 	rec.RevocationGeneration++
 	rec.RevocationEventID = revocationEventID
 	now := time.Now().UTC()

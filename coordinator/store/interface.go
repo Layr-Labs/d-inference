@@ -1019,6 +1019,18 @@ const CodeAttestPushBudgetMaxTokenRows = 8
 // LastVerifiedBinaryHash is retained for same-binary decisions and audit, but a
 // changed hash is admitted only by the server's active-release policy snapshot.
 //
+// ContinuousCoverageUntil is the coordinator-measured liveness watermark: the
+// last instant the coordinator itself observed this device connected and
+// hardware-trusted on a live SE-challenged connection anchored at a full live
+// verification or a valid reuse grant. It is written ONLY by the coordinator
+// (batched periodic advance + graceful-shutdown/disconnect sweep), never from
+// any provider-supplied value, and it is monotonic: an advance can never move
+// it backward and never touches a tombstoned or non-hardware row. A reconnect
+// whose offline gap (now - ContinuousCoverageUntil) is below the physical
+// RecoveryOS floor proves the device cannot have flipped SIP/Secure Boot in
+// between (entering and leaving Recovery takes >= ~3 minutes and drops the
+// WebSocket), so evidence may be reused without a live MDM round.
+//
 // RevocationGeneration, RevocationEventID, and RevokedAt form a durable
 // monotonic tombstone. RevocationEventID identifies one hard-untrust operation:
 // retrying that event is idempotent, while a different event advances the
@@ -1036,6 +1048,7 @@ type ProviderTrustReuse struct {
 	MDAUDID                    string     `json:"mda_udid"`
 	HardwareProofVerifiedAt    time.Time  `json:"hardware_proof_verified_at"`
 	ApplicationProofVerifiedAt *time.Time `json:"application_proof_verified_at,omitempty"`
+	ContinuousCoverageUntil    *time.Time `json:"continuous_coverage_until,omitempty"`
 	EvidenceGeneration         uint64     `json:"evidence_generation"`
 	RevocationGeneration       uint64     `json:"revocation_generation"`
 	RevocationEventID          string     `json:"revocation_event_id"`

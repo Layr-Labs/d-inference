@@ -571,34 +571,39 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Re-sync known hashes after deactivation. A read failure retains the
-	// last-known-good policy (still containing the deactivated hash until a
-	// successful sync converges) and is surfaced even though deactivation
-	// committed, so the admin retries.
+	// Re-sync known hashes and the runtime manifest after deactivation. The
+	// deactivation has already committed, so a post-mutation inventory-read
+	// failure must NOT retain a snapshot that still authorizes the deactivated
+	// release: there is no background resync, and in a force=true emergency
+	// pull of a compromised release the affected providers would keep routing
+	// until an admin happened to retry. Mirror the committed-registration
+	// convergence — fold the known version/platform deactivation into the
+	// retained snapshot, bump the generation, and invalidate/kick the affected
+	// providers. The response still surfaces a warning, and the next
+	// successful sync rebuilds from the exact inventory.
+	var syncWarnings []string
 	if err := s.SyncBinaryHashes(); err != nil {
-		s.invalidateReleaseCaches(req.Platform)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
-			"release_policy_sync_failed",
-			"release was deactivated but release policy synchronization failed",
-		))
-		return
+		s.convergeReleasePolicyWithCommittedDeactivation(req.Version, req.Platform, err)
+		syncWarnings = append(syncWarnings,
+			"release policy synchronization failed; the policy was converged from the committed deactivation and the next successful sync rebuilds from inventory")
 	}
 	if err := s.SyncRuntimeManifest(); err != nil {
-		s.invalidateReleaseCaches(req.Platform)
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse(
-			"release_policy_sync_failed",
-			"release was deactivated but runtime policy synchronization failed",
-		))
-		return
+		s.convergeRuntimeManifestWithCommittedDeactivation(req.Version, req.Platform, err)
+		syncWarnings = append(syncWarnings,
+			"runtime policy synchronization failed; the manifest was converged from the committed deactivation and the next successful sync rebuilds from inventory")
 	}
 	s.invalidateReleaseCaches(req.Platform)
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":   "release_deactivated",
 		"version":  req.Version,
 		"platform": req.Platform,
-	})
+	}
+	if len(syncWarnings) > 0 {
+		resp["warning"] = strings.Join(syncWarnings, "; ")
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func findReleaseForDeactivation(releases []store.Release, version, platform string) (store.Release, bool) {

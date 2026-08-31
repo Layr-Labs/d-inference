@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -195,5 +196,110 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 	}
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
 		t.Fatal("provider did not recover after re-proving the rotated template hash")
+	}
+}
+
+// TestFirstTokenHeartbeatRotatesTokenlessEvidence is the Codex 07:12Z P1
+// regression for the empty→non-empty APNs token transition: a provider that
+// registered token-less earns application evidence with an empty APNsToken;
+// when the first real token arrives in a heartbeat, that evidence is stale
+// (routing gate: evidence.APNsToken != APNsDeviceToken) yet the old rearm path
+// treated a first token as changed==false — evidence retained, no immediate
+// challenge — leaving the provider unroutable until the 5-minute ticker while
+// queued requests expire at 120s. The first token must be a rotation for the
+// EVIDENCE lifecycle: clear the stale evidence and kick the ordinary challenge
+// loop so regenerated, token-bound evidence restores routability immediately.
+func TestFirstTokenHeartbeatRotatesTokenlessEvidence(t *testing.T) {
+	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes: %v", err)
+	}
+
+	const model = "late-token-release-model"
+	provider := makeRoutableProvider(t, reg, "late-token-provider", model)
+	armReleaseChallengeProvider(t, provider, "2.0.0", trHashA, "se-late-token", "SER-LATE")
+
+	resp := &protocol.AttestationResponseMessage{
+		BinaryHash: trHashA,
+		SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+		TemplateHashes: map[string]string{"mlx_metallib": trHashC},
+	}
+	_, evidence, ok := srv.deriveApprovedReleaseTransition(provider, resp, true)
+	if !ok || evidence.APNsToken != "" {
+		t.Fatalf("precondition: tokenless evidence derivation failed (ok=%v token=%q)", ok, evidence.APNsToken)
+	}
+	if !provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+		t.Fatal("precondition: tokenless evidence grant was refused")
+	}
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("precondition: tokenless provider with evidence must be routable")
+	}
+
+	// First non-empty token heartbeat: the empty-token evidence is stranded the
+	// instant the token is installed — it must be cleared and the ordinary
+	// challenge loop kicked NOW, not on the next periodic tick.
+	srv.maybeRearmCodeAttest(context.Background(), "late-token-provider", provider, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		APNsDeviceToken: "late-apns-token",
+	})
+	if got := func() string {
+		provider.Mu().Lock()
+		defer provider.Mu().Unlock()
+		return provider.APNsDeviceToken
+	}(); got != "late-apns-token" {
+		t.Fatalf("heartbeat token not recorded: %q", got)
+	}
+	if stale, ok := provider.ApplicationEvidenceSnapshot(); ok {
+		t.Fatalf("first token must clear token-less evidence, still holds %+v", stale)
+	}
+	select {
+	case <-provider.ImmediateChallengeChan():
+	default:
+		t.Fatal("first token stranding token-less evidence must kick an immediate ordinary challenge")
+	}
+	if routed := findRoutableProvider(reg, model); routed != nil {
+		t.Fatalf("provider must be unroutable until evidence is re-proven, routed %s", routed.ID)
+	}
+
+	// The kicked challenge re-measures the same release; the regenerated
+	// evidence binds the installed token, restoring routability with no ticker.
+	_, refreshed, ok := srv.deriveApprovedReleaseTransition(provider, resp, true)
+	if !ok {
+		t.Fatal("re-challenge after the first token must derive fresh evidence")
+	}
+	if refreshed.APNsToken != "late-apns-token" {
+		t.Fatalf("regenerated evidence must carry the installed token, got %q", refreshed.APNsToken)
+	}
+	if !provider.GrantApplicationEvidenceIfNotUntrusted(refreshed) {
+		t.Fatal("regenerated evidence grant was refused")
+	}
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("provider did not recover after re-proving token-bound evidence")
+	}
+
+	// Steady state: an unchanged-token heartbeat is still a no-op — evidence
+	// retained, no kick, still routable.
+	srv.maybeRearmCodeAttest(context.Background(), "late-token-provider", provider, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		APNsDeviceToken: "late-apns-token",
+	})
+	if _, ok := provider.ApplicationEvidenceSnapshot(); !ok {
+		t.Fatal("unchanged token must not clear evidence")
+	}
+	select {
+	case <-provider.ImmediateChallengeChan():
+		t.Fatal("unchanged token must not kick the ordinary challenge loop")
+	default:
+	}
+	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
+		t.Fatal("unchanged-token heartbeat must leave the provider routable")
 	}
 }

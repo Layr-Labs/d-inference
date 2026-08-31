@@ -129,7 +129,11 @@ enum DoctorRunner {
             // directions. The config-derived basis remains the offline
             // fallback.
             let servingSetIDs: [String]
-            if stateFresh, let live = state?.advertisedModels, !live.isEmpty {
+            if stateFresh, let live = state?.advertisedModels {
+                // Authoritative INCLUDING empty: a daemon that retired every
+                // model after failed self-tests legitimately advertises [],
+                // and reconstructing from config would credit floors for
+                // models the daemon is not serving.
                 servingSetIDs = live
             } else {
                 let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)

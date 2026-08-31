@@ -13,8 +13,12 @@ describe("heroCta", () => {
     });
   });
 
+  it("returns no CTA when payouts are disabled on this coordinator", () => {
+    expect(heroCta(makeStripeStatus({ configured: false }), 100, 1)).toBeNull();
+  });
+
   it("points an unlinked user at setup instead of a dead button", () => {
-    const cta = heroCta(makeStripeStatus({ has_account: false, status: "" }), 100, 1);
+    const cta = heroCta(makeStripeStatus({ has_account: false, status: "" }), 100, 1)!;
     expect(cta).toMatchObject({
       label: "Link bank to withdraw",
       action: "setup",
@@ -39,7 +43,7 @@ describe("heroCta", () => {
   });
 
   it("disables withdraw below the minimum, with an explanatory hint", () => {
-    const cta = heroCta(makeStripeStatus(), 0.48, 1);
+    const cta = heroCta(makeStripeStatus(), 0.48, 1)!;
     expect(cta).toMatchObject({ action: "withdraw", disabled: true });
     expect(cta.hint).toBe(
       "Minimum withdrawal is $1.00 — your withdrawable balance is $0.48.",
@@ -140,6 +144,11 @@ describe("BalanceHero", () => {
     expect(screen.getByText("Bank ••4821")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change/i }));
     expect(onOpenDashboard).toHaveBeenCalledOnce();
+  });
+
+  it("hides the whole CTA column when payouts are disabled", () => {
+    renderHero({ status: makeStripeStatus({ configured: false }) });
+    expect(screen.queryByRole("button", { name: /withdraw/i })).toBeNull();
   });
 
   it("hides the destination line while unlinked", () => {

@@ -1,17 +1,13 @@
 "use client";
 
 // Recent-activity shell. Default view is one summary row per model; clicking
-// a model drills into its log, paginated 25 rows per page. All client-side
+// a model drills into its log, paginated at PAGE_SIZE rows. All client-side
 // over the rows the API already returned.
 
 import { useMemo, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Earning } from "./types";
-import {
-  filterEarnings,
-  perModelSummary,
-  truncationNote,
-} from "./aggregate";
+import { filterByDays, perModelSummary } from "./aggregate";
 import { modelLabel } from "./format";
 import { EarningsRow } from "./EarningsRow";
 import { ModelSummaryList } from "./ModelSummaryList";
@@ -41,11 +37,11 @@ export function EarningsHistory({
   const [now, setNow] = useState(() => Date.now());
 
   const inRange = useMemo(
-    () => filterEarnings(earnings, { model: "", days }, now),
+    () => filterByDays(earnings, days, now),
     [earnings, days, now],
   );
   const summaries = useMemo(() => perModelSummary(inRange), [inRange]);
-  const allModelIds = useMemo(() => summaries.map((s) => s.model), [summaries]);
+  const allModelIds = summaries.map((s) => s.model);
 
   const modelRows = useMemo(
     () =>
@@ -55,8 +51,6 @@ export function EarningsHistory({
   const pageCount = Math.max(1, Math.ceil(modelRows.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const pageRows = modelRows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-
-  const truncated = truncationNote(totalJobs, recentCount);
 
   const openModel = (model: string) => {
     setSelectedModel(model);
@@ -101,10 +95,10 @@ export function EarningsHistory({
           ))}
         </select>
       </div>
-      {truncated && (
+      {totalJobs > recentCount && (
         <p className="text-xs text-text-tertiary mb-3">
-          Showing the latest {truncated.shown} of{" "}
-          {truncated.total.toLocaleString("en-US")} payouts.
+          Showing the latest {recentCount} of{" "}
+          {totalJobs.toLocaleString("en-US")} payouts.
         </p>
       )}
       <div className="rounded-xl bg-bg-secondary shadow-sm overflow-hidden">

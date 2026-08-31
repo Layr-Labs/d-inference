@@ -4,8 +4,9 @@
 // data hook, and the shared Stripe payouts state machine into the layout.
 // No math, no fetch — those live in aggregate.ts / useEarningsData.ts.
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { microToUsd } from "@/lib/format/currency";
 import { trackEvent } from "@/lib/google-analytics";
 import { useToastStore } from "@/hooks/useToast";
 import {
@@ -43,28 +44,34 @@ export default function EarningsContent() {
       trackEvent("provider_withdraw_failed", { surface: "provider_earnings" }),
   });
 
-  const earnings = useMemo(() => data?.earnings ?? [], [data]);
-  const days = useMemo(() => perDayTotals(earnings), [earnings]);
-
   if (!authenticated) {
     return <SignedOutState ready={ready} onLogin={login} />;
   }
   if (loading) {
     return <LoadingSkeleton />;
   }
-  if (error) {
-    return <ErrorState error={error} unauthorized={unauthorized} onRetry={refetch} />;
+  if (error || !data) {
+    return (
+      <ErrorState
+        error={error ?? "No data returned."}
+        unauthorized={unauthorized}
+        onRetry={refetch}
+      />
+    );
   }
 
+  const earnings = data.earnings;
+  const days = perDayTotals(earnings);
+  // Older coordinators may omit the withdrawable split; treat it all as withdrawable.
   const withdrawableMicro =
-    data?.withdrawable_balance_micro_usd ?? data?.available_balance_micro_usd ?? 0;
-  const totalBalanceMicro = data?.available_balance_micro_usd ?? 0;
-  const totalMicro = data?.total_micro_usd ?? 0;
-  const totalJobs = data?.count ?? 0;
-  const recentCount = data?.recent_count ?? earnings.length;
+    data.withdrawable_balance_micro_usd ?? data.available_balance_micro_usd;
+  const totalBalanceMicro = data.available_balance_micro_usd;
+  const totalMicro = data.total_micro_usd;
+  const totalJobs = data.count;
+  const recentCount = data.recent_count ?? earnings.length;
 
-  const minWithdrawUsd = (payouts.status?.min_withdraw_micro_usd ?? 1_000_000) / 1_000_000;
-  const availableUsd = withdrawableMicro / 1_000_000;
+  const minWithdrawUsd = microToUsd(payouts.status?.min_withdraw_micro_usd ?? 1_000_000);
+  const availableUsd = microToUsd(withdrawableMicro);
   const openWithdraw = () =>
     payouts.openWithdraw(availableUsd >= minWithdrawUsd ? availableUsd.toFixed(2) : "10");
 
@@ -91,8 +98,8 @@ export default function EarningsContent() {
 
       {/* Recent withdrawals (renders nothing until there are any) */}
       {payouts.withdrawals.length > 0 && (
-        <div className="rounded-xl bg-bg-secondary shadow-sm p-5 [&>div]:mt-0 [&>div]:pt-0 [&>div]:border-t-0">
-          <WithdrawalsList withdrawals={payouts.withdrawals} />
+        <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
+          <WithdrawalsList withdrawals={payouts.withdrawals} flush />
         </div>
       )}
 

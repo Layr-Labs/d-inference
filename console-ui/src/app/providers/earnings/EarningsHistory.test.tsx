@@ -126,12 +126,22 @@ describe("EarningsHistory drill-down log", () => {
     expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument();
   });
 
-  it("filters both views by the time range", () => {
+  it("drops out-of-range jobs from the summaries when the range narrows", () => {
     renderResponse(makeScenario("TYPICAL"));
+    // Sum the per-model "N jobs" figures across the summary rows.
+    const totalJobs = () =>
+      screen
+        .getAllByText(/\d{1,6} jobs ·/)
+        .reduce(
+          (sum, el) => sum + Number(/(\d{1,6}) jobs/.exec(el.textContent!)![1]),
+          0,
+        );
+    expect(totalJobs()).toBe(40);
     fireEvent.change(screen.getByLabelText("Filter by time range"), {
       target: { value: "7" },
     });
-    // Summaries survive but cover fewer jobs than all-time.
-    expect(screen.getAllByRole("listitem").length).toBeGreaterThan(0);
+    const filtered = totalJobs();
+    expect(filtered).toBeGreaterThan(0);
+    expect(filtered).toBeLessThan(40);
   });
 });

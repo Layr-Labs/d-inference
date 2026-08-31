@@ -8,13 +8,15 @@ export interface DayBucket {
   micro: number;
 }
 
-function localDay(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
+function localDay(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${dd}`;
 }
+
+// Zero-fill window guard: one row with a corrupt ancient timestamp must not
+// emit decades of empty buckets. 731 covers two full years.
+const MAX_BUCKETS = 731;
 
 /**
  * Sum earnings per local day, ascending, with zero-filled gaps between the
@@ -23,26 +25,29 @@ function localDay(iso: string): string {
 export function perDayTotals(earnings: Earning[]): DayBucket[] {
   const sums = new Map<string, number>();
   for (const e of earnings) {
-    const day = localDay(e.created_at);
-    if (!day) continue;
+    const d = new Date(e.created_at);
+    if (Number.isNaN(d.getTime())) continue;
+    const day = localDay(d);
     sums.set(day, (sums.get(day) ?? 0) + e.amount_micro_usd);
   }
   if (sums.size === 0) return [];
   const days = [...sums.keys()].sort();
+  const lastDay = days[days.length - 1];
+  // Cursor days are noon-anchored: a DST jump at midnight moves noon by an
+  // hour at most, so setDate(±1) always lands in the adjacent local day.
+  const cursor = new Date(`${lastDay}T12:00:00`);
+  cursor.setDate(cursor.getDate() - (MAX_BUCKETS - 1));
+  const floor = localDay(cursor);
+  const start = days[0] < floor ? floor : days[0];
+  cursor.setTime(new Date(`${start}T12:00:00`).getTime());
   const out: DayBucket[] = [];
-  const cursor = new Date(`${days[0]}T00:00:00`);
-  const last = new Date(`${days[days.length - 1]}T00:00:00`);
-  while (cursor <= last) {
-    const key = localDay(cursor.toISOString());
-    out.push({ day: key, micro: sums.get(key) ?? 0 });
+  let day = start;
+  do {
+    out.push({ day, micro: sums.get(day) ?? 0 });
     cursor.setDate(cursor.getDate() + 1);
-  }
+    day = localDay(cursor);
+  } while (day <= lastDay);
   return out;
-}
-
-/** Distinct model ids, most-earned first. */
-export function modelOptions(earnings: Earning[]): string[] {
-  return perModelSummary(earnings).map((s) => s.model);
 }
 
 export interface ModelSummary {
@@ -74,36 +79,16 @@ export function perModelSummary(earnings: Earning[]): ModelSummary[] {
   return [...byModel.values()].sort((a, b) => b.micro - a.micro);
 }
 
-export interface HistoryFilter {
-  /** Model id, or "" for all models. */
-  model: string;
-  /** Look-back window in days, or 0 for all time. */
-  days: number;
-}
-
-/** Filter rows by model and by a look-back window ending at `now`. */
-export function filterEarnings(
+/**
+ * Rows within a look-back window of `days` ending at `now`. `days` 0 keeps
+ * everything, even rows with unparseable dates.
+ */
+export function filterByDays(
   earnings: Earning[],
-  filter: HistoryFilter,
+  days: number,
   now: number,
 ): Earning[] {
-  const cutoff = filter.days > 0 ? now - filter.days * 86_400_000 : null;
-  return earnings.filter((e) => {
-    if (filter.model && e.model !== filter.model) return false;
-    // No time window -> keep everything, even rows with unparseable dates.
-    if (cutoff === null) return true;
-    return new Date(e.created_at).getTime() >= cutoff;
-  });
-}
-
-/**
- * "Showing the latest N of M" — only when the server truncated history
- * (lifetime `count` exceeds the returned `recent_count`).
- */
-export function truncationNote(
-  count: number,
-  recentCount: number,
-): { shown: number; total: number } | null {
-  if (count > recentCount) return { shown: recentCount, total: count };
-  return null;
+  if (days <= 0) return earnings;
+  const cutoff = now - days * 86_400_000;
+  return earnings.filter((e) => new Date(e.created_at).getTime() >= cutoff);
 }

@@ -54,10 +54,11 @@ function ChartSvg({ days }: { days: DayBucket[] }) {
     y: PAD_Y + chartH * (1 - d.micro / peak),
     bucket: d,
   }));
+  const baseline = PAD_Y + chartH;
   const line = points.map((p) => `${p.x},${p.y}`).join(" ");
-  const area = `M${PAD_X},${PAD_Y + chartH} L${line.split(" ").join(" L")} L${
-    PAD_X + chartW
-  },${PAD_Y + chartH} Z`;
+  const area = `M${PAD_X},${baseline} ${points
+    .map((p) => `L${p.x},${p.y}`)
+    .join(" ")} L${PAD_X + chartW},${baseline} Z`;
 
   // At most 6 x labels, always including first and last day.
   const step = Math.max(1, Math.ceil(days.length / 6));

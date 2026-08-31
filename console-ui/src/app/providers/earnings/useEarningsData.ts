@@ -8,20 +8,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { useVisiblePolling } from "@/hooks/useVisiblePolling";
 import { STORAGE_KEYS } from "@/lib/constants";
 import type { EarningsResponse } from "./types";
-import { makeScenario, type ScenarioName } from "./testFixtures";
+import { makeScenario, SCENARIO_NAMES, type ScenarioName } from "./testFixtures";
 
 // Dev-only fixture preview: NEXT_PUBLIC_EARNINGS_FIXTURE=TYPICAL (or another
 // scenario name) renders local fixture data instead of fetching. Never active
 // in production builds.
-const SCENARIO_NAMES: ScenarioName[] = [
-  "EMPTY",
-  "TYPICAL",
-  "TRUNCATED",
-  "CREDITS_ONLY",
-  "BELOW_MIN_WITHDRAW",
-  "WHALE",
-];
-
 function fixtureScenario(): ScenarioName | undefined {
   if (process.env.NODE_ENV === "production") return undefined;
   const raw = process.env.NEXT_PUBLIC_EARNINGS_FIXTURE;

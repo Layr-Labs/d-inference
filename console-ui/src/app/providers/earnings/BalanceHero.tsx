@@ -6,6 +6,7 @@
 
 import { ArrowRight, Building2, CreditCard, ExternalLink, Loader2 } from "lucide-react";
 import type { StripeStatus } from "@/lib/api";
+import { microToUsd } from "@/lib/format/currency";
 import { formatMicroDollars } from "./format";
 
 export interface HeroCta {
@@ -16,17 +17,21 @@ export interface HeroCta {
   hint: string | null;
 }
 
-/** Pure mapping from payout state to the hero button's behavior. */
+/**
+ * Pure mapping from payout state to the hero button's behavior. Null while
+ * payouts are disabled on this coordinator — there is nothing to walk toward.
+ */
 export function heroCta(
   status: StripeStatus | null,
   availableUsd: number,
   minWithdrawUsd: number,
-): HeroCta {
+): HeroCta | null {
   const withdraw = "Withdraw earnings";
-  if (!status || !status.configured) {
-    // Still loading, or payouts disabled on this coordinator.
+  if (!status) {
+    // Payout status still loading.
     return { label: withdraw, action: "withdraw", disabled: true, hint: null };
   }
+  if (!status.configured) return null;
   if (!status.has_account) {
     return {
       label: "Link bank to withdraw",
@@ -83,7 +88,7 @@ export function BalanceHero({
   dashboardLoading?: boolean;
 }) {
   const creditsMicro = totalBalanceMicro - withdrawableMicro;
-  const cta = heroCta(status, withdrawableMicro / 1_000_000, minWithdrawUsd);
+  const cta = heroCta(status, microToUsd(withdrawableMicro), minWithdrawUsd);
   return (
     <div className="relative overflow-hidden rounded-xl bg-coral text-white shadow-sm p-6 flex flex-col justify-between min-h-[220px]">
       {/* Dot texture, echoes the marketing hero. */}
@@ -104,15 +109,17 @@ export function BalanceHero({
           </p>
         </div>
         <div className="flex flex-col items-end gap-2">
-          <button
-            onClick={cta.action === "withdraw" ? onWithdraw : onSetup}
-            disabled={cta.disabled}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white text-accent-green text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {cta.label}
-            <ArrowRight size={14} />
-          </button>
-          {cta.hint && (
+          {cta && (
+            <button
+              onClick={cta.action === "withdraw" ? onWithdraw : onSetup}
+              disabled={cta.disabled}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white text-accent-green text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              {cta.label}
+              <ArrowRight size={14} />
+            </button>
+          )}
+          {cta?.hint && (
             <p className="text-xs text-white/70 text-right max-w-[16rem]">
               {cta.hint}
             </p>

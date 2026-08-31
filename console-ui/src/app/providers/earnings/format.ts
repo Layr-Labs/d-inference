@@ -32,7 +32,7 @@ export function formatAvgPerJob(totalMicro: number, jobs: number): string {
 
 /** Token counts with thousands separators. */
 export function formatTokens(n: number): string {
-  return (n ?? 0).toLocaleString("en-US");
+  return n.toLocaleString("en-US");
 }
 
 /**

@@ -92,13 +92,15 @@ function typicalEarnings(now: number): Earning[] {
   return rows;
 }
 
-export type ScenarioName =
-  | "EMPTY"
-  | "TYPICAL"
-  | "TRUNCATED"
-  | "CREDITS_ONLY"
-  | "BELOW_MIN_WITHDRAW"
-  | "WHALE";
+export const SCENARIO_NAMES = [
+  "EMPTY",
+  "TYPICAL",
+  "TRUNCATED",
+  "CREDITS_ONLY",
+  "BELOW_MIN_WITHDRAW",
+  "WHALE",
+] as const;
+export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 
 export function makeScenario(
   name: ScenarioName,

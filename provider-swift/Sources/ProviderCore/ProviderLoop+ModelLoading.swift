@@ -696,8 +696,23 @@ extension ProviderLoop {
             }
             releaseLoadGateWaiters()
         } catch {
+            // ORDER MATTERS: `isLoadingAny` (and the same-id `modelsLoading`
+            // marker) stay held through every await below. Dropping them
+            // first let a new same-id loader start during the cleanup awaits
+            // and place its own `pending-load:<id>` reservation (shared
+            // key, unconditional overwrite) — which the release below then
+            // DELETED, blinding KV admission to the incoming weights; and it
+            // let another model's weights go resident before the regrow,
+            // which sizes from modelSlots only, temporarily overgrowing
+            // grants.
+            //
+            // Release the pending-load reservation first (no-op if never
+            // placed, or already released on the success path), while the
+            // gate still parks every other loader.
+            await kvBudget.release(requestID: pendingLoadID)
+            // Release pool buffers a failed load left behind (same wedge as unload).
+            MLX.Memory.clearCache()
             modelsLoading.remove(modelId)
-            isLoadingAny = false
             // A FAILED load can be the last thing keeping a dropped
             // high-floor id in the basis (advertised entry hard-swapped away
             // mid-load): without a relax here the budget and survivor grants
@@ -705,12 +720,8 @@ extension ProviderLoop {
             // clamps are min(granted, current) — nothing else hands the
             // difference back). No-op when the floor didn't move.
             await refreshActivationReserve()
-            // Release the pending-load reservation on every failure path (no-op
-            // if it was never placed, or already released on the success path).
-            await kvBudget.release(requestID: pendingLoadID)
-            // Release pool buffers a failed load left behind (same wedge as unload).
-            MLX.Memory.clearCache()
             await resliceGrowSurvivors()
+            isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume(throwing: error)
             }

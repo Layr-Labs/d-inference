@@ -310,20 +310,32 @@ extension ProviderLoop {
         // the old order the regrow was sized under the retiring model's
         // floor and survivors stayed under-granted until the next lifecycle
         // event (grant clamps are min(granted, current); heartbeats cannot
-        // heal upward). The COORDINATOR un-advertisement also goes first:
-        // leaving it until after the drain kept routing new requests here,
-        // which fastAdmissionReject accepts (resident slot), parks behind
-        // the drain, and then 404s at the advertised guard.
+        // heal upward).
         advertisedModels.removeValue(forKey: modelId)
-        if let client = coordinatorClient {
-            await client.unadvertiseModel(modelId)
-            await client.forceReconnect()
-        }
+        // Remove from the client's advertised store BEFORE the drain (any
+        // reconnect that happens during it re-registers without the failed
+        // model) — but do NOT force the reconnect yet: cancelling the
+        // WebSocket here would cancelAllInflight() and interrupt every
+        // unrelated in-flight request rather than letting them ride out the
+        // target's drain window. Until the post-drain reconnect lands, a
+        // newly routed request for the retired id can still arrive and 404
+        // at the advertised guard — bounded, and absorbed by the
+        // coordinator's dispatch retry machinery.
+        await coordinatorClient?.unadvertiseModel(modelId)
         await unloadModel(modelId)
+        // Another task may already own the drain (unloadModel returns
+        // immediately for modelsUnloading ids) — hold the tombstone until
+        // the slot is actually gone, or a same-id prefetch landing between
+        // our defer and the real unload end would re-advertise the failed
+        // build against a still-resident slot.
+        if modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
+        }
         // Cold retirement (the model never held a slot): unloadModel
         // no-ops, so relax the reserve and regrow survivors here.
         await refreshActivationReserve()
         await resliceGrowSurvivors()
+        await coordinatorClient?.forceReconnect()
     }
 
     // MARK: - Self-test decode (the serving path)

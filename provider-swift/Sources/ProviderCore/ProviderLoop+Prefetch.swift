@@ -277,6 +277,20 @@ extension ProviderLoop {
             UnifiedMemoryCap.resolvedActivationReserveBytes(
                 modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
                     + Array(modelsLoading) + [modelId]))
+        // Re-check the tombstone AFTER the push's suspension: retirement can
+        // insert it during that await, and inserting past it would
+        // re-advertise the failed build the retirement just removed. (The
+        // pushed raise is harmless — epoch-ordered; retirement's own
+        // refresh, initiated after, carries a newer epoch.)
+        guard !retiringModels.contains(modelId) else {
+            // The pre-insert push above already raised the budget for an id
+            // that will now never join the set — recompute without it, or
+            // the phantom raise stands until the next unrelated mutation.
+            await refreshActivationReserve()
+            logger.warning(
+                "Prefetch verified \(modelId) but retirement began during the reserve push; not advertising")
+            return
+        }
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
@@ -288,6 +302,15 @@ extension ProviderLoop {
         // authoritative either way (the pre-insert push handles raise-early,
         // this one handles lost-update).
         await refreshActivationReserve()
+        // Final re-check before announcing to the coordinator: retirement
+        // interleaving in the refresh suspension above removes the local
+        // advertisement — announcing then would diverge the client store
+        // from the loop's (the fail-closed removal must win).
+        guard !retiringModels.contains(modelId), advertisedModels[modelId] != nil else {
+            logger.warning(
+                "Prefetch verified \(modelId) but retirement removed it before announcement; not advertising")
+            return
+        }
         logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)

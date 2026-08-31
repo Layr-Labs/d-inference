@@ -88,11 +88,12 @@ describe("EarningsHistory drill-down log", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 
-  it("paginates the log at 25 rows per page", () => {
-    renderResponse(manyRowsResponse(60));
+  it(`paginates the log at ${PAGE_SIZE} rows per page`, () => {
+    // 2 full pages + a 4-row remainder.
+    renderResponse(manyRowsResponse(PAGE_SIZE * 2 + 4));
     fireEvent.click(screen.getByText(QWEN_SHORT));
 
-    // Page 1: 25 rows + header row.
+    // Page 1: PAGE_SIZE rows + header row.
     expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
     expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /previous/i })).toBeDisabled();
@@ -102,20 +103,20 @@ describe("EarningsHistory drill-down log", () => {
     expect(screen.getByRole("button", { name: /previous/i })).not.toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
-    // Last page: 60 - 50 = 10 rows + header.
-    expect(screen.getAllByRole("row")).toHaveLength(10 + 1);
+    // Last page: the 4-row remainder + header.
+    expect(screen.getAllByRole("row")).toHaveLength(4 + 1);
     expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
   });
 
   it("hides the pager when a page is enough", () => {
-    renderResponse(manyRowsResponse(10));
+    renderResponse(manyRowsResponse(PAGE_SIZE));
     fireEvent.click(screen.getByText(QWEN_SHORT));
-    expect(screen.getAllByRole("row")).toHaveLength(10 + 1);
+    expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
     expect(screen.queryByText(/Page 1/)).toBeNull();
   });
 
   it("resets to page 1 when the time range changes", () => {
-    renderResponse(manyRowsResponse(60));
+    renderResponse(manyRowsResponse(PAGE_SIZE * 2 + 4));
     fireEvent.click(screen.getByText(QWEN_SHORT));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
     expect(screen.getByText(/Page 2 of 3/)).toBeInTheDocument();

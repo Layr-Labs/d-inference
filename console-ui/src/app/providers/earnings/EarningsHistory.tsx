@@ -16,7 +16,7 @@ import { modelLabel } from "./format";
 import { EarningsRow } from "./EarningsRow";
 import { ModelSummaryList } from "./ModelSummaryList";
 
-export const PAGE_SIZE = 25;
+export const PAGE_SIZE = 10;
 
 const RANGES = [
   { label: "Last 7 days", days: 7 },

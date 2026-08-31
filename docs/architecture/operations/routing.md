@@ -1,12 +1,12 @@
 # Routing
 
-Darkbloom's production dispatch path is a **cost-minimization scheduler**. For each inference request it builds every eligible provider into a candidate, computes an estimated completion time (in milliseconds), and selects the lowest-cost candidate.
+Darkbloom's production dispatch path is a **cost-minimization scheduler**. For each inference request it builds every eligible provider into a candidate, computes an estimated completion time, selects the lowest-cost candidate, and retains a bounded request-local plan of alternatives.
 
-The canonical implementation is `Registry.ReserveProviderEx` in `coordinator/registry/scheduler.go:213-292`.
+The canonical primary entry point is `Registry.ReserveProviderWithPlan`; it and the legacy `ReserveProviderEx` wrapper share `reserveProvider` in `coordinator/registry/scheduler.go`.
 
 ![Routing request flow](../../assets/diagrams/routing-flow.svg)
 
-The flow above maps to the consumer handler in `coordinator/api/consumer.go`: auth and rate-limit, optional sender-seal (`coordinator/api/sender_encryption.go`), NaCl Box decryption (`consumer.go:448-510`), token estimation and balance reservation, then a `QuickCapacityCheck` (`scheduler.go:1079-1193`) before `ReserveProviderEx` selects a provider. The chosen request is re-encrypted with a fresh per-request NaCl Box to the provider's attested X25519 key and dispatched over the provider WebSocket as an `inference_request`.
+The flow above maps to the consumer handler in `coordinator/api/consumer.go`: auth and rate-limit, optional sender-seal, NaCl Box decryption, token estimation and balance reservation, then a `QuickCapacityCheck` before `ReserveProviderWithPlan` selects and reserves the primary provider. The request-local `DispatchPlan` supplies revalidated alternates for retries and hedges without repeating the full fleet scan. The chosen request is re-encrypted with a fresh per-request NaCl Box to the provider's attested X25519 key and dispatched over the provider WebSocket as an `inference_request`.
 
 ## Privacy boundary
 
@@ -19,23 +19,27 @@ Routing decisions are made after the coordinator has decrypted the request body:
 
 See the canonical privacy model in [`../../AGENTS.md`](../../AGENTS.md) and the overview in [`../overview.md`](../overview.md).
 
-## Entry point
+## Entry points
 
 ```go
-func (r *Registry) ReserveProviderEx(
+func (r *Registry) ReserveProviderWithPlan(
     model string,
     pr *PendingRequest,
     excludeIDs ...string,
-) (*Provider, RoutingDecision)
+) (*Provider, RoutingDecision, *DispatchPlan)
+
+func (r *Registry) ReserveNextFromPlan(
+    pr *PendingRequest,
+    plan *DispatchPlan,
+    excludeIDs ...string,
+) (*Provider, RoutingDecision, []PlanSkip)
 ```
 
-`ReserveProviderEx` is the only production path that both selects a provider and atomically reserves capacity. It returns a `RoutingDecision` (`scheduler.go:172-197`) so callers can emit metrics without reaching into registry internals.
-
-The public wrapper `ReserveProvider` (`scheduler.go:199-205`) discards the decision and is used by tests and legacy callers.
+`ReserveProviderWithPlan` is the production primary path. `ReserveProviderEx` and `ReserveProvider` remain legacy/test wrappers over the same selection and reservation implementation. A primary scan retains at most eight low-cost alternatives; every plan entry is identity-checked and passed through the current admission gates before reservation. One full refresh is available per request-local plan chain.
 
 ## Candidate selection and reservation
 
-`selectBestCandidateLockedFull` (`scheduler.go:302-462`) first collects every provider that passes the structural gates, then scores each one with `buildCandidateWithReason`. It returns the winner plus rejection counters:
+`selectBestCandidateLockedFull` collects providers that pass the structural gates, scores each with `buildCandidateWithReason`, and returns the winner plus the exact narrowed candidate pool and rejection counters:
 
 | Counter | Meaning |
 |---|---|
@@ -44,9 +48,14 @@ The public wrapper `ReserveProvider` (`scheduler.go:199-205`) discards the decis
 | `ModelTooLargeRejections` | Providers whose memory can never fit the model (permanent) |
 | `VisionRejections` | Providers that serve the model only as a text-only build when vision is required |
 
-The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`scheduler.go:427-432`); ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice (`scheduler.go:448-458`).
+The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are tied; ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice.
 
-After selection, `ReserveProviderEx` re-takes the provider lock and runs `providerCanAdmitLocked` (`scheduler.go:1029-1050`) to re-apply the routing gates and capacity/slot-state checks. If the provider's state changed between snapshot and reservation, the selection is rejected and the caller may retry.
+Reservation is deliberately two-phase:
+
+1. The full-fleet scan holds `Registry.mu` for shared reading, so independent model requests can scan concurrently. The TTFT shadow signal reuses that same candidate pool instead of running a second fleet scan.
+2. The winner is re-snapshotted under a short `Registry.mu` write section. The coordinator repeats the full structural, pooled token-budget, memory, TTFT, and final provider admission checks before `addPendingLocked` records the debit and the half-open capacity probe is claimed.
+
+The write phase preserves atomic capacity accounting across concurrent models sharing one provider. A stale provider identity, cache configuration, gate, deadline, or capacity snapshot rejects the optimistic commit and permits one fresh shared scan. Lock order remains `Registry.mu` → `Provider.mu`; cache, plan, quote, and hedge-governor locks remain leaf locks.
 
 ## Structural gates
 

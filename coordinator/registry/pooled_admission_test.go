@@ -3,7 +3,9 @@ package registry
 import (
 	"fmt"
 	"math"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -283,6 +285,94 @@ func TestPooledAdmissionCoResidencyDoubleSpend(t *testing.T) {
 		RequestID: "victim", Model: gemmaBuild, EstimatedPromptTokens: 100, RequestedMaxTokens: 1_900,
 	}); got != nil {
 		t.Fatalf("gemma admitted during the heartbeat gap — co-resident double-spend of the shared KV pool (provider %q)", got.ID)
+	}
+}
+
+// TestConcurrentReservationScansCommitPooledBudgetAtomically proves the
+// production primary path can scan different models concurrently without
+// double-spending one provider's cross-model token pool. Both scans rendezvous
+// after seeing the same empty heartbeat snapshot; the short serialized commit
+// must admit exactly one 2k request into the shared 3k pool.
+func TestConcurrentReservationScansCommitPooledBudgetAtomically(t *testing.T) {
+	reg := New(testLogger())
+	p := makeSchedulerProvider(t, reg, "shared-box", gptossBuild, 93)
+	addAdvertisedModel(p, gemmaBuild)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 3_000
+	p.BackendCapacity.Slots = append(p.BackendCapacity.Slots, protocol.BackendSlotCapacity{
+		Model:                gemmaBuild,
+		State:                "running",
+		ActiveTokenBudgetMax: 3_000,
+	})
+	p.mu.Unlock()
+
+	arrived := make(chan string, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseScans := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseScans()
+	var seenMu sync.Mutex
+	seen := make(map[string]bool, 2)
+	reg.reservationAfterScan = func(model string) {
+		seenMu.Lock()
+		first := !seen[model]
+		seen[model] = true
+		seenMu.Unlock()
+		if !first {
+			return
+		}
+		arrived <- model
+		<-release
+	}
+
+	type result struct {
+		requestID string
+		provider  *Provider
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for i, model := range []string{gptossBuild, gemmaBuild} {
+		go func() {
+			<-start
+			requestID := fmt.Sprintf("concurrent-%d", i)
+			provider, _, _ := reg.ReserveProviderWithPlan(model, &PendingRequest{
+				RequestID:             requestID,
+				Model:                 model,
+				EstimatedPromptTokens: 100,
+				RequestedMaxTokens:    1_900,
+			})
+			results <- result{requestID: requestID, provider: provider}
+		}()
+	}
+	close(start)
+
+	entered := make(map[string]bool, 2)
+	for len(entered) < 2 {
+		select {
+		case model := <-arrived:
+			entered[model] = true
+		case <-time.After(2 * time.Second):
+			releaseScans()
+			t.Fatalf("reservation scans serialized before commit; entered=%v", entered)
+		}
+	}
+	releaseScans()
+	reservations := make([]result, 0, 2)
+	admitted := 0
+	for range 2 {
+		res := <-results
+		reservations = append(reservations, res)
+		if res.provider != nil {
+			admitted++
+		}
+	}
+	for _, res := range reservations {
+		if res.provider != nil {
+			res.provider.RemovePending(res.requestID)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("concurrent cross-model reservations admitted %d requests, want exactly 1", admitted)
 	}
 }
 

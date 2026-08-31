@@ -1985,6 +1985,10 @@ type Registry struct {
 	tpsRegistry *TPSRegistry
 
 	logger *slog.Logger
+	// reservationAfterScan is a test-only barrier invoked with r.mu held for
+	// shared reading after winner selection and before the serialized commit.
+	// Production leaves it nil; tests set it before starting concurrent scans.
+	reservationAfterScan func(model string)
 
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64

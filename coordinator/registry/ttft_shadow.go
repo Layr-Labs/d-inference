@@ -152,17 +152,17 @@ func (e ttftShadowEval) applyTo(d *RoutingDecision) {
 // candidate WITHOUT changing the routing decision. Returns the zero value (a
 // no-op for applyTo) when the admission mode is off.
 //
-// Caller holds r.mu and NO provider lock — the peer scan in
-// loadedIdleAlternativeExistsLocked snapshots each provider under its own p.mu,
-// so taking a provider lock here would risk holding two at once. winner.snapshot
-// is the PRE-reserve snapshot, so the winner's occupancy excludes the request
-// about to be admitted (the b, not b+1, the new request actually waits behind).
-//
-// excludeIDs are the same retry/speculative-backup exclusions ReserveProviderEx
-// passed to the real selector; they are threaded into the idle-spread scan so a
-// provider the selector would never have considered is never counted as a
-// routable idle alternative.
-func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, winner *routingCandidate, excludeIDs ...string) ttftShadowEval {
+// Caller holds r.mu and no provider lock. scan is the exact post-narrowing pool
+// that produced winner, so the idle-spread signal reuses it instead of walking
+// the fleet a second time. winner.snapshot is the PRE-reserve snapshot, so its
+// occupancy excludes the request about to be admitted (the b, not b+1, the new
+// request actually waits behind).
+func (r *Registry) evaluateTTFTShadowLocked(
+	model string,
+	pr *PendingRequest,
+	winner *routingCandidate,
+	scan candidateScan,
+) ttftShadowEval {
 	mode := ttftAdmissionMode
 	if mode == TTFTAdmissionOff || winner == nil || pr == nil {
 		return ttftShadowEval{}
@@ -196,9 +196,27 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 	// to. When herded, check whether an instantly-usable loaded-idle peer for the
 	// same model was routable.
 	if occ > 0 {
-		eval.IdleAlternativeExists = r.loadedIdleAlternativeExistsLocked(model, pr, winner.provider, excludeIDs...)
+		eval.IdleAlternativeExists = loadedIdleAlternativeExistsFromScan(scan, winner.provider)
 	}
 	return eval
+}
+
+// loadedIdleAlternativeExistsFromScan derives the shadow spread signal from the
+// selector's already-filtered pool. The scan and its snapshots are immutable.
+func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) bool {
+	winnerID := ""
+	if winner != nil {
+		winnerID = winner.ID
+	}
+	for _, candidate := range scan.pool {
+		if candidate.provider == nil || candidate.provider.ID == winnerID {
+			continue
+		}
+		if candidate.snapshot.modelLoaded && snapshotOccupancy(candidate.snapshot) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // loadedIdleAlternativeExistsLocked reports whether some provider OTHER than the
@@ -215,21 +233,6 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 // can never count a peer the scheduler would have rejected. Caller holds r.mu and
 // no provider lock.
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
-	winnerID := ""
-	if winner != nil {
-		winnerID = winner.ID
-	}
-	scan := r.scanCandidatesLocked(model, pr, false, excludeIDs...)
-	for _, c := range scan.pool {
-		if c.provider == nil || c.provider.ID == winnerID {
-			continue
-		}
-		// Instantly usable: the model is resident AND no work is occupying the box
-		// (a herded peer is not a spread target). The candidate already passed
-		// every selection gate via scanCandidatesLocked.
-		if c.snapshot.modelLoaded && snapshotOccupancy(c.snapshot) == 0 {
-			return true
-		}
-	}
-	return false
+	return loadedIdleAlternativeExistsFromScan(
+		r.scanCandidatesLocked(model, pr, false, excludeIDs...), winner)
 }

@@ -607,7 +607,8 @@ func TestServabilityActivationFloorPerModel(t *testing.T) {
 		{"", "gpt-oss-20b", 3.0},                                 // unreported → legacy floor
 		{"0.7.12", "gpt-oss-20b", 3.0},                           // legacy binary → legacy floor
 		{"0.8.0", "gpt-oss-20b", 5.5},                            // flat-floor binary, measured model
-		{"0.8.10", "gpt-oss-20b", 5.5},                           // last flat-floor release
+		{"0.8.10", "gpt-oss-20b", 5.5},                           // flat-floor release
+		{"0.8.15", "gpt-oss-20b", 5.5},                           // last flat-floor release actually shipped
 		{servabilityPerModelFloorMinVersion, "gpt-oss-20b", 3.5}, // measured floor
 		{servabilityPerModelFloorMinVersion, "gemma-4-26b", 5.5}, // unmeasured → flat
 		{servabilityPerModelFloorMinVersion, "", 5.5},            // unknown model → flat

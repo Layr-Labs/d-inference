@@ -83,10 +83,18 @@ const (
 	servabilityActivationFloorMinVersion = "0.8.0"
 	// servabilityPerModelFloorMinVersion is the first provider release whose
 	// UnifiedMemoryCap resolves the activation reserve from its serving set
-	// via the measured per-model floor table. PLACEHOLDER pending release:
-	// set to the version that ships the provider half of this change (the
-	// same commit — see servabilityModelActivationFloorsGB).
-	servabilityPerModelFloorMinVersion = "0.8.11"
+	// via the measured per-model floor table.
+	//
+	// RELEASE COUPLING: the release that ships the provider half of this
+	// change MUST be numbered exactly this (or this constant updated in the
+	// release commit — see the Releases section of CLAUDE.md, which bumps
+	// ProviderCore.version in the same commit). Plain numeric only:
+	// CompareVersions parses non-numeric segments as 0, so a "-swift.N"
+	// suffix would make every per-model binary read as BELOW this gate and
+	// be charged the flat floor (the unsanctioned tighter direction).
+	// 0.8.15 is the newest release at time of writing; 0.8.11 through
+	// 0.8.15 binaries hold the flat 5.5 and are gated below by this value.
+	servabilityPerModelFloorMinVersion = "0.8.16"
 )
 
 // servabilityModelActivationFloorsGB mirrors the provider's measured

@@ -173,16 +173,19 @@ func TestVerifyProviderSuccess(t *testing.T) {
 	}
 }
 
-// TestVerifyProviderTimeout: device is enrolled but no SecurityInfo webhook ever
-// arrives, so the 90s waiter times out. We shrink the wait by NOT delivering a
-// webhook and overriding the client to a short timeout is not possible (the
-// 90s is hardcoded), so instead we assert the timeout-error semantics via the
-// lower-level WaitForSecurityInfo with a short timeout — the same error string
-// ("timeout") that VerifyProvider surfaces into result.Error and that
-// verifyProviderViaMDM buckets as securityinfo-timeout.
+// TestVerifyProviderTimeout pins the lower-level waiter error string used by
+// VerifyProvider's fixed 90-second transport timeout without retaining an
+// unbound split send/wait API.
 func TestVerifyProviderTimeoutErrorString(t *testing.T) {
 	c := testClient()
-	_, err := c.WaitForSecurityInfo(context.Background(), "UDID-NO-REPLY", 50*time.Millisecond)
+	ch, _, release, err := c.registerSecurityInfoWaiter("UDID-NO-REPLY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	_, err = awaitSecurityInfo(
+		context.Background(), ch, "UDID-NO-REPLY", 50*time.Millisecond,
+	)
 	if err == nil {
 		t.Fatal("expected a timeout error when no webhook arrives")
 	}

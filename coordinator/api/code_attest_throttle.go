@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
-	"math/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"math/rand/v2"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -13,14 +17,28 @@ import (
 // codeAttestStore is the minimal slice of store.Store the code-identity reuse
 // cache needs to survive coordinator restarts/blue-green deploys (W5 Fix 2).
 // store.Store satisfies it; tests can inject a fake. SECURITY: persistence is a
-// performance optimization (avoid re-pushing within the reuse window) — it is
-// NEVER consulted to grant CodeAttested. The reuse decision (reuseAttestation)
-// re-applies the version gate + freshness window to whatever was seeded, so a
-// stale/wrong-version persisted row falls through to a real challenge.
+// performance optimization (avoid re-pushing within the reuse window), not an
+// unconditional grant. reuseAttestation re-applies version, freshness, current
+// token, and exact registration process-key gates to every seeded row.
 type codeAttestStore interface {
 	ListCodeAttestations(ctx context.Context) ([]store.CodeAttestation, error)
 	UpsertCodeAttestation(ctx context.Context, rec store.CodeAttestation) error
 	DeleteCodeAttestation(ctx context.Context, seKey string) error
+}
+
+type codeAttestPushBudgetStore interface {
+	ListCodeAttestPushBudgets(ctx context.Context) ([]store.CodeAttestPushBudget, error)
+	ReserveCodeAttestPushBudget(
+		ctx context.Context,
+		seKey, tokenHash string,
+		now, nextPushAt time.Time,
+	) (bool, error)
+	ClearCodeAttestPushFloor(
+		ctx context.Context,
+		seKey string,
+		now time.Time,
+		cooldown time.Duration,
+	) (time.Time, bool, error)
 }
 
 // codeAttestThrottle keeps APNs code-identity pushes within Apple's background-
@@ -39,10 +57,10 @@ type codeAttestStore interface {
 // All maps are keyed by the Secure Enclave public key — the stable per-device
 // identity that survives reconnects and process restarts. Three knobs:
 //   - reuseWindow: how long a successful attestation is honored for a NEW
-//     connection from the same device+version without re-pushing. Bounds the
-//     staleness of the proof (a malicious binary swap within the window could ride
-//     a prior attestation), so it is kept short and version-gated. Within a single
-//     live connection the proof is exact regardless of this window.
+//     connection with the same device, version, APNs token, and exact process
+//     node key without re-pushing. A process-key rotation always forces a fresh
+//     challenge. Within a single live connection the proof is exact regardless
+//     of this window.
 //   - push budget (backgroundPushCooldown / alertPushCooldown): minimum spacing
 //     between pushes to the same device — the hard rate-limit backstop, chosen by
 //     delivery mode. Background stays <= 3 pushes/hour/device; alert can be much
@@ -52,14 +70,30 @@ type codeAttestStore interface {
 //     (within budget) instead of being pinned to the 20-minute background budget,
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type codeAttestThrottle struct {
-	mu               sync.Mutex
-	attested         map[string]codeAttestRecord          // seKey -> last successful attestation (reuse cache)
-	lastPush         map[string]time.Time                 // seKey -> last push (device-level rate limit)
-	lastBudgetClear  map[string]time.Time                 // seKey -> last token-rotation budget reset (anti-DoS floor)
-	outstanding      map[string][]codeAttestChallenge     // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
-	resumeChallenges map[string]codeAttestResumeChallenge // nonce -> live WS/X25519 PoP
-
-	reuseWindow time.Duration
+	mu                     sync.Mutex
+	attested               map[string]codeAttestRecord          // seKey -> last successful attestation (reuse cache)
+	lastPush               map[string]time.Time                 // seKey -> last push (device-level rate limit)
+	lastBudgetClear        map[string]time.Time                 // seKey -> last token-rotation budget reset (anti-DoS floor)
+	outstanding            map[string][]codeAttestChallenge     // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
+	resumeChallenges       map[string]codeAttestResumeChallenge // nonce -> live WS/X25519 PoP
+	loopGeneration         atomic.Uint64
+	loopGenerations        map[string]uint64
+	loopTokens             map[string]string
+	durableNextPush        map[string]time.Time
+	novelTokenBlockedUntil map[string]time.Time
+	// novelPushFloor is the per-SE-key admission floor for NOVEL tokens: every
+	// admitted push raises it, so a device's first token pushes immediately but
+	// a reconnect churn of fabricated fresh tokens is paced at the same
+	// per-device budget as one token (Codex P1). Cleared only by an honored
+	// (budgetClearCooldown-throttled) genuine rotation. Mirrors the durable
+	// TokenHash=="" sentinel row so the floor survives restarts.
+	novelPushFloor map[string]time.Time
+	// budgetTokenOrder tracks per-SE-key token budget entries in recency order
+	// so lastPush/durableNextPush stay bounded under token churn (newest
+	// store.CodeAttestPushBudgetMaxTokenRows kept, matching the durable cap).
+	budgetTokenOrder map[string][]string
+	reservationLocks map[string]*codeAttestReservationLock
+	reuseWindow      time.Duration
 
 	// Push budget (the hard background-push rate-limit backstop) is mode-aware:
 	// allowPush picks the cooldown by delivery mode.
@@ -99,11 +133,17 @@ type codeAttestThrottle struct {
 	store codeAttestStore
 }
 
+type codeAttestReservationLock struct {
+	mu    sync.Mutex
+	users int
+}
+
 type codeAttestRecord struct {
-	at      time.Time
-	version string
-	token   string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
-	nodeKey string // registration X25519 process key; strict protected-capability reuse binding
+	at         time.Time
+	version    string
+	token      string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
+	nodeKey    string // registration X25519 process key ("" = legacy non-reusable row)
+	binaryHash string // SE-attested binary identity the proof was earned under ("" = legacy row; never authorizes a transition resume)
 }
 
 // codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
@@ -132,6 +172,13 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		lastBudgetClear:        make(map[string]time.Time),
 		resumeChallenges:       make(map[string]codeAttestResumeChallenge),
 		outstanding:            make(map[string][]codeAttestChallenge),
+		loopGenerations:        make(map[string]uint64),
+		loopTokens:             make(map[string]string),
+		durableNextPush:        make(map[string]time.Time),
+		novelTokenBlockedUntil: make(map[string]time.Time),
+		novelPushFloor:         make(map[string]time.Time),
+		budgetTokenOrder:       make(map[string][]string),
+		reservationLocks:       make(map[string]*codeAttestReservationLock),
 		reuseWindow:            30 * time.Minute,
 		backgroundPushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
 		alertPushCooldown:      75 * time.Second, // alert is not background-throttled (Fix 3)
@@ -151,33 +198,15 @@ func defaultJitter(max time.Duration) time.Duration {
 	if max <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(max)))
+	return time.Duration(rand.Int64N(int64(max)))
 }
 
-// reuseAttestation reports whether the device attested recently with the SAME
-// binary version AND the SAME APNs token, so a fresh connection can inherit the
-// proof without a push. Binding to the token closes the disconnected-rotation gap
-// (Codex #7): a token that rotated while the provider was offline — so
-// maybeRearmCodeAttest never saw the change to delete the row — cannot ride the
-// pre-rotation proof after a restart reseed; it falls through to a real challenge
-// against the new token. A record with NO recorded token (legacy rows persisted
-// before token-binding) still reuses, so introducing this does not trigger a
-// fleet-wide re-push on deploy; those rows are token-bound the next time they
-// attest, and expire within the reuse window regardless.
-func (t *codeAttestThrottle) reuseAttestation(seKey, version, token string) bool {
-	if seKey == "" {
-		return false
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r, ok := t.attested[seKey]
-	if !ok || r.version != version || t.now().Sub(r.at) >= t.reuseWindow {
-		return false
-	}
-	return r.token == "" || r.token == token
-}
-
-func (t *codeAttestThrottle) reuseAttestationForProcess(
+// reuseAttestation reports whether the device attested recently with the same
+// binary version, exact current non-empty APNs token, and exact registration-
+// bound process node key that decrypted E_K(nonce). Legacy token-less or
+// process-key-less rows are never reusable authorization inputs; they must
+// bootstrap a real push.
+func (t *codeAttestThrottle) reuseAttestation(
 	seKey, version, token, nodeKey string,
 ) bool {
 	if seKey == "" || version == "" || token == "" || nodeKey == "" {
@@ -187,30 +216,48 @@ func (t *codeAttestThrottle) reuseAttestationForProcess(
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
 	return ok &&
-		t.now().Sub(r.at) < t.reuseWindow &&
 		r.version == version &&
 		r.token == token &&
-		r.nodeKey == nodeKey
+		r.nodeKey == nodeKey &&
+		t.now().Sub(r.at) < t.reuseWindow
 }
 
-// reuseAttestationCrossVersion is reuseAttestation without the version match —
-// it rides a recent proof across a version bump (which every update causes) so a
-// healthy update isn't forced into a fresh push. Dropping the version alone is
-// unsafe (SE key + token prove the device, not that the binary is legitimate), so
-// the caller (codeAttestLoop) only invokes it behind live binary-identity fences.
-// The token match is STRICT here: both stored and current token must be non-empty
-// and equal (unlike reuseAttestation's legacy empty-token leniency).
-func (t *codeAttestThrottle) reuseAttestationCrossVersion(seKey, token string) bool {
+// reuseAttestationForTransition supplies the genuine Apple/APNs half of an
+// approved release transition, returning the SE-attested binary identity the
+// cached proof was earned under. Version may differ, and — unlike same-version
+// reuseAttestation — the cached proof's process key may differ from the current
+// one: the provider generates a fresh ephemeral NodeKeyPair on every process
+// start, so requiring key equality here would push the whole fleet on every
+// routine upgrade/restart and strand providers behind the durable APNs floor
+// while queued requests expire. The proof must still be fresh, bound to the
+// same SE identity and exact current non-empty token, must itself carry a
+// process-key binding, and must record WHICH binary earned it (a legacy
+// unbound or identity-less row never authorizes a transition). The CALLER
+// (tryCrossVersionReuse) then decides whether that recorded identity — same
+// binary, or an APPROVED active predecessor of the current release — may
+// transition; a proof earned by a deactivated/unknown release falls through to
+// a real APNs challenge (Codex 05:55Z P1).
+// SECURITY: this only authorizes SENDING a live encrypted resume challenge to
+// the CURRENT registration process key; possession of that new key is proven
+// solely by decrypting E_K(nonce), and the SE signature over the recovered
+// nonce is still verified — the cached record never grants trust by itself.
+func (t *codeAttestThrottle) reuseAttestationForTransition(
+	seKey, token string,
+) (string, bool) {
 	if seKey == "" || token == "" {
-		return false
+		return "", false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r, ok := t.attested[seKey]
-	if !ok || t.now().Sub(r.at) >= t.reuseWindow {
-		return false
+	if !ok ||
+		r.token != token ||
+		r.nodeKey == "" ||
+		r.binaryHash == "" ||
+		t.now().Sub(r.at) >= t.reuseWindow {
+		return "", false
 	}
-	return r.token != "" && r.token == token
+	return r.binaryHash, true
 }
 
 // pushCooldown returns the per-device push budget for the active delivery mode.
@@ -248,6 +295,240 @@ func (t *codeAttestThrottle) recordPush(seKey string) {
 	t.mu.Unlock()
 }
 
+func codeAttestTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func codeAttestPushBudgetKey(seKey, tokenHash string) string {
+	return seKey + "\x00" + tokenHash
+}
+
+// beginLoop rotates exclusive loop ownership for one stable device identity.
+// A registration loop and heartbeat rearm may overlap briefly, but only the
+// latest generation can reserve a push.
+func (t *codeAttestThrottle) beginLoop(seKey string) uint64 {
+	if seKey == "" {
+		return 0
+	}
+	unlockReservation := t.lockPushReservation(seKey)
+	defer unlockReservation()
+	return t.beginLoopReservationHeld(seKey)
+}
+
+func (t *codeAttestThrottle) beginLoopReservationHeld(seKey string) uint64 {
+	generation := t.loopGeneration.Add(1)
+	t.mu.Lock()
+	t.loopGenerations[seKey] = generation
+	delete(t.loopTokens, seKey)
+	t.mu.Unlock()
+	return generation
+}
+
+// rotateLoopAndClearPushBudget makes token-rotation ownership and budget reset
+// one per-device operation. An old loop cannot reserve the just-cleared budget
+// between the generation change and the new loop taking ownership. An honored
+// (unthrottled) reset also clears the durable novel-token admission floor so
+// the rotated token is challenged promptly across restarts and peers.
+func (t *codeAttestThrottle) rotateLoopAndClearPushBudget(
+	ctx context.Context, seKey string,
+) uint64 {
+	if seKey == "" {
+		return 0
+	}
+	unlockReservation := t.lockPushReservation(seKey)
+	defer unlockReservation()
+	generation := t.beginLoopReservationHeld(seKey)
+	t.clearPushBudgetReservationHeld(ctx, seKey)
+	return generation
+}
+
+func (t *codeAttestThrottle) loopCurrent(seKey string, generation uint64) bool {
+	if seKey == "" || generation == 0 {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.loopGenerations[seKey] == generation
+}
+
+func (t *codeAttestThrottle) endLoop(seKey string, generation uint64) {
+	if seKey == "" || generation == 0 {
+		return
+	}
+	t.mu.Lock()
+	if t.loopGenerations[seKey] == generation {
+		delete(t.loopGenerations, seKey)
+		delete(t.loopTokens, seKey)
+	}
+	t.mu.Unlock()
+}
+
+func (t *codeAttestThrottle) loopCurrentForToken(
+	seKey, token string,
+	generation uint64,
+) bool {
+	if seKey == "" || token == "" || generation == 0 {
+		return false
+	}
+	tokenHash := codeAttestTokenHash(token)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.loopGenerations[seKey] == generation &&
+		t.loopTokens[seKey] == tokenHash
+}
+
+func (t *codeAttestThrottle) lockPushReservation(seKey string) func() {
+	t.mu.Lock()
+	lock := t.reservationLocks[seKey]
+	if lock == nil {
+		lock = &codeAttestReservationLock{}
+		t.reservationLocks[seKey] = lock
+	}
+	lock.users++
+	t.mu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		t.mu.Lock()
+		lock.users--
+		if lock.users == 0 && t.reservationLocks[seKey] == lock {
+			delete(t.reservationLocks, seKey)
+		}
+		t.mu.Unlock()
+	}
+}
+
+// reservePush combines generation validation, local cooldown admission, and
+// the durable cross-process compare-and-set. Its returned release function keeps
+// the per-device lease held through identity recheck and push dispatch.
+func (t *codeAttestThrottle) reservePush(
+	ctx context.Context,
+	seKey, token string,
+	alert bool,
+	generation uint64,
+) (func(), bool) {
+	if seKey == "" || token == "" || generation == 0 {
+		return nil, false
+	}
+	unlockReservation := t.lockPushReservation(seKey)
+
+	tokenHash := codeAttestTokenHash(token)
+	t.mu.Lock()
+	if t.loopGenerations[seKey] != generation {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	}
+	if currentToken := t.loopTokens[seKey]; currentToken != "" &&
+		currentToken != tokenHash {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	}
+	t.loopTokens[seKey] = tokenHash
+	now := t.now()
+	cooldown := t.pushCooldown(alert)
+	budgetKey := codeAttestPushBudgetKey(seKey, tokenHash)
+	_, seenLastPush := t.lastPush[budgetKey]
+	_, seenDurablePush := t.durableNextPush[budgetKey]
+	novelToken := !seenLastPush && !seenDurablePush
+	if blockedUntil := t.novelTokenBlockedUntil[seKey]; blockedUntil.After(now) && novelToken {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	} else if !blockedUntil.IsZero() && !blockedUntil.After(now) {
+		delete(t.novelTokenBlockedUntil, seKey)
+	}
+	// Per-SE-key admission floor: a token this device never budgeted may only
+	// push once the floor from the LAST push (to any token) has elapsed. The
+	// first-ever token has no floor and admits immediately; a reconnect churn
+	// of fabricated fresh tokens is paced like a single token (Codex P1).
+	if floor, ok := t.novelPushFloor[seKey]; ok && novelToken {
+		if floor.After(now) {
+			t.mu.Unlock()
+			unlockReservation()
+			return nil, false
+		}
+		delete(t.novelPushFloor, seKey)
+	}
+	if last, ok := t.lastPush[budgetKey]; ok &&
+		now.Sub(last) < cooldown {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	}
+	if next, ok := t.durableNextPush[budgetKey]; ok &&
+		next.After(now) {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	}
+	reservationCooldown := max(cooldown, time.Nanosecond)
+	next := now.Add(reservationCooldown)
+	st, hasDurableBudget := t.store.(codeAttestPushBudgetStore)
+	t.mu.Unlock()
+
+	if hasDurableBudget {
+		admitted, err := st.ReserveCodeAttestPushBudget(
+			ctx, seKey, tokenHash, now, next,
+		)
+		if err != nil || !admitted {
+			unlockReservation()
+			return nil, false
+		}
+	}
+
+	t.mu.Lock()
+	if t.loopGenerations[seKey] != generation ||
+		t.loopTokens[seKey] != tokenHash {
+		t.mu.Unlock()
+		unlockReservation()
+		return nil, false
+	}
+	t.lastPush[budgetKey] = now
+	t.durableNextPush[budgetKey] = next
+	if next.After(t.novelPushFloor[seKey]) {
+		t.novelPushFloor[seKey] = next
+	}
+	t.noteBudgetTokenReservationHeld(seKey, tokenHash)
+	t.mu.Unlock()
+	return unlockReservation, true
+}
+
+// noteBudgetTokenReservationHeld (t.mu held) tracks per-SE-key token budget
+// entries in recency order and evicts the oldest beyond the durable cap, so
+// lastPush/durableNextPush cannot grow unboundedly under token churn. An
+// evicted token that returns falls back to the admission floor.
+func (t *codeAttestThrottle) noteBudgetTokenReservationHeld(seKey, tokenHash string) {
+	order := t.budgetTokenOrder[seKey]
+	if i := slices.Index(order, tokenHash); i >= 0 {
+		order = append(order[:i], order[i+1:]...)
+	}
+	order = append(order, tokenHash)
+	for len(order) > store.CodeAttestPushBudgetMaxTokenRows {
+		evictedKey := codeAttestPushBudgetKey(seKey, order[0])
+		delete(t.lastPush, evictedKey)
+		delete(t.durableNextPush, evictedKey)
+		order = order[1:]
+	}
+	t.budgetTokenOrder[seKey] = order
+}
+
+func (t *codeAttestThrottle) tryReservePush(
+	ctx context.Context,
+	seKey, token string,
+	alert bool,
+	generation uint64,
+) bool {
+	release, ok := t.reservePush(ctx, seKey, token, alert, generation)
+	if release != nil {
+		release()
+	}
+	return ok
+}
+
 // clearPushBudget drops the per-device push cooldown so the NEXT push is allowed
 // immediately. Used on APNs token rotation: the cooldown tracks pushes to the OLD
 // token, but Apple's push budget is per-token, so the freshly registered token has
@@ -257,19 +538,81 @@ func (t *codeAttestThrottle) recordPush(seKey string) {
 //
 // Anti-DoS: the reset is itself throttled to at most once per budgetClearCooldown
 // per device, so a provider that floods token changes in heartbeats cannot reset
-// the budget every time and spam APNs beyond the per-device budget. Returns
-// whether the budget was actually cleared (false = the reset was throttled).
-func (t *codeAttestThrottle) clearPushBudget(seKey string) bool {
+// the budget every time and spam APNs beyond the per-device budget. The cooldown
+// is DURABLE (Codex 06:36Z P1): with a budget store wired, the clear is
+// compare-and-set on the sentinel's persisted last-clear instant, so a
+// coordinator restart (empty lastBudgetClear map) or a blue-green peer cannot
+// grant one extra floor clear per deploy. Returns whether the budget was
+// actually cleared (false = the reset was throttled).
+func (t *codeAttestThrottle) clearPushBudget(ctx context.Context, seKey string) bool {
 	if seKey == "" {
 		return false
 	}
+	unlockReservation := t.lockPushReservation(seKey)
+	defer unlockReservation()
+	return t.clearPushBudgetReservationHeld(ctx, seKey)
+}
+
+// clearPushBudgetReservationHeld runs the full throttled clear (reservation
+// lock held, t.mu NOT held across the store call). Admission order: the cheap
+// process-local cooldown first, then the durable compare-and-set — the durable
+// verdict is authoritative and is mirrored locally either way, so a throttled
+// peer's flood settles into the local fast path without further store traffic.
+// Fail-closed: on store error nothing is cleared; the rotated token is only
+// DELAYED until the floor elapses — the rate limit never weakens.
+func (t *codeAttestThrottle) clearPushBudgetReservationHeld(
+	ctx context.Context, seKey string,
+) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if last, ok := t.lastBudgetClear[seKey]; ok && t.now().Sub(last) < t.budgetClearCooldown {
-		return false // a recent rotation already reset the budget — throttle the flood
+	now := t.now()
+	if last, ok := t.lastBudgetClear[seKey]; ok &&
+		now.Sub(last) < t.budgetClearCooldown {
+		t.novelTokenBlockedUntil[seKey] = last.Add(t.budgetClearCooldown)
+		t.mu.Unlock()
+		return false
 	}
-	t.lastBudgetClear[seKey] = t.now()
+	st, hasDurable := t.store.(codeAttestPushBudgetStore)
+	cooldown := t.budgetClearCooldown
+	t.mu.Unlock()
+
+	if hasDurable {
+		lastClear, cleared, err := st.ClearCodeAttestPushFloor(
+			ctx, seKey, now, cooldown,
+		)
+		if err != nil {
+			return false
+		}
+		if !cleared {
+			// Another instance (or a pre-restart clear) already spent this
+			// window. Mirror the durable verdict locally so the next flood
+			// attempt short-circuits without a store round-trip.
+			t.mu.Lock()
+			if lastClear.After(t.lastBudgetClear[seKey]) {
+				t.lastBudgetClear[seKey] = lastClear
+			}
+			if blocked := lastClear.Add(cooldown); blocked.After(t.novelTokenBlockedUntil[seKey]) {
+				t.novelTokenBlockedUntil[seKey] = blocked
+			}
+			t.mu.Unlock()
+			return false
+		}
+	}
+
+	t.mu.Lock()
+	t.lastBudgetClear[seKey] = now
+	delete(t.novelTokenBlockedUntil, seKey)
+	// An honored rotation lifts the novel-token admission floor: the freshly
+	// registered token must be challengeable immediately (Codex #9). The reset
+	// itself is budgetClearCooldown-throttled — durably when a store is wired —
+	// so floor lifting cannot be flooded into unbounded novel-token admissions.
+	delete(t.novelPushFloor, seKey)
+	// Composite (SE, token-hash) entries intentionally survive rotation. They
+	// preserve A-B-A cooldowns; a genuinely new token has no composite entry and
+	// therefore receives its independent budget. Only pre-composite legacy keys
+	// are safe to clear here.
 	delete(t.lastPush, seKey)
+	delete(t.durableNextPush, seKey)
+	t.mu.Unlock()
 	return true
 }
 
@@ -283,7 +626,7 @@ func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
 }
 
 func (t *codeAttestThrottle) recordAttestedForProcess(
-	seKey, version, token, nodeKey string,
+	seKey, version, token, nodeKey, binaryHash string,
 ) {
 	if seKey == "" {
 		return
@@ -291,6 +634,7 @@ func (t *codeAttestThrottle) recordAttestedForProcess(
 	t.mu.Lock()
 	t.attested[seKey] = codeAttestRecord{
 		at: t.now(), version: version, token: token, nodeKey: nodeKey,
+		binaryHash: binaryHash,
 	}
 	t.mu.Unlock()
 }
@@ -317,10 +661,10 @@ func (t *codeAttestThrottle) invalidateReuse(seKey string) {
 // rows that could still be reused are kept (an expired row would be ignored by
 // reuseAttestation anyway). It never overwrites a fresher in-memory record (a
 // device that reconnected and re-attested before seeding finished). Returns the
-// number of rows seeded. SECURITY: seeding only populates the cache that
-// reuseAttestation re-validates (version + freshness) on every read — it cannot
-// by itself grant CodeAttested, and a stale/wrong-version row still forces a real
-// challenge.
+// number of rows seeded. SECURITY: seeding only populates the cache;
+// reuseAttestation re-validates version, freshness, token, and exact process key
+// on every read. A stale, mismatched, or legacy process-key-less row still
+// forces a real challenge.
 func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -339,6 +683,7 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 		t.attested[r.SEPubKey] = codeAttestRecord{
 			at: r.AttestedAt, version: r.Version,
 			token: r.APNsToken, nodeKey: r.NodePublicKey,
+			binaryHash: r.BinaryHash,
 		}
 		n++
 	}
@@ -519,9 +864,9 @@ func (t *codeAttestThrottle) clearChallenge(seKey string) {
 // instance does not re-push the entire fleet (against Apple's ~3/hour/device push
 // budget). Safe to call once during server setup, AFTER the store is set and the
 // attestor is wired; a nil store or nil throttle is a no-op. SECURITY: seeding
-// only repopulates the cache that reuseAttestation re-validates (same version +
-// freshness window) on every read — it cannot grant CodeAttested by itself, and a
-// stale/wrong-version persisted row still falls through to a real challenge.
+// only repopulates the cache that reuseAttestation re-validates (same version,
+// freshness, token, and exact process key) on every read. A stale, mismatched,
+// or legacy process-key-less row still falls through to a real challenge.
 func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	if s == nil || s.codeAttestThrottle == nil || s.store == nil {
 		return
@@ -532,11 +877,50 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	rows, err := s.store.ListCodeAttestations(ctx)
 	if err != nil {
 		s.logger.Warn("code-attest: failed to seed reuse cache from store", "error", err)
-		return
-	}
-	n := s.codeAttestThrottle.seed(rows)
-	if n > 0 {
+	} else if n := s.codeAttestThrottle.seed(rows); n > 0 {
 		s.logger.Info("code-attest: seeded reuse cache from persisted records (survives deploys)", "records", n)
+	}
+	if st, ok := s.store.(codeAttestPushBudgetStore); ok {
+		budgets, err := st.ListCodeAttestPushBudgets(ctx)
+		if err != nil {
+			s.logger.Warn("code-attest: failed to seed durable push budgets", "error", err)
+		} else {
+			th := s.codeAttestThrottle
+			th.mu.Lock()
+			for _, budget := range budgets {
+				if budget.SEPubKey == "" {
+					continue
+				}
+				if budget.TokenHash == "" {
+					// Sentinel row: the per-SE-key novel-token admission floor
+					// (also the shape of legacy pre-composite rows, whose
+					// per-SE budget means exactly this). Codex P1. Its
+					// LastClearAt seeds the rotation-clear cooldown, so a
+					// restart cannot re-grant a floor clear the previous
+					// instance already spent (Codex 06:36Z P1) — even when the
+					// floor itself has already elapsed.
+					if budget.LastClearAt.After(th.lastBudgetClear[budget.SEPubKey]) {
+						th.lastBudgetClear[budget.SEPubKey] = budget.LastClearAt
+					}
+					if budget.NextPushAt.After(th.now()) &&
+						budget.NextPushAt.After(th.novelPushFloor[budget.SEPubKey]) {
+						th.novelPushFloor[budget.SEPubKey] = budget.NextPushAt
+					}
+					continue
+				}
+				if !budget.NextPushAt.After(th.now()) {
+					continue
+				}
+				key := codeAttestPushBudgetKey(
+					budget.SEPubKey, budget.TokenHash,
+				)
+				th.durableNextPush[key] = budget.NextPushAt
+				th.noteBudgetTokenReservationHeld(
+					budget.SEPubKey, budget.TokenHash,
+				)
+			}
+			th.mu.Unlock()
+		}
 	}
 }
 
@@ -646,7 +1030,7 @@ func (t *codeAttestThrottle) expireResumeChallenge(
 // Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
 // reads. SECURITY: writes only AFTER the full nonce-match + SE-signature
 // verification — never from an unverified heartbeat token.
-func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey string) {
+func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey, binaryHash string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -664,6 +1048,7 @@ func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey string) {
 			AttestedAt:    at,
 			APNsToken:     token,
 			NodePublicKey: nodeKey,
+			BinaryHash:    binaryHash,
 		}); err != nil {
 			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
 		}

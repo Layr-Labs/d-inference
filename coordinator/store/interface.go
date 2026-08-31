@@ -958,31 +958,178 @@ type CodeAttestation struct {
 	SEPubKey      string    `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
 	Version       string    `json:"version"`         // provider binary version that attested
 	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
-	APNsToken     string    `json:"apns_token"`      // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+	APNsToken     string    `json:"apns_token"`      // APNs token the proof was bound to; empty legacy rows require a fresh real push.
 	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
+	BinaryHash    string    `json:"binary_hash"`     // SE-attested binary identity (SHA-256 hex) the proof was earned under; empty legacy rows never authorize a release-transition resume
 }
 
-// ProviderTrustReuse is the persistent representation of one device's most recent
-// successful FULL live MDM SecurityInfo verification (DAR-326 Phase 0). It is the
-// durable form of api.trustReuseRecord. Keyed by the Secure Enclave public key —
-// the stable per-device identity that survives reconnects AND coordinator
-// restarts. It mirrors CodeAttestation: persistence lets a planned coordinator
-// restart/blue-green swap skip a fleet-wide live MDM SecurityInfo + APNs
-// re-verification herd.
+// CodeAttestPushBudget is durable APNs admission metadata, not evidence. It
+// prevents a coordinator restart or blue-green overlap from forgetting a push
+// already spent for one Secure Enclave identity. TokenHash distinguishes a real
+// APNs token rotation without persisting another copy of the token.
 //
-// SECURITY: the row is written ONLY after a full, verified live MDM
-// verification; it is never created from an unverified heartbeat or self-report.
-// On read, the reuse decision still re-applies a live SE challenge, a serial+SE
-// identity match, a binary-hash match, a fresh good-posture check, and the
-// freshness window, so a persisted row can only ever let the coordinator skip a
-// redundant live MDM round-trip — never extend or fabricate trust.
+// The row with TokenHash == "" is the per-SE-key ADMISSION FLOOR: the earliest
+// instant a push to a NOVEL (previously unbudgeted) token may be admitted.
+// Every admitted push raises it, so a device's first-ever token pushes
+// immediately while a churn of fabricated fresh tokens is paced at the same
+// per-device budget as a single token (Codex P1). A genuine mid-connection
+// rotation clears it via ClearCodeAttestPushFloor, preserving prompt
+// re-challenge (Codex #9).
+//
+// The sentinel additionally records LastClearAt — the DURABLE instant of the
+// last honored rotation clear. ClearCodeAttestPushFloor compare-and-sets on it,
+// clearing only when the previous durable clear is at least the caller's
+// cooldown old, so the anti-abuse spacing between rotation clears survives
+// coordinator restarts and blue-green overlap (a fresh instance's empty
+// process-local throttle map can no longer grant one free floor clear per
+// deploy).
+//
+// Novel-token admission is SERIALIZED on the sentinel: an implementation must
+// atomically create-or-advance the sentinel first and admit the token row only
+// when that acquisition succeeded, so two coordinators (blue-green overlap)
+// racing distinct novel tokens for one SE key admit exactly one — the loser
+// observes the winner's raised floor. MemoryStore gets this from its single
+// process-wide mutex; PostgresStore takes the sentinel row's ON CONFLICT lock
+// before inserting the token row.
+type CodeAttestPushBudget struct {
+	SEPubKey   string
+	TokenHash  string // "" = per-SE-key admission-floor sentinel, not a token row
+	NextPushAt time.Time
+	UpdatedAt  time.Time
+	// LastClearAt is meaningful only on the TokenHash=="" sentinel: the instant
+	// of the last honored rotation floor clear (zero = never cleared). Kept
+	// when the floor is re-raised by later admissions.
+	LastClearAt time.Time
+}
+
+// CodeAttestPushBudgetMaxTokenRows caps durable per-token budget rows kept per
+// Secure Enclave key. Admission keeps the most recently used rows; an evicted
+// token that returns (deep A-B-A) is treated as novel and paced by the
+// admission floor instead of its exact historical cooldown. Bounds table growth
+// and the startup seed map against unbounded token fabrication.
+const CodeAttestPushBudgetMaxTokenRows = 8
+
+// ProviderTrustReuse is durable device evidence, not a credential. A row can
+// only avoid a redundant MDM round-trip after a fresh registration-bound
+// Secure-Enclave challenge proves the current process key and posture.
+//
+// HardwareProofVerifiedAt is the independent MDM/MDA clock. The application
+// clock is audit-only here: current application evidence is connection-scoped
+// and must be recreated from a fresh signed challenge after every reconnect.
+// LastVerifiedBinaryHash is retained for same-binary decisions and audit, but a
+// changed hash is admitted only by the server's active-release policy snapshot.
+//
+// ContinuousCoverageUntil is the coordinator-measured liveness watermark: the
+// last instant the coordinator itself observed this device connected and
+// hardware-trusted on a live SE-challenged connection anchored at a full live
+// verification or a valid reuse grant. It is written ONLY by the coordinator
+// (batched periodic advance + graceful-shutdown/disconnect sweep), never from
+// any provider-supplied value, and it is monotonic: an advance can never move
+// it backward and never touches a tombstoned or non-hardware row. A reconnect
+// whose offline gap (now - ContinuousCoverageUntil) is below the physical
+// RecoveryOS floor proves the device cannot have flipped SIP/Secure Boot in
+// between (entering and leaving Recovery takes >= ~3 minutes and drops the
+// WebSocket), so evidence may be reused without a live MDM round.
+//
+// RevocationGeneration, RevocationEventID, and RevokedAt form a durable
+// monotonic tombstone. RevocationEventID identifies one hard-untrust operation:
+// retrying that event is idempotent, while a different event advances the
+// generation even when its coordinator observed stale state. Normal upserts
+// cannot clear the tombstone; only RecoverProviderTrustReuse, called by the
+// reviewed full-device verification path, may clear it at the exact observed
+// generation.
 type ProviderTrustReuse struct {
-	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
-	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
-	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
-	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
-	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
-	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
-	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
-	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
+	SEPubKey                   string     `json:"se_pubkey"`
+	Serial                     string     `json:"serial"`
+	TrustLevel                 string     `json:"trust_level"`
+	LastVerifiedBinaryHash     string     `json:"last_verified_binary_hash"`
+	SIPEnabled                 bool       `json:"sip_enabled"`
+	SecureBootFull             bool       `json:"secure_boot_full"`
+	MDAUDID                    string     `json:"mda_udid"`
+	HardwareProofVerifiedAt    time.Time  `json:"hardware_proof_verified_at"`
+	ApplicationProofVerifiedAt *time.Time `json:"application_proof_verified_at,omitempty"`
+	ContinuousCoverageUntil    *time.Time `json:"continuous_coverage_until,omitempty"`
+	EvidenceGeneration         uint64     `json:"evidence_generation"`
+	RevocationGeneration       uint64     `json:"revocation_generation"`
+	RevocationEventID          string     `json:"revocation_event_id"`
+	RevokedAt                  *time.Time `json:"revoked_at,omitempty"`
+}
+
+// ProviderTrustReuseWriteResult is the authoritative outcome of a
+// generation-checked evidence write. Applied is false when a newer durable
+// revocation won; callers must never grant hardware in that case. The returned
+// generations always reflect the durable row, including an insert/update that
+// committed successfully.
+type ProviderTrustReuseWriteResult struct {
+	Applied              bool
+	EvidenceGeneration   uint64
+	RevocationGeneration uint64
+}
+
+// VerificationTaskKind identifies a bounded coordinator verification task.
+// Values are persisted, so additions must be backward-compatible.
+type VerificationTaskKind string
+
+const (
+	VerificationTaskSecurityInfo VerificationTaskKind = "security_info"
+	VerificationTaskMDA          VerificationTaskKind = "mda"
+)
+
+// VerificationTaskState is the durable scheduler state. A row is scheduling
+// metadata only; it is never evidence and cannot grant trust.
+type VerificationTaskState string
+
+const (
+	VerificationStateWaitingChallenge VerificationTaskState = "waiting_challenge"
+	VerificationStatePending          VerificationTaskState = "pending"
+	VerificationStateRunning          VerificationTaskState = "running"
+	VerificationStateBackoff          VerificationTaskState = "backoff"
+	VerificationStateCompleted        VerificationTaskState = "completed"
+)
+
+// VerificationPriority is ordered from most urgent to least urgent.
+type VerificationPriority int16
+
+const (
+	VerificationPriorityFirstOrExpired VerificationPriority = iota
+	VerificationPriorityRecovery
+	VerificationPriorityRefresh
+)
+
+// VerificationOutcome is a fixed, low-cardinality terminal/attempt outcome.
+type VerificationOutcome string
+
+const (
+	VerificationOutcomeNone            VerificationOutcome = "none"
+	VerificationOutcomeSuccess         VerificationOutcome = "success"
+	VerificationOutcomeReused          VerificationOutcome = "reused"
+	VerificationOutcomeTransient       VerificationOutcome = "transient"
+	VerificationOutcomeTimeout         VerificationOutcome = "timeout"
+	VerificationOutcomePostureMismatch VerificationOutcome = "posture_mismatch"
+	VerificationOutcomeInvalid         VerificationOutcome = "invalid"
+	VerificationOutcomeCancelled       VerificationOutcome = "cancelled"
+	VerificationOutcomeError           VerificationOutcome = "error"
+)
+
+// VerificationJob is durable retry/claim state keyed by the registration-bound
+// Secure Enclave identity and task kind. Provider/session IDs are deliberately
+// absent. ClaimOwner identifies a coordinator process, never a provider.
+type VerificationJob struct {
+	SEPubKey      string
+	Serial        string
+	UDID          string
+	Kind          VerificationTaskKind
+	State         VerificationTaskState
+	Priority      VerificationPriority
+	RetryStage    int
+	PreviousDelay time.Duration
+	NextAttemptAt time.Time
+	LastOutcome   VerificationOutcome
+	// ReopenPending records that a newer connection settled its challenge while
+	// an older coordinator still owned the durable claim. The old result releases
+	// this row back to pending instead of completing current-generation work.
+	ReopenPending  bool
+	UpdatedAt      time.Time
+	ClaimOwner     string
+	ClaimExpiresAt *time.Time
 }

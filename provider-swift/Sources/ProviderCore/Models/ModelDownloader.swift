@@ -23,8 +23,8 @@ public struct ModelDownloader: Sendable {
     /// transition/testing against alternate buckets.
     public static let defaultR2CDNURL = "https://models.darkbloom.ai"
 
-    internal let r2CDNURL: String
-    internal let urlSession: URLSession
+    public let r2CDNURL: String
+    public let urlSession: URLSession
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
     internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
@@ -121,7 +121,7 @@ public struct ModelDownloader: Sendable {
             .replacingOccurrences(of: "\\", with: "__")
     }
 
-    static func validatedManifestRelativePath(_ path: String) throws -> String {
+    public static func validatedManifestRelativePath(_ path: String) throws -> String {
         guard !path.isEmpty else {
             throw ModelCatalogError.downloadFailed("manifest contains empty file path")
         }
@@ -135,7 +135,7 @@ public struct ModelDownloader: Sendable {
         return path
     }
 
-    static func escapeR2Path(_ path: String) -> String {
+    public static func escapeR2Path(_ path: String) -> String {
         path.split(separator: "/", omittingEmptySubsequences: false)
             .map { segment in
                 String(segment).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(segment)

@@ -8,141 +8,6 @@ import Darwin
 #endif
 
 extension Start {
-    // MARK: - Standalone (--local)
-
-    internal func runLocalStandalone(
-        snapshot: RuntimeSnapshot,
-        config: ProviderConfig,
-        hardware: HardwareInfo,
-        runtimeCapabilities: Set<ProviderRuntimeCapability>,
-        bootSecuritySnapshot: BootSecuritySnapshot = .live()
-    ) async throws {
-        warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
-
-        let selected = advertisedModels(
-            from: snapshot.models,
-            config: config,
-            modelOverrides: model,
-            includeDisabled: all,
-            runtimeCapabilities: runtimeCapabilities
-        )
-
-        // v0.7.5 ONE ENGINE, fail loud: the standalone server serves
-        // everything through ContinuousBatchingV2, so a model whose family
-        // has no CBv2 adapter cannot serve at all. Say so per model, and
-        // refuse to start when nothing serveable remains — a silent empty
-        // catalog would 404 every request with no explanation.
-        let (advertised, unsupported) = EngineV2SupportedModels.partition(selected)
-        for dropped in unsupported {
-            printError(
-                "Skipping \(dropped.id): model_type '\(dropped.modelType ?? "unknown")' has no "
-                    + "engine-v2 adapter (v0.7.5 serves everything through engine v2)")
-        }
-        guard !advertised.isEmpty else {
-            printError(
-                "No engine-v2-capable models available to serve. "
-                    + "Download a supported model (gpt-oss / gemma-4 families) and retry.")
-            throw ExitCode.failure
-        }
-
-        // Direct/local mode: mint (or reuse) a bearer token so the loopback
-        // server isn't open to every local process / hostile webpage. --no-auth
-        // opts out for trusted/airgapped use.
-        let token: String?
-        if noAuth {
-            token = nil
-        } else {
-            token = try LocalEndpoint.loadOrCreateToken()
-        }
-
-        let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-        print("darkbloom \(ProviderCore.version) (local / direct mode)")
-        print("Listening on \(bind):\(port)")
-        print("Models: \(advertised.count)")
-        for m in advertised {
-            print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
-        }
-        print()
-        print("OpenAI-compatible endpoint:")
-        print("  base URL: \(baseURL)")
-        if let token {
-            print("  API key:  \(token)")
-            print()
-            print("  export OPENAI_BASE_URL=\(baseURL)")
-            print("  export OPENAI_API_KEY=\(token)")
-        } else {
-            print("  API key:  (auth disabled — --no-auth)")
-        }
-        print()
-        print("  Shareable any time with: darkbloom local")
-        print()
-
-        // Lock acquisition and exact legacy-artifact housekeeping are one
-        // ordered operation shared with coordinator-connected foreground mode.
-        try ProcessLifecycle.acquireMediaServingLock()
-        ProcessLifecycle.preventSystemSleep()
-        defer { ProcessLifecycle.releaseSingleInstanceLock() }
-
-        // NOTE: no LegacyCompiledDecodeGate here anymore — the standalone
-        // server constructs no legacy engine as of v0.7.5 (CBv2 compiled
-        // decode has its own path and needs no process-global latch).
-        let server = StandaloneServer(
-            config: StandaloneServerConfig(
-                port: port,
-                host: bind,
-                maxCachedModels: Int(clamping: config.backend.maxModelSlots),
-                authToken: token,
-                hardware: hardware,
-                runtimeCapabilities: runtimeCapabilities,
-                engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
-                engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
-                engineV2KVBackend: config.backend.engineV2KVBackend,
-                engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
-                prefillDeadlineMode: config.backend.prefillDeadlineMode,
-                mtpMode: config.backend.mtpMode,
-                mtpDrafterPath: config.backend.mtpDrafterPath
-            ),
-            models: advertised
-        )
-        try await server.start()
-
-        // Wait until the server CONFIRMS it bound the port before advertising it.
-        // start() launches Hummingbird in a child task and returns before the
-        // bind completes; we must not write a discovery record pointing at a dead
-        // (or, worse, a foreign) endpoint that `darkbloom local` / local-first
-        // clients would then trust. waitUntilBound reads the actor's own bind
-        // signal (Hummingbird onServerRunning), not an HTTP probe a process
-        // already holding the port could answer.
-        guard await server.waitUntilBound(timeoutSeconds: 5.0) else {
-            await server.stop()
-            printError("Local server failed to bind \(bind):\(port) within 5s — is the port already in use?")
-            throw ExitCode.failure
-        }
-
-        // Publish discovery metadata so a same-machine client (and
-        // `darkbloom local`) can find + authenticate to this server. Removed on
-        // exit; the token file persists so the token survives restarts.
-        let info = LocalEndpoint.Info(
-            host: bind,
-            port: port,
-            apiKey: token ?? "",
-            version: ProviderCore.version,
-            pid: ProcessInfo.processInfo.processIdentifier,
-            updatedAt: ISO8601DateFormatter().string(from: Date())
-        )
-        try? LocalEndpoint.writeInfo(info)
-        defer { LocalEndpoint.removeInfo() }
-
-        // The optional fan helper receives a renewable activity lease only
-        // after the server has successfully bound, and only for the lifetime
-        // of the actual Hummingbird service task. A stopped/crashed local
-        // server therefore releases fan control.
-        await withFanActivityLease(providerVersion: ProviderCore.version) {
-            await server.waitUntilStopped()
-        }
-    }
-
-
     // MARK: - Foreground (invoked by launchd)
 
     internal func runForeground(
@@ -160,18 +25,13 @@ extension Start {
             selectedModels = advertisedModels(
                 from: snapshot.models,
                 config: config,
-                modelOverrides: model,
-                runtimeCapabilities: runtimeCapabilities)
+                modelOverrides: model)
         } else if all {
-            selectedModels = snapshot.models.filter {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities)
-            }
+            selectedModels = snapshot.models
         } else {
             selectedModels = advertisedModels(
                 from: snapshot.models,
-                config: config,
-                runtimeCapabilities: runtimeCapabilities)
+                config: config)
         }
 
         guard !selectedModels.isEmpty else {
@@ -263,30 +123,6 @@ extension Start {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
 
-        // Unified mode: build the local-endpoint config when --local-endpoint is
-        // set. Reuses the same persistent bearer token + bind/port options as
-        // --local; --no-auth opts out of the token (trusted/airgapped only).
-        var localEndpointConfig: LocalInferenceHTTPConfig?
-        if localEndpoint {
-            // FAIL CLOSED: if auth is requested (no --no-auth) but the token
-            // can't be created/read, abort rather than silently opening the
-            // endpoint unauthenticated — otherwise an unwritable ~/.darkbloom
-            // would expose it (especially under --bind 0.0.0.0). Mirrors --local.
-            let token: String?
-            if noAuth {
-                token = nil
-            } else {
-                do {
-                    token = try LocalEndpoint.loadOrCreateToken()
-                } catch {
-                    printError("Cannot start --local-endpoint: failed to create the local API token (\(error)). Fix ~/.darkbloom permissions, or pass --no-auth for a trusted/airgapped setup.")
-                    throw ExitCode.failure
-                }
-            }
-            localEndpointConfig = LocalInferenceHTTPConfig(host: bind, port: port, authToken: token)
-            let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
-            print("Local endpoint: \(shownURL)\(token != nil ? "  (API key from `darkbloom local`)" : "  (auth disabled)")")
-        }
 
         let loopConfig = ProviderLoopConfig(
             coordinatorURL: coordinatorURL,
@@ -297,8 +133,7 @@ extension Start {
             runtimeHashes: runtimeHashes,
             runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
-            modelHashFingerprints: modelHashFingerprints,
-            localEndpoint: localEndpointConfig
+            modelHashFingerprints: modelHashFingerprints
         )
 
         do {

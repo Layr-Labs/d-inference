@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The worker receives model artifacts only through broker-issued,
+         read-only scoped handles/bookmarks. App Sandbox supplies its private
+         writable container for bounded MLX/Metal caches. No network, server,
+         child-process, debugger, JIT, dyld, or Mach lookup exception is
+         granted. This boundary does not claim to survive root or kernel
+         compromise; those are explicitly outside the signed-host threat
+         model. -->
+    <!-- The only cross-process credential authority is the existing
+         provider-scoped Secure Enclave key used to sign APNs challenges. -->
+    <key>com.apple.application-identifier</key>
+    <string>SLDQ2GJ6TL.io.darkbloom.provider.inference-worker</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
+    </array>
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
+</dict>
+</plist>

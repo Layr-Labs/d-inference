@@ -18,6 +18,7 @@ import (
 const processEvidenceTestBinary = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const processEvidenceTestMetallib = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 const processEvidenceTestRuntime = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+const processEvidenceTestWorker = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
 func signProcessEvidenceForTest(
 	t *testing.T, processKey string, in attestation.ProcessEvidenceCanonicalInput,
@@ -63,6 +64,9 @@ func processEvidenceVerifierFixture(t *testing.T) (
 				Version: "0.8.15", Platform: "macos-arm64", Backend: registry.BackendMLXSwift,
 				BinaryHash:  processEvidenceTestBinary,
 				RuntimeHash: processEvidenceTestRuntime, MetallibHash: processEvidenceTestMetallib,
+				TemplateHashes: map[string]string{
+					protocol.TemplateHashInferenceWorkerBinary: processEvidenceTestWorker,
+				},
 			}},
 		},
 	})
@@ -93,9 +97,12 @@ func processEvidenceVerifierFixture(t *testing.T) (
 		SerialNumber: result.SerialNumber, ProviderVersion: provider.Version,
 		ProviderPlatform: "macos-arm64", ProviderBackend: provider.Backend,
 		BinaryHash: processEvidenceTestBinary, RuntimeHash: processEvidenceTestRuntime,
-		MetallibHash:   processEvidenceTestMetallib,
-		TemplateHashes: map[string]string{"mlx_metallib": processEvidenceTestMetallib},
-		SIPEnabled:     &truth, SecureBootEnabled: &truth,
+		MetallibHash: processEvidenceTestMetallib,
+		TemplateHashes: map[string]string{
+			"mlx_metallib": processEvidenceTestMetallib,
+			protocol.TemplateHashInferenceWorkerBinary: processEvidenceTestWorker,
+		},
+		SIPEnabled: &truth, SecureBootEnabled: &truth,
 	}
 	resp.StatusSignature = testStatusSignature(t, attestation.StatusCanonicalInput{
 		Nonce: pc.nonce, Timestamp: pc.timestamp,
@@ -138,17 +145,26 @@ func TestVerifyProcessEvidenceV1MutationAndDowngradeMatrix(t *testing.T) {
 		mutate func(*protocol.AttestationResponseMessage)
 		want   processEvidenceReason
 	}{
-		"process_key":     {func(r *protocol.AttestationResponseMessage) { r.PublicKey += "x" }, processEvidenceReasonProcessKeyMismatch},
-		"se":              {func(r *protocol.AttestationResponseMessage) { r.SEPublicKey += "x" }, processEvidenceReasonIdentityMismatch},
-		"serial":          {func(r *protocol.AttestationResponseMessage) { r.SerialNumber += "x" }, processEvidenceReasonIdentityMismatch},
-		"session":         {func(r *protocol.AttestationResponseMessage) { r.CoordinatorSessionID += "x" }, processEvidenceReasonSessionMismatch},
-		"generation":      {func(r *protocol.AttestationResponseMessage) { r.ChallengeGeneration += "x" }, processEvidenceReasonGenerationMismatch},
-		"expiry":          {func(r *protocol.AttestationResponseMessage) { r.ChallengeExpiresAt += "x" }, processEvidenceReasonExpiryMismatch},
-		"binary":          {func(r *protocol.AttestationResponseMessage) { r.BinaryHash = processEvidenceTestMetallib }, processEvidenceReasonReleaseMismatch},
-		"version":         {func(r *protocol.AttestationResponseMessage) { r.ProviderVersion += "x" }, processEvidenceReasonReleaseMismatch},
-		"backend":         {func(r *protocol.AttestationResponseMessage) { r.ProviderBackend += "x" }, processEvidenceReasonReleaseMismatch},
-		"runtime":         {func(r *protocol.AttestationResponseMessage) { r.RuntimeHash = processEvidenceTestBinary }, processEvidenceReasonSignatureInvalid},
-		"metallib":        {func(r *protocol.AttestationResponseMessage) { r.MetallibHash = processEvidenceTestBinary }, processEvidenceReasonRuntimeMismatch},
+		"process_key": {func(r *protocol.AttestationResponseMessage) { r.PublicKey += "x" }, processEvidenceReasonProcessKeyMismatch},
+		"se":          {func(r *protocol.AttestationResponseMessage) { r.SEPublicKey += "x" }, processEvidenceReasonIdentityMismatch},
+		"serial":      {func(r *protocol.AttestationResponseMessage) { r.SerialNumber += "x" }, processEvidenceReasonIdentityMismatch},
+		"session":     {func(r *protocol.AttestationResponseMessage) { r.CoordinatorSessionID += "x" }, processEvidenceReasonSessionMismatch},
+		"generation":  {func(r *protocol.AttestationResponseMessage) { r.ChallengeGeneration += "x" }, processEvidenceReasonGenerationMismatch},
+		"expiry":      {func(r *protocol.AttestationResponseMessage) { r.ChallengeExpiresAt += "x" }, processEvidenceReasonExpiryMismatch},
+		"binary":      {func(r *protocol.AttestationResponseMessage) { r.BinaryHash = processEvidenceTestMetallib }, processEvidenceReasonReleaseMismatch},
+		"version":     {func(r *protocol.AttestationResponseMessage) { r.ProviderVersion += "x" }, processEvidenceReasonReleaseMismatch},
+		"backend":     {func(r *protocol.AttestationResponseMessage) { r.ProviderBackend += "x" }, processEvidenceReasonReleaseMismatch},
+		"runtime":     {func(r *protocol.AttestationResponseMessage) { r.RuntimeHash = processEvidenceTestBinary }, processEvidenceReasonSignatureInvalid},
+		"metallib":    {func(r *protocol.AttestationResponseMessage) { r.MetallibHash = processEvidenceTestBinary }, processEvidenceReasonRuntimeMismatch},
+		"worker_missing": {func(r *protocol.AttestationResponseMessage) {
+			delete(r.TemplateHashes, protocol.TemplateHashInferenceWorkerBinary)
+		}, processEvidenceReasonRuntimeMismatch},
+		"worker_malformed": {func(r *protocol.AttestationResponseMessage) {
+			r.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary] = "not-a-sha256"
+		}, processEvidenceReasonRuntimeMismatch},
+		"worker_mismatch": {func(r *protocol.AttestationResponseMessage) {
+			r.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary] = processEvidenceTestBinary
+		}, processEvidenceReasonRuntimeMismatch},
 		"sip":             {func(r *protocol.AttestationResponseMessage) { v := false; r.SIPEnabled = &v }, processEvidenceReasonPostureUnsafe},
 		"secure_boot":     {func(r *protocol.AttestationResponseMessage) { v := false; r.SecureBootEnabled = &v }, processEvidenceReasonPostureUnsafe},
 		"signature":       {func(r *protocol.AttestationResponseMessage) { r.ProcessEvidenceSignature += "x" }, processEvidenceReasonSignatureInvalid},

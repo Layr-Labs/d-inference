@@ -189,7 +189,10 @@ extension Models {
         mutating func run() async throws {
             let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
             let runtimeCapabilities = snapshot.hardware.map {
-                ProviderRuntimeCapabilityDetector.detectLive(hardware: $0)
+                ProviderRuntimeCapabilityDetector.detect(
+                    chipFamily: $0.chipFamily,
+                    naxAvailable: { false },
+                    liveMetallibHash: { nil })
             } ?? []
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)

@@ -10,10 +10,13 @@ let package = Package(
     products: [
         .library(name: "ProviderCoreFoundation", targets: ["ProviderCoreFoundation"]),
         .library(name: "ProviderCore", targets: ["ProviderCore"]),
+        .library(name: "InferenceWorkerProtocol", targets: ["InferenceWorkerProtocol"]),
+        .library(name: "InferenceWorkerCore", targets: ["InferenceWorkerCore"]),
         .library(name: "DarkbloomFanCore", targets: ["DarkbloomFanCore"]),
         .library(name: "DarkbloomFanProtocol", targets: ["DarkbloomFanProtocol"]),
         .library(name: "DarkbloomFanService", targets: ["DarkbloomFanService"]),
         .executable(name: "darkbloom", targets: ["darkbloom"]),
+        .executable(name: "darkbloom-inference-worker", targets: ["DarkbloomInferenceWorker"]),
         .executable(name: "darkbloom-fan-helper", targets: ["DarkbloomFanHelper"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
         .executable(name: "darkbloom-publish", targets: ["darkbloom-publish"]),
@@ -23,6 +26,7 @@ let package = Package(
         .package(path: "../libs/mlx-swift-lm"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+        .package(url: "https://github.com/apple/swift-numerics.git", from: "1.1.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         // swift-transformers 1.3.0 (2026-03-23) is the first release with
         // `TokenizersBackend` in `TokenizerModel.knownTokenizers`, which is
@@ -97,6 +101,19 @@ let package = Package(
         ),
 
         .target(
+            name: "InferenceWorkerSecurityShim",
+            path: "Sources/InferenceWorkerSecurityShim",
+            publicHeadersPath: "include"
+        ),
+
+        .target(
+            name: "InferenceWorkerProtocol",
+            dependencies: ["InferenceWorkerSecurityShim"],
+            path: "Sources/InferenceWorkerProtocol",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+
+        .target(
             name: "ProviderMetallibControl",
             path: "Sources/ProviderMetallibControl",
             publicHeadersPath: "include"
@@ -113,6 +130,18 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderCoreFoundation",
+                "InferenceWorkerProtocol",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "TOMLKit", package: "TOMLKit"),
+            ],
+            path: "Sources/ProviderCore"
+        ),
+        .target(
+            name: "InferenceWorkerCore",
+            dependencies: [
+                "InferenceWorkerProtocol",
+                "ProviderCore",
+                "ProviderCoreFoundation",
                 "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -123,31 +152,16 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),
-                .product(name: "TOMLKit", package: "TOMLKit"),
-                .product(name: "Hummingbird", package: "hummingbird"),
             ],
-            path: "Sources/ProviderCore"
+            path: "Sources/InferenceWorkerCore"
+        ),
+        .executableTarget(
+            name: "DarkbloomInferenceWorker",
+            dependencies: ["InferenceWorkerCore", "InferenceWorkerProtocol"],
+            path: "Sources/DarkbloomInferenceWorker"
         ),
 
-        // ----------------------------------------------------------------
-        // ProviderBenchmark: LIGHTWEIGHT benchmark runners that the shipped
-        // `darkbloom benchmark` command needs — ModelBenchmark (prefill/decode
-        // latency), ThroughputSweep (+ report), and DecodeBandwidthModel.
-        // Engines are constructed through the production
-        // EngineV2Factory.makeProductionEngine, so the perf gate measures
-        // exactly what serving slots run.
-        // ----------------------------------------------------------------
-        .target(
-            name: "ProviderBenchmark",
-            dependencies: [
-                "ProviderCore",
-                .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXVLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ],
-            path: "Sources/ProviderBenchmark"
-        ),
+
 
         // ----------------------------------------------------------------
         // darkbloom: command-line entry point. Subcommands: serve / start /
@@ -165,7 +179,6 @@ let package = Package(
                 "DarkbloomFanProtocol",
                 "DarkbloomFanService",
                 "ProviderCore",
-                "ProviderBenchmark",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/darkbloom"
@@ -212,18 +225,33 @@ let package = Package(
         // Phase 6 release-payload shape.
         // ----------------------------------------------------------------
         .testTarget(
+            name: "InferenceWorkerTests",
+            dependencies: [
+                "InferenceWorkerProtocol",
+                "InferenceWorkerCore",
+                "ProviderCore",
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "Cmlx", package: "mlx-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Numerics", package: "swift-numerics"),
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
+                .product(name: "Jinja", package: "swift-jinja"),
+            ],
+            path: "Tests/InferenceWorkerTests"
+        ),
+
+        .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderCore",
-                "ProviderBenchmark",
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                "InferenceWorkerCore",
+                .product(name: "Cmlx", package: "mlx-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Sodium", package: "swift-sodium"),
+                .product(name: "Numerics", package: "swift-numerics"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
-                // Direct Jinja access for the served-template render
-                // regression (Gemma4ServedTemplateRenderTests) — the
-                // normalizers under test live in ProviderCore, which
-                // ProviderCoreFoundationTests cannot link.
-                .product(name: "Jinja", package: "swift-jinja"),
             ],
             path: "Tests/ProviderCoreTests"
         ),

@@ -1,105 +1,43 @@
-/// ProviderLoop -- coordinator-driven model preload (load_model push).
-///
-/// Handles `load_model` pushes that pre-warm a model out of band, tracks the
-/// per-model preload tasks/subscribers, and the preload/shutdown wait helpers.
-
-import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
-#if canImport(os)
-import os
-#endif
 
 extension ProviderLoop {
-    // MARK: - Coordinator-driven preload
-
-    /// Handle a `load_model` request from the coordinator. The provider
-    /// kicks off the load asynchronously (so the WebSocket reader stays
-    /// responsive) and emits `load_model_status` outbound messages
-    /// reporting `started` immediately and `succeeded`/`failed` when the
-    /// load completes.
-    ///
-    /// If the model is already loaded, we short-circuit with
-    /// `succeeded` -- the coordinator can use this as an idempotent
-    /// "ensure warm" call.
-    internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
-        let eligibility = ModelRuntimeRequirements.evaluate(
-            modelID: modelId, available: loopConfig.runtimeCapabilities)
-        guard eligibility.isEligible else {
-            preloadTasks.removeValue(forKey: modelId)?.cancel()
-            preloadTaskIds.removeValue(forKey: modelId)
-            preloadStatusSubscribers.removeValue(forKey: modelId)
+    internal func handleLoadModelRequest(
+        modelId: String,
+        send: SendHandle
+    ) {
+        guard advertisedModels[modelId] != nil else {
             send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .failed,
-                error: ModelRuntimeIneligibleError(
-                    eligibility: eligibility).localizedDescription))
+                modelId: modelId, status: .failed,
+                error: "model is not advertised"))
             return
         }
-        if isShuttingDown {
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .failed,
-                error: "provider is shutting down"
-            ))
-            return
-        }
-        if isDrainingForUpdate {
-            sendDrainingLoadModelFailure(modelId: modelId, send: send)
-            return
-        }
-
-        if modelSlots[modelId] != nil, !modelsUnloading.contains(modelId) {
-            logger.info("Preload for \(modelId): already loaded, replying succeeded")
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .succeeded,
-                error: nil
-            ))
-            return
-        }
-
         if preloadTasks[modelId] != nil {
-            logger.info("Preload for \(modelId): already in progress, coalescing duplicate request")
             preloadStatusSubscribers[modelId, default: []].append(send)
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .started,
-                error: nil
-            ))
             return
         }
 
+        let taskID = UUID()
+        preloadTaskIds[modelId] = taskID
         preloadStatusSubscribers[modelId] = [send]
         send.send(.loadModelStatus(
-            modelId: modelId,
-            status: .started,
-            error: nil
-        ))
-
-        let me = self
-        let taskId = UUID()
-        preloadTaskIds[modelId] = taskId
+            modelId: modelId, status: .started, error: nil))
         preloadTaskStarted?(modelId)
-        preloadTasks[modelId] = Task {
-            defer { Task { await me.removePreloadTask(modelId: modelId, taskId: taskId) } }
+        preloadTasks[modelId] = Task { [weak self] in
+            guard let self else { return }
+            let status: ProviderMessage.LoadModelStatus.Status
+            let message: String?
             do {
-                try await me.ensureModelLoaded(modelId: modelId)
-                try Task.checkCancellation()
-                let shuttingDown = await me.isProviderShuttingDown()
-                guard !shuttingDown else { return }
-                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .succeeded, error: nil)
-            } catch is CancellationError {
-                return
+                try await self.inferenceWorkerClient.preloadModel(
+                    identifier: modelId)
+                status = .succeeded
+                message = nil
             } catch {
-                let message = error.localizedDescription
-                await me.logPreloadFailure(modelId: modelId, error: message)
-                await me.finishPreloadTask(modelId: modelId, taskId: taskId, status: .failed, error: message)
+                status = .failed
+                message = "worker rejected model preload"
             }
+            await self.finishPreloadTask(
+                modelId: modelId, taskId: taskID,
+                status: status, error: message)
         }
     }
 
@@ -112,65 +50,39 @@ extension ProviderLoop {
         guard preloadTaskIds[modelId] == taskId else { return }
         preloadTasks.removeValue(forKey: modelId)
         preloadTaskIds.removeValue(forKey: modelId)
-        let subscribers = preloadStatusSubscribers.removeValue(forKey: modelId) ?? []
+        let subscribers =
+            preloadStatusSubscribers.removeValue(forKey: modelId) ?? []
         for subscriber in subscribers {
             subscriber.send(.loadModelStatus(
-                modelId: modelId,
-                status: status,
-                error: error
-            ))
+                modelId: modelId, status: status, error: error))
         }
     }
 
-    internal func waitForPreloads(_ preloads: [Task<Void, Never>], timeout: Duration) async -> Bool {
+    internal func waitForPreloads(
+        _ preloads: [Task<Void, Never>],
+        timeout: Duration
+    ) async -> Bool {
         guard !preloads.isEmpty else { return true }
-        return await withCheckedContinuation { continuation in
-            let oneShot = OneShotBoolContinuation(continuation)
-
-            Task {
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
                 for task in preloads { await task.value }
-                oneShot.resume(returning: true)
+                return true
             }
-
-            // Structured timeout: first resume wins (OneShotBoolContinuation
-            // dedupes), so a slept Task replaces the GCD asyncAfter without
-            // changing the race semantics.
-            Task {
-                try? await taskSleep( timeout)
-                oneShot.resume(returning: false)
+            group.addTask {
+                do {
+                    try await taskSleep(timeout)
+                    return false
+                } catch {
+                    return false
+                }
             }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
         }
     }
 
     internal func cancelLoadWaiters() {
-        for waiters in loadingWaiters.values {
-            for waiter in waiters { waiter.resume(throwing: CancellationError()) }
-        }
-        loadingWaiters.removeAll()
-        releaseLoadGateWaiters()
-        for waiters in unloadingWaiters.values {
-            for waiter in waiters { waiter.resume() }
-        }
-        unloadingWaiters.removeAll()
+        for task in preloadTasks.values { task.cancel() }
     }
-
-    private func logPreloadFailure(modelId: String, error: String) {
-        logger.error("Preload for \(modelId) failed: \(error)")
-    }
-
-    private func isProviderShuttingDown() -> Bool {
-        isShuttingDown
-    }
-
-    /// Only remove the preload entry if it still belongs to this task,
-    /// preventing a newer preload's entry from being removed by an older
-    /// task's deferred cleanup.
-    private func removePreloadTask(modelId: String, taskId: UUID) {
-        if preloadTaskIds[modelId] == taskId {
-            preloadTasks.removeValue(forKey: modelId)
-            preloadTaskIds.removeValue(forKey: modelId)
-            preloadStatusSubscribers.removeValue(forKey: modelId)
-        }
-    }
-
 }

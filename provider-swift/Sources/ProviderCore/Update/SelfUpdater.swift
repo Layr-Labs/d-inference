@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import InferenceWorkerProtocol
 
 /// Release information returned by the coordinator.
 public struct ReleaseInfo: Sendable {
@@ -9,6 +10,7 @@ public struct ReleaseInfo: Sendable {
     public let bundleHash: String
     public let binaryHash: String?
     public let metallibHash: String?
+    public let inferenceWorkerBinaryHash: String?
 
     public init(
         version: String,
@@ -16,7 +18,8 @@ public struct ReleaseInfo: Sendable {
         url: String,
         bundleHash: String,
         binaryHash: String? = nil,
-        metallibHash: String? = nil
+        metallibHash: String? = nil,
+        inferenceWorkerBinaryHash: String? = nil
     ) {
         self.version = version
         self.platform = platform
@@ -24,6 +27,7 @@ public struct ReleaseInfo: Sendable {
         self.bundleHash = bundleHash
         self.binaryHash = binaryHash
         self.metallibHash = metallibHash
+        self.inferenceWorkerBinaryHash = inferenceWorkerBinaryHash
     }
 
     public var sha256: String {
@@ -309,6 +313,14 @@ public struct SelfUpdater: Sendable {
             else {
                 return .failed("missing release hash field")
             }
+            guard let serializedTemplateHashes = json["template_hashes"] as? String,
+                  let templateHashes = try? Self.parseReleaseTemplateHashes(
+                    serializedTemplateHashes),
+                  let workerHash = templateHashes["inference_worker_binary"]
+            else {
+                return .failed(
+                    "release is missing a valid inference worker binary hash")
+            }
 
             return .release(ReleaseInfo(
                 version: version,
@@ -316,12 +328,46 @@ public struct SelfUpdater: Sendable {
                 url: downloadURL,
                 bundleHash: bundleHash,
                 binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
+                metallibHash: json["metallib_hash"] as? String,
+                inferenceWorkerBinaryHash: workerHash
             ))
         } catch {
             return .failed(error.localizedDescription)
         }
     }
+    static func parseReleaseTemplateHashes(
+        _ serialized: String
+    ) throws -> [String: String] {
+        guard !serialized.isEmpty else {
+            throw UpdateError.replaceFailed("empty template_hashes")
+        }
+        var result: [String: String] = [:]
+        for entry in serialized.split(
+            separator: ",", omittingEmptySubsequences: false)
+        {
+            let pair = entry.split(
+                separator: "=", maxSplits: 1,
+                omittingEmptySubsequences: false)
+            guard pair.count == 2 else {
+                throw UpdateError.replaceFailed(
+                    "malformed template_hashes entry")
+            }
+            let name = String(pair[0])
+            let hash = String(pair[1]).lowercased()
+            guard !name.isEmpty, result[name] == nil,
+                  hash.count == 64,
+                  hash.utf8.allSatisfy({
+                    ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102)
+                  })
+            else {
+                throw UpdateError.replaceFailed(
+                    "invalid or duplicate template_hashes entry")
+            }
+            result[name] = hash
+        }
+        return result
+    }
+
 
     // MARK: - Download and Verify
 
@@ -516,10 +562,17 @@ public struct SelfUpdater: Sendable {
                 names: ["bin/darkbloom-enclave", "darkbloom-enclave", "bin/eigeninference-enclave", "eigeninference-enclave"],
                 root: stagingRoot
             )
-            var flatMetallib = try requiredBundleFile(
-                names: ["bin/mlx.metallib", "mlx.metallib"],
-                root: stagingRoot
-            )
+            let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
+            let hasAppBundle = fm.fileExists(atPath: extractedApp.path)
+            var flatMetallib: URL
+            if hasAppBundle {
+                flatMetallib = extractedApp.appendingPathComponent(
+                    InferenceWorkerContract.relativeMetallibPathInsideApp)
+            } else {
+                flatMetallib = try requiredBundleFile(
+                    names: ["bin/mlx.metallib", "mlx.metallib"],
+                    root: stagingRoot)
+            }
 
             if let binaryHash = release.binaryHash {
                 try verifyHash(file: flatDarkbloom, expected: binaryHash, label: "darkbloom")
@@ -533,8 +586,6 @@ public struct SelfUpdater: Sendable {
             // bin/ copies carry a bundle-contextual code signature that
             // fails codesign --verify when run standalone, causing macOS
             // to SIGKILL the process.
-            let extractedApp = stagingRoot.appendingPathComponent("Darkbloom.app")
-            let hasAppBundle = fm.fileExists(atPath: extractedApp.path)
             try Self.verifyAppBundleRequirement(
                 hasAppBundle: hasAppBundle,
                 required: verification.requireAppBundle)
@@ -577,8 +628,8 @@ public struct SelfUpdater: Sendable {
                 if hasAppBundle {
                     let appDarkbloom = extractedApp
                         .appendingPathComponent("Contents/MacOS/darkbloom")
-                    let appMetallib = extractedApp
-                        .appendingPathComponent("Contents/MacOS/mlx.metallib")
+                    let appMetallib = extractedApp.appendingPathComponent(
+                        InferenceWorkerContract.relativeMetallibPathInsideApp)
                     if let binaryHash = release.binaryHash {
                         try verifyHash(
                             file: appDarkbloom,
@@ -604,6 +655,11 @@ public struct SelfUpdater: Sendable {
                         deep: true,
                         policy: signaturePolicy
                     )
+                    try verifyNestedInferenceWorker(
+                        app: extractedApp,
+                        claimedVersion: release.version,
+                        expectedExecutableHash: release.inferenceWorkerBinaryHash,
+                        signaturePolicy: signaturePolicy)
                     if verification.requireAppBundle {
                         try Self.verifySignedAppVersion(
                             app: extractedApp,
@@ -683,6 +739,12 @@ public struct SelfUpdater: Sendable {
                         label: "Darkbloom.app",
                         deep: true
                     )
+                    try verifyNestedInferenceWorker(
+                        app: app,
+                        claimedVersion: staged.release.version,
+                        expectedExecutableHash:
+                            staged.release.inferenceWorkerBinaryHash,
+                        signaturePolicy: .darkbloomProduction)
                     try FanHelperCapabilityVerifier.verify(
                         app: app,
                         executable: app.appendingPathComponent(
@@ -1125,62 +1187,237 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
-        let marker = app.appendingPathComponent(
-            PackagedRuntimeSmoke.pagedCapabilityRelativePath)
-        let markerPresent = fileManager.fileExists(atPath: marker.path)
-        let binary = try Data(contentsOf: executable, options: [.mappedIfSafe])
-        let pagedCodePresent = binary.range(
-            of: Data("engine_v2_kv_backend".utf8)) != nil
-
-        guard markerPresent == pagedCodePresent else {
-            throw UpdateError.replaceFailed(
-                pagedCodePresent
-                    ? "paged-capable artifact is missing its signed capability marker"
-                    : "artifact advertises paged capability without paged runtime code")
-        }
-        guard markerPresent else {
-            return // pre-paged v0.7.5/v0.7.7 compatibility
-        }
-        guard
-            let markerValue = try? String(contentsOf: marker, encoding: .utf8),
-            markerValue.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
-        else {
-            throw UpdateError.replaceFailed(
-                "paged runtime capability marker is invalid")
-        }
 
         let resourceRoot = app.appendingPathComponent(
-            "Contents/Resources",
+            InferenceWorkerContract.relativeResourcesPathInsideApp,
             isDirectory: true)
         let bundles = try fileManager.contentsOfDirectory(
             at: resourceRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
             .filter {
-                $0.lastPathComponent == PackagedRuntimeSmoke.mlxLMCommonBundleName
+                $0.lastPathComponent
+                    == "mlx-swift-lm_MLXLMCommon.bundle"
             }
             .map { $0.appendingPathComponent("pagedattention.metal") }
             .filter { fileManager.isReadableFile(atPath: $0.path) }
         guard bundles.count == 1 else {
             throw UpdateError.replaceFailed(
-                "paged-capable artifact requires exactly one sealed "
-                    + "\(PackagedRuntimeSmoke.mlxLMCommonBundleName)/pagedattention.metal "
+                "worker-capable artifact requires exactly one sealed "
+                    + "mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal "
                     + "(found \(bundles.count))")
         }
-        // The signed child must prove the production TOML projection,
-        // overwrite precedence, early safe-R1 latch, and packaged AOT before
-        // it reaches the existing paged-kernel GPU smoke.
-        var smokeEnvironment = try PackagedRuntimeSmoke.retainedValidationEnvironment()
-        smokeEnvironment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
-        let smokeOutput = try BoundedProcess.runCapturingStandardOutput(
-            executable,
-            arguments: ["runtime-smoke"],
-            environment: smokeEnvironment,
-            timeout: Self.artifactVerificationTimeout)
-        guard PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(smokeOutput)
+        // MLX runtime execution is worker-only. The updater verifies the exact
+        // sealed worker resource and the app's deep signature here; signed-host
+        // XPC tests exercise the runtime inside the sandbox rather than loading
+        // MLX in this supervisor process.
+    }
+
+    private func verifyNestedInferenceWorker(
+        app: URL,
+        claimedVersion: String,
+        expectedExecutableHash: String?,
+        signaturePolicy: DarkbloomCodeSignature.Policy
+    ) throws {
+        let workerBundle = app.appendingPathComponent(
+            InferenceWorkerContract.relativeBundlePathInsideApp,
+            isDirectory: true)
+        if signaturePolicy == .darkbloomProduction {
+            guard let expectedExecutableHash,
+                  expectedExecutableHash.count == 64,
+                  expectedExecutableHash.utf8.allSatisfy({
+                    ($0 >= 48 && $0 <= 57)
+                        || ($0 >= 65 && $0 <= 70)
+                        || ($0 >= 97 && $0 <= 102)
+                  })
+            else {
+                throw UpdateError.replaceFailed(
+                    "release authorization is missing the inference worker hash")
+            }
+        }
+        let executable = app.appendingPathComponent(
+            InferenceWorkerContract.relativeExecutablePathInsideApp)
+        let infoURL = workerBundle.appendingPathComponent("Contents/Info.plist")
+        let profileURL = workerBundle.appendingPathComponent(
+            "Contents/embedded.provisionprofile")
+        let infoData = try Data(contentsOf: infoURL)
+        try Self.verifyWorkerBundleFilesystem(
+            bundle: workerBundle,
+            executable: executable,
+            info: infoURL,
+            profile: profileURL)
+        guard let info = try PropertyListSerialization.propertyList(
+            from: infoData, options: [], format: nil) as? [String: Any],
+              info["CFBundleIdentifier"] as? String
+                == InferenceWorkerContract.workerBundleIdentifier,
+              info["CFBundleExecutable"] as? String
+                == InferenceWorkerContract.executableName,
+              info["CFBundlePackageType"] as? String == "XPC!",
+              info["CFBundleShortVersionString"] as? String == claimedVersion,
+              info["CFBundleVersion"] as? String == claimedVersion,
+              (info["XPCService"] as? [String: Any])?["ServiceType"] as? String
+                == "Application",
+              (info["XPCService"] as? [String: Any])?["RunLoopType"] as? String
+                == "NSRunLoop"
         else {
             throw UpdateError.replaceFailed(
-                "packaged runtime smoke omitted the retained Gemma optimization marker")
+                "inference worker Info.plist identity/version mismatch")
+        }
+        let workerPolicy: DarkbloomCodeSignature.Policy =
+            signaturePolicy == .darkbloomProduction
+                ? .darkbloomInferenceWorker : .structuralForIsolatedTest
+        try verifyCodeSignature(
+            file: workerBundle, label: "inference worker XPC",
+            deep: true, policy: workerPolicy)
+        try verifyCodeSignature(
+            file: executable, label: "inference worker executable",
+            policy: workerPolicy)
+        if let expectedExecutableHash {
+            try verifyHash(
+                file: executable, expected: expectedExecutableHash,
+                label: "inference worker executable")
+        }
+        let entitlementsData = try BoundedProcess.runCapturingStandardOutput(
+            URL(fileURLWithPath: "/usr/bin/codesign"),
+            arguments: ["-d", "--entitlements", ":-", executable.path],
+            timeout: 30)
+        try Self.verifyWorkerEntitlements(entitlementsData)
+        let profileData: Data
+        if signaturePolicy == .structuralForIsolatedTest {
+            profileData = try Data(contentsOf: profileURL)
+        } else {
+            profileData = try BoundedProcess.runCapturingStandardOutput(
+                URL(fileURLWithPath: "/usr/bin/security"),
+                arguments: ["cms", "-D", "-i", profileURL.path],
+                timeout: 30)
+        }
+        try Self.verifyWorkerProvisioningProfile(profileData)
+        if signaturePolicy == .darkbloomProduction {
+            var environment = ProcessInfo.processInfo.environment
+            environment["DARKBLOOM_SIGNED_HOST_TEST"] = "1"
+            let probeOutput = try BoundedProcess.runCapturingStandardOutput(
+                executable,
+                arguments: ["--sandbox-self-test-v1"],
+                environment: environment,
+                timeout: 30)
+            try Self.verifyWorkerSandboxProbeOutput(probeOutput)
+        }
+    }
+
+    static func verifyWorkerSandboxProbeOutput(_ data: Data) throws {
+        guard String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            == "DBXPC_SANDBOX_SELF_TEST_V1:63"
+        else {
+            throw UpdateError.replaceFailed(
+                "inference worker sandbox self-test failed")
+        }
+    }
+    static func verifyWorkerBundleFilesystem(
+        bundle: URL,
+        executable: URL,
+        info: URL,
+        profile: URL
+    ) throws {
+        let fm = FileManager.default
+        let contents = bundle.appendingPathComponent("Contents")
+        let macOS = contents.appendingPathComponent("MacOS")
+        let metallib = macOS.appendingPathComponent("mlx.metallib")
+        let resources = contents.appendingPathComponent("Resources")
+        let resourceBundle = resources.appendingPathComponent(
+            "mlx-swift-lm_MLXLMCommon.bundle")
+        let paged = resourceBundle.appendingPathComponent(
+            "pagedattention.metal")
+        for directory in [bundle, contents, macOS, resources, resourceBundle] {
+            let values = try directory.resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw UpdateError.replaceFailed(
+                    "inference worker bundle contains a symlink/non-directory")
+            }
+        }
+        for file in [executable, info, profile, metallib, paged] {
+            let values = try file.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  (values.fileSize ?? 0) > 0 else {
+                throw UpdateError.replaceFailed(
+                    "inference worker bundle contains a missing/symlink/empty file")
+            }
+        }
+        let resourceItems = try fm.contentsOfDirectory(
+            at: resources, includingPropertiesForKeys: nil)
+        guard fm.isExecutableFile(atPath: executable.path) else {
+            throw UpdateError.replaceFailed(
+                "inference worker executable does not have execute permission")
+        }
+        guard resourceItems.map(\.lastPathComponent)
+            == ["mlx-swift-lm_MLXLMCommon.bundle"],
+              try fm.contentsOfDirectory(
+                at: resourceBundle, includingPropertiesForKeys: nil)
+                .map(\.lastPathComponent) == ["pagedattention.metal"]
+        else {
+            throw UpdateError.replaceFailed(
+                "inference worker bundle contains unapproved runtime resources")
+        }
+        for forbidden in ["Frameworks", "Helpers", "PlugIns", "SharedSupport"] {
+            guard !fm.fileExists(
+                atPath: contents.appendingPathComponent(forbidden).path) else {
+                throw UpdateError.replaceFailed(
+                    "inference worker bundle contains unapproved nested code/support")
+            }
+        }
+    }
+
+
+    static func verifyWorkerEntitlements(
+        _ data: Data,
+        requireExactKeys: Bool = true
+    ) throws {
+        guard let value = try PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil) as? [String: Any]
+        else {
+            throw UpdateError.replaceFailed(
+                "inference worker entitlements are not a property list")
+        }
+        let exactKeys: Set<String> = [
+            "com.apple.application-identifier",
+            "keychain-access-groups",
+            "com.apple.security.app-sandbox",
+            "com.apple.security.files.bookmarks.app-scope",
+        ]
+        guard (!requireExactKeys || Set(value.keys) == exactKeys),
+              value["com.apple.application-identifier"] as? String
+                == "\(InferenceWorkerContract.teamIdentifier).\(InferenceWorkerContract.workerBundleIdentifier)",
+              value["keychain-access-groups"] as? [String]
+                == ["\(InferenceWorkerContract.teamIdentifier).\(InferenceWorkerContract.hostBundleIdentifier)"],
+              value["com.apple.security.app-sandbox"] as? Bool == true,
+              value["com.apple.security.files.bookmarks.app-scope"] as? Bool
+                == true
+        else {
+            throw UpdateError.replaceFailed(
+                "inference worker entitlements violate exact sandbox contract")
+        }
+    }
+
+    static func verifyWorkerProvisioningProfile(_ data: Data) throws {
+        guard let profile = try PropertyListSerialization.propertyList(
+            from: data, options: [], format: nil) as? [String: Any],
+              let expirationDate = profile["ExpirationDate"] as? Date,
+              expirationDate > Date(),
+              profile["TeamIdentifier"] as? [String]
+                == [InferenceWorkerContract.teamIdentifier],
+              let entitlements = profile["Entitlements"] as? [String: Any],
+              entitlements["application-identifier"] as? String
+                == "\(InferenceWorkerContract.teamIdentifier).\(InferenceWorkerContract.workerBundleIdentifier)",
+              entitlements["keychain-access-groups"] as? [String]
+                == ["\(InferenceWorkerContract.teamIdentifier).\(InferenceWorkerContract.hostBundleIdentifier)"],
+              entitlements["com.apple.security.app-sandbox"] as? Bool == true,
+              entitlements[
+                "com.apple.security.files.bookmarks.app-scope"] as? Bool == true
+        else {
+            throw UpdateError.replaceFailed(
+                "inference worker provisioning profile grants are invalid")
         }
     }
 

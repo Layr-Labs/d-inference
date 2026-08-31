@@ -78,6 +78,7 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
     public let binaryHash: String
     public let bundleHash: String
     public let metallibHash: String?
+    public let inferenceWorkerBinaryHash: String?
     public let url: String
     public let desiredGeneration: UInt64
 
@@ -88,6 +89,7 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
         binaryHash: String,
         bundleHash: String,
         metallibHash: String? = nil,
+        inferenceWorkerBinaryHash: String? = nil,
         url: String,
         desiredGeneration: UInt64
     ) {
@@ -97,6 +99,8 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
         self.binaryHash = binaryHash
         self.bundleHash = bundleHash
         self.metallibHash = metallibHash.flatMap { $0.isEmpty ? nil : $0 }
+        self.inferenceWorkerBinaryHash =
+            inferenceWorkerBinaryHash.flatMap { $0.isEmpty ? nil : $0 }
         self.url = url
         self.desiredGeneration = desiredGeneration
     }
@@ -108,7 +112,8 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
             url: url,
             bundleHash: bundleHash,
             binaryHash: binaryHash,
-            metallibHash: metallibHash)
+            metallibHash: metallibHash,
+            inferenceWorkerBinaryHash: inferenceWorkerBinaryHash)
     }
 
     func hasSameArtifact(as other: AuthorizedReleaseUpdate) -> Bool {
@@ -118,6 +123,7 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
             binaryHash == other.binaryHash &&
             bundleHash == other.bundleHash &&
             metallibHash == other.metallibHash &&
+            inferenceWorkerBinaryHash == other.inferenceWorkerBinaryHash &&
             url == other.url
     }
     enum CodingKeys: String, CodingKey {
@@ -127,6 +133,7 @@ public struct AuthorizedReleaseUpdate: Codable, Sendable, Equatable {
 
 
         case metallibHash = "metallib_hash"
+        case inferenceWorkerBinaryHash = "inference_worker_binary_hash"
         case desiredGeneration = "desired_generation"
     }
 }

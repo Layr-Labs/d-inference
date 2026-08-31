@@ -5,11 +5,6 @@
 
 import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
 #if canImport(os)
 import os
 #endif
@@ -27,7 +22,7 @@ extension ProviderLoop {
         let prefetcher: any ModelPrefetcher =
             CatalogModelPrefetcher(
                 coordinatorURL: loopConfig.coordinatorURL,
-                runtimeCapabilities: loopConfig.runtimeCapabilities)
+                runtimeCapabilities: inferenceWorkerRuntimeCapabilities)
         return ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
@@ -41,7 +36,7 @@ extension ProviderLoop {
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
         guard ModelRuntimeRequirements.isEligible(
-            modelID: modelId, available: loopConfig.runtimeCapabilities)
+            modelID: modelId, available: inferenceWorkerRuntimeCapabilities)
         else {
             rejectPermanentlyIneligiblePrefetch(modelId: modelId, send: send)
             return
@@ -172,7 +167,6 @@ extension ProviderLoop {
     /// re-hashes), so we do not pay a full re-download for a good build — but we
     /// never report `.verified` for an unverified snapshot.
     internal func prefetchPreCheck(modelId: String) -> PrefetchPreCheck {
-        if modelSlots[modelId] != nil { return .alreadyAvailable }
         if advertisedModels[modelId] != nil, modelHashes[modelId] != nil {
             return .alreadyAvailable
         }
@@ -190,17 +184,6 @@ extension ProviderLoop {
     /// utility priority) so hashing a multi-GB build never blocks inference or
     /// the event loop; only the small dictionary writes happen on the actor.
     func applyVerifiedPrefetch(modelId: String) async {
-        guard ModelRuntimeRequirements.isEligible(
-            modelID: modelId, available: loopConfig.runtimeCapabilities)
-        else {
-            desiredSwapDrop.removeValue(forKey: modelId)
-            desiredPrefetchTargets.remove(modelId)
-            staleDesiredPrefetches.insert(modelId)
-            clearDesiredPrefetchRetryState(for: modelId)
-            logger.error(
-                "Ignoring verified prefetch for permanently ineligible model \(modelId)")
-            return
-        }
         if staleDesiredPrefetches.remove(modelId) != nil {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
@@ -241,18 +224,6 @@ extension ProviderLoop {
             logger.error("Prefetch verified \(modelId) but the weight hash could not be computed; not advertising (keeping the previous build to avoid an unverifiable swap)")
             return
         }
-        // Architecture-derived supported set (v0.7.5): a prefetched build
-        // whose family has no CBv2 adapter can never serve — advertising it
-        // would invite requests that always refuse. Keep the previous build
-        // serving; the catalog entry is the thing that needs fixing.
-        guard EngineV2SupportedModels.isSupported(modelType: info.modelType) else {
-            desiredSwapDrop.removeValue(forKey: modelId)
-            logger.error(
-                "Prefetch verified \(modelId) but model_type '\(info.modelType ?? "unknown")' "
-                    + "has no CBv2 adapter (v0.7.5 serves everything through engine v2); "
-                    + "not advertising (keeping the previous build)")
-            return
-        }
         // Adding to `advertisedModels` also raises the effective slot cap
         // (`maxModelSlots` is computed from this set), so the newly-verified
         // build can be held resident alongside the model currently being served
@@ -261,7 +232,19 @@ extension ProviderLoop {
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
-        syncWarmModelState()
+        do {
+            // Broker and atomically install the expanded worker catalog before
+            // any coordinator advertisement can route the new build.
+            try await initializeInferenceWorkerAfterHardening()
+            await certifyInferenceWorkerForCurrentConnection()
+        } catch {
+            advertisedModels.removeValue(forKey: modelId)
+            modelHashes.removeValue(forKey: modelId)
+            liveModelHashes.removeValue(forKey: modelId)
+            logger.error(
+                "Prefetch verified \(modelId) but worker catalog update failed; not advertising")
+            return
+        }
         logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
             await coordinatorClient.updateModelWeightHashes(liveModelHashes)
@@ -282,6 +265,13 @@ extension ProviderLoop {
         // monitor reclaims it.
         if let previous = desiredSwapDrop.removeValue(forKey: modelId), previous != modelId {
             await dropAdvertisedBuild(previous)
+            do {
+                try await initializeInferenceWorkerAfterHardening()
+                _ = await certifyInferenceWorkerForCurrentConnection()
+            } catch {
+                logger.error(
+                    "Prefetch swap installed but final worker catalog contraction failed")
+            }
         }
     }
 
@@ -293,7 +283,6 @@ extension ProviderLoop {
         advertisedModels.removeValue(forKey: buildID)
         modelHashes.removeValue(forKey: buildID)
         await coordinatorClient?.unadvertiseModel(buildID)
-        syncWarmModelState()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 
@@ -302,11 +291,7 @@ extension ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     internal func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
-        let currentDesired = Set(requestedDesired.filter {
-            ModelRuntimeRequirements.isEligible(
-                modelID: $0, available: loopConfig.runtimeCapabilities)
-        })
+        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
         for stale in desiredPrefetchTargets.subtracting(currentDesired) {
             desiredSwapDrop.removeValue(forKey: stale)
             staleDesiredPrefetches.insert(stale)
@@ -317,12 +302,6 @@ extension ProviderLoop {
         for entry in entries {
             let desired = entry.desiredBuild
             guard !desired.isEmpty else { continue }
-            guard ModelRuntimeRequirements.isEligible(
-                modelID: desired, available: loopConfig.runtimeCapabilities)
-            else {
-                rejectPermanentlyIneligiblePrefetch(modelId: desired, send: send)
-                continue
-            }
             staleDesiredPrefetches.remove(desired)
             // A fresh declarative push resets the retry budget (and supersedes
             // any pending backoff timer — the loop below re-prefetches a missing
@@ -346,8 +325,14 @@ extension ProviderLoop {
             if let desiredInfo = advertisedModels[desired], modelHashes[desired] != nil {
                 if let previous, advertisedModels[previous] != nil {
                     await dropAdvertisedBuild(previous)
-                    // Authoritative re-announce so the coordinator drops previous too.
+                }
+                do {
+                    try await initializeInferenceWorkerAfterHardening()
+                    _ = await certifyInferenceWorkerForCurrentConnection()
                     outboundSend?.send(.modelsUpdate(models: [desiredInfo]))
+                } catch {
+                    logger.error(
+                        "desired_models: worker generation update failed; withholding reannounce")
                 }
                 desiredSwapDrop.removeValue(forKey: desired)
                 continue

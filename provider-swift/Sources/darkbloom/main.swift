@@ -12,16 +12,6 @@ import ProviderCore
 
 let rawArgs = Array(CommandLine.arguments.dropFirst())
 
-// An installed pre-v0.8.10 updater cannot seed the new packaged-smoke latch
-// environment. Bootstrap it in the candidate itself before command parsing or
-// AppKit hosting can cause a first MLX/Metal touch.
-if rawArgs.first == "runtime-smoke" {
-    do {
-        try PackagedRuntimeSmoke.seedRetainedValidationEnvironment()
-    } catch {
-        Darkbloom.exit(withError: error)
-    }
-}
 
 #if os(macOS)
 if ProviderAppKitHost.shouldHost(rawArgs) {

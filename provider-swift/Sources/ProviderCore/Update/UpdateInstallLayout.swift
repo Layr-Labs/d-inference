@@ -1,4 +1,5 @@
 import Foundation
+import InferenceWorkerProtocol
 
 /// Concrete app/flat-layout operations used by the journaled recovery store.
 /// Kept separate from transaction/state orchestration so rename ordering and
@@ -30,7 +31,8 @@ extension UpdateRecoveryStore {
             try fm.copyItem(at: source, to: copiedBundle)
             copiedBinary = copiedBundle.appendingPathComponent("Contents/MacOS/darkbloom")
             copiedEnclave = copiedBundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            copiedMetallib = copiedBundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
+            copiedMetallib = copiedBundle.appendingPathComponent(
+                InferenceWorkerContract.relativeMetallibPathInsideApp)
         case .flat:
             let sourceBin = installRoot.appendingPathComponent("bin")
             copiedBundle = nextRoot.appendingPathComponent("bin")
@@ -80,7 +82,7 @@ extension UpdateRecoveryStore {
                 ? "predecessor/Darkbloom.app/Contents/MacOS/darkbloom-enclave"
                 : "predecessor/bin/darkbloom-enclave",
             metallibPath: layout == .app
-                ? "predecessor/Darkbloom.app/Contents/MacOS/mlx.metallib"
+                ? "predecessor/Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"
                 : "predecessor/bin/mlx.metallib",
             verifiedAt: now
         )
@@ -113,7 +115,8 @@ extension UpdateRecoveryStore {
             bundle = app
             binary = app.appendingPathComponent("Contents/MacOS/darkbloom")
             enclave = app.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = app.appendingPathComponent("Contents/MacOS/mlx.metallib")
+            metallib = app.appendingPathComponent(
+                InferenceWorkerContract.relativeMetallibPathInsideApp)
         } else {
             bundle = staged.stagingRoot.appendingPathComponent("bin")
             binary = staged.flatDarkbloom
@@ -184,7 +187,8 @@ extension UpdateRecoveryStore {
             try fm.createDirectory(at: bin, withIntermediateDirectories: true)
             let appBin = "../Darkbloom.app/Contents/MacOS"
             for (name, target) in [
-                ("mlx.metallib", "\(appBin)/mlx.metallib"),
+                ("mlx.metallib",
+                 "../Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"),
                 ("darkbloom-enclave", "\(appBin)/darkbloom-enclave"),
                 ("eigeninference-enclave", "darkbloom-enclave"),
                 ("darkbloom", "\(appBin)/darkbloom"),
@@ -300,7 +304,8 @@ extension UpdateRecoveryStore {
             bundle = stagingRoot.appendingPathComponent("Darkbloom.app")
             binary = bundle.appendingPathComponent("Contents/MacOS/darkbloom")
             enclave = bundle.appendingPathComponent("Contents/MacOS/darkbloom-enclave")
-            metallib = bundle.appendingPathComponent("Contents/MacOS/mlx.metallib")
+            metallib = bundle.appendingPathComponent(
+                InferenceWorkerContract.relativeMetallibPathInsideApp)
         case .flat:
             bundle = stagingRoot.appendingPathComponent("bin")
             binary = bundle.appendingPathComponent("darkbloom")
@@ -404,7 +409,8 @@ extension UpdateRecoveryStore {
     private func liveLayout() throws -> VerifiedPredecessor.Layout {
         let app = installRoot.appendingPathComponent("Darkbloom.app")
         if fm.fileExists(atPath: app.appendingPathComponent("Contents/MacOS/darkbloom").path),
-           fm.fileExists(atPath: app.appendingPathComponent("Contents/MacOS/mlx.metallib").path)
+           fm.fileExists(atPath: app.appendingPathComponent(
+            InferenceWorkerContract.relativeMetallibPathInsideApp).path)
         {
             return .app
         }
@@ -430,7 +436,8 @@ extension UpdateRecoveryStore {
                 bundle,
                 app.appendingPathComponent("darkbloom"),
                 app.appendingPathComponent("darkbloom-enclave"),
-                app.appendingPathComponent("mlx.metallib")
+                bundle.appendingPathComponent(
+                    InferenceWorkerContract.relativeMetallibPathInsideApp)
             )
         case .flat:
             let bin = root.appendingPathComponent("bin")

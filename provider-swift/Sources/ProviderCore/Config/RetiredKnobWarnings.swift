@@ -27,7 +27,19 @@ public enum RetiredKnobWarnings {
         // operators still setting them so nobody believes a kill switch
         // exists that doesn't. Selection is unconditional; rollback is
         // release-level.
-        for retired in EngineV2Config.retiredEnvironmentKeysSet(environment: environment) {
+        let retiredEnvironmentKeys = [
+            "DARKBLOOM_ENGINE_V2",
+            "DARKBLOOM_ENGINE_V2_MODELS",
+            "DARKBLOOM_COMPILED_DECODE",
+            "DARKBLOOM_GEMMA_B1_FAST_PATH",
+            "DARKBLOOM_B1_GREEDY_FAST_PATH",
+            "DARKBLOOM_KV_GPTOSS_KERNEL",
+            "DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192",
+            "DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT",
+            "DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS",
+        ]
+        for retired in retiredEnvironmentKeys
+            where !(environment[retired] ?? "").isEmpty {
             out.append(
                 "\(retired) is retired and IGNORED as of v0.7.5 — the v2 engine serves "
                     + "everything; rollback is release-level, not a per-box switch")

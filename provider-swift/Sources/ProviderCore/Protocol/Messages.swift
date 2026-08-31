@@ -488,7 +488,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.tier = tier
             if let stageMs, stageMs.isFinite {
-                self.stageMs = min(PrefixCacheReadyResult.maxStageMs, max(0, stageMs))
+                self.stageMs = min(600_000, max(0, stageMs))
             } else {
                 self.stageMs = nil
             }
@@ -1588,6 +1588,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var binaryHash: String
         public var bundleHash: String
         public var metallibHash: String?
+        public var inferenceWorkerBinaryHash: String?
         public var url: String
         public var desiredGeneration: UInt64
 
@@ -1598,6 +1599,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             binaryHash: String,
             bundleHash: String,
             metallibHash: String? = nil,
+            inferenceWorkerBinaryHash: String? = nil,
             url: String,
             desiredGeneration: UInt64
         ) {
@@ -1607,6 +1609,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.binaryHash = binaryHash
             self.bundleHash = bundleHash
             self.metallibHash = metallibHash
+            self.inferenceWorkerBinaryHash = inferenceWorkerBinaryHash
             self.url = url
             self.desiredGeneration = desiredGeneration
         }
@@ -1619,6 +1622,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
                 binaryHash: binaryHash,
                 bundleHash: bundleHash,
                 metallibHash: metallibHash,
+                inferenceWorkerBinaryHash: inferenceWorkerBinaryHash,
                 url: url,
                 desiredGeneration: desiredGeneration)
         }
@@ -1669,6 +1673,7 @@ extension CoordinatorMessage: Codable {
         case binaryHash = "binary_hash"
         case bundleHash = "bundle_hash"
         case metallibHash = "metallib_hash"
+        case inferenceWorkerBinaryHash = "inference_worker_binary_hash"
         case url, platform, backend, version
         case desiredGeneration = "desired_generation"
         // PrivateRequestV2
@@ -1799,6 +1804,9 @@ extension CoordinatorMessage: Codable {
             try container.encode(update.binaryHash, forKey: .binaryHash)
             try container.encode(update.bundleHash, forKey: .bundleHash)
             try container.encodeIfPresent(update.metallibHash, forKey: .metallibHash)
+            try container.encodeIfPresent(
+                update.inferenceWorkerBinaryHash,
+                forKey: .inferenceWorkerBinaryHash)
             try container.encode(update.url, forKey: .url)
             try container.encode(update.desiredGeneration, forKey: .desiredGeneration)
         }
@@ -1921,6 +1929,8 @@ extension CoordinatorMessage: Codable {
                 binaryHash: try container.decode(String.self, forKey: .binaryHash),
                 bundleHash: try container.decode(String.self, forKey: .bundleHash),
                 metallibHash: try container.decodeIfPresent(String.self, forKey: .metallibHash),
+                inferenceWorkerBinaryHash: try container.decodeIfPresent(
+                    String.self, forKey: .inferenceWorkerBinaryHash),
                 url: try container.decode(String.self, forKey: .url),
                 desiredGeneration: try container.decode(UInt64.self, forKey: .desiredGeneration)
             ))

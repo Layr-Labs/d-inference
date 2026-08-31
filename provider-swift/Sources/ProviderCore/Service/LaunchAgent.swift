@@ -292,7 +292,7 @@ public enum LaunchAgent: Sendable {
     /// admission-mode control. Both must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
     static let inferencePassthroughEnvKeys = [
-        EngineV2Factory.maxPartialPrefillsKey,
+        "DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS",
         PrefillDeadlineMode.environmentKey,
     ]
 

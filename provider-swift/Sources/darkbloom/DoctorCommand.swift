@@ -236,7 +236,7 @@ func buildDoctorChecks(
         ))
     }
 
-    let metal = GPUEnforcement.probeMetal()
+    let metal = MetalHardwareProbe.probe()
     if metal.isAvailable {
         let working = metal.recommendedMaxWorkingSetSizeBytes / (1024 * 1024 * 1024)
         let device = metal.deviceName ?? "unknown"

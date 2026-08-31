@@ -18,10 +18,6 @@ public struct ProviderLoopConfig: Sendable {
     /// `ensureModelLoaded` skip a full re-read of weights that were already
     /// hashed at startup; without them the first load re-hashes every byte.
     public let modelHashFingerprints: [String: String]
-    /// When set, the provider also serves a local OpenAI-compatible HTTP
-    /// endpoint off the SAME loaded models it serves to the coordinator
-    /// (unified mode). nil = coordinator-only (the default).
-    public let localEndpoint: LocalInferenceHTTPConfig?
 
     public init(
         coordinatorURL: String,
@@ -32,8 +28,7 @@ public struct ProviderLoopConfig: Sendable {
         runtimeHashes: RuntimeHashes? = nil,
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         modelHashes: [String: String] = [:],
-        modelHashFingerprints: [String: String] = [:],
-        localEndpoint: LocalInferenceHTTPConfig? = nil
+        modelHashFingerprints: [String: String] = [:]
     ) {
         self.coordinatorURL = coordinatorURL
         self.hardware = hardware
@@ -44,6 +39,5 @@ public struct ProviderLoopConfig: Sendable {
         self.runtimeCapabilities = runtimeCapabilities
         self.modelHashes = modelHashes
         self.modelHashFingerprints = modelHashFingerprints
-        self.localEndpoint = localEndpoint
     }
 }

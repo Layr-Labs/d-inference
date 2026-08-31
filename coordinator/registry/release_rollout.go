@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
@@ -275,6 +276,16 @@ func (r *Registry) SendReleaseUpdate(providerID string, release store.Release, d
 	return r.SendReleaseUpdateContext(ctx, providerID, release, desiredGeneration)
 }
 
+func releaseTemplateHash(raw, key string) string {
+	for _, entry := range strings.Split(raw, ",") {
+		name, hash, ok := strings.Cut(entry, "=")
+		if ok && strings.TrimSpace(name) == key {
+			return strings.TrimSpace(hash)
+		}
+	}
+	return ""
+}
+
 // SendReleaseUpdateContext binds and hands off one approved target under a
 // caller-owned cancellation boundary.
 func (r *Registry) SendReleaseUpdateContext(
@@ -348,7 +359,10 @@ func (r *Registry) SendReleaseUpdateContext(
 	message := protocol.ReleaseUpdateMessage{
 		Type: protocol.TypeReleaseUpdate, Version: release.Version, Platform: release.Platform,
 		Backend: release.Backend, BinaryHash: release.BinaryHash, BundleHash: release.BundleHash,
-		MetallibHash: release.MetallibHash, URL: release.URL, DesiredGeneration: desiredGeneration,
+		MetallibHash: release.MetallibHash,
+		InferenceWorkerBinaryHash: releaseTemplateHash(
+			release.TemplateHashes, protocol.TemplateHashInferenceWorkerBinary),
+		URL: release.URL, DesiredGeneration: desiredGeneration,
 	}
 	if sender != nil {
 		if err := sender(ctx, providerID, message); err != nil {

@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
@@ -27,16 +30,18 @@ func runtimeManifestTestServer(t *testing.T) (*Server, *store.MemoryStore) {
 func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	srv, st := runtimeManifestTestServer(t)
 	metallibHash := strings.Repeat("a", 64)
+	workerHash := strings.Repeat("d", 64)
 
 	if err := st.SetRelease(&store.Release{
-		Version:      "0.5.0",
-		Platform:     "macos-arm64",
-		Backend:      "mlx-swift",
-		BinaryHash:   strings.Repeat("b", 64),
-		BundleHash:   strings.Repeat("c", 64),
-		MetallibHash: metallibHash,
-		URL:          "https://example.com/swift.tar.gz",
-		Active:       true,
+		Version:        "0.5.0",
+		Platform:       "macos-arm64",
+		Backend:        "mlx-swift",
+		BinaryHash:     strings.Repeat("b", 64),
+		BundleHash:     strings.Repeat("c", 64),
+		MetallibHash:   metallibHash,
+		TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + workerHash,
+		URL:            "https://example.com/swift.tar.gz",
+		Active:         true,
 	}); err != nil {
 		t.Fatalf("SetRelease(swift): %v", err)
 	}
@@ -49,6 +54,106 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	if got := srv.knownRuntimeManifest.TemplateHashes["mlx_metallib"]; got != metallibHash {
 		t.Fatalf("mlx_metallib hash = %q, want %q", got, metallibHash)
 	}
+	if !srv.knownRuntimeManifest.
+		InferenceWorkerBinaryHashesByVersion["0.5.0"][workerHash] {
+		t.Fatal("signed inference worker hash was dropped from runtime manifest")
+	}
+	if _, unscoped := srv.knownRuntimeManifest.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary]; unscoped {
+		t.Fatal("version-specific inference worker hash was flattened into template hashes")
+	}
+	response := httptest.NewRecorder()
+	srv.handleRuntimeManifest(
+		response,
+		httptest.NewRequest(http.MethodGet, "/v1/runtime/manifest", nil),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("runtime manifest status = %d", response.Code)
+	}
+	var body struct {
+		WorkerHashes map[string]map[string]bool `json:"inference_worker_binary_hashes_by_version"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.WorkerHashes["0.5.0"][workerHash] {
+		t.Fatalf("runtime manifest response dropped signed worker hash: %s", response.Body.String())
+	}
+}
+
+func TestVerifyRuntimeHashesKeepsInferenceWorkerHashReleaseSpecific(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+	metallibHash := strings.Repeat("a", 64)
+	workerV1 := strings.Repeat("b", 64)
+	workerV2 := strings.Repeat("c", 64)
+	releases := []store.Release{
+		{
+			Version: "1.0.0", Platform: "macos-arm64", Backend: "mlx-swift",
+			BinaryHash: strings.Repeat("1", 64), BundleHash: strings.Repeat("2", 64),
+			MetallibHash:   metallibHash,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + workerV1,
+			URL:            "https://example.com/1.0.0.tar.gz", Active: true,
+		},
+		{
+			Version: "2.0.0", Platform: "macos-arm64", Backend: "mlx-swift",
+			BinaryHash: strings.Repeat("3", 64), BundleHash: strings.Repeat("4", 64),
+			MetallibHash:   metallibHash,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + workerV2,
+			URL:            "https://example.com/2.0.0.tar.gz", Active: true,
+		},
+		{
+			Version: "3.0.0", Platform: "macos-arm64", Backend: "mlx-swift",
+			BinaryHash: strings.Repeat("5", 64), BundleHash: strings.Repeat("6", 64),
+			MetallibHash: metallibHash,
+			URL:          "https://example.com/3.0.0.tar.gz", Active: true,
+		},
+	}
+	for i := range releases {
+		if err := st.SetRelease(&releases[i]); err != nil {
+			t.Fatalf("SetRelease(%s): %v", releases[i].Version, err)
+		}
+	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		version    string
+		workerHash string
+		report     bool
+		wantOK     bool
+	}{
+		{name: "older active release matches", version: "1.0.0", workerHash: workerV1, report: true, wantOK: true},
+		{name: "newer active release matches", version: "2.0.0", workerHash: workerV2, report: true, wantOK: true},
+		{name: "cross release mismatch", version: "1.0.0", workerHash: workerV2, report: true},
+		{name: "missing reported hash", version: "1.0.0"},
+		{name: "malformed reported hash", version: "1.0.0", workerHash: "not-a-sha256", report: true},
+		{name: "active release missing expected hash", version: "3.0.0", workerHash: workerV1, report: true},
+		{name: "unknown claimed release", version: "4.0.0", workerHash: workerV1, report: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reported := map[string]string{"mlx_metallib": metallibHash}
+			if test.report {
+				reported[protocol.TemplateHashInferenceWorkerBinary] = test.workerHash
+			}
+			ok, mismatches := srv.verifyRuntimeHashesForBackend(
+				"mlx-swift", test.version, "", "", reported)
+			if ok != test.wantOK {
+				t.Fatalf("ok=%v mismatches=%#v", ok, mismatches)
+			}
+			if test.wantOK {
+				if len(mismatches) != 0 {
+					t.Fatalf("matched release produced mismatches: %#v", mismatches)
+				}
+				return
+			}
+			if len(mismatches) != 1 ||
+				mismatches[0].Component != "template:"+protocol.TemplateHashInferenceWorkerBinary {
+				t.Fatalf("mismatches=%#v, want one inference worker mismatch", mismatches)
+			}
+		})
+	}
 }
 
 func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testing.T) {
@@ -60,14 +165,14 @@ func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testi
 		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": metallibHash},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches := srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", "", map[string]string{
 		"mlx_metallib": metallibHash,
 	})
 	if !ok {
 		t.Fatalf("swift runtime verification failed with matching metallib: %#v", mismatches)
 	}
 
-	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", map[string]string{
+	ok, mismatches = srv.verifyRuntimeHashesForBackend("mlx-swift", "", "", "", map[string]string{
 		"mlx_metallib": strings.Repeat("b", 64),
 	})
 	if ok {
@@ -102,7 +207,7 @@ func TestVerifyRuntimeHashesForLegacyBackendRejected(t *testing.T) {
 		TemplateHashes: map[string]string{"qwen3.5": "legacy-template", "mlx_metallib": strings.Repeat("a", 64)},
 	})
 
-	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "legacy-python", "legacy-runtime", map[string]string{
+	ok, mismatches := srv.verifyRuntimeHashesForBackend("vllm-mlx", "", "legacy-python", "legacy-runtime", map[string]string{
 		"qwen3.5": "legacy-template",
 	})
 	if ok {
@@ -397,6 +502,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	srv, st := runtimeManifestTestServer(t)
 	oldMetallib := strings.Repeat("a", 64)
 	newMetallib := strings.Repeat("b", 64)
+	workerHash := strings.Repeat("c", 64)
 	const providerVersion = "0.8.16"
 	capabilities := []string{
 		registry.ProviderCapabilityAppleM5,
@@ -445,7 +551,10 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	provider.CodeAttested = true
 	provider.FreshCodeAttested = true
 	provider.Version = providerVersion
-	provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
+	provider.TemplateHashes = map[string]string{
+		"mlx_metallib": oldMetallib,
+		protocol.TemplateHashInferenceWorkerBinary: workerHash,
+	}
 	provider.ChallengeVerifiedSIP = true
 	provider.LastChallengeVerified = time.Now()
 	now := time.Now()
@@ -497,7 +606,6 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		t.Fatal("precondition: current process evidence does not match the approved runtime")
 	}
 
-	releasePatch := 17
 	clearActiveManifests := func() {
 		t.Helper()
 		for _, release := range st.ListReleases() {
@@ -508,6 +616,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 			}
 		}
 	}
+	releasePatch := 17
 	nextReleaseVersion := func() string {
 		version := fmt.Sprintf("0.8.%d", releasePatch)
 		releasePatch++
@@ -516,12 +625,26 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	setManifest := func(hash string) {
 		t.Helper()
 		clearActiveManifests()
-		if err := st.SetRelease(&store.Release{
-			Version:      nextReleaseVersion(),
-			Platform:     "macos-arm64",
-			MetallibHash: hash,
-		}); err != nil {
-			t.Fatalf("SetRelease(%s): %v", hash, err)
+		baseline := &store.Release{
+			Version:        providerVersion,
+			Platform:       "macos-arm64",
+			MetallibHash:   oldMetallib,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + workerHash,
+			Active:         true,
+		}
+		if err := st.SetRelease(baseline); err != nil {
+			t.Fatalf("SetRelease(baseline): %v", err)
+		}
+		if hash != oldMetallib {
+			if err := st.SetRelease(&store.Release{
+				Version:        nextReleaseVersion(),
+				Platform:       "macos-arm64",
+				MetallibHash:   hash,
+				TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + workerHash,
+				Active:         true,
+			}); err != nil {
+				t.Fatalf("SetRelease(%s): %v", hash, err)
+			}
 		}
 		srv.SyncRuntimeManifest()
 	}
@@ -531,6 +654,7 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		if err := st.SetRelease(&store.Release{
 			Version:  nextReleaseVersion(),
 			Platform: "macos-arm64",
+			Active:   true,
 		}); err != nil {
 			t.Fatalf("SetRelease(withdrawal): %v", err)
 		}
@@ -641,7 +765,10 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 	runtimePolicyActive, runtimeOK, _ := srv.applyChallengeRuntimePolicy(
 		provider,
 		&protocol.AttestationResponseMessage{
-			TemplateHashes: map[string]string{"mlx_metallib": oldMetallib},
+			TemplateHashes: map[string]string{
+				"mlx_metallib": oldMetallib,
+				protocol.TemplateHashInferenceWorkerBinary: workerHash,
+			},
 		},
 	)
 	if !runtimePolicyActive {
@@ -688,11 +815,14 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		runtimePolicyActive, runtimeOK, _ := srv.applyChallengeRuntimePolicy(
 			provider,
 			&protocol.AttestationResponseMessage{
-				TemplateHashes: map[string]string{"mlx_metallib": oldMetallib},
+				TemplateHashes: map[string]string{
+					"mlx_metallib": oldMetallib,
+					protocol.TemplateHashInferenceWorkerBinary: workerHash,
+				},
 			},
 		)
-		if runtimePolicyActive || runtimeOK {
-			t.Fatalf("withdrawn policy reported active=%v runtimeOK=%v",
+		if !runtimePolicyActive || runtimeOK {
+			t.Fatalf("incomplete release policy reported active=%v runtimeOK=%v",
 				runtimePolicyActive, runtimeOK)
 		}
 		if err := srv.registry.ReconcileAttestedRuntimeCapabilities(provider.ID); err != nil {
@@ -709,8 +839,8 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 			provider,
 			&protocol.AttestationResponseMessage{},
 		)
-		if runtimePolicyActive || runtimeOK {
-			t.Fatalf("withdrawn policy with omitted identity reported active=%v runtimeOK=%v",
+		if !runtimePolicyActive || runtimeOK {
+			t.Fatalf("incomplete release policy with omitted identity reported active=%v runtimeOK=%v",
 				runtimePolicyActive, runtimeOK)
 		}
 		if err := srv.registry.ReconcileAttestedRuntimeCapabilities(provider.ID); err == nil {
@@ -737,7 +867,10 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		// Restore the fixture's proven identity for independent cases below.
 		provider.Mu().Lock()
 		provider.FreshCodeAttested = true
-		provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
+		provider.TemplateHashes = map[string]string{
+			"mlx_metallib": oldMetallib,
+			protocol.TemplateHashInferenceWorkerBinary: workerHash,
+		}
 		provider.Mu().Unlock()
 		setManifest(oldMetallib)
 		recertifyCurrentProcess()
@@ -775,7 +908,10 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		// identity case below.
 		provider.Mu().Lock()
 		provider.FreshCodeAttested = true
-		provider.TemplateHashes = map[string]string{"mlx_metallib": oldMetallib}
+		provider.TemplateHashes = map[string]string{
+			"mlx_metallib": oldMetallib,
+			protocol.TemplateHashInferenceWorkerBinary: workerHash,
+		}
 		provider.Mu().Unlock()
 		setManifest(oldMetallib)
 		recertifyCurrentProcess()
@@ -788,7 +924,10 @@ func TestSyncRuntimeManifestPreservesFreshProcessProofAcrossMismatchAndRecovery(
 		runtimePolicyActive, runtimeOK, _ := srv.applyChallengeRuntimePolicy(
 			provider,
 			&protocol.AttestationResponseMessage{
-				TemplateHashes: map[string]string{"mlx_metallib": newMetallib},
+				TemplateHashes: map[string]string{
+					"mlx_metallib": newMetallib,
+					protocol.TemplateHashInferenceWorkerBinary: workerHash,
+				},
 			},
 		)
 		if !runtimePolicyActive {

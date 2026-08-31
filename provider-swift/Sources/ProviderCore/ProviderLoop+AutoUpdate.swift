@@ -159,7 +159,8 @@ extension ProviderLoop {
         status: String
     ) async {
         let lifecycleState = updateLifecycle.record.state
-        guard lifecycleState == .applicationVerifying ||
+        guard lifecycleState == .serving ||
+                lifecycleState == .applicationVerifying ||
                 lifecycleState == .modelReloading ||
                 lifecycleState == .ready,
               trustLevel == "hardware",
@@ -170,7 +171,15 @@ extension ProviderLoop {
         else { return }
 
         let generation = coordinatorConnectionGeneration
+        guard await certifyInferenceWorkerForCurrentConnection() else { return }
         certifiedConnectionGeneration = generation
+        if lifecycleState == .serving {
+            if !startupPreloadGateCompleted {
+                _ = await runStartupPreloadGate()
+                startupPreloadGateCompleted = true
+            }
+            return
+        }
         if lifecycleState == .ready {
             try? await publishCurrentUpdateLifecycle()
             return
@@ -221,56 +230,31 @@ extension ProviderLoop {
         }
     }
 
-    private struct WarmTopologyIdentity: Equatable {
-        let modelId: String
-        let bridge: ObjectIdentifier
-        let modelHash: String?
-        let kvBackend: String
-    }
-
-    private func warmTopologyIdentity() -> [WarmTopologyIdentity] {
-        modelSlots.keys.sorted().compactMap { modelId in
-            guard let slot = modelSlots[modelId],
-                  !modelsUnloading.contains(modelId)
-            else { return nil }
-            return WarmTopologyIdentity(
-                modelId: modelId,
-                bridge: ObjectIdentifier(slot.engineV2),
-                modelHash: liveModelHashes[modelId] ?? modelHashes[modelId],
-                kvBackend: slot.engineV2.kvBackendKind.rawValue)
-        }
-    }
-
     internal func captureWarmIntents(
         desiredGeneration: UInt64
     ) async -> [WarmIntent] {
-        while true {
-            let topology = warmTopologyIdentity()
-            var intents: [WarmIntent] = []
-            var remainsValid = true
-            for identity in topology {
-                guard let slot = modelSlots[identity.modelId],
-                      ObjectIdentifier(slot.engineV2) == identity.bridge,
-                      !modelsUnloading.contains(identity.modelId)
-                else {
-                    remainsValid = false
-                    break
-                }
-                let mtp = await slot.engineV2.mtpStatusSnapshot()
-                intents.append(WarmIntent(
-                    modelId: identity.modelId,
-                    modelHash: identity.modelHash,
-                    slotId: identity.modelId,
-                    kvBackend: identity.kvBackend,
-                    kvQuantization: nil,
-                    mtpModelId: mtp.assistantModelID,
-                    desiredGeneration: desiredGeneration))
-            }
-            guard remainsValid, topology == warmTopologyIdentity() else {
-                continue
-            }
-            return intents
+        guard let snapshot = try? await inferenceWorkerClient.capacitySnapshot(),
+              snapshot.launchIdentifier == inferenceWorkerIdentity?.launchIdentifier else {
+            return []
         }
+        return snapshot.entries
+            .filter { $0.state == 2 }
+            .sorted { $0.modelIdentifier < $1.modelIdentifier }
+            .map { entry in
+                let capacity = entry.capacityJSON.flatMap {
+                    try? JSONDecoder().decode(BackendSlotCapacity.self, from: $0)
+                }
+                return WarmIntent(
+                    modelId: entry.modelIdentifier,
+                    modelHash: entry.manifestSHA256
+                        ?? liveModelHashes[entry.modelIdentifier]
+                        ?? modelHashes[entry.modelIdentifier],
+                    slotId: entry.modelIdentifier,
+                    kvBackend: capacity?.kvBackend,
+                    kvQuantization: nil,
+                    mtpModelId: entry.mtpModelIdentifier,
+                    desiredGeneration: desiredGeneration)
+            }
     }
 
     private func resumeAuthorizedInstallAfterCrash() async throws {
@@ -356,27 +340,31 @@ extension ProviderLoop {
             guard let modelId = intent.modelId else {
                 throw UpdateLifecycleError.corruptState
             }
-            try await ensureModelLoaded(modelId: modelId)
-            guard let slot = modelSlots[modelId] else {
+            try await inferenceWorkerClient.preloadModel(identifier: modelId)
+            let snapshot = try await inferenceWorkerClient.capacitySnapshot()
+            guard let entry = snapshot.entries.first(where: {
+                $0.modelIdentifier == modelId && $0.state == 2
+            }) else {
                 throw UpdateLifecycleError.corruptState
             }
             if let expectedHash = intent.modelHash,
-               liveModelHashes[modelId] != expectedHash {
+               entry.manifestSHA256 != expectedHash {
                 throw UpdateError.hashMismatch(
                     expected: expectedHash,
-                    got: liveModelHashes[modelId] ?? "missing")
+                    got: entry.manifestSHA256 ?? "missing")
+            }
+            let capacity = entry.capacityJSON.flatMap {
+                try? JSONDecoder().decode(BackendSlotCapacity.self, from: $0)
             }
             if let expectedBackend = intent.kvBackend,
-               slot.engineV2.kvBackendKind.rawValue != expectedBackend {
+               capacity?.kvBackend != expectedBackend {
                 throw UpdateError.replaceFailed(
                     "restored KV backend mismatch for \(modelId)")
             }
-            if let expectedMTP = intent.mtpModelId {
-                let mtp = await slot.engineV2.mtpStatusSnapshot()
-                guard mtp.assistantModelID == expectedMTP else {
-                    throw UpdateError.replaceFailed(
-                        "restored MTP model mismatch for \(modelId)")
-                }
+            if let expectedMTP = intent.mtpModelId,
+               entry.mtpModelIdentifier != expectedMTP {
+                throw UpdateError.replaceFailed(
+                    "restored MTP model mismatch for \(modelId)")
             }
             try updateLifecycle.completeNextWarmIntent(intent)
             try persistUpdateLifecycle()

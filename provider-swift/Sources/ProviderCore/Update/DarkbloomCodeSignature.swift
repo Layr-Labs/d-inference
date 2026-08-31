@@ -1,4 +1,5 @@
 import Foundation
+import InferenceWorkerProtocol
 
 enum DarkbloomCodeSignature {
     static let teamID = "SLDQ2GJ6TL"
@@ -10,10 +11,14 @@ enum DarkbloomCodeSignature {
     static let fanHelperDesignatedRequirement =
         "anchor apple generic and identifier \"\(fanHelperIdentifier)\" "
         + "and certificate leaf[subject.OU] = \"\(teamID)\""
+    static let workerIdentifier = InferenceWorkerContract.workerBundleIdentifier
+    static let workerDesignatedRequirement =
+        InferenceWorkerContract.workerDesignatedRequirement
 
     enum Policy: Sendable, Equatable {
         case darkbloomProduction
         case darkbloomFanHelper
+        case darkbloomInferenceWorker
         case structuralForIsolatedTest
     }
 
@@ -29,6 +34,8 @@ enum DarkbloomCodeSignature {
             arguments.append("-R=\(designatedRequirement)")
         } else if policy == .darkbloomFanHelper {
             arguments.append("-R=\(fanHelperDesignatedRequirement)")
+        } else if policy == .darkbloomInferenceWorker {
+            arguments.append("-R=\(workerDesignatedRequirement)")
         }
         arguments.append(target.path)
         try BoundedProcess.run(

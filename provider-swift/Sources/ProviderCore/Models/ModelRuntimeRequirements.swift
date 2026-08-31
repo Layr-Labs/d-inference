@@ -1,5 +1,4 @@
 import Foundation
-import MLX
 
 /// A provider runtime capability carried on the registration wire and consumed
 /// by catalog eligibility checks. The open value type preserves unknown future
@@ -54,59 +53,6 @@ public enum ProviderRuntimeCapabilityDetector {
         return capabilities
     }
 
-    /// Bind `metallibURL` before the first live GPU diagnostic. Passing nil
-    /// selects the production loader-visible colocated metallib.
-    public static func detectLive(
-        hardware: HardwareInfo,
-        metallibURL: URL? = nil
-    ) -> Set<ProviderRuntimeCapability> {
-        detectLive(
-            hardware: hardware,
-            metallibURL: metallibURL,
-            bindMetallib: { bindRuntimeMetallibForMLX(from: $0) },
-            naxAvailable: { GPU.gemma4ExpertQMMDiagnostics().naxAvailable }
-        )
-    }
-
-    static func detectLive(
-        hardware: HardwareInfo,
-        metallibURL: URL?,
-        bindMetallib: @Sendable (URL?) -> String?,
-        naxAvailable: @Sendable () -> Bool
-    ) -> Set<ProviderRuntimeCapability> {
-        let loadedMetallibHash = bindMetallib(metallibURL)
-        return detectPrepared(
-            hardware: hardware,
-            boundMetallibHash: loadedMetallibHash,
-            naxAvailable: naxAvailable
-        )
-    }
-
-    /// Diagnose a runtime whose metallib was already bound at an earlier
-    /// startup boundary. Call once and retain the immutable returned set for
-    /// every local gate and registration message.
-    public static func detectPrepared(
-        hardware: HardwareInfo,
-        boundMetallibHash: String?
-    ) -> Set<ProviderRuntimeCapability> {
-        detectPrepared(
-            hardware: hardware,
-            boundMetallibHash: boundMetallibHash,
-            naxAvailable: { GPU.gemma4ExpertQMMDiagnostics().naxAvailable }
-        )
-    }
-
-    static func detectPrepared(
-        hardware: HardwareInfo,
-        boundMetallibHash: String?,
-        naxAvailable: @Sendable () -> Bool
-    ) -> Set<ProviderRuntimeCapability> {
-        detect(
-            chipFamily: hardware.chipFamily,
-            naxAvailable: naxAvailable,
-            liveMetallibHash: { boundMetallibHash }
-        )
-    }
 }
 
 public struct ModelRuntimeEligibility: Sendable, Equatable {

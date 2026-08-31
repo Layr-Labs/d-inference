@@ -5,11 +5,7 @@
 
 import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
+import InferenceWorkerProtocol
 
 extension ProviderLoop {
     // MARK: - Attestation Challenge
@@ -28,30 +24,27 @@ extension ProviderLoop {
         }
 
         do {
-            let activeModelHash: String?
-            if let modelId = state.currentModel {
-                activeModelHash = liveModelHashes[modelId]
-            } else {
-                activeModelHash = nil
+            let snapshot = try await inferenceWorkerClient.capacitySnapshot()
+            guard snapshot.launchIdentifier == inferenceWorkerIdentity?.launchIdentifier else {
+                throw InferenceWorkerClientError.invalidated
             }
+            let loadedEntries = snapshot.entries.filter {
+                $0.state == 2 && $0.manifestSHA256 != nil
+            }
+            let loadedModelHashes = Dictionary(uniqueKeysWithValues:
+                loadedEntries.compactMap { entry in
+                    entry.manifestSHA256.map { (entry.modelIdentifier, $0) }
+                })
+            let activeModelHash = (
+                loadedEntries.first(where: { $0.activeRequests > 0 })
+                    ?? loadedEntries.first
+            )?.manifestSHA256
 
-            // Report hashes ONLY for models we are CURRENTLY SERVING (a live
-            // slot this session), never for every advertised model. Registration
-            // still advertises all models' startup hashes (the coordinator's
-            // catalog routing filter needs them, and a stale IDLE model there
-            // degrades to a gentle silent deroute). But the challenge response
-            // feeds the coordinator's model-swap *hard-untrust* check: reporting
-            // a hash for an idle, unloaded model would hard-untrust this provider
-            // the moment that model's catalog hash changes (e.g. a re-publish)
-            // before we re-download it — even though we never served stale
-            // weights. A model that has been idle-unloaded drops out
-            // automatically here because it no longer has a slot.
-            let loadedModelHashes = loadedModelHashesSnapshot()
-
+            guard let workerPublicKey = workerProcessPublicKeyBase64 else { return false }
             let response = try builder.buildChallengeResponse(
                 nonce: nonce,
                 timestamp: timestamp,
-                providerPublicKey: keyPair.publicKeyBase64,
+                providerPublicKey: workerPublicKey,
                 binaryHash: binaryHash,
                 activeModelHash: activeModelHash,
                 runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
@@ -133,24 +126,6 @@ extension ProviderLoop {
 
     // MARK: - Code-identity (APNs) challenge
 
-    /// Decrypts an E_K(nonce) code-identity challenge and produces the WebSocket
-    /// reply: the recovered nonce (proof of K-possession) + Sign_SE(nonce). Pure
-    /// and testable. K (NodeKeyPair, X25519) is decrypt-only — the signature is
-    /// the separate Secure-Enclave P-256 key. The coordinator verifies both
-    /// (nonce equality + the SE signature against the registration-bound SE key).
-    static func answerCodeChallenge(
-        challenge: EncryptedPayload,
-        keyPair: NodeKeyPair,
-        signer: any AttestationSigner
-    ) throws -> (nonce: String, signature: String) {
-        let nonceData = try keyPair.decryptPayload(challenge)
-        guard let nonceB64 = String(data: nonceData, encoding: .utf8) else {
-            throw NSError(domain: "ProviderCore.codeAttest", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "decrypted code-challenge nonce is not UTF-8"])
-        }
-        let sig = try signer.sign(Data(nonceB64.utf8))
-        return (nonceB64, sig.base64EncodedString())
-    }
 
     /// Extracts the code_challenge EncryptedPayload from an APNs push userInfo.
     static func extractCodeChallenge(_ userInfo: [String: Any]) -> EncryptedPayload? {
@@ -162,22 +137,45 @@ extension ProviderLoop {
         return try? JSONDecoder().decode(EncryptedPayload.self, from: data)
     }
 
-    /// Handles an inbound APNs code-identity challenge (delivered by the app
-    /// delegate): decrypt E_K(nonce) with K, sign the nonce with the SE key, and
-    /// reply over the WebSocket. Only the genuine hardened process can do both,
-    /// which is what binds the Apple-gated push proof onto this connection.
-    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) {
-        guard let signer = self.signer else {
+    /// Requests a domain-specific, launch/certification-bound proof. The worker
+    /// validates the decrypted nonce shape and signs it with the shared
+    /// persistent Secure Enclave identity; no generic plaintext payload crosses
+    /// XPC and the supervisor only forwards the typed proof fields.
+    func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) async {
+        guard let identity = inferenceWorkerIdentity,
+              certifiedConnectionGeneration == coordinatorConnectionGeneration,
+              let senderKey = Data(base64Encoded: challenge.ephemeralPublicKey),
+              let ciphertext = Data(base64Encoded: challenge.ciphertext),
+              let request = WorkerCodeChallengeRequest(
+                launchIdentifier: identity.launchIdentifier,
+                connectionGeneration: coordinatorConnectionGeneration,
+                senderPublicKey: senderKey,
+                ciphertext: ciphertext) else {
             logger.warning(.codeAttestationSignerUnavailable)
             return
         }
         do {
-            let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
-            send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
+            let proof = try await inferenceWorkerClient.answerCodeChallenge(request)
+            guard proof.launchIdentifier == identity.launchIdentifier,
+                  proof.connectionGeneration == coordinatorConnectionGeneration,
+                  let nonceBytes = Data(base64Encoded: proof.nonce),
+                  nonceBytes.count == 32 else {
+                throw InferenceWorkerClientError.invalidFrame
+            }
+            var binding = Data("darkbloom/code-challenge-proof/v1\u{0}".utf8)
+            binding.append(Data(identity.launchIdentifier.utf8))
+            var generation = coordinatorConnectionGeneration.bigEndian
+            withUnsafeBytes(of: &generation) { binding.append(contentsOf: $0) }
+            binding.append(nonceBytes)
+            guard sha256Hex(binding) == proof.bindingDigest else {
+                throw InferenceWorkerClientError.invalidFrame
+            }
+            send.send(.codeAttestationResponse(
+                nonce: proof.nonce,
+                signature: proof.signature))
             logger.info(.codeAttestationResponseSent)
         } catch {
             logger.error(.codeAttestationSigningFailed)
-            logger.error("failed to answer code-identity challenge: \(error)")
         }
     }
 

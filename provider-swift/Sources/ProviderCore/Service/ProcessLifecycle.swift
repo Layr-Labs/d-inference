@@ -96,7 +96,7 @@ public enum ProcessLifecycle {
                 TelemetryOverflowQueue.shared.purge()
             },
             purgeLegacyVideoFiles: {
-                MediaIngest.purgeLegacyVideoTempFiles()
+                LegacyMediaCleanup.purgeVideoTempFiles()
             })
     }
 

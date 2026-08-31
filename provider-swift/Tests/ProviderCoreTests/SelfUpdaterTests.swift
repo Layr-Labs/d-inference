@@ -1,4 +1,5 @@
 import Foundation
+import InferenceWorkerProtocol
 import Testing
 @testable import ProviderCore
 
@@ -16,6 +17,100 @@ struct SelfUpdaterTests {
                 urlSession: SelfUpdater.watchdogURLSession()
             ).verifiesCodeSignatures
         )
+    }
+
+    @Test("worker executable entitlements use an exact allowlist")
+    func workerEntitlementsRejectUnknownCapability() throws {
+        var entitlements: [String: Any] = [
+            "com.apple.application-identifier":
+                "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+            "keychain-access-groups": ["SLDQ2GJ6TL.io.darkbloom.provider"],
+            "com.apple.security.app-sandbox": true,
+            "com.apple.security.files.bookmarks.app-scope": true,
+        ]
+        func encoded() throws -> Data {
+            try PropertyListSerialization.data(
+                fromPropertyList: entitlements, format: .xml, options: 0)
+        }
+        try SelfUpdater.verifyWorkerEntitlements(encoded())
+        entitlements["com.apple.security.cs.allow-jit"] = true
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.verifyWorkerEntitlements(encoded())
+        }
+    }
+
+    @Test("worker provisioning profile uses Apple grant key names")
+    func workerProvisioningProfileAcceptsRealShape() throws {
+        let profile: [String: Any] = [
+            "TeamIdentifier": ["SLDQ2GJ6TL"],
+            "ExpirationDate": Date(timeIntervalSinceNow: 86_400),
+            "Name": "Darkbloom Worker Distribution",
+            "Entitlements": [
+                "application-identifier":
+                    "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+                "keychain-access-groups":
+                    ["SLDQ2GJ6TL.io.darkbloom.provider"],
+                "com.apple.security.app-sandbox": true,
+                "com.apple.security.files.bookmarks.app-scope": true,
+                "com.apple.developer.team-identifier": "SLDQ2GJ6TL",
+            ],
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: profile, format: .xml, options: 0)
+        try SelfUpdater.verifyWorkerProvisioningProfile(data)
+    }
+
+    @Test("expired worker provisioning profile is rejected")
+    func workerProvisioningProfileRejectsExpiry() throws {
+        let profile: [String: Any] = [
+            "TeamIdentifier": ["SLDQ2GJ6TL"],
+            "ExpirationDate": Date(timeIntervalSinceNow: -1),
+            "Entitlements": [
+                "application-identifier":
+                    "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+                "keychain-access-groups":
+                    ["SLDQ2GJ6TL.io.darkbloom.provider"],
+                "com.apple.security.app-sandbox": true,
+                "com.apple.security.files.bookmarks.app-scope": true,
+            ],
+        ]
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: profile, format: .xml, options: 0)
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.verifyWorkerProvisioningProfile(data)
+        }
+    }
+
+    @Test("worker sandbox probe output is exact")
+    func workerSandboxProbeOutputIsExact() throws {
+        try SelfUpdater.verifyWorkerSandboxProbeOutput(
+            Data("DBXPC_SANDBOX_SELF_TEST_V1:63\n".utf8))
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.verifyWorkerSandboxProbeOutput(
+                Data("DBXPC_SANDBOX_SELF_TEST_V1:31\n".utf8))
+        }
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.verifyWorkerSandboxProbeOutput(
+                Data("DBXPC_SANDBOX_SELF_TEST_V1:63\nextra".utf8))
+        }
+    }
+
+    @Test("release template hashes parse the coordinator canonical string")
+    func releaseTemplateHashParsingIsStrict() throws {
+        let worker = String(repeating: "a", count: 64)
+        let metal = String(repeating: "b", count: 64)
+        let parsed = try SelfUpdater.parseReleaseTemplateHashes(
+            "inference_worker_binary=\(worker),mlx_metallib=\(metal)")
+        #expect(parsed["inference_worker_binary"] == worker)
+        #expect(parsed["mlx_metallib"] == metal)
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.parseReleaseTemplateHashes(
+                "inference_worker_binary=\(worker),inference_worker_binary=\(worker)")
+        }
+        #expect(throws: (any Error).self) {
+            try SelfUpdater.parseReleaseTemplateHashes(
+                "inference_worker_binary=not-a-sha256")
+        }
     }
 
     @Test("effective installed version prefers the newer of process and durable record")
@@ -235,16 +330,27 @@ struct SelfUpdaterTests {
         // Create an .app bundle layout inside the staging area.
         let appMacOS = stage.appendingPathComponent("Darkbloom.app/Contents/MacOS")
         let appHelpers = stage.appendingPathComponent("Darkbloom.app/Contents/Helpers")
+        let appWorkerMacOS = stage.appendingPathComponent(
+            "Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"
+        ).deletingLastPathComponent()
         let binFlat = stage.appendingPathComponent("bin")
         try FileManager.default.createDirectory(at: appMacOS, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: appHelpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: appWorkerMacOS, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: binFlat, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: install, withIntermediateDirectories: true)
         let oldAppBin = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        let oldWorkerMacOS = install.appendingPathComponent(
+            "Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"
+        ).deletingLastPathComponent()
         try FileManager.default.createDirectory(at: oldAppBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: oldWorkerMacOS, withIntermediateDirectories: true)
         try Data("old app darkbloom".utf8).write(to: oldAppBin.appendingPathComponent("darkbloom"))
         try Data("old app enclave".utf8).write(to: oldAppBin.appendingPathComponent("darkbloom-enclave"))
-        try Data("old app metallib".utf8).write(to: oldAppBin.appendingPathComponent("mlx.metallib"))
+        try Data("old app metallib".utf8).write(
+            to: oldWorkerMacOS.appendingPathComponent("mlx.metallib"))
 
         // Write Info.plist for the .app bundle.
         let infoDir = stage.appendingPathComponent("Darkbloom.app/Contents")
@@ -253,7 +359,8 @@ struct SelfUpdaterTests {
         // Write the binaries inside the .app bundle.
         try Data("app darkbloom".utf8).write(to: appMacOS.appendingPathComponent("darkbloom"))
         try Data("app enclave".utf8).write(to: appMacOS.appendingPathComponent("darkbloom-enclave"))
-        try Data("app metallib".utf8).write(to: appMacOS.appendingPathComponent("mlx.metallib"))
+        try Data("app metallib".utf8).write(
+            to: appWorkerMacOS.appendingPathComponent("mlx.metallib"))
         let fanHelper = appHelpers.appendingPathComponent("darkbloom-fan-helper")
         try Data("app fan helper".utf8).write(to: fanHelper)
         try FileManager.default.setAttributes(
@@ -283,7 +390,8 @@ struct SelfUpdaterTests {
             bundleHash: sha256Hex(try Data(contentsOf: tarball)),
             // Hash is from the flat copy (matches release workflow).
             binaryHash: sha256Hex(try Data(contentsOf: binFlat.appendingPathComponent("darkbloom"))),
-            metallibHash: sha256Hex(try Data(contentsOf: binFlat.appendingPathComponent("mlx.metallib")))
+            metallibHash: sha256Hex(try Data(
+                contentsOf: appWorkerMacOS.appendingPathComponent("mlx.metallib")))
         )
         let updater = SelfUpdater(coordinatorBaseURL: "https://api.example.test")
 
@@ -324,6 +432,10 @@ struct SelfUpdaterTests {
             atPath: installedBin.appendingPathComponent("darkbloom").path
         )
         #expect(linkDest == "../Darkbloom.app/Contents/MacOS/darkbloom")
+        let metallibLinkDest = try FileManager.default.destinationOfSymbolicLink(
+            atPath: installedBin.appendingPathComponent("mlx.metallib").path)
+        #expect(metallibLinkDest ==
+            "../Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)")
 
         // Content should come from the .app bundle (not the flat copy).
         #expect((try String(contentsOf: installedBin.appendingPathComponent("darkbloom"), encoding: .utf8)) == "app darkbloom")
@@ -345,30 +457,42 @@ struct SelfUpdaterTests {
         let stage = root.appendingPathComponent("tarball-src", isDirectory: true)
         let install = root.appendingPathComponent("install", isDirectory: true)
 
+        let appWorkerMacOS = stage.appendingPathComponent(
+            "Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"
+        ).deletingLastPathComponent()
         let appMacOS = stage.appendingPathComponent("Darkbloom.app/Contents/MacOS")
         let binFlat = stage.appendingPathComponent("bin")
+        try fm.createDirectory(at: appWorkerMacOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: appMacOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: binFlat, withIntermediateDirectories: true)
         try Data("<plist/>".utf8).write(
             to: stage.appendingPathComponent("Darkbloom.app/Contents/Info.plist"))
         try Data("new app darkbloom".utf8).write(to: appMacOS.appendingPathComponent("darkbloom"))
-        try Data("new app enclave".utf8).write(to: appMacOS.appendingPathComponent("darkbloom-enclave"))
-        try Data("new app metallib".utf8).write(to: appMacOS.appendingPathComponent("mlx.metallib"))
+        try Data("new app enclave".utf8).write(
+            to: appMacOS.appendingPathComponent("darkbloom-enclave"))
+        try Data("new app metallib".utf8).write(
+            to: appWorkerMacOS.appendingPathComponent("mlx.metallib"))
         try Data("new flat darkbloom".utf8).write(to: binFlat.appendingPathComponent("darkbloom"))
         try Data("new flat enclave".utf8).write(to: binFlat.appendingPathComponent("darkbloom-enclave"))
         try Data("new flat metallib".utf8).write(to: binFlat.appendingPathComponent("mlx.metallib"))
 
         // Populate the "live" install with an old .app bundle + symlinks.
         let liveMacOS = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
+        let liveWorkerMacOS = install.appendingPathComponent(
+            "Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"
+        ).deletingLastPathComponent()
         let liveBin = install.appendingPathComponent("bin")
         try fm.createDirectory(at: liveMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: liveWorkerMacOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: liveBin, withIntermediateDirectories: true)
         try Data("old darkbloom".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom"))
         try Data("old enclave".utf8).write(to: liveMacOS.appendingPathComponent("darkbloom-enclave"))
-        try Data("old metallib".utf8).write(to: liveMacOS.appendingPathComponent("mlx.metallib"))
+        try Data("old metallib".utf8).write(
+            to: liveWorkerMacOS.appendingPathComponent("mlx.metallib"))
         try fm.createSymbolicLink(
             atPath: liveBin.appendingPathComponent("mlx.metallib").path,
-            withDestinationPath: "../Darkbloom.app/Contents/MacOS/mlx.metallib")
+            withDestinationPath:
+                "../Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)")
 
         let tarball = root.appendingPathComponent("bundle.tar.gz")
         try runTarCreate(sourceDir: stage, tarball: tarball)
@@ -379,7 +503,8 @@ struct SelfUpdaterTests {
             url: "file://unused",
             bundleHash: sha256Hex(try Data(contentsOf: tarball)),
             binaryHash: sha256Hex(try Data(contentsOf: binFlat.appendingPathComponent("darkbloom"))),
-            metallibHash: sha256Hex(try Data(contentsOf: binFlat.appendingPathComponent("mlx.metallib")))
+            metallibHash: sha256Hex(try Data(
+                contentsOf: appWorkerMacOS.appendingPathComponent("mlx.metallib")))
         )
         return (tarball, release, install)
     }
@@ -411,6 +536,14 @@ struct SelfUpdaterTests {
         let stage = root.appendingPathComponent("signed-src", isDirectory: true)
         let app = stage.appendingPathComponent("Darkbloom.app", isDirectory: true)
         let appMacOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+        let workerMacOS = app.appendingPathComponent(
+            InferenceWorkerContract.relativeMetallibPathInsideApp)
+            .deletingLastPathComponent()
+        let workerResources = app.appendingPathComponent(
+            InferenceWorkerContract.relativeResourcesPathInsideApp,
+            isDirectory: true)
+        let workerXPC = workerMacOS.deletingLastPathComponent()
+            .deletingLastPathComponent()
         let helpers = app.appendingPathComponent("Contents/Helpers", isDirectory: true)
         let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
         let bin = stage.appendingPathComponent("bin", isDirectory: true)
@@ -418,12 +551,15 @@ struct SelfUpdaterTests {
         try fm.createDirectory(at: appMacOS, withIntermediateDirectories: true)
         try fm.createDirectory(at: helpers, withIntermediateDirectories: true)
         try fm.createDirectory(at: resources, withIntermediateDirectories: true)
+        let workerExecutable = URL(fileURLWithPath: "/usr/bin/true")
+        try fm.createDirectory(at: workerMacOS, withIntermediateDirectories: true)
+        try fm.createDirectory(at: workerResources, withIntermediateDirectories: true)
         try fm.createDirectory(at: bin, withIntermediateDirectories: true)
         try fm.createDirectory(at: install, withIntermediateDirectories: true)
 
         let darkbloom = try debugBuildProduct("darkbloom")
         let fanHelper = try debugBuildProduct("darkbloom-fan-helper")
-        let metallib = try debugBuildProduct("mlx.metallib")
+        let metallib = URL(fileURLWithPath: "/usr/bin/true")
         try fm.copyItem(
             at: darkbloom,
             to: appMacOS.appendingPathComponent("darkbloom"))
@@ -432,7 +568,52 @@ struct SelfUpdaterTests {
             to: appMacOS.appendingPathComponent("darkbloom-enclave"))
         try fm.copyItem(
             at: metallib,
-            to: appMacOS.appendingPathComponent("mlx.metallib"))
+            to: workerMacOS.appendingPathComponent("mlx.metallib"))
+        let stagedWorker = workerMacOS.appendingPathComponent(
+            "darkbloom-inference-worker")
+        try fm.copyItem(at: workerExecutable, to: stagedWorker)
+        let workerInfo: [String: Any] = [
+            "CFBundleIdentifier": InferenceWorkerContract.workerBundleIdentifier,
+            "CFBundleExecutable": InferenceWorkerContract.executableName,
+            "CFBundlePackageType": "XPC!",
+            "CFBundleVersion": "test",
+            "CFBundleShortVersionString": "test",
+            "XPCService": ["ServiceType": "Application", "RunLoopType": "NSRunLoop"],
+        ]
+        try PropertyListSerialization.data(
+            fromPropertyList: workerInfo, format: .xml, options: 0)
+            .write(to: workerXPC.appendingPathComponent("Contents/Info.plist"))
+        let workerEntitlements: [String: Any] = [
+            "com.apple.application-identifier":
+                "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+            "keychain-access-groups": ["SLDQ2GJ6TL.io.darkbloom.provider"],
+            "com.apple.security.app-sandbox": true,
+            "com.apple.security.files.bookmarks.app-scope": true,
+        ]
+        let entitlementsURL = root.appendingPathComponent(
+            "worker-entitlements.plist")
+        try PropertyListSerialization.data(
+            fromPropertyList: workerEntitlements, format: .xml, options: 0)
+            .write(to: entitlementsURL)
+        let profile: [String: Any] = [
+            "TeamIdentifier": ["SLDQ2GJ6TL"],
+            "ExpirationDate": Date(timeIntervalSinceNow: 86_400),
+            "Entitlements": [
+                "application-identifier":
+                    "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+                "keychain-access-groups":
+                    ["SLDQ2GJ6TL.io.darkbloom.provider"],
+                "com.apple.security.app-sandbox": true,
+                "com.apple.security.files.bookmarks.app-scope": true,
+                "com.apple.developer.team-identifier": "SLDQ2GJ6TL",
+            ],
+        ]
+        try PropertyListSerialization.data(
+            fromPropertyList: profile, format: .xml, options: 0)
+            .write(to: workerXPC.appendingPathComponent(
+                "Contents/embedded.provisionprofile"))
+        try fm.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: stagedWorker.path)
         let stagedFanHelper = helpers.appendingPathComponent("darkbloom-fan-helper")
         if includeFanHelper {
             try fm.copyItem(at: fanHelper, to: stagedFanHelper)
@@ -456,17 +637,14 @@ struct SelfUpdaterTests {
             isDirectory: true)
         try fm.createDirectory(at: capability, withIntermediateDirectories: true)
         try Data("1\n".utf8).write(
-            to: capability.appendingPathComponent("paged-kernel-v1"))
-        try Data("1\n".utf8).write(
             to: capability.appendingPathComponent("fan-helper-v1"))
         if includeResource {
-            let builtBundle = try debugBuildProduct(
-                PackagedRuntimeSmoke.mlxLMCommonBundleName)
-            try fm.copyItem(
-                at: builtBundle,
-                to: resources.appendingPathComponent(
-                    PackagedRuntimeSmoke.mlxLMCommonBundleName,
-                    isDirectory: true))
+            let bundle = workerResources.appendingPathComponent(
+                PackagedRuntimeSmoke.mlxLMCommonBundleName,
+                isDirectory: true)
+            try fm.createDirectory(at: bundle, withIntermediateDirectories: true)
+            try Data("paged kernel source".utf8).write(
+                to: bundle.appendingPathComponent("pagedattention.metal"))
         }
 
         if includeFanHelper {
@@ -476,7 +654,17 @@ struct SelfUpdaterTests {
         }
         try runTestProcess(
             "/usr/bin/codesign",
-            ["--force", "--sign", "-", appMacOS.appendingPathComponent("mlx.metallib").path])
+            ["--force", "--sign", "-", workerMacOS.appendingPathComponent("mlx.metallib").path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", "--identifier",
+             InferenceWorkerContract.workerBundleIdentifier,
+             "--entitlements", entitlementsURL.path, stagedWorker.path])
+        try runTestProcess(
+            "/usr/bin/codesign",
+            ["--force", "--sign", "-", "--identifier",
+             InferenceWorkerContract.workerBundleIdentifier,
+             "--entitlements", entitlementsURL.path, workerXPC.path])
         try runTestProcess(
             "/usr/bin/codesign",
             ["--force", "--sign", "-", appMacOS.appendingPathComponent("darkbloom-enclave").path])
@@ -497,7 +685,7 @@ struct SelfUpdaterTests {
             at: appMacOS.appendingPathComponent("darkbloom-enclave"),
             to: bin.appendingPathComponent("darkbloom-enclave"))
         try fm.copyItem(
-            at: appMacOS.appendingPathComponent("mlx.metallib"),
+            at: workerMacOS.appendingPathComponent("mlx.metallib"),
             to: bin.appendingPathComponent("mlx.metallib"))
         let tarball = root.appendingPathComponent(
             includeResource ? "signed-valid.tar.gz" : "signed-missing.tar.gz")
@@ -510,28 +698,12 @@ struct SelfUpdaterTests {
             binaryHash: sha256Hex(
                 try Data(contentsOf: bin.appendingPathComponent("darkbloom"))),
             metallibHash: sha256Hex(
-                try Data(contentsOf: bin.appendingPathComponent("mlx.metallib"))))
+                try Data(contentsOf: bin.appendingPathComponent("mlx.metallib"))),
+            inferenceWorkerBinaryHash: sha256Hex(
+                try Data(contentsOf: stagedWorker)))
         return (tarball, release, install)
     }
 
-    @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
-    func oldParentBootstrapsCandidateSmoke() throws {
-        _ = LiveInferenceFixtures.ensureMetallibColocated()
-        let executable = try debugBuildProduct("darkbloom")
-        let output = try BoundedProcess.runCapturingStandardOutput(
-            executable,
-            arguments: ["runtime-smoke"],
-            environment: [
-                "DARKBLOOM_NO_UPDATE_CHECK": "1",
-                GemmaOptimizationEnvironment.prefillLayer18Key: "0",
-                GemmaOptimizationEnvironment.weightedUnsortKey: "0",
-                GemmaOptimizationEnvironment.safeR1Key: "0",
-            ],
-            timeout: 30)
-        #expect(PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(output))
-        #expect(String(data: output, encoding: .utf8)?.contains(
-            "paged-kernel-runtime-smoke: ok") == true)
-    }
 
     @Test("signed extracted child proves retained Gemma marker before staging succeeds")
     func signedAppRunsRealVerification() throws {
@@ -702,7 +874,10 @@ struct SelfUpdaterTests {
         // symlink still resolves to the OLD content.
         let liveMacOS = install.appendingPathComponent("Darkbloom.app/Contents/MacOS")
         #expect((try String(contentsOf: liveMacOS.appendingPathComponent("darkbloom"), encoding: .utf8)) == "old darkbloom")
-        #expect((try String(contentsOf: liveMacOS.appendingPathComponent("mlx.metallib"), encoding: .utf8)) == "old metallib")
+        #expect((try String(
+            contentsOf: install.appendingPathComponent(
+                "Darkbloom.app/\(InferenceWorkerContract.relativeMetallibPathInsideApp)"),
+            encoding: .utf8)) == "old metallib")
         #expect((try String(contentsOf: install.appendingPathComponent("bin/mlx.metallib"), encoding: .utf8)) == "old metallib")
 
         // The staged contents are verified and complete, off to the side.

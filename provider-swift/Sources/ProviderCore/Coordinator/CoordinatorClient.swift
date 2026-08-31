@@ -83,6 +83,11 @@ public actor CoordinatorClient {
     /// state. This does not force a reconnect; challenge responses already use
     /// the live map, and this keeps future registrations consistent.
     internal var modelWeightHashOverrides: [String: String]?
+    /// Rotated only when the XPC worker process restarts. Future registration
+    /// frames and their signed attestation must use the same fresh identity.
+    internal var processPublicKeyOverride: String?
+    internal var registrationAttestationOverride: (@Sendable () -> RawJSON?)?
+    internal var runtimeCapabilitiesOverride: Set<ProviderRuntimeCapability>?
 
     private let shutdownFlag = ShutdownFlag()
 
@@ -109,10 +114,7 @@ public actor CoordinatorClient {
         self.config = config
         self.stats = stats
         self.state = state
-        self.advertisedModelStore = AdvertisedModelStore(config.models.filter {
-            ModelRuntimeRequirements.isEligible(
-                modelID: $0.id, available: config.runtimeCapabilities)
-        })
+        self.advertisedModelStore = AdvertisedModelStore(config.models)
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
 
         // Inference-chunk fast path. The encode closure is the same pure static
@@ -157,18 +159,17 @@ public actor CoordinatorClient {
     /// the coordinator's advertised inventory on the next reconnect.
     @discardableResult
     public func advertiseModel(_ model: ModelInfo) -> Bool {
-        guard ModelRuntimeRequirements.isEligible(
-            modelID: model.id, available: config.runtimeCapabilities)
-        else {
-            logger.error(
-                "advertiseModel(\(model.id)): permanently ineligible; refusing advertisement")
-            return false
-        }
         let isNew = advertisedModelStore.add(model)
         if isNew {
             logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")
         }
         return isNew
+    }
+
+    public func updateRuntimeCapabilities(
+        _ capabilities: Set<ProviderRuntimeCapability>
+    ) {
+        runtimeCapabilitiesOverride = capabilities
     }
 
     /// Retire a build from the advertised set (hard swap). After this, a register
@@ -269,6 +270,15 @@ public actor CoordinatorClient {
     /// blip; no-op when no connection is up (registration hasn't happened
     /// yet — the register that follows will already carry the current set).
     public func forceReconnect() {
+        closeCurrentConnection()
+    }
+
+    public func refreshInferenceWorkerIdentity(
+        publicKey: String,
+        registrationAttestation: @escaping @Sendable () -> RawJSON?
+    ) {
+        processPublicKeyOverride = publicKey
+        registrationAttestationOverride = registrationAttestation
         closeCurrentConnection()
     }
 

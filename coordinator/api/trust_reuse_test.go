@@ -242,11 +242,14 @@ func TestApprovedReleaseTransitionDerivedFromActiveRuntimePolicy(t *testing.T) {
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	for _, release := range []store.Release{
 		{Version: "0.8.14", Platform: "macos-arm64", Backend: "mlx-swift",
-			BinaryHash: trHashA, MetallibHash: trHashC, Active: true},
+			BinaryHash: trHashA, MetallibHash: trHashC,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + trHashA, Active: true},
 		{Version: "0.8.15", Platform: "macos-arm64", Backend: "mlx-swift",
-			BinaryHash: trHashB, MetallibHash: trHashC, Active: true},
+			BinaryHash: trHashB, MetallibHash: trHashC,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + trHashD, Active: true},
 		{Version: "0.8.16", Platform: "macos-arm64", Backend: "mlx-swift",
-			BinaryHash: trHashD, MetallibHash: trHashC, Active: false},
+			BinaryHash: trHashD, MetallibHash: trHashC,
+			TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + trHashB, Active: false},
 	} {
 		release := release
 		if err := st.SetRelease(&release); err != nil {
@@ -272,7 +275,10 @@ func TestApprovedReleaseTransitionDerivedFromActiveRuntimePolicy(t *testing.T) {
 	resp := &protocol.AttestationResponseMessage{
 		BinaryHash: trHashB, SIPEnabled: trBoolPtr(true),
 		SecureBootEnabled: trBoolPtr(true),
-		TemplateHashes:    map[string]string{"mlx_metallib": trHashC},
+		TemplateHashes: map[string]string{
+			"mlx_metallib": trHashC,
+			protocol.TemplateHashInferenceWorkerBinary: trHashD,
+		},
 	}
 	fact, evidence, ok := srv.deriveApprovedReleaseTransition(p, resp, true)
 	if !ok || !fact.Approved || fact.BinaryHash != trHashB ||
@@ -292,6 +298,7 @@ func TestApprovedReleaseTransitionDerivedFromActiveRuntimePolicy(t *testing.T) {
 	p.AttestationResult.BinaryHash = trHashA
 	p.Mu().Unlock()
 	resp.BinaryHash = trHashA
+	resp.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary] = trHashA
 	oldFact, _, oldOK := srv.deriveApprovedReleaseTransition(p, resp, true)
 	if !oldOK {
 		t.Fatal("active old release should still prove its own application")
@@ -304,6 +311,7 @@ func TestApprovedReleaseTransitionDerivedFromActiveRuntimePolicy(t *testing.T) {
 	p.AttestationResult.BinaryHash = trHashB
 	p.Mu().Unlock()
 	resp.BinaryHash = trHashB
+	resp.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary] = trHashD
 
 	resp.BinaryHash = trHashD
 	p.Mu().Lock()

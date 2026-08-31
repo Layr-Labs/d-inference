@@ -65,7 +65,7 @@ struct KVBackendPostureTests {
                 .init(
                     model: "inert-slot", kvBackend: "paged", kvBackendRequested: "paged",
                     mtpEnabled: true, mtpActive: false,
-                    mtpInactiveReason: MTPFallbackReason.inertKVUnsupported.rawValue),
+                    mtpInactiveReason: "inert_kv_unsupported"),
                 .init(
                     model: "off-slot", kvBackend: "contiguous", kvBackendRequested: "auto",
                     mtpEnabled: false, mtpActive: false),

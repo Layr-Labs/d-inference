@@ -49,8 +49,8 @@ func TestReleaseUpdateMessageExactShape(t *testing.T) {
 	message := ReleaseUpdateMessage{
 		Type: TypeReleaseUpdate, Version: "1.2.3", Platform: "macos-arm64",
 		Backend: "mlx-swift", BinaryHash: "binary", BundleHash: "bundle",
-		MetallibHash: "metallib", URL: "https://example.invalid/release",
-		DesiredGeneration: 7,
+		MetallibHash: "metallib", InferenceWorkerBinaryHash: "worker",
+		URL: "https://example.invalid/release", DesiredGeneration: 7,
 	}
 	encoded, err := json.Marshal(message)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestReleaseUpdateMessageExactShape(t *testing.T) {
 	if err := json.Unmarshal(encoded, &fields); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"type", "version", "platform", "backend", "binary_hash", "bundle_hash", "metallib_hash", "url", "desired_generation"}
+	want := []string{"type", "version", "platform", "backend", "binary_hash", "bundle_hash", "metallib_hash", "inference_worker_binary_hash", "url", "desired_generation"}
 	if len(fields) != len(want) {
 		t.Fatalf("unexpected command shape: %s", encoded)
 	}

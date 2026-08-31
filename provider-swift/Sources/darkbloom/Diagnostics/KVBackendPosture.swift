@@ -128,8 +128,8 @@ enum KVBackendPosture {
         guard slot.mtpEnabled else { return "mtp=disabled" }
         if slot.mtpActive { return "mtp=enabled, active" }
         let reason = slot.mtpInactiveReason
-        if reason == MTPFallbackReason.inertKVUnsupported.rawValue {
-            return "mtp=enabled but INERT (\(MTPFallbackReason.inertKVUnsupported.rawValue))"
+        if reason == "inert_kv_unsupported" {
+            return "mtp=enabled but INERT (inert_kv_unsupported)"
         }
         return "mtp=enabled but inactive (\(reason ?? "reason unreported"))"
     }

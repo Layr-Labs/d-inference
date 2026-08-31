@@ -1562,6 +1562,22 @@ func releaseRuntimeMatches(policy approvedReleasePolicy, resp *protocol.Attestat
 	if err != nil || gotMetallib != expectedMetallib {
 		return false
 	}
+	expectedWorkerHash, ok := policy.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary]
+	if !ok {
+		return false
+	}
+	expectedWorkerHash, err = normalizeSHA256Hex(
+		expectedWorkerHash, "release template inference_worker_binary")
+	if err != nil {
+		return false
+	}
+	gotWorkerHash, err := normalizeSHA256Hex(
+		resp.TemplateHashes[protocol.TemplateHashInferenceWorkerBinary],
+		"template inference_worker_binary",
+	)
+	if err != nil || gotWorkerHash != expectedWorkerHash {
+		return false
+	}
 	for name, expected := range policy.TemplateHashes {
 		if !strings.EqualFold(resp.TemplateHashes[name], expected) {
 			return false
@@ -1604,14 +1620,15 @@ func (s *Server) SyncRuntimeManifest() error {
 	// should not instantly knock all existing providers offline.
 
 	manifest := &RuntimeManifest{
-		PythonHashes:   make(map[string]bool),
-		RuntimeHashes:  make(map[string]bool),
-		TemplateHashes: make(map[string]string),
+		PythonHashes:                         make(map[string]bool),
+		RuntimeHashes:                        make(map[string]bool),
+		TemplateHashes:                       make(map[string]string),
+		InferenceWorkerBinaryHashesByVersion: make(map[string]map[string]bool),
 	}
 
-	// Sort releases ascending by version so newer releases' template hashes
-	// overwrite older ones (templates are keyed by name; binary/runtime hashes
-	// accumulate as a set).
+	// Sort releases ascending by version so newer releases' unversioned template
+	// hashes overwrite older ones. Binary/runtime hashes accumulate globally,
+	// while signed inference-worker hashes accumulate per provider version.
 	sortedReleases := append([]store.Release(nil), releases...)
 	sort.SliceStable(sortedReleases, func(i, j int) bool {
 		return semverGreater(sortedReleases[j].Version, sortedReleases[i].Version)
@@ -1622,6 +1639,14 @@ func (s *Server) SyncRuntimeManifest() error {
 		if !r.Active {
 			continue
 		}
+		workerHashes := manifest.InferenceWorkerBinaryHashesByVersion[r.Version]
+		if workerHashes == nil {
+			workerHashes = make(map[string]bool)
+			manifest.InferenceWorkerBinaryHashesByVersion[r.Version] = workerHashes
+		}
+		// An active release is itself runtime policy. Keeping an empty worker set
+		// makes missing or malformed release metadata fail closed for that version.
+		hasAny = true
 		if r.PythonHash != "" {
 			manifest.PythonHashes[r.PythonHash] = true
 			hasAny = true
@@ -1631,13 +1656,30 @@ func (s *Server) SyncRuntimeManifest() error {
 			hasAny = true
 		}
 		if r.TemplateHashes != "" {
-			// Parse "name=hash,name=hash" format
+			// Parse "name=hash,name=hash" format.
 			for _, pair := range strings.Split(r.TemplateHashes, ",") {
 				parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-				if len(parts) == 2 {
-					manifest.TemplateHashes[parts[0]] = parts[1]
-					hasAny = true
+				if len(parts) != 2 {
+					continue
 				}
+				name := strings.TrimSpace(parts[0])
+				hash := strings.TrimSpace(parts[1])
+				if name == protocol.TemplateHashInferenceWorkerBinary {
+					normalized, err := normalizeSHA256Hex(
+						hash, "release template inference_worker_binary")
+					if err != nil {
+						s.logger.Warn("invalid release inference worker hash ignored",
+							"version", r.Version,
+							"platform", r.Platform,
+							"error", err,
+						)
+					} else {
+						workerHashes[normalized] = true
+					}
+					continue
+				}
+				manifest.TemplateHashes[name] = hash
+				hasAny = true
 			}
 		}
 		if r.MetallibHash != "" {
@@ -1661,6 +1703,7 @@ func (s *Server) SyncRuntimeManifest() error {
 			"python_hashes", len(manifest.PythonHashes),
 			"runtime_hashes", len(manifest.RuntimeHashes),
 			"template_hashes", len(manifest.TemplateHashes),
+			"inference_worker_versions", len(manifest.InferenceWorkerBinaryHashesByVersion),
 		)
 	} else if len(releases) > 0 {
 		// Explicit empty: releases exist but none have hashes. Clear manifest.
@@ -1721,6 +1764,7 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
 				backend,
+				version,
 				pythonHash,
 				runtimeHash,
 				templateHashes,
@@ -1800,9 +1844,10 @@ func runtimeManifestApprovesMetallib(
 // When configured, the coordinator verifies provider-reported hashes against
 // this manifest at registration and during periodic attestation challenges.
 type RuntimeManifest struct {
-	PythonHashes   map[string]bool   `json:"python_hashes"`   // set of accepted Python runtime hashes
-	RuntimeHashes  map[string]bool   `json:"runtime_hashes"`  // set of accepted inference runtime hashes
-	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
+	PythonHashes                         map[string]bool            `json:"python_hashes"`   // set of accepted Python runtime hashes
+	RuntimeHashes                        map[string]bool            `json:"runtime_hashes"`  // set of accepted inference runtime hashes
+	TemplateHashes                       map[string]string          `json:"template_hashes"` // template_name -> expected hash
+	InferenceWorkerBinaryHashesByVersion map[string]map[string]bool `json:"inference_worker_binary_hashes_by_version"`
 }
 
 // semverGreater returns true when a has higher SemVer precedence than b,
@@ -1837,7 +1882,7 @@ func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
 
-func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesForBackend(backend, providerVersion, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
 	if s.knownRuntimeManifest == nil {
 		return true, nil
 	}
@@ -1854,23 +1899,32 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 
 	manifest := s.knownRuntimeManifest
 	scoped := &RuntimeManifest{
-		PythonHashes:   map[string]bool{},
-		RuntimeHashes:  map[string]bool{},
-		TemplateHashes: map[string]string{},
+		PythonHashes:                         map[string]bool{},
+		RuntimeHashes:                        map[string]bool{},
+		TemplateHashes:                       map[string]string{},
+		InferenceWorkerBinaryHashesByVersion: manifest.InferenceWorkerBinaryHashesByVersion,
 	}
 	scopedReportedTemplates := make(map[string]string)
 
 	if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
 		scoped.TemplateHashes["mlx_metallib"] = expected
 	}
-	if got := templateHashes["mlx_metallib"]; got != "" {
+	if got, reported := templateHashes["mlx_metallib"]; reported {
 		scopedReportedTemplates["mlx_metallib"] = got
 	}
+	if got, reported := templateHashes[protocol.TemplateHashInferenceWorkerBinary]; reported {
+		scopedReportedTemplates[protocol.TemplateHashInferenceWorkerBinary] = got
+	}
 
-	return s.verifyRuntimeHashesAgainstManifest(scoped, pythonHash, runtimeHash, scopedReportedTemplates)
+	return s.verifyRuntimeHashesAgainstManifest(
+		scoped, providerVersion, pythonHash, runtimeHash, scopedReportedTemplates)
 }
 
-func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, pythonHash, runtimeHash string, templateHashes map[string]string) (bool, []protocol.RuntimeMismatch) {
+func (s *Server) verifyRuntimeHashesAgainstManifest(
+	manifest *RuntimeManifest,
+	providerVersion, pythonHash, runtimeHash string,
+	templateHashes map[string]string,
+) (bool, []protocol.RuntimeMismatch) {
 	if manifest == nil {
 		return true, nil
 	}
@@ -1921,11 +1975,51 @@ func (s *Server) verifyRuntimeHashesAgainstManifest(manifest *RuntimeManifest, p
 			}
 		}
 		for name, got := range templateHashes {
+			if name == protocol.TemplateHashInferenceWorkerBinary &&
+				len(manifest.InferenceWorkerBinaryHashesByVersion) > 0 {
+				continue
+			}
 			if _, ok := manifest.TemplateHashes[name]; !ok {
 				mismatches = append(mismatches, protocol.RuntimeMismatch{
 					Component: "template:" + name,
 					Expected:  "template listed in runtime manifest",
 					Got:       got,
+				})
+			}
+		}
+	}
+
+	if len(manifest.InferenceWorkerBinaryHashesByVersion) > 0 {
+		component := "template:" + protocol.TemplateHashInferenceWorkerBinary
+		got, reported := templateHashes[protocol.TemplateHashInferenceWorkerBinary]
+		got = strings.TrimSpace(got)
+		accepted, versionKnown := manifest.InferenceWorkerBinaryHashesByVersion[providerVersion]
+		if !versionKnown || len(accepted) == 0 {
+			if !reported || got == "" {
+				got = "(missing)"
+			}
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: component,
+				Expected: fmt.Sprintf(
+					"published SHA-256 for active provider version %q", providerVersion),
+				Got: got,
+			})
+		} else if !reported || got == "" {
+			mismatches = append(mismatches, protocol.RuntimeMismatch{
+				Component: component,
+				Expected: fmt.Sprintf(
+					"one of known-good hashes for provider version %q", providerVersion),
+				Got: "(missing)",
+			})
+		} else {
+			normalized, err := normalizeSHA256Hex(
+				got, "template inference_worker_binary")
+			if err != nil || !accepted[normalized] {
+				mismatches = append(mismatches, protocol.RuntimeMismatch{
+					Component: component,
+					Expected: fmt.Sprintf(
+						"one of known-good hashes for provider version %q", providerVersion),
+					Got: got,
 				})
 			}
 		}
@@ -1950,6 +2044,7 @@ func (s *Server) handleRuntimeManifest(w http.ResponseWriter, r *http.Request) {
 			"python_hashes":   s.knownRuntimeManifest.PythonHashes,
 			"runtime_hashes":  s.knownRuntimeManifest.RuntimeHashes,
 			"template_hashes": s.knownRuntimeManifest.TemplateHashes,
+			"inference_worker_binary_hashes_by_version": s.knownRuntimeManifest.InferenceWorkerBinaryHashesByVersion,
 		}
 	}
 	body, err := json.Marshal(resp)

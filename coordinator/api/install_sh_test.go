@@ -130,6 +130,38 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 	})
 
+	t.Run("mature bundle requires the signed sandboxed inference worker", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+		for _, required := range []string{
+			"Contents/XPCServices/DarkbloomInferenceWorker.xpc",
+			"Contents/MacOS/darkbloom-inference-worker",
+			`identifier "io.darkbloom.provider.inference-worker"`,
+			`certificate leaf[subject.OU] = "SLDQ2GJ6TL"`,
+			"SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+			"SLDQ2GJ6TL.io.darkbloom.provider",
+			"com.apple.security.app-sandbox",
+			"com.apple.security.files.bookmarks.app-scope",
+			"Contents/embedded.provisionprofile",
+			`security cms -D -i "$profile"`,
+			"Entitlements:application-identifier",
+			"darkbloom-verify.XXXXXX",
+			".install-staging.XXXXXX",
+			"--sandbox-self-test-v1",
+			"DBXPC_SANDBOX_SELF_TEST_V1:63",
+			"mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
+			`mktemp -d "${TMPDIR:-/tmp}/darkbloom-install.XXXXXX"`,
+			"single-link regular file",
+			"flat artifacts are rejected",
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("install.sh is missing worker-XPC enforcement %q", required)
+			}
+		}
+	})
+
 	t.Run("enrollment excludes hardware identity", func(t *testing.T) {
 		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()

@@ -8,16 +8,15 @@ set -euo pipefail
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
-#   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
+#   2. Downloads the provider app and its signed sandboxed XPC worker
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
 #   5. Optionally enrolls in MDM (device attestation)
 #   6. Optionally downloads a starter model
 #
-# Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
-# links mlx-swift directly and ships a colocated mlx.metallib for Metal
-# kernels; there is no Python interpreter to install and no inference
-# subprocess to spawn.
+# Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift supervisor
+# delegates plaintext inference to its separately signed, sandboxed XPC worker;
+# there is no Python interpreter or unsandboxed inference subprocess.
 
 # This source intentionally retains the placeholder used by the coordinator.
 # End users fetch /install.sh from a coordinator, which substitutes its own base
@@ -27,12 +26,71 @@ INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+DARKBLOOM_WORKER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider.inference-worker" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+WORKER_BUNDLE_RELATIVE_PATH='Contents/XPCServices/DarkbloomInferenceWorker.xpc'
+WORKER_EXECUTABLE_RELATIVE_PATH='Contents/MacOS/darkbloom-inference-worker'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
+WORKER_REQUIREMENT="$DARKBLOOM_WORKER_REQUIREMENT"
 INSTALL_TEST_MODE=0
+SANDBOX_TEST_PROBE=""
 
 fail_install() {
     echo "  ✗ $*" >&2
     return 1
+}
+
+DOWNLOAD_DIR=""
+TARBALL=""
+
+cleanup_download_bundle() {
+    if [ -n "$DOWNLOAD_DIR" ] && [ -d "$DOWNLOAD_DIR" ] && [ ! -L "$DOWNLOAD_DIR" ]; then
+        rm -rf -- "$DOWNLOAD_DIR"
+    fi
+    DOWNLOAD_DIR=""
+    TARBALL=""
+}
+
+verify_download_archive_path() {
+    local archive=$1
+    [ -f "$archive" ] && [ ! -L "$archive" ] \
+        && [ "$(stat -f '%u' "$archive" 2>/dev/null || true)" = "$(id -u)" ] \
+        && [ "$(stat -f '%l' "$archive" 2>/dev/null || true)" = "1" ] \
+        || fail_install "Downloaded release archive must be an owned, single-link regular file."
+}
+
+secure_download_release() {
+    local url=$1
+    local old_umask
+    DOWNLOAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-install.XXXXXX") || {
+        fail_install "Could not allocate a private release download directory."
+        return 1
+    }
+    trap cleanup_download_bundle EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    chmod 0700 "$DOWNLOAD_DIR"
+    [ ! -L "$DOWNLOAD_DIR" ] \
+        && [ "$(stat -f '%Lp' "$DOWNLOAD_DIR" 2>/dev/null || true)" = "700" ] \
+        && [ "$(stat -f '%u' "$DOWNLOAD_DIR" 2>/dev/null || true)" = "$(id -u)" ] \
+        || {
+            fail_install "Release download directory is not private to the current user."
+            return 1
+        }
+
+    TARBALL="$DOWNLOAD_DIR/darkbloom-bundle.tar.gz"
+    [ ! -e "$TARBALL" ] && [ ! -L "$TARBALL" ] || {
+        fail_install "Private release archive path unexpectedly already exists."
+        return 1
+    }
+    old_umask=$(umask)
+    umask 077
+    if ! curl -f#L "$url" -o "$TARBALL"; then
+        umask "$old_umask"
+        return 1
+    fi
+    umask "$old_umask"
+    verify_download_archive_path "$TARBALL"
 }
 
 verify_file_hash() {
@@ -67,14 +125,196 @@ verify_staged_app_signature() {
         return 1
     }
 }
-
-# Stock-macOS binary capability probe. `strings` is an Xcode CLT shim on a
-# pristine Mac (it prompts/fails without developer tools), so scan the file
-# directly with BSD grep's binary-as-text mode — grep ships in base macOS.
-binary_contains_paged_code() {
-    local binary=$1
-    LC_ALL=C grep -a -q -F 'engine_v2_kv_backend' "$binary"
+plist_value() {
+    /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null
 }
+private_validation_dir() {
+    local old_umask dir
+    old_umask=$(umask)
+    umask 077
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-verify.XXXXXX") || {
+        umask "$old_umask"
+        fail_install "Could not allocate a private verification directory."
+        return 1
+    }
+    umask "$old_umask"
+    chmod 0700 "$dir"
+    [ ! -L "$dir" ] \
+        && [ "$(stat -f '%Lp' "$dir" 2>/dev/null || true)" = "700" ] \
+        && [ "$(stat -f '%u' "$dir" 2>/dev/null || true)" = "$(id -u)" ] \
+        || {
+            rm -rf -- "$dir"
+            fail_install "Verification directory is not private to the current user."
+            return 1
+        }
+    printf '%s\n' "$dir"
+}
+
+verify_worker_profile() {
+    local profile=$1
+    local temp_dir decoded
+    temp_dir=$(private_validation_dir) || return 1
+    decoded="$temp_dir/profile.plist"
+    if [ "$INSTALL_TEST_MODE" = "1" ]; then
+        cp "$profile" "$decoded"
+    elif ! security cms -D -i "$profile" > "$decoded" 2>/dev/null; then
+        rm -rf -- "$temp_dir"
+        fail_install "Inference worker provisioning profile is not a valid Apple CMS profile."
+        return 1
+    fi
+    [ -s "$decoded" ] \
+        && [ "$(plist_value "$decoded" 'TeamIdentifier:0' || true)" = "SLDQ2GJ6TL" ] \
+        && ! plist_value "$decoded" 'TeamIdentifier:1' >/dev/null \
+        && [ "$(plist_value "$decoded" 'Entitlements:application-identifier' || true)" = "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker" ] \
+        && [ "$(plist_value "$decoded" 'Entitlements:keychain-access-groups:0' || true)" = "SLDQ2GJ6TL.io.darkbloom.provider" ] \
+        && ! plist_value "$decoded" 'Entitlements:keychain-access-groups:1' >/dev/null \
+        && [ "$(plist_value "$decoded" 'Entitlements:com.apple.security.app-sandbox' || true)" = "true" ] \
+        && [ "$(plist_value "$decoded" 'Entitlements:com.apple.security.files.bookmarks.app-scope' || true)" = "true" ] \
+        || {
+            rm -rf -- "$temp_dir"
+            fail_install "Inference worker provisioning profile does not grant its exact Team, application identity, shared provider key group, sandbox, and app-scoped bookmarks."
+            return 1
+        }
+    rm -rf -- "$temp_dir"
+}
+
+
+verify_worker_entitlements() {
+    local worker=$1
+    local temp_dir entitlements
+    temp_dir=$(private_validation_dir) || return 1
+    entitlements="$temp_dir/entitlements.plist"
+    if ! codesign -d --entitlements "$entitlements" --xml "$worker" 2>/dev/null \
+        || [ ! -s "$entitlements" ]
+    then
+        rm -rf -- "$temp_dir"
+        fail_install "Could not extract inference worker entitlements."
+        return 1
+    fi
+
+    [ "$(plist_value "$entitlements" 'com.apple.application-identifier' || true)" = "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker" ] \
+        && [ "$(plist_value "$entitlements" 'keychain-access-groups:0' || true)" = "SLDQ2GJ6TL.io.darkbloom.provider" ] \
+        && ! plist_value "$entitlements" 'keychain-access-groups:1' >/dev/null \
+        && [ "$(plist_value "$entitlements" 'com.apple.security.app-sandbox' || true)" = "true" ] \
+        && [ "$(plist_value "$entitlements" 'com.apple.security.files.bookmarks.app-scope' || true)" = "true" ] \
+        || {
+            rm -rf -- "$temp_dir"
+            fail_install "Inference worker must have its exact application identity, shared provider key group, App Sandbox, and brokered model access."
+            return 1
+        }
+
+    local keys key
+    keys=$(/usr/libexec/PlistBuddy -c Print "$entitlements" 2>/dev/null \
+        | sed -n 's/^[[:space:]]*\([^ =][^ =]*\)[[:space:]]*=.*$/\1/p')
+    set -- $keys
+    [ "$#" -eq 4 ] || {
+        rm -rf -- "$temp_dir"
+        fail_install "Inference worker entitlement allowlist is not exact."
+        return 1
+    }
+    for key in $keys; do
+        case "$key" in
+            com.apple.application-identifier|keychain-access-groups|com.apple.security.app-sandbox|com.apple.security.files.bookmarks.app-scope)
+                ;;
+            *)
+                rm -rf -- "$temp_dir"
+                fail_install "Inference worker carries forbidden entitlement: $key."
+                return 1
+                ;;
+        esac
+    done
+    rm -rf -- "$temp_dir"
+}
+
+verify_worker_bundle() {
+    local app=$1
+    local app_info="$app/Contents/Info.plist"
+    local xpc="$app/$WORKER_BUNDLE_RELATIVE_PATH"
+    local info="$xpc/Contents/Info.plist"
+    local worker="$xpc/$WORKER_EXECUTABLE_RELATIVE_PATH"
+    local worker_metallib="$xpc/Contents/MacOS/mlx.metallib"
+    local worker_profile="$xpc/Contents/embedded.provisionprofile"
+    local worker_resources="$xpc/Contents/Resources"
+    local paged_resource="$worker_resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+    local paged_bundle="${paged_resource%/*}"
+    [ -d "$xpc" ] && [ ! -L "$xpc" ] \
+        && [ -f "$info" ] && [ ! -L "$info" ] \
+        && [ -f "$worker_profile" ] && [ ! -L "$worker_profile" ] && [ -s "$worker_profile" ] \
+        && [ -f "$worker" ] && [ ! -L "$worker" ] && [ -x "$worker" ] \
+        || {
+            fail_install "Release is missing the regular executable DarkbloomInferenceWorker.xpc bundle."
+            return 1
+        }
+    [ "$(plist_value "$info" CFBundleIdentifier || true)" = "io.darkbloom.provider.inference-worker" ] \
+        && [ "$(plist_value "$info" CFBundleExecutable || true)" = "darkbloom-inference-worker" ] \
+        && [ "$(plist_value "$info" CFBundlePackageType || true)" = "XPC!" ] \
+        && [ "$(plist_value "$info" 'XPCService:ServiceType' || true)" = "Application" ] \
+        && [ "$(plist_value "$info" CFBundleVersion || true)" = "$(plist_value "$app_info" CFBundleVersion || true)" ] \
+        && [ "$(plist_value "$info" CFBundleShortVersionString || true)" = "$(plist_value "$app_info" CFBundleShortVersionString || true)" ] \
+        || {
+            fail_install "Inference worker Info.plist has the wrong service identity, executable, type, or version."
+            return 1
+        }
+    [ ! -e "$xpc/Contents/Frameworks" ] \
+        && [ ! -e "$xpc/Contents/Helpers" ] \
+        && [ ! -e "$xpc/Contents/PlugIns" ] \
+        && [ ! -e "$xpc/Contents/SharedSupport" ] \
+        || {
+            fail_install "Inference worker bundle contains an unapproved nested code or support directory."
+            return 1
+        }
+    [ -f "$worker_metallib" ] && [ ! -L "$worker_metallib" ] && [ -s "$worker_metallib" ] \
+        && [ -d "$worker_resources" ] && [ ! -L "$worker_resources" ] \
+        && [ -d "$paged_bundle" ] && [ ! -L "$paged_bundle" ] \
+        && [ -f "$paged_resource" ] && [ ! -L "$paged_resource" ] && [ -s "$paged_resource" ] \
+        || {
+            fail_install "Inference worker is missing its sealed MLX metallib or paged-attention resource."
+            return 1
+        }
+    [ -z "$(find "$worker_resources" -mindepth 1 \
+        ! -path "$paged_bundle" ! -path "$paged_resource" -print -quit)" ] || {
+            fail_install "Inference worker bundle contains an unapproved runtime resource."
+            return 1
+        }
+    verify_worker_profile "$worker_profile" || return 1
+
+
+    verify_code_requirement "$xpc" 1 "$WORKER_REQUIREMENT" || {
+        fail_install "Inference worker does not satisfy the pinned Team ID and bundle identity requirement."
+        return 1
+    }
+    verify_code_requirement "$worker" 0 "$WORKER_REQUIREMENT" || {
+        fail_install "Inference worker executable does not satisfy the pinned Team ID and signing identity requirement."
+        return 1
+    }
+    verify_worker_entitlements "$worker" || return 1
+    local sandbox_output sandbox_probe
+    sandbox_probe=$worker
+    if [ "$INSTALL_TEST_MODE" = "1" ]; then
+        # Apple-issued profiles cannot be fabricated for an ad-hoc packaging
+        # fixture. The test-only entrypoint supplies an unsigned probe while
+        # the staged worker's exact signature and entitlements are still
+        # verified above.
+        [ -n "$SANDBOX_TEST_PROBE" ] \
+            && [ -f "$SANDBOX_TEST_PROBE" ] \
+            && [ ! -L "$SANDBOX_TEST_PROBE" ] \
+            && [ -x "$SANDBOX_TEST_PROBE" ] || {
+                fail_install "Inference worker test probe is invalid."
+                return 1
+            }
+        sandbox_probe=$SANDBOX_TEST_PROBE
+    fi
+    sandbox_output=$(DARKBLOOM_SIGNED_HOST_TEST=1 \
+        "$sandbox_probe" --sandbox-self-test-v1) || {
+            fail_install "Inference worker sandbox self-test did not complete."
+            return 1
+        }
+    [ "$sandbox_output" = "DBXPC_SANDBOX_SELF_TEST_V1:63" ] || {
+        fail_install "Inference worker sandbox self-test did not deny every prohibited operation."
+        return 1
+    }
+}
+
 
 verify_fan_helper_capability() {
     local app=$1
@@ -117,8 +357,6 @@ verify_fan_helper_capability() {
 
 verify_staged_app() {
     local app=$1
-    local executable="$app/Contents/MacOS/darkbloom"
-    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
 
     if [ "$INSTALL_TEST_MODE" = "1" ]; then
         codesign --verify --deep --strict --verbose=2 "$app" >/dev/null 2>&1 || {
@@ -128,48 +366,8 @@ verify_staged_app() {
     else
         verify_staged_app_signature "$app" || return 1
     fi
+    verify_worker_bundle "$app" || return 1
     verify_fan_helper_capability "$app" || return 1
-
-    local code_has_paged=0
-    local marker_present=0
-    binary_contains_paged_code "$executable" && code_has_paged=1
-    [ -f "$marker" ] && marker_present=1
-    [ "$code_has_paged" -eq "$marker_present" ] || {
-        if [ "$code_has_paged" -eq 1 ]; then
-            fail_install "Paged-capable staged app is missing its signed capability marker."
-        else
-            fail_install "Staged app advertises paged capability without paged runtime code."
-        fi
-        return 1
-    }
-    [ "$marker_present" -eq 1 ] || return 0
-    [ "$(tr -d '[:space:]' < "$marker")" = "1" ] || {
-        fail_install "Paged runtime capability marker is invalid."
-        return 1
-    }
-
-    shopt -s nullglob
-    local paged_resources=(
-        "$app/Contents/Resources"/*.bundle/pagedattention.metal
-    )
-    local expected_resource="$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
-    [ "${#paged_resources[@]}" -eq 1 ] \
-        && [ "${paged_resources[0]}" = "$expected_resource" ] \
-        && [ -s "$expected_resource" ] \
-        || {
-            fail_install "Paged-capable staged app requires exactly one sealed MLXLMCommon pagedattention.metal."
-            return 1
-        }
-
-    DARKBLOOM_NO_UPDATE_CHECK=1 \
-        DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
-        MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
-        MLX_GATHER_QMM_EXPERT_SLICES=1 \
-        "$executable" runtime-smoke >/dev/null \
-        || {
-            fail_install "Packaged paged-kernel runtime smoke failed."
-            return 1
-        }
 }
 
 verify_staged_app_payload() {
@@ -177,96 +375,237 @@ verify_staged_app_payload() {
     local binary_hash=$2
     local metallib_hash=$3
     local app_bin="$app/Contents/MacOS"
+    local worker_metallib="$app/$WORKER_BUNDLE_RELATIVE_PATH/Contents/MacOS/mlx.metallib"
     [ -n "$binary_hash" ] && [ -n "$metallib_hash" ] || {
         fail_install "App releases require binary_hash and metallib_hash."
         return 1
     }
     verify_file_hash "$app_bin/darkbloom" "$binary_hash" "App binary" \
-        && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
+        && verify_file_hash "$worker_metallib" "$metallib_hash" "Worker metallib"
+}
+
+restore_launcher_snapshot() {
+    local transaction=$1
+    local install_dir=$2
+    local name current previous restore_failed=0
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        current="$install_dir/bin/$name"
+        previous="$transaction/previous-links/$name"
+        if [ -e "$previous" ] || [ -L "$previous" ]; then
+            if [ -e "$current" ] || [ -L "$current" ]; then
+                rm -f -- "$current" || {
+                    restore_failed=1
+                    continue
+                }
+            fi
+            mv -h "$previous" "$current" || restore_failed=1
+        elif [ -e "$transaction/previous-absent/$name" ]; then
+            if [ -e "$current" ] || [ -L "$current" ]; then
+                rm -f -- "$current" || restore_failed=1
+            fi
+        fi
+    done
+    [ "$restore_failed" -eq 0 ]
 }
 
 commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
     local destination="$install_dir/Darkbloom.app"
-    local had_previous=0
-    mkdir -p "$backup" "$install_dir/bin"
+    local transaction had_previous=0 name current rollback_failed
+    mkdir -p "$install_dir/bin" || {
+        fail_install "Could not prepare the launcher directory."
+        return 1
+    }
+    transaction=$(mktemp -d "$install_dir/.install-transaction.XXXXXX") || {
+        fail_install "Could not allocate an installation transaction directory."
+        return 1
+    }
+    if ! chmod 0700 "$transaction" \
+        || ! mkdir "$transaction/links" \
+            "$transaction/previous-links" \
+            "$transaction/previous-absent"
+    then
+        rm -rf -- "$transaction"
+        fail_install "Could not secure the installation transaction directory."
+        return 1
+    fi
 
-    if [ -d "$destination" ]; then
-        mv "$destination" "$backup/Darkbloom.app" || {
-            rm -rf "$backup"
+    local staged_bin="$staged_app/Contents/MacOS"
+    local staged_worker_bin="$staged_app/$WORKER_BUNDLE_RELATIVE_PATH/Contents/MacOS"
+    chmod +x \
+        "$staged_bin/darkbloom" \
+        "$staged_bin/darkbloom-enclave" \
+        "$staged_worker_bin/darkbloom-inference-worker" || {
+            rm -rf -- "$transaction"
+            fail_install "Could not finalize staged executable permissions."
             return 1
         }
+
+    if ! ln -s "../Darkbloom.app/Contents/MacOS/darkbloom" \
+        "$transaction/links/darkbloom" \
+        || ! ln -s "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" \
+            "$transaction/links/darkbloom-enclave" \
+        || ! ln -s "../Darkbloom.app/$WORKER_BUNDLE_RELATIVE_PATH/Contents/MacOS/mlx.metallib" \
+            "$transaction/links/mlx.metallib" \
+        || ! ln -s "darkbloom-enclave" \
+            "$transaction/links/eigeninference-enclave"
+    then
+        rm -rf -- "$transaction"
+        fail_install "Could not prepare atomic launcher replacements."
+        return 1
+    fi
+
+    # Prior releases installed regular flat files. They are legitimate upgrade
+    # inputs alongside current symlinks; directories, devices, sockets, and
+    # other special objects are never replaced.
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        current="$install_dir/bin/$name"
+        if [ -e "$current" ] || [ -L "$current" ]; then
+            if [ ! -L "$current" ] && [ ! -f "$current" ]; then
+                rm -rf -- "$transaction"
+                fail_install "Refusing to replace unsafe launcher object at $current."
+                return 1
+            fi
+        else
+            : > "$transaction/previous-absent/$name"
+        fi
+    done
+
+    # Remove the entire previous launcher set into the transaction before any
+    # new link is exposed. Every subsequent failure restores this snapshot.
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        current="$install_dir/bin/$name"
+        if [ -e "$current" ] || [ -L "$current" ]; then
+            if ! mv -h "$current" "$transaction/previous-links/$name"; then
+                if ! restore_launcher_snapshot "$transaction" "$install_dir"; then
+                    fail_install "Launcher snapshot failed and could not be fully restored from $transaction."
+                    return 1
+                fi
+                rm -rf -- "$transaction"
+                fail_install "Could not snapshot the previous launcher set."
+                return 1
+            fi
+        fi
+    done
+
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+        [ -d "$destination" ] && [ ! -L "$destination" ] || {
+            restore_launcher_snapshot "$transaction" "$install_dir" || {
+                fail_install "Existing app was unsafe and launcher restoration failed from $transaction."
+                return 1
+            }
+            rm -rf -- "$transaction"
+            fail_install "Existing Darkbloom.app is not a regular app directory."
+            return 1
+        }
+        if ! mv "$destination" "$transaction/previous.app"; then
+            if ! restore_launcher_snapshot "$transaction" "$install_dir"; then
+                fail_install "App snapshot failed and launchers could not be fully restored from $transaction."
+                return 1
+            fi
+            rm -rf -- "$transaction"
+            fail_install "Could not begin the app replacement transaction."
+            return 1
+        fi
         had_previous=1
     fi
+
     if ! mv "$staged_app" "$destination"; then
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
-        rm -rf "$backup"
-        return 1
-    fi
-
-    local app_bin="$destination/Contents/MacOS"
-    if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
-        || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
-        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
-    then
-        rm -rf "$destination"
-        [ "$had_previous" -eq 1 ] \
-            && mv "$backup/Darkbloom.app" "$destination" 2>/dev/null || true
-        rm -rf "$backup"
-        return 1
-    fi
-    chmod +x "$app_bin/darkbloom" "$app_bin/darkbloom-enclave"
-    rm -rf "$backup"
-}
-
-commit_staged_flat_bundle() {
-    local staged_bin=$1
-    local install_dir=$2
-    local backup="$install_dir/.install-backup-$$-$RANDOM"
-    local destination="$install_dir/bin"
-    mkdir -p "$backup"
-    if [ -d "$destination" ]; then
-        mv "$destination" "$backup/bin" || {
-            rm -rf "$backup"
+        rollback_failed=0
+        if [ "$had_previous" -eq 1 ] \
+            && ! mv "$transaction/previous.app" "$destination"
+        then
+            rollback_failed=1
+        fi
+        restore_launcher_snapshot "$transaction" "$install_dir" \
+            || rollback_failed=1
+        if [ "$rollback_failed" -ne 0 ]; then
+            fail_install "App activation failed and rollback was incomplete; recovery state remains at $transaction."
             return 1
-        }
-    fi
-    if ! mv "$staged_bin" "$destination"; then
-        [ -d "$backup/bin" ] && mv "$backup/bin" "$destination" 2>/dev/null || true
-        rm -rf "$backup"
+        fi
+        rm -rf -- "$transaction"
+        fail_install "Could not activate the staged app; previous app and launchers were restored."
         return 1
     fi
-    chmod +x "$destination/darkbloom" "$destination/darkbloom-enclave"
-    ln -sfn "darkbloom-enclave" "$destination/eigeninference-enclave"
-    rm -rf "$backup"
+
+    for name in darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave; do
+        if ! mv -h "$transaction/links/$name" "$install_dir/bin/$name"; then
+            rollback_failed=0
+            if ! mv "$destination" "$staged_app"; then
+                rollback_failed=1
+            elif [ "$had_previous" -eq 1 ] \
+                && ! mv "$transaction/previous.app" "$destination"
+            then
+                rollback_failed=1
+            fi
+            restore_launcher_snapshot "$transaction" "$install_dir" \
+                || rollback_failed=1
+            if [ "$rollback_failed" -ne 0 ]; then
+                fail_install "Launcher activation failed and rollback was incomplete; recovery state remains at $transaction."
+                return 1
+            fi
+            rm -rf -- "$transaction"
+            fail_install "Launcher activation failed; previous app and launcher set were restored."
+            return 1
+        fi
+    done
+
+    rm -rf -- "$transaction" || {
+        fail_install "Installed app, but could not remove its private transaction backup."
+        return 1
+    }
 }
+
 
 install_bundle_atomically() {
     local archive=$1
     local install_dir=$2
     local binary_hash=${3:-}
     local metallib_hash=${4:-}
-    local stage="$install_dir/.install-staging-$$-$RANDOM"
-    rm -rf "$stage"
-    mkdir -p "$stage"
+    local stage
+    mkdir -p "$install_dir" || return 1
+    stage=$(mktemp -d "$install_dir/.install-staging.XXXXXX") || {
+        fail_install "Could not allocate a private extraction directory."
+        return 1
+    }
+    chmod 0700 "$stage"
+    [ ! -L "$stage" ] \
+        && [ "$(stat -f '%Lp' "$stage" 2>/dev/null || true)" = "700" ] \
+        && [ "$(stat -f '%u' "$stage" 2>/dev/null || true)" = "$(id -u)" ] \
+        || {
+            rm -rf -- "$stage"
+            fail_install "Extraction directory is not private to the current user."
+            return 1
+        }
     if ! tar xzf "$archive" -C "$stage"; then
         rm -rf "$stage"
         return 1
     fi
 
+    local app="$stage/Darkbloom.app"
     local flat_bin="$stage/bin"
-    [ -f "$flat_bin/darkbloom" ] \
-        && [ -f "$flat_bin/darkbloom-enclave" ] \
-        && [ -f "$flat_bin/mlx.metallib" ] \
+    [ -d "$app" ] && [ ! -L "$app" ] || {
+        rm -rf "$stage"
+        fail_install "Mature releases require the complete Darkbloom.app with its inference worker; flat artifacts are rejected."
+        return 1
+    }
+    [ -f "$flat_bin/darkbloom" ] && [ ! -L "$flat_bin/darkbloom" ] \
+        && [ -f "$flat_bin/darkbloom-enclave" ] && [ ! -L "$flat_bin/darkbloom-enclave" ] \
+        && [ -f "$flat_bin/mlx.metallib" ] && [ ! -L "$flat_bin/mlx.metallib" ] \
         || {
             rm -rf "$stage"
-            fail_install "Release bundle is missing required flat verifier files."
+            fail_install "Release bundle is missing required regular flat verifier files."
             return 1
         }
+    verify_staged_app "$app" || {
+        rm -rf "$stage"
+        return 1
+    }
+    verify_staged_app_payload "$app" "$binary_hash" "$metallib_hash" || {
+        rm -rf "$stage"
+        return 1
+    }
     verify_file_hash "$flat_bin/darkbloom" "$binary_hash" "Binary" || {
         rm -rf "$stage"
         return 1
@@ -275,43 +614,19 @@ install_bundle_atomically() {
         rm -rf "$stage"
         return 1
     }
-
-    if [ -d "$stage/Darkbloom.app" ]; then
-        verify_staged_app_payload \
-            "$stage/Darkbloom.app" "$binary_hash" "$metallib_hash" || {
+    cmp -s "$flat_bin/darkbloom" "$app/Contents/MacOS/darkbloom" \
+        && cmp -s "$flat_bin/darkbloom-enclave" "$app/Contents/MacOS/darkbloom-enclave" \
+        && cmp -s "$flat_bin/mlx.metallib" \
+            "$app/$WORKER_BUNDLE_RELATIVE_PATH/Contents/MacOS/mlx.metallib" || {
             rm -rf "$stage"
+            fail_install "Flat verifier files do not match the signed app payload."
             return 1
         }
-        verify_staged_app "$stage/Darkbloom.app" || {
-            rm -rf "$stage"
-            return 1
-        }
-        commit_staged_app "$stage/Darkbloom.app" "$install_dir" || {
-            rm -rf "$stage"
-            fail_install "Atomic app swap failed; previous install was restored."
-            return 1
-        }
-    else
-        if [ "$INSTALL_TEST_MODE" = "1" ]; then
-            codesign --verify --strict --verbose=2 "$flat_bin/darkbloom" >/dev/null 2>&1 || {
-                rm -rf "$stage"
-                fail_install "Strict signature verification failed for legacy flat artifact."
-                return 1
-            }
-        else
-            verify_code_requirement \
-                "$flat_bin/darkbloom" 0 "$DARKBLOOM_DESIGNATED_REQUIREMENT" || {
-                rm -rf "$stage"
-                fail_install "Legacy flat artifact does not satisfy the pinned signature requirement."
-                return 1
-            }
-        fi
-        commit_staged_flat_bundle "$flat_bin" "$install_dir" || {
-            rm -rf "$stage"
-            fail_install "Atomic flat-bundle swap failed; previous install was restored."
-            return 1
-        }
-    fi
+    commit_staged_app "$app" "$install_dir" || {
+        rm -rf "$stage"
+        fail_install "App replacement transaction failed; installation was not reported successful."
+        return 1
+    }
     rm -rf "$stage"
 }
 
@@ -324,13 +639,46 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
     exit $?
 fi
 
+if [ "${1:-}" = "--verify-worker-signature-test" ]; then
+    [ "$#" -eq 4 ] || {
+        echo "usage: $0 --verify-worker-signature-test <xpc-bundle> <worker-executable> <requirement>" >&2
+        exit 64
+    }
+    verify_code_requirement "$2" 1 "$4" \
+        && verify_code_requirement "$3" 0 "$4"
+    exit $?
+fi
+
+if [ "${1:-}" = "--secure-download-test" ]; then
+    [ "$#" -eq 3 ] || {
+        echo "usage: $0 --secure-download-test <url> <expected-hash>" >&2
+        exit 64
+    }
+    secure_download_release "$2"
+    verify_file_hash "$TARBALL" "$3" "Secure download fixture"
+    cleanup_download_bundle
+    trap - EXIT HUP INT TERM
+    exit 0
+fi
+
+if [ "${1:-}" = "--verify-download-path-test" ]; then
+    [ "$#" -eq 2 ] || {
+        echo "usage: $0 --verify-download-path-test <archive>" >&2
+        exit 64
+    }
+    verify_download_archive_path "$2"
+    exit $?
+fi
+
 if [ "${1:-}" = "--install-bundle-test" ]; then
-    { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || {
-        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement]" >&2
+    [ "$#" -eq 8 ] || {
+        echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> <fan-helper-requirement> <worker-requirement> <unsigned-sandbox-probe>" >&2
         exit 64
     }
     INSTALL_TEST_MODE=1
-    if [ "$#" -eq 6 ]; then FAN_HELPER_REQUIREMENT=$6; fi
+    FAN_HELPER_REQUIREMENT=$6
+    WORKER_REQUIREMENT=$7
+    SANDBOX_TEST_PROBE=$8
     install_bundle_atomically "$2" "$3" "$4" "$5"
     exit $?
 fi
@@ -397,8 +745,7 @@ echo ""
 echo "→ [2/5] Downloading Darkbloom v${VERSION}..."
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-TARBALL="/tmp/darkbloom-bundle.tar.gz"
-curl -f#L "$BUNDLE_URL" -o "$TARBALL"
+secure_download_release "$BUNDLE_URL"
 
 ACTUAL_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
@@ -406,18 +753,23 @@ if [ "$ACTUAL_HASH" != "$BUNDLE_HASH" ]; then
     echo "  ✗ Bundle hash mismatch — refusing to install possibly-tampered binary."
     echo "    Expected: $BUNDLE_HASH"
     echo "    Got:      $ACTUAL_HASH"
-    rm -f "$TARBALL"
     exit 1
 fi
 echo "  Bundle hash verified ✓"
 
 echo "  Staging and verifying the complete app before touching the live install ..."
+verify_download_archive_path "$TARBALL"
+PRE_EXTRACT_HASH=$(shasum -a 256 "$TARBALL" | cut -d' ' -f1)
+if [ "$PRE_EXTRACT_HASH" != "$BUNDLE_HASH" ]; then
+    fail_install "Release archive changed after verification; refusing extraction."
+    exit 1
+fi
 if ! install_bundle_atomically "$TARBALL" "$INSTALL_DIR" "$BINARY_HASH" "$METALLIB_HASH"; then
-    rm -f "$TARBALL"
     echo "  Existing installation was left unchanged."
     exit 1
 fi
-rm -f "$TARBALL"
+cleanup_download_bundle
+trap - EXIT HUP INT TERM
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.

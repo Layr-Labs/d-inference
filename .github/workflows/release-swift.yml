@@ -5,9 +5,10 @@ name: Release Provider Bundle (Swift)
 # Builds and ships:
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
-#   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - bin/mlx.metallib       (worker's compiled Metal kernels; verifier copy)
+#   - Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
-#   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
+#   - worker XPC mlx.metallib plus the exact paged-attention Metal resource
 #
 # install.sh creates a backward-compatibility symlink from the legacy
 # `eigeninference-enclave` name to `darkbloom-enclave` for existing
@@ -65,6 +66,9 @@ env:
   ENCLAVE_NAME: 'darkbloom-enclave'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
+  WORKER_NAME: 'darkbloom-inference-worker'
+  WORKER_BUNDLE_NAME: 'DarkbloomInferenceWorker.xpc'
+  WORKER_ID: 'io.darkbloom.provider.inference-worker'
   MIN_MACOS: '14.0'
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
@@ -184,6 +188,55 @@ jobs:
 
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
+      - name: Validate inference worker release fixtures
+        run: |
+          set -euo pipefail
+          ./scripts/sync-install-embed.sh check
+          plutil -lint \
+            scripts/entitlements.plist \
+            scripts/inference-worker-entitlements.plist \
+            scripts/inference-worker-Info.plist
+          python3 - <<'PY'
+          import plistlib
+
+          def load(path):
+              with open(path, "rb") as stream:
+                  return plistlib.load(stream)
+
+          info = load("scripts/inference-worker-Info.plist")
+          expected_info = {
+              "CFBundleIdentifier": "io.darkbloom.provider.inference-worker",
+              "CFBundleExecutable": "darkbloom-inference-worker",
+              "CFBundlePackageType": "XPC!",
+              "LSMinimumSystemVersion": "14.0",
+          }
+          for key, expected in expected_info.items():
+              actual = info.get(key)
+              if actual != expected:
+                  raise SystemExit(f"worker Info.plist {key}={actual!r}, expected {expected!r}")
+          if info.get("XPCService", {}).get("ServiceType") != "Application":
+              raise SystemExit("worker Info.plist must declare XPCService.ServiceType=Application")
+
+          worker = load("scripts/inference-worker-entitlements.plist")
+          expected_worker = {
+              "com.apple.application-identifier":
+                  "SLDQ2GJ6TL.io.darkbloom.provider.inference-worker",
+              "keychain-access-groups": ["SLDQ2GJ6TL.io.darkbloom.provider"],
+              "com.apple.security.app-sandbox": True,
+              "com.apple.security.files.bookmarks.app-scope": True,
+          }
+          if worker != expected_worker:
+              raise SystemExit(
+                  f"worker entitlements must be the exact minimal allowlist; got {sorted(worker)}"
+              )
+
+          main = load("scripts/entitlements.plist")
+          service = main.get(
+              "com.apple.security.temporary-exception.mach-lookup.global-name"
+          )
+          if service != ["io.darkbloom.provider.inference-worker"]:
+              raise SystemExit(f"main XPC lookup allowlist is not exact: {service!r}")
+          PY
 
       - name: Set up Go for prompt parity
         uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
@@ -199,27 +252,42 @@ jobs:
           xcrun --sdk macosx --show-sdk-version
           uname -a
 
+      - name: Prepare private release workspace
+        run: |
+          set -euo pipefail
+          old_umask=$(umask)
+          umask 077
+          RELEASE_PRIVATE_DIR=$(mktemp -d "$RUNNER_TEMP/darkbloom-release.XXXXXX")
+          umask "$old_umask"
+          chmod 0700 "$RELEASE_PRIVATE_DIR"
+          test ! -L "$RELEASE_PRIVATE_DIR"
+          test "$(stat -f '%Lp' "$RELEASE_PRIVATE_DIR")" = "700"
+          test "$(stat -f '%u' "$RELEASE_PRIVATE_DIR")" = "$(id -u)"
+          echo "RELEASE_PRIVATE_DIR=$RELEASE_PRIVATE_DIR" >> "$GITHUB_ENV"
+
       - name: Import Developer ID certificate
         env:
           P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
-          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+          KEYCHAIN_PATH="$RELEASE_PRIVATE_DIR/build.keychain-db"
+          CERT_PATH="$RELEASE_PRIVATE_DIR/cert.p12"
+          umask 077
+          printf '%s' "$P12_BASE64" | base64 --decode > "$CERT_PATH"
 
           security create-keychain -p "build" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "build" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-          security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: \
             -s -k "build" "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-          rm -f /tmp/cert.p12
+          rm -f "$CERT_PATH"
 
       - name: Install awscli (R2)
         run: |
@@ -318,14 +386,69 @@ jobs:
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           swift build -c release --product darkbloom-fan-helper
+          swift build -c release --product darkbloom-inference-worker
           BIN_DIR=$(swift build -c release --show-bin-path)
           test -x "$BIN_DIR/$CLI_NAME"
           test -x "$BIN_DIR/$ENCLAVE_NAME"
           test -x "$BIN_DIR/$FAN_HELPER_NAME"
+          test -x "$BIN_DIR/$WORKER_NAME"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
           ls -la "$BIN_DIR" | head -50
           REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
           ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
+
+      - name: Verify supervisor release-link isolation
+        run: |
+          set -euo pipefail
+          SUPERVISOR="$BIN_DIR/$CLI_NAME"
+          SYMBOLS="$RELEASE_PRIVATE_DIR/supervisor-symbols.txt"
+          DEPENDENCIES="$RELEASE_PRIVATE_DIR/supervisor-dependencies.txt"
+          nm -gj "$SUPERVISOR" | swift-demangle --compact > "$SYMBOLS"
+          otool -L "$SUPERVISOR" > "$DEPENDENCIES"
+
+          for forbidden_symbol in \
+            InferenceWorkerRuntime \
+            StandaloneServer \
+            NodeKeyPair \
+            bindRuntimeMetallibForMLX \
+            darkbloom_mlx_set_metallib_path \
+            ModelContainer \
+            TokenizerHandle \
+            MLXArray \
+            MLX.Memory \
+            PagedAttentionKernel \
+            PrivateV2KeyMaterial \
+            PrivateV2Crypto \
+            PrivateV2RequestOpener \
+            PrivateV2ResponseSealer \
+            PrivateV2NativeStreamAdapter \
+            CBv2Engine
+          do
+            if grep -Fq "$forbidden_symbol" "$SYMBOLS"; then
+              echo "::error::supervisor release binary contains forbidden inference symbol: $forbidden_symbol"
+              exit 1
+            fi
+          done
+
+          for forbidden_product in \
+            MLX \
+            MLXNN \
+            MLXLLM \
+            MLXVLM \
+            MLXLMCommon \
+            MLXLMServer \
+            ProviderMetallibControl
+          do
+            if grep -Eq \
+              "(^|[/[:space:]])(lib)?${forbidden_product}([./[:space:]]|$)" \
+              "$DEPENDENCIES"
+            then
+              echo "::error::supervisor release binary links forbidden inference product: $forbidden_product"
+              exit 1
+            fi
+          done
+
+          echo "Supervisor release-link isolation verified"
 
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -343,31 +466,46 @@ jobs:
       # blocking signed releases on CI hardware timing differences.
 
       # ----------------------------------------------------------------------
-      # Stage the app, every SwiftPM runtime bundle, and flat verifier files.
+      # Stage the app, its minimal nested XPC worker, and flat verifier files.
       # ----------------------------------------------------------------------
 
       - name: Embed provisioning profile
         env:
           PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          WORKER_PROVISIONING_PROFILE_BASE64: ${{ secrets.WORKER_PROVISIONING_PROFILE_BASE64 }}
         run: |
           set -euo pipefail
           if [ -z "${PROVISIONING_PROFILE_BASE64:-}" ]; then
             echo "::error::PROVISIONING_PROFILE_BASE64 is required (PR #146 persistent SE key)"
             exit 1
           fi
-          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > /tmp/embedded.provisionprofile
+          if [ -z "${WORKER_PROVISIONING_PROFILE_BASE64:-}" ]; then
+            echo "::error::WORKER_PROVISIONING_PROFILE_BASE64 is required for the worker's shared Secure Enclave key access"
+            exit 1
+          fi
+          MAIN_PROFILE="$RELEASE_PRIVATE_DIR/embedded.provisionprofile"
+          MAIN_PROFILE_PLIST="$RELEASE_PRIVATE_DIR/profile.plist"
+          WORKER_PROFILE="$RELEASE_PRIVATE_DIR/worker.provisionprofile"
+          WORKER_PROFILE_PLIST="$RELEASE_PRIVATE_DIR/worker-profile.plist"
+          umask 077
+          printf '%s' "$PROVISIONING_PROFILE_BASE64" \
+            | base64 --decode > "$MAIN_PROFILE"
 
-          # Decode the CMS-wrapped profile to its plist payload so we can
-          # introspect entitlements + expiry. Without this, a profile that
-          # doesn't grant SLDQ2GJ6TL.io.darkbloom.provider (or is expired)
-          # passes codesign but fails at runtime → silent attestation break.
-          security cms -D -i /tmp/embedded.provisionprofile > /tmp/profile.plist
+          # Decode the CMS-wrapped profiles to their plist payloads so release
+          # fails before signing if either identity grant is stale or broad.
+          security cms -D -i "$MAIN_PROFILE" > "$MAIN_PROFILE_PLIST"
+          printf '%s' "$WORKER_PROVISIONING_PROFILE_BASE64" \
+            | base64 --decode > "$WORKER_PROFILE"
+          security cms -D -i "$WORKER_PROFILE" > "$WORKER_PROFILE_PLIST"
 
           python3 - <<'PY'
-          import plistlib, sys
-          from datetime import datetime, timezone
+          import os
+          import plistlib
+          import sys
+          from datetime import datetime
 
-          with open('/tmp/profile.plist', 'rb') as f:
+          private_dir = os.environ['RELEASE_PRIVATE_DIR']
+          with open(os.path.join(private_dir, 'profile.plist'), 'rb') as f:
               p = plistlib.load(f)
 
           errors = []
@@ -377,40 +515,41 @@ jobs:
 
           ents = p.get('Entitlements', {})
           groups = ents.get('keychain-access-groups', [])
-          # Accept exact match or wildcard (SLDQ2GJ6TL.*) which covers
-          # SLDQ2GJ6TL.io.darkbloom.provider at runtime.
           has_group = any(
               g == 'SLDQ2GJ6TL.io.darkbloom.provider' or g == 'SLDQ2GJ6TL.*'
               for g in groups
           )
           if not has_group:
-              errors.append(f"keychain-access-groups missing SLDQ2GJ6TL.io.darkbloom.provider or wildcard: {groups}")
+              errors.append(
+                  "keychain-access-groups missing "
+                  f"SLDQ2GJ6TL.io.darkbloom.provider or wildcard: {groups}"
+              )
 
           app_id = ents.get('application-identifier', '')
-          # Developer ID profiles may omit application-identifier entirely;
-          # accept empty or wildcard alongside exact match.
-          if app_id and not (app_id.endswith('io.darkbloom.provider') or app_id.endswith('*')):
+          if app_id and not (
+              app_id.endswith('io.darkbloom.provider') or app_id.endswith('*')
+          ):
               errors.append(f"application-identifier mismatch: {app_id}")
 
-          # v0.6.0 APNs code-identity: the embedded profile MUST grant
-          # aps-environment=production, or the signed binary AMFI-kills at launch
-          # (restricted entitlement without an authorizing profile). This is the
-          # only build-time guard against shipping the entitlement with a stale,
-          # non-push profile. Profiles key it short ('aps-environment') or long.
-          aps = ents.get('aps-environment') or ents.get('com.apple.developer.aps-environment')
+          aps = (
+              ents.get('aps-environment')
+              or ents.get('com.apple.developer.aps-environment')
+          )
           if aps != 'production':
               errors.append(
-                  f"profile does not grant aps-environment=production (got {aps!r}); "
-                  "regenerate the push-enabled provisioning profile and update PROVISIONING_PROFILE_BASE64"
+                  "profile does not grant aps-environment=production "
+                  f"(got {aps!r}); regenerate the push-enabled provisioning "
+                  "profile and update PROVISIONING_PROFILE_BASE64"
               )
 
           expiry = p.get('ExpirationDate')
           if expiry is not None:
-              # ExpirationDate is a naive UTC datetime from plistlib.
-              now = datetime.utcnow()
-              days_left = (expiry - now).days
+              days_left = (expiry - datetime.utcnow()).days
               if days_left < 30:
-                  errors.append(f"Profile expires in {days_left} days (renew before cutover): {expiry}")
+                  errors.append(
+                      f"Profile expires in {days_left} days "
+                      f"(renew before cutover): {expiry}"
+                  )
               else:
                   print(f"Profile valid for {days_left} more days")
           else:
@@ -418,11 +557,77 @@ jobs:
 
           name = p.get('Name', '<unknown>')
           uuid = p.get('UUID', '<unknown>')
-          print(f"Profile: name={name!r} uuid={uuid} team={team} app_id={app_id}")
+          print(
+              f"Profile: name={name!r} uuid={uuid} "
+              f"team={team} app_id={app_id}"
+          )
+
+          with open(
+              os.path.join(private_dir, 'worker-profile.plist'), 'rb'
+          ) as f:
+              worker_profile = plistlib.load(f)
+          worker_team = worker_profile.get('TeamIdentifier', [])
+          if 'SLDQ2GJ6TL' not in worker_team:
+              errors.append(
+                  f"worker TeamIdentifier missing SLDQ2GJ6TL: {worker_team}"
+              )
+          worker_ents = worker_profile.get('Entitlements', {})
+          worker_groups = worker_ents.get('keychain-access-groups', [])
+          expected_worker_groups = ['SLDQ2GJ6TL.io.darkbloom.provider']
+          if worker_groups != expected_worker_groups:
+              errors.append(
+                  "worker keychain-access-groups must be the exact shared "
+                  f"provider group {expected_worker_groups!r}; "
+                  f"got {worker_groups!r}"
+              )
+          worker_app_id = worker_ents.get('application-identifier', '')
+          expected_worker_app_id = (
+              'SLDQ2GJ6TL.io.darkbloom.provider.inference-worker'
+          )
+          if worker_app_id != expected_worker_app_id:
+              errors.append(
+                  "worker application-identifier must be exact; "
+                  f"expected {expected_worker_app_id!r}, "
+                  f"got {worker_app_id!r}"
+              )
+          if worker_ents.get('com.apple.security.app-sandbox') is not True:
+              errors.append(
+                  "worker profile must grant "
+                  "com.apple.security.app-sandbox=true"
+              )
+          if (
+              worker_ents.get(
+                  'com.apple.security.files.bookmarks.app-scope'
+              ) is not True
+          ):
+              errors.append(
+                  "worker profile must grant "
+                  "com.apple.security.files.bookmarks.app-scope=true"
+              )
+          worker_expiry = worker_profile.get('ExpirationDate')
+          if worker_expiry is not None:
+              worker_days_left = (worker_expiry - datetime.utcnow()).days
+              if worker_days_left < 30:
+                  errors.append(
+                      "Worker profile expires in "
+                      f"{worker_days_left} days: {worker_expiry}"
+                  )
+              else:
+                  print(
+                      f"Worker profile valid for {worker_days_left} more days"
+                  )
+          else:
+              errors.append("Worker profile has no ExpirationDate field")
+          print(
+              "Worker profile: "
+              f"name={worker_profile.get('Name', '<unknown>')!r} "
+              f"uuid={worker_profile.get('UUID', '<unknown>')} "
+              f"team={worker_team} app_id={worker_app_id}"
+          )
 
           if errors:
-              for e in errors:
-                  print(f"::error::{e}", file=sys.stderr)
+              for error in errors:
+                  print(f"::error::{error}", file=sys.stderr)
               sys.exit(1)
           print("Provisioning profile verification passed")
           PY
@@ -434,20 +639,38 @@ jobs:
         id: bundle
         run: |
           set -euo pipefail
-          STAGE=/tmp/darkbloom-bundle
+          STAGE="$RELEASE_PRIVATE_DIR/bundle"
           rm -rf "$STAGE"
 
           # Wrap the CLI in a minimal .app bundle so the provisioning profile
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
+          WORKER_XPC="$APP/Contents/XPCServices/$WORKER_BUNDLE_NAME"
+          WORKER_EXECUTABLE="$WORKER_XPC/Contents/MacOS/$WORKER_NAME"
           mkdir -p \
             "$APP/Contents/MacOS" \
             "$APP/Contents/Helpers" \
-            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
+            "$APP/Contents/Resources/darkbloom-runtime-capabilities" \
+            "$WORKER_XPC/Contents/MacOS"
 
-          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
-          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
+          install -m 0755 "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
+          install -m 0755 "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          install -m 0755 "$BIN_DIR/$WORKER_NAME" "$WORKER_EXECUTABLE"
+          cp "${{ steps.metallib.outputs.metallib }}" "$WORKER_XPC/Contents/MacOS/mlx.metallib"
+          cp scripts/inference-worker-Info.plist "$WORKER_XPC/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" \
+            "$WORKER_XPC/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+            "$WORKER_XPC/Contents/Info.plist"
+          PAGED_RESOURCE_SOURCE="$BIN_DIR/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+          PAGED_RESOURCE_DESTINATION="$WORKER_XPC/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+          test -d "$(dirname "$PAGED_RESOURCE_SOURCE")"
+          test ! -L "$(dirname "$PAGED_RESOURCE_SOURCE")"
+          test -f "$PAGED_RESOURCE_SOURCE"
+          test ! -L "$PAGED_RESOURCE_SOURCE"
+          test -s "$PAGED_RESOURCE_SOURCE"
+          mkdir -p "$(dirname "$PAGED_RESOURCE_DESTINATION")"
+          install -m 0644 "$PAGED_RESOURCE_SOURCE" "$PAGED_RESOURCE_DESTINATION"
           install -m 0755 \
             "$BIN_DIR/$FAN_HELPER_NAME" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
@@ -478,38 +701,56 @@ jobs:
           PLIST
 
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
-            cp /tmp/embedded.provisionprofile "$APP/Contents/embedded.provisionprofile"
-            echo "Provisioning profile embedded in app bundle"
+            cp "$RELEASE_PRIVATE_DIR/embedded.provisionprofile" "$APP/Contents/embedded.provisionprofile"
+            cp "$RELEASE_PRIVATE_DIR/worker.provisionprofile" "$WORKER_XPC/Contents/embedded.provisionprofile"
+            echo "Provisioning profiles embedded in app and worker bundles"
           fi
 
-          # Copy every product resource bundle into the canonical signed-app
-          # resource directory before signing/notarizing. PagedAttention uses
-          # a catchable locator instead of SwiftPM's fatal Bundle.module
-          # accessor and searches this sealed location. This includes
-          # mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal and future
-          # dependency resource bundles.
-          RESOURCE_MANIFEST=/tmp/darkbloom-swiftpm-resource-bundles.txt
-          scripts/stage-swiftpm-resource-bundles.sh \
-            "$BIN_DIR" "$APP" "$RESOURCE_MANIFEST"
 
-          # Package-real runtime gate. Before its first GPU access the staged
-          # child decodes the retained Gemma config, proves authoritative
-          # overwrite of all three low-level controls, snapshots the early R1
-          # latch/AOT capability without arming counters, then runs the
-          # existing GPT-OSS paged-kernel shapes. The v0.7.6 artifact still
-          # fails here because its resource bundle is absent.
-          PRE_SIGN_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
-            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
-            MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
-          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
-          printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
-            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          # Sign every nested worker component before the outer app. The XPC
+          # executable and bundle share the exact service identifier and Team
+          # ID requirement; no ad-hoc identity is accepted in release builds.
+          codesign --force --options runtime --timestamp \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$WORKER_XPC/Contents/MacOS/mlx.metallib"
+          codesign --force --options runtime --timestamp \
+            --identifier "$WORKER_ID" \
+            --entitlements scripts/inference-worker-entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$WORKER_EXECUTABLE"
+          codesign --force --options runtime --timestamp \
+            --identifier "$WORKER_ID" \
+            --entitlements scripts/inference-worker-entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$WORKER_XPC"
+          WORKER_REQUIREMENT="anchor apple generic and identifier \"$WORKER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --deep --strict --verbose=2 \
+            "-R=$WORKER_REQUIREMENT" "$WORKER_XPC"
+          codesign --verify --strict --verbose=2 \
+            "-R=$WORKER_REQUIREMENT" "$WORKER_EXECUTABLE"
+          WORKER_ENTITLEMENTS="$RELEASE_PRIVATE_DIR/worker-ents.plist"
+          rm -f "$WORKER_ENTITLEMENTS"
+          codesign -d --entitlements "$WORKER_ENTITLEMENTS" --xml \
+            "$WORKER_EXECUTABLE" 2>/dev/null
+          python3 - <<'PY'
+          import os
+          import plistlib
 
-          # Hardened-runtime sign each binary and resource, then the bundle.
-          # mlx.metallib must be signed before the bundle or codesign rejects
-          # it as an unsigned subcomponent.
+          with open(os.path.join(os.environ["RELEASE_PRIVATE_DIR"], "worker-ents.plist"), "rb") as stream:
+              actual = plistlib.load(stream)
+          with open("scripts/inference-worker-entitlements.plist", "rb") as stream:
+              expected = plistlib.load(stream)
+          if actual != expected:
+              raise SystemExit(
+                  f"signed worker entitlement drift: actual={actual!r}, expected={expected!r}"
+              )
+          PY
+          WORKER_SANDBOX_OUTPUT=$(DARKBLOOM_SIGNED_HOST_TEST=1 \
+            "$WORKER_EXECUTABLE" --sandbox-self-test-v1)
+          printf '%s\n' "$WORKER_SANDBOX_OUTPUT"
+          printf '%s\n' "$WORKER_SANDBOX_OUTPUT" \
+            | grep -Fqx 'DBXPC_SANDBOX_SELF_TEST_V1:63'
+
           # The fan helper runs as root only after a separate, explicit sudo
           # command. Give it its own identity and no provider APNs/keychain
           # entitlements; ordinary installation leaves it sealed and dormant.
@@ -521,36 +762,23 @@ jobs:
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          codesign --force --options runtime --timestamp \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
+
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
-          # It gets its own entitlements without keychain-access-groups and
-          # application-identifier so AMFI doesn't require a provisioning
-          # profile match (which only works for the main bundle executable).
           codesign --force --options runtime --timestamp \
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements scripts/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements scripts/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
-
-          # Packaged post-sign smoke: the release-candidate evaluator must be
-          # exposed by the exact signed main executable. This checks command
-          # wiring/help only; CI never downloads or runs model weights.
-          SIGNED_BENCHMARK_HELP=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$APP/Contents/MacOS/$CLI_NAME" benchmark --help)
-          printf '%s\n' "$SIGNED_BENCHMARK_HELP" \
-            | grep -F -- '--scheduler-prefill-decision'
 
           # Persistent Secure Enclave key requires keychain-access-groups
           # bound to the team-scoped access group. If the entitlement is
@@ -576,27 +804,54 @@ jobs:
           #   (b) get-task-allow ABSENT — its absence (not "hardened runtime" per
           #       se) is what blocks even-root debugger attach / dylib injection;
           #       Developer ID + notarization strips it.
-          rm -f /tmp/cli-ents.plist
-          codesign -d --entitlements /tmp/cli-ents.plist --xml "$APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
+          CLI_ENTITLEMENTS="$RELEASE_PRIVATE_DIR/cli-ents.plist"
+          rm -f "$CLI_ENTITLEMENTS"
+          codesign -d --entitlements "$CLI_ENTITLEMENTS" --xml "$APP/Contents/MacOS/$CLI_NAME" 2>/dev/null || true
           # Fail loudly if extraction produced nothing — otherwise the
           # get-task-allow check below would pass vacuously on an empty file.
-          if [ ! -s /tmp/cli-ents.plist ]; then
+          if [ ! -s "$CLI_ENTITLEMENTS" ]; then
             echo "::error::Failed to extract entitlements from signed CLI for APNs/get-task-allow verification"
             exit 1
           fi
-          APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' /tmp/cli-ents.plist 2>/dev/null || echo "")
+          APS_ENV=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.aps-environment' "$CLI_ENTITLEMENTS" 2>/dev/null || echo "")
           if [ "$APS_ENV" != "production" ]; then
             echo "::error::Signed CLI aps-environment must be 'production' (got '${APS_ENV:-<absent>}'). Regenerate the push provisioning profile + entitlements (v0.6.0 APNs code-identity)."
             exit 1
           fi
-          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' /tmp/cli-ents.plist 2>/dev/null | grep -qi true; then
+          if /usr/libexec/PlistBuddy -c 'Print :com.apple.security.get-task-allow' "$CLI_ENTITLEMENTS" 2>/dev/null | grep -qi true; then
             echo "::error::Signed CLI has get-task-allow=true — defeats even-root injection resistance. It must be absent (Developer ID + notarized strips it)."
             exit 1
           fi
+          python3 - <<'PY'
+          import os
+          import plistlib
+
+          with open(os.path.join(os.environ["RELEASE_PRIVATE_DIR"], "cli-ents.plist"), "rb") as stream:
+              entitlements = plistlib.load(stream)
+          service = entitlements.get(
+              "com.apple.security.temporary-exception.mach-lookup.global-name"
+          )
+          if service != ["io.darkbloom.provider.inference-worker"]:
+              raise SystemExit(f"signed supervisor XPC lookup allowlist is not exact: {service!r}")
+          forbidden = {
+              "com.apple.security.get-task-allow",
+              "com.apple.security.cs.allow-jit",
+              "com.apple.security.cs.allow-unsigned-executable-memory",
+              "com.apple.security.cs.allow-dyld-environment-variables",
+              "com.apple.security.cs.disable-library-validation",
+          }
+          present = forbidden.intersection(entitlements)
+          if present:
+              raise SystemExit(f"signed supervisor carries forbidden code-loading entitlements: {sorted(present)}")
+          PY
           echo "APNs code-identity entitlements verified: aps-environment=production, get-task-allow absent"
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             if [ ! -f "$APP/Contents/embedded.provisionprofile" ]; then
               echo "::error::Provisioning profile secret set but not embedded in app bundle"
+              exit 1
+            fi
+            if [ ! -f "$WORKER_XPC/Contents/embedded.provisionprofile" ]; then
+              echo "::error::Worker provisioning profile secret set but not embedded in XPC bundle"
               exit 1
             fi
           else
@@ -611,38 +866,45 @@ jobs:
           mkdir -p "$STAGE/bin"
           cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
-          cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
+          cp "$WORKER_XPC/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
           # Notarize only the canonical app. The flat bin/ copies exist solely
           # for coordinator artifact verification and inherit signatures that
           # are valid only in the app-bundle context, so they are not valid
           # notarization inputs on their own.
-          ditto -c -k --keepParent "$APP" /tmp/darkbloom-notarize.zip
+          NOTARIZE_ZIP="$RELEASE_PRIVATE_DIR/darkbloom-notarize.zip"
+          ARCHIVE="$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz"
+          FILE_LIST="$RELEASE_PRIVATE_DIR/darkbloom-bundle-files.txt"
+          ditto -c -k --keepParent "$APP" "$NOTARIZE_ZIP"
 
           # The distribution tar retains both shapes: install.sh uses the app,
           # while the coordinator hashes the regular file at bin/darkbloom.
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
+          tar czf "$ARCHIVE" -C "$STAGE" .
+          tar tzf "$ARCHIVE" | sort | tee "$FILE_LIST"
 
-      - name: Notarize bundle
+          ls -lh "$ARCHIVE"
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          xcrun notarytool submit /tmp/darkbloom-notarize.zip \
+          NOTARIZE_ZIP="$RELEASE_PRIVATE_DIR/darkbloom-notarize.zip"
+          NOTARY_RESULT="$RELEASE_PRIVATE_DIR/notary-result.json"
+          xcrun notarytool submit "$NOTARIZE_ZIP" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait --timeout 15m \
-            --output-format json | tee /tmp/notary-result.json
+            --output-format json | tee "$NOTARY_RESULT"
 
           read -r NOTARY_ID NOTARY_STATUS < <(python3 - <<'PY'
           import json
+          import os
 
-          with open('/tmp/notary-result.json', encoding='utf-8') as result_file:
+          result_path = os.path.join(
+              os.environ['RELEASE_PRIVATE_DIR'], 'notary-result.json'
+          )
+          with open(result_path, encoding='utf-8') as result_file:
               result = json.load(result_file)
 
           submission_id = result.get('id')
@@ -669,6 +931,8 @@ jobs:
           # the distribution artifact can be rebuilt or uploaded.
           STAGE="${{ steps.bundle.outputs.stage }}"
           APP="$STAGE/Darkbloom.app"
+          WORKER_XPC="$APP/Contents/XPCServices/$WORKER_BUNDLE_NAME"
+          WORKER_EXECUTABLE="$WORKER_XPC/Contents/MacOS/$WORKER_NAME"
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
           spctl --assess --type execute --verbose=4 "$APP"
@@ -678,47 +942,72 @@ jobs:
           # with the coordinator and verified by provider self-update.
           cmp "$STAGE/bin/$CLI_NAME" "$APP/Contents/MacOS/$CLI_NAME"
           cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
-          cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
+          cmp "$STAGE/bin/mlx.metallib" "$WORKER_XPC/Contents/MacOS/mlx.metallib"
 
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
-          grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
-          if grep -qx './bin/darkbloom-fan-helper' /tmp/darkbloom-bundle-files.txt; then
+          ARCHIVE="$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz"
+          FILE_LIST="$RELEASE_PRIVATE_DIR/darkbloom-bundle-files.txt"
+          tar czf "$ARCHIVE" -C "${{ steps.bundle.outputs.stage }}" .
+          tar tzf "$ARCHIVE" | sort | tee "$FILE_LIST"
+          grep -qx './bin/darkbloom' "$FILE_LIST"
+          grep -qx './bin/darkbloom-enclave' "$FILE_LIST"
+          grep -qx './bin/mlx.metallib' "$FILE_LIST"
+          if grep -qx './bin/darkbloom-fan-helper' "$FILE_LIST"; then
             echo "::error::fan helper must not be present in the flat verifier layout"
+            exit 1
+          fi
+          if grep -qx "./bin/${WORKER_NAME}" "$FILE_LIST"; then
+            echo "::error::inference worker must exist only inside its signed XPC bundle"
             exit 1
           fi
           grep -qx \
             './Darkbloom.app/Contents/Helpers/darkbloom-fan-helper' \
-            /tmp/darkbloom-bundle-files.txt
+            "$FILE_LIST"
           grep -qx \
             './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1' \
-            /tmp/darkbloom-bundle-files.txt
-          while IFS= read -r bundle_name; do
-            grep -qx \
-              "./Darkbloom.app/Contents/Resources/${bundle_name}/" \
-              /tmp/darkbloom-bundle-files.txt
-          done < /tmp/darkbloom-swiftpm-resource-bundles.txt
+            "$FILE_LIST"
           grep -qx \
-            './Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal' \
-            /tmp/darkbloom-bundle-files.txt
+            "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/Info.plist" \
+            "$FILE_LIST"
           grep -qx \
-            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
-            /tmp/darkbloom-bundle-files.txt
+            "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/embedded.provisionprofile" \
+            "$FILE_LIST"
+          grep -qx \
+            "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/MacOS/${WORKER_NAME}" \
+            "$FILE_LIST"
+          grep -qx \
+            "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/MacOS/mlx.metallib" \
+            "$FILE_LIST"
+          EXPECTED_WORKER_RESOURCE="./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+          grep -Fqx "$EXPECTED_WORKER_RESOURCE" "$FILE_LIST"
+          while IFS= read -r resource_entry; do
+            case "$resource_entry" in
+              "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/Resources/"|\
+              "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/"|\
+              "$EXPECTED_WORKER_RESOURCE")
+                ;;
+              *)
+                echo "::error::inference worker bundle contains unapproved resource: $resource_entry"
+                exit 1
+                ;;
+            esac
+          done < <(grep -F \
+            "./Darkbloom.app/Contents/XPCServices/${WORKER_BUNDLE_NAME}/Contents/Resources/" \
+            "$FILE_LIST")
 
           # Verify the FINAL archived layout, not merely the staging tree.
           # This runs after signing, notarization, stapling, and tar rebuild,
           # and before any upload or coordinator registration.
-          SMOKE_ROOT=/tmp/darkbloom-final-artifact-smoke
+          SMOKE_ROOT="$RELEASE_PRIVATE_DIR/final-artifact-smoke"
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
-          tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
-          FINAL_APP_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
+          tar xzf "$ARCHIVE" -C "$SMOKE_ROOT"
+          FINAL_WORKER_XPC="$SMOKE_ROOT/Darkbloom.app/Contents/XPCServices/$WORKER_BUNDLE_NAME"
+          FINAL_WORKER="$FINAL_WORKER_XPC/Contents/MacOS/$WORKER_NAME"
+          FINAL_WORKER_METALLIB="$FINAL_WORKER_XPC/Contents/MacOS/mlx.metallib"
           FINAL_FLAT_METALLIB="$SMOKE_ROOT/bin/mlx.metallib"
-          test -s "$FINAL_APP_METALLIB"
+          test -s "$FINAL_WORKER_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
-          cmp "$FINAL_FLAT_METALLIB" "$FINAL_APP_METALLIB"
+          cmp "$FINAL_FLAT_METALLIB" "$FINAL_WORKER_METALLIB"
           # Repeat the helper's completeness contract against the final
           # extracted, signed bytes rather than the pre-signing input.
           NAX_SYMBOL="_nax"
@@ -761,30 +1050,53 @@ jobs:
           FAN_HELPER_REQUIREMENT="anchor apple generic and identifier \"$FAN_HELPER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
           codesign --verify --strict --verbose=2 \
             "-R=$FAN_HELPER_REQUIREMENT" "$FINAL_FAN_HELPER"
+          WORKER_REQUIREMENT="anchor apple generic and identifier \"$WORKER_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --deep --strict --verbose=2 \
+            "-R=$WORKER_REQUIREMENT" "$FINAL_WORKER_XPC"
+          codesign --verify --strict --verbose=2 \
+            "-R=$WORKER_REQUIREMENT" "$FINAL_WORKER"
           codesign --verify --deep --strict --verbose=2 \
             "$SMOKE_ROOT/Darkbloom.app"
-          FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
-            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
-            MLX_GATHER_QMM_EXPERT_SLICES=1 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
-          printf '%s\n' "$FINAL_SMOKE_OUTPUT"
-          printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
-            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          FINAL_WORKER_PROFILE="$FINAL_WORKER_XPC/Contents/embedded.provisionprofile"
+          test -f "$FINAL_WORKER_PROFILE"
+          test ! -L "$FINAL_WORKER_PROFILE"
+          test -s "$FINAL_WORKER_PROFILE"
+          FINAL_PAGED_RESOURCE="$FINAL_WORKER_XPC/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+          test -f "$FINAL_PAGED_RESOURCE"
+          test ! -L "$FINAL_PAGED_RESOURCE"
+          test -s "$FINAL_PAGED_RESOURCE"
+          test -z "$(find "$FINAL_WORKER_XPC/Contents/Resources" \
+            \( -type f -o -type l \) ! -path "$FINAL_PAGED_RESOURCE" -print -quit)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$FINAL_WORKER_XPC/Contents/Info.plist")" = "$WORKER_ID"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$FINAL_WORKER_XPC/Contents/Info.plist")" = "$WORKER_NAME"
+          FINAL_SANDBOX_OUTPUT=$(DARKBLOOM_SIGNED_HOST_TEST=1 \
+            "$FINAL_WORKER" --sandbox-self-test-v1)
+          printf '%s\n' "$FINAL_SANDBOX_OUTPUT"
+          printf '%s\n' "$FINAL_SANDBOX_OUTPUT" \
+            | grep -Fqx 'DBXPC_SANDBOX_SELF_TEST_V1:63'
           REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
           ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            "$FINAL_WORKER_XPC/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "$FINAL_WORKER_XPC/Contents/Info.plist")" = "$VERSION"
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          WORKER_HASH=$(shasum -a 256 "$FINAL_WORKER" | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 "$ARCHIVE" | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
+          echo "WORKER_HASH=$WORKER_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
           echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
+          echo "Worker hash:   $WORKER_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
 
@@ -797,7 +1109,7 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+          aws s3 cp "$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz" \
             "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
@@ -805,10 +1117,10 @@ jobs:
           # the canonical `darkbloom-bundle` name and the legacy
           # `eigeninference-bundle` name for backward compatibility with
           # any caller that hardcoded the old filename.
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+          aws s3 cp "$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz" \
             "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+          aws s3 cp "$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz" \
             "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
@@ -826,6 +1138,13 @@ jobs:
               echo "Template $name: ${HASH:0:16}…"
             fi
           done
+          if ! [[ "$WORKER_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::post-sign worker hash is missing or malformed"
+            exit 1
+          fi
+          [ -n "$TEMPLATE_HASHES" ] && TEMPLATE_HASHES+=","
+          TEMPLATE_HASHES+="inference_worker_binary=${WORKER_HASH}"
+          echo "Inference worker binary: ${WORKER_HASH}"
           echo "TEMPLATE_HASHES=$TEMPLATE_HASHES" >> "$GITHUB_ENV"
 
       - name: Register release with coordinator
@@ -845,7 +1164,8 @@ jobs:
           # The Swift provider does NOT expose python_hash / runtime_hash —
           # those fields are dropped post-cutover. Coordinator should accept
           # releases without them when backend == "mlx-swift".
-          python3 - <<PY > /tmp/release-payload.json
+          RELEASE_PAYLOAD="$RELEASE_PRIVATE_DIR/release-payload.json"
+          python3 - <<PY > "$RELEASE_PAYLOAD"
           import json, os
           payload = {
               "version":         os.environ["VERSION"],
@@ -863,7 +1183,7 @@ jobs:
           curl -fsSL -X POST "${COORDINATOR_URL}/v1/releases" \
             -H "Authorization: Bearer ${RELEASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d @/tmp/release-payload.json
+            -d @"$RELEASE_PAYLOAD"
           echo
           echo "Release v${VERSION} registered with coordinator"
 
@@ -873,10 +1193,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cat > /tmp/release-notes.md <<NOTES
+          RELEASE_NOTES="$RELEASE_PRIVATE_DIR/release-notes.md"
+          cat > "$RELEASE_NOTES" <<NOTES
           ## Provider v${VERSION} (Swift CLI)
 
           **Binary hash:**   \`${BINARY_HASH}\`
+          **Worker hash:**   \`${WORKER_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
           **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
           **Signed by:**     \`${DEVELOPER_ID}\`
@@ -891,12 +1213,20 @@ jobs:
 
           NOTES
           gh release create "${{ github.ref_name }}" \
-            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            "$RELEASE_PRIVATE_DIR/darkbloom-bundle-macos-arm64.tar.gz" \
             --title "${{ github.ref_name }}" \
-            --notes-file /tmp/release-notes.md \
+            --notes-file "$RELEASE_NOTES" \
             --generate-notes
 
-      - name: Cleanup keychain
+      - name: Cleanup private release workspace
         if: always()
         run: |
-          security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
+          fi
+          case "${RELEASE_PRIVATE_DIR:-}" in
+            "$RUNNER_TEMP"/darkbloom-release.??????)
+              chmod -R u+rwX "$RELEASE_PRIVATE_DIR" 2>/dev/null || true
+              rm -rf -- "$RELEASE_PRIVATE_DIR"
+              ;;
+          esac

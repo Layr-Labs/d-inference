@@ -29,9 +29,12 @@ extension CoordinatorClient {
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
             models: advertisedModelStore.models,
+            runtimeCapabilitiesOverride: runtimeCapabilitiesOverride,
             privacyCapabilities: privacyCapabilities,
             apnsDeviceTokenOverride: apnsTokenOverride,
             modelWeightHashOverrides: modelWeightHashOverrides,
+            processPublicKeyOverride: processPublicKeyOverride,
+            registrationAttestationOverride: registrationAttestationOverride,
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,

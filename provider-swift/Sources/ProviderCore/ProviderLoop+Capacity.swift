@@ -5,11 +5,6 @@
 
 import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
 #if canImport(os)
 import os
 #endif
@@ -52,149 +47,72 @@ extension ProviderLoop {
 
     /// One capacity-monitor tick, isolated on the loop actor.
     internal func capacityRefreshTick() async {
-        // Proactive trim of the MLX reclaimable buffer pool (DAR-338). Freed
-        // KV/activation buffers otherwise sit in MLX's cache up to the cache
-        // limit and are never returned to the OS — under sustained serving the
-        // pool grows monotonically (each completed request parks its buffers)
-        // until macOS memory pressure fires. The legacy engine's liveness
-        // watchdog drove this sweep every 2s until the v0.7.5 engine deletion
-        // removed it with its host; this tick is that watchdog's documented
-        // successor. Non-blocking: only signals the off-actor reclaimer
-        // (rate-limited, threshold-gated); the GPU sync never runs here.
-        kvBudget.proactiveReclaimSweep()
         await updateAggregateCapacity()
-        await recoverWedgedEngineV2Slots()
         writeDaemonState()
     }
 
     internal func updateAggregateCapacity() async {
-        // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
-        // slot source — every loaded model serves through a v2 bridge; the
-        // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
-        // shape, same slot-state strings ("idle"/"running"/"crashed").
-        var allSlots: [BackendSlotCapacity] = []
-        var totalActive = 0
-        if hasEngineV2Slots {
-            // Fleet context for the v2 budget clamp: engine grants are now
-            // RE-SLICED at load/unload, so between re-slices this clamp is a
-            // near-inert safety net — but it stays: it recomputes each
-            // bridge's live budget from CURRENT fleet residency (weights of
-            // ALL slots, including mid-unload ones whose bytes are still
-            // resident) so the reported max can never advertise capacity the
-            // shared KV gate would reject. The runtime reads each engine's
-            // CURRENT (post-re-slice) grant per heartbeat — never a stale
-            // construction-time figure. Heartbeat cadence only.
-            var totalResidentWeightBytes: UInt64 = 0
-            for (_, slot) in modelSlots {
-                let (sum, overflow) = totalResidentWeightBytes
-                    .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
-                totalResidentWeightBytes = overflow ? .max : sum
+        do {
+            let snapshot = try await inferenceWorkerClient.capacitySnapshot()
+            guard snapshot.launchIdentifier == inferenceWorkerIdentity?.launchIdentifier else {
+                throw InferenceWorkerClientError.invalidated
             }
-            // Physical memory MUST come from the same source the re-slice
-            // grant arithmetic uses (`fleetKVBudgetBytes`): the test hooks'
-            // override when installed, the machine's real memory otherwise.
-            // Mixing sources makes the clamp bind spuriously on any box
-            // smaller than the hooked figure (grants computed against the
-            // override, clamp against real RAM) — nil hooks ⇒ production
-            // behavior unchanged.
-            let engineV2 = await engineV2Runtime.capacitySummary(
-                fleetKV: EngineV2Runtime.FleetKVContext(
-                    totalResidentWeightBytes: totalResidentWeightBytes,
-                    configReserveBytes: Self.memoryReserveBytes(
-                        forGiB: loopConfig.config.provider.memoryReserveGB),
-                    physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
-                        ?? ProcessInfo.processInfo.physicalMemory))
-            allSlots.append(contentsOf: engineV2.slots)
-            totalActive += engineV2.activeRequests
+            let slots = snapshot.entries.compactMap { entry -> BackendSlotCapacity? in
+                guard entry.state == 2 || entry.activeRequests > 0 else { return nil }
+                if let encoded = entry.capacityJSON,
+                   let exact = try? JSONDecoder().decode(
+                    BackendSlotCapacity.self, from: encoded),
+                   exact.model == entry.modelIdentifier {
+                    return exact
+                }
+                return BackendSlotCapacity(
+                    model: entry.modelIdentifier,
+                    state: entry.activeRequests > 0 ? "running" : "idle",
+                    numRunning: UInt32(entry.activeRequests),
+                    numWaiting: UInt32(entry.queuedRequests),
+                    activeTokens: 0,
+                    maxTokensPotential: 0,
+                    maxConcurrency: UInt32(entry.maximumRequests),
+                    kvBytesPerToken: Int64(clamping: entry.kvBytes))
+            }
+            let divisor = 1024.0 * 1024.0 * 1024.0
+            state.backendCapacity = BackendCapacity(
+                slots: slots,
+                gpuMemoryActiveGb: Double(snapshot.gpuActiveBytes) / divisor,
+                gpuMemoryPeakGb: Double(snapshot.gpuPeakBytes) / divisor,
+                gpuMemoryCacheGb: Double(snapshot.gpuCacheBytes) / divisor,
+                totalMemoryGb: Double(snapshot.totalMemoryBytes) / divisor,
+                freeForLoadGb: Double(snapshot.freeForLoadBytes) / divisor)
+            state.inferenceActive = snapshot.entries.contains { $0.activeRequests > 0 }
+            let warmEntries = snapshot.entries
+                .filter { $0.state == 2 }
+                .sorted { $0.modelIdentifier < $1.modelIdentifier }
+            state.warmModels = warmEntries.map(\.modelIdentifier)
+            let current = warmEntries.first(where: { $0.activeRequests > 0 })
+                ?? warmEntries.first
+            state.currentModel = current?.modelIdentifier
+            state.currentModelHash = current?.manifestSHA256
+            let prefixCacheAdvertisement = snapshot.prefixCacheAdvertisementJSON.flatMap {
+                try? JSONDecoder().decode(
+                    WorkerPrefixCacheAdvertisementMetadata.self, from: $0)
+            }
+            state.setPrefixCacheSnapshot(
+                statuses: [],
+                runtimeIdentityAvailable:
+                    inferenceWorkerIdentity != nil)
+            state.setWorkerPrefixCacheAdvertisement(prefixCacheAdvertisement)
+            lastLiveSlotPostures = []
+        } catch {
+            state.backendCapacity = BackendCapacity(
+                slots: [], gpuMemoryActiveGb: 0, gpuMemoryPeakGb: 0,
+                gpuMemoryCacheGb: 0,
+                totalMemoryGb: Double(ProcessInfo.processInfo.physicalMemory)
+                    / (1024.0 * 1024.0 * 1024.0),
+                freeForLoadGb: 0)
+            state.inferenceActive = false
+            state.setWorkerPrefixCacheAdvertisement(nil)
+            await workerConnectionFailed()
         }
-
-        let gbDivisor = 1024.0 * 1024.0 * 1024.0
-        let totalMem = ProcessInfo.processInfo.physicalMemory
-
-        // Max model weight we could load right now (single source of truth for
-        // the coordinator's cold-load routing). Holds back the same load reserve
-        // the load gate uses, so it enforces the 90% cap.
-        //
-        // Eviction handling: current MLX usage may be reclaimed by evicting idle
-        // models on a cold load — BUT ONLY when nothing is being served. MLX
-        // memory is global (it also covers the local inference endpoint, whose
-        // streams are tracked by localReservations, not modelSlots), so a model
-        // serving a local request is NOT evictable. `hasInflightWork` is the
-        // comprehensive signal (coordinator inflight + local streams): when work
-        // is in flight we treat NOTHING as reclaimable (conservative, never
-        // advertises an actively-served model's weights as free); only when fully
-        // idle do we assume idle models can be evicted.
-        let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
-        let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
-        let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
-        let mlxUsed = mlxActiveBytes + mlxCacheBytes
-        let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
-        let loadReserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
-        // Subtract KV already promised to in-flight requests (coordinator + local
-        // streams), exactly as the real load gate (availableMemoryGb) does, so the
-        // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
-        let outstandingKV = await kvBudget.outstandingReservedBytes()
-        let freeForLoadGb = ModelLoadAdmission.maxLoadableWeightGb(
-            totalBytes: totalMem,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
-            mlxUsedBytes: reclaimableMlx,
-            reserveBytes: loadReserve,
-            outstandingReservationBytes: outstandingKV)
-        let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
-        let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
-            cacheLimitBytes: UInt64(max(
-                0, MLXMemoryGuard.configuredLimitsSnapshot()?.cacheLimitBytes ?? 0)),
-            sweepSignals: reclaimer.sweepSignals,
-            reclaims: reclaimer.reclaims,
-            reclaimedBytes: reclaimer.reclaimedBytes,
-            lastReclaimedBytes: reclaimer.lastReclaimedBytes,
-            lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
-
-        state.backendCapacity = BackendCapacity(
-            slots: allSlots,
-            gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
-            gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
-            gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
-            totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb,
-            mlxCacheReclaimer: reclaimerTelemetry
-        )
-        state.inferenceActive = totalActive > 0
-        let loadedSlots = modelSlots.compactMap { modelId, slot
-            -> (String, EngineV2Bridge)? in
-            guard advertisedModels[modelId] != nil else { return nil }
-            return (modelId, slot.engineV2)
-        }
-        state.setPrefixCacheSnapshot(
-            sources: Dictionary(uniqueKeysWithValues: loadedSlots.compactMap { modelId, bridge in
-                bridge.ssdPrefixCache.map { (modelId, $0) }
-            }),
-            statuses: loadedSlots.map { _, bridge in bridge.prefixCacheModelStatus() },
-            runtimeIdentityAvailable: binaryHash?.isEmpty == false)
-
-        // Per-slot KV-backend + MTP posture for the diagnostics state file
-        // (`darkbloom status` / `doctor`). Sampled HERE, on the existing
-        // capacity cadence, because `mtpStatusSnapshot()` is an actor hop
-        // and `writeDaemonState()` is synchronous — and because this is the
-        // same tick that already reports `BackendSlotCapacity.kv_backend` to
-        // the coordinator, so the box and the fleet cannot disagree about
-        // which backend a slot resolved to.
-        //
-        // EVERY slot, not just `loadedSlots`: a model that is loaded but not
-        // advertised is still occupying memory on the backend an operator is
-        // asking about.
-        // Assembled by the BRIDGE (`slotPosture`), not here, so this and the
-        // `engine_v2_slot_posture` telemetry event cannot describe the same
-        // slot differently — that shared accessor is what makes the sentence
-        // above true rather than merely intended.
-        var postures: [DaemonSlotPostureBuilder.LiveSlot] = []
-        postures.reserveCapacity(modelSlots.count)
-        for (_, slot) in modelSlots {
-            let bridge = slot.engineV2
-            postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
-        }
-        lastLiveSlotPostures = postures
     }
 
 }

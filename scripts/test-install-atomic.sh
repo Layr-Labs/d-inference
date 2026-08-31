@@ -4,66 +4,43 @@ set -euo pipefail
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-install-test.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-INSTALLER="$REPO_ROOT/scripts/install.sh"
+CANONICAL_INSTALLER="$REPO_ROOT/scripts/install.sh"
+EMBEDDED_INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
 "$REPO_ROOT/scripts/sync-install-embed.sh" check
 
-cat > "$ROOT/paged.c" <<'C'
-#include <libgen.h>
-#include <limits.h>
+cat > "$ROOT/main.c" <<'C'
+#include <stdio.h>
+static const char *fan_capability = "darkbloom-fan-helper-v1";
+int main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    fputs(fan_capability, stderr);
+    return 0;
+}
+C
+cat > "$ROOT/worker.c" <<'C'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
-static const char *capability = "engine_v2_kv_backend";
-static const char *fan_capability = "darkbloom-fan-helper-v1";
-
 int main(int argc, char **argv) {
-    if (argc < 2 || strcmp(argv[1], "runtime-smoke") != 0) {
-        fputs(capability, stderr);
-        fputs(fan_capability, stderr);
-        return 0;
-    }
-    const char *chunk_eval = getenv("DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL");
-    const char *weighted = getenv("MLX_GEMMA4_FUSED_WEIGHTED_UNSORT");
-    const char *safe_r1 = getenv("MLX_GATHER_QMM_EXPERT_SLICES");
-    if (chunk_eval == NULL || strcmp(chunk_eval, "18") != 0) return 4;
-    if (weighted == NULL || strcmp(weighted, "1") != 0) return 5;
-    if (safe_r1 == NULL || strcmp(safe_r1, "1") != 0) return 6;
-
-    char resolved[PATH_MAX];
-    if (realpath(argv[0], resolved) == NULL) return 2;
-    char first[PATH_MAX], second[PATH_MAX], third[PATH_MAX];
-    snprintf(first, sizeof(first), "%s", resolved);
-    snprintf(second, sizeof(second), "%s", dirname(first));
-    snprintf(third, sizeof(third), "%s", dirname(second));
-    char *app = dirname(third);
-    char resource[PATH_MAX];
-    snprintf(
-        resource, sizeof(resource),
-        "%s/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal",
-        app);
-    return access(resource, R_OK) == 0 ? 0 : 3;
+    const char *gate = getenv("DARKBLOOM_SIGNED_HOST_TEST");
+    if (argc != 2 || strcmp(argv[1], "--sandbox-self-test-v1") != 0
+        || gate == NULL || strcmp(gate, "1") != 0) return 64;
+    puts("DBXPC_SANDBOX_SELF_TEST_V1:63");
+    return 0;
 }
 C
-
-cat > "$ROOT/legacy.c" <<'C'
+cat > "$ROOT/bad-worker.c" <<'C'
+#include <stdio.h>
+int main(void) { puts("DBXPC_SANDBOX_SELF_TEST_V1:31"); return 0; }
+C
+cat > "$ROOT/helper.c" <<'C'
 int main(void) { return 0; }
 C
+clang -Os "$ROOT/main.c" -o "$ROOT/main"
+clang -Os "$ROOT/worker.c" -o "$ROOT/worker"
+clang -Os "$ROOT/bad-worker.c" -o "$ROOT/bad-worker"
+clang -Os "$ROOT/helper.c" -o "$ROOT/helper"
 
-cat > "$ROOT/fan-helper.c" <<'C'
-int main(void) { return 0; }
-C
-
-clang -Os "$ROOT/paged.c" -o "$ROOT/paged"
-clang -Os "$ROOT/legacy.c" -o "$ROOT/legacy"
-clang -Os "$ROOT/fan-helper.c" -o "$ROOT/fan-helper"
-
-# A pristine Mac has no Xcode Command Line Tools: /usr/bin/strings, otool,
-# nm, etc. are shims that prompt/fail. Prove the installers never need them
-# two ways: (1) statically — no CLT tool is referenced outside comments in
-# either installer; (2) behaviorally — every install below runs with failing
-# CLT shims first on PATH, so any hidden invocation aborts the install.
 CLT_SHIMS="$ROOT/clt-shims"
 mkdir -p "$CLT_SHIMS"
 for tool in strings otool nm xcrun swift swiftc clang gcc ld libtool lipo sudo launchctl; do
@@ -81,14 +58,12 @@ assert_no_clt_tools() {
     offending=$(sed 's/#.*$//' "$script" \
         | grep -nEw 'strings|otool|nm|xcrun|swiftc|libtool|lipo' \
         || true)
-    if [ -n "$offending" ]; then
+    [ -z "$offending" ] || {
         echo "CLT-dependent tool referenced in $script:" >&2
         echo "$offending" >&2
         exit 1
-    fi
+    }
 }
-assert_no_clt_tools "$REPO_ROOT/scripts/install.sh"
-assert_no_clt_tools "$REPO_ROOT/coordinator/api/install.sh"
 
 assert_no_privileged_install() {
     local script=$1
@@ -96,64 +71,91 @@ assert_no_privileged_install() {
     offending=$(sed 's/#.*$//' "$script" \
         | grep -nE '(^|[^[:alnum:]_])(sudo|launchctl)([^[:alnum:]_]|$)|/Library/PrivilegedHelperTools' \
         || true)
-    if [ -n "$offending" ]; then
+    [ -z "$offending" ] || {
         echo "ordinary installer contains privileged activation in $script:" >&2
         echo "$offending" >&2
         exit 1
-    fi
+    }
 }
-assert_no_privileged_install "$REPO_ROOT/scripts/install.sh"
-assert_no_privileged_install "$REPO_ROOT/coordinator/api/install.sh"
 
-make_artifact() {
-    local output=$1
-    local capability=$2
-    local include_resource=$3
-    local include_fan=${4:-no}
-    local stage="$ROOT/stage-$RANDOM"
-    local app="$stage/Darkbloom.app"
-    local binary="$ROOT/$capability"
-    mkdir -p "$app/Contents/MacOS" "$stage/bin"
-    cp "$binary" "$app/Contents/MacOS/darkbloom"
-    cp "$binary" "$app/Contents/MacOS/darkbloom-enclave"
-    cp "$binary" "$app/Contents/MacOS/mlx.metallib"
-    cat > "$app/Contents/Info.plist" <<'PLIST'
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    assert_no_clt_tools "$installer"
+    assert_no_privileged_install "$installer"
+    grep -Fqx \
+        'DARKBLOOM_DESIGNATED_REQUIREMENT='\''anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'\''' \
+        "$installer"
+    grep -Fqx \
+        'DARKBLOOM_FAN_HELPER_REQUIREMENT='\''anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'\''' \
+        "$installer"
+    grep -Fqx \
+        'DARKBLOOM_WORKER_REQUIREMENT='\''anchor apple generic and identifier "io.darkbloom.provider.inference-worker" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'\''' \
+        "$installer"
+done
+
+make_app_info() {
+    local path=$1
+    cat > "$path" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.darkbloom.install-test</string>
 <key>CFBundleExecutable</key><string>darkbloom</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>1.0.0</string>
+<key>CFBundleShortVersionString</key><string>1.0.0</string>
 </dict></plist>
 PLIST
+}
 
-    if [ "$capability" = "paged" ]; then
-        mkdir -p "$app/Contents/Resources/darkbloom-runtime-capabilities"
-        printf '1\n' \
-            > "$app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
-        if [ "$include_resource" = "yes" ]; then
-            mkdir -p "$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle"
-            printf 'kernel\n' \
-                > "$app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
-        fi
-    fi
+make_artifact() {
+    local output=$1
+    local stage="$ROOT/stage-$RANDOM"
+    local app="$stage/Darkbloom.app"
+    local xpc="$app/Contents/XPCServices/DarkbloomInferenceWorker.xpc"
+    mkdir -p \
+        "$app/Contents/MacOS" \
+        "$app/Contents/Helpers" \
+        "$app/Contents/Resources/darkbloom-runtime-capabilities" \
+        "$xpc/Contents/MacOS" \
+        "$stage/bin"
+    cp "$ROOT/main" "$app/Contents/MacOS/darkbloom"
+    cp "$ROOT/main" "$app/Contents/MacOS/darkbloom-enclave"
+    install -m 0755 "$ROOT/helper" "$app/Contents/Helpers/darkbloom-fan-helper"
+    printf '1\n' > "$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+    make_app_info "$app/Contents/Info.plist"
 
-    if [ "$include_fan" = "yes" ]; then
-        mkdir -p \
-            "$app/Contents/Helpers" \
-            "$app/Contents/Resources/darkbloom-runtime-capabilities"
-        install -m 0755 \
-            "$ROOT/fan-helper" \
-            "$app/Contents/Helpers/darkbloom-fan-helper"
-        printf '1\n' \
-            > "$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
-        codesign --force --sign - \
-            --identifier io.darkbloom.fan-helper \
-            "$app/Contents/Helpers/darkbloom-fan-helper"
-    fi
+    install -m 0755 "$ROOT/worker" "$xpc/Contents/MacOS/darkbloom-inference-worker"
+    cp "$ROOT/main" "$xpc/Contents/MacOS/mlx.metallib"
+    cp "$REPO_ROOT/scripts/inference-worker-Info.plist" "$xpc/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 1.0.0' "$xpc/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 1.0.0' "$xpc/Contents/Info.plist"
+    mkdir -p "$xpc/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle"
+    printf 'kernel fixture\n' \
+        > "$xpc/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+    cat > "$xpc/Contents/embedded.provisionprofile" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>TeamIdentifier</key><array><string>SLDQ2GJ6TL</string></array>
+<key>Entitlements</key><dict>
+<key>application-identifier</key><string>SLDQ2GJ6TL.io.darkbloom.provider.inference-worker</string>
+<key>keychain-access-groups</key><array><string>SLDQ2GJ6TL.io.darkbloom.provider</string></array>
+<key>com.apple.security.app-sandbox</key><true/>
+<key>com.apple.security.files.bookmarks.app-scope</key><true/>
+</dict></dict></plist>
+PLIST
 
-    codesign --force --sign - "$app/Contents/MacOS/mlx.metallib"
+    codesign --force --sign - "$xpc/Contents/MacOS/mlx.metallib"
+    codesign --force --sign - \
+        --identifier io.darkbloom.provider.inference-worker \
+        --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" \
+        "$xpc/Contents/MacOS/darkbloom-inference-worker"
+    codesign --force --sign - \
+        --identifier io.darkbloom.provider.inference-worker \
+        --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" \
+        "$xpc"
+    codesign --force --sign - --identifier io.darkbloom.fan-helper \
+        "$app/Contents/Helpers/darkbloom-fan-helper"
     codesign --force --sign - "$app/Contents/MacOS/darkbloom-enclave"
     codesign --force --sign - "$app/Contents/MacOS/darkbloom"
     codesign --force --sign - "$app"
@@ -161,15 +163,12 @@ PLIST
 
     cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
     cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
-    cp "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
+    cp "$xpc/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
     tar czf "$output" -C "$stage" .
     rm -rf "$stage"
 }
 
-hash_file() {
-    shasum -a 256 "$1" | cut -d' ' -f1
-}
-
+hash_file() { shasum -a 256 "$1" | cut -d' ' -f1; }
 artifact_hashes() {
     local archive=$1
     local extracted="$ROOT/hash-$RANDOM"
@@ -180,243 +179,363 @@ artifact_hashes() {
     rm -rf "$extracted"
 }
 
+FAN_HELPER_REQUIREMENT='identifier "io.darkbloom.fan-helper"'
+WORKER_REQUIREMENT='identifier "io.darkbloom.provider.inference-worker"'
 run_install() {
-    local archive=$1
-    local install_dir=$2
+    local installer=$1 archive=$2 install_dir=$3
+    local sandbox_probe="$ROOT/worker"
+    case "$archive" in
+        *bad-sandbox-probe.tar.gz) sandbox_probe="$ROOT/bad-worker" ;;
+    esac
     artifact_hashes "$archive"
-    PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
+    PATH="$CLT_SHIMS:$PATH" bash "$installer" --install-bundle-test \
         "$archive" "$install_dir" "$BINARY_HASH" "$METALLIB_HASH" \
-        "$FAN_HELPER_REQUIREMENT"
+        "$FAN_HELPER_REQUIREMENT" "$WORKER_REQUIREMENT" "$sandbox_probe"
 }
 
-run_install_without_hashes() {
-    PATH="$CLT_SHIMS:$PATH" bash "$INSTALLER" --install-bundle-test \
-        "$1" "$2" "" "" "$FAN_HELPER_REQUIREMENT"
-}
-
-VALID="$ROOT/valid.tar.gz"
-MISSING="$ROOT/missing.tar.gz"
-LEGACY="$ROOT/legacy.tar.gz"
-make_artifact "$VALID" paged yes yes
-make_artifact "$MISSING" paged no yes
-make_artifact "$LEGACY" legacy no no
-
-# The designated requirement must be applied to the complete app target,
-# whose main-executable signature seals Contents/Resources.
-SIGNATURE_ROOT="$ROOT/signature"
-mkdir -p "$SIGNATURE_ROOT"
-tar xzf "$VALID" -C "$SIGNATURE_ROOT"
-APP_REQUIREMENT=$(codesign -d -r- \
-    "$SIGNATURE_ROOT/Darkbloom.app" 2>&1 \
-    | awk -F' => ' '/designated/{print $2; exit}')
-[ -n "$APP_REQUIREMENT" ]
-FAN_HELPER_REQUIREMENT=$(codesign -d -r- \
-    "$SIGNATURE_ROOT/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper" 2>&1 \
-    | awk -F' => ' '/designated/{print $2; exit}')
-[ -n "$FAN_HELPER_REQUIREMENT" ]
-PRODUCTION_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-PRODUCTION_FAN_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
-for installer in \
-    "$REPO_ROOT/scripts/install.sh" \
-    "$REPO_ROOT/coordinator/api/install.sh"
-do
-    grep -Fqx \
-        "DARKBLOOM_DESIGNATED_REQUIREMENT='$PRODUCTION_REQUIREMENT'" \
-        "$installer"
-    grep -Fqx \
-        "DARKBLOOM_FAN_HELPER_REQUIREMENT='$PRODUCTION_FAN_REQUIREMENT'" \
-        "$installer"
-    bash "$installer" --verify-staged-app-signature-test \
-        "$SIGNATURE_ROOT/Darkbloom.app" "$APP_REQUIREMENT"
-    if bash "$installer" --verify-staged-app-signature-test \
-        "$SIGNATURE_ROOT/Darkbloom.app" 'identifier "not.darkbloom"'
-    then
-        echo "$installer accepted an app outside the required identity" >&2
-        exit 1
-    fi
-done
-
-make_fan_variant() {
-    local output=$1
-    local mutation=$2
-    local stage="$ROOT/fan-variant-$mutation-$RANDOM"
+resign_outer() {
+    local stage=$1
     local app="$stage/Darkbloom.app"
-    local helper="$app/Contents/Helpers/darkbloom-fan-helper"
-    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+    codesign --force --sign - "$app"
+    cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
+    cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
+}
+
+make_variant() {
+    local output=$1 mutation=$2
+    local stage="$ROOT/variant-$mutation-$RANDOM"
+    local app="$stage/Darkbloom.app"
+    local xpc="$app/Contents/XPCServices/DarkbloomInferenceWorker.xpc"
+    local worker="$xpc/Contents/MacOS/darkbloom-inference-worker"
     mkdir -p "$stage"
     tar xzf "$VALID" -C "$stage"
-
+    local resign=1
     case "$mutation" in
-        missing-helper)
-            rm -f "$helper"
+        missing-xpc)
+            rm -rf "$xpc"
             ;;
-        missing-marker)
-            rm -f "$marker"
+        missing-worker)
+            rm -f "$worker"
+            resign=0
             ;;
-        non-executable)
-            chmod 0644 "$helper"
-            ;;
-        symlink)
-            rm -f "$helper"
-            ln -s ../MacOS/darkbloom "$helper"
+        symlink-worker)
+            rm -f "$worker"
+            ln -s ../../../../../MacOS/darkbloom "$worker"
+            resign=0
             ;;
         wrong-identifier)
+            codesign --force --sign - --identifier not.darkbloom.worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$worker"
+            codesign --force --sign - --identifier not.darkbloom.worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        wrong-info)
+            /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier not.darkbloom.worker' \
+                "$xpc/Contents/Info.plist"
             codesign --force --sign - \
-                --identifier not.darkbloom.fan-helper "$helper"
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        version-mismatch)
+            /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 9.9.9' \
+                "$xpc/Contents/Info.plist"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        no-sandbox)
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker "$worker"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker "$xpc"
+            ;;
+        network-entitlement)
+            cp "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$ROOT/network-entitlements.plist"
+            /usr/libexec/PlistBuddy -c 'Add :com.apple.security.network.client bool true' \
+                "$ROOT/network-entitlements.plist"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$ROOT/network-entitlements.plist" "$worker"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$ROOT/network-entitlements.plist" "$xpc"
+            ;;
+        missing-metallib)
+            rm -f "$xpc/Contents/MacOS/mlx.metallib"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        missing-paged-resource)
+            rm -f "$xpc/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        missing-worker-profile)
+            rm -f "$xpc/Contents/embedded.provisionprofile"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        invalid-worker-profile)
+            printf 'not a profile\n' > "$xpc/Contents/embedded.provisionprofile"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        broad-worker-profile)
+            /usr/libexec/PlistBuddy -c \
+                'Set :Entitlements:application-identifier SLDQ2GJ6TL.*' \
+                "$xpc/Contents/embedded.provisionprofile"
+            /usr/libexec/PlistBuddy -c \
+                'Add :Entitlements:keychain-access-groups:1 string SLDQ2GJ6TL.unapproved' \
+                "$xpc/Contents/embedded.provisionprofile"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        extra-resources)
+            mkdir -p "$xpc/Contents/Resources"
+            printf 'unapproved\n' > "$xpc/Contents/Resources/source.txt"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
+            ;;
+        bad-sandbox-probe)
+            cp "$ROOT/bad-worker" "$worker"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$worker"
+            codesign --force --sign - \
+                --identifier io.darkbloom.provider.inference-worker \
+                --entitlements "$REPO_ROOT/scripts/inference-worker-entitlements.plist" "$xpc"
             ;;
         tampered)
-            printf 'tampered\n' >> "$helper"
+            printf 'tampered\n' >> "$worker"
+            resign=0
             ;;
-        *)
-            echo "unknown fan variant: $mutation" >&2
-            exit 1
-            ;;
+        *) echo "unknown variant: $mutation" >&2; exit 1 ;;
     esac
-
-    # Keep the outer app structurally valid except for the intentional tamper,
-    # so each negative case exercises the dedicated fan-helper checks.
-    if [ "$mutation" != "tampered" ]; then
-        codesign --force --sign - "$app"
-        # Re-signing the outer app may update its main executable signature.
-        # Keep the release verifier's flat payload byte-identical so rejection
-        # reaches the dedicated fan-helper invariant under test.
-        cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
-        cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
-        cp "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
-    fi
+    [ "$resign" -eq 0 ] || resign_outer "$stage"
+    cp "$xpc/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib" 2>/dev/null || true
     tar czf "$output" -C "$stage" .
     rm -rf "$stage"
 }
 
-FAN_MISSING_HELPER="$ROOT/fan-missing-helper.tar.gz"
-FAN_MISSING_MARKER="$ROOT/fan-missing-marker.tar.gz"
-FAN_NON_EXECUTABLE="$ROOT/fan-non-executable.tar.gz"
-FAN_SYMLINK="$ROOT/fan-symlink.tar.gz"
-FAN_WRONG_ID="$ROOT/fan-wrong-id.tar.gz"
-FAN_TAMPERED="$ROOT/fan-tampered.tar.gz"
-make_fan_variant "$FAN_MISSING_HELPER" missing-helper
-make_fan_variant "$FAN_MISSING_MARKER" missing-marker
-make_fan_variant "$FAN_NON_EXECUTABLE" non-executable
-make_fan_variant "$FAN_SYMLINK" symlink
-make_fan_variant "$FAN_WRONG_ID" wrong-identifier
-make_fan_variant "$FAN_TAMPERED" tampered
+VALID="$ROOT/valid.tar.gz"
+make_artifact "$VALID"
+SIGNATURE_ROOT="$ROOT/signature"
+mkdir -p "$SIGNATURE_ROOT"
+tar xzf "$VALID" -C "$SIGNATURE_ROOT"
+SIGNED_XPC="$SIGNATURE_ROOT/Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc"
+SIGNED_WORKER="$SIGNED_XPC/Contents/MacOS/darkbloom-inference-worker"
+PRODUCTION_WORKER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider.inference-worker" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    bash "$installer" --verify-worker-signature-test \
+        "$SIGNED_XPC" "$SIGNED_WORKER" "$WORKER_REQUIREMENT"
+    if bash "$installer" --verify-worker-signature-test \
+        "$SIGNED_XPC" "$SIGNED_WORKER" "$PRODUCTION_WORKER_REQUIREMENT"
+    then
+        echo "$installer accepted an ad-hoc worker without the production Team ID" >&2
+        exit 1
+    fi
+done
+for mutation in \
+    missing-xpc missing-worker symlink-worker wrong-identifier wrong-info \
+    version-mismatch no-sandbox network-entitlement missing-metallib \
+    missing-paged-resource missing-worker-profile invalid-worker-profile \
+    broad-worker-profile extra-resources bad-sandbox-probe tampered
+do
+    make_variant "$ROOT/$mutation.tar.gz" "$mutation"
+done
 
-assert_fan_variants_rejected() {
-    local install_dir=$1
-    for archive in \
-        "$FAN_MISSING_HELPER" \
-        "$FAN_MISSING_MARKER" \
-        "$FAN_NON_EXECUTABLE" \
-        "$FAN_SYMLINK" \
-        "$FAN_WRONG_ID" \
-        "$FAN_TAMPERED"
+# A flat-only artifact is never a mature release, even if every flat binary is signed.
+FLAT_ONLY_ROOT="$ROOT/flat-only"
+mkdir -p "$FLAT_ONLY_ROOT"
+tar xzf "$VALID" -C "$FLAT_ONLY_ROOT"
+rm -rf "$FLAT_ONLY_ROOT/Darkbloom.app"
+tar czf "$ROOT/flat-only.tar.gz" -C "$FLAT_ONLY_ROOT" .
+
+# A pre-created shared-path symlink must remain untouched. Downloads happen in
+# a fresh mode-0700 directory, and non-regular/multi-link archive paths fail.
+ATTACKER_TMP="$ROOT/attacker-tmp"
+mkdir -p "$ATTACKER_TMP"
+SENTINEL="$ROOT/download-sentinel"
+printf 'do-not-clobber\n' > "$SENTINEL"
+ln -s "$SENTINEL" "$ATTACKER_TMP/darkbloom-bundle.tar.gz"
+VALID_HASH=$(hash_file "$VALID")
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    TMPDIR="$ATTACKER_TMP" bash "$installer" --secure-download-test \
+        "file://$VALID" "$VALID_HASH"
+    test "$(cat "$SENTINEL")" = "do-not-clobber"
+    test -L "$ATTACKER_TMP/darkbloom-bundle.tar.gz"
+    if bash "$installer" --verify-download-path-test \
+        "$ATTACKER_TMP/darkbloom-bundle.tar.gz"
+    then
+        echo "$installer accepted a symlink download archive" >&2
+        exit 1
+    fi
+    if bash "$installer" --verify-download-path-test "$ATTACKER_TMP"; then
+        echo "$installer accepted a non-regular download archive" >&2
+        exit 1
+    fi
+    ln "$VALID" "$ATTACKER_TMP/multi-link-archive"
+    if bash "$installer" --verify-download-path-test "$ATTACKER_TMP/multi-link-archive"; then
+        echo "$installer accepted a replaceable multi-link download archive" >&2
+        exit 1
+    fi
+    rm -f "$ATTACKER_TMP/multi-link-archive"
+done
+
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    install_root="$ROOT/install-$(basename "$(dirname "$installer")")-$RANDOM"
+    mkdir -p "$install_root/Darkbloom.app"
+    printf 'old\n' > "$install_root/Darkbloom.app/sentinel"
+    for mutation in \
+        missing-xpc missing-worker symlink-worker wrong-identifier wrong-info \
+        version-mismatch no-sandbox network-entitlement missing-metallib \
+        missing-paged-resource missing-worker-profile invalid-worker-profile \
+        broad-worker-profile extra-resources bad-sandbox-probe tampered flat-only
     do
-        if run_install "$archive" "$install_dir"; then
-            echo "invalid fan-helper artifact unexpectedly installed: $archive" >&2
+        if run_install "$installer" "$ROOT/$mutation.tar.gz" "$install_root"; then
+            echo "$installer accepted invalid worker fixture: $mutation" >&2
             exit 1
         fi
+        test -f "$install_root/Darkbloom.app/sentinel"
     done
+
+    run_install "$installer" "$VALID" "$install_root"
+    test ! -f "$install_root/Darkbloom.app/sentinel"
+    worker="$install_root/Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc/Contents/MacOS/darkbloom-inference-worker"
+    test -x "$worker"
+    paged_resource="$install_root/Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+    test -s "$paged_resource"
+    test ! -L "$paged_resource"
+    test -z "$(find "$(dirname "$(dirname "$paged_resource")")" -mindepth 1 \
+        ! -path "$(dirname "$paged_resource")" ! -path "$paged_resource" -print -quit)"
+    codesign --verify --deep --strict "$install_root/Darkbloom.app"
+    codesign --verify --strict "-R=$WORKER_REQUIREMENT" "$worker"
+    test "$(readlink "$install_root/bin/mlx.metallib")" = \
+        '../Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc/Contents/MacOS/mlx.metallib'
+done
+
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    flat_upgrade_root="$ROOT/flat-upgrade-$(basename "$(dirname "$installer")")-$RANDOM"
+    mkdir -p "$flat_upgrade_root/bin"
+    for legacy_name in \
+        darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave
+    do
+        printf 'legacy flat %s\n' "$legacy_name" \
+            > "$flat_upgrade_root/bin/$legacy_name"
+    done
+    run_install "$installer" "$VALID" "$flat_upgrade_root"
+    test -d "$flat_upgrade_root/Darkbloom.app"
+    for migrated_name in \
+        darkbloom darkbloom-enclave mlx.metallib eigeninference-enclave
+    do
+        test -L "$flat_upgrade_root/bin/$migrated_name"
+    done
+    test "$(readlink "$flat_upgrade_root/bin/mlx.metallib")" = \
+        '../Darkbloom.app/Contents/XPCServices/DarkbloomInferenceWorker.xpc/Contents/MacOS/mlx.metallib'
+done
+
+seed_previous_launcher_set() {
+    local root=$1
+    mkdir -p "$root/bin"
+    ln -s old-darkbloom "$root/bin/darkbloom"
+    ln -s old-enclave "$root/bin/darkbloom-enclave"
+    ln -s ../old/mlx.metallib "$root/bin/mlx.metallib"
+    ln -s old-enclave-alias "$root/bin/eigeninference-enclave"
 }
 
-# Make the registered flat metallib differ from the signed app payload.
-# Structural app verification alone must not admit it.
-DIVERGED_ROOT="$ROOT/diverged"
-mkdir -p "$DIVERGED_ROOT"
-tar xzf "$VALID" -C "$DIVERGED_ROOT"
-printf 'diverged\n' \
-    >> "$DIVERGED_ROOT/bin/mlx.metallib"
-DIVERGED="$ROOT/diverged.tar.gz"
-tar czf "$DIVERGED" -C "$DIVERGED_ROOT" .
+assert_previous_launcher_set() {
+    local root=$1
+    test "$(readlink "$root/bin/darkbloom")" = old-darkbloom
+    test "$(readlink "$root/bin/darkbloom-enclave")" = old-enclave
+    test "$(readlink "$root/bin/mlx.metallib")" = ../old/mlx.metallib
+    test "$(readlink "$root/bin/eigeninference-enclave")" = old-enclave-alias
+}
 
-INSTALL="$ROOT/install"
-mkdir -p "$INSTALL/Darkbloom.app"
-printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
-
-assert_fan_variants_rejected "$INSTALL"
-test -f "$INSTALL/Darkbloom.app/sentinel"
-if run_install_without_hashes "$VALID" "$INSTALL"; then
-    echo "app release without payload hashes unexpectedly installed" >&2
-    exit 1
+ROLLBACK_SHIMS="$ROOT/rollback-shims"
+mkdir -p "$ROLLBACK_SHIMS"
+cat > "$ROLLBACK_SHIMS/mv" <<'SHIM'
+#!/bin/bash
+should_fail=0
+case "${DARKBLOOM_MV_FAILURE_MODE:-}" in
+    app)
+        case "${1:-}:${2:-}" in
+            */.install-staging.*/Darkbloom.app:*/Darkbloom.app)
+                should_fail=1
+                ;;
+        esac
+        ;;
+    launcher)
+        case "${1:-}:${2:-}:${3:-}" in
+            -h:*/.install-transaction.*/links/eigeninference-enclave:*/bin/eigeninference-enclave)
+                should_fail=1
+                ;;
+        esac
+        ;;
+esac
+if [ "$should_fail" -eq 1 ] \
+    && [ ! -e "$DARKBLOOM_MV_FAILURE_MARKER" ]
+then
+    /usr/bin/touch "$DARKBLOOM_MV_FAILURE_MARKER"
+    exit 73
 fi
-test -f "$INSTALL/Darkbloom.app/sentinel"
-if run_install "$MISSING" "$INSTALL"; then
-    echo "missing paged resource unexpectedly installed" >&2
-    exit 1
-fi
-test -f "$INSTALL/Darkbloom.app/sentinel"
-if run_install "$DIVERGED" "$INSTALL"; then
-    echo "divergent app payload unexpectedly installed" >&2
-    exit 1
-fi
-test -f "$INSTALL/Darkbloom.app/sentinel"
+exec /bin/mv "$@"
+SHIM
+chmod +x "$ROLLBACK_SHIMS/mv"
 
-run_install "$VALID" "$INSTALL"
-test ! -f "$INSTALL/Darkbloom.app/sentinel"
-DARKBLOOM_NO_UPDATE_CHECK=1 \
-    DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
-    MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
-    MLX_GATHER_QMM_EXPERT_SLICES=1 \
-    "$INSTALL/bin/darkbloom" runtime-smoke
-INSTALLED_FAN_HELPER="$INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
-INSTALLED_FAN_MARKER="$INSTALL/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
-test -f "$INSTALLED_FAN_HELPER"
-test ! -L "$INSTALLED_FAN_HELPER"
-test -x "$INSTALLED_FAN_HELPER"
-test "$(stat -f '%Lp' "$INSTALLED_FAN_HELPER")" = "755"
-test "$(tr -d '[:space:]' < "$INSTALLED_FAN_MARKER")" = "1"
-codesign --verify --strict "-R=$FAN_HELPER_REQUIREMENT" "$INSTALLED_FAN_HELPER"
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    rollback_root="$ROOT/rollback-$(basename "$(dirname "$installer")")-$RANDOM"
+    marker="$rollback_root/mv-failed"
+    mkdir -p "$rollback_root/Darkbloom.app"
+    printf 'old\n' > "$rollback_root/Darkbloom.app/sentinel"
+    seed_previous_launcher_set "$rollback_root"
+    artifact_hashes "$VALID"
+    if DARKBLOOM_MV_FAILURE_MODE=app \
+        DARKBLOOM_MV_FAILURE_MARKER="$marker" \
+        PATH="$ROLLBACK_SHIMS:$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$rollback_root" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT" "$WORKER_REQUIREMENT" "$ROOT/worker"
+    then
+        echo "$installer did not propagate staged-app activation failure" >&2
+        exit 1
+    fi
+    test -f "$marker"
+    test -f "$rollback_root/Darkbloom.app/sentinel"
+    assert_previous_launcher_set "$rollback_root"
+    test -z "$(find "$rollback_root" -maxdepth 1 \
+        \( -name '.install-transaction.*' -o -name '.install-staging.*' \) \
+        -print -quit)"
+done
 
-LEGACY_INSTALL="$ROOT/legacy-install"
-run_install "$LEGACY" "$LEGACY_INSTALL"
-test -x "$LEGACY_INSTALL/bin/darkbloom"
-test ! -e "$LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
+for installer in "$CANONICAL_INSTALLER" "$EMBEDDED_INSTALLER"; do
+    rollback_root="$ROOT/link-rollback-$(basename "$(dirname "$installer")")-$RANDOM"
+    marker="$rollback_root/mv-failed"
+    mkdir -p "$rollback_root/Darkbloom.app"
+    printf 'old\n' > "$rollback_root/Darkbloom.app/sentinel"
+    seed_previous_launcher_set "$rollback_root"
+    artifact_hashes "$VALID"
+    if DARKBLOOM_MV_FAILURE_MODE=launcher \
+        DARKBLOOM_MV_FAILURE_MARKER="$marker" \
+        PATH="$ROLLBACK_SHIMS:$CLT_SHIMS:$PATH" \
+        bash "$installer" --install-bundle-test \
+            "$VALID" "$rollback_root" "$BINARY_HASH" "$METALLIB_HASH" \
+            "$FAN_HELPER_REQUIREMENT" "$WORKER_REQUIREMENT" "$ROOT/worker"
+    then
+        echo "$installer did not propagate partial launcher activation failure" >&2
+        exit 1
+    fi
+    test -f "$marker"
+    test -f "$rollback_root/Darkbloom.app/sentinel"
+    assert_previous_launcher_set "$rollback_root"
+    test -z "$(find "$rollback_root" -maxdepth 1 \
+        \( -name '.install-transaction.*' -o -name '.install-staging.*' \) \
+        -print -quit)"
+done
 
-TAMPER_ROOT="$ROOT/tamper"
-mkdir -p "$TAMPER_ROOT"
-tar xzf "$VALID" -C "$TAMPER_ROOT"
-printf 'tampered\n' \
-    >> "$TAMPER_ROOT/Darkbloom.app/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
-TAMPERED="$ROOT/tampered.tar.gz"
-tar czf "$TAMPERED" -C "$TAMPER_ROOT" .
-if run_install "$TAMPERED" "$INSTALL"; then
-    echo "tampered signed app unexpectedly installed" >&2
-    exit 1
-fi
-DARKBLOOM_NO_UPDATE_CHECK=1 \
-    DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
-    MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
-    MLX_GATHER_QMM_EXPERT_SLICES=1 \
-    "$INSTALL/bin/darkbloom" runtime-smoke
-
-INSTALLER="$REPO_ROOT/coordinator/api/install.sh"
-COORD_INSTALL="$ROOT/coordinator-install"
-mkdir -p "$COORD_INSTALL/Darkbloom.app"
-printf 'coordinator-old\n' > "$COORD_INSTALL/Darkbloom.app/sentinel"
-assert_fan_variants_rejected "$COORD_INSTALL"
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install_without_hashes "$VALID" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted an app without payload hashes" >&2
-    exit 1
-fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install "$MISSING" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted missing paged resource" >&2
-    exit 1
-fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-if run_install "$DIVERGED" "$COORD_INSTALL"; then
-    echo "coordinator installer accepted a divergent app payload" >&2
-    exit 1
-fi
-test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-run_install "$VALID" "$COORD_INSTALL"
-test ! -f "$COORD_INSTALL/Darkbloom.app/sentinel"
-test -x "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
-test "$(stat -f '%Lp' "$COORD_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper")" = "755"
-
-COORD_LEGACY_INSTALL="$ROOT/coordinator-legacy-install"
-run_install "$LEGACY" "$COORD_LEGACY_INSTALL"
-test -x "$COORD_LEGACY_INSTALL/bin/darkbloom"
-test ! -e "$COORD_LEGACY_INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
-
-echo "atomic installer tests passed"
+echo "atomic installer worker-XPC tests passed"

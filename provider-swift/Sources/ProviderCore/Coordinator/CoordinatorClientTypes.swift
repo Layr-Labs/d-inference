@@ -91,8 +91,8 @@ public enum CoordinatorEvent: Sendable {
     /// `ciphertext` is the **decoded** NaCl-box ciphertext (nonce ‖ tag ‖ body),
     /// i.e. base64 already stripped. `senderPublicKey` is the consumer's
     /// 32-byte X25519 ephemeral public key, also decoded.
-    /// Consumers (ProviderLoop) feed both directly to NodeKeyPair.decrypt
-    /// without further base64 manipulation.
+    /// The supervisor forwards both opaque values to the authenticated XPC
+    /// worker without decrypting or parsing the request body.
     case inferenceRequest(
         requestId: String,
         ciphertext: Data,

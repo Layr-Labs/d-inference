@@ -201,7 +201,7 @@ extension ModelDownloader {
         return total
     }
 
-    internal static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
+    public static func ensureAvailableCapacity(at directory: URL, requiredBytes: Int64) throws {
         guard requiredBytes > 0 else { return }
         let values = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
         let available = values.volumeAvailableCapacityForImportantUsage ?? Int64(values.volumeAvailableCapacity ?? 0)

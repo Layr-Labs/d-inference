@@ -43,7 +43,9 @@ final class ChunkBatcher: @unchecked Sendable {
     private let queue: DispatchQueue
 
     // Touched only on `queue`.
-    private var sink: (@Sendable ([Data]) -> Void)?
+    private var sink: (@Sendable (
+        [Data], @escaping @Sendable (Bool) -> Void
+    ) -> Void)?
     private var boundConnection: NWConnection?
     // Pre-allocate for typical concurrent batch size. Under solo inference
     // this holds 1 element; under B=4 concurrent it may hold up to 4. The
@@ -55,6 +57,7 @@ final class ChunkBatcher: @unchecked Sendable {
         return a
     }()
     private var pendingBytes = 0
+    private var pendingCompletions: [@Sendable (Bool) -> Void] = []
     private var flushScheduled = false
 
     init(label: String = "dev.darkbloom.coordinator.chunks") {
@@ -68,7 +71,12 @@ final class ChunkBatcher: @unchecked Sendable {
     /// Bind the live connection's frame sink for THIS session. Called from
     /// `connectAndRun` after the outbound stream is activated. Routed through
     /// `queue` so it is ordered with respect to any in-flight flush.
-    func bind(connection: NWConnection, sink: @escaping @Sendable ([Data]) -> Void) {
+    func bind(
+        connection: NWConnection,
+        sink: @escaping @Sendable (
+            [Data], @escaping @Sendable (Bool) -> Void
+        ) -> Void
+    ) {
         queue.async {
             self.boundConnection = connection
             self.sink = sink
@@ -87,6 +95,9 @@ final class ChunkBatcher: @unchecked Sendable {
             self.sink = nil
             self.pending.removeAll(keepingCapacity: true)
             self.pendingBytes = 0
+            let completions = self.pendingCompletions
+            self.pendingCompletions.removeAll(keepingCapacity: true)
+            for completion in completions { completion(false) }
         }
     }
 
@@ -95,16 +106,17 @@ final class ChunkBatcher: @unchecked Sendable {
     /// Enqueue one pre-encoded text frame for direct delivery. Coalesces with
     /// other frames that land in the same dispatch turn; flushes immediately
     /// once the byte threshold is crossed.
-    func enqueue(_ frame: Data) {
+    func enqueue(
+        _ frame: Data,
+        completion: (@Sendable (Bool) -> Void)? = nil
+    ) {
         queue.async {
             self.pending.append(frame)
+            if let completion { self.pendingCompletions.append(completion) }
             self.pendingBytes += frame.count
             if self.pendingBytes >= Self.flushThresholdBytes {
                 self.flushPendingOnQueue()
             } else if !self.flushScheduled {
-                // Defer to the next dispatch turn so concurrent enqueues from
-                // other requests at the same decode step accumulate and flush
-                // together (one batched write).
                 self.flushScheduled = true
                 self.queue.async { self.flushPendingOnQueue() }
             }
@@ -129,16 +141,20 @@ final class ChunkBatcher: @unchecked Sendable {
     private func flushPendingOnQueue() {
         flushScheduled = false
         guard !pending.isEmpty else { return }
+        let completions = pendingCompletions
+        pendingCompletions.removeAll(keepingCapacity: true)
         guard let sink else {
-            // No live session (reconnect window). Drop — see `unbind`.
             pending.removeAll(keepingCapacity: true)
             pendingBytes = 0
+            for completion in completions { completion(false) }
             return
         }
         let frames = pending
         pending.removeAll(keepingCapacity: true)
         pendingBytes = 0
-        sink(frames)
+        sink(frames) { success in
+            for completion in completions { completion(success) }
+        }
     }
 
     // MARK: - Test seam
@@ -146,7 +162,14 @@ final class ChunkBatcher: @unchecked Sendable {
     /// Install a recording sink without a real connection. Test-only: lets the
     /// throughput/coalescing tests drive the REAL queue + coalescing logic
     /// while observing flushes deterministically. Not used in production.
-    func installSinkForTesting(_ sink: @escaping @Sendable ([Data]) -> Void) {
-        queue.async { self.sink = sink }
+    func installSinkForTesting(
+        _ sink: @escaping @Sendable ([Data]) -> Void
+    ) {
+        queue.async {
+            self.sink = { frames, completion in
+                sink(frames)
+                completion(true)
+            }
+        }
     }
 }

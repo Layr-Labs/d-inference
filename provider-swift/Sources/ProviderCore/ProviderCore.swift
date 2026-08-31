@@ -1,10 +1,6 @@
 @_exported import ProviderCoreFoundation
 
 import Foundation
-import MLX
-import MLXNN
-import MLXLLM
-import MLXLMCommon
 
 public enum ProviderCore {
     /// Provider version. Bumped manually on each cut; CI reads this to derive

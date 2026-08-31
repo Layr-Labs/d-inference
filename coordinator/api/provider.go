@@ -389,7 +389,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// runtime assets such as mlx.metallib under template_hashes.
 			if s.knownRuntimeManifest != nil {
 				runtimeOK, mismatches := s.verifyRuntimeHashesForBackend(
-					regMsg.Backend, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
+					regMsg.Backend, regMsg.Version, regMsg.PythonHash, regMsg.RuntimeHash, regMsg.TemplateHashes)
 				provider.Mu().Lock()
 				provider.RuntimeVerified = runtimeOK
 				provider.RuntimeManifestChecked = runtimeOK
@@ -1637,7 +1637,7 @@ func (s *Server) applyChallengeRuntimePolicy(
 	var mismatches []protocol.RuntimeMismatch
 	if policyActive {
 		runtimeOK, mismatches = s.verifyRuntimeHashesForBackend(
-			provider.Backend, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
+			provider.Backend, provider.Version, resp.PythonHash, resp.RuntimeHash, resp.TemplateHashes)
 	}
 
 	provider.Mu().Lock()

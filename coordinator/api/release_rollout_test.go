@@ -128,6 +128,7 @@ func TestAdminRolloutE2EExactStagesCommandsAndPreviousAcceptance(t *testing.T) {
 		Version: "2.0.0", Platform: defaultReleasePlatform, Backend: registry.BackendMLXSwift,
 		BinaryHash: strings.Repeat("c", 64), BundleHash: strings.Repeat("d", 64),
 		URL: "https://releases.example/2.0.0", CreatedAt: created.Add(time.Second),
+		TemplateHashes: protocol.TemplateHashInferenceWorkerBinary + "=" + strings.Repeat("e", 64),
 	}
 	if err := memory.SetRelease(previous); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,8 @@ func TestAdminRolloutE2EExactStagesCommandsAndPreviousAcceptance(t *testing.T) {
 
 	commandCount := make(map[string]int)
 	reg.SetReleaseUpdateSenderForTesting(func(_ context.Context, providerID string, message protocol.ReleaseUpdateMessage) error {
-		if message.Version != target.Version || message.DesiredGeneration != 1 {
+		if message.Version != target.Version || message.DesiredGeneration != 1 ||
+			message.InferenceWorkerBinaryHash != strings.Repeat("e", 64) {
 			t.Fatalf("unexpected command: %+v", message)
 		}
 		commandCount[providerID]++

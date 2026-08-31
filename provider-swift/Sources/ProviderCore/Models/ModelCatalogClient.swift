@@ -124,7 +124,7 @@ public struct ModelCatalogClient: Sendable {
         }
     }
 
-    static let manifestDecoder: JSONDecoder = {
+    public static let manifestDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

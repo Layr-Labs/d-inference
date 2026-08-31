@@ -176,8 +176,8 @@ extension CoordinatorClient {
         // buffer off a dedicated serial queue. Rebound on every reconnect;
         // detached in the defer above.
         let chunkWriter = ChunkFrameWriter(connection: connection, logger: self.logger)
-        chunkBatcher.bind(connection: connection) { frames in
-            chunkWriter.write(frames)
+        chunkBatcher.bind(connection: connection) { frames, completion in
+            chunkWriter.write(frames, completion: completion)
         }
 
         eventContinuation?.yield(.connected)

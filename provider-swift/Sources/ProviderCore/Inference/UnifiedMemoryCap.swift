@@ -102,7 +102,7 @@ public enum UnifiedMemoryCap {
     /// to be worth loading — a model that loads but can serve no KV is useless.
     /// Small (1 GiB): the load gate only needs to guarantee the model can serve
     /// at least a modest request; concurrency beyond that is sized at runtime.
-    static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
+    public static let minimumLoadKVBytes: UInt64 = 1 * 1024 * 1024 * 1024  // 1 GiB
 
     /// The post-load guard decision, as a pure function so it's unit-testable
     /// (KVHeadroomProbe feeds it from real MLX globals). A

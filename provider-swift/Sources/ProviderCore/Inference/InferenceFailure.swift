@@ -95,7 +95,7 @@ public struct InferenceFailure: Sendable, Equatable {
     public var message: String { code.message }
 }
 
-enum InferenceFailurePhase: Sendable, Equatable {
+public enum InferenceFailurePhase: Sendable, Equatable {
     case request
     case modelLoad
     case streamStart

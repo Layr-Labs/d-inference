@@ -17,7 +17,7 @@ import Foundation
 /// the key rather than guessing. Defaulting it to a string would silently turn
 /// "we do not know" into an observation at exactly one call site and nobody
 /// would see it happen.
-enum EngineHealthEvent {
+public enum EngineHealthEvent {
 
     /// Every engine-health event names the ENGINE here. `backend` is the
     /// engine executing inference (matching `RegisterMessage.backend` on the
@@ -30,7 +30,7 @@ enum EngineHealthEvent {
     /// `extra` wins on a key collision so a call site can specialize, but
     /// nothing in the tree does today: the base keys mean the same thing
     /// everywhere, which is why they are shared at all.
-    static func make(
+    public static func make(
         severity: TelemetrySeverity,
         message: String,
         operation: String,
@@ -64,7 +64,7 @@ enum EngineHealthEvent {
 /// (production). Free function so the static factories above and the
 /// `EngineV2Bridge.emit(_:)` instance method share one rule; a call site that
 /// re-implements it is a call site that can forget the fallback.
-func emitEngineHealth(
+public func emitEngineHealth(
     _ event: TelemetryEvent,
     sink: (@Sendable (TelemetryEvent) -> Void)?
 ) {

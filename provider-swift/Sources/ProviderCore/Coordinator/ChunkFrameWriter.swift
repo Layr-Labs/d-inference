@@ -54,24 +54,51 @@ final class ChunkFrameWriter: @unchecked Sendable {
     /// state handler (sessionLoop Task 0) tears down and the reconnect loop
     /// fires — matching `sendTextFrame`'s failure semantics so the chunk path
     /// and control path fail identically.
-    func write(_ frames: [Data]) {
+    func write(
+        _ frames: [Data],
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        guard !frames.isEmpty else {
+            completion(true)
+            return
+        }
         let connection = self.connection
         let context = self.textContext
         let logger = self.logger
+        let group = DispatchGroup()
+        let result = ChunkWriteResult()
         connection.batch {
             for frame in frames {
+                group.enter()
                 connection.send(
                     content: frame,
                     contentContext: context,
                     isComplete: true,
                     completion: .contentProcessed { error in
                         if error != nil {
+                            result.recordFailure()
                             logger.error(.coordinatorChunkSendFailed)
                             connection.cancel()
                         }
-                    }
-                )
+                        group.leave()
+                    })
             }
         }
+        group.notify(queue: .global()) {
+            completion(result.succeeded)
+        }
+    }
+}
+
+private final class ChunkWriteResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failed = false
+
+    var succeeded: Bool {
+        lock.withLock { !failed }
+    }
+
+    func recordFailure() {
+        lock.withLock { failed = true }
     }
 }

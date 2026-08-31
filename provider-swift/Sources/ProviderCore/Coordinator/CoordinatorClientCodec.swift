@@ -7,10 +7,13 @@ public enum CoordinatorClientCodec {
     public static func registrationMessage(
         from config: CoordinatorClientConfig,
         models: [ModelInfo]? = nil,
+        runtimeCapabilitiesOverride: Set<ProviderRuntimeCapability>? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
         modelWeightHashOverrides: [String: String]? = nil,
+        processPublicKeyOverride: String? = nil,
+        registrationAttestationOverride: (@Sendable () -> RawJSON?)? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
@@ -28,10 +31,7 @@ public enum CoordinatorClientCodec {
         // authoritative: missing entries clear daemon-start hashes that could
         // no longer be verified. The advertised set may still be overridden on
         // reconnect; the live snapshot is applied to whichever set we send.
-        let baseModels = (models ?? config.models).filter {
-            ModelRuntimeRequirements.isEligible(
-                modelID: $0.id, available: config.runtimeCapabilities)
-        }
+        let baseModels = models ?? config.models
         let effectiveModels: [ModelInfo]
         if let modelWeightHashOverrides {
             effectiveModels = baseModels.map { model in
@@ -48,17 +48,18 @@ public enum CoordinatorClientCodec {
             models: effectiveModels,
             backend: config.backendName,
             version: version,
-            publicKey: config.publicKey,
+            publicKey: processPublicKeyOverride ?? config.publicKey,
             processEvidenceVersion: config.processEvidenceVersion,
             encryptedResponseChunks: true,
             walletAddress: config.walletAddress,
-            attestation: config.registrationAttestation(),
+            attestation: (registrationAttestationOverride ?? config.registrationAttestation)(),
             authToken: config.authToken,
             pythonHash: config.runtimeHashes?.pythonHash,
             runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
-            runtimeCapabilities: config.runtimeCapabilities.sorted(),
+            runtimeCapabilities:
+                (runtimeCapabilitiesOverride ?? config.runtimeCapabilities).sorted(),
             privateOnly: config.privateOnly,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv,
@@ -76,10 +77,13 @@ public enum CoordinatorClientCodec {
     public static func encodeRegistration(
         from config: CoordinatorClientConfig,
         models: [ModelInfo]? = nil,
+        runtimeCapabilitiesOverride: Set<ProviderRuntimeCapability>? = nil,
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
         modelWeightHashOverrides: [String: String]? = nil,
+        processPublicKeyOverride: String? = nil,
+        registrationAttestationOverride: (@Sendable () -> RawJSON?)? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
@@ -91,10 +95,13 @@ public enum CoordinatorClientCodec {
             registrationMessage(
                 from: config,
                 models: models,
+                runtimeCapabilitiesOverride: runtimeCapabilitiesOverride,
                 version: version,
                 privacyCapabilities: privacyCapabilities,
                 apnsDeviceTokenOverride: apnsDeviceTokenOverride,
                 modelWeightHashOverrides: modelWeightHashOverrides,
+                processPublicKeyOverride: processPublicKeyOverride,
+                registrationAttestationOverride: registrationAttestationOverride,
                 prefixCacheProtocol: prefixCacheProtocol,
                 prefixCacheV2Models: prefixCacheV2Models,
                 prefixCacheStatuses: prefixCacheStatuses,
@@ -272,8 +279,16 @@ public enum CoordinatorClientCodec {
     private static func toolConstraintModelIDs(
         _ models: [ModelInfo]
     ) -> [String] {
-        models.filter(ToolChoiceEnforcementPolicy.advertisesCapability)
-            .map(\.id).sorted()
+        models.filter { model in
+            if Gemma4ToolConstraintContract.supports(
+                modelType: model.modelType) {
+                return model.toolConstraintTemplateHash
+                    == Gemma4ToolConstraintContract
+                        .pinnedTemplateSHA256
+            }
+            return model.id
+                == "EigenLabs/Qwen3.8-27B-4bit"
+        }.map(\.id).sorted()
     }
 
     public static func encodeOutboundMessage(_ outbound: OutboundMessage) throws -> Data {

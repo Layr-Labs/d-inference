@@ -1,0 +1,34 @@
+import Foundation
+
+public enum MTPAutomaticVerificationPolicy {
+    public static let initialDraftTokens = 1
+
+    /// Request-stateful assistants own enough trusted history to use the
+    /// engine's marginal 0...4 controller. Stateless Gemma keeps the
+    /// established fixed initial depth.
+    static func fixedDraftTokens(usesRequestStatefulDrafter: Bool) -> Int? {
+        usesRequestStatefulDrafter ? nil : initialDraftTokens
+    }
+
+    public static func maxRectangularTokens(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        chipName: String? = nil
+    ) -> Int {
+        let resolvedChipName = chipName
+            ?? (try? HardwareDetector.detect().chipName)
+            ?? "Unknown"
+        let certifiedMaximum = maxRectangularTokens(chipName: resolvedChipName)
+        if let value = environment["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS"].flatMap(Int.init) {
+            return min(max(value, 0), certifiedMaximum)
+        }
+        return certifiedMaximum
+    }
+
+    public static func maxRectangularTokens(chipName: String) -> Int {
+        let normalized = chipName.lowercased()
+        return normalized.contains("m3")
+            || normalized.contains("m4")
+            || normalized.contains("m5")
+            ? 8 : 4
+    }
+}

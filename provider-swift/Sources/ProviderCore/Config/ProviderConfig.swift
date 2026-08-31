@@ -77,9 +77,9 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     case on
     case off
 
-    static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
+    public static let automaticTargetModelID = "EigenLabs/Qwen3.8-27B-4bit"
 
-    func enablesMTP(forModelID modelID: String) -> Bool {
+    public func enablesMTP(forModelID modelID: String) -> Bool {
         switch self {
         case .on:
             return true

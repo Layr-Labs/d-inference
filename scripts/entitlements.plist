@@ -2,20 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- NO get-task-allow → blocks debugger attachment under Hardened Runtime -->
+    <!-- Hardened Runtime is signed without get-task-allow, JIT, debugger, or
+         dynamic-library exceptions. The supervisor retains only its existing
+         network/keychain/APNs authorities plus the exact embedded worker
+         service lookup; plaintext inference remains in the sandboxed XPC. -->
+    <key>com.apple.application-identifier</key>
+    <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
+    <key>com.apple.developer.aps-environment</key>
+    <string>production</string>
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
-    <!--
-      Keychain access for E2E key storage.
-      Team prefix is hardcoded because codesign (our release flow) does NOT
-      expand $(AppIdentifierPrefix) — that's an Xcode-only build variable.
-      A literal unexpanded macro gets baked into the entitlements blob and
-      keychain writes fail with errSecMissingEntitlement (-34018).
-      Format per Apple docs: "TEAMID.identifier".
-    -->
-    <key>com.apple.security.keychain-access-groups</key>
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>io.darkbloom.provider.inference-worker</string>
+    </array>
+    <key>keychain-access-groups</key>
     <array>
         <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
     </array>

@@ -160,7 +160,22 @@ public struct EnrollmentService: Sendable {
 
 // MARK: - Local cleanup helpers (used by unenroll)
 
+public enum LegacyInferenceKeyCleanup {
+    /// One-way migration cleanup. These retired plaintext process-key files are
+    /// never read or imported; only the supervisor has home-directory access,
+    /// so it removes them before the sandboxed worker is started.
+    public static func removeRetiredFiles(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
+    ) {
+        let darkbloom = home.appendingPathComponent(".darkbloom")
+        for name in ["wallet_key", "enclave_key.data", "node_key", "secret_key"] {
+            try? fileManager.removeItem(at: darkbloom.appendingPathComponent(name))
+        }
+    }
+}
 public enum LocalDataCleanup: Sendable {
+
     /// Delete optional pieces of local Darkbloom state. Caller should ask for
     /// confirmation before invoking. Each removal is best-effort -- missing
     /// files are not an error.

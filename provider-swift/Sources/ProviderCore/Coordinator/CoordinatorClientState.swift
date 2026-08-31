@@ -145,9 +145,9 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
-    private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
+    private var _workerPrefixCacheAdvertisement: WorkerPrefixCacheAdvertisementMetadata?
     private var _updateLifecycleState: UpdateLifecycleState? = nil
     private var _warmIntent: WarmIntent? = nil
 
@@ -198,14 +198,20 @@ public final class ProviderState: @unchecked Sendable {
 
 
     func setPrefixCacheSnapshot(
-        sources: [String: SSDPrefixCache],
         statuses: [PrefixCacheModelStatus],
         runtimeIdentityAvailable: Bool
     ) {
         lock.withLock {
-            _prefixCacheV2Sources = sources
             _prefixCacheStatuses = statuses
             _prefixCacheRuntimeIdentityAvailable = runtimeIdentityAvailable
+        }
+    }
+
+    func setWorkerPrefixCacheAdvertisement(
+        _ advertisement: WorkerPrefixCacheAdvertisementMetadata?
+    ) {
+        lock.withLock {
+            _workerPrefixCacheAdvertisement = advertisement
         }
     }
 
@@ -217,45 +223,25 @@ public final class ProviderState: @unchecked Sendable {
     ) {
         let snapshot = lock.withLock {
             (
-                sources: _prefixCacheV2Sources,
                 statuses: _prefixCacheStatuses,
-                runtimeIdentityAvailable: _prefixCacheRuntimeIdentityAvailable
+                runtimeIdentityAvailable:
+                    _prefixCacheRuntimeIdentityAvailable,
+                worker: _workerPrefixCacheAdvertisement
             )
         }
-        let sources = snapshot.sources
-        var models: [PrefixCacheV2Capability] = []
-        var statuses = snapshot.statuses.map { status in
-            let current: PrefixCacheModelStatus
-            if let source = sources[status.modelId] {
-                let advertisement = source.prefixCacheAdvertisement(base: status)
-                if let capability = advertisement.capability {
-                    models.append(capability)
-                }
-                current = advertisement.status
-            } else {
-                current = status
-            }
-            return snapshot.runtimeIdentityAvailable
-                ? current : current.withoutRuntimeIdentity()
-        }.sorted { $0.modelId < $1.modelId }
-        if !snapshot.runtimeIdentityAvailable {
-            models.removeAll(keepingCapacity: true)
+        if let worker = snapshot.worker {
+            return (
+                worker.protocolVersion,
+                worker.models,
+                worker.statuses,
+                worker.donationOutcomes
+            )
         }
-        let capableModels = Set(models.map(\.modelId))
-        statuses = statuses.filter { status in
-            status.state != .ready ||
-                (status.isConcreteReady && capableModels.contains(status.modelId))
-        }
-        let readyModels = Set(
-            statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
-        models.removeAll { !readyModels.contains($0.modelId) }
-        models.sort { $0.modelId < $1.modelId }
-        return (
-            models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
-            models,
-            statuses,
-            PrefixCacheDonationTelemetry.shared.snapshot()
-        )
+        let statuses = snapshot.runtimeIdentityAvailable
+            ? snapshot.statuses.filter { $0.state != .ready }
+                .sorted { $0.modelId < $1.modelId }
+            : []
+        return (1, [], statuses, [])
     }
 }
 

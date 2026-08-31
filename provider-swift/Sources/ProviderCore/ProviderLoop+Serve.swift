@@ -6,11 +6,6 @@
 
 import CryptoKit
 import Foundation
-import MLX
-import MLXLLM
-import MLXLMCommon
-import MLXLMServer
-import MLXVLM
 #if canImport(os)
 import os
 #endif
@@ -28,11 +23,6 @@ extension ProviderLoop {
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
 
-        // Maintain the entire encrypted SSD-cache root even when no model is
-        // loaded. This is metadata/file-only work: no weights or KV arrays are
-        // constructed. It closes TTL and 20 GiB budget gaps for unloaded dirs.
-        SSDPrefixCacheFactory.startWholeRootMaintenance()
-        defer { SSDPrefixCacheFactory.stopWholeRootMaintenance() }
 
         // Keep the network stack alive during sleep for APN/MDM push delivery.
         networkAssertion.acquire()
@@ -55,65 +45,19 @@ extension ProviderLoop {
         // #315) — installed from the serve path, so it reaches auto-updated
         // installs too. KeepAlive stays false to avoid racing the updater.
 
-        // Surface any prior-run OOM and react to live memory pressure. Best-effort.
-        startMemoryProtection()
-        // On any controlled exit (return/throw — i.e. NOT a jetsam SIGKILL),
-        // drop a memory-pressure marker so a survived pressure spike isn't
-        // misreported as an OOM next launch. A real kill bypasses this.
-        defer {
-            memoryPressureMonitor?.cancel()
-            OOMDetector.clearMarker()
-        }
 
         // 1. Apply security hardening
         try await completeSecurityHardeningForProcess()
-        try initializeProcessKeyAfterHardening()
 
         // Restore the non-secret authorized update record before any preload or
         // registration. Process-evidence-v1 startup never polls \"latest\".
         try await prepareUpdateLifecycleForRun()
+        try await initializeInferenceWorkerAfterHardening()
 
 
-        // MTP catalog metadata is process-local. Give it one short, owned
-        // prewarm before either startup preloads or the unified local endpoint
-        // can perform the first normal cold target load. This never downloads
-        // assistant bytes and fails open on timeout.
-        await prewarmSpecDecCatalog()
-
-        // Unified mode: also expose a local OpenAI endpoint off the same loaded
-        // models. It starts after the bounded metadata prewarm, but still before
-        // the coordinator connection, so local serving keeps coordinator
-        // independence while a cached assistant can join the first target load.
-        if let localEndpoint = loopConfig.localEndpoint {
-            startLocalEndpoint(localEndpoint)
-        }
-        defer { stopLocalEndpoint() }
-
-        // Arm the loaded-models persistence now that this loop is actually
-        // serving (test instances never flip this, so their unload paths
-        // cannot clobber the real ~/.darkbloom/loaded-models.json).
-        loadedModelsPersistenceEnabled = true
-
-        // 1.5 Startup preload + readiness gate (ProviderLoop+StartupPreload):
-        // load the previously-served / configured model set BEFORE the
-        // coordinator client exists, so a release restart never advertises
-        // models it hasn't warmed (the v0.6.30 first_chunk_timeout storm).
-        // Bounded by startup_preload_timeout_secs — on timeout we register
-        // anyway and the remaining loads continue in the background.
-        //
-        // Stamp a minimal daemon state FIRST: a freshly installed candidate
-        // spends its whole preload window with no heartbeat otherwise, and
-        // the watchdog would misread a long (operator-raised) preload as a
-        // hung launch and charge a false start failure. The refresh task keeps
-        // that stamp fresh for the WHOLE preload (a single stamp goes stale
-        // after 90s, but the gate may defer for startup_preload_timeout_secs);
-        // it is cancelled once the gate returns and the capacity loop takes over.
+        // The coordinator-facing supervisor never constructs a local plaintext
+        // HTTP endpoint; all inference crosses the authenticated XPC boundary.
         writeDaemonState()
-        if !shouldDeferStartupPreloadForUpdate {
-            let preloadLivenessRefresh = startPreloadLivenessRefresh()
-            await runStartupPreloadGate()
-            preloadLivenessRefresh.cancel()
-        }
 
         // 2. Hash the exact mlx.metallib the live process will load. The same
         // digest is sent as reported runtime evidence and embedded in the
@@ -153,7 +97,7 @@ extension ProviderLoop {
             models: registrationModels,
             backendName: "mlx-swift",
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
-            publicKey: keyPair.publicKeyBase64,
+            publicKey: workerProcessPublicKeyBase64,
             walletAddress: nil,
             attestation: nil,
             registrationAttestation: registrationAttestation,
@@ -161,7 +105,7 @@ extension ProviderLoop {
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
             privacyCapabilities: privacyCapabilitiesForRegistration(),
-            runtimeCapabilities: loopConfig.runtimeCapabilities,
+            runtimeCapabilities: inferenceWorkerRuntimeCapabilities,
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
@@ -178,6 +122,8 @@ extension ProviderLoop {
         // client existed (e.g. a local-endpoint request during startup) may
         // already have refreshed a hash, and registration must carry it.
         await coordinator.updateModelWeightHashes(liveModelHashes)
+        await coordinator.updateRuntimeCapabilities(
+            inferenceWorkerRuntimeCapabilities)
 
         let (events, sendFn) = await coordinator.start()
         // Wire the direct inference-chunk fast path (Optimizations 1-3) alongside
@@ -223,7 +169,6 @@ extension ProviderLoop {
         // a rogue model-load (e.g. during `attestation_challenge` priming)
         // followed by a long disconnect is still subject to the unload
         // timer.
-        startIdleMonitor()
         startCapacityRefreshMonitor()
         // Release rollout is coordinator-pushed; v1 providers never poll latest.
 
@@ -244,6 +189,7 @@ extension ProviderLoop {
                     evidenceSentConnectionGeneration = nil
                     certifiedConnectionGeneration = nil
                     pendingCertifiedConnectionGeneration = nil
+                    await invalidateInferenceWorkerCertification()
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
                     await cancelAllInflight()
@@ -253,7 +199,7 @@ extension ProviderLoop {
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
                     let toolSchemaMetadataProtocol, let firstContentDeadline
                 ):
-                    await handleInferenceRequest(
+                    await forwardLegacyInferenceToWorker(
                         requestId: requestId,
                         ciphertext: ciphertext,
                         senderPublicKey: senderPublicKey,
@@ -266,7 +212,7 @@ extension ProviderLoop {
                     )
 
                 case .privateRequestV2(let request):
-                    await handlePrivateV2Request(request, send: send)
+                    await forwardPrivateV2InferenceToWorker(request, send: send)
 
                 case .cancel(let requestId):
                     await handleCancellation(requestId: requestId)
@@ -290,7 +236,7 @@ extension ProviderLoop {
                     }
 
                 case .codeAttestationResumeChallenge(let challenge):
-                    handleCodeChallenge(challenge, send: send)
+                    await handleCodeChallenge(challenge, send: send)
 
                 case .runtimeOutdated(let mismatches):
                     logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
@@ -346,8 +292,6 @@ extension ProviderLoop {
 
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
-        idleMonitorTask?.cancel()
-        idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         capacityRefreshTask = nil
         // No provider-side release polling task exists for process-evidence-v1.
@@ -356,7 +300,6 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
-        await specDecFunnel.shutdown()
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {
@@ -386,16 +329,7 @@ extension ProviderLoop {
             await cancelAllInflight()
         }
         await coordinator.shutdown()
-        while !modelSlots.isEmpty {
-            if let unloading = modelsUnloading.first {
-                await waitForModelUnload(unloading)
-                continue
-            }
-            for modelId in Array(modelSlots.keys) {
-                await unloadModel(modelId)
-            }
-        }
-        powerAssertion.releaseAll()
+        await inferenceWorkerClient.shutdown()
     }
 
     // MARK: - Security Hardening
@@ -405,14 +339,6 @@ extension ProviderLoop {
         securityHardeningCompleted = true
     }
 
-    internal func initializeProcessKeyAfterHardening() throws {
-        guard securityHardeningCompleted else {
-            throw ProviderLoopError.processKeyBeforeHardening
-        }
-        if keyPair == nil {
-            keyPair = nodeKeyFactory()
-        }
-    }
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
@@ -431,15 +357,14 @@ extension ProviderLoop {
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
-        // textBackendInprocess + textProxyDisabled: always true on the Swift
-        //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
-        //   proxy is involved.
+        // Inference is out-of-process in the authenticated sandboxed XPC
+        // worker. There is still no plaintext HTTP proxy.
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.
         if let posture = securityPosture {
             return PrivacyCapabilities(
-                textBackendInprocess: true,
+                textBackendInprocess: false,
                 textProxyDisabled: true,
                 pythonRuntimeLocked: false,
                 dangerousModulesBlocked: false,
@@ -453,7 +378,7 @@ extension ProviderLoop {
 
         // Pre-hardening fallback (DEBUG builds, or hardening failed).
         return PrivacyCapabilities(
-            textBackendInprocess: true,
+            textBackendInprocess: false,
             textProxyDisabled: true,
             pythonRuntimeLocked: false,
             dangerousModulesBlocked: false,
@@ -475,7 +400,7 @@ extension ProviderLoop {
     internal func augmentRuntimeHashesWithMetallib(
         _ existing: RuntimeHashes?
     ) -> RuntimeHashes? {
-        let metallib = metallibHash()
+        let metallib = inferenceWorkerIdentity?.metallibSHA256
 
         // No metallib and no caller-supplied data -- return whatever the
         // caller passed (might be nil; that's fine).
@@ -487,6 +412,9 @@ extension ProviderLoop {
         if let metallib {
             templates["mlx_metallib"] = metallib
         }
+        if let workerBinaryHash = inferenceWorkerIdentity?.workerBinarySHA256 {
+            templates["inference_worker_binary"] = workerBinaryHash
+        }
 
         return RuntimeHashes(
             pythonHash: existing?.pythonHash,
@@ -497,17 +425,17 @@ extension ProviderLoop {
 
     // MARK: - Attestation
 
-    private func makeRegistrationAttestationProvider(
+    internal func makeRegistrationAttestationProvider(
         runtimeHashes: RuntimeHashes?
     ) -> @Sendable () -> RawJSON? {
         let builder = attestationBuilder
-        let encryptionPublicKey = keyPair.publicKeyBase64
+        let encryptionPublicKey = workerProcessPublicKeyBase64
         let signedBinaryHash = binaryHash
         let chipFamily = loopConfig.hardware.chipFamily
-        let capabilities = loopConfig.runtimeCapabilities
+        let capabilities = inferenceWorkerRuntimeCapabilities
         let signedMetallibHash = runtimeHashes?.templateHashes["mlx_metallib"]
         return {
-            guard let builder else { return nil }
+            guard let builder, let encryptionPublicKey else { return nil }
             guard let jsonData = try? builder.buildAttestationJSON(
                 encryptionPublicKey: encryptionPublicKey,
                 binaryHash: signedBinaryHash,

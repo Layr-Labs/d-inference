@@ -40,6 +40,18 @@ final class ChunkSender: @unchecked Sendable {
         return true
     }
 
+    /// Suspends until Network.framework reports that the encoded frame was
+    /// processed by the live connection. A missing connection or send failure
+    /// is reported as failure rather than acknowledged upstream.
+    func sendChunkAwaitingTransport(_ message: OutboundMessage) async -> Bool {
+        guard let frame = encode(message) else { return false }
+        return await withCheckedContinuation { continuation in
+            batcher.enqueue(frame) { success in
+                continuation.resume(returning: success)
+            }
+        }
+    }
+
     /// Ordering barrier: synchronously drain queued chunks before a terminal
     /// control message is sent through the (slower) AsyncStream path. See
     /// `ChunkBatcher.flush()`.

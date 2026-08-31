@@ -65,6 +65,10 @@ const (
 	ProcessEvidenceV1 = "process_evidence_v1"
 )
 
+// Release template hash keys shared by release metadata, provider runtime
+// evidence, and coordinator verification.
+const TemplateHashInferenceWorkerBinary = "inference_worker_binary"
+
 // PrivateV2MaxOutputTokens leaves sequence-ledger headroom for terminal,
 // lifecycle, and tool events while bounding one encrypted chunk per token.
 const PrivateV2MaxOutputTokens uint64 = 8000
@@ -788,15 +792,16 @@ type DesiredModelsMessage struct {
 // provider binary transition. It contains one approved target, never a release
 // inventory or downgrade candidate.
 type ReleaseUpdateMessage struct {
-	Type              string `json:"type"`
-	Version           string `json:"version"`
-	Platform          string `json:"platform"`
-	Backend           string `json:"backend,omitempty"`
-	BinaryHash        string `json:"binary_hash"`
-	BundleHash        string `json:"bundle_hash"`
-	MetallibHash      string `json:"metallib_hash,omitempty"`
-	URL               string `json:"url"`
-	DesiredGeneration uint64 `json:"desired_generation"`
+	Type                      string `json:"type"`
+	Version                   string `json:"version"`
+	Platform                  string `json:"platform"`
+	Backend                   string `json:"backend,omitempty"`
+	BinaryHash                string `json:"binary_hash"`
+	BundleHash                string `json:"bundle_hash"`
+	MetallibHash              string `json:"metallib_hash,omitempty"`
+	InferenceWorkerBinaryHash string `json:"inference_worker_binary_hash,omitempty"`
+	URL                       string `json:"url"`
+	DesiredGeneration         uint64 `json:"desired_generation"`
 }
 
 // ModelsUpdateMessage is an authoritative, out-of-band update to the provider's

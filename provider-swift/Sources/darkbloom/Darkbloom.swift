@@ -33,10 +33,8 @@ struct Darkbloom: AsyncParsableCommand {
             Status.self,
             Doctor.self,
             Models.self,
-            Local.self,
             Login.self,
             Logout.self,
-            Benchmark.self,
             Update.self,
             Verify.self,
             Enroll.self,
@@ -47,7 +45,6 @@ struct Darkbloom: AsyncParsableCommand {
             Beta.self,
             Fan.self,
             Watchdog.self,
-            RuntimeSmoke.self,
         ]
     )
 

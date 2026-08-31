@@ -27,22 +27,15 @@ extension Start {
 
         if !model.isEmpty {
             let known = Set(snapshot.models.map(\.id))
-            selectedModelIDs = model.filter {
-                known.contains($0)
-                    && ModelRuntimeRequirements.isEligible(
-                        modelID: $0, available: runtimeCapabilities)
-            }
+            selectedModelIDs = model.filter { known.contains($0) }
         } else if all {
-            selectedModelIDs = snapshot.models.compactMap {
-                ModelRuntimeRequirements.isEligible(
-                    modelID: $0.id, available: runtimeCapabilities) ? $0.id : nil
-            }
+            selectedModelIDs = snapshot.models.map(\.id)
         } else {
             selectedModelIDs = try await interactiveCatalogPicker(
                 snapshot: snapshot,
                 config: config,
                 coordinatorURL: coordinatorURL,
-                runtimeCapabilities: runtimeCapabilities
+                runtimeCapabilities: runtimeCapabilities.union([.mlxNAX])
             )
         }
 

@@ -311,14 +311,16 @@ extension ProviderLoop {
         // refuse to re-advertise the same weights (`applyVerifiedPrefetch`
         // checks this map). A future build with a different hash clears it
         // there and gets its chance.
-        // ALWAYS mark, even when no reliable hash is known ("" = unknown
-        // bytes failed): the recorded map hash can be absent or stale (the
-        // scanner keeps a previous hash when recomputation fails), and a
-        // stale H1 recorded while H2 actually failed would let a prefetch
-        // of H2 sail past the record. The sentinel refuses every same-id
-        // build until a daemon restart — conservative, fail-closed.
+        // ALWAYS mark, from the SLOT-BOUND hash or the "" sentinel — never
+        // the scanner maps: those keep a previous value when recomputation
+        // fails, so a stale H1 could be recorded while H2's bytes actually
+        // loaded and failed, and a later verified H2 would sail past the
+        // record. `cacheEligibleWeightHash` is the slot's own verified
+        // binding for the bytes it loaded; absent that (or a cold retire),
+        // the sentinel refuses every same-id build until a daemon restart —
+        // conservative, fail-closed.
         failedSelfTestHashes[modelId] =
-            liveModelHashes[modelId] ?? modelHashes[modelId] ?? ""
+            modelSlots[modelId]?.cacheEligibleWeightHash ?? ""
         // Un-advertise BEFORE unloading so unloadModel's own
         // refresh-then-regrow runs against the SHRUNKEN serving set — with
         // the old order the regrow was sized under the retiring model's

@@ -81,6 +81,51 @@ func TestTokenlessProviderEarnsEvidenceAndStaysRoutable(t *testing.T) {
 	}
 }
 
+// TestHashlessRegistrationEarnsEvidenceFromFreshChallenge is the production
+// rollout regression: shipped providers omit binary_hash from their registration
+// attestation and report it only in the signed periodic challenge. Application
+// evidence must use that fresh approved-release fact while retaining the
+// registration cross-check whenever the optional field is present.
+func TestHashlessRegistrationEarnsEvidenceFromFreshChallenge(t *testing.T) {
+	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
+	if err := st.SetRelease(testRelease("2.0.0", trHashA)); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	if err := srv.SyncBinaryHashes(); err != nil {
+		t.Fatalf("SyncBinaryHashes: %v", err)
+	}
+
+	provider := makeRoutableProvider(t, reg, "hashless-provider", "hashless-release-model")
+	armReleaseChallengeProvider(t, provider, "2.0.0", "", "se-hashless", "SER-HASHLESS")
+	resp := &protocol.AttestationResponseMessage{
+		BinaryHash: trHashA,
+		SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
+		TemplateHashes: map[string]string{"mlx_metallib": trHashC},
+	}
+	fact, evidence, ok := srv.deriveApprovedReleaseTransition(provider, resp, true)
+	if !ok || !fact.Approved {
+		t.Fatal("hashless registration did not derive evidence from the fresh signed challenge")
+	}
+	if evidence.BinaryHash != trHashA || evidence.SEPublicKey != "se-hashless" {
+		t.Fatalf("derived evidence lost challenge/SE binding: %+v", evidence)
+	}
+	if !provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
+		t.Fatal("hashless provider application evidence grant was refused")
+	}
+	if routed := findRoutableProvider(reg, "hashless-release-model"); routed == nil || routed.ID != provider.ID {
+		t.Fatal("hashless provider remained unroutable after fresh approved challenge")
+	}
+	provider.Mu().Lock()
+	provider.AttestationResult.BinaryHash = trHashB
+	provider.Mu().Unlock()
+	if _, _, ok := srv.deriveApprovedReleaseTransition(provider, resp, true); ok {
+		t.Fatal("present registration/challenge binary hash mismatch did not fail closed")
+	}
+}
+
 // TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep is the
 // review-finding regression for the carry-forward recheck: a policy refresh
 // must re-prove EVERY release-specific runtime field the original challenge

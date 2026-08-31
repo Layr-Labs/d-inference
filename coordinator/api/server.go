@@ -1780,9 +1780,16 @@ func (s *Server) deriveApprovedReleaseTransition(
 			(version == "" || semverLess(version, s.minProviderVersion))) {
 		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
 	}
-	attestedHash, err := normalizeSHA256Hex(attested.BinaryHash, "attested binary_hash")
-	if err != nil || attestedHash != freshHash {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	// Registration-time binary_hash is optional and the production fleet omits
+	// it. The fresh hash is carried by this already-signature-verified challenge
+	// from the same attested SE identity and is still required to match an active
+	// release below. When registration did carry a hash, keep the stronger
+	// cross-check and fail closed on a mismatch.
+	if strings.TrimSpace(attested.BinaryHash) != "" {
+		attestedHash, hashErr := normalizeSHA256Hex(attested.BinaryHash, "attested binary_hash")
+		if hashErr != nil || attestedHash != freshHash {
+			return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+		}
 	}
 
 	// Legacy release rows can carry an empty backend: the migration added the

@@ -3,7 +3,9 @@ package registry
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // planTestProvider registers a token-budget provider whose routing cost is
@@ -378,6 +380,143 @@ func TestConcurrentReservationsCannotDoubleSpendReportedBudget(t *testing.T) {
 	}
 	if wins != 1 {
 		t.Fatalf("wins=%d, want exactly 1 of two concurrent reservations against one budget", wins)
+	}
+}
+
+// TestConcurrentPrimaryScansRerankUntilUntriedCapacity proves a scan cohort
+// cannot herd onto the same stale cheapest provider or stop after a fixed retry
+// count. Three requests first select p00 from the same empty snapshot; commits
+// must then observe prior debits and spread across p00, p01, and p02.
+func TestConcurrentPrimaryScansRerankUntilUntriedCapacity(t *testing.T) {
+	reg := New(testLogger())
+	model := "primary-rerank-model"
+	for i := range 3 {
+		p := planTestProvider(t, reg, fmt.Sprintf("p%02d", i), model, int64(i)*400)
+		p.mu.Lock()
+		p.BackendCapacity.Slots[0].MaxConcurrency = 1
+		p.mu.Unlock()
+	}
+
+	arrived := make(chan struct{}, 3)
+	release := make(chan struct{})
+	var initialScans atomic.Int32
+	reg.reservationAfterScan = func(string) {
+		if initialScans.Add(1) > 3 {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}
+
+	selected := make([]*Provider, 3)
+	var wg sync.WaitGroup
+	for i := range selected {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			selected[i], _, _ = reg.ReserveProviderWithPlan(
+				model, planTestRequest(fmt.Sprintf("primary-rerank-%d", i), 100, 100))
+		}()
+	}
+	for range 3 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("primary scans serialized instead of reaching the shared-scan barrier")
+		}
+	}
+	close(release)
+	wg.Wait()
+
+	winners := make(map[string]bool, 3)
+	for i, p := range selected {
+		if p == nil {
+			t.Fatalf("request %d returned nil while an untried provider remained", i)
+		}
+		winners[p.ID] = true
+	}
+	if len(winners) != 3 {
+		t.Fatalf("winner set=%v, want one request on each of p00, p01, and p02", winners)
+	}
+	for i, p := range selected {
+		p.RemovePending(fmt.Sprintf("primary-rerank-%d", i))
+	}
+}
+
+// TestCommitCapacityRejectionSurvivesCandidateExclusion proves a provider that
+// becomes full between scan and commit remains classified as transient capacity
+// after it is excluded from the next scan.
+func TestCommitCapacityRejectionSurvivesCandidateExclusion(t *testing.T) {
+	reg := New(testLogger())
+	model := "commit-rejection-counters"
+	p := planTestProvider(t, reg, "only", model, 0)
+	scanned := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	reg.reservationAfterScan = func(string) {
+		once.Do(func() {
+			close(scanned)
+			<-release
+		})
+	}
+	type result struct {
+		provider *Provider
+		decision RoutingDecision
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		provider, decision := reg.ReserveProviderEx(
+			model, planTestRequest("commit-capacity-reject", 100, 100))
+		resultCh <- result{provider: provider, decision: decision}
+	}()
+	<-scanned
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 100
+	p.mu.Unlock()
+	close(release)
+
+	got := <-resultCh
+	if got.provider != nil {
+		t.Fatalf("provider=%q, want nil after commit-time capacity loss", got.provider.ID)
+	}
+	if got.decision.CapacityRejections != 1 {
+		t.Fatalf("CapacityRejections=%d, want 1 preserved across exclusion", got.decision.CapacityRejections)
+	}
+}
+
+// TestCommitRejectsExpiredFirstContentDeadline proves scan and write-lock wait
+// time cannot produce a doomed pending debit after the absolute clock expires.
+func TestCommitRejectsExpiredFirstContentDeadline(t *testing.T) {
+	reg := New(testLogger())
+	model := "commit-deadline"
+	p := planTestProvider(t, reg, "deadline-provider", model, 0)
+	pr := planTestRequest("commit-deadline-request", 100, 100)
+	pr.FirstContentDeadline = time.Now().Add(time.Minute)
+
+	scanned := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	reg.reservationAfterScan = func(string) {
+		once.Do(func() {
+			close(scanned)
+			<-release
+		})
+	}
+	selected := make(chan *Provider, 1)
+	go func() {
+		provider, _, _ := reg.ReserveProviderWithPlan(model, pr)
+		selected <- provider
+	}()
+	<-scanned
+	pr.FirstContentDeadline = time.Now().Add(-time.Second)
+	close(release)
+
+	if provider := <-selected; provider != nil {
+		t.Fatalf("provider=%q, want nil after deadline expired before commit", provider.ID)
+	}
+	if pending := p.PendingCount(); pending != 0 {
+		t.Fatalf("pending=%d, want no debit for expired request", pending)
 	}
 }
 

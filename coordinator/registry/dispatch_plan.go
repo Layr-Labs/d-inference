@@ -153,7 +153,8 @@ type DispatchPlan struct {
 // dispatchPlanMaxAlternates lowest-cost non-winner candidates via insertion
 // into a fixed-capacity slice (O(n·8) comparisons, no full-pool sort, no
 // full-pool copy — only the ≤8 retained entries copy their ranking terms).
-// Caller holds r.mu (candidates reference live *Providers).
+// The scan pool is immutable; live provider identity/state is revalidated when
+// an entry is consumed.
 func newDispatchPlan(model string, scan candidateScan, winner *routingCandidate) *DispatchPlan {
 	plan := &DispatchPlan{
 		model:     model,

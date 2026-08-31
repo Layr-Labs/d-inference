@@ -685,11 +685,11 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	var sePubKey, attestedBinaryHash string
 	if provider.AttestationResult != nil {
 		sePubKey = provider.AttestationResult.PublicKey
-		// The SE-signed application challenge measured this binary; retain it
-		// on the cached APNs proof so a later release-transition resume is
-		// bound to the binary that EARNED the proof (Codex 05:55Z P1). A
-		// missing/unparseable hash leaves it empty — an identity-less record
-		// that never authorizes a transition (fail-closed).
+		// Prefer the binary identity measured during registration. Production
+		// registrations may omit it; after releasing Provider.mu below, current
+		// application evidence may supply the same SE- and process-bound identity.
+		// If neither source is usable, the proof remains identity-less and cannot
+		// authorize a release transition.
 		attestedBinaryHash, _ = normalizeSHA256Hex(
 			provider.AttestationResult.BinaryHash, "attested binary_hash")
 	}
@@ -697,6 +697,8 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	apnsToken := provider.APNsDeviceToken
 	nodeKey := provider.PublicKey
 	provider.Mu().Unlock()
+	attestedBinaryHash = providerApplicationBinaryHash(
+		provider, sePubKey, attestedBinaryHash)
 
 	if sePubKey == "" {
 		s.codeAttestMetric("verify_failed")

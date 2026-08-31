@@ -723,6 +723,29 @@ func (s *Server) SeedTrustReuseCache(ctx context.Context) error {
 	return nil
 }
 
+// providerApplicationBinaryHash resolves the binary measured for this
+// connection. A registration hash is authoritative when present. Hashless
+// registrations may use fresh application evidence only while it remains
+// installed and bound to both the verified SE identity and this provider
+// process's current public key.
+func providerApplicationBinaryHash(provider *registry.Provider, seKey, registrationHash string) string {
+	if registrationHash != "" {
+		return registrationHash
+	}
+	if provider == nil || seKey == "" {
+		return ""
+	}
+
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	evidence := provider.ApplicationEvidence
+	if evidence.EvidenceGeneration == 0 || evidence.SEPublicKey != seKey ||
+		provider.PublicKey == "" || evidence.ProcessPublicKey != provider.PublicKey {
+		return ""
+	}
+	return evidence.BinaryHash
+}
+
 // recordTrustReuse persists a reviewed, synchronous full MDM/MDA verification.
 // It is the only path allowed to clear a durable revocation tombstone, and then
 // only at the exact generation observed before the write. A concurrent hard

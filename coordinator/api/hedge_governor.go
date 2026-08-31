@@ -19,9 +19,11 @@ import "sync"
 // be tested exhaustively and attributed in telemetry: each suppression
 // increments routing.hedge_governor_suppressed tagged with the verdict string
 // and logs speculative_backup_suppressed. The mutable half — the global
-// active-hedge counter and per-model win-rate EWMAs — lives in hedgeGovernor;
-// dispatch wiring (inc on launch, dec on resolve, snapshot into inputs) lives
-// in runSpeculative and dispatch_plan_wiring.go governorVerdictForBackup.
+// active-hedge counter and per-model win-rate EWMAs — lives in hedgeGovernor,
+// whose tryAcquireHedge computes the verdict AND claims the budget slot under
+// ONE mutex hold; dispatch wiring (acquire on launch, release on resolve,
+// registry snapshot into inputs) lives in runSpeculative and
+// dispatch_plan_wiring.go tryAcquireBackupHedge.
 
 const (
 	// hedgeFleetIdleHeadroomSlots is the minimum fleet-wide idle-slot count
@@ -50,8 +52,30 @@ const (
 	// primaries are fine and the hedges are ~pure waste heat — nine losing
 	// dispatches buying one marginal win. Below the floor the model backs
 	// off to no-hedge until fresh outcomes (recordHedgeOutcome at race
-	// resolution in runSpeculative) lift the EWMA back over it.
+	// resolution in runSpeculative, including the periodic exploration
+	// hedges below) lift the EWMA back over it.
 	hedgeWinRateFloor = 0.10
+
+	// hedgeWinRateMinSamples is the minimum number of recorded hedge
+	// outcomes before the win-rate floor is enforced. The floor's
+	// justification is ECONOMIC — nine losing dispatches buying one marginal
+	// win — and that arithmetic needs statistical footing: a single unlucky
+	// first race seeds the EWMA at 0 and, because outcomes are recorded only
+	// for LAUNCHED hedges, a floor enforced immediately would lock the model
+	// out of hedging forever (no launches → no fresh outcomes → no
+	// recovery). Below this count the win rate passes and the model keeps
+	// sampling.
+	hedgeWinRateMinSamples = 8
+
+	// hedgeWinRateExploreInterval bounds a win-rate lockout: every Nth
+	// win-rate-suppressed evaluation (per model) converts to an allow — an
+	// exploration hedge whose recorded outcome refreshes the EWMA, so a
+	// model whose hedges started losing can prove a regime change and earn
+	// normal hedging back. At 1-in-16 the exploration cost is negligible
+	// (~6% of the suppressed volume) while recovery stays within a handful
+	// of slow-request bursts; without it the suppression is permanent for
+	// the lifetime of the server.
+	hedgeWinRateExploreInterval = 16
 
 	// hedgeWinRateAlpha is the EWMA weight of each new hedge outcome,
 	// matching the repo-wide recency/smoothness balance (registry
@@ -68,9 +92,10 @@ const (
 
 // hedgeGovernorInputs is a point-in-time snapshot of everything the verdict
 // reads. Kept as plain locals (not registry types) so the decision is
-// snapshot-consistent and independently testable; governorVerdictForBackup
-// (dispatch_plan_wiring.go) populates it under the registry's existing
-// locks.
+// snapshot-consistent and independently testable; tryAcquireBackupHedge
+// (dispatch_plan_wiring.go) populates the registry-side fields under the
+// registry's existing locks, and tryAcquireHedge fills the governor-owned
+// ones under its own mutex.
 type hedgeGovernorInputs struct {
 	// idleAlternativeExists: an idle-loaded eligible provider for this model
 	// is routable right now (the registry's IdleAlternativeExists machinery)
@@ -88,6 +113,16 @@ type hedgeGovernorInputs struct {
 	// modelWinRate: this model's hedge win-rate EWMA in [0,1], or
 	// hedgeWinRateUnknown when no outcome has been recorded.
 	modelWinRate float64
+	// modelWinRateSamples: how many resolved hedge outcomes the EWMA is
+	// built on. The win-rate floor is enforced only at
+	// hedgeWinRateMinSamples or more (see that constant's WHY).
+	modelWinRateSamples int
+	// exploreNow: this evaluation is the model's periodic exploration hedge
+	// (every hedgeWinRateExploreInterval-th win-rate suppression) — the
+	// win-rate floor is waived for it so the EWMA can be refreshed. Every
+	// other rule still applies: exploration is insurance too and must not
+	// displace queued primaries or bust the global budget.
+	exploreNow bool
 }
 
 // hedgeVerdict is the governor's decision. Non-allow values name the FIRST
@@ -161,16 +196,20 @@ func hedgeGovernorVerdict(in hedgeGovernorInputs) hedgeVerdict {
 	if in.activeHedges >= hedgeGlobalBudget(in.fleetIdleSlots, in.idleAlternativeExists) {
 		return hedgeSuppressGlobalBudget
 	}
-	if in.modelWinRate != hedgeWinRateUnknown && in.modelWinRate < hedgeWinRateFloor {
+	if in.modelWinRate != hedgeWinRateUnknown &&
+		in.modelWinRateSamples >= hedgeWinRateMinSamples &&
+		in.modelWinRate < hedgeWinRateFloor &&
+		!in.exploreNow {
 		return hedgeSuppressWinRate
 	}
 	return hedgeAllow
 }
 
 // hedgeGovernor owns the mutable feedback state behind the verdict: the
-// global active-hedge counter and the per-model win-rate EWMAs. One instance
-// per Server; every method is safe for concurrent use from the dispatch
-// goroutines that launch and resolve hedges.
+// global active-hedge counter, the per-model win-rate EWMAs with their sample
+// counts, and the per-model exploration cadence. One instance per Server;
+// every method is safe for concurrent use from the dispatch goroutines that
+// launch and resolve hedges.
 type hedgeGovernor struct {
 	mu           sync.Mutex
 	activeHedges int
@@ -178,17 +217,72 @@ type hedgeGovernor struct {
 	// from the map has recorded no outcome (hedgeWinRateUnknown). Bounded by
 	// the served-model catalog, so no eviction is needed.
 	winRates map[string]float64
+	// winSamples counts recorded outcomes per model; the win-rate floor is
+	// enforced only at hedgeWinRateMinSamples or more.
+	winSamples map[string]int
+	// suppressedSinceExplore counts consecutive win-rate suppressions per
+	// model since the last exploration hedge; at
+	// hedgeWinRateExploreInterval it resets and the evaluation converts to
+	// an exploration allow.
+	suppressedSinceExplore map[string]int
 }
 
 func newHedgeGovernor() *hedgeGovernor {
-	return &hedgeGovernor{winRates: make(map[string]float64)}
+	return &hedgeGovernor{
+		winRates:               make(map[string]float64),
+		winSamples:             make(map[string]int),
+		suppressedSinceExplore: make(map[string]int),
+	}
 }
 
-// noteHedgeLaunched increments the global in-flight hedge count. Called
-// exactly once per launched backup dispatch (runSpeculative), before the
-// dispatch is sent, so the budget check and the increment cannot admit more
-// hedges than the budget under concurrency.
-func (g *hedgeGovernor) noteHedgeLaunched() {
+// tryAcquireHedge computes the launch verdict for one speculative backup AND,
+// on allow, claims its global budget slot — atomically, under one mutex hold.
+// The caller supplies the registry-side snapshot fields; the governor fills
+// activeHedges, the model's win-rate EWMA/sample count, and the exploration
+// flag from its own state. The read-check-increment being ONE operation is
+// the point: concurrent slow requests can no longer all observe the same free
+// budget and launch past the fleet-wide cap during a burst.
+//
+// A win-rate suppression advances the model's exploration cadence; every
+// hedgeWinRateExploreInterval-th one converts to an exploration allow (the
+// verdict is re-derived with exploreNow set, so the earlier rules still
+// bind). acquired reports whether a slot was claimed; every acquired hedge
+// MUST be released exactly once via noteHedgeResolved, whatever becomes of
+// the dispatch.
+func (g *hedgeGovernor) tryAcquireHedge(model string, in hedgeGovernorInputs) (verdict hedgeVerdict, acquired bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	in.activeHedges = g.activeHedges
+	in.modelWinRate = hedgeWinRateUnknown
+	if rate, ok := g.winRates[model]; ok {
+		in.modelWinRate = rate
+	}
+	in.modelWinRateSamples = g.winSamples[model]
+	in.exploreNow = false
+	verdict = hedgeGovernorVerdict(in)
+	if verdict == hedgeSuppressWinRate {
+		g.suppressedSinceExplore[model]++
+		if g.suppressedSinceExplore[model] >= hedgeWinRateExploreInterval {
+			g.suppressedSinceExplore[model] = 0
+			in.exploreNow = true
+			verdict = hedgeGovernorVerdict(in)
+		}
+	}
+	if verdict != hedgeAllow {
+		return verdict, false
+	}
+	g.activeHedges++
+	return hedgeAllow, true
+}
+
+// acquireHedgeUngoverned claims a budget slot for a hedge admitted OUTSIDE
+// the verdict rules — the capacity-SILENT legacy escape in
+// tryAcquireBackupHedge, where every governor input is meaningless and the
+// verdict is definitionally allow. This is load ACCOUNTING, not a budget-
+// check bypass: the legacy hedge is really in flight, so capacity-aware
+// requests must see it against their budget. Released exactly once via
+// noteHedgeResolved, like any acquired hedge.
+func (g *hedgeGovernor) acquireHedgeUngoverned() {
 	g.mu.Lock()
 	g.activeHedges++
 	g.mu.Unlock()
@@ -214,9 +308,10 @@ func (g *hedgeGovernor) activeHedgeCount() int {
 }
 
 // recordHedgeOutcome folds one resolved hedge race into the model's win-rate
-// EWMA: won means the hedge produced the committed first content. The first
-// sample seeds the average directly (the repo's RecordLatency pattern) so a
-// model's early rate reflects real outcomes rather than a synthetic prior.
+// EWMA and bumps its sample count: won means the hedge produced the committed
+// first content. The first sample seeds the average directly (the repo's
+// RecordLatency pattern) so a model's early rate reflects real outcomes
+// rather than a synthetic prior.
 func (g *hedgeGovernor) recordHedgeOutcome(model string, won bool) {
 	sample := 0.0
 	if won {
@@ -224,6 +319,7 @@ func (g *hedgeGovernor) recordHedgeOutcome(model string, won bool) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.winSamples[model]++
 	prior, ok := g.winRates[model]
 	if !ok {
 		g.winRates[model] = sample

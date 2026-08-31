@@ -46,6 +46,37 @@ private func published(seq: UInt64 = 5, decodeTps: Double = 0) -> BackendCapacit
     #expect(enriched.feasibleAfterMs == nil)
 }
 
+@Test func fullyBusySlotSuppliesExplicitZeroBudgetNotNil() {
+    // A slot with zero admittable tokens must enrich to a PRESENT 0 — the
+    // wire encodes it (presence semantics), so the coordinator learns the
+    // budget is exhausted right now instead of falling back to its stale
+    // heartbeat figure and misreading the transient reject as deterministic.
+    let exhausted = BackendCapacity(
+        slots: [
+            BackendSlotCapacity(
+                model: "org/model-a",
+                state: "running",
+                numRunning: 4,
+                numWaiting: 2,
+                activeTokens: 0,
+                maxTokensPotential: 0,
+                activeTokenBudgetUsed: 8000,
+                activeTokenBudgetMax: 9000,
+                queuedTokenBudget: 1000)
+        ],
+        gpuMemoryActiveGb: 1,
+        gpuMemoryPeakGb: 1,
+        gpuMemoryCacheGb: 0,
+        totalMemoryGb: 64,
+        capacitySeq: 6)
+    let enriched = CapacityRejectionEnrichment.enrich(
+        InferenceFailure(code: .capacity, statusCode: 503, errorReason: .tokenBudgetExhausted),
+        modelId: "org/model-a",
+        published: exhausted,
+        fallbackReason: .slotState)
+    #expect(enriched.availableTokenBudget == 0)
+}
+
 @Test func errorReasonMapsToBoundedRejectionReasonOverFallback() {
     let cases: [(InferenceErrorReason, CapacityRejectionReason)] = [
         (.tokenBudgetExhausted, .tokenBudget),

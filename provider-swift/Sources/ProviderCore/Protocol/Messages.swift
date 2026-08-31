@@ -387,7 +387,10 @@ public enum ProviderMessage: Sendable, Equatable {
         /// snapshot, so every rejection doubles as a fresh state sample.
         public let rejectionReason: CapacityRejectionReason?
         /// Live admittable token budget of the rejected model's slot at the
-        /// moment of rejection (max − used − queued, floored at 0).
+        /// moment of rejection (max − used − queued, floored at 0). Presence
+        /// semantics on the wire: nil is omitted, but an EXPLICIT ZERO is
+        /// encoded — a busy slot with zero free tokens must say so, or the
+        /// coordinator falls back to its stale heartbeat budget.
         public let availableTokenBudget: Int64?
         /// Estimated milliseconds until the request would become admissible
         /// (duration, never a wall clock). Omitted when inestimable.
@@ -1004,14 +1007,17 @@ extension ProviderMessage: Codable {
             // wire shape is byte-identical (mirrors Go `omitempty`).
             try container.encodeIfPresent(e.terminalCause?.rawValue, forKey: .terminalCause)
             try container.encodeIfPresent(e.attemptUsage, forKey: .attemptUsage)
-            // Enriched capacity-rejection additions (routing v2). Mirror Go
-            // `omitempty`: nil AND zero stay off the wire, so a legacy frame
-            // re-encodes byte-identically and absent decodes as zero on the
-            // Go side either way.
+            // Enriched capacity-rejection additions (routing v2). Nil stays
+            // off the wire so a legacy frame re-encodes byte-identically.
             try container.encodeIfPresent(e.rejectionReason?.rawValue, forKey: .rejectionReason)
-            if let budget = e.availableTokenBudget, budget != 0 {
-                try container.encode(budget, forKey: .availableTokenBudget)
-            }
+            // available_token_budget carries PRESENCE semantics, not Go
+            // omitempty: an explicit zero is real state — "busy slot, zero
+            // free tokens right now" — and must reach the coordinator.
+            // Omitting it made the coordinator fall back to the stale
+            // heartbeat budget, which could misclassify this transient
+            // reject as deterministic and stop failover. The Go mirror is
+            // `*int64` (nil omitted, zero encoded) for the same reason.
+            try container.encodeIfPresent(e.availableTokenBudget, forKey: .availableTokenBudget)
             if let feasibleAfterMs = e.feasibleAfterMs, feasibleAfterMs != 0 {
                 try container.encode(feasibleAfterMs, forKey: .feasibleAfterMs)
             }

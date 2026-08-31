@@ -64,18 +64,36 @@ public enum CapacityHeartbeatMateriality {
             if before.state != slot.state { return true }
             if before.numRunning != slot.numRunning { return true }
             if before.numWaiting != slot.numWaiting { return true }
-            previousBudget += admittableTokens(before)
-            currentBudget += admittableTokens(slot)
+            // Token budget drifting without an admission-count change
+            // (re-slice, queued work retiring, KV reclaim) is compared PER
+            // SLOT: the coordinator's ledger is per-model, so opposing
+            // per-model deltas (A −50k, B +50k) must never cancel into a
+            // fleet-level "nothing changed" — that leaves A's ledger
+            // stale-optimistic, the exact staleness this policy exists to
+            // push out. Providers host multiple model slots in production.
+            let beforeTokens = admittableTokens(before)
+            let nowTokens = admittableTokens(slot)
+            if budgetShiftIsMaterial(previous: beforeTokens, current: nowTokens) {
+                return true
+            }
+            previousBudget += beforeTokens
+            currentBudget += nowTokens
         }
 
-        // Reported token budget drifting without an admission-count change
-        // (re-slice, queued work retiring, KV reclaim): material at ≥1024
-        // tokens or ≥10% of the previous figure.
-        let shift = (currentBudget - previousBudget).magnitude
+        // The aggregate check still adds signal on top of the per-slot one:
+        // several slots each drifting just below the per-slot thresholds can
+        // sum to a fleet-level shift the coordinator's total-capacity view
+        // cares about (e.g. three slots each +400 tokens ≥ the 1024 floor).
+        return budgetShiftIsMaterial(previous: previousBudget, current: currentBudget)
+    }
+
+    /// Materiality of one budget figure moving to another: a shift of
+    /// ≥ ``tokenShiftFloor`` tokens, or ≥ ``tokenShiftFraction`` of the
+    /// previous figure. Applied per slot AND to the roster aggregate.
+    static func budgetShiftIsMaterial(previous: Int64, current: Int64) -> Bool {
+        let shift = (current - previous).magnitude
         if shift >= UInt64(tokenShiftFloor) { return true }
-        if previousBudget > 0,
-            Double(shift) >= tokenShiftFraction * Double(previousBudget)
-        {
+        if previous > 0, Double(shift) >= tokenShiftFraction * Double(previous) {
             return true
         }
         return false

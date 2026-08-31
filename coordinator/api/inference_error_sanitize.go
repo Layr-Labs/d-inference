@@ -58,8 +58,14 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 			suppliedReason = capacityRejectionErrorReason(msg.RejectionReason)
 		}
 	}
-	if msg.AvailableTokenBudget > 0 {
-		safe.AvailableTokenBudget = msg.AvailableTokenBudget
+	if msg.AvailableTokenBudget != nil && *msg.AvailableTokenBudget >= 0 {
+		// Pointer presence is the contract: an EXPLICIT zero means "the live
+		// gate has no headroom RIGHT NOW" (transient) and must survive the
+		// boundary, while nil keeps the stale-heartbeat fallback in play.
+		// Copied into a fresh allocation so the safe frame never aliases the
+		// raw provider message.
+		v := *msg.AvailableTokenBudget
+		safe.AvailableTokenBudget = &v
 	}
 	if msg.FeasibleAfterMS > 0 {
 		safe.FeasibleAfterMS = msg.FeasibleAfterMS

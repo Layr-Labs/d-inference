@@ -96,6 +96,53 @@ private func capacity(_ slots: [BackendSlotCapacity]) -> BackendCapacity {
         previous: base, current: capacity([slot(used: 1000, max: 9000, queued: 2048)])))
 }
 
+@Test func opposingPerSlotBudgetShiftsNeverCancel() {
+    // Model A loses 50k tokens while model B gains 50k: the aggregate is
+    // unchanged, but A's coordinator ledger is now stale-optimistic by 50k —
+    // exactly the staleness event heartbeats exist to push out. Material.
+    let before = capacity([
+        slot(model: "org/model-a", used: 10_000, max: 100_000),
+        slot(model: "org/model-b", used: 60_000, max: 100_000),
+    ])
+    let after = capacity([
+        slot(model: "org/model-a", used: 60_000, max: 100_000),
+        slot(model: "org/model-b", used: 10_000, max: 100_000),
+    ])
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+}
+
+@Test func multiSlotRosterBelowAllThresholdsStaysNonMaterial() {
+    // Two slots each drift well under both the 1024-token floor and the 10%
+    // fraction, and the aggregate drift (300 + 200 = 500) stays under both
+    // too: no heartbeat.
+    let before = capacity([
+        slot(model: "org/model-a", used: 10_000, max: 100_000),
+        slot(model: "org/model-b", used: 20_000, max: 100_000),
+    ])
+    let after = capacity([
+        slot(model: "org/model-a", used: 10_300, max: 100_000),
+        slot(model: "org/model-b", used: 20_200, max: 100_000),
+    ])
+    #expect(!CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+}
+
+@Test func distributedSubThresholdDriftsStillTripTheAggregateFloor() {
+    // Three slots each shift 400 tokens — below the per-slot floor and
+    // fraction — but the fleet total moves 1200 ≥ the 1024 floor: the
+    // aggregate check retains this signal on top of the per-slot rule.
+    let before = capacity([
+        slot(model: "org/model-a", used: 10_000, max: 100_000),
+        slot(model: "org/model-b", used: 10_000, max: 100_000),
+        slot(model: "org/model-c", used: 10_000, max: 100_000),
+    ])
+    let after = capacity([
+        slot(model: "org/model-a", used: 10_400, max: 100_000),
+        slot(model: "org/model-b", used: 10_400, max: 100_000),
+        slot(model: "org/model-c", used: 10_400, max: 100_000),
+    ])
+    #expect(CapacityHeartbeatMateriality.isMaterial(previous: before, current: after))
+}
+
 // MARK: - Throttle (deterministic clock)
 
 @Test func throttleSendsImmediatelyOutsideCapWindow() {

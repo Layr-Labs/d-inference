@@ -150,6 +150,12 @@ type dispatchState struct {
 	// budget" rejection as deterministic (budget >= context) vs transient
 	// (budget < context — this node was memory-pressured).
 	lastErrProviderBudget int64
+	// lastErrRejectionReason is the typed CapacityRejectionReason from the
+	// last provider error ("" for legacy providers). classifyRejection
+	// treats a typed token_budget as AUTHORITATIVE transient: the provider's
+	// live gate named the shortage, so a deterministic-unservable verdict
+	// must never be re-derived from the stale heartbeat budget fallback.
+	lastErrRejectionReason protocol.CapacityRejectionReason
 	// lastErrTerminalCause is the typed terminal_cause from the last provider
 	// error ("" for legacy providers). shouldStopFailover trusts a typed
 	// admission_timeout as transient capacity directly — the provider's engine
@@ -657,6 +663,7 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	// fault): clear any budget captured from a prior attempt so it never bleeds
 	// into a later classification.
 	d.lastErrProviderBudget = 0
+	d.lastErrRejectionReason = ""
 	// Same bleed-through rule for the typed terminal fields: a coordinator-
 	// synthesized error is not a provider terminal, so a stale typed cause from
 	// a prior attempt must not reclassify it (shouldStopFailover trusts a typed
@@ -700,6 +707,7 @@ func isGenuinePreContentFault(
 	}
 	return classifyRejection(
 		msg.ErrorReason, msg.Error, providerBudget, modelContext,
+		msg.RejectionReason,
 	) == rejectionNotCapacity
 }
 
@@ -842,19 +850,23 @@ func (d *dispatchState) latchProviderBodyTooLarge(errText string) {
 func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
 	providerBudget := providerReportedBudget(provider, d.model)
-	if msg.AvailableTokenBudget > 0 {
+	if msg.AvailableTokenBudget != nil {
 		// Enriched rejection (routing v2): the LIVE gate budget at rejection
 		// time beats the last heartbeat's snapshot — this closes the
 		// documented stale-snapshot LIMITATION in classifyRejection, where a
 		// budget that shrank below the model context between heartbeats
-		// misclassified a node-pressured reject as fleet-deterministic.
-		providerBudget = msg.AvailableTokenBudget
+		// misclassified a node-pressured reject as fleet-deterministic. The
+		// wire field is a pointer precisely so an EXPLICIT zero survives:
+		// it means "this node has no headroom RIGHT NOW" (maximally
+		// transient, budget frees as sequences retire), never "unknown".
+		providerBudget = *msg.AvailableTokenBudget
 	}
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
 	d.lastFailureDeadline = isDeadlineUnreachableErrorReason(msg.ErrorReason)
 	d.lastErrProviderBudget = providerBudget
+	d.lastErrRejectionReason = msg.RejectionReason
 	d.lastErrTerminalCause = msg.TerminalCause
 	d.lastErrCoordinatorCause = msg.CoordinatorCause
 	d.lastErrAttemptUsage = msg.AttemptUsage
@@ -1716,7 +1728,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// through the legacy capacity substrings, gets classified as a generic
 	// fault, and walks the unbounded fault-failover ladder to a final 503
 	// instead of the bounded capacity retries and uptime-neutral 429.
-	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext)
+	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason)
 	if kind != rejectionDeadlineUnreachable &&
 		d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
 		kind = rejectionTransientCapacity
@@ -1786,7 +1798,14 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bo
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
-	d.captureGenuineFault(provider, msg, providerReportedBudget(provider, d.model))
+	// Same budget preference as setLastInferenceError: the enriched LIVE
+	// gate budget (explicit zero included) supersedes the stale heartbeat
+	// snapshot for this loser's classification.
+	budget := providerReportedBudget(provider, d.model)
+	if msg.AvailableTokenBudget != nil {
+		budget = *msg.AvailableTokenBudget
+	}
+	d.captureGenuineFault(provider, msg, budget)
 	if d.unservable || d.terminalClientError {
 		return
 	}
@@ -1810,8 +1829,7 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.latchTerminalAttribution(provider)
 		return
 	}
-	budget := providerReportedBudget(provider, d.model)
-	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext) {
+	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
 	case rejectionDeadlineUnreachable:
 		// A race loser that could not meet the remaining absolute deadline is
 		// health-neutral and non-deterministic across providers. It must not
@@ -2094,10 +2112,17 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	// through the nil-backup branch below — byte-identical to today's
 	// "no backup available" path. The owner-served prefer skip above stays
 	// governor-blind: it is a product rule, not a capacity decision.
+	//
+	// The verdict and the budget-slot increment are ONE atomic governor
+	// operation (tryAcquireHedge): concurrent slow requests can no longer
+	// each read the last free slot and all launch past the fleet-wide cap.
+	// An acquired slot is released exactly once — below when no backup
+	// actually dispatches, at race resolution otherwise.
 	hedgeLaunched := false
 	if !skipBackup && s.hedgeGov != nil {
-		verdict := d.governorVerdictForBackup(provider.ID)
+		verdict, acquired := d.tryAcquireBackupHedge(provider.ID)
 		d.hedgeGovernorVerdict = verdict.String()
+		hedgeLaunched = acquired
 		if verdict != hedgeAllow {
 			s.ddIncr("routing.hedge_governor_suppressed", []string{"model:" + d.model, "verdict:" + verdict.String()})
 			s.logger.Info("speculative_backup_suppressed",
@@ -2106,13 +2131,6 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 				"verdict", verdict.String(),
 			)
 			skipBackup = true
-		} else {
-			// Counted BEFORE the dispatch so the budget check and the
-			// increment cannot admit more hedges than the budget under
-			// concurrency (hedge_governor contract); released below when no
-			// backup actually launches, and at race resolution otherwise.
-			s.hedgeGov.noteHedgeLaunched()
-			hedgeLaunched = true
 		}
 	}
 

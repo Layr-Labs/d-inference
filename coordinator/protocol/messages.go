@@ -590,11 +590,16 @@ type InferenceErrorMessage struct {
 	// budget clamp, and failure taxonomy — the gray-box incident
 	// (registry/budget_clamp.go) was 11,581 opaque capacity 503s that had to
 	// be re-learned one bounce at a time. All four fields are additive and
-	// omitted when zero-valued, so legacy frames decode byte-identically.
+	// absent on legacy frames, so those decode byte-identically.
 	//
 	// RejectionReason is the bounded CapacityRejectionReason enum (shared with
 	// capacity_quote). AvailableTokenBudget is the live gate's remaining token
-	// headroom at rejection time. FeasibleAfterMS is the provider's busy-wait
+	// headroom at rejection time — a POINTER because zero is a meaningful
+	// measurement, not an unset default: a busy slot with exactly zero tokens
+	// free must encode that zero (nil = legacy/unenriched, absent on the
+	// wire), or the coordinator falls back to the stale heartbeat budget and
+	// can misclassify a transient token_budget reject as fleet-deterministic
+	// (codex P1-4). FeasibleAfterMS is the provider's busy-wait
 	// forecast of when a request of this shape could next be admitted
 	// (duration, never a wall clock) — emitted on busy-slot token_budget
 	// rejections by quote-capable providers, from the same queue estimator
@@ -602,7 +607,7 @@ type InferenceErrorMessage struct {
 	// gate decided from, letting the coordinator order the rejection against
 	// heartbeats.
 	RejectionReason      CapacityRejectionReason `json:"rejection_reason,omitempty"`
-	AvailableTokenBudget int64                   `json:"available_token_budget,omitempty"`
+	AvailableTokenBudget *int64                  `json:"available_token_budget,omitempty"`
 	FeasibleAfterMS      int64                   `json:"feasible_after_ms,omitempty"`
 	CapacitySeq          uint64                  `json:"capacity_seq,omitempty"`
 }

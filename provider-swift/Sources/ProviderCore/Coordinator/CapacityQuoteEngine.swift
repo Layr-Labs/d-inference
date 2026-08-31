@@ -19,7 +19,8 @@
 //     `EngineV2KVSizing.liveEngineKVBytesBudget`, i.e. `UnifiedMemoryCap`
 //     with the activation reserve) minus used and queued budget;
 //   * cold-load room — `freeForLoadGb` (`ModelLoadAdmission
-//     .maxLoadableWeightGb`) against `ModelLoadAdmission.requiredToLoadGb`;
+//     .maxLoadableWeightGb`, already net of the load headroom) against the
+//     model's padded weight footprint;
 //   * template/capability — the advertised `ModelInfo`'s
 //     `templateRenderOK`/`isVision` self-check results;
 //   * vision-tower admission — `VisionTowerBudget.maxAdmissiblePatches`.
@@ -115,10 +116,15 @@ enum CapacityQuoteEngine {
         guard let slot else {
             // Model advertised but not resident: admissible only when the
             // cold-load gate's published answer says the weights fit now.
-            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: model.estimatedMemoryGb,
-                headroomGb: ProviderLoop.loadHeadroomGb)
-            guard capacity.freeForLoadGb >= requiredGb else {
+            // `freeForLoadGb` is `ModelLoadAdmission.maxLoadableWeightGb` —
+            // already NET of the activation + min-serveable-KV load headroom
+            // (and the unified cap / reserves), i.e. the maximum padded
+            // WEIGHT footprint loadable right now. Compare the weights
+            // directly: adding `requiredToLoadGb`'s headroom on top would
+            // charge that headroom a second time and reject cold probes for
+            // models the real load gate (weights + headroom ≤ raw free
+            // memory) would admit.
+            guard capacity.freeForLoadGb >= max(0, model.estimatedMemoryGb) else {
                 return reject(.memoryCap)
             }
             if probe.deadlineRemainingMs <= 0 {

@@ -245,33 +245,37 @@ func quoteHedgeConfidence(confidence string) hedgeQuoteConfidence {
 	return hedgeConfidenceNone
 }
 
-// governorVerdictForBackup snapshots the registry-side inputs (idle
-// alternative, model queue depth, fleet idle slots — advisory, RLock-only)
-// plus the Server governor's mutable state and applies the launch rules.
+// tryAcquireBackupHedge snapshots the registry-side inputs (idle alternative,
+// model queue depth, fleet idle slots — advisory, RLock-only) and hands them
+// to the governor's tryAcquireHedge, which applies the launch rules AND
+// claims the global budget slot in one atomic operation. acquired hedges MUST
+// be released exactly once via noteHedgeResolved (runSpeculative owns that).
 //
 // Two deliberate legacy escapes, per the dual-path decision (plan #3):
 //   - A Server without a governor (bare test literals) keeps the legacy
 //     always-hedge behavior rather than failing closed on a fixture gap.
+//     Nothing is acquired: there is no counter to release.
 //   - A capacity-SILENT fleet for the model (no provider reports a
 //     BackendCapacity snapshot and none is quote-capable) makes every
 //     governor input meaningless — (false, 0, 0) there is ignorance, not
 //     saturation — so legacy providers keep today's unconditional 50% hedge
-//     instead of losing insurance to a signal they cannot emit.
-func (d *dispatchState) governorVerdictForBackup(primaryID string) hedgeVerdict {
+//     instead of losing insurance to a signal they cannot emit. The hedge is
+//     still really in flight, so it acquires a slot ungoverned: capacity-
+//     aware requests must see it against their budget.
+func (d *dispatchState) tryAcquireBackupHedge(primaryID string) (hedgeVerdict, bool) {
 	g := d.s.hedgeGov
 	if g == nil {
-		return hedgeAllow
+		return hedgeAllow, false
 	}
 	exclude := append(d.excludedProviderIDs(), primaryID)
 	idleAlt, queueDepth, fleetIdle, capacitySignals := d.s.registry.HedgeGovernorSnapshot(d.model, d.pr, exclude...)
 	if !capacitySignals {
-		return hedgeAllow
+		g.acquireHedgeUngoverned()
+		return hedgeAllow, true
 	}
-	return hedgeGovernorVerdict(hedgeGovernorInputs{
+	return g.tryAcquireHedge(d.model, hedgeGovernorInputs{
 		idleAlternativeExists: idleAlt,
 		modelQueueDepth:       queueDepth,
-		activeHedges:          g.activeHedgeCount(),
 		fleetIdleSlots:        fleetIdle,
-		modelWinRate:          g.modelWinRate(d.model),
 	})
 }

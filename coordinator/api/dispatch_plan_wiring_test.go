@@ -362,7 +362,7 @@ func TestCapacityRejectionReasonThreadsIntoClassification(t *testing.T) {
 			if safe.ErrorReason != tt.wantReason {
 				t.Fatalf("ErrorReason=%q, want mapped %q", safe.ErrorReason, tt.wantReason)
 			}
-			if got := classifyRejection(safe.ErrorReason, safe.Error, 0, 0); got != tt.wantKind {
+			if got := classifyRejection(safe.ErrorReason, safe.Error, 0, 0, safe.RejectionReason); got != tt.wantKind {
 				t.Fatalf("classifyRejection=%v, want %v", got, tt.wantKind)
 			}
 		})
@@ -393,7 +393,7 @@ func TestSetLastInferenceErrorPrefersLiveBudgetAndKeepsFeasibleAfter(t *testing.
 		StatusCode:           http.StatusServiceUnavailable,
 		FailureCode:          protocol.FailureCodeCapacity,
 		ErrorReason:          errorReasonRequestExceedsBatchBudget,
-		AvailableTokenBudget: 4096,
+		AvailableTokenBudget: i64ptr(4096),
 		FeasibleAfterMS:      1500,
 	})
 	if d.lastErrProviderBudget != 4096 {
@@ -404,12 +404,62 @@ func TestSetLastInferenceErrorPrefersLiveBudgetAndKeepsFeasibleAfter(t *testing.
 	}
 	// Live budget (4096) below the model context (8192): a batch-budget
 	// reject from THIS pressured node is transient, not fleet-deterministic.
-	if got := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext); got != rejectionTransientCapacity {
+	if got := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != rejectionTransientCapacity {
 		t.Fatalf("classifyRejection=%v, want rejectionTransientCapacity via the live budget", got)
 	}
 	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 	if d.lastErrFeasibleAfterMS != 0 {
 		t.Fatalf("lastErrFeasibleAfterMS=%d after synthetic error, want cleared", d.lastErrFeasibleAfterMS)
+	}
+}
+
+func i64ptr(v int64) *int64 { return &v }
+
+// TestSetLastInferenceErrorExplicitZeroBudgetStaysTransient pins the P1-4
+// authority chain end to end: an enriched busy-slot rejection carrying an
+// EXPLICIT zero live budget plus the typed token_budget reason crosses the
+// sanitizer with both intact, and classification stays TRANSIENT — the typed
+// reason is authoritative, so the stale heartbeat fallback (an unknown or
+// at/above-context budget snapshot would otherwise read fleet-deterministic)
+// can never stop failover for a shortage the live gate called momentary.
+func TestSetLastInferenceErrorExplicitZeroBudgetStaysTransient(t *testing.T) {
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m", modelMaxContext: 8192}
+	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
+		Type:                 protocol.TypeInferenceError,
+		StatusCode:           http.StatusServiceUnavailable,
+		FailureCode:          protocol.FailureCodeCapacity,
+		ErrorReason:          errorReasonRequestExceedsBatchBudget,
+		RejectionReason:      protocol.RejectionReasonTokenBudget,
+		AvailableTokenBudget: i64ptr(0),
+	})
+	if d.lastErrProviderBudget != 0 {
+		t.Fatalf("lastErrProviderBudget=%d, want the explicit live zero", d.lastErrProviderBudget)
+	}
+	if d.lastErrRejectionReason != protocol.RejectionReasonTokenBudget {
+		t.Fatalf("lastErrRejectionReason=%q, want token_budget preserved through the sanitizer", d.lastErrRejectionReason)
+	}
+	if got := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason); got != rejectionTransientCapacity {
+		t.Fatalf("classifyRejection=%v, want transient — typed token_budget is authoritative over the stale heartbeat fallback", got)
+	}
+	// Failover continues: the transient verdict consumes a capacity retry
+	// instead of latching unservable on the first occurrence.
+	if d.shouldStopFailover() {
+		t.Fatal("first typed token_budget rejection must keep failing over")
+	}
+	if d.unservable {
+		t.Fatal("typed token_budget rejection must not latch deterministic-unservable")
+	}
+	// Legacy frame (nil budget, no typed reason): today's classification is
+	// byte-identical — unknown budget ⇒ deterministic stop.
+	d2 := &dispatchState{s: newTestServerForDispatch(t), model: "m", modelMaxContext: 8192}
+	d2.setLastInferenceError(nil, protocol.InferenceErrorMessage{
+		Type:        protocol.TypeInferenceError,
+		StatusCode:  http.StatusServiceUnavailable,
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonRequestExceedsBatchBudget,
+	})
+	if got := classifyRejection(d2.lastErrReason, d2.lastErr, d2.lastErrProviderBudget, d2.modelMaxContext, d2.lastErrRejectionReason); got != rejectionDeterministicUnservable {
+		t.Fatalf("legacy classifyRejection=%v, want unchanged deterministic", got)
 	}
 }
 

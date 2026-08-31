@@ -414,3 +414,96 @@ func TestHeartbeatResyncRestoresProviderReportedTruth(t *testing.T) {
 		t.Fatalf("request C rejected after heartbeat re-sync: %+v", decision)
 	}
 }
+
+// TestReserveNextFromPlanVersionDiverseRetry pins the soft two-pass
+// AvoidVersion rule on plan consumption (codex P1: a retry populated
+// pr.Traits.AvoidVersion, but revalidation walked the plan in raw cost order
+// and re-dispatched onto the failed build even when a diverse entry
+// remained). Versions are set AFTER the plan is built: the pass must read the
+// provider's LIVE reported version, never a scan-time copy.
+func TestReserveNextFromPlanVersionDiverseRetry(t *testing.T) {
+	reg := New(testLogger())
+	model := "plan-avoid-version-model"
+	planTestProvider(t, reg, "w", model, 0)
+	planTestProvider(t, reg, "a1", model, 400)
+	planTestProvider(t, reg, "a2", model, 800)
+
+	pr := planTestRequest("avoid-primary", 500, 256)
+	pr.Model = model
+	if p, _, plan := reg.ReserveProviderWithPlan(model, pr); p == nil || p.ID != "w" || plan == nil {
+		t.Fatalf("primary=%v, want w with a plan", p)
+	} else {
+		// Live versions diverge after the scan: the cheaper alternate a1 runs
+		// the version the retry must avoid; a2 runs a different build.
+		setProviderVersion(reg.GetProvider("a1"), "0.6.4")
+		setProviderVersion(reg.GetProvider("a2"), "0.6.5")
+
+		retry := planTestRequest("avoid-retry", 500, 256)
+		retry.Traits.AvoidVersion = "0.6.4"
+		next, _, skips := reg.ReserveNextFromPlan(retry, plan)
+		if next == nil || next.ID != "a2" {
+			t.Fatalf("next=%v, want a2 (the diverse version)", next)
+		}
+		if len(skips) != 1 || skips[0] != (PlanSkip{ProviderID: "a1", Reason: PlanSkipVersionAvoided}) {
+			t.Fatalf("skips=%+v, want single a1 version_avoided", skips)
+		}
+	}
+}
+
+// When every remaining entry runs the avoided version, diversity must fall
+// back to the same-version pool (cost order) rather than failing closed —
+// parity with scanCandidatesLocked's soft narrowing.
+func TestReserveNextFromPlanAvoidVersionNeverFailsClosed(t *testing.T) {
+	reg := New(testLogger())
+	model := "plan-avoid-all-model"
+	planTestProvider(t, reg, "w", model, 0)
+	planTestProvider(t, reg, "a1", model, 400)
+	planTestProvider(t, reg, "a2", model, 800)
+
+	pr := planTestRequest("avoid-all-primary", 500, 256)
+	pr.Model = model
+	_, _, plan := reg.ReserveProviderWithPlan(model, pr)
+	if plan == nil {
+		t.Fatal("plan is nil")
+	}
+	setProviderVersion(reg.GetProvider("a1"), "0.6.4")
+	setProviderVersion(reg.GetProvider("a2"), "0.6.4")
+
+	retry := planTestRequest("avoid-all-retry", 500, 256)
+	retry.Traits.AvoidVersion = "0.6.4"
+	next, _, skips := reg.ReserveNextFromPlan(retry, plan)
+	if next == nil || next.ID != "a1" {
+		t.Fatalf("next=%v, want a1 (cost-order fallback onto the avoided version)", next)
+	}
+	if len(skips) != 0 {
+		t.Fatalf("skips=%+v, want none (fallback entries reserve with their own outcome)", skips)
+	}
+}
+
+// An empty AvoidVersion must leave plan consumption byte-identical to the
+// single-pass behavior: pure cost order, no deferral, no version skips.
+func TestReserveNextFromPlanNoAvoidVersionUnchanged(t *testing.T) {
+	reg := New(testLogger())
+	model := "plan-no-avoid-model"
+	planTestProvider(t, reg, "w", model, 0)
+	planTestProvider(t, reg, "a1", model, 400)
+	planTestProvider(t, reg, "a2", model, 800)
+
+	pr := planTestRequest("no-avoid-primary", 500, 256)
+	pr.Model = model
+	_, _, plan := reg.ReserveProviderWithPlan(model, pr)
+	if plan == nil {
+		t.Fatal("plan is nil")
+	}
+	setProviderVersion(reg.GetProvider("a1"), "0.6.4")
+	setProviderVersion(reg.GetProvider("a2"), "0.6.5")
+
+	retry := planTestRequest("no-avoid-retry", 500, 256)
+	next, _, skips := reg.ReserveNextFromPlan(retry, plan)
+	if next == nil || next.ID != "a1" {
+		t.Fatalf("next=%v, want a1 (plain cost order)", next)
+	}
+	if len(skips) != 0 {
+		t.Fatalf("skips=%+v, want none", skips)
+	}
+}

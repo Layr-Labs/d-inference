@@ -10,11 +10,15 @@
 // never wall-clock timestamps (clock skew across boxes).
 //
 // Design constraints, in order:
-//   * Bounded memory: fixed-size sample rings per bucket, a hard cap on the
-//     number of buckets (LRU-evicted), no unbounded history.
+//   * Bounded memory: fixed-size sample rings per bucket AND per fallback
+//     tier, a hard cap on the number of buckets (LRU-evicted), no unbounded
+//     history.
 //   * Cheap recording: the hot path (request completion) is one unfair lock
-//     plus one array-slot write; no sorting, no allocation after a ring fills.
-//   * Sorting happens only at estimate time (the probe path, human-rate).
+//     plus O(1) ring-slot writes (exact bucket + the two fallback tiers); no
+//     sorting, no allocation after a ring fills.
+//   * Cheap probing: every estimate tier is a single dictionary lookup into a
+//     precomputed ring; sorting happens only at estimate time and only over
+//     one ring's ≤ 64 samples — probe cost never scales with bucket count.
 
 import Foundation
 
@@ -87,8 +91,24 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
         }
     }
 
+    /// Fallback-tier identity for the (model, warm) aggregate ring.
+    private struct ModelWarmKey: Hashable {
+        let model: String
+        let warm: Bool
+    }
+
     private let lock = OSAllocatedUnfairLock()
     private var buckets: [Key: Ring] = [:]
+    /// Precomputed fallback tiers, appended on the record path (O(1) each)
+    /// instead of rebuilt per probe. The probe path previously copied every
+    /// matching bucket's samples into both aggregate arrays under the lock —
+    /// up to `maxBuckets × ringCapacity` (32,768) doubles gathered and sorted
+    /// synchronously on the coordinator-client actor, delaying frame decode
+    /// behind sustained probe traffic. A bounded ring per tier keeps probes
+    /// O(ringCapacity) worst-case: nearest-rank over the freshest ≤ 64
+    /// samples, the same estimator quality every other tier gets.
+    private var modelWarmAggregates: [ModelWarmKey: Ring] = [:]
+    private var modelAggregates: [String: Ring] = [:]
     private var touchCounter: UInt64 = 0
 
     public init() {}
@@ -125,6 +145,7 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
             warm: warm,
             promptBucket: Self.promptBucket(forPromptTokens: promptTokens),
             batchBucket: Self.batchBucket(forActiveRequests: activeRequestsAtDispatch))
+        let tierKey = ModelWarmKey(model: model, warm: warm)
         lock.withLock {
             touchCounter &+= 1
             var ring = buckets[key] ?? Ring()
@@ -137,7 +158,32 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
                 }
             }
             buckets[key] = ring
+            // Feed the fallback tiers on the same O(1) write path. The
+            // aggregate key spaces (models × warmth, models) are strictly
+            // smaller than the bucket key space, but cap them identically so
+            // a hostile model-id mix can never outgrow the bucket bound.
+            appendToAggregate(&modelWarmAggregates, key: tierKey, value: ttftMs)
+            appendToAggregate(&modelAggregates, key: model, value: ttftMs)
         }
+    }
+
+    /// Append one sample to a fallback-tier ring, LRU-evicting whole tiers at
+    /// the same ``maxBuckets`` cap the exact buckets use. Must run under the
+    /// lock (shares `touchCounter`).
+    private func appendToAggregate<K: Hashable>(
+        _ aggregates: inout [K: Ring],
+        key: K,
+        value: Double
+    ) {
+        var ring = aggregates[key] ?? Ring()
+        ring.append(value)
+        ring.lastTouch = touchCounter
+        if aggregates[key] == nil, aggregates.count >= Self.maxBuckets {
+            if let victim = aggregates.min(by: { $0.value.lastTouch < $1.value.lastTouch })?.key {
+                aggregates.removeValue(forKey: victim)
+            }
+        }
+        aggregates[key] = ring
     }
 
     /// Quantile estimate with the documented fallback chain:
@@ -145,44 +191,55 @@ public final class TTFTQuantileTracker: @unchecked Sendable {
     /// (model, warm) aggregate → model aggregate (both `.low`) → nil, in
     /// which case the caller quotes its benchmark/manifest-derived floor with
     /// `confidence = .low`.
+    ///
+    /// Every tier is a single dictionary lookup against a precomputed ring —
+    /// an exact-bucket hit copies only its own ≤ ``ringCapacity`` samples and
+    /// never touches the fallback tiers, so probe cost is independent of how
+    /// many buckets the model has accumulated.
     public func estimate(
         model: String,
         warm: Bool,
         promptBucket: Int,
         batchBucket: Int
     ) -> Estimate? {
-        let (exact, modelWarm, modelAny) = lock.withLock {
-            () -> ([Double], [Double], [Double]) in
-            var exact: [Double] = []
-            var modelWarm: [Double] = []
-            var modelAny: [Double] = []
-            for (key, ring) in buckets where key.model == model {
-                modelAny.append(contentsOf: ring.samples)
-                guard key.warm == warm else { continue }
-                modelWarm.append(contentsOf: ring.samples)
-                if key.promptBucket == promptBucket, key.batchBucket == batchBucket {
-                    exact = ring.samples
-                }
+        let key = Key(
+            model: model, warm: warm,
+            promptBucket: promptBucket, batchBucket: batchBucket)
+        let resolved = lock.withLock {
+            () -> ([Double], CapacityQuoteConfidence)? in
+            if let ring = buckets[key], !ring.samples.isEmpty {
+                let confidence: CapacityQuoteConfidence =
+                    ring.samples.count >= Self.highConfidenceMinSamples ? .high : .low
+                return (ring.samples, confidence)
             }
-            return (exact, modelWarm, modelAny)
+            if let ring = modelWarmAggregates[ModelWarmKey(model: model, warm: warm)],
+                !ring.samples.isEmpty
+            {
+                return (ring.samples, .low)
+            }
+            if let ring = modelAggregates[model], !ring.samples.isEmpty {
+                return (ring.samples, .low)
+            }
+            return nil
         }
-        if exact.count >= Self.highConfidenceMinSamples {
-            return Self.quantiles(exact, confidence: .high)
-        }
-        if !exact.isEmpty {
-            return Self.quantiles(exact, confidence: .low)
-        }
-        if !modelWarm.isEmpty {
-            return Self.quantiles(modelWarm, confidence: .low)
-        }
-        if !modelAny.isEmpty {
-            return Self.quantiles(modelAny, confidence: .low)
-        }
-        return nil
+        guard let (samples, confidence) = resolved else { return nil }
+        return Self.quantiles(samples, confidence: confidence)
     }
 
-    /// Nearest-rank quantiles over a copy of the samples. Sorting ≤ a few
-    /// hundred doubles at probe rate is noise; recording stays O(1).
+    /// Test seam for the boundedness contract: the sample count currently
+    /// held by each fallback tier for `model`. Lets tests assert a probe can
+    /// only ever touch bounded work (≤ ``ringCapacity`` per tier) without
+    /// timing assertions.
+    func aggregateSampleCounts(model: String, warm: Bool) -> (modelWarm: Int, model: Int) {
+        lock.withLock {
+            (modelWarmAggregates[ModelWarmKey(model: model, warm: warm)]?.samples.count ?? 0,
+             modelAggregates[model]?.samples.count ?? 0)
+        }
+    }
+
+    /// Nearest-rank quantiles over a copy of the samples. Every tier is a
+    /// bounded ring, so this sorts ≤ ``ringCapacity`` doubles per probe;
+    /// recording stays O(1).
     private static func quantiles(
         _ samples: [Double],
         confidence: CapacityQuoteConfidence

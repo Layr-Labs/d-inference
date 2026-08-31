@@ -630,3 +630,124 @@ func TestHedgeGovernorSnapshotCapacitySilentFleet(t *testing.T) {
 		t.Fatal("capacitySignalsAvailable = false with a quote-capable provider serving the model")
 	}
 }
+
+// TestQuoteTrackerSweepIsTimeGated pins the P1 fix on add's expiry sweep:
+// the >1024 size trigger only makes a sweep worth CONSIDERING — the time
+// gate (quoteTrackerSweepInterval) must hold sustained over-threshold
+// insertion to at most one full scan per window, instead of rescanning the
+// whole map under t.mu on every add.
+func TestQuoteTrackerSweepIsTimeGated(t *testing.T) {
+	var tr quoteTracker
+	live := time.Now().Add(time.Hour) // unexpired: a sweep removes nothing
+	for i := range 1025 {
+		tr.add(fmt.Sprintf("q%04d", i), &pendingQuote{expiresAt: live})
+	}
+	if tr.sweeps != 0 {
+		t.Fatalf("sweeps=%d while filling to the threshold, want 0", tr.sweeps)
+	}
+
+	// First over-threshold add: the zero-value lastSweep passes the time
+	// gate, so exactly one sweep runs.
+	tr.add("over-0", &pendingQuote{expiresAt: live})
+	if tr.sweeps != 1 {
+		t.Fatalf("sweeps=%d after first over-threshold add, want 1", tr.sweeps)
+	}
+
+	// Sustained over-threshold insertion within the window: still one sweep.
+	for i := range 64 {
+		tr.add(fmt.Sprintf("over-%d", i+1), &pendingQuote{expiresAt: live})
+	}
+	if tr.sweeps != 1 {
+		t.Fatalf("sweeps=%d after 64 in-window adds, want 1 (time-gated)", tr.sweeps)
+	}
+
+	// A full window elapses (clock seam: rewind lastSweep) — the next add
+	// sweeps again, and the sweep still collects expired entries.
+	tr.mu.Lock()
+	tr.pending["expired-a"] = &pendingQuote{expiresAt: time.Now().Add(-time.Second)}
+	tr.pending["expired-b"] = &pendingQuote{expiresAt: time.Now().Add(-time.Second)}
+	tr.lastSweep = time.Now().Add(-2 * quoteTrackerSweepInterval)
+	tr.mu.Unlock()
+	tr.add("post-window", &pendingQuote{expiresAt: live})
+	if tr.sweeps != 2 {
+		t.Fatalf("sweeps=%d after the window elapsed, want 2", tr.sweeps)
+	}
+	tr.mu.Lock()
+	_, expAlive := tr.pending["expired-a"]
+	_, liveAlive := tr.pending["post-window"]
+	tr.mu.Unlock()
+	if expAlive || !liveAlive {
+		t.Fatalf("post-window sweep: expired retained=%v live dropped=%v", expAlive, !liveAlive)
+	}
+}
+
+// TestHedgeGovernorSnapshotQueueDepthFiltersIncompatibleWaiters pins the P2
+// routing-compatibility filter on modelQueueDepth: a waiter that structurally
+// cannot drain onto the capacity a public hedge would consume (exclusive
+// self-route, or pinned to serials the request cannot use) must not suppress
+// that hedge, while a plain public waiter still does.
+func TestHedgeGovernorSnapshotQueueDepthFiltersIncompatibleWaiters(t *testing.T) {
+	reg := New(testLogger())
+	model := "governor-queue-filter-model"
+	for i := range 2 {
+		planTestProvider(t, reg, fmt.Sprintf("gq%02d", i), model, int64(i)*400)
+	}
+	pr := planTestRequest("governor-queue", 200, 128)
+	pr.Model = model
+
+	enqueue := func(id string, pending *PendingRequest) {
+		t.Helper()
+		if err := reg.Queue().Enqueue(&QueuedRequest{
+			RequestID:  id,
+			Model:      model,
+			ResponseCh: make(chan *Provider, 1),
+			Pending:    pending,
+		}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+
+	enqueue("w-self", &PendingRequest{RequestID: "w-self", Model: model, SelfRouteOnly: true, OwnerAccountID: "acct-A"})
+	if _, depth, _, _ := reg.HedgeGovernorSnapshot(model, pr); depth != 0 {
+		t.Fatalf("modelQueueDepth = %d with only a self-route-only waiter, want 0 (must not suppress a public hedge)", depth)
+	}
+
+	enqueue("w-serial", &PendingRequest{RequestID: "w-serial", Model: model, AllowedProviderSerials: []string{"SER-X"}})
+	if _, depth, _, _ := reg.HedgeGovernorSnapshot(model, pr); depth != 0 {
+		t.Fatalf("modelQueueDepth = %d with a non-overlapping serial-pinned waiter, want 0", depth)
+	}
+
+	enqueue("w-public", &PendingRequest{RequestID: "w-public", Model: model})
+	if _, depth, _, _ := reg.HedgeGovernorSnapshot(model, pr); depth != 1 {
+		t.Fatalf("modelQueueDepth = %d with a plain public waiter, want 1 (still suppresses)", depth)
+	}
+
+	// A request pinned to the SAME serial set demonstrably competes with the
+	// pinned waiter — both count, plus the unconstrained public waiter.
+	pinned := planTestRequest("governor-queue-pinned", 200, 128)
+	pinned.Model = model
+	pinned.AllowedProviderSerials = []string{"SER-X"}
+	if _, depth, _, _ := reg.HedgeGovernorSnapshot(model, pinned); depth != 2 {
+		t.Fatalf("modelQueueDepth = %d for an overlapping pinned request, want 2 (pinned + public waiters)", depth)
+	}
+}
+
+// TestHedgeGovernorSnapshotExcludesPrivateOnlyIdleSlots pins the P2 hedge
+// budget fix: an idle slot on a private-only provider serves exclusively its
+// owner's self-route requests, cannot absorb displaced public demand, and so
+// must not mint public hedge budget via fleetIdleSlots.
+func TestHedgeGovernorSnapshotExcludesPrivateOnlyIdleSlots(t *testing.T) {
+	reg := New(testLogger())
+	model := "governor-private-model"
+	planTestProvider(t, reg, "pub", model, 0)
+	priv := planTestProvider(t, reg, "priv", model, 400)
+	priv.mu.Lock()
+	priv.PrivateOnly = true
+	priv.mu.Unlock()
+
+	pr := planTestRequest("governor-private", 200, 128)
+	pr.Model = model
+	if _, _, idleSlots, _ := reg.HedgeGovernorSnapshot(model, pr); idleSlots != 1 {
+		t.Fatalf("fleetIdleSlots = %d, want 1 (idle private-only slot contributes zero)", idleSlots)
+	}
+}

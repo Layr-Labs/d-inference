@@ -483,7 +483,11 @@ func (s *Server) isRequestShapeBatchBudgetReject(providerID, model, errStr, errR
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil && rec != nil {
 		modelContext = rec.MaxContextLength
 	}
-	return classifyRejection(errReason, errStr, providerBudget, modelContext) == rejectionDeterministicUnservable
+	// No typed CapacityRejectionReason threads into the strike funnel
+	// (noteInferenceError carries only the string vocabulary), so this stays
+	// the legacy string+heartbeat heuristic — enriched typed reasons already
+	// reach it mapped onto error_reason by the sanitizer.
+	return classifyRejection(errReason, errStr, providerBudget, modelContext, "") == rejectionDeterministicUnservable
 }
 
 // noteInferenceSuccess clears the inference-error strike state for the serving

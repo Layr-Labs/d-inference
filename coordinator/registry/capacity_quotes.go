@@ -74,18 +74,38 @@ type pendingQuote struct {
 	deliver    chan<- quoteDelivery
 }
 
+// quoteTrackerSweepInterval is the minimum spacing between full sweeps of the
+// pending-quote map. Probe entries expire at probe-window scale (the api
+// layer's capacityProbeWindow, 250ms), so sweeping faster than the window is
+// pure overhead: entries added since the last sweep cannot have expired yet,
+// and rescanning them buys nothing. Without the gate the >1024 size trigger
+// turns quadratic under sustained load — at eight probes per request and a
+// 250ms window, ~129 concurrent primary requests keep the map above the
+// threshold with mostly-unexpired entries, so EVERY insertion would rescan
+// the whole map under the single tracker mutex and serialize quote delivery
+// behind cleanup (codex P1). One sweep per window bounds cleanup to O(size)
+// per window instead of per insert.
+const quoteTrackerSweepInterval = 250 * time.Millisecond
+
 // quoteTracker correlates capacity quotes with their probes by quote_id.
 // LEAF mutex: nothing is called while holding t.mu except buffered channel
 // sends, and no code path takes r.mu, p.mu, or a plan mu under it.
 type quoteTracker struct {
 	mu      sync.Mutex
 	pending map[string]*pendingQuote
+	// lastSweep gates add's expiry sweep to once per
+	// quoteTrackerSweepInterval; sweeps counts performed sweeps (test
+	// instrumentation only). Both guarded by mu.
+	lastSweep time.Time
+	sweeps    int
 }
 
-// add registers an outstanding probe. The opportunistic >1024 sweep (same
-// idiom as the sibling cooldown maps) drops expired entries whose collector
-// died before its window sweep — a leak only a panicked collector can create,
-// since a live one takes back every silent entry at expiry.
+// add registers an outstanding probe. The opportunistic sweep (same idiom as
+// the sibling cooldown maps) drops expired entries whose collector died
+// before its window sweep — a leak only a panicked collector can create,
+// since a live one takes back every silent entry at expiry. The >1024 size
+// trigger merely makes a sweep WORTH considering; the time gate
+// (quoteTrackerSweepInterval) decides whether one actually runs.
 func (t *quoteTracker) add(quoteID string, pq *pendingQuote) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -94,9 +114,13 @@ func (t *quoteTracker) add(quoteID string, pq *pendingQuote) {
 	}
 	if len(t.pending) > 1024 {
 		now := time.Now()
-		for id, e := range t.pending {
-			if now.After(e.expiresAt) {
-				delete(t.pending, id)
+		if now.Sub(t.lastSweep) >= quoteTrackerSweepInterval {
+			t.lastSweep = now
+			t.sweeps++
+			for id, e := range t.pending {
+				if now.After(e.expiresAt) {
+					delete(t.pending, id)
+				}
 			}
 		}
 	}
@@ -340,12 +364,18 @@ func applyQuoteDelivery(plan *DispatchPlan, d quoteDelivery) QuoteOutcome {
 //     as the Phase-0 shadow signal (loadedIdleAlternativeExistsLocked), so
 //     the governor and the shadow metric can never disagree on "spare
 //     capacity exists";
-//   - modelQueueDepth: queued demand for the model (queued consumers outrank
-//     insurance);
+//   - modelQueueDepth: queued demand for the model whose routing constraints
+//     could overlap the capacity available to THIS request (queued consumers
+//     outrank insurance — but only consumers that could actually drain onto
+//     the pool a hedge would spend; see CompetingQueueDepth for why
+//     self-route-only and non-overlapping serial-pinned waiters are out);
 //   - fleetIdleSlots: slots with any model resident and zero occupancy,
-//     across the whole fleet, from the same heartbeat BackendCapacity
-//     snapshots routing reads — the global concurrent-hedge budget's
-//     denominator;
+//     across the publicly-routable fleet, from the same heartbeat
+//     BackendCapacity snapshots routing reads — the global concurrent-hedge
+//     budget's denominator. Private-only providers are excluded: their idle
+//     slots serve exclusively their owner's self-route requests, so they
+//     cannot absorb the public demand a hedge displaces and must not mint
+//     public hedge budget;
 //   - capacitySignalsAvailable: at least one live provider serving the model
 //     reports a BackendCapacity snapshot (or has proven quote capability).
 //     The dual-path switch: on a capacity-SILENT fleet (all-legacy, plan
@@ -365,7 +395,7 @@ func applyQuoteDelivery(plan *DispatchPlan, d quoteDelivery) QuoteOutcome {
 // inside it (see RequestQueue.PreferWaiterOwners for the ordering rule).
 func (r *Registry) HedgeGovernorSnapshot(model string, pr *PendingRequest, excludeIDs ...string) (idleAlternativeExists bool, modelQueueDepth int, fleetIdleSlots int, capacitySignalsAvailable bool) {
 	if q := r.Queue(); q != nil {
-		modelQueueDepth = q.QueueSize(model)
+		modelQueueDepth = q.CompetingQueueDepth(model, pr)
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -375,7 +405,7 @@ func (r *Registry) HedgeGovernorSnapshot(model string, pr *PendingRequest, exclu
 	for _, p := range r.providers {
 		p.mu.Lock()
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
-			if p.BackendCapacity != nil {
+			if p.BackendCapacity != nil && !p.PrivateOnly {
 				for _, slot := range p.BackendCapacity.Slots {
 					if slotStateModelLoaded(slot.State) && slot.NumRunning == 0 && slot.NumWaiting == 0 {
 						fleetIdleSlots++

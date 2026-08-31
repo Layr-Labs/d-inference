@@ -186,7 +186,7 @@ private func capacity(seq: UInt64) -> BackendCapacity {
 
 // MARK: - enriched inference_error fields
 
-@Test func inferenceErrorEnrichedFieldsEncodeAndOmitLikeGoOmitempty() throws {
+@Test func inferenceErrorEnrichedFieldsEncodePresenceAndOmitempty() throws {
     let enriched = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-1",
         failure: InferenceFailure(
@@ -212,8 +212,13 @@ private func capacity(seq: UInt64) -> BackendCapacity {
         #expect(bareObj.keys.contains(key) == false, "unexpected \(key)")
     }
 
-    // Zero values mirror Go omitempty: absent, so absent-decodes-as-zero
-    // agrees on both sides.
+    // feasible_after_ms / capacity_seq mirror Go omitempty (zero ≡ "no
+    // estimate" / "unstamped": absent, so absent-decodes-as-zero agrees on
+    // both sides). available_token_budget does NOT: presence semantics — an
+    // explicit zero is real state ("busy slot, zero free tokens") and must
+    // be encoded, or the coordinator falls back to its stale heartbeat
+    // budget and can misclassify a transient reject as deterministic. The
+    // Go mirror is `*int64`.
     let zeros = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-3",
         failure: InferenceFailure(
@@ -223,9 +228,21 @@ private func capacity(seq: UInt64) -> BackendCapacity {
             feasibleAfterMs: 0,
             capacitySeq: 0)))
     let zerosObj = try object(try ProviderProtocolCodec.encodeProviderMessage(zeros))
-    for key in ["available_token_budget", "feasible_after_ms", "capacity_seq"] {
+    #expect(zerosObj["available_token_budget"] as? Int64 == 0)
+    for key in ["feasible_after_ms", "capacity_seq"] {
         #expect(zerosObj.keys.contains(key) == false, "unexpected \(key)")
     }
+
+    // The explicit zero survives a full round trip as a PRESENT zero, and
+    // stays distinguishable from the omitted/nil legacy shape.
+    let zeroRoundTrip = try ProviderProtocolCodec.decodeProviderMessage(
+        from: try ProviderProtocolCodec.encodeProviderMessage(zeros))
+    guard case .inferenceError(let zrt) = zeroRoundTrip else {
+        throw QuoteTestFailure.unexpectedMessage
+    }
+    #expect(zrt.availableTokenBudget == 0)
+    #expect(zrt.feasibleAfterMs == nil)
+    #expect(zrt.capacitySeq == nil)
 }
 
 @Test func inferenceErrorLegacyFramesDecodeUnchangedAndUnknownReasonIsTolerated() throws {

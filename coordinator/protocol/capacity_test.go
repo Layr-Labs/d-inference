@@ -279,8 +279,10 @@ func TestBackendCapacitySeqWire(t *testing.T) {
 
 // TestInferenceErrorEnrichedRejectionWire pins the additive contract on
 // inference_error: legacy frames without the routing-v2 fields decode to zero
-// values, a legacy-shaped struct marshals without the new keys, and an
-// enriched rejection round-trips all four fields.
+// values (nil budget), a legacy-shaped struct marshals without the new keys,
+// an enriched rejection round-trips all four fields, and — the P1-4 presence
+// contract — an EXPLICIT zero live budget survives the wire instead of being
+// conflated with "not enriched".
 func TestInferenceErrorEnrichedRejectionWire(t *testing.T) {
 	legacyRaw := `{"type":"inference_error","request_id":"req-1","error":"capacity","status_code":503,"failure_code":"capacity"}`
 	var pm ProviderMessage
@@ -294,9 +296,9 @@ func TestInferenceErrorEnrichedRejectionWire(t *testing.T) {
 	if legacy.RequestID != "req-1" || legacy.StatusCode != 503 || legacy.FailureCode != FailureCodeCapacity {
 		t.Errorf("legacy fields disturbed: %+v", legacy)
 	}
-	if legacy.RejectionReason != "" || legacy.AvailableTokenBudget != 0 ||
+	if legacy.RejectionReason != "" || legacy.AvailableTokenBudget != nil ||
 		legacy.FeasibleAfterMS != 0 || legacy.CapacitySeq != 0 {
-		t.Errorf("legacy frame must decode with zero routing-v2 fields: %+v", legacy)
+		t.Errorf("legacy frame must decode with zero routing-v2 fields (nil budget): %+v", legacy)
 	}
 	reencoded, err := json.Marshal(legacy)
 	if err != nil {
@@ -308,6 +310,7 @@ func TestInferenceErrorEnrichedRejectionWire(t *testing.T) {
 		}
 	}
 
+	budget := int64(2048)
 	enriched := InferenceErrorMessage{
 		Type:                 TypeInferenceError,
 		RequestID:            "req-2",
@@ -315,7 +318,7 @@ func TestInferenceErrorEnrichedRejectionWire(t *testing.T) {
 		StatusCode:           503,
 		FailureCode:          FailureCodeCapacity,
 		RejectionReason:      RejectionReasonTokenBudget,
-		AvailableTokenBudget: 2048,
+		AvailableTokenBudget: &budget,
 		FeasibleAfterMS:      450,
 		CapacitySeq:          17,
 	}
@@ -335,7 +338,36 @@ func TestInferenceErrorEnrichedRejectionWire(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal enriched: %v", err)
 	}
-	if decoded != enriched {
+	if !reflect.DeepEqual(decoded, enriched) {
 		t.Errorf("enriched round-trip mismatch: got %+v, want %+v", decoded, enriched)
+	}
+
+	// Explicit zero: a busy slot with exactly zero tokens free is a real
+	// measurement. It must be ENCODED (present key, value 0) and decode back
+	// to a non-nil zero — never collapse to the legacy "absent" shape, which
+	// would send the coordinator back to the stale heartbeat budget.
+	zero := int64(0)
+	zeroMsg := InferenceErrorMessage{
+		Type:                 TypeInferenceError,
+		RequestID:            "req-3",
+		Error:                "capacity",
+		StatusCode:           503,
+		FailureCode:          FailureCodeCapacity,
+		RejectionReason:      RejectionReasonTokenBudget,
+		AvailableTokenBudget: &zero,
+	}
+	zeroData, err := json.Marshal(zeroMsg)
+	if err != nil {
+		t.Fatalf("marshal zero-budget: %v", err)
+	}
+	if !strings.Contains(string(zeroData), `"available_token_budget":0`) {
+		t.Errorf("explicit zero budget must be encoded: %s", zeroData)
+	}
+	var zeroDecoded InferenceErrorMessage
+	if err := json.Unmarshal(zeroData, &zeroDecoded); err != nil {
+		t.Fatalf("unmarshal zero-budget: %v", err)
+	}
+	if zeroDecoded.AvailableTokenBudget == nil || *zeroDecoded.AvailableTokenBudget != 0 {
+		t.Errorf("explicit zero budget must decode non-nil zero: %+v", zeroDecoded.AvailableTokenBudget)
 	}
 }

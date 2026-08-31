@@ -135,6 +135,46 @@ import Testing
         model: "org/m", warm: true, promptBucket: freshest, batchBucket: 0) != nil)
 }
 
+@Test func probeWorkStaysBoundedRegardlessOfBucketCount() {
+    let tracker = TTFTQuantileTracker()
+    // A model with MANY buckets and far more samples than one ring holds:
+    // 200 distinct prompt buckets × 4 samples. The old probe path gathered
+    // every matching bucket's samples into rebuilt aggregates under the
+    // lock; the fix maintains bounded precomputed fallback rings instead.
+    for i in 0..<200 {
+        for _ in 0..<4 {
+            tracker.record(
+                model: "org/m", warm: true,
+                promptTokens: i * 512 + 1,
+                activeRequestsAtDispatch: 0,
+                // Bucket 512 (i == 0) gets a distinct 100ms so an exact hit
+                // is distinguishable from any aggregate blend.
+                ttftMs: i == 0 ? 100 : 500)
+        }
+    }
+    // Structural bound: each fallback tier holds at most ringCapacity
+    // samples, so ANY probe — exact hit or fallback — touches ≤ 64 samples
+    // per tier, never the 800 recorded.
+    let counts = tracker.aggregateSampleCounts(model: "org/m", warm: true)
+    #expect(counts.modelWarm == TTFTQuantileTracker.ringCapacity)
+    #expect(counts.model == TTFTQuantileTracker.ringCapacity)
+
+    // An exact-bucket hit answers from that bucket's own 4 samples (low
+    // confidence: under the high floor) and never blends the aggregates:
+    // 100ms, while the fallback rings' freshest 64 samples are all 500ms.
+    let exact = tracker.estimate(
+        model: "org/m", warm: true, promptBucket: 512, batchBucket: 0)
+    #expect(exact?.confidence == .low)
+    #expect(exact?.p50Ms == 100)
+
+    // A missing bucket still walks the fallback chain to the bounded
+    // (model, warm) ring.
+    let fallback = tracker.estimate(
+        model: "org/m", warm: true, promptBucket: 512, batchBucket: 4)
+    #expect(fallback?.confidence == .low)
+    #expect(fallback?.p50Ms == 500)
+}
+
 @Test func rejectsNonFiniteAndNegativeSamples() {
     let tracker = TTFTQuantileTracker()
     tracker.record(

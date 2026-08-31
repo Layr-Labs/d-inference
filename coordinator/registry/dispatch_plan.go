@@ -48,6 +48,13 @@ const (
 	// longer clears the full admission gate chain (structural/trait/trust
 	// gates, capacity admission, TTFT ceiling) against CURRENT state.
 	PlanSkipGateRejected PlanSkipReason = "gate_rejected"
+	// PlanSkipVersionAvoided: a version-diverse retry (pr.Traits.AvoidVersion)
+	// reserved an entry running a DIFFERENT binary version, so this entry —
+	// live on exactly the avoided version — was passed over. Soft by
+	// construction: recorded only when diversity actually won; when no
+	// diverse entry is admissible the same entries are revisited and reserve
+	// or fail with their own reasons.
+	PlanSkipVersionAvoided PlanSkipReason = "version_avoided"
 	// PlanSkipExhausted: no entries remain in the plan. Plan-level, carried
 	// with an empty ProviderID as the terminal element of the skip list.
 	PlanSkipExhausted PlanSkipReason = "exhausted"
@@ -348,6 +355,18 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 // coordinatorExtra / pooledBudgetAdmits). See the ledger rationale on
 // reserveProvider's pending-debit path in scheduler.go.
 //
+// Version-diverse retry (SOFT — parity with scanCandidatesLocked's
+// post-candidate AvoidVersion narrowing): when pr.Traits.AvoidVersion is set,
+// consumption is a two-pass walk. Pass 1 visits the plan in cost order but
+// DEFERS every entry whose provider's LIVE reported version equals the
+// avoided one — read via providerVersion under p.mu during this
+// revalidation, never a scan-time copy, because the provider may have
+// upgraded (or rolled back onto the broken build) since the plan was built.
+// Pass 2 revisits the deferred entries in the same order only when no
+// diverse entry reserved, so diversity never fails closed: a pool that is
+// all-avoided-version behaves exactly as if AvoidVersion were empty, just as
+// the scan keeps its full pool when the diverse set is empty.
+//
 // The Phase-0 shadow TTFT evaluation is intentionally not recomputed for plan
 // reservations: it is observational primary-selection telemetry, and the plan
 // path is the retry/hedge lane.
@@ -378,50 +397,41 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	var skips []PlanSkip
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for {
-		entry, ok := plan.nextEntry()
-		if !ok {
-			skips = append(skips, PlanSkip{Reason: PlanSkipExhausted})
-			return nil, RoutingDecision{Model: model}, skips
-		}
+
+	// tryReserve runs the full CURRENT gate chain against one identity-checked
+	// entry and, on success, commits the reservation. Failure appends the
+	// bounded gate_rejected skip.
+	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
 		id := entry.view.ProviderID
+		p := entry.provider
 		skip := func(reason PlanSkipReason) {
 			skips = append(skips, PlanSkip{ProviderID: id, Reason: reason})
 		}
-		if _, excluded := exclude[id]; excluded {
-			skip(PlanSkipExcluded)
-			continue
-		}
-		if cur, live := r.providers[id]; !live || cur != entry.provider {
-			skip(PlanSkipStaleSession)
-			continue
-		}
-		p := entry.provider
 		// Scan-order pre-snapshot filters (scanCandidatesLocked): exclusive
 		// self-route ownership and the attested-serial allowlist.
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		if pr.SelfRouteOnly && !owned {
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 		if len(allowedSerials) > 0 && !providerMatchesAllowedSerial(p, allowedSerials) {
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 		snap, ok := r.snapshotProviderLocked(p, model, pr.Traits, relaxTrust)
 		if !ok {
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 		candidate, _, ok := r.buildCandidateWithReason(snap, pr)
 		if !ok {
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 
 		// Final admit + reservation under p.mu — the same commit sequence as
@@ -432,7 +442,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
-			continue
+			return nil, RoutingDecision{}, false
 		}
 		pr.ProviderID = p.ID
 		p.addPendingLocked(pr)
@@ -473,8 +483,50 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			EffectiveTPS:       candidate.effectiveTPS,
 			StaticTPS:          candidate.snapshot.decodeTPS,
 		}
-		return p, decision, skips
+		return p, decision, true
 	}
+
+	// Pass 1: cost order, deferring live avoided-version entries (see the
+	// version-diverse retry rationale in the doc comment).
+	avoid := pr.Traits.AvoidVersion
+	var deferred []planEntry
+	for {
+		entry, ok := plan.nextEntry()
+		if !ok {
+			break
+		}
+		id := entry.view.ProviderID
+		if _, excluded := exclude[id]; excluded {
+			skips = append(skips, PlanSkip{ProviderID: id, Reason: PlanSkipExcluded})
+			continue
+		}
+		if cur, live := r.providers[id]; !live || cur != entry.provider {
+			skips = append(skips, PlanSkip{ProviderID: id, Reason: PlanSkipStaleSession})
+			continue
+		}
+		if avoid != "" && providerVersion(entry.provider) == avoid {
+			deferred = append(deferred, entry)
+			continue
+		}
+		if p, decision, ok := tryReserve(entry); ok {
+			// Diversity won: the deferred same-version entries were passed
+			// over for this consumption — record them for telemetry.
+			for _, d := range deferred {
+				skips = append(skips, PlanSkip{ProviderID: d.view.ProviderID, Reason: PlanSkipVersionAvoided})
+			}
+			return p, decision, skips
+		}
+	}
+	// Pass 2: no diverse entry was admissible — fall back to the avoided
+	// version rather than failing closed. The pass-1 identity checks remain
+	// valid: r.providers cannot change while the r.mu write lock is held.
+	for _, entry := range deferred {
+		if p, decision, ok := tryReserve(entry); ok {
+			return p, decision, skips
+		}
+	}
+	skips = append(skips, PlanSkip{Reason: PlanSkipExhausted})
+	return nil, RoutingDecision{Model: model}, skips
 }
 
 // RefreshDispatchPlan performs the plan's single full re-scan refresh: a fresh

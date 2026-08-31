@@ -117,7 +117,7 @@ private func quote(
 }
 
 @Test func advertisedButUnloadedModelIsAdmissibleOnlyWhenColdLoadFits() {
-    // freeForLoadGb (40) ≥ required (8 + headroom): cold-admissible.
+    // freeForLoadGb (40) ≥ the padded weights (8): cold-admissible.
     let fits = quote(capacity: capacity([], freeForLoadGb: 40), model: model(weightsGb: 8))
     #expect(fits.admissibleNow)
     #expect(fits.availableTokenBudget == 0)
@@ -127,6 +127,50 @@ private func quote(
     let tooBig = quote(capacity: capacity([], freeForLoadGb: 2), model: model(weightsGb: 8))
     #expect(!tooBig.admissibleNow)
     #expect(tooBig.rejectionReason == .memoryCap)
+}
+
+@Test func coldQuoteNeverDoubleChargesTheLoadHeadroom() {
+    // freeForLoadGb rides the heartbeat as ModelLoadAdmission
+    // .maxLoadableWeightGb — ALREADY net of the activation + min-KV load
+    // headroom. A provider whose published figure barely covers the padded
+    // weights must quote admissible: re-adding requiredToLoadGb's headroom
+    // on top would charge it twice and reject exactly the near-capacity
+    // providers the real load gate admits.
+    let weightsGb = 8.0
+    let epsilon = 0.001
+    let q = quote(
+        capacity: capacity([], freeForLoadGb: weightsGb + epsilon),
+        model: model(weightsGb: weightsGb))
+    #expect(q.admissibleNow)
+    #expect(q.rejectionReason == nil)
+
+    // ...and the real load gate agrees, by the same arithmetic: with no
+    // unreclaimable MLX usage, maxLoadableWeightGb == freeForLoadGb − h, so
+    // "weights ≤ published freeForLoadGb" ⟺ canLoad's
+    // "weights + h ≤ raw free". Pin the equivalence on synthetic bytes.
+    let gb = 1024.0 * 1024.0 * 1024.0
+    let headroomGb = 3.0
+    let totalBytes = UInt64(64.0 * gb)
+    let reserveBytes = UInt64(4.0 * gb)
+    // Choose OS-available so the published loadable-weight figure is
+    // weights + epsilon, exactly the quote scenario above.
+    let availableBytes = UInt64((weightsGb + epsilon + headroomGb) * gb) + reserveBytes
+    let published = ModelLoadAdmission.maxLoadableWeightGb(
+        totalBytes: totalBytes,
+        systemAvailableBytes: availableBytes,
+        mlxUsedBytes: 0,
+        reserveBytes: reserveBytes,
+        headroomGb: headroomGb)
+    #expect(abs(published - (weightsGb + epsilon)) < 0.0001)
+    #expect(published >= weightsGb)
+    #expect(ModelLoadAdmission.canLoad(
+        weightsGb: weightsGb,
+        headroomGb: headroomGb,
+        totalBytes: totalBytes,
+        systemAvailableBytes: availableBytes,
+        gpuActiveBytes: 0,
+        gpuCacheBytes: 0,
+        reserveBytes: reserveBytes))
 }
 
 @Test func measuredTTFTQuantilesRideTheQuoteWithConfidence() {

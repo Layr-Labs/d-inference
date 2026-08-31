@@ -168,6 +168,7 @@ func TestSyncBinaryHashesReleaseRegistrationKeepsApprovedFleetRoutable(t *testin
 	}
 	logger := quietLogger()
 	reg := registry.New(logger)
+	reg.SetReleasePolicyEnforcement(true)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)
@@ -290,6 +291,7 @@ func TestReleaseDeactivationReadFailureConvergesPolicyFromCommittedDeactivation(
 	}
 	logger := quietLogger()
 	reg := registry.New(logger)
+	reg.SetReleasePolicyEnforcement(true)
 	srv := NewServer(reg, st, ServerConfig{AdminKey: "admin-key"}, logger)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("initial SyncBinaryHashes: %v", err)

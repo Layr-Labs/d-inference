@@ -1691,12 +1691,11 @@ func (s *Server) convergeReleasePolicyWithCommittedDeactivation(version, platfor
 // releaseEvidenceStillApproved reports whether previously granted application
 // evidence remains approved under a freshly built release-policy snapshot: the
 // same binary hash still maps to an active release with the same version,
-// platform, and backend, AND every release-specific runtime fact the original
-// challenge proved (python/runtime/metallib/template hashes — the full
-// releaseRuntimeMatches input set, retained on the evidence) is unchanged in
-// that release row. Any mismatch or ambiguity — including a field the evidence
-// cannot prove unchanged — fails closed (evidence is invalidated and the
-// provider re-challenged).
+// platform, and backend, and that release's metallib hash is unchanged. These
+// are the ONLY facts application evidence proves — python/runtime/per-family
+// template facts were deliberately removed (mlx-swift providers never report
+// them; requiring them made evidence underivable fleet-wide, 2026-08-31
+// incident). Binary hash and metallib fail closed on absence or mismatch.
 func releaseEvidenceStillApproved(
 	snapshot *releaseTrustPolicySnapshot,
 	evidence registry.ApplicationEvidence,
@@ -1704,7 +1703,6 @@ func releaseEvidenceStillApproved(
 	if evidence.BinaryHash == "" || evidence.MetallibHash == "" {
 		return false
 	}
-candidates:
 	for _, candidate := range snapshot.ByBinaryHash[evidence.BinaryHash] {
 		if candidate.Version != evidence.Version ||
 			candidate.Platform != evidence.Platform ||
@@ -1717,26 +1715,47 @@ candidates:
 		if candidate.Backend != "" && candidate.Backend != evidence.Backend {
 			continue
 		}
-		if candidate.PythonHash != "" && !strings.EqualFold(candidate.PythonHash, evidence.PythonHash) {
-			continue
-		}
-		if candidate.RuntimeHash != "" && !strings.EqualFold(candidate.RuntimeHash, evidence.RuntimeHash) {
-			continue
-		}
 		expectedMetallib, err := normalizeSHA256Hex(candidate.MetallibHash, "release.metallib_hash")
 		if err != nil || expectedMetallib != evidence.MetallibHash {
 			continue
 		}
-		// Every template hash the row pins must be re-proven from the facts the
-		// challenge measured; a template the evidence never proved fails closed.
-		for name, expected := range candidate.TemplateHashes {
-			if !strings.EqualFold(evidence.TemplateHashes[name], expected) {
-				continue candidates
-			}
-		}
 		return true
 	}
 	return false
+}
+
+// Closed outcome set for application-evidence derivation. Every
+// deriveApprovedReleaseTransition return path records exactly one of these as
+// a release_evidence.outcome DogStatsD counter tag so a candidate coordinator
+// can be judged in SHADOW mode from per-reason fleet counts instead of a
+// silent boolean (the 2026-08-31 zero-capacity deploys were undiagnosable
+// precisely because every rejection branch looked identical). No hashes,
+// keys, serials, or tokens ride on these tags.
+const (
+	evidenceOutcomeGranted                 = "granted"
+	evidenceReasonPrecondition             = "precondition"
+	evidenceReasonInvalidBinaryHash        = "invalid_binary_hash"
+	evidenceReasonPolicyUnavailable        = "policy_unavailable"
+	evidenceReasonPolicyNotRequired        = "policy_not_required"
+	evidenceReasonProcessIdentity          = "process_identity"
+	evidenceReasonRuntimeGate              = "runtime_gate"
+	evidenceReasonVersionFloor             = "version_floor"
+	evidenceReasonRegistrationHashMismatch = "registration_hash_mismatch"
+	evidenceReasonNoActiveRelease          = "no_active_release"
+	evidenceReasonMetallibMismatch         = "metallib_mismatch"
+)
+
+// recordReleaseEvidenceOutcome counts one application-evidence derivation
+// outcome. No-op without DogStatsD.
+func (s *Server) recordReleaseEvidenceOutcome(outcome string) {
+	s.ddIncr("release_evidence.outcome", []string{"outcome:" + outcome})
+}
+
+// evidenceRejected records the typed rejection reason and returns the empty
+// derivation result.
+func (s *Server) evidenceRejected(reason string) (approvedReleaseTransitionFact, registry.ApplicationEvidence, bool) {
+	s.recordReleaseEvidenceOutcome(reason)
+	return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
 }
 
 func (s *Server) deriveApprovedReleaseTransition(
@@ -1748,15 +1767,15 @@ func (s *Server) deriveApprovedReleaseTransition(
 		resp.SIPEnabled == nil || !*resp.SIPEnabled ||
 		resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled ||
 		provider.ChallengeShouldStop() {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+		return s.evidenceRejected(evidenceReasonPrecondition)
 	}
 	freshHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
 	if err != nil {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+		return s.evidenceRejected(evidenceReasonInvalidBinaryHash)
 	}
 	snapshot := s.releaseTrustPolicy.Load()
 	if snapshot == nil {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+		return s.evidenceRejected(evidenceReasonPolicyUnavailable)
 	}
 
 	provider.Mu().Lock()
@@ -1772,13 +1791,19 @@ func (s *Server) deriveApprovedReleaseTransition(
 	// token possession is enforced exclusively by the code-identity gate (with
 	// its own grace semantics). Tokenless legacy/headless providers with a
 	// valid signed challenge must still derive and keep evidence.
-	if !snapshot.Required || processKey == "" ||
-		attested == nil || !attested.Valid ||
-		attested.PublicKey == "" || attested.SerialNumber == "" ||
-		!runtimeVerified || !manifestChecked || !metallibVerified ||
-		(s.minProviderVersion != "" &&
-			(version == "" || semverLess(version, s.minProviderVersion))) {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	if !snapshot.Required {
+		return s.evidenceRejected(evidenceReasonPolicyNotRequired)
+	}
+	if processKey == "" || attested == nil || !attested.Valid ||
+		attested.PublicKey == "" || attested.SerialNumber == "" {
+		return s.evidenceRejected(evidenceReasonProcessIdentity)
+	}
+	if !runtimeVerified || !manifestChecked || !metallibVerified {
+		return s.evidenceRejected(evidenceReasonRuntimeGate)
+	}
+	if s.minProviderVersion != "" &&
+		(version == "" || semverLess(version, s.minProviderVersion)) {
+		return s.evidenceRejected(evidenceReasonVersionFloor)
 	}
 	// Registration-time binary_hash is optional and the production fleet omits
 	// it. The fresh hash is carried by this already-signature-verified challenge
@@ -1788,7 +1813,7 @@ func (s *Server) deriveApprovedReleaseTransition(
 	if strings.TrimSpace(attested.BinaryHash) != "" {
 		attestedHash, hashErr := normalizeSHA256Hex(attested.BinaryHash, "attested binary_hash")
 		if hashErr != nil || attestedHash != freshHash {
-			return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+			return s.evidenceRejected(evidenceReasonRegistrationHashMismatch)
 		}
 	}
 
@@ -1820,8 +1845,11 @@ func (s *Server) deriveApprovedReleaseTransition(
 			}
 		}
 	}
-	if !found || !releaseRuntimeMatches(current, resp) {
-		return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+	if !found {
+		return s.evidenceRejected(evidenceReasonNoActiveRelease)
+	}
+	if !releaseMetallibMatches(current, resp) {
+		return s.evidenceRejected(evidenceReasonMetallibMismatch)
 	}
 
 	approvedFrom := make(map[string]struct{})
@@ -1846,25 +1874,25 @@ func (s *Server) deriveApprovedReleaseTransition(
 		ProcessPublicKey: processKey, APNsToken: apnsToken,
 		BinaryHash: freshHash,
 		Version:    current.Version, Platform: current.Platform,
-		Backend: current.Backend, RuntimeHash: resp.RuntimeHash,
-		// Retain the full releaseRuntimeMatches fact set so the next policy
-		// sweep can re-prove every release-specific runtime field rather than
-		// assuming it unchanged (releaseEvidenceStillApproved).
-		PythonHash:     resp.PythonHash,
-		TemplateHashes: registry.CloneStringMap(resp.TemplateHashes),
-		MetallibHash:   metallibHash, VerifiedAt: time.Now().UTC(),
+		Backend:      current.Backend,
+		MetallibHash: metallibHash, VerifiedAt: time.Now().UTC(),
 		PolicyGeneration: snapshot.Generation,
 	}
+	s.recordReleaseEvidenceOutcome(evidenceOutcomeGranted)
 	return fact, evidence, true
 }
 
-func releaseRuntimeMatches(policy approvedReleasePolicy, resp *protocol.AttestationResponseMessage) bool {
-	if policy.PythonHash != "" && !strings.EqualFold(policy.PythonHash, resp.PythonHash) {
-		return false
-	}
-	if policy.RuntimeHash != "" && !strings.EqualFold(policy.RuntimeHash, resp.RuntimeHash) {
-		return false
-	}
+// releaseMetallibMatches verifies the ONE release-specific runtime fact both
+// sides always hold: the release row's metallib hash must equal the provider's
+// reported mlx_metallib template hash (both normalized 64-hex; absence on
+// either side fails closed). Nothing else is compared here by design — the
+// python plane is gone (mlx-swift providers hardcode it nil), and release
+// rows' per-model-family template hashes were CI fabrications (hashed from
+// CDN jinja files by release-swift.yml) that no provider ever reported;
+// requiring provider coverage of those made application evidence underivable
+// for 100% of the production fleet (2026-08-31 zero-capacity incident).
+// Binary-hash ↔ active-release matching is the caller's job.
+func releaseMetallibMatches(policy approvedReleasePolicy, resp *protocol.AttestationResponseMessage) bool {
 	if policy.MetallibHash == "" {
 		return false
 	}
@@ -1873,15 +1901,7 @@ func releaseRuntimeMatches(policy approvedReleasePolicy, resp *protocol.Attestat
 		return false
 	}
 	gotMetallib, err := normalizeSHA256Hex(resp.TemplateHashes["mlx_metallib"], "mlx_metallib")
-	if err != nil || gotMetallib != expectedMetallib {
-		return false
-	}
-	for name, expected := range policy.TemplateHashes {
-		if !strings.EqualFold(resp.TemplateHashes[name], expected) {
-			return false
-		}
-	}
-	return true
+	return err == nil && gotMetallib == expectedMetallib
 }
 
 func (s *Server) rebuildBinaryHashPolicyLocked() {

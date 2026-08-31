@@ -354,11 +354,15 @@ func TestRoutingGateInferenceErrorCooldown(t *testing.T) {
 	}
 }
 
+// TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence
+// characterizes ENFORCE mode: with enforcement on, a policy refresh that
+// invalidates evidence must synchronously remove routing authority.
 func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *testing.T) {
 	reg := &Registry{
 		providers:               make(map[string]*Provider),
 		releasePolicyGeneration: 1,
 		releasePolicyRequired:   true,
+		releasePolicyEnforced:   true,
 	}
 	provider := &Provider{
 		ID: "provider", PublicKey: "process-key", Backend: BackendMLXSwift,
@@ -412,6 +416,7 @@ func TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence(t *testing.T
 		providers:               make(map[string]*Provider),
 		releasePolicyGeneration: 1,
 		releasePolicyRequired:   true,
+		releasePolicyEnforced:   true,
 	}
 	provider := &Provider{
 		ID: "provider", PublicKey: "process-key", Backend: BackendMLXSwift,
@@ -459,5 +464,64 @@ func TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence(t *testing.T
 	}
 	if reg.providerSupportsPrivateTextLocked(provider) {
 		t.Fatal("invalidated provider must not remain routable")
+	}
+}
+
+// TestReleasePolicyShadowModeNeverBlocksRouting pins the rollout contract that
+// prevented a third zero-capacity deploy: with a required release policy but
+// enforcement OFF (the default), a provider with NO application evidence —
+// exactly the state of the whole production fleet the moment a new coordinator
+// boots — keeps routing, while the same provider is derouted the instant
+// enforcement flips on, and re-admitted once evidence lands.
+func TestReleasePolicyShadowModeNeverBlocksRouting(t *testing.T) {
+	reg := &Registry{
+		providers:               make(map[string]*Provider),
+		releasePolicyGeneration: 1,
+		releasePolicyRequired:   true,
+	}
+	provider := &Provider{
+		ID: "provider", PublicKey: "process-key", Backend: BackendMLXSwift,
+		Version: "0.8.15", APNsDeviceToken: "token",
+		EncryptedResponseChunks: true,
+		RuntimeManifestChecked:  true, ChallengeVerifiedSIP: true,
+		CodeAttested: true,
+		AttestationResult: &attestation.VerificationResult{
+			Valid: true, PublicKey: "se-key", SerialNumber: "SERIAL",
+		},
+		PrivacyCapabilities: &protocol.PrivacyCapabilities{
+			TextBackendInprocess: true,
+			TextProxyDisabled:    true,
+			AntiDebugEnabled:     true,
+			CoreDumpsDisabled:    true,
+			EnvScrubbed:          true,
+		},
+	}
+	reg.providers[provider.ID] = provider
+
+	if !reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("shadow mode must route a provider without application evidence")
+	}
+	holding, connected := reg.CountProvidersWithCurrentApplicationEvidence()
+	if holding != 0 || connected != 1 {
+		t.Fatalf("shadow coverage counter = (%d, %d), want (0, 1)", holding, connected)
+	}
+
+	reg.SetReleasePolicyEnforcement(true)
+	if reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("enforce mode must deroute a provider without application evidence")
+	}
+
+	provider.ApplicationEvidence = ApplicationEvidence{
+		SEPublicKey: "se-key", Serial: "SERIAL",
+		ProcessPublicKey: "process-key", APNsToken: "token",
+		BinaryHash: "hash", Version: "0.8.15", Backend: BackendMLXSwift,
+		EvidenceGeneration: 1, PolicyGeneration: 1,
+	}
+	if !reg.providerSupportsPrivateTextLocked(provider) {
+		t.Fatal("enforce mode must route once current evidence is held")
+	}
+	holding, connected = reg.CountProvidersWithCurrentApplicationEvidence()
+	if holding != 1 || connected != 1 {
+		t.Fatalf("coverage counter after grant = (%d, %d), want (1, 1)", holding, connected)
 	}
 }

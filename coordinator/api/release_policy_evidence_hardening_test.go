@@ -126,26 +126,23 @@ func TestHashlessRegistrationEarnsEvidenceFromFreshChallenge(t *testing.T) {
 	}
 }
 
-// TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep is the
-// review-finding regression for the carry-forward recheck: a policy refresh
-// must re-prove EVERY release-specific runtime field the original challenge
-// proved, not just binary/version/backend/metallib. Overwriting one release
-// row's template hash (binary and backend unchanged) must invalidate that
-// provider's carried evidence at the sweep with an immediate re-challenge kick
-// — even while ANOTHER active release keeps the old template hash allowlisted
-// globally.
-func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
-	tmplOld := strings.Repeat("1", 64)
-	tmplNew := strings.Repeat("2", 64)
-	pythonHash := strings.Repeat("3", 64)
+// TestMetallibRotationInvalidatesCarriedEvidenceAtSweep is the carry-forward
+// recheck regression: a policy refresh must re-prove the release-specific
+// facts application evidence actually holds — the binary→active-release
+// binding and the metallib hash. Overwriting one release row's metallib hash
+// (binary, backend, and version unchanged) must invalidate that provider's
+// carried evidence at the sweep with an immediate re-challenge kick — even
+// while ANOTHER active release keeps the old metallib hash allowlisted
+// globally. Per-model-family template hashes are deliberately NOT part of
+// this contract (TestFamilyTemplateReleaseRowsNeverGateEvidence).
+func TestMetallibRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
+	metallibOld := trHashC
+	metallibNew := strings.Repeat("2", 64)
 
 	relA := testRelease("2.0.0", trHashA)
-	relA.TemplateHashes = "chat_template=" + tmplOld
-	relA.PythonHash = pythonHash
-	// Release B (different version/binary) keeps the OLD template hash active,
+	// Release B (different version/binary) keeps the OLD metallib hash active,
 	// so any global-allowlist shortcut would wrongly vouch for the evidence.
 	relB := testRelease("2.1.0", trHashB)
-	relB.TemplateHashes = "chat_template=" + tmplOld
 
 	st := &releaseInventoryFailureStore{MemoryStore: store.NewMemory(store.Config{})}
 	for _, rel := range []*store.Release{relA, relB} {
@@ -155,36 +152,32 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 	}
 	logger := quietLogger()
 	reg := registry.New(logger)
+	reg.SetReleasePolicyEnforcement(true)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	if err := srv.SyncBinaryHashes(); err != nil {
 		t.Fatalf("SyncBinaryHashes: %v", err)
 	}
 
-	const model = "template-rotation-model"
-	provider := makeRoutableProvider(t, reg, "template-provider", model)
-	armReleaseChallengeProvider(t, provider, "2.0.0", trHashA, "se-template", "SER-TEMPLATE")
-	// A token is set so this test isolates the carry-forward recheck: it must
-	// fail on any code that skips re-proving release-specific runtime fields,
+	const model = "metallib-rotation-model"
+	provider := makeRoutableProvider(t, reg, "metallib-provider", model)
+	armReleaseChallengeProvider(t, provider, "2.0.0", trHashA, "se-metallib", "SER-METALLIB")
+	// A token is set so this test isolates the carry-forward recheck
 	// independent of the tokenless-evidence fix.
 	provider.Mu().Lock()
-	provider.APNsDeviceToken = "template-apns-token"
+	provider.APNsDeviceToken = "metallib-apns-token"
 	provider.Mu().Unlock()
 
 	resp := &protocol.AttestationResponseMessage{
 		BinaryHash: trHashA,
 		SIPEnabled: trBoolPtr(true), SecureBootEnabled: trBoolPtr(true),
-		PythonHash: pythonHash,
-		TemplateHashes: map[string]string{
-			"mlx_metallib":  trHashC,
-			"chat_template": tmplOld,
-		},
+		TemplateHashes: map[string]string{"mlx_metallib": metallibOld},
 	}
 	_, evidence, ok := srv.deriveApprovedReleaseTransition(provider, resp, true)
 	if !ok {
-		t.Fatal("active release with matching template hashes must derive evidence")
+		t.Fatal("active release with matching metallib must derive evidence")
 	}
-	if evidence.PythonHash != pythonHash || evidence.TemplateHashes["chat_template"] != tmplOld {
-		t.Fatalf("evidence must retain the proven runtime facts, got %+v", evidence)
+	if evidence.MetallibHash != metallibOld {
+		t.Fatalf("evidence must retain the proven metallib hash, got %+v", evidence)
 	}
 	if !provider.GrantApplicationEvidenceIfNotUntrusted(evidence) {
 		t.Fatal("evidence grant was refused")
@@ -208,10 +201,9 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 	default:
 	}
 
-	// Rotate ONLY release A's template hash; binary, backend, version,
-	// metallib, and python hash all stay equal, and release B still allowlists
-	// the old template hash globally.
-	relA.TemplateHashes = "chat_template=" + tmplNew
+	// Rotate ONLY release A's metallib hash; binary, backend, and version all
+	// stay equal, and release B still allowlists the old metallib globally.
+	relA.MetallibHash = metallibNew
 	if err := st.SetRelease(relA); err != nil {
 		t.Fatalf("SetRelease rotated: %v", err)
 	}
@@ -219,7 +211,7 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 		t.Fatalf("SyncBinaryHashes after rotation: %v", err)
 	}
 	if stale, ok := provider.ApplicationEvidenceSnapshot(); ok {
-		t.Fatalf("template-hash rotation must invalidate carried evidence, still holds %+v", stale)
+		t.Fatalf("metallib rotation must invalidate carried evidence, still holds %+v", stale)
 	}
 	select {
 	case <-provider.ImmediateChallengeChan():
@@ -227,11 +219,11 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 		t.Fatal("invalidated provider must be re-challenged immediately, not on the next tick")
 	}
 	if routed := findRoutableProvider(reg, model); routed != nil {
-		t.Fatalf("provider with rotated template hash remained routable: %s", routed.ID)
+		t.Fatalf("provider with rotated metallib hash remained routable under enforcement: %s", routed.ID)
 	}
 
-	// The re-challenge measuring the NEW template hash re-earns evidence.
-	resp.TemplateHashes["chat_template"] = tmplNew
+	// The re-challenge measuring the NEW metallib hash re-earns evidence.
+	resp.TemplateHashes["mlx_metallib"] = metallibNew
 	_, refreshed, ok := srv.deriveApprovedReleaseTransition(provider, resp, true)
 	if !ok {
 		t.Fatal("re-challenge against the rotated row must derive fresh evidence")
@@ -240,7 +232,7 @@ func TestTemplateHashRotationInvalidatesCarriedEvidenceAtSweep(t *testing.T) {
 		t.Fatal("fresh evidence grant was refused")
 	}
 	if routed := findRoutableProvider(reg, model); routed == nil || routed.ID != provider.ID {
-		t.Fatal("provider did not recover after re-proving the rotated template hash")
+		t.Fatal("provider did not recover after re-proving the rotated metallib hash")
 	}
 }
 
@@ -261,6 +253,7 @@ func TestFirstTokenHeartbeatRotatesTokenlessEvidence(t *testing.T) {
 	}
 	logger := quietLogger()
 	reg := registry.New(logger)
+	reg.SetReleasePolicyEnforcement(true)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
 	fastBudgets(srv)
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})

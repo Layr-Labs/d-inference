@@ -759,6 +759,13 @@ type DeviceEvidence struct {
 	RevocationGeneration uint64
 }
 
+// ApplicationEvidence proves this connection's process runs an active approved
+// release: the SE-signed challenge binary hash matched an active release row
+// for the provider's version/platform/backend, and the runtime metallib hash
+// matched that release. Deliberately NO python/runtime/per-family-template
+// facts: mlx-swift providers never report them (python is gone; family
+// template hashes were CI fabrications no provider could echo — requiring
+// them made evidence underivable fleet-wide, 2026-08-31 incident).
 type ApplicationEvidence struct {
 	SEPublicKey      string
 	Serial           string
@@ -767,19 +774,11 @@ type ApplicationEvidence struct {
 	// has one. It MAY be empty: tokenless (legacy/headless) providers with a
 	// valid signed challenge still earn application evidence — APNs token
 	// possession is enforced exclusively by the APNs code-identity gate.
-	APNsToken   string
-	BinaryHash  string
-	Version     string
-	Platform    string
-	Backend     string
-	RuntimeHash string
-	// PythonHash and TemplateHashes retain the release-specific runtime facts
-	// the challenge proved, so a policy refresh can re-prove EVERY
-	// releaseRuntimeMatches input against the new snapshot instead of assuming
-	// them unchanged. TemplateHashes is never mutated after the grant (the
-	// struct is copied by value; the map is shared read-only).
-	PythonHash         string
-	TemplateHashes     map[string]string
+	APNsToken          string
+	BinaryHash         string
+	Version            string
+	Platform           string
+	Backend            string
 	MetallibHash       string
 	VerifiedAt         time.Time
 	EvidenceGeneration uint64
@@ -1021,25 +1020,15 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 		return false
 	}
 	// A configured release policy makes current active-release application
-	// evidence mandatory independently of the APNs rollout deadline. The APNs
-	// proof establishes genuine Apple code identity; this generation-bound fact
-	// establishes that the live binary/runtime is still active and approved.
-	if r.releasePolicyRequired {
-		evidence := p.ApplicationEvidence
-		if evidence.EvidenceGeneration == 0 ||
-			evidence.PolicyGeneration != r.releasePolicyGeneration ||
-			evidence.ProcessPublicKey != p.PublicKey ||
-			// Tokenless providers pass with matching empty tokens; APNs token
-			// possession is enforced only by the code-identity gate below.
-			evidence.APNsToken != p.APNsDeviceToken ||
-			evidence.Version != p.Version ||
-			evidence.Backend != p.Backend ||
-			evidence.BinaryHash == "" ||
-			p.AttestationResult == nil ||
-			evidence.SEPublicKey != p.AttestationResult.PublicKey ||
-			evidence.Serial != p.AttestationResult.SerialNumber {
-			return false
-		}
+	// evidence mandatory independently of the APNs rollout deadline — but only
+	// once enforcement is switched on. In shadow mode (the default) the
+	// predicate is still evaluated so operators can compare
+	// CountProvidersWithCurrentApplicationEvidence against the connected fleet
+	// BEFORE flipping enforcement; a provider failing it keeps routing.
+	if r.releasePolicyRequired &&
+		r.releasePolicyEnforced &&
+		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
+		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
@@ -1626,6 +1615,62 @@ func (r *Registry) SetReleasePolicyGeneration(
 	return needChallenge
 }
 
+// providerHoldsCurrentApplicationEvidenceLocked reports whether p holds
+// generation-current application evidence bound to its live identity: current
+// policy generation, this connection's process key, the current APNs token
+// (tokenless providers pass with matching empty tokens; token possession is
+// enforced only by the code-identity gate), the registered version/backend,
+// and the registration-attested SE identity. Caller must hold r.mu; provider
+// fields are read without p.mu, matching the routing chokepoint's semantics.
+func (r *Registry) providerHoldsCurrentApplicationEvidenceLocked(p *Provider) bool {
+	evidence := p.ApplicationEvidence
+	return evidence.EvidenceGeneration != 0 &&
+		evidence.PolicyGeneration == r.releasePolicyGeneration &&
+		evidence.ProcessPublicKey == p.PublicKey &&
+		evidence.APNsToken == p.APNsDeviceToken &&
+		evidence.Version == p.Version &&
+		evidence.Backend == p.Backend &&
+		evidence.BinaryHash != "" &&
+		p.AttestationResult != nil &&
+		evidence.SEPublicKey == p.AttestationResult.PublicKey &&
+		evidence.Serial == p.AttestationResult.SerialNumber
+}
+
+// SetReleasePolicyEnforcement switches the release-policy routing gate between
+// SHADOW (false, default: evidence derived/granted/swept and counted but never
+// blocks routing) and ENFORCE (true: the routing chokepoint requires current
+// evidence). Thread-safe.
+func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
+	r.mu.Lock()
+	r.releasePolicyEnforced = enforced
+	r.mu.Unlock()
+}
+
+// ReleasePolicyEnforced reports whether missing application evidence currently
+// blocks routing. Thread-safe.
+func (r *Registry) ReleasePolicyEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.releasePolicyEnforced
+}
+
+// CountProvidersWithCurrentApplicationEvidence returns (holding, connected):
+// how many currently connected providers hold generation-current application
+// evidence, and the total connected count. This is the shadow-mode acceptance
+// instrument: enforcement must not be enabled until holding is near connected.
+// Thread-safe.
+func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	holding := 0
+	for _, provider := range r.providers {
+		if r.providerHoldsCurrentApplicationEvidenceLocked(provider) {
+			holding++
+		}
+	}
+	return holding, len(r.providers)
+}
+
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
 // connection handler should issue code-identity challenges). Thread-safe.
 func (r *Registry) CodeAttestationConfigured() bool {
@@ -1972,6 +2017,15 @@ type Registry struct {
 	// derived from the current generation; APNs identity alone is insufficient.
 	releasePolicyGeneration uint64
 	releasePolicyRequired   bool
+	// releasePolicyEnforced gates whether missing/stale application evidence
+	// actually blocks routing. false = SHADOW: evidence is still derived,
+	// granted, swept, and counted (CountProvidersWithCurrentApplicationEvidence)
+	// but a provider without it keeps routing exactly like the pre-release-policy
+	// coordinator. true = ENFORCE: evidence is mandatory at the routing
+	// chokepoint. A brand-new global trust gate MUST prove fleet compatibility
+	// in shadow before it is allowed to deroute anything (2026-08-31 incident:
+	// an unprovable evidence predicate zeroed network capacity twice).
+	releasePolicyEnforced bool
 
 	modelCatalog map[string]CatalogEntry
 

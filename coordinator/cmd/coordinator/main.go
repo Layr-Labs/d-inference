@@ -407,6 +407,23 @@ func main() {
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
 	}
+	// Release-policy routing gate mode. SHADOW (default): application evidence
+	// is derived, granted, swept, and counted (release_evidence.outcome metrics
+	// + /v1/stats application_evidence_providers) but NEVER blocks routing —
+	// identical routing behavior to the pre-release-policy coordinator. ENFORCE:
+	// the routing chokepoint requires generation-current evidence. Enforcement
+	// must only be enabled after a shadow deployment shows evidence coverage
+	// near the connected fleet size (2026-08-31: enforcing an unproven evidence
+	// predicate zeroed network capacity twice).
+	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
+	case "enforce":
+		reg.SetReleasePolicyEnforcement(true)
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route")
+	case "", "shadow":
+		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
+	default:
+		logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode", "value", mode)
+	}
 	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
 	// (APNs code-identity attestation is the real signal). Set this to re-enable
 	// the legacy derouting-on-mismatch behavior (rollback only).

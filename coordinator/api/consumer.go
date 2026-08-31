@@ -809,13 +809,25 @@ func rejectionSamplingParams(parsed map[string]any) json.RawMessage {
 	return b
 }
 
-// dispatchOneProvider encrypts and sends an inference request to a single
-// provider. It returns the pending request and provider on success, or an
-// error string on failure. The excludeProviders set is updated on failure.
-// selfRoutePolicy and its resolvers live in self_route.go.
-
 type routeDecisionRecorder func(*registry.Provider, *registry.PendingRequest, registry.RoutingDecision)
 
+// dispatchReserver selects and atomically reserves a provider for an
+// already-constructed PendingRequest. It is the ONE seam between provider
+// SELECTION and the single prepare/encrypt/write funnel in
+// dispatchWithReserver: wave-2 callers plug in the retained-plan variants
+// (ReserveNextFromPlan / RefreshDispatchPlan) without forking the funnel.
+// The returned plan is non-nil only for scan-backed reservers that retain
+// alternates.
+type dispatchReserver func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan)
+
+// dispatchOneProvider encrypts and sends an inference request to a single
+// provider selected by a fresh full scan. It returns the pending request and
+// provider on success, or an error string on failure, plus the bounded
+// DispatchPlan of provisional alternates retained from the SAME scan (nil
+// whenever no provider was reserved) so retries and speculative backups can
+// consume retained identities instead of rescanning the fleet (Routing v2
+// Phase 3). The excludeProviders set is updated on failure. selfRoutePolicy
+// and its resolvers live in self_route.go.
 func (s *Server) dispatchOneProvider(
 	r *http.Request,
 	model string,
@@ -839,17 +851,73 @@ func (s *Server) dispatchOneProvider(
 	excludeProviders map[string]struct{},
 	attempt int,
 	recordRoute routeDecisionRecorder,
+	onDispatched func(),
 ) (
 	provider *registry.Provider,
 	pr *registry.PendingRequest,
 	decision registry.RoutingDecision,
+	plan *registry.DispatchPlan,
+	lastErr string,
+	lastErrCode int,
+) {
+	return s.dispatchWithReserver(
+		r, model, publicModel, rawBody, consumerKey, consumerLocation,
+		reservedMicroUSD, estimatedPromptTokens, requestDeadline,
+		requestedMaxTokens, tokenAdmission, requiresVision, traits,
+		allowedProviderSerials, isResponsesAPI, policy, timing,
+		serviceReservation, cachePlan, excludeProviders, attempt,
+		recordRoute, onDispatched,
+		func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
+			return s.registry.ReserveProviderWithPlan(model, pr, excludeIDs...)
+		},
+	)
+}
+
+// dispatchWithReserver is the single prepare/encrypt/write funnel behind every
+// provider dispatch: pending construction and admission stamps, the pluggable
+// reservation, the billing surcharge, E2E encryption, and the
+// deadline-bounded provider write, with releaseUnsentDispatch cleanup on every
+// failure path. onDispatched (nil-safe) fires inside the write handoff
+// callback — the same instant Timing.DispatchedAt is stamped — so
+// providerDispatches counts frames that actually reached a provider, never
+// loop attempts.
+func (s *Server) dispatchWithReserver(
+	r *http.Request,
+	model string,
+	publicModel string,
+	rawBody []byte,
+	consumerKey string,
+	consumerLocation *store.ProviderLocation,
+	reservedMicroUSD int64,
+	estimatedPromptTokens int,
+	requestDeadline time.Duration,
+	requestedMaxTokens int,
+	tokenAdmission registry.TokenAdmission,
+	requiresVision bool,
+	traits registry.RequestTraits,
+	allowedProviderSerials []string,
+	isResponsesAPI bool,
+	policy selfRoutePolicy,
+	timing *registry.RequestTiming,
+	serviceReservation bool,
+	cachePlan registry.CachePlan,
+	excludeProviders map[string]struct{},
+	attempt int,
+	recordRoute routeDecisionRecorder,
+	onDispatched func(),
+	reserve dispatchReserver,
+) (
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+	decision registry.RoutingDecision,
+	plan *registry.DispatchPlan,
 	lastErr string,
 	lastErrCode int,
 ) {
 	receivedAt := timingReceivedAt(timing)
 	_, dispatchable := firstContentBudgetMillis(receivedAt, requestDeadline)
 	if !dispatchable {
-		return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+		return nil, nil, decision, nil, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 	}
 
 	requestID := uuid.New().String()
@@ -909,7 +977,7 @@ func (s *Server) dispatchOneProvider(
 	// Refresh immediately before reservation: every retry spends the same
 	// absolute clock, so the scheduler must never see the original ceiling.
 	if !pr.RefreshFirstContentBudget(time.Now()) {
-		return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+		return nil, nil, decision, nil, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 	}
 	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
 	// routes; it only ranks providers, never rejects.
@@ -923,20 +991,20 @@ func (s *Server) dispatchOneProvider(
 		return ids
 	}
 
-	provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
+	provider, decision, plan = reserve(pr, excludeList())
 	if provider == nil {
 		// Providers serve this model but none can physically fit it: don't make
 		// the caller queue/retry for something that will never load.
 		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
-			return nil, nil, decision, errModelTooLarge, http.StatusServiceUnavailable
+			return nil, nil, decision, plan, errModelTooLarge, http.StatusServiceUnavailable
 		}
 		// Providers are available but all exceed the TTFT ceiling. Fail fast
 		// with a retryable 429 rather than queueing or routing to a slow
 		// provider.
 		if decision.TTFTRejections > 0 {
-			return nil, nil, decision, errTTFTTooSlow, http.StatusTooManyRequests
+			return nil, nil, decision, plan, errTTFTTooSlow, http.StatusTooManyRequests
 		}
-		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
+		return nil, nil, decision, plan, "no provider available", http.StatusServiceUnavailable
 	}
 	pendingCleanup := true
 	cleanupPending := func() {
@@ -979,10 +1047,10 @@ func (s *Server) dispatchOneProvider(
 			cleanupPending()
 			excludeProviders[provider.ID] = struct{}{}
 			if errors.Is(err, store.ErrInsufficientBalance) {
-				return nil, nil, decision, "insufficient funds for provider price", http.StatusPaymentRequired
+				return nil, nil, decision, plan, "insufficient funds for provider price", http.StatusPaymentRequired
 			}
 			s.logger.Error("provider reservation failed (DB error)", "provider_id", provider.ID, "error", err)
-			return nil, nil, decision, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
+			return nil, nil, decision, plan, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
 		}
 	}
 	// refundExtra credits back the provider-specific surcharge that
@@ -1004,7 +1072,7 @@ func (s *Server) dispatchOneProvider(
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, "no provider with E2E encryption", http.StatusServiceUnavailable
+		return nil, nil, decision, plan, "no provider with E2E encryption", http.StatusServiceUnavailable
 	}
 
 	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
@@ -1012,21 +1080,21 @@ func (s *Server) dispatchOneProvider(
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
-		return nil, nil, decision, "provider public key invalid", http.StatusServiceUnavailable
+		return nil, nil, decision, plan, "provider public key invalid", http.StatusServiceUnavailable
 	}
 
 	sessionKeys, err := e2e.GenerateSessionKeys()
 	if err != nil {
 		refundExtra()
 		cleanupPending()
-		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
+		return nil, nil, decision, plan, "failed to generate session keys", http.StatusInternalServerError
 	}
 
 	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
-		return nil, nil, decision, "failed to prepare cache-safe request", http.StatusInternalServerError
+		return nil, nil, decision, plan, "failed to prepare cache-safe request", http.StatusInternalServerError
 	}
 	// Pre-fix providers crash on a vision request carrying sampling penalties;
 	// strip them for those providers only. Protocol-0 providers additionally get
@@ -1038,16 +1106,16 @@ func (s *Server) dispatchOneProvider(
 		cleanupPending()
 		if errors.Is(err, errProviderBodyTooLarge) {
 			excludeProviders[provider.ID] = struct{}{}
-			return nil, nil, decision, err.Error(), http.StatusRequestEntityTooLarge
+			return nil, nil, decision, plan, err.Error(), http.StatusRequestEntityTooLarge
 		}
-		return nil, nil, decision, "failed to prepare provider request", http.StatusInternalServerError
+		return nil, nil, decision, plan, "failed to prepare provider request", http.StatusInternalServerError
 	}
 	encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
 	if err != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
-		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
+		return nil, nil, decision, plan, "failed to encrypt request", http.StatusInternalServerError
 	}
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
@@ -1070,6 +1138,9 @@ func (s *Server) dispatchOneProvider(
 			if pr.Timing != nil {
 				pr.Timing.DispatchedAt = metadata.DequeuedAt
 			}
+			if onDispatched != nil {
+				onDispatched()
+			}
 		},
 	)
 	cancelWrite()
@@ -1084,13 +1155,13 @@ func (s *Server) dispatchOneProvider(
 			// its connection during an in-flight write. Cancel defensively in
 			// case the provider decoded the final bytes before disconnect.
 			s.sendProviderCancel(provider, requestID)
-			return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
-		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
+		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
 
-	return provider, pr, decision, "", 0
+	return provider, pr, decision, plan, "", 0
 }
 
 // releaseUnsentDispatch returns a reservation after frame construction or
@@ -2051,6 +2122,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
+		visionImageCount:       countMediaParts(parsed),
 		hasTools:               hasTools,
 		requiresToolConstraint: requiresToolConstraint,
 		toolChoiceMode:         string(validatedMode),
@@ -4331,6 +4403,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
+		visionImageCount:       countMediaParts(parsed),
 		hasTools:               hasTools,
 		requiresToolConstraint: requiresToolConstraint,
 		toolChoiceMode:         string(validatedMode),

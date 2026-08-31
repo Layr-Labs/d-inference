@@ -195,6 +195,58 @@ extension ProviderLoop {
             postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
         }
         lastLiveSlotPostures = postures
+
+        // Routing v2, Phase 1: every capacity rebuild flows through here —
+        // request admitted (post-submit refresh), completed/cancelled, model
+        // loaded/unloaded/evicted, wedge recovery flipping a slot to
+        // "crashed"/"reloading", and the periodic tick that picks up token
+        // budget drift. Comparing the fresh payload against the last SENT
+        // heartbeat's payload (the published snapshot) is therefore the one
+        // seam that implements all of the plan's event triggers without
+        // forking any of those call sites.
+        scheduleEventHeartbeatIfMaterial()
+    }
+
+    /// Fire (or schedule) an out-of-band heartbeat when the freshly rebuilt
+    /// capacity materially differs from the last one the coordinator saw.
+    /// Rate-capped at 2/s with trailing-edge coalescing; a change inside the
+    /// cap window is never dropped — the trailing timer guarantees exactly
+    /// one heartbeat at window end carrying the then-current payload. The 5s
+    /// baseline heartbeat keeps running untouched as liveness.
+    internal func scheduleEventHeartbeatIfMaterial() {
+        guard let capacity = state.backendCapacity else { return }
+        guard CapacityHeartbeatMateriality.isMaterial(
+            previous: state.publishedCapacity, current: capacity)
+        else { return }
+        switch capacityHeartbeatThrottle.noteMaterialChange(now: .now) {
+        case .sendNow:
+            guard let client = coordinatorClient else { return }
+            Task { await client.sendEventHeartbeat() }
+        case .scheduled(let after):
+            let me = self
+            // `Task.sleep(nanoseconds:)`, NOT the Duration/Clock overload —
+            // same -O task-allocator crash documented on the capacity poll
+            // loop above.
+            let delayNs = UInt64(max(0, after.components.seconds)) * 1_000_000_000
+                + UInt64(max(0, after.components.attoseconds / 1_000_000_000))
+            trailingHeartbeatTask = Task {
+                try? await Task.sleep(nanoseconds: delayNs)
+                if Task.isCancelled { return }
+                await me.fireTrailingEventHeartbeat()
+            }
+        case .coalesced:
+            break
+        }
+    }
+
+    /// Trailing-edge send: services the one scheduled verdict. Deliberately
+    /// does NOT rebuild capacity first — `state.backendCapacity` already
+    /// holds the latest rebuild (that rebuild is what coalesced into this
+    /// timer), and rebuilding here would re-enter the materiality check.
+    internal func fireTrailingEventHeartbeat() async {
+        trailingHeartbeatTask = nil
+        guard capacityHeartbeatThrottle.takeScheduledSend(now: .now) else { return }
+        await coordinatorClient?.sendEventHeartbeat()
     }
 
 }

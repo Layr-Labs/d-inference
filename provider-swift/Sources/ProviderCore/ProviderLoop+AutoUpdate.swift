@@ -186,6 +186,8 @@ extension ProviderLoop {
     /// provider converges back onto the coordinator's current desired set.
     private func resumeServingAfterUpdate() async {
         updatePhase = .idle
+        // Quote path mirror (routing v2): quotes may admit again.
+        state.refusingNewWork = false
 
         if let staged = stagedUpdateBundle {
             stagedUpdateBundle = nil
@@ -208,6 +210,9 @@ extension ProviderLoop {
     /// hot-swap.
     private func beginUpdateDraining() {
         updatePhase = .draining
+        // Quote path mirror (routing v2): while draining, capacity quotes
+        // refuse with `slot_state` exactly like the live admission gate.
+        state.refusingNewWork = true
     }
 
     /// Download, verify, and stage the release bundle while still serving.

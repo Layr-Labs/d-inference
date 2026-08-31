@@ -566,6 +566,22 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
 
+		case protocol.TypeCapacityQuote:
+			if provider == nil {
+				// A quote answers a coordinator-sent probe, and probes are only
+				// sent to registered providers — a quote on an unregistered
+				// connection is a protocol violation, same posture as heartbeat.
+				s.logger.Warn("capacity quote from unregistered provider",
+					"provider_id", providerID)
+				continue
+			}
+			quoteMsg := msg.Payload.(*protocol.CapacityQuoteMessage)
+			// Correlation (quote_id → outstanding probe, provider binding,
+			// window expiry) and plan confirm/demote all live registry-side
+			// with the probe state; the read loop only delivers. Synchronous
+			// like heartbeat ingest — no DB or lock-heavy work on this path.
+			s.registry.HandleCapacityQuote(providerID, quoteMsg)
+
 		case protocol.TypeInferenceAccepted:
 			acceptMsg := msg.Payload.(*protocol.InferenceAcceptedMessage)
 			s.handleInferenceAccepted(provider, acceptMsg)

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
-	"nhooyr.io/websocket"
 )
 
 // E4 (2026-07-15 platform errors deep dive): a provider error_reason of
@@ -280,24 +278,6 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 				t.Error("terminal error was not delivered to ErrorCh")
 			}
 		})
-	}
-}
-
-// sendInferenceErrorWithReason mirrors sendInferenceError but carries the
-// structured error_reason a 0.7.11+ provider stamps on the wire (the E4/E5
-// vocabulary the coordinator's terminal classification keys on).
-func (fp *failoverProvider) sendInferenceErrorWithReason(ctx context.Context, req protocol.InferenceRequestMessage, errMsg string, statusCode int, errReason string) {
-	msg := protocol.InferenceErrorMessage{
-		Type:        protocol.TypeInferenceError,
-		RequestID:   req.RequestID,
-		Error:       errMsg,
-		StatusCode:  statusCode,
-		ErrorReason: errReason,
-		FailureCode: protocol.FailureCodeTemplateRender,
-	}
-	data, _ := json.Marshal(msg)
-	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
-		fp.t.Logf("provider %s: write inference_error: %v", fp.name, err)
 	}
 }
 

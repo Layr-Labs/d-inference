@@ -71,3 +71,18 @@ export function formatDuration(seconds: number | string | null | undefined): str
   const d = Math.floor(h / 24);
   return `${d}d ${h % 24}h`;
 }
+
+export function formatPercent(ratio: number | null | undefined): string {
+  if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "percent",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(ratio);
+}
+
+export function formatMilliseconds(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1_000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1_000).toFixed(1)} s`;
+}

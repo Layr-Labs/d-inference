@@ -68,6 +68,12 @@ import (
 // mirroring setupTestServer / setupLoadTestServer.
 func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, *httptest.Server) {
 	t.Helper()
+	reg, st, _, ts := setupFailoverServerWithServer(t)
+	return reg, st, ts
+}
+
+func setupFailoverServerWithServer(t *testing.T) (*registry.Registry, *store.MemoryStore, *Server, *httptest.Server) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
@@ -75,7 +81,7 @@ func setupFailoverServer(t *testing.T) (*registry.Registry, *store.MemoryStore, 
 	srv.challengeInterval = 500 * time.Millisecond
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return reg, st, ts
+	return reg, st, srv, ts
 }
 
 // ---------------------------------------------------------------------------

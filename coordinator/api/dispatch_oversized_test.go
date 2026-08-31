@@ -33,9 +33,15 @@ func rejectScript(errMsg string, status int) inferenceScript {
 // fleet (the prod storm: median 22 / max 63 attempts). Two providers are present
 // so a storm would be observable as >1 dispatch.
 func TestDispatch_DeterministicTokenBudget_StopsAfterOneAttempt(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
+	reg, _, srv, ts := setupFailoverServerWithServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
 
 	model := "oversized-deterministic-model"
 	script := rejectScript("token_budget_exhausted: request exceeds batch token budget", http.StatusServiceUnavailable)
@@ -75,6 +81,14 @@ func TestDispatch_DeterministicTokenBudget_StopsAfterOneAttempt(t *testing.T) {
 	}
 	if total := pA.dispatchCount() + pB.dispatchCount(); total != 1 {
 		t.Errorf("total dispatches = %d, want 1 — a deterministic context rejection must STOP after the first attempt, not storm", total)
+	}
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	if !hasMetric(packets, "routing.oversized_request_rejected") {
+		t.Fatalf("deterministic oversize metric missing: %v", packets)
+	}
+	if hasMetric(packets, "routing.capacity_exhausted_rejected") {
+		t.Fatalf("deterministic oversize emitted capacity-exhausted metric: %v", packets)
 	}
 }
 
@@ -124,9 +138,15 @@ func TestDispatch_TransientCapacity_StillFailsOver(t *testing.T) {
 // walk all maxDispatchAttempts=64). Five providers are present so the cap — not
 // candidate exhaustion — is what stops it.
 func TestDispatch_TransientCapacity_CappedRetries(t *testing.T) {
-	reg, _, ts := setupFailoverServer(t)
+	reg, st, srv, ts := setupFailoverServerWithServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
 
 	model := "transient-capped-model"
 	script := rejectScript("server busy", http.StatusServiceUnavailable)
@@ -154,4 +174,76 @@ func TestDispatch_TransientCapacity_CappedRetries(t *testing.T) {
 		t.Errorf("total dispatches = %d, want %d (transient capacity must be capped, not stormed to %d)",
 			total, maxCapacityClassRetries, maxDispatchAttempts)
 	}
+	recorded := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rejections := st.RejectionRecordsSince(time.Time{})
+		if len(rejections) > 0 {
+			if got := rejections[0].ReasonCode; got != rejectionReasonCapacityExhausted {
+				t.Fatalf("rejection reason = %q, want %q", got, rejectionReasonCapacityExhausted)
+			}
+			recorded = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !recorded {
+		t.Fatal("transient-capacity rejection was not recorded")
+	}
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	if !hasMetric(packets, "routing.capacity_exhausted_rejected") {
+		t.Fatalf("capacity-exhausted metric missing: %v", packets)
+	}
+	if hasMetric(packets, "routing.oversized_request_rejected") {
+		t.Fatalf("transient capacity emitted oversized-request metric: %v", packets)
+	}
+}
+
+// A fleet with fewer providers than maxCapacityClassRetries exhausts candidates
+// before it reaches the retry cap. That is still capacity exhaustion and must
+// produce the same supply-pressure reason.
+func TestDispatch_TransientCapacity_CandidateExhaustion(t *testing.T) {
+	reg, st, ts := setupFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	model := "transient-small-fleet-model"
+	script := rejectScript("server busy", http.StatusServiceUnavailable)
+	const nProviders = maxCapacityClassRetries - 1
+	providers := make([]*failoverProvider, 0, nProviders)
+	for i := 0; i < nProviders; i++ {
+		providers = append(providers, startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+			Name: fmt.Sprintf("provider-%d", i), Version: "0.6.20", DecodeTPS: 100,
+			Models: []failoverModelSpec{{ID: model}}, Script: script,
+		}))
+	}
+
+	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, false, nil))
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", status, body)
+	}
+	total := 0
+	for _, provider := range providers {
+		total += provider.dispatchCount()
+	}
+	if total != nProviders {
+		t.Fatalf("total dispatches = %d, want %d", total, nProviders)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rejections := st.RejectionRecordsSince(time.Time{})
+		if len(rejections) > 0 {
+			if got := rejections[0].ReasonCode; got != rejectionReasonCapacityExhausted {
+				t.Fatalf("rejection reason = %q, want %q", got, rejectionReasonCapacityExhausted)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("candidate-exhaustion rejection was not recorded")
 }

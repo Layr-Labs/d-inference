@@ -5,6 +5,8 @@ import {
   formatDateTime,
   formatRelative,
   formatDuration,
+  formatPercent,
+  formatMilliseconds,
   isOnline,
   truncate,
   ONLINE_WINDOW_SECONDS,
@@ -86,5 +88,20 @@ describe("formatDateTime", () => {
   it("renders an ISO-ish timestamp and dash for null", () => {
     expect(formatDateTime("2026-06-03T12:00:00.000Z")).toBe("2026-06-03 12:00:00Z");
     expect(formatDateTime(null)).toBe("—");
+  });
+});
+
+describe("supply-pressure formats", () => {
+  it("formats ratios as percentages", () => {
+    expect(formatPercent(0.1234)).toBe("12.3%");
+    expect(formatPercent(0)).toBe("0%");
+    expect(formatPercent(null)).toBe("—");
+  });
+
+  it("formats TTFT in milliseconds or seconds", () => {
+    expect(formatMilliseconds(842.4)).toBe("842 ms");
+    expect(formatMilliseconds(1_250)).toBe("1.3 s");
+    expect(formatMilliseconds(null)).toBe("—");
+    expect(formatMilliseconds(-1)).toBe("—");
   });
 });

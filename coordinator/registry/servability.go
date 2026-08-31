@@ -92,8 +92,9 @@ const (
 	// CompareVersions parses non-numeric segments as 0, so a "-swift.N"
 	// suffix would make every per-model binary read as BELOW this gate and
 	// be charged the flat floor (the unsanctioned tighter direction).
-	// 0.8.15 is the newest release at time of writing; 0.8.11 through
-	// 0.8.15 binaries hold the flat 5.5 and are gated below by this value.
+	// This branch bumps ProviderCore.version to 0.8.16 in the same tree,
+	// honoring the coupling; 0.8.11 through 0.8.15 binaries hold the flat
+	// 5.5 and are gated below by this value.
 	servabilityPerModelFloorMinVersion = "0.8.16"
 )
 

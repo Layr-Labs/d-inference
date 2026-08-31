@@ -84,12 +84,14 @@ floor) with the default retune explicitly DEFERRED; 3c resolved by discovery.**
   models) must not lower it. The measured data stands in the report as the
   text-decode baseline; the 32 GB qwen tier verdict (re-tier to 36) is
   unchanged. Every deferred model fits its tier at the 5.5 default.
-- 3c ✅ resolved by discovery: `qwen3_vl_moe` has NO CBv2 adapter
-  (`EngineV2SupportedModels` — gpt_oss/gemma4/gemma4_text/qwen3_5_moe only), so
-  every v0.7.5+ provider drops `qwen3-vl-30b-a3b-instruct` at advertise time.
-  The catalog entry is dark fleet-wide; its real blocker is an engine adapter,
-  not memory arithmetic. Flagged as a catalog/ops decision (remove or build the
-  adapter).
+- 3c ✅ resolved by discovery, then partially superseded: at review time
+  `qwen3_vl_moe` had no CBv2 adapter, so every v0.7.5+ provider drops
+  `qwen3-vl-30b-a3b-instruct` at advertise time (dark fleet-wide). The
+  ENGINE-side adapter has since landed in mlx-swift-lm (#125, Qwen3-VL CBv2
+  DeepStack — included in this branch's submodule pin), but the PROVIDER
+  still gates it off: `EngineV2SupportedModels` (gpt_oss/gemma4/gemma4_text/
+  qwen3_5_moe) and the `makeProductionEngine` family switch need wiring +
+  measurement before the catalog entry can serve. Follow-up, not this PR.
 
 ### Original phase text (for context)
 

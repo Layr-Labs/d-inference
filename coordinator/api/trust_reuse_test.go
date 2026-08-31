@@ -1292,6 +1292,49 @@ func TestApplyLateSecurityInfoGrantsWithoutBinaryHashPersistsNothing(t *testing.
 	}
 }
 
+// TestApplyLateSecurityInfoHashlessEvidencePersistsForRestart covers the
+// scheduler callback sibling of synchronous MDM verification. A production-
+// shape hashless registration with current SE/process-bound application
+// evidence must persist the approved hash and reseed reusable device evidence.
+func TestApplyLateSecurityInfoHashlessEvidencePersistsForRestart(t *testing.T) {
+	fake := &fakeMDMServer{device: &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true}}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background())
+	p.Mu().Lock()
+	p.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey:        "se-pub-key-bytes",
+		ProcessPublicKey:   p.PublicKey,
+		BinaryHash:         trHashA,
+		EvidenceGeneration: 1,
+	}
+	p.Mu().Unlock()
+	bindLateSecurityInfoForTest(t, srv, p, "UDID-1")
+
+	srv.ApplyLateSecurityInfo(
+		"UDID-1", lateSecurityInfoCommandUUID,
+		&mdm.SecurityInfoResponse{
+			SystemIntegrityProtectionEnabled: true,
+			SecureBootLevel:                  "full",
+		},
+	)
+
+	rows, err := srv.store.ListProviderTrustReuse(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].LastVerifiedBinaryHash != trHashA {
+		t.Fatalf("late hashless grant rows=%+v err=%v, want one row bound to %q", rows, err, trHashA)
+	}
+	if _, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
+		t.Fatal("late hashless grant did not install reusable device evidence")
+	}
+
+	restarted := NewServer(registry.New(quietLogger()), srv.store, ServerConfig{}, quietLogger())
+	if err := restarted.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("restart seed: %v", err)
+	}
+	if _, ok := restarted.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); !ok {
+		t.Fatal("late hashless device evidence did not survive restart reseeding")
+	}
+}
+
 // --- Round 2 FIX 2: post-write epoch recheck (check-then-write TOCTOU) ---
 
 // TestRecordTrustReusePostWriteRecheckDeletesOnRacedUntrust proves FIX 2: a hard

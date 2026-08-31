@@ -3102,8 +3102,11 @@ func (s *Server) ApplyLateSecurityInfo(
 		return
 	}
 	ar := binding.attestation
+	binaryHash := providerApplicationBinaryHash(
+		binding.provider, ar.PublicKey, ar.BinaryHash,
+	)
 	if !s.recordLateTrustReuse(
-		binding.provider, ar.PublicKey, ar.SerialNumber, ar.BinaryHash,
+		binding.provider, ar.PublicKey, ar.SerialNumber, binaryHash,
 		true, true, udid,
 	) {
 		return

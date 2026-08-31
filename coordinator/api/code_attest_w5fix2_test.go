@@ -1109,8 +1109,16 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 		t.Fatalf("restart-seeded APNs proof binary hash = %q, ok=%v; want %q", got, ok, trHashA)
 	}
 
-	reconnected := newCodeAttestProvider(kPubB64, sePubB64)
-	reconnected.Version = provider.Version
+	// Restart with a fresh process key. The persisted proof must compose with
+	// current generation-bound application evidence and authorize a live resume;
+	// exact-key reuse would not exercise the binary identity carried by this fix.
+	k2Pub, k2Priv, _, _ := providerKeyMaterial(t)
+	reconnected := crossVersionProvider(k2Pub, sePubB64, provider.Version)
+	reconnected.AttestationResult.BinaryHash = ""
+	armCrossVersionApplicationEvidenceWithPolicy(t, restarted, reconnected, sePubB64,
+		map[string][]approvedReleasePolicy{
+			trHashA: {{Version: provider.Version, Platform: "macos-arm64", Backend: provider.Backend}},
+		})
 	var pushes int32
 	restarted.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
 		atomic.AddInt32(&pushes, 1)
@@ -1120,7 +1128,7 @@ func TestHashlessRegistrationPersistsApplicationEvidenceHashForRestartReuse(t *t
 		_ string, message protocol.CodeAttestationResumeChallenge,
 	) error {
 		return completeResumeRoundTrip(
-			t, restarted, reconnected, "p1", kPriv, seKey, message)
+			t, restarted, reconnected, "p1", k2Priv, seKey, message)
 	}
 	restarted.codeAttestLoop(context.Background(), "p1", reconnected)
 	if got := atomic.LoadInt32(&pushes); got != 0 {

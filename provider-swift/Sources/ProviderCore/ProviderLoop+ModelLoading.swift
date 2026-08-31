@@ -358,9 +358,14 @@ extension ProviderLoop {
             // blows the unified-memory cap. Released once the weights are resident.
             // Includes `extraWeightBytes` (the drafter): those bytes land in
             // mlxUsed during this load window just like the target's.
+            // Deliberately the PADDED estimate, not the measured residency:
+            // this reservation guards the LOAD TRANSIENT (allocations during
+            // shard staging can exceed the steady post-load residency), and
+            // the transient is exactly what the measured steady figure does
+            // not cover. The admit gate above may use measured weights; the
+            // in-flight reservation must keep the padding.
             let pendingLoadBytes = Self.pendingLoadReservationBytes(
-                estimatedWeightsGb: UnifiedMemoryCap.loadGateWeightsGb(
-                    modelId: modelId, estimatedGb: modelInfo.estimatedMemoryGb),
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: extraWeightBytes)
             await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 

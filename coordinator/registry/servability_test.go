@@ -610,8 +610,8 @@ func TestServabilityActivationFloorPerModel(t *testing.T) {
 		{"0.8.10", "gpt-oss-20b", 5.5},                                            // flat-floor release
 		{"0.8.15", "gpt-oss-20b", 5.5},                                            // last flat-floor release actually shipped
 		{servabilityPerModelFloorMinVersion, "gpt-oss-20b", 3.5},                  // measured floor
-		{servabilityPerModelFloorMinVersion, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 4.0}, // measured (decomposed basis)
-		{servabilityPerModelFloorMinVersion, "qwen3.5-35b-a3b", 4.0},              // same family, measured 2026-08-31
+		{servabilityPerModelFloorMinVersion, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 5.5}, // vision-capable → default until vision-inclusive measurement
+		{servabilityPerModelFloorMinVersion, "qwen3.5-35b-a3b", 5.5},              // vision-capable → default
 		{servabilityPerModelFloorMinVersion, "gemma-4-26b", 5.5},                  // unmeasured → flat
 		{servabilityPerModelFloorMinVersion, "", 5.5},                             // unknown model → flat
 		{"0.9.0", "gpt-oss-20b", 3.5},                                             // later releases keep the table
@@ -666,9 +666,9 @@ func TestServabilityColdWeightsPerModel(t *testing.T) {
 	}{
 		{"", "gemma-4-26b-8bit", 28.0, padded(28.0)},            // unreported → padded
 		{"0.8.15", "gemma-4-26b-8bit", 28.0, padded(28.0)},      // flat-era binary → padded
-		{v, "gemma-4-26b-8bit", 28.0, 25.5},                     // measured residency
-		{v, "gemma-4-26b", 28.0, 25.5},                          // same artifact, 36 GB tier id
-		{v, "gpt-oss-20b", 12.1, 11.5},                          // measured residency
+		{v, "gemma-4-26b-8bit", 28.0, padded(28.0)},             // VLM artifact → padded pending provider-path measurement
+		{v, "gemma-4-26b", 28.0, padded(28.0)},                  // VLM artifact → padded
+		{v, "gpt-oss-20b", 12.1, 11.5},                          // measured residency (text-only artifact)
 		{v, "qwen3.6-35b-a3b-vl-mtp-mxfp8", 21.3, padded(21.3)}, // vision-capable → padded
 		{v, "unknown-model", 10.0, padded(10.0)},                // unmeasured → padded
 	}
@@ -679,16 +679,18 @@ func TestServabilityColdWeightsPerModel(t *testing.T) {
 		}
 	}
 
-	// The measured figure unblocks the tier the padding killed: gemma-8bit on
-	// a 36 GB box. Padded: 0.9*36 − 31.29 = 1.10 GB post-load — the floor
-	// never fits → budget 0. Measured: 0.9*36 − 25.5 = 6.9 GB post-load —
-	// with the 3.5-and-below floors inapplicable (unmeasured model → flat
-	// activation floor 5.5 for this fixture id is deliberately not the
-	// point here; use gpt-oss which has both entries measured):
+	// gemma-8bit stays padded (VLM artifact) in EVERY regime for now — the
+	// 36 GB tier unblock is gated on a provider-path residency measurement:
 	if got := coldTokenBudgetEstimate(36, 28, 400000, "0.8.15", "gemma-4-26b-8bit"); got != 0 {
 		t.Fatalf("flat-era gemma-8bit@36 estimate = %d, want 0 (padded weights bust the box)", got)
 	}
-	if got := coldTokenBudgetEstimate(36, 28, 400000, v, "gemma-4-26b-8bit"); got <= 0 {
-		t.Fatalf("perModel gemma-8bit@36 estimate = %d, want > 0 (measured residency fits)", got)
+	if got := coldTokenBudgetEstimate(36, 28, 400000, v, "gemma-4-26b-8bit"); got != 0 {
+		t.Fatalf("perModel gemma-8bit@36 estimate = %d, want 0 (still padded pending VLM-path measurement)", got)
+	}
+	// The measured text-only model DOES take the measured figure: gpt-oss on
+	// a 24 GB box gains the difference (padded 13.53 vs measured 11.5).
+	if got, want := coldTokenBudgetEstimate(24, 12.1, 400000, v, "gpt-oss-20b"),
+		coldTokenBudgetEstimate(24, 12.1, 400000, "0.8.15", "gpt-oss-20b"); got <= want {
+		t.Fatalf("perModel gpt-oss@24 estimate = %d, want > flat-era %d (measured weights + floor)", got, want)
 	}
 }

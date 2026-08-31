@@ -123,10 +123,10 @@ var servabilityModelActivationFloorsGB = map[string]float64{
 	// figure's growth is cell KV, which the token budget accounts) + ~0.4
 	// inline-MTP allowance + slack. Mirrors the provider table's entry —
 	// same commit, same basis note.
-	"qwen3.6-35b-a3b-vl-mtp-mxfp8": 4.0,
-	// Same qwen3_5_moe family, measured 2026-08-31: byte-identical B=8
-	// profile to qwen3.6. Mirrors the provider entry — same commit.
-	"qwen3.5-35b-a3b": 4.0,
+	// qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB) are
+	// deliberately ABSENT pending a vision-inclusive measurement — they are
+	// vision-capable and the tower transient rides the reserve this floor
+	// sizes. Mirrors the provider table's absence — same commit.
 }
 
 // servabilityMeasuredResidentGiB mirrors the provider's measured resident
@@ -141,9 +141,13 @@ var servabilityModelActivationFloorsGB = map[string]float64{
 // text-only bench residency under-counts the vision tower, so they keep the
 // padded estimate until a vision-inclusive measurement exists.
 var servabilityMeasuredResidentGiB = map[string]float64{
-	"gpt-oss-20b":      11.5, // measured 11.25 active
-	"gemma-4-26b":      25.5, // measured 24.97 active (same artifact as -8bit)
-	"gemma-4-26b-8bit": 25.5,
+	// measured 11.25 active; model_type gpt_oss has no VLM wrapper, so the
+	// bench's LLM-factory load IS the production load path.
+	"gpt-oss-20b": 11.5,
+	// gemma-4-26b/-8bit (24.97 measured TEXT-path) are deliberately
+	// ABSENT: their artifact carries vision_config (model_type gemma4), so
+	// production loads the tower too and the text-path figure under-counts
+	// residency. Padded until a provider-path (VLM) measurement exists.
 }
 
 // servabilityColdWeightsGiB is the weights term of the cold-load "needs"

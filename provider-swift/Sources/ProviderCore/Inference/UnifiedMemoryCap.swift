@@ -136,24 +136,13 @@ public enum UnifiedMemoryCap {
         // convention; the compiled path was removed in v0.8.0 — the
         // current-engine raw figure is 2.63, so 3.5 keeps ~0.9 margin).
         "gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2,
-        // Measured 2026-08-30 on the served artifact (hub 73a03825), v2
-        // contiguous B=8 at L ∈ {500, 4k, 8k} — stock route, which a code
-        // trace confirmed is production's live route. Basis differs from
-        // gpt-oss above (documented so the table stays honest): the raw
-        // peak-over-resident GROWS with prompt length (3.28 @500 → 4.87
-        // @8k) but the growth is the contiguous cell's own KV (~25 KB/tok/
-        // seq, separately accounted by the KV budget in production); the
-        // non-KV transient SATURATES at ~3.3 GiB. 4.0 = 3.3 saturated
-        // + ~0.4 inline-MTP k=2 allowance (measured at B=1: 0.78 stock vs
-        // 1.18 MTP) + slack. It also bounds the raw-500 stock figure
-        // (3.28) with 0.7 margin. Full data:
+        // qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB, floor 4.0
+        // candidate) are deliberately ABSENT pending a vision-inclusive
+        // measurement: they are vision-capable, and VisionMemoryGate charges
+        // decoded-media buffers + KV while the TOWER transient rides this
+        // reserve — lowering it on text-only evidence exposes headroom a
+        // vision request may need. Text-decode data:
         // docs/reports/2026-08-30-activation-floor-measurements.md.
-        "qwen3.6-35b-a3b-vl-mtp-mxfp8": 4 * 1024 * 1024 * 1024,
-        // Same architecture family (qwen3_5_moe hybrid trunk), measured
-        // 2026-08-31 stock v2 B=8: byte-identical profile to qwen3.6
-        // (3.28 @500tok; same saturating envelope). 4.0 also pre-covers the
-        // family's inline-MTP default (#777) with the measured allowance.
-        "qwen3.5-35b-a3b": 4 * 1024 * 1024 * 1024,
     ]
 
     /// Measured post-load MLX residency (bytes, +~2% slack) for TEXT-ONLY
@@ -170,12 +159,16 @@ public enum UnifiedMemoryCap {
     /// commit, exactly like ``measuredActivationFloorsBytes``. Measured
     /// 2026-08-30/31 (docs/reports/2026-08-30-activation-floor-measurements.md).
     static let measuredResidentWeightsBytes: [String: UInt64] = [
-        // measured 11.25 GiB active (mlx-community/gpt-oss-20b-MXFP4-Q8)
-        "gpt-oss-20b": 23 * 1024 * 1024 * 1024 / 2,  // 11.5 GiB
-        // measured 24.97 GiB active (gemma-4-26b-a4b-it-8bit; both catalog
-        // ids serve the same artifact)
-        "gemma-4-26b": 51 * 1024 * 1024 * 1024 / 2,  // 25.5 GiB
-        "gemma-4-26b-8bit": 51 * 1024 * 1024 * 1024 / 2,
+        // measured 11.25 GiB active (mlx-community/gpt-oss-20b-MXFP4-Q8;
+        // model_type gpt_oss — no VLM wrapper, so the bench's LLM-factory
+        // load IS the production load path)
+        "gpt-oss-20b": 23 * 1024 * 1024 * 1024 / 2  // 11.5 GiB
+        // gemma-4-26b/-8bit (measured 24.97 text-path) are deliberately
+        // ABSENT: the artifact carries vision_config (model_type gemma4),
+        // so production loads it through VLMModelFactory with the tower —
+        // the bench's forced-LLM residency under-counts it. They keep the
+        // padded estimate until a provider-path (VLM) residency is
+        // measured; the 36 GB tier unblock moves behind that measurement.
     ]
 
     /// The load gate's weights figure (GB) for a model: measured residency

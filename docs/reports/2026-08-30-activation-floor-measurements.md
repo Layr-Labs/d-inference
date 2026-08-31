@@ -262,8 +262,15 @@ Current-engine saturated non-KV activation envelopes (B=8):
 |---|---|---|
 | gemma-4-26b (qat-4bit & 8bit) | 2.28 / 2.29 | **~3.6** |
 | gpt-oss-20b | 2.63 | **~2.7** |
-| qwen3.6-35b (served artifact) | B=1 only (small) | **unmeasured at B=8** |
-| qwen3-vl-30b / qwen3.5-35b | unmeasurable in this harness / artifact mismatch | unmeasured |
+| qwen3.6-35b (served artifact) | 3.28 | **~3.3 (measured; see the section above)** |
+| qwen3.5-35b (rev 8964653) | 3.28 | ~3.3 (byte-identical family profile, measured 2026-08-31 with the fixed harness) |
+| qwen3-vl-30b | n/a | n/a — `qwen3_vl_moe` has NO CBv2 adapter; no v0.7.5+ provider can serve it at all |
+
+**Vision caveat that gates the qwen floors**: all figures above are TEXT-path.
+The qwens (and the gemma VLM builds) are vision-capable, and the tower
+transient rides the activation reserve — so despite the measured ~3.3
+envelope, their floor entries are deferred until a vision-inclusive peak is
+measured. Only text-only artifacts (gpt-oss) carry measured floors/residency.
 
 1. **The 5.5 GiB default is sized against an engine that no longer exists.** Its basis
    measurement (gemma qat-4bit B=8 = 5.05, July) measures 2.28 on today's engine —
@@ -290,12 +297,15 @@ Current-engine saturated non-KV activation envelopes (B=8):
 
 ## Follow-ups
 
-1. **Harness fix (worktree)**: stock `--mode perf` SIGTRAPs on `qwen3_5_moe` at the
-   first v2 warmup cell — the only blocker to a table-grade qwen3.6 B=8 floor.
-   Campaign construction (same `makeV2Engine`, same hooks, near-identical scheduler
-   config) works at B=1, so the delta is in the cell path (task-group submission or
-   synthetic-prompt shape); needs a proper debug in a worktree.
-2. **qwen3_vl_moe support**: the bench's LLM registry can't load Qwen3-VL-30B at all.
+1. ~~Harness fix~~ **DONE** (mlx-swift-lm PR #129): the "SIGTRAP" was the
+   v2-paged dense-subscript bug + missing capability veto; stock contiguous
+   was always fine, and the qwen3.6/3.5 B=8 matrices above were measured with
+   the fixed harness.
+2. **Vision-inclusive measurement** (the new gate): B=8 activation peaks and
+   residency through the provider's VLM load/serve path — prerequisite for
+   the qwen/gemma floor+residency entries AND the default retune.
+3. **qwen3-vl-30b**: not a measurement problem — `qwen3_vl_moe` has no CBv2
+   adapter, so the catalog entry is dark fleet-wide (ops: adapter or removal).
 3. **Re-measure the default's basis per release**: the 5.5 constant silently went
    stale when the engine improved. If floors move to the catalog (measured field per
    model, populated by the onboarding bench), staleness becomes visible and cheap to

@@ -43,12 +43,40 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 
 	safe.TerminalCause, invalidCause = sanitizeProviderTerminalCause(msg.TerminalCause)
 	suppliedReason := msg.ErrorReason
+	// Enriched rejection (routing v2): the four additive fields are typed and
+	// bounded, so they may cross the confidentiality boundary — RejectionReason
+	// only from the closed CapacityRejectionReason vocabulary (unknown values
+	// are treated as absent, matching the protocol contract), the numeric
+	// fields clamped non-negative. A typed reason on a frame that carries no
+	// structured error_reason is additionally mapped onto the EXISTING closed
+	// error_reason vocabulary so classifyRejection's reason-first path (and
+	// every breaker/cooldown funnel behind it) classifies the rejection without
+	// a parallel classifier.
+	if msg.RejectionReason.Valid() {
+		safe.RejectionReason = msg.RejectionReason
+		if suppliedReason == "" {
+			suppliedReason = capacityRejectionErrorReason(msg.RejectionReason)
+		}
+	}
+	if msg.AvailableTokenBudget != nil && *msg.AvailableTokenBudget >= 0 {
+		// Pointer presence is the contract: an EXPLICIT zero means "the live
+		// gate has no headroom RIGHT NOW" (transient) and must survive the
+		// boundary, while nil keeps the stale-heartbeat fallback in play.
+		// Copied into a fresh allocation so the safe frame never aliases the
+		// raw provider message.
+		v := *msg.AvailableTokenBudget
+		safe.AvailableTokenBudget = &v
+	}
+	if msg.FeasibleAfterMS > 0 {
+		safe.FeasibleAfterMS = msg.FeasibleAfterMS
+	}
+	safe.CapacitySeq = msg.CapacitySeq
 	// Older providers used a bare 429 to mean queue saturation. Preserve that
 	// bounded distinction during rolling upgrades; typed capacity frames remain
 	// reason-driven, so capacity_timeout continues to canonicalize to 503.
 	if legacyFrame &&
 		msg.StatusCode == http.StatusTooManyRequests &&
-		msg.ErrorReason == "" &&
+		suppliedReason == "" &&
 		msg.TerminalCause == "" {
 		suppliedReason = errorReasonQueueFull
 	}
@@ -296,4 +324,32 @@ func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) p
 	}
 	safe, _, _ := sanitizeProviderInferenceError(&msg)
 	return safe
+}
+
+// capacityRejectionErrorReason maps the typed wire CapacityRejectionReason
+// onto the coordinator's existing closed error_reason vocabulary — the exact
+// values classifyRejection's reason-first path (P1) already trusts. This is a
+// vocabulary translation, never a new classifier: deterministic-vs-transient
+// stays decided in one place (inference_failure_class.go).
+//
+//   - token_budget: the node's live active-token budget cannot fit the
+//     request → node-scoped, transient (a bigger/idler box may serve).
+//   - kv_headroom / memory_cap: this node's memory pressure → node-scoped.
+//   - slot_state: loading/reloading/draining/crashed slot → busy now.
+//   - deadline: admissible eventually, not within the remaining clock →
+//     the health-neutral deadline_unreachable refusal.
+//   - template / capability: request-shape refusals with no capacity-class
+//     mapping; empty keeps the legacy status/string heuristics authoritative.
+func capacityRejectionErrorReason(r protocol.CapacityRejectionReason) string {
+	switch r {
+	case protocol.RejectionReasonTokenBudget:
+		return errorReasonRequestExceedsNodeBudget
+	case protocol.RejectionReasonKVHeadroom, protocol.RejectionReasonMemoryCap:
+		return errorReasonRequestExceedsNode
+	case protocol.RejectionReasonSlotState:
+		return errorReasonCapacityBusy
+	case protocol.RejectionReasonDeadline:
+		return errorReasonDeadlineUnreachable
+	}
+	return ""
 }

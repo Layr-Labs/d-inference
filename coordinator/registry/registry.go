@@ -886,6 +886,20 @@ type Provider struct {
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
+	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
+	// connection; capacityQuoteCapable latches true the first time a heartbeat
+	// carries seq > 0 (routing v2 W2: seq-stamping providers also answer
+	// capacity probes — see protocol/messages.go CapacitySeq).
+	//
+	// Per-connection on purpose: the provider process restarts its counter on
+	// every reconnect, and Register creates a fresh *Provider per connection
+	// (see the CodeAttested field's contract), so both fields reset to their
+	// zero values with the object — a reconnected provider's seq 1 is never
+	// compared against the previous connection's high-water mark. Guarded by
+	// p.mu.
+	capacitySeq          uint64
+	capacityQuoteCapable bool
+
 	// kvBackends is the last KV-cache backend observation each SLOT (keyed by
 	// model) named on a heartbeat — the resolved kind AND, when the slot
 	// degraded, why — for the v0.8.0 paged rollout's per-backend segmentation.
@@ -2122,6 +2136,12 @@ type Registry struct {
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
+
+	// capacityQuotes correlates outstanding capacity probes with their quotes
+	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
+	// a lazily-created map, so bare &Registry{} test constructions work
+	// without New(). See capacity_quotes.go.
+	capacityQuotes quoteTracker
 
 	cacheRouting                *cacheRoutingTracker
 	cacheActivation             *cacheActivationGate
@@ -3690,6 +3710,42 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	warmModels, currentModel, backendCapacity := canonicalHeartbeatModelState(
 		eligibleModels, msg.WarmModels, msg.ActiveModel, msg.BackendCapacity)
 	r.mu.RUnlock()
+	// Routing v2 W2 — capacity_seq gate. Event-triggered heartbeats share the
+	// bounded data lane with the 5s baseline, so an event frame published
+	// AFTER a baseline frame can be decoded BEFORE it (two frames in the
+	// writer queue, read-loop dispatch order vs. publish order is not the
+	// coordinator's to assume). Applying the older snapshot second would
+	// regress fresher slot/budget state — exactly the staleness window the
+	// event heartbeats exist to close. Seq ordering is per-connection: a
+	// reconnect restarts the provider's counter AND creates a fresh *Provider
+	// (capacitySeq zero), so cross-connection comparisons never happen.
+	//
+	// The gate reads msg.BackendCapacity (the wire truth) rather than the
+	// canonicalized copy: canonicalization can drop slots but never reorders
+	// frames. Seq 0/omitted is a legacy provider — every legacy heartbeat
+	// takes the unguarded path below, byte-identical to today.
+	if msg.BackendCapacity != nil && msg.BackendCapacity.CapacitySeq > 0 {
+		if msg.BackendCapacity.CapacitySeq <= p.capacitySeq {
+			// Stale/reordered frame: discard the ENTIRE application — capacity,
+			// KV/TPS observations, warm/current model, status, and the clamp
+			// release proof all derive from this one out-of-date snapshot.
+			// LastHeartbeat still advances: the frame proves the connection is
+			// alive, and eviction must key on liveness, not snapshot ordering.
+			// Uptime credit and stats deltas are deliberately NOT applied — a
+			// fresher frame just applied them microseconds ago (that is the
+			// only way this branch is reachable), so nothing is lost.
+			appliedSeq := p.capacitySeq
+			p.LastHeartbeat = time.Now()
+			p.mu.Unlock()
+			r.logger.Debug("discarding stale capacity heartbeat",
+				"provider_id", id, "seq", msg.BackendCapacity.CapacitySeq, "applied_seq", appliedSeq)
+			return
+		}
+		p.capacitySeq = msg.BackendCapacity.CapacitySeq
+		// Seq-stamping providers implement the wave-2 capacity protocol:
+		// mark the session quote-capable so the probe fanout can find it.
+		p.capacityQuoteCapable = true
+	}
 	// Clamp only after unknown slot identifiers have been removed. Besides
 	// keeping them out of routing state, this prevents an unaccepted model ID
 	// from reaching clamp diagnostics or TPS/KV observations.
@@ -4699,6 +4755,13 @@ func (r *Registry) Disconnect(id string) {
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
 	r.cacheRouting.disconnect(id, cacheHolderRemovalDisconnect)
+	// Outstanding capacity-probe waiters bound to this connection can never be
+	// answered now (the socket is gone) — resolve them as SendFailed so probe
+	// collectors demote the entries immediately instead of burning the full
+	// quote window. Like the cache-holder cleanup above, this runs after the
+	// registry/provider locks are released (quoteTracker has its own leaf
+	// mutex; see capacity_quotes.go).
+	r.capacityQuotes.failProvider(id)
 
 	// Close all pending request channels so consumers get errors. Pending
 	// requests created by tests may leave these channels nil, and consumer

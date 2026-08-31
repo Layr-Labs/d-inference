@@ -382,6 +382,60 @@ func (q *RequestQueue) QueueSize(model string) int {
 	return len(q.queues[model])
 }
 
+// CompetingQueueDepth counts the queued waiters for a model whose routing
+// constraints could overlap the capacity available to pr — the hedge
+// governor's "queued consumers outrank insurance" input. A raw QueueSize
+// over-suppresses: a waiter that structurally CANNOT drain onto the pool a
+// hedge for pr would consume is not a competing consumer, and counting it
+// starves every public request of hedges for the waiter's whole queue stay
+// (codex P2). Excluded:
+//
+//   - exclusive self-route waiters (Pending.SelfRouteOnly): they drain only
+//     onto their owner's machines and never fall back to the public fleet,
+//     so public capacity spent on a hedge takes nothing from them;
+//   - serial-pinned waiters (Pending.AllowedProviderSerials) whose allowlist
+//     does not intersect pr's own: they can only consume their pinned
+//     providers. When pr is itself pinned to an overlapping set the two
+//     demonstrably compete for the same pool and the waiter counts.
+//
+// A waiter with a nil Pending has an unconstrained shape and counts
+// conservatively. pr == nil means "no constraint context": only the
+// structural self-route/serial-pinned exclusions apply.
+func (q *RequestQueue) CompetingQueueDepth(model string, pr *PendingRequest) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	depth := 0
+	for _, req := range q.queues[model] {
+		w := req.Pending
+		if w == nil {
+			depth++
+			continue
+		}
+		if w.SelfRouteOnly {
+			continue
+		}
+		if len(w.AllowedProviderSerials) > 0 &&
+			(pr == nil || !serialSetsIntersect(w.AllowedProviderSerials, pr.AllowedProviderSerials)) {
+			continue
+		}
+		depth++
+	}
+	return depth
+}
+
+// serialSetsIntersect reports whether two attested-serial allowlists share a
+// serial. Sized for the tiny per-request lists routing carries; no map.
+func serialSetsIntersect(a, b []string) bool {
+	for _, s := range a {
+		for _, t := range b {
+			if s == t && s != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (q *RequestQueue) QueueStats(model string) (depth int, oldestAge time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

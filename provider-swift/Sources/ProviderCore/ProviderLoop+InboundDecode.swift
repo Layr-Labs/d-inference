@@ -170,4 +170,27 @@ extension ProviderLoop {
         ) else { return 0 }
         return ids.count
     }
+
+    /// The engine admission view of a request's token envelope: the templated
+    /// prompt recount (``promptTokenFloor`` — the same applyChatTemplate path
+    /// the engine prefills) plus the output reservation the scheduler applies
+    /// (`max_tokens`, or ``schedulerDefaultMaxTokens`` when the request omits
+    /// one). Feeds the busy-wait forecast on enriched token-budget rejections
+    /// (`CapacityRejectionEnrichment.enrich`). nil when the recount fails
+    /// (e.g. the failure WAS a render error) — no honest envelope exists, so
+    /// no forecast is invented.
+    internal static func admissionTokenEnvelope(
+        request: OpenAIChatCompletionRequest,
+        tokenizer: TokenizerHandle,
+        modelType: String?,
+        templateControls: ChatTemplateControls
+    ) -> Int64? {
+        let promptFloor = promptTokenFloor(
+            request: request,
+            tokenizer: tokenizer,
+            modelType: modelType,
+            templateControls: templateControls)
+        guard promptFloor > 0 else { return nil }
+        return Int64(promptFloor + max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
+    }
 }

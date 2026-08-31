@@ -424,3 +424,41 @@ func TestWriteGenericProviderErrorIgnoresRawErrorEvenWithValidCode(t *testing.T)
 		t.Fatalf("fixed client message missing: %s", recorder.Body.String())
 	}
 }
+
+// TestSanitizeProviderInferenceErrorLiveBudgetPresence pins the P1-4 wire
+// semantics at the confidentiality boundary: the live budget is a POINTER so
+// presence itself is signal — nil (legacy frame) stays nil and leaves the
+// stale-heartbeat fallback in play, an EXPLICIT zero ("no headroom right
+// now", transient) survives, and a nonsense negative is treated as absent.
+// The safe copy must never alias the raw provider message's allocation.
+func TestSanitizeProviderInferenceErrorLiveBudgetPresence(t *testing.T) {
+	base := protocol.InferenceErrorMessage{
+		Type:        protocol.TypeInferenceError,
+		StatusCode:  http.StatusServiceUnavailable,
+		FailureCode: protocol.FailureCodeCapacity,
+	}
+
+	legacy := base
+	safe, _, _ := sanitizeProviderInferenceError(&legacy)
+	if safe.AvailableTokenBudget != nil {
+		t.Fatalf("legacy nil budget crossed the boundary as %v, want nil", *safe.AvailableTokenBudget)
+	}
+
+	zero := base
+	zero.RejectionReason = protocol.RejectionReasonTokenBudget
+	zero.AvailableTokenBudget = i64ptr(0)
+	safe, _, _ = sanitizeProviderInferenceError(&zero)
+	if safe.AvailableTokenBudget == nil || *safe.AvailableTokenBudget != 0 {
+		t.Fatalf("explicit zero live budget = %v, want a preserved 0", safe.AvailableTokenBudget)
+	}
+	if safe.AvailableTokenBudget == zero.AvailableTokenBudget {
+		t.Fatal("safe frame aliases the raw provider message's budget allocation")
+	}
+
+	negative := base
+	negative.AvailableTokenBudget = i64ptr(-5)
+	safe, _, _ = sanitizeProviderInferenceError(&negative)
+	if safe.AvailableTokenBudget != nil {
+		t.Fatalf("negative budget crossed the boundary as %v, want dropped", *safe.AvailableTokenBudget)
+	}
+}

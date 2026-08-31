@@ -351,6 +351,13 @@ type Server struct {
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
 	zombieCanceller *zombieStreamCanceller
 
+	// hedgeGov is the fleet-wide hedge admission governor (Routing v2 Phase 4):
+	// the mutable half of the speculative-launch verdict — the global
+	// concurrent-hedge counter and per-model win-rate EWMAs. One instance per
+	// Server; runSpeculative consults it before every backup launch and
+	// resolves it exactly once per launched hedge. See hedge_governor.go.
+	hedgeGov *hedgeGovernor
+
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
 	// Set from EIGENINFERENCE_MIN_PROVIDER_VERSION env var or derived from latest release.
@@ -781,6 +788,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
+		hedgeGov:                 newHedgeGovernor(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),

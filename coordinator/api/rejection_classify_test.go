@@ -1,6 +1,10 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // TestClassifyRejection pins the deterministic-vs-transient split that drives the
 // dispatch loop's stop-or-failover decision (DAR-347). The exact provider strings
@@ -17,6 +21,7 @@ func TestClassifyRejection(t *testing.T) {
 		errStr         string
 		providerBudget int64
 		modelContext   int
+		typedRejection protocol.CapacityRejectionReason
 		want           rejectionKind
 	}{
 		{
@@ -125,6 +130,36 @@ func TestClassifyRejection(t *testing.T) {
 			modelContext:   131072,
 			want:           rejectionDeterministicUnservable,
 		},
+		// P1-4: a typed token_budget rejection is AUTHORITATIVE transient for
+		// the batch-budget family — the live gate itself named this node's
+		// budget as the binding term, so the stale heartbeat fallback (which
+		// would read "unknown budget ⇒ deterministic" below) must not overrule
+		// it, on either the reason-first or the string path.
+		{
+			name:           "typed_token_budget_overrides_stale_heartbeat_reason_path",
+			reason:         "request_exceeds_batch_token_budget",
+			typedRejection: protocol.RejectionReasonTokenBudget,
+			providerBudget: 0,
+			modelContext:   131072,
+			want:           rejectionTransientCapacity,
+		},
+		{
+			name:           "typed_token_budget_overrides_stale_heartbeat_string_path",
+			errStr:         "token_budget_exhausted: request exceeds batch token budget",
+			typedRejection: protocol.RejectionReasonTokenBudget,
+			providerBudget: 200_000,
+			modelContext:   131072,
+			want:           rejectionTransientCapacity,
+		},
+		// A typed reason NEVER touches the explicit context-overflow verdict:
+		// that path derives from the string naming the context, not from any
+		// budget, so it stays fleet-wide deterministic.
+		{
+			name:           "typed_token_budget_never_overrides_explicit_context",
+			errStr:         "prompt exceeds the model's context window",
+			typedRejection: protocol.RejectionReasonTokenBudget,
+			want:           rejectionDeterministicUnservable,
+		},
 		// Genuine faults / unknown ⇒ not capacity (keep fault failover + breaker).
 		{name: "crash_is_not_capacity", errStr: "backend crash during generation", want: rejectionNotCapacity},
 		{name: "panic_is_not_capacity", errStr: "panic: nil map", want: rejectionNotCapacity},
@@ -138,9 +173,9 @@ func TestClassifyRejection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyRejection(tc.reason, tc.errStr, tc.providerBudget, tc.modelContext); got != tc.want {
-				t.Errorf("classifyRejection(%q, %q, budget=%d, ctx=%d) = %d, want %d",
-					tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, got, tc.want)
+			if got := classifyRejection(tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, tc.typedRejection); got != tc.want {
+				t.Errorf("classifyRejection(%q, %q, budget=%d, ctx=%d, typed=%q) = %d, want %d",
+					tc.reason, tc.errStr, tc.providerBudget, tc.modelContext, tc.typedRejection, got, tc.want)
 			}
 		})
 	}

@@ -366,8 +366,40 @@ func (r *Registry) ReserveProvider(model string, pr *PendingRequest, excludeIDs 
 // Prometheus counters/histograms without the registry needing to import
 // the metrics package.
 func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeIDs ...string) (*Provider, RoutingDecision) {
+	p, decision, _ := r.reserveProvider(model, pr, false, excludeIDs...)
+	return p, decision
+}
+
+// reserveProvider is the single selection+reservation implementation behind
+// ReserveProviderEx and ReserveProviderWithPlan (dispatch_plan.go). wantPlan
+// additionally retains a bounded DispatchPlan of provisional alternates drawn
+// from the SAME scan that picked the winner — the plan is a byproduct of the
+// one existing pass, never a second scan — and is nil whenever no provider is
+// reserved. Selection and reservation are byte-for-byte identical in both
+// modes; wantPlan=false skips plan construction entirely so legacy callers
+// pay nothing.
+//
+// In-flight token-budget ledger: the reservation itself IS the debit. The
+// r.mu WRITE lock below is held for the whole selection+reservation, so
+// reservations serialize fleet-wide, and addPendingLocked records the request
+// in p.pendingReqs before the lock is released. The reader that consults the
+// debit is the admission gate itself: every subsequent scan's
+// fillSnapshotPendingAndPool aggregates the pending prompt+max token budgets,
+// and freeMemoryAdmits charges them against the last-reported
+// active_token_budget (coordinatorExtra) and the reconstructed whole-box pool
+// (pooledBudgetAdmits) — so concurrent reservations between heartbeats cannot
+// double-spend the same reported headroom. Heartbeat re-sync makes the debit
+// safe rather than double-counting: coordinatorExtra subtracts
+// committedTokenBudget (the provider's own active/queued/potential report),
+// so as heartbeats begin reporting the admitted work the coordinator-side
+// charge for it shrinks to zero — in-flight work is charged exactly once,
+// provider-reported when known, coordinator-estimated only in the dark window.
+// Completion/cancel credits via RemovePending, disconnect drops the whole
+// pending set, and the budget clamp (budget_clamp.go) remains the backstop
+// for stale-optimistic reports.
+func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bool, excludeIDs ...string) (*Provider, RoutingDecision, *DispatchPlan) {
 	if pr == nil || pr.RequestID == "" {
-		return nil, RoutingDecision{Model: model}
+		return nil, RoutingDecision{Model: model}, nil
 	}
 	if pr.Model == "" {
 		pr.Model = model
@@ -408,17 +440,17 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		pr.CacheSelectionMode = ""
 	}
 
-	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
+	selected, scan := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
 		return nil, RoutingDecision{
 			Model:                   model,
-			CandidateCount:          candidateCount,
-			CapacityRejections:      capacityRejections,
-			ModelTooLargeRejections: tooLargeRejections,
-			VisionRejections:        visionRejections,
-			TTFTRejections:          ttftRejections,
-			BestTTFTMs:              bestTTFTMs,
-		}
+			CandidateCount:          scan.candidateCount,
+			CapacityRejections:      scan.capacityRejections,
+			ModelTooLargeRejections: scan.tooLargeRejections,
+			VisionRejections:        scan.visionRejections,
+			TTFTRejections:          scan.ttftRejections,
+			BestTTFTMs:              scan.bestTTFTMs,
+		}, nil
 	}
 
 	// Phase-0 shadow TTFT evaluation: computed here (r.mu held, no provider lock
@@ -471,13 +503,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 		return nil, RoutingDecision{
 			Model:                   model,
-			CandidateCount:          candidateCount,
-			CapacityRejections:      capacityRejections,
-			ModelTooLargeRejections: tooLargeRejections,
-			VisionRejections:        visionRejections,
-			TTFTRejections:          ttftRejections,
-			BestTTFTMs:              bestTTFTMs,
-		}
+			CandidateCount:          scan.candidateCount,
+			CapacityRejections:      scan.capacityRejections,
+			ModelTooLargeRejections: scan.tooLargeRejections,
+			VisionRejections:        scan.visionRejections,
+			TTFTRejections:          scan.ttftRejections,
+			BestTTFTMs:              scan.bestTTFTMs,
+		}, nil
 	}
 
 	bd := selected.breakdown
@@ -526,12 +558,12 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		CapacityRateMs:            bd.CapacityRateMs,
 		CapacityRejectRate:        selected.capacityRejectRate,
 		EffectiveQueue:            selected.effectiveQueue,
-		CandidateCount:            candidateCount,
-		CapacityRejections:        capacityRejections,
-		ModelTooLargeRejections:   tooLargeRejections,
-		VisionRejections:          visionRejections,
-		TTFTRejections:            ttftRejections,
-		BestTTFTMs:                bestTTFTMs,
+		CandidateCount:            scan.candidateCount,
+		CapacityRejections:        scan.capacityRejections,
+		ModelTooLargeRejections:   scan.tooLargeRejections,
+		VisionRejections:          scan.visionRejections,
+		TTFTRejections:            scan.ttftRejections,
+		BestTTFTMs:                scan.bestTTFTMs,
 		TTFTMs:                    bd.TTFTMs,
 		CacheTier:                 selected.cacheTier,
 		CacheDiscountMs:           bd.CacheDiscountMs,
@@ -540,7 +572,16 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		StaticTPS:                 selected.snapshot.decodeTPS,
 	}
 	shadowEval.applyTo(&decision)
-	return p, decision
+	// Plan retention (Routing v2 Phase 3): capture up to
+	// dispatchPlanMaxAlternates lowest-cost non-winner candidates from the SAME
+	// scan pool the selector just ranked, plus the full-pool aggregate tallies.
+	// Built only after the winner's reservation committed, so a rejected admit
+	// re-check never leaks a plan; skipped entirely for legacy callers.
+	var plan *DispatchPlan
+	if wantPlan {
+		plan = newDispatchPlan(model, scan, selected)
+	}
+	return p, decision, plan
 }
 
 // selectBestCandidateLockedFull is the full-fidelity selection that
@@ -549,8 +590,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // distinguish "no provider serves this model" from "every fitting
 // provider is over-subscribed", which is the difference between the
 // no_provider and over_capacity outcome counters.
-// Returns (winner, candidateCount, capacityRejections, modelTooLargeRejections,
-// visionRejections, ttftRejections, bestTTFTMs).
+// Returns the winner plus the candidateScan of the pass that produced it, so
+// the caller can read the rejection tallies AND (for plan retention) the
+// ranked pool itself without a second scan.
 //
 // FAIL-OPEN SAFETY VALVE: selection runs in two passes. Pass 1 honors the
 // per-provider node-health breaker. If pass 1 finds ZERO candidates AND the
@@ -564,19 +606,18 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 // when it yields a candidate, and its counters (not pass 1's) are returned so
 // metrics are never double-counted. This mirrors servability.go's fail-open
 // philosophy: when in doubt, keep serving.
-func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64) {
-	winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs, breakerRejected :=
-		r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
-	if !shouldBypassBreakerFailOpen(winner, breakerRejected, capacityRejections, ttftRejections) {
-		return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+func (r *Registry) selectBestCandidateLockedFull(model string, pr *PendingRequest, excludeIDs ...string) (*routingCandidate, candidateScan) {
+	winner, scan := r.selectBestCandidateScanLocked(model, pr, false, excludeIDs...)
+	if !shouldBypassBreakerFailOpen(winner, scan.breakerRejected, scan.capacityRejections, scan.ttftRejections) {
+		return winner, scan
 	}
 	// The node-health breaker is the SOLE reason this request has no route: re-scan
 	// with the breaker bypassed. Use pass 2 only when it actually finds a candidate,
 	// so a genuinely empty fleet still reports pass 1's (accurate) counters.
-	if w2, cc2, cr2, tl2, vr2, tr2, bt2, _ := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
-		return w2, cc2, cr2, tl2, vr2, tr2, bt2
+	if w2, scan2 := r.selectBestCandidateScanLocked(model, pr, true, excludeIDs...); w2 != nil {
+		return w2, scan2
 	}
-	return winner, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs
+	return winner, scan
 }
 
 // shouldBypassBreakerFailOpen decides whether selection should retry with the
@@ -857,24 +898,22 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 
 // selectBestCandidateScanLocked is one pass of candidate selection: it builds the
 // eligible pool (scanCandidatesLocked — the single source of eligibility) and
-// ranks it by cost, returning the winner plus the rejection tallies. When
-// ignoreProviderBreaker is true the node-health breaker gate is skipped;
-// breakerRejected (providers dropped while their breaker was OPEN) is the signal
-// selectBestCandidateLockedFull uses to decide whether a breaker-bypassed
-// fail-open re-scan could help, and is always 0 in that mode.
-func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, int, int, int, int, int, float64, int) {
+// ranks it by cost, returning the winner plus the whole scan (rejection tallies
+// and the ranked pool). When ignoreProviderBreaker is true the node-health
+// breaker gate is skipped; scan.breakerRejected (providers dropped while their
+// breaker was OPEN) is the signal selectBestCandidateLockedFull uses to decide
+// whether a breaker-bypassed fail-open re-scan could help, and is always 0 in
+// that mode.
+func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) (*routingCandidate, candidateScan) {
 	scan := r.scanCandidatesLocked(model, pr, ignoreProviderBreaker, excludeIDs...)
 	if len(scan.pool) == 0 {
-		return nil, scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+		return nil, scan
 	}
-	pool := scan.pool
-	candidateCount := scan.candidateCount
-
-	winner := selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
+	winner := selectRoutingCandidate(scan.pool, func(candidate *routingCandidate) float64 {
 		return candidate.costMs
 	})
-	r.logRoutingDecision(model, pr, winner, candidateCount)
-	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
+	r.logRoutingDecision(model, pr, winner, scan.candidateCount)
+	return winner, scan
 }
 
 // selectRoutingCandidate centralizes cost ranking, near-tie admission, and

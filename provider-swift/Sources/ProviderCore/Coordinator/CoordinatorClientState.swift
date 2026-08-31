@@ -143,6 +143,16 @@ public final class ProviderState: @unchecked Sendable {
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
+    private var _publishedCapacity: BackendCapacity? = nil
+    private var _capacitySeq: UInt64 = 0
+    private var _refusingNewWork = false
+
+    /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
+    /// TTFT statistics from completed real requests, fed by the ProviderLoop's
+    /// streaming path and read lock-free-ish by the quote path. Lives here
+    /// because ProviderState is the one object both the loop actor and the
+    /// CoordinatorClient actor already share without an actor hop.
+    public let ttftTracker = TTFTQuantileTracker()
 
     public init() {}
 
@@ -169,6 +179,57 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    /// Mirror of the ProviderLoop's "refuse new work" windows (update drain,
+    /// shutdown) for the quote path, which runs on the CoordinatorClient and
+    /// must not hop to the loop actor to learn what the live gate would do.
+    /// The loop writes it at the same transitions that flip its own gates, so
+    /// quotes and admissions refuse in the same windows.
+    public var refusingNewWork: Bool {
+        get { lock.withLock { _refusingNewWork } }
+        set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// The capacity payload of the LAST heartbeat actually sent on the
+    /// current connection, seq-stamped (routing v2). This is the lock-free
+    /// published snapshot the capacity-quote path reads: quotes must be
+    /// computed from state the coordinator can order by `capacity_seq`, never
+    /// from a rebuild it has not seen — and reading it here costs one unfair
+    /// lock, no hop to the inference engine actor, no blocking of
+    /// admission/decode.
+    public var publishedCapacity: BackendCapacity? {
+        lock.withLock { _publishedCapacity }
+    }
+
+    /// Stamp the given heartbeat capacity payload with the next per-connection
+    /// `capacity_seq` (starting at 1) and publish it as the quote snapshot,
+    /// atomically. Called for EVERY outbound heartbeat — 5s baseline and
+    /// event-triggered alike — so seq is dense and strictly monotonic within a
+    /// connection. A nil payload (capacity not yet rebuilt after startup) is
+    /// passed through without burning a seq: `capacity_seq` only ever rides an
+    /// actual `backend_capacity` object.
+    public func stampAndPublishHeartbeatCapacity(
+        _ capacity: BackendCapacity?
+    ) -> BackendCapacity? {
+        guard var capacity else { return nil }
+        return lock.withLock {
+            _capacitySeq &+= 1
+            capacity.capacitySeq = _capacitySeq
+            _publishedCapacity = capacity
+            return capacity
+        }
+    }
+
+    /// Reset the capacity-seq session on a fresh coordinator connection: the
+    /// contract is per-connection monotonicity starting at 1, and the stale
+    /// published snapshot must not answer quotes for a connection whose
+    /// coordinator never saw it.
+    public func resetCapacitySession() {
+        lock.withLock {
+            _capacitySeq = 0
+            _publishedCapacity = nil
+        }
     }
 
     func setPrefixCacheSnapshot(

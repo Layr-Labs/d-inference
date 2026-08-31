@@ -349,6 +349,18 @@ public actor ProviderLoop {
     /// coordinator's per-model catalog routing filter). Set in `run()`.
     internal var coordinatorClient: CoordinatorClient?
 
+    /// Rate cap + trailing-edge coalescing for event-triggered heartbeats
+    /// (routing v2, Phase 1). Driven from `updateAggregateCapacity()` — the
+    /// choke point every material slot-state change already flows through.
+    /// Loop-actor state; the pure policy lives in `CapacityEventHeartbeats`.
+    internal var capacityHeartbeatThrottle = CapacityHeartbeatThrottle()
+
+    /// The one in-flight trailing-edge timer servicing a
+    /// `CapacityHeartbeatThrottle.Verdict.scheduled` verdict. Cancelled on
+    /// shutdown; at most one exists because further changes inside the cap
+    /// window coalesce.
+    internal var trailingHeartbeatTask: Task<Void, Never>?
+
     /// The live outbound send handle (same one prefetch status flows through).
     /// Retained so `applyVerifiedPrefetch` can push an out-of-band
     /// `models_update` carrying the verified build's authoritative `ModelInfo`

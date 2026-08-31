@@ -84,6 +84,14 @@ public actor CoordinatorClient {
     /// the live map, and this keeps future registrations consistent.
     internal var modelWeightHashOverrides: [String: String]?
 
+    /// True from the moment this connection's `register` frame was handed to
+    /// the transport until the session tears down. Event-triggered heartbeats
+    /// check it so an out-of-band heartbeat can never precede registration on
+    /// a fresh connection (frames before `register` are a protocol violation);
+    /// the baseline heartbeat task starts after registration and needs no
+    /// gate.
+    internal var sessionRegistered = false
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.

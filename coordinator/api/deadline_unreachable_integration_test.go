@@ -332,7 +332,7 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		"/v1/chat/completions",
 		strings.NewReader(buildChatBody(t, model, false, nil)),
 	)
-	selected, pending, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
+	selected, pending, _, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
 		req,
 		model,
 		model,
@@ -356,6 +356,7 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		registry.CachePlan{},
 		map[string]struct{}{},
 		0,
+		nil,
 		nil,
 	)
 	if selected != nil || pending != nil {

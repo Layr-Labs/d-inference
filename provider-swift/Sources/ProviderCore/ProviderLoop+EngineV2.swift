@@ -595,6 +595,10 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
+                // The serving-set resolved reserve, so the paged capacity
+                // decision inside the factory measures headroom against the
+                // same reserve every other gate on this load path carves.
+                activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:

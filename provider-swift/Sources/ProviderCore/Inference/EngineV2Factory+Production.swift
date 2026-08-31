@@ -445,6 +445,7 @@ extension EngineV2Factory {
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        activationReserveBytes: UInt64? = nil,
         prefixCache: (any CBv2PrefixCache)? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
@@ -457,6 +458,7 @@ extension EngineV2Factory {
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
+            activationReserveBytes: activationReserveBytes,
             prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
@@ -613,6 +615,7 @@ extension EngineV2Factory {
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        activationReserveBytes: UInt64? = nil,
         prefixCache: (any CBv2PrefixCache)? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
@@ -625,6 +628,7 @@ extension EngineV2Factory {
             model: model,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
+            activationReserveBytes: activationReserveBytes,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment,
@@ -646,6 +650,7 @@ extension EngineV2Factory {
         model: any LanguageModel,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
+        activationReserveBytes: UInt64? = nil,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -954,7 +959,17 @@ extension EngineV2Factory {
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 inputs: .init(
                     physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(),
+                    // The caller's serving-set reserve (nil → flat default,
+                    // StandaloneServer's deliberate posture). The pool
+                    // decision must measure headroom against the SAME
+                    // reserve the load gate admitted with, or a load the
+                    // relaxed gate admitted can land in the band where the
+                    // flat-reserve liveLimit dips under the 1 GiB minimum
+                    // pool and `degradeOrRefuse` 503s an explicit-paged
+                    // slot — the admit-then-fail shape this change removes
+                    // everywhere else.
+                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        activationReserveBytes: activationReserveBytes),
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):
@@ -999,7 +1014,37 @@ extension EngineV2Factory {
                         // exists, so no admitted page is ever unbacked.
                         slabCommitment: plan.commitment)
                     let pagedCaches = paged.makeLayerCaches()
-                    let caches = try newCaches { index, _ in pagedCaches[index] }
+                    // `newCacheV2` hands the closure the MODEL layer index
+                    // (`kind.modelLayerIndex ?? storagePosition`), while
+                    // `makeLayerCaches()` is dense per STORAGE slot. For
+                    // Gemma/GPT-OSS the two coincide (modelLayerIndex nil);
+                    // on a hybrid trunk (Qwen3.5/3.6: 40 model layers, 10
+                    // attending at indices 3, 7, …, 39) the dense subscript
+                    // is out of range by the third attending layer — and
+                    // even in-range values hand layer 3 the cache built for
+                    // layer 15. Unreachable TODAY only because
+                    // `supportsPagedKV == false` vetoes paged for recurrent
+                    // models upstream; the day that flag flips, this is a
+                    // crash at engine build. Map model index → storage slot.
+                    var storageForModelIndex: [Int: Int] = [:]
+                    for (storage, kind) in layerKinds.enumerated() {
+                        storageForModelIndex[kind.modelLayerIndex ?? storage] = storage
+                    }
+                    let caches = try newCaches { index, _ in
+                        // A miss is impossible by construction: `layerKinds`
+                        // is the same `cbv2LayerKinds` array `newCacheV2`
+                        // enumerates, and `pagedCaches` is one cache per
+                        // entry of it — precondition rather than throw (the
+                        // maker closure is non-throwing).
+                        guard let storage = storageForModelIndex[index],
+                            storage < pagedCaches.count
+                        else {
+                            preconditionFailure(
+                                "paged cache storage mapping missing model layer \(index) "
+                                    + "(\(pagedCaches.count) storage slots)")
+                        }
+                        return pagedCaches[storage]
+                    }
                     return ProductionBackendPreparation(
                         model: model,
                         maxConcurrentRequests: maxConcurrentRequests,

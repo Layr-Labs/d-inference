@@ -146,6 +146,20 @@ extension ProviderLoop {
         return plan
     }
 
+    /// The LIVE preload requirement for a candidate: measured-or-padded
+    /// weights plus the CURRENT serving-set headroom. Consulted at each
+    /// preloader admission step because a fail-closed retirement earlier in
+    /// the run can relax the floor the plan-time figure captured. nil when
+    /// the id left the advertised set (the preloader then keeps its planned
+    /// figure; the load itself re-guards).
+    internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
+        guard let info = advertisedModels[modelId] else { return nil }
+        return ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: UnifiedMemoryCap.loadGateWeightsGb(
+                modelId: modelId, estimatedGb: info.estimatedMemoryGb),
+            headroomGb: loadHeadroomGb)
+    }
+
     // MARK: - Readiness gate
 
     /// Preload the startup plan, deferring the caller (registration) up to
@@ -195,7 +209,8 @@ extension ProviderLoop {
             selfTestFailClosed: failClosed,
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
-            log: { line in log.info("\(line)") }
+            log: { line in log.info("\(line)") },
+            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) }
         )
 
         let preloader = StartupPreloader(deps: deps)

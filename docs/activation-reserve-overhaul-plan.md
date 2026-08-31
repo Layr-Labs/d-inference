@@ -55,12 +55,14 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
    **~3.3 GiB, saturated** (hybrid trunk — no composed-attention blow-up). MTP delta
    ≈ +0.4 GiB (B=1-measured; a B=8 MTP figure needs the campaign B=N harness
    extension — do with the harness PR).
-3. **Both outcomes**: (a) add the floor entry
-   `qwen3.6-35b-a3b-vl-mtp-mxfp8 → 4.0 GiB` (non-KV 3.3 + MTP allowance + slack;
-   convention note required — see conclusions in the measurement report) to both
-   tables in one commit — it meaningfully widens the 36 GB tier (needs 30.3 → 28.8);
-   AND (b) recommend the catalog correction `min_ram_gb` 32 → 36 (ops change): even
-   at floor 4.0 the 32 GiB box retains <4 GiB for macOS — not honestly serveable.
+3. **Resolved as follows** (superseded by the PR review — see Phase 3 status):
+   (a) the 4.0 GiB floor entry is a REJECTED-FOR-NOW candidate: qwen3.6 is
+   vision-capable and the tower transient rides this reserve, so the
+   text-decode measurement alone must not lower it — the entry is DEFERRED
+   behind a vision-inclusive measurement (shipped tables carry gpt-oss only).
+   (b) the catalog correction `min_ram_gb` 32 → 36 is REQUIRED regardless:
+   at the shipped 5.5 default the tier does not fit (30.3 > 28.8 cap), and
+   even at a future 4.0 floor a 32 GiB box retains <4 GiB for macOS.
 
 ## Phase 3 — measured-weights estimate + default retune → follow-up PR(s)
 

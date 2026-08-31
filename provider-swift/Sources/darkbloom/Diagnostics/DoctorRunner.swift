@@ -129,13 +129,24 @@ enum DoctorRunner {
             // TARGET diagnosis above, so a too-large configured model is
             // still flagged rather than silently skipped. Alternatives keep
             // their solo floors: each models `enabled_models = [candidate]`.
-            let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
-                .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
-            let enabled = snapshot.config.backend.enabledModels
-            let servingSetIDs: [String] =
-                enabled.isEmpty
-                ? daemonBasis.map(\.id)
-                : daemonBasis.map(\.id).filter(enabled.contains)
+            // Prefer the daemon's OWN advertised list when it is up and
+            // fresh: CLI selection overrides (`--all` bypasses a non-empty
+            // enabled_models filter; `--model` restricts an unfiltered
+            // config) make any config-derived reconstruction wrong in both
+            // directions. The config-derived basis remains the offline
+            // fallback.
+            let servingSetIDs: [String]
+            if stateFresh, let live = state?.advertisedModels, !live.isEmpty {
+                servingSetIDs = live
+            } else {
+                let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
+                    .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
+                let enabled = snapshot.config.backend.enabledModels
+                servingSetIDs =
+                    enabled.isEmpty
+                    ? daemonBasis.map(\.id)
+                    : daemonBasis.map(\.id).filter(enabled.contains)
+            }
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: doctorWeightGb(target),

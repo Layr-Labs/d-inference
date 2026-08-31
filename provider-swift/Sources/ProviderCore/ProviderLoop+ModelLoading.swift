@@ -264,6 +264,10 @@ extension ProviderLoop {
             await waitForModelUnload(modelId)
             if isShuttingDown { throw CancellationError() }
         }
+        // specDecPreparation suspended above — a self-test failure can have
+        // begun retiring this model meanwhile; the resident return below
+        // must not hand the request to the failed build.
+        try throwIfRetiring(modelId)
         if modelSlots[modelId] != nil { return }
         if modelsLoading.contains(modelId) {
             try await ensureModelLoaded(
@@ -284,6 +288,8 @@ extension ProviderLoop {
                 await waitForModelUnload(modelId)
                 if isShuttingDown { throw CancellationError() }
             }
+            // Same rule at the load-gate wait's resident return.
+            try throwIfRetiring(modelId)
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true

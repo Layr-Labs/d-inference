@@ -5145,24 +5145,40 @@ func (s *PostgresStore) ReserveCodeAttestPushBudget(
 	// Token row = per-token cooldown (A-B-A retention). Sentinel row
 	// (token_hash = '') = per-SE-key admission floor: a NOVEL token (no row) is
 	// only admitted once the floor has elapsed, so fabricated fresh tokens
-	// cannot mint fresh budgets (Codex P1). Every admission raises the floor.
+	// cannot mint fresh budgets (Codex P1).
+	//
+	// Novel-token admission is serialized on the sentinel row itself: the floor
+	// is created-or-advanced FIRST, and only the statement whose ON CONFLICT
+	// guard passes against the row's latest committed version proceeds to
+	// insert the token row. Two blue-green coordinators racing distinct novel
+	// tokens for one SE key therefore cannot both admit — the loser re-checks
+	// the winner's freshly raised floor and returns floor-blocked, even when
+	// neither snapshot saw a sentinel (or a floor block) at statement start.
 	var admitted bool
 	err := s.pool.QueryRow(ctx,
-		`WITH floor_blocked AS (
+		`WITH known AS (
 			SELECT 1 FROM code_attest_push_budgets
-			 WHERE se_pubkey = $1 AND token_hash = ''
-			   AND next_push_at > $3
-			   AND NOT EXISTS (
-				SELECT 1 FROM code_attest_push_budgets
-				 WHERE se_pubkey = $1 AND token_hash = $2
-			   )
+			 WHERE se_pubkey = $1 AND token_hash = $2
+		),
+		floor_acquired AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3
+			 WHERE NOT EXISTS (SELECT 1 FROM known)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at
+			WHERE code_attest_push_budgets.next_push_at <= $3
+			RETURNING 1
 		),
 		admitted AS (
 			INSERT INTO code_attest_push_budgets (
 				se_pubkey, token_hash, next_push_at, updated_at
 			)
 			SELECT $1, $2, $4, $3
-			 WHERE NOT EXISTS (SELECT 1 FROM floor_blocked)
+			 WHERE EXISTS (SELECT 1 FROM known)
+			    OR EXISTS (SELECT 1 FROM floor_acquired)
 			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
 				next_push_at = EXCLUDED.next_push_at,
 				updated_at = EXCLUDED.updated_at
@@ -5170,10 +5186,15 @@ func (s *PostgresStore) ReserveCodeAttestPushBudget(
 			RETURNING 1
 		),
 		floor_raised AS (
+			-- Known-token admissions raise the floor too; novel admissions
+			-- already set it in floor_acquired. The two paths are mutually
+			-- exclusive, so the sentinel row is written at most once here.
 			INSERT INTO code_attest_push_budgets (
 				se_pubkey, token_hash, next_push_at, updated_at
 			)
-			SELECT $1, '', $4, $3 FROM admitted
+			SELECT $1, '', $4, $3
+			  FROM admitted
+			 WHERE EXISTS (SELECT 1 FROM known)
 			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
 				next_push_at = GREATEST(
 					code_attest_push_budgets.next_push_at,

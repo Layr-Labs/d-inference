@@ -26,14 +26,21 @@ const (
 	trustReuseJournalVersion       = 1
 	trustReuseJournalMaxEntries    = 4096
 	trustReuseJournalMaxBytes      = 1 << 20
-	trustReuseJournalMaxLineBytes  = 256
+	trustReuseJournalMaxLineBytes  = 512
 	trustReuseJournalLockTimeout   = 5 * time.Second
 )
 
+// hardUntrustJournalEntry is one durable pending hard-untrust revocation.
+// SEPubKey (added within journal version 1 as an optional field) carries the
+// plaintext SE public key so crash replay can create a missing tombstone row
+// even when the identity never had a provider_trust_reuse row at revocation
+// time. Legacy digest-only entries (written before the field existed) still
+// load and replay against listed rows; only row-less convergence needs the key.
 type hardUntrustJournalEntry struct {
 	Version      int    `json:"v"`
 	SEKeySHA256  string `json:"se_key_sha256"`
 	RevocationID string `json:"revocation_event_id"`
+	SEPubKey     string `json:"se_pub_key,omitempty"`
 }
 
 type hardUntrustJournal interface {
@@ -116,6 +123,7 @@ func newHardUntrustJournalEntry(seKey, revocationEventID string) hardUntrustJour
 		Version:      trustReuseJournalVersion,
 		SEKeySHA256:  hashSEPublicKey(seKey),
 		RevocationID: revocationEventID,
+		SEPubKey:     seKey,
 	}
 }
 
@@ -360,6 +368,11 @@ func validateHardUntrustJournalEntry(entry hardUntrustJournalEntry) error {
 	parsed, err := uuid.Parse(entry.RevocationID)
 	if err != nil || parsed.String() != entry.RevocationID {
 		return errors.New("invalid revocation event ID")
+	}
+	// Optional plaintext SE key (row-less replay) must bind to the digest, so
+	// a corrupted/edited journal line cannot redirect a revocation replay.
+	if entry.SEPubKey != "" && hashSEPublicKey(entry.SEPubKey) != entry.SEKeySHA256 {
+		return errors.New("SE key does not match digest")
 	}
 	return nil
 }

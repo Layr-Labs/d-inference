@@ -531,6 +531,24 @@ func (s *Server) SeedTrustReuseCache(ctx context.Context) error {
 			}
 			s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
 		}
+		// A hard untrust during a store outage for an identity with no
+		// provider_trust_reuse row leaves an entry that matches nothing above.
+		// Entries carrying the plaintext SE key create the missing tombstone
+		// (RevokeProviderTrustReuse upserts on absence) and converge; legacy
+		// digest-only entries stay pending and keep denying via the pending set.
+		if !matched && entry.SEPubKey != "" {
+			matched = true
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				s.store, entry.SEPubKey, entry.RevocationID)
+			if err != nil {
+				replayed = false
+				if replayErr == nil {
+					replayErr = fmt.Errorf("replay hard-untrust revocation: %w", err)
+				}
+			} else {
+				s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+			}
+		}
 		if !matched || !replayed {
 			continue
 		}
@@ -951,6 +969,7 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	if result.Decision == "" {
 		return reject(result.Reason)
 	}
+	record := result.Record
 	if result.Decision == trustReuseDecisionApprovedReleaseTransition {
 		evidence, ok := provider.ApplicationEvidenceSnapshot()
 		if !ok || evidence.BinaryHash != freshBinaryHash ||
@@ -959,24 +978,34 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 			evidence.Backend != fact.Backend {
 			return reject(trustReuseReasonTransitionUnapproved)
 		}
+		// The approved A→B transition has just proven binary B (fresh signed
+		// challenge + verified application evidence). Advance the cached and
+		// durable application identity to B so a later deactivation of
+		// release A (ApprovedFromBinaryHashes only lists ACTIVE predecessors)
+		// cannot orphan the record and force this device back to live MDM.
+		// The hardware-proof timestamp is deliberately NOT refreshed — it
+		// still dates the last live device verification, so the reuse window
+		// keeps expiring on the hardware proof, not on binary churn.
+		record.lastVerifiedBinaryHash = freshBinaryHash
+		at := evidence.VerifiedAt
+		record.applicationProofVerifiedAt = &at
 	}
-	record := result.Record
 	epoch := provider.HardUntrustEpoch()
+	rec := store.ProviderTrustReuse{
+		SEPubKey:                   seKey,
+		Serial:                     record.serial,
+		TrustLevel:                 record.trustLevel,
+		LastVerifiedBinaryHash:     record.lastVerifiedBinaryHash,
+		SIPEnabled:                 record.sipEnabled,
+		SecureBootFull:             record.secureBootFull,
+		MDAUDID:                    record.mdaUDID,
+		HardwareProofVerifiedAt:    record.hardwareProofVerifiedAt,
+		ApplicationProofVerifiedAt: record.applicationProofVerifiedAt,
+		EvidenceGeneration:         record.evidenceGeneration,
+		RevocationGeneration:       record.revocationGeneration,
+		RevocationEventID:          record.revocationEventID,
+	}
 	if st := s.trustReuseCache.store; st != nil {
-		rec := store.ProviderTrustReuse{
-			SEPubKey:                   seKey,
-			Serial:                     record.serial,
-			TrustLevel:                 record.trustLevel,
-			LastVerifiedBinaryHash:     record.lastVerifiedBinaryHash,
-			SIPEnabled:                 record.sipEnabled,
-			SecureBootFull:             record.secureBootFull,
-			MDAUDID:                    record.mdaUDID,
-			HardwareProofVerifiedAt:    record.hardwareProofVerifiedAt,
-			ApplicationProofVerifiedAt: record.applicationProofVerifiedAt,
-			EvidenceGeneration:         record.evidenceGeneration,
-			RevocationGeneration:       record.revocationGeneration,
-			RevocationEventID:          record.revocationEventID,
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		writeResult, persistErr := st.UpsertProviderTrustReuse(
 			ctx, rec, record.revocationGeneration)
@@ -995,8 +1024,8 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 		record.revocationGeneration = writeResult.RevocationGeneration
 		rec.EvidenceGeneration = writeResult.EvidenceGeneration
 		rec.RevocationGeneration = writeResult.RevocationGeneration
-		s.trustReuseCache.recordTrust(rec)
 	}
+	s.trustReuseCache.recordTrust(rec)
 	if !provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(registry.DeviceEvidence{
 		SEPublicKey:          seKey,
 		Serial:               serial,

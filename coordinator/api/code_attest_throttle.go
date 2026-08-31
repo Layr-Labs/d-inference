@@ -217,13 +217,22 @@ func (t *codeAttestThrottle) reuseAttestation(
 }
 
 // reuseAttestationForTransition supplies the genuine Apple/APNs half of an
-// approved release transition. Version may differ, but the proof must be fresh
-// and bound to the same SE identity, exact current non-empty token, and exact
-// registration-bound process node key that decrypted E_K(nonce).
+// approved release transition. Version may differ, and — unlike same-version
+// reuseAttestation — the cached proof's process key may differ from the current
+// one: the provider generates a fresh ephemeral NodeKeyPair on every process
+// start, so requiring key equality here would push the whole fleet on every
+// routine upgrade/restart and strand providers behind the durable APNs floor
+// while queued requests expire. The proof must still be fresh, bound to the
+// same SE identity and exact current non-empty token, and must itself carry a
+// process-key binding (a legacy unbound row never authorizes a transition).
+// SECURITY: this only authorizes SENDING a live encrypted resume challenge to
+// the CURRENT registration process key; possession of that new key is proven
+// solely by decrypting E_K(nonce), and the SE signature over the recovered
+// nonce is still verified — the cached record never grants trust by itself.
 func (t *codeAttestThrottle) reuseAttestationForTransition(
-	seKey, token, nodeKey string,
+	seKey, token string,
 ) bool {
-	if seKey == "" || token == "" || nodeKey == "" {
+	if seKey == "" || token == "" {
 		return false
 	}
 	t.mu.Lock()
@@ -231,7 +240,7 @@ func (t *codeAttestThrottle) reuseAttestationForTransition(
 	r, ok := t.attested[seKey]
 	return ok &&
 		r.token == token &&
-		r.nodeKey == nodeKey &&
+		r.nodeKey != "" &&
 		t.now().Sub(r.at) < t.reuseWindow
 }
 

@@ -373,6 +373,92 @@ func TestPostgresCodeAttestPushAdmissionIsAtomic(t *testing.T) {
 	}
 }
 
+// exerciseCodeAttestPushDistinctNovelTokenRace reproduces the blue-green
+// double-admission (Codex P1 follow-up): two coordinators racing DISTINCT
+// novel tokens for one SE key — before any floor sentinel exists — must admit
+// exactly one, because admission is serialized on the sentinel row itself.
+// Repeated iterations alternate the launch order of the two tokens.
+func exerciseCodeAttestPushDistinctNovelTokenRace(
+	t *testing.T, st codeAttestPushBudgetTestStore, prefix string, iterations int,
+) {
+	t.Helper()
+	ctx := context.Background()
+	for iter := range iterations {
+		now := time.Now().UTC()
+		seKey := fmt.Sprintf("%s-%d-%d", prefix, now.UnixNano(), iter)
+		hashes := []string{"novel-token-a", "novel-token-b"}
+		if iter%2 == 1 { // both orderings
+			hashes[0], hashes[1] = hashes[1], hashes[0]
+		}
+		var admitted atomic.Int32
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for _, hash := range hashes {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				ok, err := st.ReserveCodeAttestPushBudget(
+					ctx, seKey, hash, now, now.Add(20*time.Minute),
+				)
+				if err != nil {
+					t.Errorf("iter %d reserve %s: %v", iter, hash, err)
+					return
+				}
+				if ok {
+					admitted.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if got := admitted.Load(); got != 1 {
+			t.Fatalf("iter %d: distinct novel tokens admitted = %d, want 1", iter, got)
+		}
+		// The loser must stay floor-blocked, and durable state must hold
+		// exactly the winner's token row plus the raised floor sentinel.
+		if ok, err := st.ReserveCodeAttestPushBudget(
+			ctx, seKey, "novel-token-c", now.Add(time.Minute),
+			now.Add(21*time.Minute),
+		); err != nil || ok {
+			t.Fatalf("iter %d: third novel token bypassed the floor: ok=%v err=%v", iter, ok, err)
+		}
+		rows, err := st.ListCodeAttestPushBudgets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokenRows, floorRows := 0, 0
+		for _, row := range rows {
+			if row.SEPubKey != seKey {
+				continue
+			}
+			if row.TokenHash == "" {
+				floorRows++
+				if !row.NextPushAt.Equal(now.Add(20 * time.Minute)) {
+					t.Fatalf("iter %d: floor sentinel window = %+v", iter, row)
+				}
+			} else {
+				tokenRows++
+			}
+		}
+		if tokenRows != 1 || floorRows != 1 {
+			t.Fatalf("iter %d: budget rows tokens=%d floors=%d, want 1/1", iter, tokenRows, floorRows)
+		}
+	}
+}
+
+func TestMemoryCodeAttestPushDistinctNovelTokensAdmitExactlyOne(t *testing.T) {
+	exerciseCodeAttestPushDistinctNovelTokenRace(
+		t, NewMemory(Config{}), "race-memory", 32,
+	)
+}
+
+func TestPostgresCodeAttestPushDistinctNovelTokensAdmitExactlyOne(t *testing.T) {
+	exerciseCodeAttestPushDistinctNovelTokenRace(
+		t, testPostgresStore(t), "race-postgres", 24,
+	)
+}
+
 type codeAttestPushBudgetTestStore interface {
 	ReserveCodeAttestPushBudget(
 		ctx context.Context, seKey, tokenHash string,

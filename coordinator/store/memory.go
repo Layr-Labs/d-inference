@@ -3251,6 +3251,9 @@ func (s *MemoryStore) ReserveCodeAttestPushBudget(
 	if !ok {
 		// Novel token: admission must additionally clear the per-SE-key floor,
 		// so fabricating fresh tokens cannot mint fresh budgets (Codex P1).
+		// s.mu serializes floor-check-then-admit here, mirroring the Postgres
+		// store, which acquires the floor sentinel row lock before inserting
+		// the token row (blue-green double-admission fix).
 		if floor, has := s.codeAttestPushBudgets[floorKey]; has &&
 			floor.NextPushAt.After(now) {
 			return false, nil

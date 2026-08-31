@@ -167,8 +167,13 @@ func TestHardUntrustJournalAppendIsFsyncBackedBoundedAndIdempotent(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if strings.Contains(string(data), seKey) || !strings.Contains(string(data), hashSEPublicKey(seKey)) {
-		t.Fatalf("journal leaked raw identity or omitted digest: %q", data)
+	// The entry embeds BOTH the digest (row matching, legacy compat) and the
+	// plaintext SE public key (Codex P2: row-less tombstone creation on crash
+	// replay). The SE public key is not confidential — the store keeps it
+	// plaintext in provider_trust_reuse — and the file stays 0600 below.
+	if !strings.Contains(string(data), hashSEPublicKey(seKey)) ||
+		!strings.Contains(string(data), "\"se_pub_key\":\""+seKey+"\"") {
+		t.Fatalf("journal entry must carry the digest and the bound SE key: %q", data)
 	}
 	for _, filename := range []string{path, path + ".lock"} {
 		info, err := os.Stat(filename)
@@ -401,5 +406,108 @@ func TestHardUntrustJournalRuntimeReplayClearsFailClosedLatch(t *testing.T) {
 		return !blocked
 	}) {
 		t.Fatal("runtime revocation replay did not tombstone, clean journal, and restore readiness")
+	}
+}
+
+// --- Codex P2: row-less hard untrust must converge on crash replay ---
+
+// TestHardUntrustJournalReplayCreatesMissingTombstone: a hard untrust during a
+// store outage for an SE identity with NO provider_trust_reuse row leaves a
+// journal entry. Crash replay must not merely match listed rows — the entry
+// carries the SE key, so replay creates the missing tombstone row, converges,
+// and removes the entry (instead of denying the identity forever through the
+// in-memory pending set alone).
+func TestHardUntrustJournalReplayCreatesMissingTombstone(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	path := filepath.Join(t.TempDir(), "coordinator", trustReuseJournalFilename)
+	journal := newFileHardUntrustJournal(path)
+	if err := journal.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	entry := newHardUntrustJournalEntry("se-no-row", uuid.NewString())
+	if _, err := journal.Append(entry); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	srv := durableTrustReuseTestServer(t, mem, path)
+	defer srv.Close()
+	if err := srv.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("SeedTrustReuseCache: %v", err)
+	}
+
+	rows, err := mem.ListProviderTrustReuse(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].SEPubKey != "se-no-row" ||
+		rows[0].RevokedAt == nil || rows[0].RevocationEventID != entry.RevocationID {
+		t.Fatalf("replay must create the missing tombstone row: %+v, err=%v", rows, err)
+	}
+	remaining, err := journal.Load()
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("converged entry must be removed from the journal: %+v, err=%v", remaining, err)
+	}
+	if srv.trustReuseIdentityPending("se-no-row") {
+		t.Fatal("converged identity must not stay in the pending denial set")
+	}
+	if blocked, reason := srv.trustSafetyStatus(); blocked {
+		t.Fatalf("converged replay must not block routing: reason=%q", reason)
+	}
+	if !srv.trustReuseCache.isRevoked("se-no-row") {
+		t.Fatal("replayed tombstone must be installed in the cache")
+	}
+}
+
+// TestHardUntrustJournalLegacyDigestOnlyEntriesStillReplay: entries written
+// before the SE key was embedded (digest-only) must keep loading and replaying
+// against listed rows exactly as before — and a digest-only entry with no row
+// must stay pending (fail closed) rather than being dropped.
+func TestHardUntrustJournalLegacyDigestOnlyEntriesStillReplay(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	path := filepath.Join(t.TempDir(), "coordinator", trustReuseJournalFilename)
+	journal := newFileHardUntrustJournal(path)
+	if err := journal.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// Legacy on-disk shape: v1 without se_pub_key (omitempty reproduces the
+	// exact old JSON).
+	rowedLegacy := hardUntrustJournalEntry{
+		Version:      trustReuseJournalVersion,
+		SEKeySHA256:  hashSEPublicKey("se-legacy-rowed"),
+		RevocationID: uuid.NewString(),
+	}
+	rowlessLegacy := hardUntrustJournalEntry{
+		Version:      trustReuseJournalVersion,
+		SEKeySHA256:  hashSEPublicKey("se-legacy-rowless"),
+		RevocationID: uuid.NewString(),
+	}
+	if _, err := journal.Append(rowedLegacy); err != nil {
+		t.Fatalf("Append rowed legacy: %v", err)
+	}
+	if _, err := journal.Append(rowlessLegacy); err != nil {
+		t.Fatalf("Append rowless legacy: %v", err)
+	}
+	rec := hardwareReuseRecord("se-legacy-rowed", "SER-L", trHashA, time.Now())
+	if _, err := mem.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	srv := durableTrustReuseTestServer(t, mem, path)
+	defer srv.Close()
+	if err := srv.SeedTrustReuseCache(context.Background()); err != nil {
+		t.Fatalf("SeedTrustReuseCache: %v", err)
+	}
+
+	rows, err := mem.ListProviderTrustReuse(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].SEPubKey != "se-legacy-rowed" ||
+		rows[0].RevokedAt == nil || rows[0].RevocationEventID != rowedLegacy.RevocationID {
+		t.Fatalf("legacy entry with a row must replay to a tombstone: %+v, err=%v", rows, err)
+	}
+	remaining, err := journal.Load()
+	if err != nil || len(remaining) != 1 || remaining[0] != rowlessLegacy {
+		t.Fatalf("row-less legacy entry must stay pending: %+v, err=%v", remaining, err)
+	}
+	if !srv.trustReuseIdentityPending("se-legacy-rowless") {
+		t.Fatal("row-less legacy identity must remain denied via the pending set")
+	}
+	if srv.trustReuseIdentityPending("se-legacy-rowed") {
+		t.Fatal("replayed legacy identity must leave the pending set")
 	}
 }

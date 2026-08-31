@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -251,6 +252,83 @@ func TestRearmChangedTokenDeletesPersistedReuse(t *testing.T) {
 	}
 }
 
+// TestRearmChangedTokenKicksImmediateOrdinaryChallenge proves the Codex 05:33Z
+// #2 fix: token rotation clears application evidence, and that evidence is
+// regenerated ONLY by the connection's ordinary attestation challenge loop —
+// so the rearm path must kick that loop immediately (RequestImmediateChallenge)
+// rather than leaving the provider unroutable until the 5-minute periodic
+// tick while queued requests expire at 120s. A first-token arrival clears no
+// evidence and must NOT kick.
+func TestRearmChangedTokenKicksImmediateOrdinaryChallenge(t *testing.T) {
+	logger := quietLogger()
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error { return nil }})
+
+	_, _, _, sePubB64 := providerKeyMaterial(t)
+	// Registry-created provider: carries the real challengeKick channel the
+	// connection's challengeLoop selects on.
+	p := makeRoutableProvider(t, reg, "kick-provider", "kick-model")
+	p.Mu().Lock()
+	p.AttestationResult = &attestation.VerificationResult{Valid: true, PublicKey: sePubB64}
+	p.APNsDeviceToken = "tok1"
+	p.CodeAttested = true
+	p.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey: sePubB64, Serial: "SERIAL",
+		ProcessPublicKey: p.PublicKey, APNsToken: "tok1",
+		BinaryHash: strings.Repeat("a", 64), VerifiedAt: time.Now(),
+		EvidenceGeneration: 1, PolicyGeneration: 1,
+	}
+	p.Mu().Unlock()
+	select {
+	case <-p.ImmediateChallengeChan():
+		t.Fatal("precondition: unexpected pending challenge kick")
+	default:
+	}
+
+	// Steady state: an unchanged token must not kick.
+	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok1",
+	})
+	select {
+	case <-p.ImmediateChallengeChan():
+		t.Fatal("unchanged token must not kick the ordinary challenge loop")
+	default:
+	}
+
+	// Rotation: evidence is cleared AND the ordinary challenge loop is kicked.
+	srv.maybeRearmCodeAttest(context.Background(), "kick-provider", p, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "tok2",
+	})
+	if _, ok := p.ApplicationEvidenceSnapshot(); ok {
+		t.Fatal("token rotation retained stale application evidence")
+	}
+	if p.GetCodeAttested() {
+		t.Fatal("token rotation must reset CodeAttested (fail-closed)")
+	}
+	select {
+	case <-p.ImmediateChallengeChan():
+	default:
+		t.Fatal("token rotation must kick an immediate ordinary challenge, not wait for the 5-minute tick")
+	}
+
+	// First-token arrival on a token-less provider clears no evidence: no kick.
+	late := makeRoutableProvider(t, reg, "late-provider", "kick-model")
+	late.Mu().Lock()
+	late.AttestationResult = &attestation.VerificationResult{Valid: true, PublicKey: sePubB64}
+	late.APNsDeviceToken = ""
+	late.Mu().Unlock()
+	srv.maybeRearmCodeAttest(context.Background(), "late-provider", late, &protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", APNsDeviceToken: "late-tok",
+	})
+	select {
+	case <-late.ImmediateChallengeChan():
+		t.Fatal("first token arrival clears no evidence and must not kick")
+	default:
+	}
+}
+
 // TestClearChallengeDropsOutstanding proves the Codex #1 hardening: clearing the
 // outstanding challenge (done on APNs token rotation) drops it unconditionally,
 // so a stale reply to the pre-rotation challenge can never complete the forced
@@ -450,7 +528,8 @@ func TestSeededWrongVersionRowForcesRealChallenge(t *testing.T) {
 
 // crossVersionProvider builds a fully-fenced provider running newVersion: valid
 // attestation, runtime+manifest verified, SIP-verified challenge, same SE key +
-// APNs token. Reuse additionally requires a cached proof for its exact node key.
+// APNs token. Transition reuse additionally requires current generation-bound
+// application evidence attesting this provider's exact process key.
 func crossVersionProvider(kPubB64, sePubB64, newVersion string) *registry.Provider {
 	p := newCodeAttestProvider(kPubB64, sePubB64)
 	p.Version = newVersion
@@ -499,8 +578,8 @@ func armCrossVersionApplicationEvidence(
 // TestCrossVersionReuseAboveFloorSameProcessKeyReuses: a healthy update
 // (version bump, same SE key + token + process node key, all binary-identity
 // fences satisfied, at/above the min-version floor) may ride the recent proof
-// across the version change with no new push. A changed process key is covered
-// separately and must perform a fresh APNs challenge.
+// across the version change with no new push. A restarted process with a FRESH
+// node key is covered separately and transitions via the live resume proof.
 func TestCrossVersionReuseAboveFloorSameProcessKeyReuses(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -646,8 +725,8 @@ func TestCrossVersionReuseEmptyVersionForcesChallenge(t *testing.T) {
 
 // TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses proves that
 // current generation-bound application evidence composes with a genuine APNs
-// proof from the prior version only when the cached proof targeted this exact
-// process node key.
+// proof from the prior version to authorize a live resume proof of this exact
+// process key — never a direct grant.
 func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
@@ -682,12 +761,16 @@ func TestCrossVersionReuseCurrentApplicationEvidenceSameProcessReuses(t *testing
 	}
 }
 
-// TestCrossVersionReuseChangedProcessKeyForcesFreshAPNsChallenge reproduces the
-// transferable-proof attack: K1 completes a genuine E_K1(nonce)+SE proof, then
-// K2 reconnects with the same SE identity/token and valid current application
-// evidence. The K1 proof must not grant K2 code trust before K2 answers a fresh
-// APNs challenge.
-func TestCrossVersionReuseChangedProcessKeyForcesFreshAPNsChallenge(t *testing.T) {
+// TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush reproduces the
+// routine upgrade/restart (Codex 05:33Z #1): the provider mints a fresh
+// ephemeral NodeKeyPair every process start, so K2 reconnects with the same SE
+// identity + APNs token, current generation-bound application evidence
+// attesting K2, and a cached genuine proof recorded under K1. That must
+// authorize a live encrypted resume challenge to K2 — decrypting it is the
+// possession proof for the new key — and re-attest with ZERO new APNs pushes,
+// so the device never sits behind the durable 20-minute push floor while
+// queued requests expire at 120s.
+func TestRestartFreshProcessKeyTransitionsViaResumeWithoutPush(t *testing.T) {
 	logger := quietLogger()
 	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
 	fastBudgets(srv)
@@ -704,20 +787,70 @@ func TestCrossVersionReuseChangedProcessKeyForcesFreshAPNsChallenge(t *testing.T
 		t.Fatal("precondition: K1 did not complete a genuine APNs proof")
 	}
 	if !srv.codeAttestThrottle.reuseAttestationForTransition(
-		sePub, k1.APNsDeviceToken, k1Pub,
+		sePub, k1.APNsDeviceToken,
 	) {
-		t.Fatal("precondition: K1 proof was not cached with K1's process key")
+		t.Fatal("precondition: K1 proof was not cached for this SE identity + token")
 	}
 
+	// Restart: fresh X25519 process key, same SE identity + token, fresh
+	// SE-signed application evidence for the NEW process key.
 	k2Pub, k2Priv, _, _ := providerKeyMaterial(t)
 	k2 := crossVersionProvider(k2Pub, sePub, "0.6.14")
 	armCrossVersionApplicationEvidence(t, srv, k2, sePub)
 
+	var pushes int32
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		atomic.AddInt32(&pushes, 1)
+		return nil
+	}})
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		// completeResumeRoundTrip asserts no code trust was granted before the
+		// live possession proof.
+		return completeResumeRoundTrip(t, srv, k2, "k2", k2Priv, seKey, message)
+	}
+	srv.codeAttestLoop(context.Background(), "k2", k2)
+
+	if got := atomic.LoadInt32(&pushes); got != 0 {
+		t.Fatalf("restart transition sent %d APNs pushes, want 0 (resume path)", got)
+	}
+	if !k2.GetCodeAttested() || !k2.GetFreshCodeAttested() {
+		t.Fatal("restarted process did not re-attest via the live resume proof")
+	}
+}
+
+// TestRestartTransitionWithoutCurrentEvidenceForcesFreshAPNsChallenge preserves
+// the transferable-proof defense in its remaining form: a process with the same
+// SE identity + token but NO current generation-bound application evidence (an
+// unapproved binary cannot earn one) must not ride K1's cached proof — it must
+// answer a fresh APNs challenge, and gains no code trust before doing so.
+func TestRestartTransitionWithoutCurrentEvidenceForcesFreshAPNsChallenge(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	k1Pub, k1Priv, seKey, sePub := providerKeyMaterial(t)
+	k1 := newCodeAttestProvider(k1Pub, sePub)
+	k1.Version = "0.6.13"
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
+		return completeRoundTrip(t, srv, k1, "k1", k1Priv, seKey, pubKeyB64, nonceB64)
+	}})
+	srv.codeAttestLoop(context.Background(), "k1", k1)
+	if !k1.GetFreshCodeAttested() {
+		t.Fatal("precondition: K1 did not complete a genuine APNs proof")
+	}
+
+	k2Pub, k2Priv, _, _ := providerKeyMaterial(t)
+	k2 := crossVersionProvider(k2Pub, sePub, "0.6.14")
+	// NO application evidence armed for K2.
+
 	if srv.tryCrossVersionReuse(context.Background(), "k2", k2) {
-		t.Fatal("K2 reused K1's process-bound APNs proof")
+		t.Fatal("evidence-less process rode K1's cached APNs proof")
 	}
 	if k2.GetCodeAttested() || k2.GetFreshCodeAttested() {
-		t.Fatal("K2 gained code trust from SE+token+application evidence before proof")
+		t.Fatal("K2 gained code trust from the SE+token cache before any proof")
 	}
 
 	var k2Pushes int32
@@ -731,10 +864,75 @@ func TestCrossVersionReuseChangedProcessKeyForcesFreshAPNsChallenge(t *testing.T
 	srv.codeAttestLoop(context.Background(), "k2", k2)
 
 	if got := atomic.LoadInt32(&k2Pushes); got != 1 {
-		t.Fatalf("changed process key sent %d fresh APNs challenges, want 1", got)
+		t.Fatalf("evidence-less process sent %d fresh APNs challenges, want 1", got)
 	}
 	if !k2.GetCodeAttested() || !k2.GetFreshCodeAttested() {
 		t.Fatal("K2 did not gain code trust after its own live APNs proof")
+	}
+}
+
+// TestRestartTransitionRotatedTokenRefused: even with current application
+// evidence armed, a cached proof bound to a DIFFERENT APNs token never
+// authorizes a transition resume — the rotated token must earn a real
+// challenge under its own budget/floor.
+func TestRestartTransitionRotatedTokenRefused(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+
+	kPub, _, _, sePub := providerKeyMaterial(t)
+	provider := crossVersionProvider(kPub, sePub, "0.6.14")
+	provider.APNsDeviceToken = "newtok"
+	// Cached genuine proof was earned under the OLD token (by some process key).
+	seedFreshProcessAttestation(srv, sePub, "0.6.13", "oldtok", "old-process-key")
+	armCrossVersionApplicationEvidence(t, srv, provider, sePub)
+	srv.codeResumeSender = func(string, protocol.CodeAttestationResumeChallenge) error {
+		t.Error("rotated token must never receive a transition resume challenge")
+		return nil
+	}
+
+	if srv.tryCrossVersionReuse(context.Background(), "p1", provider) {
+		t.Fatal("cached old-token proof authorized a transition for the rotated token")
+	}
+	if provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
+		t.Fatal("rotated token gained code trust without any live proof")
+	}
+}
+
+// TestRestartTransitionWrongSESignatureRefused: the transition resume challenge
+// fails closed when the SE signature over the recovered nonce does not verify
+// against the registration-bound SE key — decrypting E_K(nonce) alone (process
+// key possession) never grants code trust without the SE identity proof.
+func TestRestartTransitionWrongSESignatureRefused(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	fastBudgets(srv)
+	srv.minProviderVersion = "0.6.0"
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	kPub, kPriv, _, sePub := providerKeyMaterial(t)
+	_, _, wrongSE, _ := providerKeyMaterial(t)
+	provider := crossVersionProvider(kPub, sePub, "0.6.14")
+	seedFreshProcessAttestation(
+		srv, sePub, "0.6.13", provider.APNsDeviceToken, "old-process-key")
+	armCrossVersionApplicationEvidence(t, srv, provider, sePub)
+	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, _, _ string) error {
+		return nil
+	}})
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		// The genuine process key decrypts, but a WRONG SE key signs.
+		return completeResumeRoundTrip(t, srv, provider, "p1", kPriv, wrongSE, message)
+	}
+
+	if !srv.tryCrossVersionReuse(ctx, "p1", provider) {
+		t.Fatal("precondition: transition resume challenge was not even sent")
+	}
+	if provider.GetCodeAttested() || provider.GetFreshCodeAttested() {
+		t.Fatal("a resume reply with an unverifiable SE signature granted code trust")
 	}
 }
 

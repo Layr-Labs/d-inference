@@ -1406,3 +1406,87 @@ func TestVerifyChallengeFastSkipGrantDrainsQueue(t *testing.T) {
 		t.Fatal("fast-skip grant must drain the queued request to the provider (FIX 3)")
 	}
 }
+
+// --- Codex P1: approved transition must advance the durable binary identity ---
+
+// TestApprovedTransitionAdvancesDurableBinaryIdentity: after an approved A→B
+// release transition granted hardware via reuse, the cached AND durable
+// application identity must read B — with the ORIGINAL hardware-proof
+// timestamp (binary churn must not extend the device-proof window). Otherwise,
+// once release A is deactivated (ApprovedFromBinaryHashes only lists ACTIVE
+// predecessors), the next B reconnect matches neither the same-binary nor the
+// transition path and the fleet falls back to live MDM — including on a fresh
+// coordinator seeded from the store during a blue-green deploy.
+func TestApprovedTransitionAdvancesDurableBinaryIdentity(t *testing.T) {
+	srv, provider, clock := trustReuseFastSkipProvider(t)
+	mem := srv.store.(*store.MemoryStore)
+	srv.trustReuseCache.store = mem
+
+	proofAt := (*clock)()
+	rec := hardwareReuseRecord("se-pub-key-bytes", "SERIAL-1", trHashA, proofAt)
+	srv.trustReuseCache.recordTrust(rec)
+	if _, err := mem.UpsertProviderTrustReuse(context.Background(), rec, 0); err != nil {
+		t.Fatalf("seed durable evidence: %v", err)
+	}
+
+	evidenceAt := proofAt.Add(30 * time.Minute)
+	provider.Mu().Lock()
+	provider.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey: "se-pub-key-bytes", Serial: "SERIAL-1",
+		ProcessPublicKey: "proc-key",
+		BinaryHash:       trHashB,
+		Version:          "0.9.0", Platform: "macos-arm64", Backend: "mlx-swift",
+		VerifiedAt:         evidenceAt,
+		EvidenceGeneration: 1,
+		PolicyGeneration:   1,
+	}
+	provider.Mu().Unlock()
+
+	resp := goodFastSkipResp()
+	resp.BinaryHash = trHashB
+	fact := approvedReleaseTransitionFact{
+		Approved: true, BinaryHash: trHashB, Version: "0.9.0",
+		Platform: "macos-arm64", Backend: "mlx-swift", PolicyGeneration: 1,
+		ApprovedFromBinaryHashes: map[string]struct{}{trHashA: {}},
+	}
+	if !srv.tryTrustReuseFastSkip("prov-fs", provider, resp, true, fact) {
+		t.Fatal("approved A→B transition should grant from fresh device evidence")
+	}
+
+	rows := mustList(t, mem)
+	if len(rows) != 1 || rows[0].LastVerifiedBinaryHash != trHashB {
+		t.Fatalf("durable identity must advance to B, got %+v", rows)
+	}
+	if !rows[0].HardwareProofVerifiedAt.Equal(proofAt) {
+		t.Fatalf("hardware-proof timestamp must not be refreshed by a binary transition: got %v, want %v",
+			rows[0].HardwareProofVerifiedAt, proofAt)
+	}
+	if rows[0].ApplicationProofVerifiedAt == nil ||
+		!rows[0].ApplicationProofVerifiedAt.Equal(evidenceAt) {
+		t.Fatalf("application-proof timestamp must reflect the fresh B proof, got %v",
+			rows[0].ApplicationProofVerifiedAt)
+	}
+
+	// Release A deactivated: no fact lists A as an approved predecessor
+	// anymore. A B reconnect must reuse via the same-binary path — no fact,
+	// no live MDM.
+	result := srv.trustReuseCache.decideTrustReuse(trustReuseInput{
+		SEPubKey: "se-pub-key-bytes", Serial: "SERIAL-1", FreshBinaryHash: trHashB,
+	})
+	if result.Decision != trustReuseDecisionSameBinary {
+		t.Fatalf("post-transition decision = %q (reason %q), want same_binary",
+			result.Decision, result.Reason)
+	}
+
+	// Blue-green deploy: a fresh coordinator seeded from the SAME store must
+	// reuse on B and refuse the retired A.
+	restarted := newTrustReuseCacheWithTTL(defaultHardwareProofTTL)
+	restarted.now = *clock
+	restarted.seed(rows)
+	if _, ok := restarted.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashB); !ok {
+		t.Fatal("restart-seeded cache must reuse on B after A is deactivated")
+	}
+	if _, ok := restarted.reuseTrust("se-pub-key-bytes", "SERIAL-1", trHashA); ok {
+		t.Fatal("retired A hash must no longer reuse after the identity advanced")
+	}
+}

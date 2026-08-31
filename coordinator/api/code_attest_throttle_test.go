@@ -120,26 +120,32 @@ func TestCodeAttestThrottleProcessKeyBinding(t *testing.T) {
 	}
 }
 
+// TestCodeAttestThrottleTransitionProcessKeyBinding: a transition proof is
+// bound to the SE identity and exact APNs token — NOT to the current process
+// key, which rotates on every provider restart. Possession of the new key is
+// proven by decrypting the resume challenge, not by this cache lookup. A
+// rotated token, empty inputs, or a legacy record without any process-key
+// binding still refuse.
 func TestCodeAttestThrottleTransitionProcessKeyBinding(t *testing.T) {
 	th := newCodeAttestThrottle()
 	th.recordAttestedForProcess("se", "0.8.17", "token", "node-key-A")
 
-	if !th.reuseAttestationForTransition("se", "token", "node-key-A") {
-		t.Fatal("same process key should reuse its proof across an approved version transition")
+	if !th.reuseAttestationForTransition("se", "token") {
+		t.Fatal("same SE identity + token should authorize a transition resume challenge")
 	}
-	if th.reuseAttestationForTransition("se", "token", "node-key-B") {
-		t.Fatal("changed process key reused another process's APNs proof")
-	}
-	if th.reuseAttestationForTransition("se", "rotated-token", "node-key-A") {
+	if th.reuseAttestationForTransition("se", "rotated-token") {
 		t.Fatal("rotated token reused a transition APNs proof")
 	}
-	if th.reuseAttestationForTransition("se", "token", "") {
-		t.Fatal("empty current process key reused a transition APNs proof")
+	if th.reuseAttestationForTransition("se", "") {
+		t.Fatal("empty token reused a transition APNs proof")
+	}
+	if th.reuseAttestationForTransition("", "token") {
+		t.Fatal("empty SE key reused a transition APNs proof")
 	}
 
 	legacy := newCodeAttestThrottle()
 	legacy.recordAttested("se", "0.8.17", "token")
-	if legacy.reuseAttestationForTransition("se", "token", "node-key-A") {
+	if legacy.reuseAttestationForTransition("se", "token") {
 		t.Fatal("proof without a cached process-key binding reused for a transition")
 	}
 }

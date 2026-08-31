@@ -974,6 +974,14 @@ type CodeAttestation struct {
 // per-device budget as a single token (Codex P1). A genuine mid-connection
 // rotation clears it via ClearCodeAttestPushFloor (itself throttled by the
 // api-layer budgetClearCooldown), preserving prompt re-challenge (Codex #9).
+//
+// Novel-token admission is SERIALIZED on the sentinel: an implementation must
+// atomically create-or-advance the sentinel first and admit the token row only
+// when that acquisition succeeded, so two coordinators (blue-green overlap)
+// racing distinct novel tokens for one SE key admit exactly one — the loser
+// observes the winner's raised floor. MemoryStore gets this from its single
+// process-wide mutex; PostgresStore takes the sentinel row's ON CONFLICT lock
+// before inserting the token row.
 type CodeAttestPushBudget struct {
 	SEPubKey   string
 	TokenHash  string // "" = per-SE-key admission-floor sentinel, not a token row

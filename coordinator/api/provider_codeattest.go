@@ -63,9 +63,16 @@ func (s *Server) codeAttestMetric(outcome string) {
 // Providers with no APNs device token (legacy <0.6.0, or headless boxes with no
 // GUI session) can never attest, so the loop exits immediately — they are derouted
 // once enforcement begins, the intended "everyone must update" outcome.
-// tryCrossVersionReuse combines a genuine cached APNs proof with current
-// application evidence only to authorize a live encrypted resume challenge.
-// The persisted proof never grants code trust by itself.
+// tryCrossVersionReuse combines a genuine cached APNs proof (same SE identity,
+// same exact APNs token — the process key MAY differ, since the provider mints
+// a fresh ephemeral NodeKeyPair every process start) with CURRENT generation-
+// bound application evidence (a fresh SE-signed challenge attesting this exact
+// process key and approved binary) only to authorize a live encrypted resume
+// challenge to the current process key. Decrypting that challenge is the sole
+// possession proof for the new key; the persisted proof never grants code
+// trust by itself. This is what lets a routine upgrade/restart re-attest over
+// the live WebSocket instead of falling to a fresh APNs push behind the
+// durable per-device floor while queued requests expire (Codex 05:33Z #1).
 func (s *Server) tryCrossVersionReuse(
 	ctx context.Context,
 	providerID string,
@@ -88,7 +95,7 @@ func (s *Server) tryCrossVersionReuse(
 		return false
 	}
 	if !s.codeAttestThrottle.reuseAttestationForTransition(
-		evidence.SEPublicKey, evidence.APNsToken, nodeKey) {
+		evidence.SEPublicKey, evidence.APNsToken) {
 		return false
 	}
 	if !s.sendCodeIdentityResumeChallenge(
@@ -285,7 +292,11 @@ func (s *Server) codeAttestLoopForGeneration(
 //   - CHANGED token: a material change to the device's identity-binding inputs.
 //     Reset CodeAttested (fail-closed — deroute until re-proven) AND force a real
 //     challenge with NO reuse bypass (invalidateReuse), so the new token cannot
-//     ride a proof earned under the old one.
+//     ride a proof earned under the old one. Because the rotation also clears
+//     application evidence, the connection's ORDINARY attestation challenge loop
+//     is kicked immediately (RequestImmediateChallenge) so the evidence half
+//     regenerates well inside the 120s request-queue window instead of waiting
+//     out the 5-minute periodic ticker (Codex 05:33Z #2).
 //
 // A token-less heartbeat is ignored (it never clears an existing token), and an
 // unchanged token is a no-op, so the steady state adds no churn or pushes.
@@ -328,6 +339,10 @@ func (s *Server) maybeRearmCodeAttest(ctx context.Context, providerID string, pr
 	provider.Mu().Unlock()
 	if changed {
 		_ = s.registry.ReconcileAttestedRuntimeCapabilities(providerID)
+		// The cleared application evidence is regenerated only by the ordinary
+		// challenge loop; without a kick the provider stays unroutable until the
+		// next periodic tick even after the code-attest half re-proves.
+		provider.RequestImmediateChallenge()
 	}
 
 	var loopGeneration uint64

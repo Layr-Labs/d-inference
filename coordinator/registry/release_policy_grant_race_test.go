@@ -229,3 +229,131 @@ func TestFirstRequiredPolicyActivationKicksEvidencelessFleet(t *testing.T) {
 		}
 	}
 }
+
+func TestCountProvidersByBinaryHashUsesOnlyCurrentBoundApplicationEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Registry, *Provider)
+		want   int
+	}{
+		{name: "hashless registration with current tokenless evidence", want: 1},
+		{
+			name: "missing evidence generation",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.EvidenceGeneration = 0
+			},
+		},
+		{
+			name: "stale policy generation",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.PolicyGeneration--
+			},
+		},
+		{
+			name: "policy generation ignored when policy is not required",
+			mutate: func(reg *Registry, p *Provider) {
+				reg.releasePolicyRequired = false
+				p.ApplicationEvidence.PolicyGeneration--
+			},
+			want: 1,
+		},
+		{
+			name: "SE binding not required without registration evidence",
+			mutate: func(_ *Registry, p *Provider) {
+				p.AttestationResult = nil
+				p.ApplicationEvidence.SEPublicKey = "challenge-se-key"
+				p.ApplicationEvidence.Serial = "CHALLENGE-SERIAL"
+			},
+			want: 1,
+		},
+		{
+			name: "stale process key",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.ProcessPublicKey = "previous-process-key"
+			},
+		},
+		{
+			name: "stale APNs token",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.APNsToken = "previous-token"
+			},
+		},
+		{
+			name: "stale SE key",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.SEPublicKey = "previous-se-key"
+			},
+		},
+		{
+			name: "stale SE serial",
+			mutate: func(_ *Registry, p *Provider) {
+				p.ApplicationEvidence.Serial = "PREVIOUS-SERIAL"
+			},
+		},
+		{
+			name: "offline provider",
+			mutate: func(_ *Registry, p *Provider) {
+				p.Status = StatusOffline
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := New(testLogger())
+			reg.SetReleasePolicyGeneration(7, true, nil)
+			p := reg.Register("provider", nil, testRegisterMessage())
+			p.mu.Lock()
+			p.PublicKey = "current-process-key"
+			p.APNsDeviceToken = ""
+			p.AttestationResult = &attestation.VerificationResult{
+				Valid: true, PublicKey: "current-se-key", SerialNumber: "CURRENT-SERIAL",
+			}
+			p.ApplicationEvidence = ApplicationEvidence{
+				SEPublicKey: "current-se-key", Serial: "CURRENT-SERIAL",
+				ProcessPublicKey: "current-process-key", APNsToken: "",
+				BinaryHash: "application-hash", EvidenceGeneration: 1, PolicyGeneration: 7,
+			}
+			if tt.mutate != nil {
+				tt.mutate(reg, p)
+			}
+			p.mu.Unlock()
+
+			if got := reg.CountProvidersByBinaryHash("application-hash"); got != tt.want {
+				t.Fatalf("CountProvidersByBinaryHash() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCountProvidersByBinaryHashPreservesRegistrationHashBehavior(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetReleasePolicyGeneration(7, true, nil)
+	p := reg.Register("provider", nil, testRegisterMessage())
+	p.mu.Lock()
+	p.PublicKey = "current-process-key"
+	p.APNsDeviceToken = "current-token"
+	p.AttestationResult = &attestation.VerificationResult{
+		Valid: true, PublicKey: "current-se-key", SerialNumber: "CURRENT-SERIAL",
+		BinaryHash: "release-hash",
+	}
+	// Matching evidence must not double-count the provider. Its stale bindings
+	// also demonstrate that a present registration hash remains authoritative.
+	p.ApplicationEvidence = ApplicationEvidence{
+		SEPublicKey: "stale-se-key", Serial: "STALE-SERIAL",
+		ProcessPublicKey: "stale-process-key", APNsToken: "stale-token",
+		BinaryHash: "release-hash", EvidenceGeneration: 1, PolicyGeneration: 6,
+	}
+	p.mu.Unlock()
+
+	if got := reg.CountProvidersByBinaryHash("release-hash"); got != 1 {
+		t.Fatalf("CountProvidersByBinaryHash() = %d, want one registration-hash match", got)
+	}
+
+	p.mu.Lock()
+	p.Status = StatusOffline
+	p.mu.Unlock()
+	if got := reg.CountProvidersByBinaryHash("release-hash"); got != 0 {
+		t.Fatalf("offline registration-hash provider count = %d, want 0", got)
+	}
+}

@@ -4843,9 +4843,10 @@ func (r *Registry) GetProvider(id string) *Provider {
 }
 
 // CountProvidersByBinaryHash returns the number of currently connected
-// providers whose registration attested the given provider binary hash. Used by
-// release administration to avoid removing a hash from the forced allowlist
-// while old-but-still-connected providers are draining/restarting into a newer
+// providers whose registration or current, connection-bound application
+// evidence attests the given provider binary hash. Used by release
+// administration to avoid removing a hash from the forced allowlist while
+// old-but-still-connected providers are draining/restarting into a newer
 // release.
 func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	normalized := strings.ToLower(strings.TrimSpace(hash))
@@ -4859,14 +4860,26 @@ func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	count := 0
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		attestedHash := ""
-		if p.AttestationResult != nil {
-			attestedHash = p.AttestationResult.BinaryHash
+		if p.Status == StatusOffline {
+			p.mu.Unlock()
+			continue
 		}
+
+		registrationMatches := p.AttestationResult != nil &&
+			strings.EqualFold(p.AttestationResult.BinaryHash, normalized)
+		evidence := p.ApplicationEvidence
+		evidenceCurrent := evidence.EvidenceGeneration != 0 &&
+			(!r.releasePolicyRequired || evidence.PolicyGeneration == r.releasePolicyGeneration) &&
+			evidence.ProcessPublicKey == p.PublicKey &&
+			evidence.APNsToken == p.APNsDeviceToken
+		if evidenceCurrent && p.AttestationResult != nil {
+			evidenceCurrent = evidence.SEPublicKey == p.AttestationResult.PublicKey &&
+				evidence.Serial == p.AttestationResult.SerialNumber
+		}
+		evidenceMatches := evidenceCurrent && strings.EqualFold(evidence.BinaryHash, normalized)
 		p.mu.Unlock()
 
-		if status != StatusOffline && strings.EqualFold(attestedHash, normalized) {
+		if registrationMatches || evidenceMatches {
 			count++
 		}
 	}

@@ -3035,6 +3035,9 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		provider.SetMDMFailureReason("securityinfo-timeout")
 		return mdmVerifyTransient
 	}
+	binaryHash := providerApplicationBinaryHash(
+		provider, attestResult.PublicKey, attestResult.BinaryHash,
+	)
 
 	// Durable revocation is authoritative. Persist/recover the verified device
 	// evidence at the expected generation before touching live hardware trust;
@@ -3043,7 +3046,7 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 		provider,
 		attestResult.PublicKey,
 		attestResult.SerialNumber,
-		attestResult.BinaryHash,
+		binaryHash,
 		mdmResult.MDMSIPEnabled,
 		mdmResult.MDMSecureBootFull,
 		mdmResult.UDID,

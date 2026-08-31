@@ -415,13 +415,13 @@ func TestVerifyProviderViaMDM_SuccessGranted(t *testing.T) {
 	}
 }
 
-// TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHash (review finding 2,
-// synchronous path): the self-reported binary hash is OPTIONAL — a provider
-// omitting it that passes the full live MDM SecurityInfo check must still be
-// upgraded to hardware trust. Only the durable reuse record requires the hash,
-// so nothing is persisted or cached and every reconnect re-runs the full
-// verification.
-func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHash(t *testing.T) {
+// TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEvidence
+// (review finding 2, synchronous path): the self-reported binary hash is
+// OPTIONAL — a provider omitting it that passes the full live MDM SecurityInfo
+// check must still be upgraded to hardware trust. Without current bound
+// application evidence, only the durable reuse record lacks a hash, so nothing
+// is persisted or cached and every reconnect re-runs the full verification.
+func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHashOrApplicationEvidence(t *testing.T) {
 	fake := &fakeMDMServer{
 		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
 		commandUUID:       "cmd-ok",
@@ -446,6 +446,60 @@ func TestVerifyProviderViaMDM_SuccessGrantedWithoutBinaryHash(t *testing.T) {
 	}
 	if srv.trustReuseCache.hasFreshRecord("se-pub-key-bytes", "SERIAL-1") {
 		t.Fatal("hashless grant must not cache an unbindable reuse record")
+	}
+}
+
+// TestVerifyProviderViaMDM_HashlessRegistrationUsesBoundApplicationEvidence
+// proves a fresh SE-signed application challenge can supply the binary binding
+// absent from the registration. The evidence must be installed for the current
+// SE identity and process key before live MDM device evidence becomes reusable.
+func TestVerifyProviderViaMDM_HashlessRegistrationUsesBoundApplicationEvidence(t *testing.T) {
+	fake := &fakeMDMServer{
+		device:            &mdm.DeviceInfo{SerialNumber: "SERIAL-1", UDID: "UDID-1", EnrollmentStatus: true},
+		commandUUID:       "cmd-ok",
+		failMDARawCommand: true,
+	}
+	srv, p := mdmReliabilityServer(t, fake)
+	srv.SeedTrustReuseCache(context.Background())
+	binaryHash := strings.Repeat("b", 64)
+	verifiedAt := time.Now()
+	p.Mu().Lock()
+	p.ApplicationEvidence = registry.ApplicationEvidence{
+		SEPublicKey:        "se-pub-key-bytes",
+		Serial:             "SERIAL-1",
+		ProcessPublicKey:   p.PublicKey,
+		BinaryHash:         binaryHash,
+		VerifiedAt:         verifiedAt,
+		EvidenceGeneration: 1,
+	}
+	p.Mu().Unlock()
+
+	deliverWebhookWhenPushed(srv, fake, "UDID-1", "cmd-ok", true /*sip*/, true /*secureboot*/)
+
+	outcome := srv.verifyProviderViaMDM(context.Background(), "prov-mdm", p, attestResultOf(p))
+
+	if outcome != mdmVerifyGranted {
+		t.Errorf("outcome = %v, want mdmVerifyGranted for bound application evidence", outcome)
+	}
+	rows, err := srv.store.ListProviderTrustReuse(context.Background())
+	if err != nil {
+		t.Fatalf("list trust reuse: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("persisted reuse rows = %d, want 1", len(rows))
+	}
+	if got := rows[0].LastVerifiedBinaryHash; got != binaryHash {
+		t.Fatalf("LastVerifiedBinaryHash = %q, want application hash %q", got, binaryHash)
+	}
+	if rows[0].ApplicationProofVerifiedAt == nil || !rows[0].ApplicationProofVerifiedAt.Equal(verifiedAt) {
+		t.Fatalf("ApplicationProofVerifiedAt = %v, want %v", rows[0].ApplicationProofVerifiedAt, verifiedAt)
+	}
+	cached, ok := srv.trustReuseCache.reuseTrust("se-pub-key-bytes", "SERIAL-1", binaryHash)
+	if !ok {
+		t.Fatal("bound application hash did not cache reusable hardware proof")
+	}
+	if cached.lastVerifiedBinaryHash != binaryHash {
+		t.Fatalf("cached binary hash = %q, want %q", cached.lastVerifiedBinaryHash, binaryHash)
 	}
 }
 

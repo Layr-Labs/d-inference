@@ -247,7 +247,7 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			pr := &registry.PendingRequest{
 				RequestID:  "req-toolnc",
 				Model:      "test-model",
-				ChunkCh:    make(chan string, 1),
+				ChunkCh:    make(chan registry.ProviderChunk, 1),
 				CompleteCh: make(chan protocol.UsageInfo, 1),
 				ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 			}

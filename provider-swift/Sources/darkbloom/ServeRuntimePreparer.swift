@@ -6,32 +6,37 @@ import Darwin
 
 /// Process-start seam shared by every serving/benchmarking entry point
 /// (`start` daemon/foreground/local, `benchmark`): the authoritative
-/// `[gemma_optimizations]` TOML projection must be applied to the low-level
-/// process environment BEFORE the first MLX device access (`requireMetal`),
-/// because those controls are process-start latches in MLX/MLX-LM.
+/// `[gemma_optimizations]` TOML projection must be applied first, then the
+/// immutable metallib snapshot must be bound, and only then may MLX be touched
+/// by `requireMetal`.
 ///
-/// Ordering contract: config projection strictly precedes the first MLX
-/// touch. A rejected projection throws before `requireMetal()`, so a
-/// half-applied weighted-unsort/safe-R1 pair can never reach engine
-/// construction.
+/// A rejected projection throws before binding. Binding strictly precedes the
+/// first MLX device access, so diagnostics and later model loads cannot select
+/// mutable or different metallib bytes.
 enum ServeRuntimePreparer {
 
-    /// Apply `settings` to the process environment, then probe Metal.
+    /// Apply `settings`, bind the runtime metallib, then probe Metal.
     ///
-    /// The default closures are the production path; tests replace only the
-    /// apply/Metal probes so they can assert ordering without constructing an
-    /// MLX device.
+    /// The returned hash identifies the retained anonymous snapshot. Nil is
+    /// preserved for fail-closed capability detection: NAX is never advertised
+    /// without a successfully bound hash.
+    @discardableResult
     internal static func prepareRuntime(
         settings: GemmaOptimizationSettings,
         apply: (GemmaOptimizationSettings) throws -> Void = {
             try GemmaOptimizationEnvironment.apply($0)
         },
+        bindMetallib: () -> String? = {
+            bindRuntimeMetallibForMLX(from: nil)
+        },
         requireMetal: () throws -> Void = {
             _ = try GPUEnforcement.requireMetal()
         }
-    ) throws {
+    ) throws -> String? {
         try apply(settings)
+        let boundMetallibHash = bindMetallib()
         try requireMetal()
+        return boundMetallibHash
     }
 
     /// One pre-set low-level environment key that CONFLICTS with the config

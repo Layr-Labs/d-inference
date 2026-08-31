@@ -1,6 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Production request-routing seams for EngineV2 slots.
+// Production request-routing seams for EngineV2 slots, plus the prefill
+// deadline / FCFS production configuration contracts.
 //
 // Construction, re-slicing, failure unwind, heartbeat/capacity, KV backend,
 // MTP, and state-file contracts live in their focused production-wiring suites.
@@ -187,6 +188,76 @@ struct EngineV2RequestRoutingTests {
             #expect(
                 error == .invalidToolPayload(
                     "inference-enforced tool_choice requires the pinned Gemma prompt contract"))
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
+    @Test("required Qwen tool choice is parsed and validated before exposure")
+    func requiredQwenToolChoiceUsesFailClosedPostValidation() async throws {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(
+                text: "<tool_call>\n<function=get_weather>\n</function>\n</tool_call>",
+                tokens: [10], logprobs: nil),
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]), kvBytesCapacity: 0)
+        let bridge = productionMakeBridge(engine: engine, modelId: "qwen3.8-27b")
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "qwen3.8-27b": .init(
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
+                        modelType: "qwen3_5",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "qwen3.8-27b",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "get_weather"))],
+            toolChoice: .mode(.required),
+            toolCallParser: "qwen3_coder")
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        var events: [MLXServerGenerationEvent] = []
+        for try await event in stream { events.append(event) }
+
+        #expect(events.contains { event in
+            guard case .toolCall(let call) = event else { return false }
+            return call.function.name == "get_weather"
+                && call.function.arguments.isEmpty
+        })
+        #expect(engine.submitted.count == 1)
+        #expect(engine.submitted[0].tokenConstraint == nil)
+    }
+
+    @Test("required Qwen tool choice rejects a non-XML parser before submit")
+    func requiredQwenToolChoiceRejectsParserOverride() async throws {
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
+        let bridge = productionMakeBridge(engine: engine, modelId: "qwen3.8-27b")
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "qwen3.8-27b": .init(
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
+                        modelType: "qwen3_5",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "qwen3.8-27b",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "get_weather"))],
+            toolChoice: .mode(.required),
+            toolCallParser: "json")
+
+        do {
+            _ = try await providerEngine.streamChatCompletion(request: request)
+            Issue.record("expected Qwen parser mismatch rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .invalidToolPayload(
+                "inference-enforced Qwen tool_choice requires the qwen3_coder tool parser"))
         }
         #expect(engine.submitted.isEmpty)
     }
@@ -671,5 +742,185 @@ struct EngineV2RequestRoutingTests {
             try await Task.sleep(for: .milliseconds(5))
         }
         #expect(engine.cancelled.first == engine.submitted.first?.id)
+    }
+}
+
+// MARK: - Prefill deadline / FCFS production configuration
+
+@Suite("Prefill deadline and FCFS production configuration")
+struct PrefillDeadlineProductionConfigTests {
+    @Test("deadline mode exhaustively resolves config authority and environment inheritance")
+    func deadlineModeUsesSourceAwarePrecedence() {
+        let configuredCases: [(name: String, value: PrefillDeadlineMode?)] = [
+            ("absent", nil),
+            ("enforce", .enforce),
+            ("off", .off),
+        ]
+        let environmentCases: [(name: String, value: String?)] = [
+            ("missing", nil),
+            ("off", "off"),
+            ("enforce", "enforce"),
+            ("malformed", "garbage"),
+            ("empty", ""),
+        ]
+        for configuredCase in configuredCases {
+            for environmentCase in environmentCases {
+                let environment = environmentCase.value.map {
+                    [PrefillDeadlineMode.environmentKey: $0]
+                } ?? [:]
+                let expected: PrefillDeadlineMode =
+                    configuredCase.value
+                    ?? (environmentCase.value == "off" ? .off : .enforce)
+                #expect(
+                    PrefillDeadlineMode.resolve(
+                        configured: configuredCase.value,
+                        environment: environment) == expected,
+                    "configured=\(configuredCase.name), env=\(environmentCase.name)")
+            }
+        }
+    }
+
+    @Test("production bridge carries mode and scheduler projection compatibility")
+    func productionBridgeResolvesDeadlineEnvironment() async throws {
+        let configuredCases: [PrefillDeadlineMode?] = [
+            nil, .enforce, .off,
+        ]
+        let environmentCases: [String?] = [
+            nil, "off", "enforce", "invalid", "",
+        ]
+
+        for configuredMode in configuredCases {
+            for environmentValue in environmentCases {
+                let environment = environmentValue.map {
+                    [PrefillDeadlineMode.environmentKey: $0]
+                } ?? [:]
+                let expectedMode =
+                    configuredMode
+                    ?? (environmentValue == "off"
+                        ? PrefillDeadlineMode.off : .enforce)
+                let bridge = try EngineV2Factory.makeBridge(
+                    modelId: "deadline-mode-wiring",
+                    tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
+                    eosTokenIds: [2],
+                    prefillDeadlineMode: configuredMode,
+                    runtimePolicyEnvironment: environment,
+                    makeEngine: {
+                        EngineV2Factory.ProductionBuild(
+                            engine: ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0),
+                            fixedRequestBytes: 0,
+                            kvBackendKind: .contiguous,
+                            kvBackendFallbackReason: nil)
+                    })
+                #expect(await bridge.prefillDeadlineMode == expectedMode)
+                #expect(await bridge.prefillDeadlineProjectionEnabled)
+                await bridge.shutdown()
+            }
+        }
+
+        for cap in ["0", "2"] {
+            let bridge = try EngineV2Factory.makeBridge(
+                modelId: "deadline-cap-wiring",
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
+                eosTokenIds: [2],
+                prefillDeadlineMode: .enforce,
+                runtimePolicyEnvironment: [
+                    EngineV2Factory.maxPartialPrefillsKey: cap
+                ],
+                makeEngine: {
+                    EngineV2Factory.ProductionBuild(
+                        engine: ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0),
+                        fixedRequestBytes: 0,
+                        kvBackendKind: .contiguous,
+                        kvBackendFallbackReason: nil)
+                })
+            #expect(await bridge.prefillDeadlineMode == .enforce)
+            #expect(!(await bridge.prefillDeadlineProjectionEnabled))
+            await bridge.shutdown()
+        }
+    }
+
+    @Test("partial-prefill cap defaults to one with zero as rollback")
+    func partialPrefillCapDefaultsToOne() {
+        #expect(EngineV2Factory.defaultMaxConcurrentPartialPrefills == 1)
+        #expect(EngineV2Factory.maxConcurrentPartialPrefills(environment: [:]) == 1)
+        #expect(
+            EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 8,
+                environment: [:]
+            ).maxConcurrentPartialPrefills == 1)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "0"]) == nil)
+        #expect(
+            EngineV2Factory.productionSchedulerConfig(
+                maxConcurrentRequests: 8,
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "0"]
+            ).maxConcurrentPartialPrefills == nil)
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: [EngineV2Factory.maxPartialPrefillsKey: "3"]) == 3)
+        for unlimited in ["-1", "off", ""] {
+            #expect(
+                EngineV2Factory.maxConcurrentPartialPrefills(
+                    environment: [
+                        EngineV2Factory.maxPartialPrefillsKey: unlimited
+                    ]) == nil,
+                "\(unlimited) should preserve unlimited partial prefills")
+        }
+    }
+
+    @Test("cap zero disables forecast compatibility without rewriting deadline mode")
+    func capZeroDisablesForecastCompatibility() {
+        let fcfsRollback = [
+            EngineV2Factory.maxPartialPrefillsKey: "0"
+        ]
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(environment: fcfsRollback) == nil)
+        #expect(PrefillDeadlineMode.resolve(environment: fcfsRollback) == .enforce)
+        #expect(
+            !EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: fcfsRollback))
+
+        let deadlineRollback = [
+            PrefillDeadlineMode.environmentKey: "off"
+        ]
+        #expect(
+            EngineV2Factory.maxConcurrentPartialPrefills(environment: deadlineRollback) == 1)
+        #expect(PrefillDeadlineMode.resolve(environment: deadlineRollback) == .off)
+        #expect(
+            EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: deadlineRollback))
+    }
+
+    @Test("projection bypass diagnostic uses the configured mode")
+    func projectionBypassDiagnosticUsesConfiguredMode() {
+        let unsupportedWithStaleEnforce = [
+            PrefillDeadlineMode.environmentKey: "enforce",
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+        ]
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .off,
+                environment: unsupportedWithStaleEnforce))
+        #expect(
+            EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: unsupportedWithStaleEnforce))
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: [:]))
+        let unsupportedWithLegacyOff = [
+            PrefillDeadlineMode.environmentKey: "off",
+            EngineV2Factory.maxPartialPrefillsKey: "0",
+        ]
+        #expect(
+            !EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: nil,
+                environment: unsupportedWithLegacyOff))
+        #expect(
+            EngineV2SlotFactory.shouldLogPrefillDeadlineProjectionBypass(
+                configuredMode: .enforce,
+                environment: unsupportedWithLegacyOff))
     }
 }

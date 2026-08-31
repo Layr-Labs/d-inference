@@ -49,14 +49,15 @@ const (
 	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
 
 	// Coordinator → Provider.
-	TypeInferenceRequest     = "inference_request"
-	TypeCancel               = "cancel"
-	TypeAttestationChallenge = "attestation_challenge"
-	TypeRuntimeStatus        = "runtime_status"
-	TypeLoadModel            = "load_model"
-	TypePrefetchModel        = "prefetch_model"
-	TypeDesiredModels        = "desired_models"
-	TypeTrustStatus          = "trust_status"
+	TypeInferenceRequest               = "inference_request"
+	TypeCancel                         = "cancel"
+	TypeAttestationChallenge           = "attestation_challenge"
+	TypeCodeAttestationResumeChallenge = "code_attestation_resume_challenge"
+	TypeRuntimeStatus                  = "runtime_status"
+	TypeLoadModel                      = "load_model"
+	TypePrefetchModel                  = "prefetch_model"
+	TypeDesiredModels                  = "desired_models"
+	TypeTrustStatus                    = "trust_status"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -185,6 +186,7 @@ type RegisterMessage struct {
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
 	Backend                     string                             `json:"backend"`
+	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
 	PublicKey                   string                             `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
 	EncryptedResponseChunks     bool                               `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
@@ -197,7 +199,7 @@ type RegisterMessage struct {
 	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
-	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
+	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time forced-tool enforcement protocol version
 	ToolConstraintModels        []string                           `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
@@ -596,10 +598,14 @@ type InferenceRequestMessage struct {
 	RequestID string               `json:"request_id"`
 	Body      InferenceRequestBody `json:"body,omitempty"`
 	// E2E encrypted request body (set when provider has a public key)
-	EncryptedBody       *EncryptedPayload `json:"encrypted_body,omitempty"`
-	CacheReceiptNonce   string            `json:"cache_receipt_nonce,omitempty"`
-	CacheScope          string            `json:"cache_scope,omitempty"`
-	PrefixCacheProtocol int               `json:"prefix_cache_protocol,omitempty"`
+	EncryptedBody *EncryptedPayload `json:"encrypted_body,omitempty"`
+	// FirstContentBudgetMS is the positive time remaining for this dispatch
+	// attempt to produce its first content-bearing chunk. Zero preserves the
+	// legacy wire shape by omitting the field.
+	FirstContentBudgetMS int64  `json:"first_content_budget_ms,omitempty"`
+	CacheReceiptNonce    string `json:"cache_receipt_nonce,omitempty"`
+	CacheScope           string `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol  int    `json:"prefix_cache_protocol,omitempty"`
 	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
 	// metadata carried inside the encrypted body. Version 1 means the
 	// coordinator rejected client-forged reserved keys before normalization.
@@ -719,6 +725,13 @@ type AttestationChallengeMessage struct {
 	Type      string `json:"type"`
 	Nonce     string `json:"nonce"`     // base64-encoded random 32-byte nonce
 	Timestamp string `json:"timestamp"` // ISO 8601 timestamp
+}
+
+// CodeAttestationResumeChallenge proves possession of the cached registration
+// X25519 private key over the live WebSocket without spending another APNs push.
+type CodeAttestationResumeChallenge struct {
+	Type          string           `json:"type"`
+	CodeChallenge EncryptedPayload `json:"code_challenge"`
 }
 
 // AttestationResponseMessage is sent by the provider in response to an

@@ -218,6 +218,32 @@ func TestSanitizeProviderInferenceErrorTypedCapacityReasonControls429Versus503(t
 	}
 }
 
+func TestSanitizeProviderInferenceErrorPreservesDeadlineUnreachable(t *testing.T) {
+	for _, input := range []protocol.InferenceErrorMessage{
+		{
+			FailureCode: protocol.FailureCodeCapacity,
+			StatusCode:  http.StatusInternalServerError,
+			ErrorReason: errorReasonDeadlineUnreachable,
+		},
+		{
+			// Mixed-fleet compatibility: a provider may add the closed reason
+			// before it adds failure_code.
+			StatusCode:  http.StatusServiceUnavailable,
+			ErrorReason: errorReasonDeadlineUnreachable,
+		},
+	} {
+		safe, _, invalidCause := sanitizeProviderInferenceError(&input)
+		if invalidCause {
+			t.Fatal("deadline refusal unexpectedly invalidated terminal cause")
+		}
+		if safe.FailureCode != protocol.FailureCodeCapacity ||
+			safe.ErrorReason != errorReasonDeadlineUnreachable ||
+			safe.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("deadline refusal normalized to %+v", safe)
+		}
+	}
+}
+
 func TestLegacyBare429RemainsTransientAndHealthNeutral(t *testing.T) {
 	safe, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
 		StatusCode: http.StatusTooManyRequests,
@@ -330,7 +356,7 @@ func TestProviderInferenceErrorSentinelsDoNotReachLogsChannelOutcomeOrClient(t *
 			RequestID:  requestID,
 			ProviderID: provider.ID,
 			Model:      "safe-model",
-			ChunkCh:    make(chan string, 1),
+			ChunkCh:    make(chan registry.ProviderChunk, 1),
 			CompleteCh: make(chan protocol.UsageInfo, 1),
 			ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		}

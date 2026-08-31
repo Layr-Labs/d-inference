@@ -18,11 +18,25 @@ struct MediaKindClassificationTests {
         }
     }
 
+    @Test("media requests default thinking off unless the client asks")
+    func mediaDefaultsThinkingOff() async throws {
+        let request = visionImageRequest()
+        let input = try await MediaIngest.buildUserInput(from: request)
+        #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+
+        let text = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: OpenAIChatCompletionRequest(
+                model: "qwen3.5-35b-a3b",
+                messages: [.init(role: .user, content: .text("hi"))]),
+            controls: .init())
+        #expect(text?["enable_thinking"] == nil)
+    }
+
     @Test("media processor preserves out-of-band reasoning effort")
     func reasoningEffortTemplateContext() async throws {
         let request = visionImageRequest()
         let input = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: "high")
+            from: request, templateControls: .init(reasoningEffort: "high"))
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
     }
 

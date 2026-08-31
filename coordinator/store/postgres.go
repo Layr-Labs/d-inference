@@ -414,6 +414,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			max_output_length INTEGER NOT NULL DEFAULT 0,
 			min_ram_gb INTEGER NOT NULL DEFAULT 0,
 			capabilities TEXT[] NOT NULL DEFAULT '{}',
+			required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}',
 			status TEXT NOT NULL DEFAULT 'beta',
 			description TEXT NOT NULL DEFAULT '',
 			runtime_parameters JSONB NOT NULL DEFAULT '{}',
@@ -449,6 +450,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
 		EXCEPTION WHEN others THEN NULL;
 		END $$`,
+		`DO $$ BEGIN
+			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS required_provider_capabilities TEXT[] NOT NULL DEFAULT '{}';
+		EXCEPTION WHEN others THEN NULL;
+		END $$`,
+		`UPDATE model_registry
+		 SET required_provider_capabilities = (
+		   SELECT ARRAY_AGG(DISTINCT capability ORDER BY capability)
+		   FROM UNNEST(required_provider_capabilities ||
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[]) AS capability
+		 )
+		 WHERE id = 'EigenLabs/Qwen3.8-27B-4bit'
+		   AND NOT (required_provider_capabilities @>
+		     ARRAY['apple_m5', 'mlx_nax']::TEXT[])`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
 		`CREATE TABLE IF NOT EXISTS model_version_files (
 			id BIGSERIAL PRIMARY KEY,
@@ -731,28 +745,28 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
-		// Backfill from existing usage rows.  ON CONFLICT DO NOTHING makes
-		// this idempotent — only runs on first deploy.
-		`INSERT INTO usage_totals (id, total_requests, total_prompt_tokens, total_completion_tokens)
-		 SELECT 1, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
-		 FROM usage
-		 ON CONFLICT (id) DO NOTHING`,
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.
 		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
 
 		// Provider log reports — providers upload 24h unified logs for debugging.
+		// serial_number is retained only as a rollback-compatible legacy column.
+		// The write guard and one-time scrub keep it empty.
 		`CREATE TABLE IF NOT EXISTS provider_log_reports (
 			id BIGSERIAL PRIMARY KEY,
-			serial_number TEXT NOT NULL,
+			serial_number TEXT NOT NULL DEFAULT '',
 			provider_id TEXT NOT NULL DEFAULT '',
 			account_id TEXT NOT NULL DEFAULT '',
 			log_data BYTEA NOT NULL,
 			log_size_bytes BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
+		`ALTER TABLE provider_log_reports ALTER COLUMN serial_number SET DEFAULT ''`,
+		providerLogReportSerialGuardFunction,
+		providerLogReportSerialGuardTrigger,
+		providerLogReportSerialScrubMigration,
+		`DROP INDEX IF EXISTS idx_log_reports_serial`,
 
 		// Provider sessions — durable connect→disconnect history for uptime/downtime.
 		// One row per websocket connection; disconnected_at IS NULL while open.
@@ -972,11 +986,13 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			se_pubkey TEXT PRIMARY KEY,
 			version TEXT NOT NULL DEFAULT '',
 			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			apns_token TEXT NOT NULL DEFAULT ''
+			apns_token TEXT NOT NULL DEFAULT '',
+			node_public_key TEXT NOT NULL DEFAULT ''
 		)`,
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS node_public_key TEXT NOT NULL DEFAULT ''`,
 
 		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
 		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
@@ -1044,6 +1060,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		if _, err := s.pool.Exec(ctx, m); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
 		}
+	}
+
+	if err := s.migrateUsageTotals(ctx); err != nil {
+		return err
 	}
 
 	if err := s.migrateWithdrawableBalance(ctx); err != nil {
@@ -4978,7 +4998,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -4987,7 +5007,10 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	var out []CodeAttestation
 	for rows.Next() {
 		var rec CodeAttestation
-		if err := rows.Scan(&rec.SEPubKey, &rec.Version, &rec.AttestedAt, &rec.APNsToken); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
+			&rec.APNsToken, &rec.NodePublicKey,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
 		out = append(out, rec)
@@ -5006,11 +5029,14 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO code_attestations (se_pubkey, version, attested_at, apns_token)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO code_attestations (
+			se_pubkey, version, attested_at, apns_token, node_public_key
+		 ) VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			version = $2, attested_at = $3, apns_token = $4`,
-		rec.SEPubKey, rec.Version, rec.AttestedAt, rec.APNsToken,
+			version = $2, attested_at = $3,
+			apns_token = $4, node_public_key = $5`,
+		rec.SEPubKey, rec.Version, rec.AttestedAt,
+		rec.APNsToken, rec.NodePublicKey,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5095,56 +5121,24 @@ func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey stri
 
 const maxLogReportSize = 10 << 20 // 10 MB
 
-func (s *PostgresStore) StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error {
+func (s *PostgresStore) StoreLogReport(accountID string, logData []byte) (int64, error) {
 	if len(logData) > maxLogReportSize {
 		logData = logData[:maxLogReportSize]
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_log_reports (serial_number, provider_id, account_id, log_data, log_size_bytes)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		serialNumber, providerID, accountID, logData, int64(len(logData)),
-	)
+	var reportID int64
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_log_reports (account_id, log_data, log_size_bytes)
+		 VALUES ($1, $2, $3)
+		 RETURNING id`,
+		accountID, logData, int64(len(logData)),
+	).Scan(&reportID)
 	if err != nil {
-		return fmt.Errorf("store: insert log report: %w", err)
+		return 0, fmt.Errorf("store: insert log report: %w", err)
 	}
-	return nil
-}
-
-func (s *PostgresStore) GetLogReports(serialNumber string, limit int) ([]LogReport, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 10
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_size_bytes, created_at
-		 FROM provider_log_reports
-		 WHERE serial_number = $1
-		 ORDER BY created_at DESC
-		 LIMIT $2`,
-		serialNumber, limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list log reports: %w", err)
-	}
-	defer rows.Close()
-
-	var reports []LogReport
-	for rows.Next() {
-		var r LogReport
-		if err := rows.Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogSizeBytes, &r.CreatedAt); err != nil {
-			continue
-		}
-		reports = append(reports, r)
-	}
-	if reports == nil {
-		return []LogReport{}, nil
-	}
-	return reports, nil
+	return reportID, nil
 }
 
 func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
@@ -5153,9 +5147,9 @@ func (s *PostgresStore) GetLogReport(id int64) (*LogReport, error) {
 
 	var r LogReport
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, serial_number, provider_id, account_id, log_data, log_size_bytes, created_at
+		`SELECT id, account_id, log_data, log_size_bytes, created_at
 		 FROM provider_log_reports WHERE id = $1`, id,
-	).Scan(&r.ID, &r.SerialNumber, &r.ProviderID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
+	).Scan(&r.ID, &r.AccountID, &r.LogData, &r.LogSizeBytes, &r.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: log report %d not found: %w", id, err)
 	}

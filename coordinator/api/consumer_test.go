@@ -77,11 +77,15 @@ func TestCORSPreflight(t *testing.T) {
 	srv, _ := testServer(t)
 
 	req := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	req.Header.Set("Access-Control-Request-Headers", "authorization, "+metadataDetailsHeader)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(strings.ToLower(got), strings.ToLower(metadataDetailsHeader)) {
+		t.Errorf("Access-Control-Allow-Headers = %q, want %q", got, metadataDetailsHeader)
 	}
 }
 

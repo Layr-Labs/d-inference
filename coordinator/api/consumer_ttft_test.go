@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -40,28 +41,53 @@ func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 }
 
 func TestTTFTDeadlineExact(t *testing.T) {
+	srv, _ := testServer(t)
 	tests := []struct {
+		model       string
 		inputTokens int
 		want        time.Duration
 	}{
-		{inputTokens: 0, want: 5 * time.Second},
-		{inputTokens: 1, want: 5*time.Second + time.Millisecond},
-		{inputTokens: 5_000, want: 10 * time.Second},
-		{inputTokens: 5_001, want: 10*time.Second + time.Millisecond},
+		{model: "ordinary-model", inputTokens: 0, want: 5 * time.Second},
+		{model: "ordinary-model", inputTokens: 1, want: 5*time.Second + time.Millisecond},
+		{model: "ordinary-model", inputTokens: 5_000, want: 10 * time.Second},
+		{model: "ordinary-model", inputTokens: 5_001, want: 10*time.Second + time.Millisecond},
+		{model: modelpolicy.Qwen3VL30BA3BInstructModelID, inputTokens: 0, want: 4 * time.Second},
+		{model: modelpolicy.Qwen3VL30BA3BInstructModelID, inputTokens: 1, want: 4*time.Second + time.Millisecond},
+		{model: modelpolicy.Qwen3VL30BA3BInstructModelID + "-preview", inputTokens: 0, want: 5 * time.Second},
 	}
 
 	for _, tt := range tests {
-		if got := ttftDeadline(tt.inputTokens); got != tt.want {
-			t.Fatalf("ttftDeadline(%d) = %v, want %v", tt.inputTokens, got, tt.want)
+		if got := srv.FirstContentDeadline(tt.model, tt.inputTokens); got != tt.want {
+			t.Fatalf("FirstContentDeadline(%q, %d) = %v, want %v", tt.model, tt.inputTokens, got, tt.want)
 		}
+	}
+}
+
+func TestFirstContentDeadlineIsServerOwned(t *testing.T) {
+	ordinary, _ := testServer(t)
+	productionLike, _ := testServerWithConfig(t, ServerConfig{
+		FirstContentDeadlineBase: 9 * time.Second,
+	})
+
+	const promptTokens = 321
+	if got, want := productionLike.FirstContentDeadline("ordinary-model", promptTokens), 9*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("production-like deadline = %v, want %v", got, want)
+	}
+	if got, want := ordinary.FirstContentDeadline("ordinary-model", promptTokens), 5*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("ordinary deadline changed by another server: got %v, want %v", got, want)
+	}
+	if got, want := productionLike.FirstContentDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 4*time.Second+321*time.Millisecond; got != want {
+		t.Fatalf("Qwen3-VL production-like deadline = %v, want %v", got, want)
 	}
 }
 
 func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
-	threshold := ttftDeadline(0)
+	threshold := srv.FirstContentDeadline("slow-ttft-model", 0)
 	if threshold != 5*time.Second {
-		t.Fatalf("ttftDeadline(0) = %v, want 5s", threshold)
+		t.Fatalf("FirstContentDeadline(0) = %v, want 5s", threshold)
 	}
 	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
 		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
@@ -224,6 +250,50 @@ func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 	}
 }
 
+func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetTTFTHardReject(true)
+	warmCfg := registry.ReadConfig().WarmPool
+	warmCfg.Enabled = true
+	warmCfg.ObserveOnly = false
+	srv.registry.ConfigureWarmPool(warmCfg)
+	model := "media-estimate-is-partial"
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: model, SizeGB: 1, MinRAMGB: 24}})
+	srv.registry.RecordWarmPoolSpeculativeStarted(model) // seed an observable bucket
+	p := registerBuildsProvider(srv, "vision-provider", model)
+	p.Mu().Lock()
+	p.DecodeTPS = 100
+	p.PrefillTPS = 0.2
+	p.Models[0].IsVision = true
+	p.Mu().Unlock()
+
+	body := strings.ReplaceAll(
+		`{"model":"MODEL","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}],"max_tokens":16}`,
+		"MODEL", model)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code == http.StatusTooManyRequests || strings.Contains(w.Body.String(), "TTFT target") {
+		t.Fatalf("hard gate used a text-only estimate to reject media: status=%d body=%s", w.Code, w.Body.String())
+	}
+	found := false
+	for _, snap := range srv.registry.TriggerWarmPool() {
+		if snap.Model != model {
+			continue
+		}
+		found = true
+		if snap.TTFTMisses != 0 {
+			t.Fatalf("media token proxy emitted %d synthetic warm-pool TTFT miss(es), want 0", snap.TTFTMisses)
+		}
+	}
+	if !found {
+		t.Fatal("warm-pool snapshot missing media model")
+	}
+}
+
 func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	srv, _ := testServer(t)
 	publicModel := "public-ttft-alias"
@@ -258,7 +328,7 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 		desired,
 		100,
 		128,
-		ttftDeadline(100),
+		srv.FirstContentDeadline(desired, 100),
 		registry.RequestTraits{},
 		false,
 		nil,
@@ -273,8 +343,28 @@ func TestMaybeFallbackAliasTTFTSwitchesToPrevious(t *testing.T) {
 	if candidates != 1 || rejections != 0 || tooLarge != 0 {
 		t.Fatalf("capacity = (%d,%d,%d), want (1,0,0)", candidates, rejections, tooLarge)
 	}
-	if !hasTTFT || bestTTFT > ttftDeadline(100) {
+	if !hasTTFT || bestTTFT > srv.FirstContentDeadline(desired, 100) {
 		t.Fatalf("bestTTFT = %v has=%v, want within threshold", bestTTFT, hasTTFT)
+	}
+
+	// Alias fallback must consume the logical request's pinned deadline rather
+	// than recomputing a fresh full duration for Previous. A deliberately tiny
+	// pinned budget therefore blocks the same otherwise-healthy fallback.
+	parsed["model"] = desired
+	fallbackModel, _, _, _, _, _, switched = srv.maybeFallbackAlias(
+		parsed,
+		aliasFallbackTTFT,
+		publicModel,
+		desired,
+		100,
+		128,
+		time.Nanosecond,
+		registry.RequestTraits{},
+		false,
+		nil,
+	)
+	if switched || fallbackModel != previous || parsed["model"] != desired {
+		t.Fatalf("expired pinned deadline restarted on Previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
 	}
 }
 
@@ -295,7 +385,7 @@ func TestMaybeFallbackAliasTTFTSkipsRejectedPrevious(t *testing.T) {
 	parsed := map[string]any{"model": desired}
 
 	fallbackModel, _, _, _, _, _, switched := srv.maybeFallbackAlias(
-		parsed, aliasFallbackTTFT, publicModel, desired, 100, 128, ttftDeadline(100), registry.RequestTraits{}, false, nil)
+		parsed, aliasFallbackTTFT, publicModel, desired, 100, 128, srv.FirstContentDeadline(desired, 100), registry.RequestTraits{}, false, nil)
 
 	if switched || fallbackModel != desired || parsed["model"] != desired {
 		t.Fatalf("fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)

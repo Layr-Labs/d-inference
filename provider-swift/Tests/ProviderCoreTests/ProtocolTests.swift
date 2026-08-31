@@ -827,6 +827,73 @@ import Testing
     #expect(try jsonObject(ProviderProtocolCodec.encodeProviderMessage(legacy))["prefix_cache_protocol"] == nil)
 }
 
+@Test func inferenceRequestFirstContentBudgetIsOptionalOuterAndCompatible() throws {
+    let budgeted = CoordinatorMessage.inferenceRequest(.init(
+        requestId: "req-budget",
+        encryptedBody: EncryptedPayload(ephemeralPublicKey: "a", ciphertext: "b"),
+        firstContentBudgetMs: 2_750))
+    let data = try ProviderProtocolCodec.encodeCoordinatorMessage(budgeted)
+    let object = try jsonObject(data)
+    #expect((object["first_content_budget_ms"] as? NSNumber)?.int64Value == 2_750)
+    #expect(object["firstContentBudgetMs"] == nil)
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == budgeted)
+
+    let legacy = #"{"type":"inference_request","request_id":"legacy","body":null}"#
+    guard case .inferenceRequest(let legacyRequest) =
+        try ProviderProtocolCodec.decodeCoordinatorMessage(from: legacy)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(legacyRequest.firstContentBudgetMs == nil)
+
+    let future = #"{"type":"inference_request","request_id":"future","body":null,"first_content_budget_ms":900,"future_outer_field":{"enabled":true}}"#
+    guard case .inferenceRequest(let futureRequest) =
+        try ProviderProtocolCodec.decodeCoordinatorMessage(from: future)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(futureRequest.firstContentBudgetMs == 900)
+
+    let without = CoordinatorMessage.inferenceRequest(.init(requestId: "req-no-budget"))
+    let withoutObject = try jsonObject(
+        ProviderProtocolCodec.encodeCoordinatorMessage(without))
+    #expect(withoutObject["first_content_budget_ms"] == nil)
+
+    for invalidBudgetMs in [Int64(0), -1] {
+        let invalid = CoordinatorMessage.inferenceRequest(.init(
+            requestId: "req-invalid-budget",
+            firstContentBudgetMs: invalidBudgetMs))
+        guard case .inferenceRequest(let sanitized) = invalid
+        else { throw TestFailure.unexpectedMessage }
+        #expect(sanitized.firstContentBudgetMs == nil)
+        let invalidObject = try jsonObject(
+            ProviderProtocolCodec.encodeCoordinatorMessage(invalid))
+        #expect(invalidObject["first_content_budget_ms"] == nil)
+    }
+}
+
+@Test func inferenceRequestCacheEnvelopeFieldsRoundTripAndRemainOptional() throws {
+    let scoped = CoordinatorMessage.inferenceRequest(.init(
+        requestId: "req-cache",
+        encryptedBody: EncryptedPayload(ephemeralPublicKey: "a", ciphertext: "b"),
+        cacheReceiptNonce: "nonce-1",
+        cacheScope: "account-route-key",
+        prefixCacheProtocol: 2,
+        toolSchemaMetadataProtocol: 1))
+    let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
+    let object = try jsonObject(data)
+    #expect(object["cache_receipt_nonce"] as? String == "nonce-1")
+    #expect(object["cache_scope"] as? String == "account-route-key")
+    #expect(object["prefix_cache_protocol"] as? Int == 2)
+    #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
+    #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
+
+    let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
+    guard case .inferenceRequest(let decoded) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: Data(legacy.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(decoded.cacheReceiptNonce == nil)
+    #expect(decoded.cacheScope == nil)
+    #expect(decoded.prefixCacheProtocol == nil)
+    #expect(decoded.toolSchemaMetadataProtocol == nil)
+}
+
 @Test func prefixCacheReceiptMessagesMatchWireContract() throws {
     let lookup = ProviderMessage.prefixCacheLookup(.init(
         requestId: "req-1",

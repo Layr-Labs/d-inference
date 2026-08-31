@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -137,9 +139,10 @@ func TestResolveRemoteMediaInlinesOnSuccess(t *testing.T) {
 
 func TestResolveRemoteMediaNoRemoteNoOp(t *testing.T) {
 	s := minimalMediaServer(mediafetch.DefaultConfig())
+	s.firstContentDeadlineBase = 5 * time.Second
 	raw, parsed := chatBodyBytes(t, "data:image/png;base64,iVBORw0KGgo=")
 	w := httptest.NewRecorder()
-	timing := &registry.RequestTiming{}
+	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}
 
 	out, inlined, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
 	if !ok || inlined || !bytes.Equal(out, raw) {
@@ -147,6 +150,118 @@ func TestResolveRemoteMediaNoRemoteNoOp(t *testing.T) {
 	}
 	if !timing.MediaFetchedAt.IsZero() {
 		t.Error("MediaFetchedAt must stay zero when nothing was fetched")
+	}
+}
+
+func TestMediaFetchBudgetUnstampedKeepsHistoricalPath(t *testing.T) {
+	budget, bound := mediaFetchBudget(time.Time{}, 9*time.Second)
+	if bound || budget != 0 {
+		t.Fatalf("unstamped clock = (%s,%v), want unbounded", budget, bound)
+	}
+}
+
+func TestMediaFetchBudgetProductionLeavesInferenceReserve(t *testing.T) {
+	deadline := 9*time.Second + 1500*time.Millisecond
+	budget, bound := mediaFetchBudget(time.Now(), deadline)
+	if !bound {
+		t.Fatal("stamped production clock must bound the fetch")
+	}
+	// reserve = min(5s, 10.5s/2) = 5s; leftover ≈ 10.5s → budget ≈ 5.5s
+	if budget < 5*time.Second || budget > 6*time.Second {
+		t.Fatalf("production video budget = %s, want ~5.5s", budget)
+	}
+}
+
+func TestMediaFetchBudgetTestDefaultDeadlineStillFetches(t *testing.T) {
+	budget, bound := mediaFetchBudget(time.Now(), 5*time.Second)
+	if !bound {
+		t.Fatal("stamped 5s clock must still bound")
+	}
+	// reserve shrinks to deadline/2 = 2.5s so ordinary test servers still fetch
+	if budget < 2*time.Second || budget > 3*time.Second {
+		t.Fatalf("5s deadline budget = %s, want ~2.5s", budget)
+	}
+}
+
+func TestMediaFetchBudgetUsesPinnedQwenDeadline(t *testing.T) {
+	srv, _ := testServerWithConfig(t, ServerConfig{
+		FirstContentDeadlineBase: 9 * time.Second,
+	})
+	deadline := srv.FirstContentDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, 300,
+	)
+	if want := 4*time.Second + 300*time.Millisecond; deadline != want {
+		t.Fatalf("Qwen3-VL deadline = %s, want %s", deadline, want)
+	}
+	budget, bound := mediaFetchBudget(time.Now(), deadline)
+	if !bound {
+		t.Fatal("stamped Qwen3-VL clock must bound the fetch")
+	}
+	// For a sub-5s clock the resolver reserves half for inference, so remote
+	// media gets roughly 2.15s and cannot consume the full first-content SLA.
+	if budget < 1900*time.Millisecond || budget > 2300*time.Millisecond {
+		t.Fatalf("Qwen3-VL media budget = %s, want ~2.15s", budget)
+	}
+}
+
+func TestMediaFetchBudgetExpiredClockIsZero(t *testing.T) {
+	budget, bound := mediaFetchBudget(time.Now().Add(-15*time.Second), 9*time.Second)
+	if !bound || budget != 0 {
+		t.Fatalf("expired clock = (%s,%v), want 0+bound", budget, bound)
+	}
+}
+
+func TestResolveRemoteMediaExpiredFirstContentClockDoesNotFetch(t *testing.T) {
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+
+	s := minimalMediaServer(cfg)
+	s.firstContentDeadlineBase = 9 * time.Second
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	w := httptest.NewRecorder()
+	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-15 * time.Second)}
+
+	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
+	if ok || out != nil {
+		t.Fatal("expired first-content clock must not fetch")
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Fatalf("origin was fetched %d times", hits)
+	}
+	if w.Code != http.StatusRequestTimeout {
+		t.Fatalf("status=%d body=%s, want 408", w.Code, w.Body.String())
+	}
+}
+
+func TestResolveRemoteMediaUsesPinnedDeadlineWithoutRecomputing(t *testing.T) {
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+
+	s := minimalMediaServer(cfg)
+	s.firstContentDeadlineBase = 9 * time.Second
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	w := httptest.NewRecorder()
+	timing := &registry.RequestTiming{ReceivedAt: time.Now().Add(-200 * time.Millisecond)}
+	meta := testMeta()
+	meta.firstContentDeadline = 100 * time.Millisecond
+
+	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, meta)
+	if ok || out != nil {
+		t.Fatal("expired pinned media deadline must not be recomputed from the 9s server base")
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("origin was fetched %d times, want 0", got)
+	}
+	if w.Code != http.StatusRequestTimeout {
+		t.Fatalf("status=%d body=%s, want 408", w.Code, w.Body.String())
 	}
 }
 

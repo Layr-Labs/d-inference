@@ -587,7 +587,7 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	defer cancel()
 
 	pubKey := testPublicKeyB64()
-	attestationJSON := createTestAttestationJSON(t, pubKey)
+	attestationJSON := createTestAttestationJSONWithSerial(t, "PRIVATE-SERIAL", pubKey)
 	fixture := newTestProviderWS(t, ctx, ts.URL, reg,
 		[]protocol.ModelInfo{{ID: "trust-model", ModelType: "chat", Quantization: "4bit"}},
 		pubKey,
@@ -654,6 +654,11 @@ func TestTrustLevelInResponseHeaders(t *testing.T) {
 	attested := resp.Header.Get("X-Provider-Attested")
 	if attested != "true" {
 		t.Errorf("X-Provider-Attested = %q, want true", attested)
+	}
+	for _, header := range []string{"X-Provider-Serial", "X-Attestation-Device-Serial"} {
+		if value := resp.Header.Get(header); value != "" {
+			t.Errorf("%s leaked device serial %q", header, value)
+		}
 	}
 }
 

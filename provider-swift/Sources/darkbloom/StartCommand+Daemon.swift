@@ -14,7 +14,8 @@ extension Start {
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         coordinatorURL: String,
-        configPath: URL?
+        configPath: URL?,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
     ) async throws {
         // Run critical checks before downloading models or prompting.
         try runPreflightChecks(snapshot: snapshot)
@@ -25,14 +26,23 @@ extension Start {
         let selectedModelIDs: [String]
 
         if !model.isEmpty {
-            selectedModelIDs = model
+            let known = Set(snapshot.models.map(\.id))
+            selectedModelIDs = model.filter {
+                known.contains($0)
+                    && ModelRuntimeRequirements.isEligible(
+                        modelID: $0, available: runtimeCapabilities)
+            }
         } else if all {
-            selectedModelIDs = snapshot.models.map(\.id)
+            selectedModelIDs = snapshot.models.compactMap {
+                ModelRuntimeRequirements.isEligible(
+                    modelID: $0.id, available: runtimeCapabilities) ? $0.id : nil
+            }
         } else {
             selectedModelIDs = try await interactiveCatalogPicker(
                 snapshot: snapshot,
                 config: config,
-                coordinatorURL: coordinatorURL
+                coordinatorURL: coordinatorURL,
+                runtimeCapabilities: runtimeCapabilities
             )
         }
 

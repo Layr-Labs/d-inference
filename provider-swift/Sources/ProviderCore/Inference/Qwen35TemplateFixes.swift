@@ -5,6 +5,13 @@
 // to a conversation history. Fold those turns into one leading system message
 // before Jinja rendering instead of letting the template throw a deterministic
 // "System message must be at the beginning" error.
+//
+// Qwen3-VL (qwen3_vl_moe / qwen3_vl) shares that template contract: its
+// system role is consumed only at messages[0], so a mid-conversation system
+// turn is silently DROPPED from the rendered prompt — multi-system
+// conversations lose the later instruction entirely (the OpenRouter
+// multi-system failure) rather than erroring. The same leading-system fold
+// fixes both families.
 
 import Foundation
 import MLXLMServer
@@ -14,7 +21,8 @@ enum Qwen35TemplateFix {
         if let modelType = context.modelType?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased(),
-            modelType == "qwen3_5_moe"
+            modelType == "qwen3_5" || modelType == "qwen3_5_moe"
+                || modelType == "qwen3_vl_moe"
         {
             return true
         }
@@ -24,42 +32,16 @@ enum Qwen35TemplateFix {
             || modelId.contains("qwen3_5")
             || modelId.contains("qwen3.6")
             || modelId.contains("qwen3_6")
+            || modelId.contains("qwen3.8")
+            || modelId.contains("qwen3_8")
+            || modelId.contains("qwen3-vl")
+            || modelId.contains("qwen3_vl")
     }
 
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]
     ) -> [[String: any Sendable]] {
-        let systemIndices = messages.indices.filter {
-            (messages[$0]["role"] as? String) == "system"
-        }
-        guard let firstSystemIndex = systemIndices.first else { return messages }
-        guard systemIndices.count > 1 || firstSystemIndex != messages.startIndex else {
-            return messages
-        }
-
-        let nonSystemMessages = messages.filter {
-            ($0["role"] as? String) != "system"
-        }
-        if systemIndices.count == 1 {
-            return [messages[firstSystemIndex]] + nonSystemMessages
-        }
-
-        let systemMessages = systemIndices.map { messages[$0] }
-        var systemTexts: [String] = []
-        systemTexts.reserveCapacity(systemMessages.count)
-        for message in systemMessages {
-            guard let text = systemTextContent(message["content"]) else {
-                // Images, video, and unknown structured content are not safe to
-                // move into Qwen's leading system slot. Preserve the template's
-                // deterministic rejection instead of changing their semantics.
-                return messages
-            }
-            if !text.isEmpty { systemTexts.append(text) }
-        }
-
-        var mergedSystem = systemMessages[0]
-        mergedSystem["content"] = systemTexts.joined(separator: "\n\n")
-        return [mergedSystem] + nonSystemMessages
+        LeadingSystemMessageNormalizer.normalize(messages)
     }
 
     /// Typed counterpart used by the multimodal path before `UserInput`
@@ -110,26 +92,5 @@ enum Qwen35TemplateFix {
             }
             return text
         }
-    }
-
-    private static func systemTextContent(_ content: (any Sendable)?) -> String? {
-        guard let content else { return "" }
-        if let text = content as? String { return text }
-        guard let parts = content as? [any Sendable] else { return nil }
-
-        var text = ""
-        for part in parts {
-            guard let object = part as? [String: any Sendable],
-                  object["image"] == nil,
-                  object["image_url"] == nil,
-                  object["video"] == nil,
-                  object["video_url"] == nil,
-                  let partText = object["text"] as? String
-            else {
-                return nil
-            }
-            text += partText
-        }
-        return text
     }
 }

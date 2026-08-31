@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -455,13 +456,10 @@ func TestVerifyProviderViaMDM_TransportErrorTransient(t *testing.T) {
 	}
 }
 
-// TestProviderAttestationGatesMDAPayloadOnHardware is the regression for the
-// drift where /v1/providers/attestation gated the mda_verified boolean on
-// hardware but still emitted the MDA cert chain + serial/udid payload (which the
-// late-MDA callback can attach to a since-reconnected self_signed provider). The
-// whole MDA payload must be suppressed for non-hardware connections, so the
-// endpoint can never show mda_verified=false alongside a populated cert chain.
-func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
+// TestProviderAttestationRedactsDeviceIdentity proves that neither explicit
+// identifiers nor the identity-bearing Apple leaf certificate cross the public
+// API boundary, even for a currently hardware-trusted provider.
+func TestProviderAttestationRedactsDeviceIdentity(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
@@ -495,29 +493,43 @@ func TestProviderAttestationGatesMDAPayloadOnHardware(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	for _, secret := range []string{
+		"S-ss-payload", "S-hw-payload",
+		"MDA-ss-payload", "MDA-hw-payload",
+		"UDID-ss-payload", "UDID-hw-payload",
+		"der-leaf", "der-intermediate",
+		`"serial_number"`, `"mda_serial"`, `"mda_udid"`, `"mda_cert_chain_b64"`,
+	} {
+		if strings.Contains(string(body), secret) {
+			t.Fatalf("public attestation response leaked %q: %s", secret, body)
+		}
+	}
+
 	var parsed struct {
 		Providers []struct {
-			ProviderID   string   `json:"provider_id"`
-			MDAVerified  bool     `json:"mda_verified"`
-			MDACertChain []string `json:"mda_cert_chain_b64"`
-			MDASerial    string   `json:"mda_serial"`
-			MDAUDID      string   `json:"mda_udid"`
+			ProviderID   string `json:"provider_id"`
+			MDAVerified  bool   `json:"mda_verified"`
+			MDAOSVersion string `json:"mda_os_version"`
 		} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	for _, pr := range parsed.Providers {
 		switch pr.ProviderID {
 		case "ss-payload":
-			if pr.MDAVerified || len(pr.MDACertChain) != 0 || pr.MDASerial != "" || pr.MDAUDID != "" {
-				t.Errorf("self_signed provider leaked MDA payload: verified=%v chain=%d serial=%q udid=%q",
-					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial, pr.MDAUDID)
+			if pr.MDAVerified || pr.MDAOSVersion != "" {
+				t.Errorf("self_signed provider exposed hardware-only MDA state: verified=%v os=%q",
+					pr.MDAVerified, pr.MDAOSVersion)
 			}
 		case "hw-payload":
-			if !pr.MDAVerified || len(pr.MDACertChain) != 2 || pr.MDASerial == "" {
-				t.Errorf("hardware provider should expose MDA payload: verified=%v chain=%d serial=%q",
-					pr.MDAVerified, len(pr.MDACertChain), pr.MDASerial)
+			if !pr.MDAVerified || pr.MDAOSVersion != "26.5" {
+				t.Errorf("hardware provider should expose redacted MDA status: verified=%v os=%q",
+					pr.MDAVerified, pr.MDAOSVersion)
 			}
 		}
 	}

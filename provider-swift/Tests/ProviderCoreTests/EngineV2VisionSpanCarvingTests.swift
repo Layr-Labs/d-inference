@@ -1,5 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 
+import MLX
 import MLXLMCommon
 import MLXLMServer
 import Testing
@@ -197,6 +198,23 @@ struct EngineV2VisionSpanCarvingTests {
         }
     }
 
+    @Test("Qwen video: one contiguous video_pad run splits into adjacent frame spans")
+    func qwenContiguousVideoRun() throws {
+        // Qwen emits ONE run of T × spatial `video_pad` tokens. Two frames of
+        // 3 spatial tokens each is 6 adjacent pads — not Gemma's per-frame
+        // blocks with timestamps between them.
+        let tokens = [1, v, v, v, v, v, v, 9]
+        let carved = try EngineV2VisionPrefill.carveSpans(
+            tokens: tokens, imagePlaceholderId: nil, imageSpanLengths: [],
+            videoPlaceholderId: v, videoSpanLengths: [3, 3])
+        #expect(carved == [
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 1, length: 3)),
+            EngineV2VisionPrefill.CarvedSpan(
+                kind: .video, span: CBv2ImageSpan(tokenOffset: 4, length: 3)),
+        ])
+    }
+
     @Test("a disabled kind's id is an ordinary token (mirrors the processor)")
     func disabledKindIgnored() throws {
         // No video features ⇒ the video id is not watched: a stray 991 in
@@ -208,5 +226,26 @@ struct EngineV2VisionSpanCarvingTests {
             tokens: tokens, imagePlaceholderId: p, imageSpanLengths: [2],
             videoPlaceholderId: nil, videoSpanLengths: [])
         #expect(carved.map(\.span) == [CBv2ImageSpan(tokenOffset: 1, length: 2)])
+    }
+
+    @Test("Qwen3-VL media guard refuses video with unsupported-media")
+    func qwen3VLVideoRefusal() {
+        let input = LMInput(
+            text: .init(tokens: MLXArray([Int32(1), 2])),
+            video: .init(
+                pixels: MLXArray([Float(1)]).reshaped([1, 1]),
+                frames: [THW(1, 1, 1)]))
+        do {
+            try EngineV2VisionPrefill.validateQwen3VLMedia(input)
+            Issue.record("expected unsupportedMedia")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .unsupportedMedia(let detail) = error else {
+                Issue.record("expected unsupportedMedia, got \(error)")
+                return
+            }
+            #expect(detail == "Qwen3-VL video media is not production-proven")
+        } catch {
+            Issue.record("expected EngineV2VisionPrefillError, got \(error)")
+        }
     }
 }

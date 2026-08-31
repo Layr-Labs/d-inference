@@ -75,6 +75,26 @@ public struct PagedPoolResizeShortfall: Sendable, Equatable {
     public var isExact: Bool { poolBytes == requestedBytes }
 }
 
+/// One-way handoff flag shared by submit defers and the detached retirement
+/// owner. Once claimed, the submit path must leave provider/engine IDs and
+/// resource reservations intact for that owner to release exactly once.
+private final class EngineV2RetirementTransfer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var transferred = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            guard !transferred else { return false }
+            transferred = true
+            return true
+        }
+    }
+
+    var isClaimed: Bool {
+        lock.withLock { transferred }
+    }
+}
+
 /// Bridges one `CBv2Engine` (one loaded model) to the provider's
 /// `GenerationEvent` streaming surface.
 ///
@@ -155,6 +175,15 @@ public actor EngineV2Bridge {
     let stopTokenIds: Set<Int>
     let defaultMaxTokens: Int
     let maxConcurrentRequests: Int
+    /// Operational control for atomic first-token deadline admission.
+    /// Parsed once per bridge so runtime behavior cannot change mid-request.
+    let prefillDeadlineMode: PrefillDeadlineMode
+    /// Whether the configured scheduler posture can produce the bounded,
+    /// authoritative first-token projection required by atomic admission.
+    /// Production enables this only for serialized partial prefill (cap 1).
+    /// Explicit cap 0/unlimited therefore keeps serving through ordinary
+    /// submission while the hard absolute-expiry checks remain authoritative.
+    let prefillDeadlineProjectionEnabled: Bool
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
     /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
@@ -213,12 +242,30 @@ public actor EngineV2Bridge {
     struct ActiveRequestState {
         let promptTokens: Int
         let maxTokens: Int
+        /// True only when no other bridge row (prefill or decode) and no other
+        /// provider/engine submission existed at this request's exact
+        /// engine-submit boundary.
+        var isolatedPrefillSampleEligible: Bool
         var completionTokens: Int = 0
         var submittedAt: ContinuousClock.Instant
         var firstTokenAt: ContinuousClock.Instant?
+        var firstEmissionTokens: Int = 0
     }
 
     var active: [String: ActiveRequestState] = [:]
+    /// IDs that have passed bridge validation but have not yet completed
+    /// engine admission. Atomic deadline submission suspends this actor; this
+    /// guard prevents a reentrant duplicate from acquiring resources or
+    /// reaching the engine during that suspension.
+    var pendingSubmissionIDs: Set<String> = []
+    /// Provider cancellations that arrive while atomic engine admission has
+    /// suspended this actor. The marker survives an early engine-cancel miss
+    /// and is consumed only after pre-submit cleanup or queue acknowledgement.
+    var pendingCancellationIDs: Set<String> = []
+    /// Engine identities reserved across async atomic admission. Provider
+    /// request IDs are distinct: two concurrent deterministic seeded requests
+    /// can have different provider IDs but derive the same engine ID.
+    var pendingEngineIDs: Set<CBv2RequestID> = []
     /// Provider request-id → engine request-id, for `cancel`.
     var idMap: [String: CBv2RequestID] = [:]
     /// Monotonic engine-id counter for UNSEEDED requests. Lives in the low
@@ -284,6 +331,18 @@ public actor EngineV2Bridge {
     /// the same plausibility bounds — see `recordPrefillSample`.
     var observedPrefillTpsEwma: Double = 0
     var prefillEwmaInitialized = false
+    /// Queue- and decode-excluded cold-prefill service-rate EWMA used ONLY by
+    /// atomic scheduler deadline projection. A sample is eligible only when
+    /// no other request of any phase is active or pending at its exact submit
+    /// boundary. Mixed decode work is priced separately; it must never be
+    /// hidden inside this prefill denominator.
+    var isolatedPrefillTpsEwma: Double = 0
+    var isolatedPrefillEwmaInitialized = false
+    /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
+    /// projection halves each available phase rate, providing a fixed 2x
+    /// service-time envelope without letting one pathological minimum poison
+    /// the bridge forever.
+    static let deadlineProjectionRateHaircut = 0.5
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).
@@ -318,6 +377,8 @@ public actor EngineV2Bridge {
         extraEOSTokens: [String] = [],
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
+        prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
+        prefillDeadlineProjectionEnabled: Bool = true,
         kvBytesPerToken: Int = 0,
         fixedRequestBytes: Int = 0,
         auxiliaryBytesPerToken: Int = 0,
@@ -345,6 +406,8 @@ public actor EngineV2Bridge {
         )
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
+        self.prefillDeadlineMode = prefillDeadlineMode
+        self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
         self.kvBytesPerToken = kvBytesPerToken
         self.fixedRequestBytes = max(0, fixedRequestBytes)
         self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
@@ -445,6 +508,52 @@ public actor EngineV2Bridge {
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) async -> AsyncStream<GenerationEvent> {
+        do {
+            return try await submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: requestId,
+                cacheScope: cacheScope,
+                cacheEnabled: cacheEnabled,
+                logprobsChannel: logprobsChannel,
+                usageSignal: usageSignal,
+                multimodal: multimodal,
+                positionState: positionState,
+                mediaKind: mediaKind,
+                tokenConstraint: tokenConstraint,
+                firstContentDeadline: nil)
+        } catch {
+            // A nil deadline cannot produce the only thrown error in the
+            // deadline-aware overload. Keep legacy/local callers non-throwing
+            // without turning a future invariant violation into a process crash.
+            let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+            continuation.yield(.error("request rejected before engine submission"))
+            continuation.finish()
+            return stream
+        }
+    }
+
+    /// Deadline-aware remote submission. The absolute deadline was derived
+    /// once at coordinator-frame receipt and converted to a remaining
+    /// monotonic duration only at atomic engine admission. Existing local/test
+    /// callers use the non-throwing overload.
+    public func submitTokenized(
+        promptTokens: [Int],
+        request: ChatCompletionRequest,
+        requestId: String? = nil,
+        cacheScope: String = "",
+        cacheEnabled: Bool = true,
+        logprobsChannel: EngineV2LogprobsChannel? = nil,
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        multimodal: CBv2MultimodalInput? = nil,
+        positionState: CBv2PositionState? = nil,
+        mediaKind: EngineV2MediaKind? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil,
+        firstContentDeadline: FirstContentDeadline?
+    ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
         // id is replaced with a fresh generated one (it could never correlate
@@ -458,7 +567,7 @@ public actor EngineV2Bridge {
         // the same id would overwrite the first request's bookkeeping and
         // the two pumps would corrupt each other's teardown. Same canonical
         // message → `.requestRejected` (a deterministic client fault).
-        guard active[id] == nil else {
+        guard active[id] == nil, !pendingSubmissionIDs.contains(id) else {
             usageSignal?.finalizeLookup(
                 failure: .policy,
                 fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
@@ -466,6 +575,22 @@ public actor EngineV2Bridge {
             continuation.finish()
             return stream
         }
+        let retirementTransfer = EngineV2RetirementTransfer()
+        pendingSubmissionIDs.insert(id)
+        defer {
+            if !retirementTransfer.isClaimed {
+                pendingSubmissionIDs.remove(id)
+                pendingCancellationIDs.remove(id)
+            }
+        }
+        try await checkFirstContentDeadline(
+            firstContentDeadline,
+            requestID: id,
+            sharedKVReserved: false,
+            prefixCacheReceiptID: nil,
+            ssdStaged: false,
+            readyReceiptRegistered: false,
+            usageSignal: usageSignal)
 
         // Translate with a PLACEHOLDER engine id — the real id is minted
         // below, AFTER the shared-budget await, in the same synchronous
@@ -483,6 +608,14 @@ public actor EngineV2Bridge {
             tokenConstraint: tokenConstraint
         )
         cbv2Request.positionState = positionState ?? multimodal?.positionState
+        try await checkFirstContentDeadline(
+            firstContentDeadline,
+            requestID: id,
+            sharedKVReserved: false,
+            prefixCacheReceiptID: nil,
+            ssdStaged: false,
+            readyReceiptRegistered: false,
+            usageSignal: usageSignal)
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
         guard !tokenCountOverflow else {
@@ -538,6 +671,8 @@ public actor EngineV2Bridge {
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,
                 cacheScope: cacheScope)
+            ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
             usageSignal?.record(stageResult: stageResult)
             if case .skippedCapacity = stageResult.disposition {
                 emitPrefixCacheColdFallback(
@@ -545,22 +680,16 @@ public actor EngineV2Bridge {
                     reason: "stage_capacity",
                     capacityRefusal: true)
             }
-            ssdStaged = stageResult.staged
-            ssdReuseAttempted = stageResult.staged
-            // `stage` suspended this actor — re-check the duplicate guard
-            // (same discipline as the shared-budget gate below).
-            guard active[id] == nil else {
-                if ssdStaged { await ssd.abandonStaging(requestID: prefixCacheReceiptID) }
-                if readyReceiptRegistered {
-                    ssd.discardReadyReceipt(requestID: prefixCacheReceiptID)
-                }
-                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: .ssd)
-                continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
-                continuation.finish()
-                return stream
-            }
         }
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
+        try await checkFirstContentDeadline(
+            firstContentDeadline,
+            requestID: id,
+            sharedKVReserved: false,
+            prefixCacheReceiptID: prefixCacheReceiptID,
+            ssdStaged: ssdStaged,
+            readyReceiptRegistered: readyReceiptRegistered,
+            usageSignal: usageSignal)
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
         // footprint (target KV plus fixed recurrent and block-rounded assistant
@@ -612,13 +741,37 @@ public actor EngineV2Bridge {
         {
             sharedKVReserved = await reserveSharedRequestBytes(
                 budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
+            try await checkFirstContentDeadline(
+                firstContentDeadline,
+                requestID: id,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal)
             if !sharedKVReserved, ssdStaged, let prefixCacheReceiptID {
                 // Optional adoption may be the only reason R no longer fits:
                 // retire S synchronously, then retry the full cold request R.
                 await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
                 ssdStaged = false
+                try await checkFirstContentDeadline(
+                    firstContentDeadline,
+                    requestID: id,
+                    sharedKVReserved: false,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: false,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal)
                 sharedKVReserved = await reserveSharedRequestBytes(
                     budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
+                try await checkFirstContentDeadline(
+                    firstContentDeadline,
+                    requestID: id,
+                    sharedKVReserved: sharedKVReserved,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: false,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal)
                 if sharedKVReserved {
                     emitPrefixCacheColdFallback(
                         requestId: id,
@@ -650,31 +803,25 @@ public actor EngineV2Bridge {
                 continuation.finish()
                 return stream
             }
-            // Re-check the duplicate guard: `reserve` suspended this actor,
-            // so a concurrent submit under the SAME id that skipped the gate
-            // (degenerate maxTokens / unknown rate ⇒ no suspension) could
-            // have been admitted in the gap. Reject THIS submission and roll
-            // back its reservation — never overwrite live bookkeeping. (A
-            // gate-taking duplicate can't get here: its own `reserve` fails
-            // on this id's existing entry.)
-            guard active[id] == nil else {
-                await kvBudget.release(requestID: id)
-                if let prefixCacheReceiptID {
-                    if ssdStaged {
-                        await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
-                    }
-                    if readyReceiptRegistered {
-                        ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
-                    }
-                }
-                usageSignal?.finalizeLookup(
-                    failure: .policy,
-                    fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
-                continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
-                continuation.finish()
-                return stream
-            }
         }
+
+        // Expiry is authoritative even when projection policy will fail open.
+        // This is the final check after every provider-owned suspension.
+        try await checkFirstContentDeadline(
+            firstContentDeadline,
+            requestID: id,
+            sharedKVReserved: sharedKVReserved,
+            prefixCacheReceiptID: prefixCacheReceiptID,
+            ssdStaged: ssdStaged,
+            readyReceiptRegistered: readyReceiptRegistered,
+            usageSignal: usageSignal)
+
+        // Snapshot queue isolation at the exact engine-submit boundary. The
+        // current provider request is already in `pendingSubmissionIDs`; every
+        // other active or pending row disqualifies this sample.
+        disqualifyOverlappedPrefillSamples()
+        let isolatedPrefillSampleEligible =
+            isIsolatedPrefillSubmitBoundary(currentProviderRequestID: id)
 
         // Mint the engine request id: monotonic by default, STABLE
         // (seed, prompt)-derived when the caller supplied an explicit seed —
@@ -686,52 +833,157 @@ public actor EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
-
-        let events: AsyncStream<CBv2Event>
-        guard let engine = ownedEngine else {
-            if sharedKVReserved { await kvBudget?.release(requestID: id) }
-            if let prefixCacheReceiptID {
-                if ssdStaged {
-                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
-                }
-                if readyReceiptRegistered {
-                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+        let engineRequest = cbv2Request
+        pendingEngineIDs.insert(cbv2Id)
+        idMap[id] = cbv2Id
+        defer {
+            if !retirementTransfer.isClaimed {
+                pendingEngineIDs.remove(cbv2Id)
+                if active[id] == nil, idMap[id] == cbv2Id {
+                    idMap.removeValue(forKey: id)
                 }
             }
-            usageSignal?.finalizeLookup(
-                failure: .policy,
-                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+        }
+
+        let events: AsyncStream<CBv2Event>
+        // Ordinary submission registers synchronously; atomic submission
+        // replaces this with the engine-queue commit instant returned by the
+        // admission transaction.
+        var engineAdmittedAt = ContinuousClock.now
+        guard let engine = ownedEngine else {
+            await releasePreSubmitResources(
+                requestID: id,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
             continuation.yield(.error("request queue full: engine is shutting down"))
             continuation.finish()
             return stream
         }
         do {
-            // `engine.submit` is an O(1) non-blocking ENQUEUE by contract
-            // (`CBv2Engine.submit`: "Cancel promptly … row is dropped O(1)";
-            // `EngineV2.submit` does a lock-guarded admission check +
-            // `loop.register` + `loop.enqueue`, all constant-time, and NO
-            // forward pass — that runs on the engine's own step thread).
-            // Tokenization already happened off this actor (in `submit`, or in
-            // the caller for `submitTokenized`), so calling it synchronously
-            // on the bridge actor does not stall other actor work.
-            events = try engine.submit(cbv2Request)
+            if let admission = firstTokenDeadlineAdmission(
+                deadline: firstContentDeadline,
+                isMultimodal: multimodal != nil)
+            {
+                // The engine's serialized closure compares projection against
+                // this same absolute deadline. A second task-group race would
+                // cancel after commit and hide the generation-bound retirement
+                // handle needed to transfer resource ownership safely.
+                let result = try await engine.submit(
+                    engineRequest,
+                    firstTokenDeadline: admission)
+                switch result {
+                case .admitted(let stream, _, let admittedAt, let retirement):
+                    if Task.isCancelled || pendingCancellationIDs.contains(id) {
+                        engine.cancel(cbv2Id)
+                        transferPreSubmitRetirement(
+                            retirementTransfer,
+                            requestID: id,
+                            engineID: cbv2Id,
+                            stream: stream,
+                            retirement: retirement,
+                            sharedKVReserved: sharedKVReserved,
+                            prefixCacheReceiptID: prefixCacheReceiptID,
+                            ssdStaged: ssdStaged,
+                            readyReceiptRegistered: readyReceiptRegistered,
+                            usageSignal: usageSignal,
+                            failure: .policy)
+                        throw CancellationError()
+                    }
+                    do {
+                        try firstContentDeadline?.check()
+                    } catch {
+                        engine.cancel(cbv2Id)
+                        // Admission committed at the deadline boundary. Keep
+                        // provider-global reservations until the generation-
+                        // bound engine acknowledgement proves the row and KV
+                        // ownership are gone. A watchdog terminal alone is not
+                        // that acknowledgement.
+                        transferPreSubmitRetirement(
+                            retirementTransfer,
+                            requestID: id,
+                            engineID: cbv2Id,
+                            stream: stream,
+                            retirement: retirement,
+                            sharedKVReserved: sharedKVReserved,
+                            prefixCacheReceiptID: prefixCacheReceiptID,
+                            ssdStaged: ssdStaged,
+                            readyReceiptRegistered: readyReceiptRegistered,
+                            usageSignal: usageSignal,
+                            failure: .capacity)
+                        throw error
+                    }
+                    events = stream
+                    engineAdmittedAt = admittedAt
+                case .deadlineUnreachable:
+                    if Task.isCancelled || pendingCancellationIDs.contains(id) {
+                        throw CancellationError()
+                    }
+                    throw PreContentDeadlineFailure.deadlineUnreachable
+                }
+            } else {
+                // Projection fails open when mode is off, no isolated rate has
+                // been measured, or media makes token projection incomplete.
+                // Absolute expiry does not: it was checked immediately above.
+                events = try engine.submit(engineRequest)
+            }
+        } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
+            engine.cancel(cbv2Id)
+            transferPreSubmitRetirement(
+                retirementTransfer,
+                requestID: id,
+                engineID: cbv2Id,
+                stream: cancellation.stream,
+                retirement: cancellation.retirement,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
+            throw CancellationError()
+        } catch let failure as PreContentDeadlineFailure {
+            if !retirementTransfer.isClaimed {
+                await releasePreSubmitResources(
+                    requestID: id,
+                    sharedKVReserved: sharedKVReserved,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: ssdStaged,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal,
+                    failure: .capacity)
+            }
+            throw failure
+        } catch is CancellationError {
+            if !retirementTransfer.isClaimed {
+                await releasePreSubmitResources(
+                    requestID: id,
+                    sharedKVReserved: sharedKVReserved,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: ssdStaged,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal,
+                    failure: .policy)
+            }
+            throw CancellationError()
         } catch {
             // Engine rejected AFTER the shared reservation was taken — release
             // it before surfacing the error (no pump will ever finish it).
             // A rejected submit also never ran the prefix-cache lookup, so
             // the engine can never balance the staging ticket — backstop it.
-            if sharedKVReserved { await kvBudget?.release(requestID: id) }
-            if let prefixCacheReceiptID {
-                if ssdStaged {
-                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
-                }
-                if readyReceiptRegistered {
-                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
-                }
+            if !retirementTransfer.isClaimed {
+                await releasePreSubmitResources(
+                    requestID: id,
+                    sharedKVReserved: sharedKVReserved,
+                    prefixCacheReceiptID: prefixCacheReceiptID,
+                    ssdStaged: ssdStaged,
+                    readyReceiptRegistered: readyReceiptRegistered,
+                    usageSignal: usageSignal,
+                    failure: Self.prefixCacheFailureClass(for: error))
             }
-            usageSignal?.finalizeLookup(
-                failure: Self.prefixCacheFailureClass(for: error),
-                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
@@ -744,9 +996,13 @@ public actor EngineV2Bridge {
         active[id] = ActiveRequestState(
             promptTokens: promptTokens.count,
             maxTokens: cbv2Request.maxTokens,
-            submittedAt: .now
+            isolatedPrefillSampleEligible:
+                isolatedPrefillSampleEligible
+                && pendingSubmissionIDs.allSatisfy({ $0 == id })
+                && pendingEngineIDs.allSatisfy({ $0 == cbv2Id })
+                && active.isEmpty,
+            submittedAt: engineAdmittedAt
         )
-        idMap[id] = cbv2Id
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
 
@@ -776,6 +1032,193 @@ public actor EngineV2Bridge {
             }
         }
         return stream
+    }
+
+    /// Build the caller-owned policy passed into the engine's atomic
+    /// projection. This runs immediately before submission, after every SSD
+    /// and shared-KV suspension. The absolute monotonic instant is carried
+    /// unchanged; only the engine queue reads "now" for the final verdict.
+    private func firstTokenDeadlineAdmission(
+        deadline: FirstContentDeadline?,
+        isMultimodal: Bool
+    ) -> CBv2FirstTokenDeadlineAdmission? {
+        guard prefillDeadlineMode == .enforce,
+            prefillDeadlineProjectionEnabled,
+            !isMultimodal,
+            let deadline,
+            isolatedPrefillEwmaInitialized
+        else {
+            return nil
+        }
+
+        let prefillRate =
+            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
+        let decodeCandidate =
+            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        let decodeRate =
+            ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
+            ? decodeCandidate
+            : nil
+        guard prefillRate.isFinite, prefillRate > 0 else {
+            return nil
+        }
+
+        return CBv2FirstTokenDeadlineAdmission(
+            deadline: deadline.instant,
+            conservativePrefillTokensPerSecond: prefillRate,
+            conservativeDecodeTokensPerSecond: decodeRate)
+    }
+
+    private func isIsolatedPrefillSubmitBoundary(
+        currentProviderRequestID: String
+    ) -> Bool {
+        guard pendingEngineIDs.isEmpty else { return false }
+        guard pendingSubmissionIDs.allSatisfy({ $0 == currentProviderRequestID }) else {
+            return false
+        }
+        return active.isEmpty
+    }
+
+    /// A later arrival can share a step with an already-prefilling row. Mark
+    /// that older sample non-isolated before submitting the newcomer; rows
+    /// that already emitted their first token keep their completed prefill
+    /// observation.
+    private func disqualifyOverlappedPrefillSamples() {
+        for id in Array(active.keys) {
+            guard var state = active[id], state.firstTokenAt == nil else {
+                continue
+            }
+            state.isolatedPrefillSampleEligible = false
+            active[id] = state
+        }
+    }
+
+    /// Move post-commit cancellation cleanup out of the cancelling task. The
+    /// retained IDs block provider- and engine-ID reuse while the background
+    /// owner holds every pre-submit reservation through actual engine
+    /// retirement. A permanent engine wedge therefore retains capacity (safe)
+    /// without synchronously deadlocking cancellation.
+    private func transferPreSubmitRetirement(
+        _ transfer: EngineV2RetirementTransfer,
+        requestID: String,
+        engineID: CBv2RequestID,
+        stream: AsyncStream<CBv2Event>,
+        retirement: CBv2RequestRetirement,
+        sharedKVReserved: Bool,
+        prefixCacheReceiptID: CBv2RequestID?,
+        ssdStaged: Bool,
+        readyReceiptRegistered: Bool,
+        usageSignal: EngineV2RequestUsageSignal?,
+        failure: PrefixCacheLookupFailureClass
+    ) {
+        guard transfer.claim() else { return }
+        let bridge = self
+        Task {
+            await retirement.wait()
+            withExtendedLifetime(stream) {}
+            await bridge.completeTransferredPreSubmitRetirement(
+                requestID: requestID,
+                engineID: engineID,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: failure)
+        }
+    }
+
+    private func completeTransferredPreSubmitRetirement(
+        requestID: String,
+        engineID: CBv2RequestID,
+        sharedKVReserved: Bool,
+        prefixCacheReceiptID: CBv2RequestID?,
+        ssdStaged: Bool,
+        readyReceiptRegistered: Bool,
+        usageSignal: EngineV2RequestUsageSignal?,
+        failure: PrefixCacheLookupFailureClass
+    ) async {
+        await releasePreSubmitResources(
+            requestID: requestID,
+            sharedKVReserved: sharedKVReserved,
+            prefixCacheReceiptID: prefixCacheReceiptID,
+            ssdStaged: ssdStaged,
+            readyReceiptRegistered: readyReceiptRegistered,
+            usageSignal: usageSignal,
+            failure: failure)
+        pendingSubmissionIDs.remove(requestID)
+        pendingCancellationIDs.remove(requestID)
+        pendingEngineIDs.remove(engineID)
+        if active[requestID] == nil, idMap[requestID] == engineID {
+            idMap.removeValue(forKey: requestID)
+        }
+    }
+
+    /// Enforce absolute expiry independently from projection mode and balance
+    /// every resource acquired before this boundary.
+    private func checkFirstContentDeadline(
+        _ deadline: FirstContentDeadline?,
+        requestID: String,
+        sharedKVReserved: Bool,
+        prefixCacheReceiptID: CBv2RequestID?,
+        ssdStaged: Bool,
+        readyReceiptRegistered: Bool,
+        usageSignal: EngineV2RequestUsageSignal?
+    ) async throws {
+        if pendingCancellationIDs.contains(requestID) {
+            await releasePreSubmitResources(
+                requestID: requestID,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .policy)
+            throw CancellationError()
+        }
+        do {
+            try deadline?.check()
+        } catch let failure as PreContentDeadlineFailure {
+            await releasePreSubmitResources(
+                requestID: requestID,
+                sharedKVReserved: sharedKVReserved,
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                ssdStaged: ssdStaged,
+                readyReceiptRegistered: readyReceiptRegistered,
+                usageSignal: usageSignal,
+                failure: .capacity)
+            throw failure
+        }
+    }
+
+    /// Balance every provider-owned resource acquired before engine
+    /// submission. Engine-owned prefix/KV state is released atomically by the
+    /// deadline API before it returns a rejection.
+    private func releasePreSubmitResources(
+        requestID: String,
+        sharedKVReserved: Bool,
+        prefixCacheReceiptID: CBv2RequestID?,
+        ssdStaged: Bool,
+        readyReceiptRegistered: Bool,
+        usageSignal: EngineV2RequestUsageSignal?,
+        failure: PrefixCacheLookupFailureClass
+    ) async {
+        if sharedKVReserved {
+            await kvBudget?.release(requestID: requestID)
+        }
+        if let prefixCacheReceiptID {
+            if ssdStaged {
+                await ssdPrefixCache?.abandonStaging(
+                    requestID: prefixCacheReceiptID)
+            }
+            if readyReceiptRegistered {
+                ssdPrefixCache?.discardReadyReceipt(
+                    requestID: prefixCacheReceiptID)
+            }
+        }
+        usageSignal?.finalizeLookup(
+            failure: failure,
+            fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
     }
 
     private func reserveSharedRequestBytes(
@@ -832,8 +1275,12 @@ public actor EngineV2Bridge {
     /// then delivers `.finished(.cancelled)` on the request's stream,
     /// which drives the normal bookkeeping/teardown in the pump.
     public func cancel(requestId: String) {
-        guard let cbv2Id = idMap[requestId] else { return }
-        ownedEngine?.cancel(cbv2Id)
+        if pendingSubmissionIDs.contains(requestId) {
+            pendingCancellationIDs.insert(requestId)
+        }
+        if let cbv2Id = idMap[requestId] {
+            ownedEngine?.cancel(cbv2Id)
+        }
     }
 
     // MARK: - Runtime KV re-slicing / slot bookkeeping
@@ -1112,7 +1559,7 @@ public actor EngineV2Bridge {
                 // otherwise leave the first-token bookkeeping unset.
                 if !sawFirstToken, !tokens.isEmpty {
                     sawFirstToken = true
-                    recordFirstToken(id: id)
+                    recordFirstToken(id: id, emissionTokens: tokens.count)
                 }
                 recordProgress(id: id, newTokens: tokens.count)
                 if !stopSequences.isEmpty {
@@ -1316,12 +1763,13 @@ public actor EngineV2Bridge {
 
     // MARK: - Bookkeeping
 
-    private func recordFirstToken(id: String) {
+    private func recordFirstToken(id: String, emissionTokens: Int) {
         let now = ContinuousClock.Instant.now
         wedgeMonitor.recordFirstToken(now: now)
         guard var state = active[id] else { return }
         if state.firstTokenAt == nil {
             state.firstTokenAt = now
+            state.firstEmissionTokens = max(1, emissionTokens)
             active[id] = state
         }
     }
@@ -1358,15 +1806,28 @@ public actor EngineV2Bridge {
             let seconds = WedgeMonitor.seconds(now - state.submittedAt)
             tps = seconds > 0 ? Double(completion) / seconds : 0
         }
-        if success, tps > 0 {
-            updateDecodeTpsEwma(tps)
+        // Only tokens emitted strictly after the first engine emission are a
+        // decode observation. MTP can deliver several accepted tokens in that
+        // first burst; charging all but one over a near-zero interval would
+        // catastrophically inflate the conservative decode rate.
+        if success, let firstTokenAt = state.firstTokenAt,
+            completion > state.firstEmissionTokens
+        {
+            let decodeSeconds = WedgeMonitor.seconds(now - firstTokenAt)
+            let decodeTokens = completion - state.firstEmissionTokens
+            let decodeTps =
+                decodeSeconds > 0 ? Double(decodeTokens) / decodeSeconds : 0
+            if decodeTps > 0 {
+                updateDecodeTpsEwma(decodeTps)
+            }
         }
         if success {
             recordPrefillSample(
                 promptTokens: prompt,
                 usage: usage,
                 submittedAt: state.submittedAt,
-                firstTokenAt: state.firstTokenAt)
+                firstTokenAt: state.firstTokenAt,
+                isolatedAtSubmit: state.isolatedPrefillSampleEligible)
         }
         return (prompt, completion, tps)
     }
@@ -1388,10 +1849,10 @@ public actor EngineV2Bridge {
 
     /// Classify one prefill sample against the plausibility bounds. Pure —
     /// mirrors `BatchScheduler.classifyPrefillSample`'s floor/ceiling shape
-    /// with the v2 measurement (window = first token − SUBMIT: the bridge
-    /// owns both timestamps, so no engine prefill-start marker is needed;
-    /// under load the window includes engine queue wait, making this the
-    /// same load-inclusive observed rate the decode EWMA reports).
+    /// with the v2 measurement. The window starts at the atomic engine-queue
+    /// admission instant, not before that queue await; admission delay is
+    /// therefore never smuggled into isolated prefill throughput. Isolation
+    /// is revoked if another row arrives before this row's first token.
     static func classifyPrefillSample(
         prefilledTokens: Int, prefillSeconds: Double
     ) -> Double? {
@@ -1410,7 +1871,8 @@ public actor EngineV2Bridge {
         promptTokens: Int,
         usage: CBv2Usage,
         submittedAt: ContinuousClock.Instant,
-        firstTokenAt: ContinuousClock.Instant?
+        firstTokenAt: ContinuousClock.Instant?,
+        isolatedAtSubmit: Bool
     ) {
         guard Self.isColdPrefillSample(usage: usage) else { return }
         guard let firstTokenAt else { return }
@@ -1425,6 +1887,14 @@ public actor EngineV2Bridge {
         } else {
             observedPrefillTpsEwma = tps
             prefillEwmaInitialized = true
+        }
+        guard isolatedAtSubmit else { return }
+        if isolatedPrefillEwmaInitialized {
+            isolatedPrefillTpsEwma =
+                alpha * tps + (1 - alpha) * isolatedPrefillTpsEwma
+        } else {
+            isolatedPrefillTpsEwma = tps
+            isolatedPrefillEwmaInitialized = true
         }
     }
 
@@ -1446,6 +1916,7 @@ public actor EngineV2Bridge {
     /// Same EWMA (α = 0.3) as the legacy scheduler's decode-TPS heartbeat
     /// signal so routing sees comparable numbers across engines.
     private func updateDecodeTpsEwma(_ tps: Double) {
+        guard tps.isFinite, tps > 0 else { return }
         let alpha = 0.3
         if ewmaInitialized {
             observedDecodeTpsEwma = alpha * tps + (1 - alpha) * observedDecodeTpsEwma
@@ -1553,25 +2024,27 @@ public actor EngineV2Bridge {
     /// (seed, prompt)-derived id; everything else gets the monotonic counter
     /// (`&+` wrap: 2^63 ids is unreachable, but the overflow is defined).
     ///
-    /// Collision guard: an IDENTICAL seeded request that is still LIVE would
-    /// collide inside the engine's per-request maps, so the derived id falls
-    /// back to a fresh monotonic id. DOCUMENTED LIMITS of seeded
+    /// Collision guard: an IDENTICAL seeded request that is LIVE or awaiting
+    /// async atomic admission would collide inside the engine's per-request
+    /// maps, so the derived id falls back to a fresh monotonic id. DOCUMENTED LIMITS of seeded
     /// reproducibility: (a) submissions that overlap their own duplicate
     /// in-flight lose the stable id (this fallback); (b) under batching the
     /// contract is best-effort — the RNG key itself is batch-invariant, but
     /// non-deterministic kernel scheduling can still perturb floating-point
     /// reductions across different batch compositions.
     ///
-    /// MUST be called in the same synchronous (no-await) stretch as
-    /// `engine.submit` + the `idMap` registration, so the liveness check
-    /// cannot race a concurrent identical submission across a suspension.
+    /// Its result is inserted into `pendingEngineIDs` in the same synchronous
+    /// stretch. That reservation spans the async engine call and closes the
+    /// actor-reentrancy gap before `idMap` registration.
     private func mintEngineRequestId(seed: UInt64?, promptTokens: [Int]) -> CBv2RequestID {
         if let seed {
             let stable = CBv2RequestID(
                 Self.stableSeededRawId(seed: seed, promptTokens: promptTokens))
             // O(live requests) scan (≤ engine concurrency + waiting cap);
             // only taken on seeded submissions.
-            if !idMap.values.contains(stable) { return stable }
+            if !idMap.values.contains(stable), !pendingEngineIDs.contains(stable) {
+                return stable
+            }
         }
         let fresh = CBv2RequestID(nextRawId)
         nextRawId &+= 1
@@ -1611,6 +2084,24 @@ public actor EngineV2Bridge {
 
     /// Number of live pump tasks (shutdown-tracking assertions).
     func _testLivePumpCount() -> Int { pumpTasks.count }
+
+    /// Number of bridge submissions currently suspended before admission.
+    func _testPendingSubmissionCount() -> Int { pendingSubmissionIDs.count }
+
+    /// Number of deterministic/monotonic engine IDs reserved across admission.
+    func _testPendingEngineIDCount() -> Int { pendingEngineIDs.count }
+
+    /// Number of provider request IDs currently mapped to engine generations.
+    func _testMappedRequestCount() -> Int { idMap.count }
+
+    /// Queue-excluded service rate consumed by deadline projection.
+    func _testIsolatedPrefillTps() -> Double {
+        isolatedPrefillEwmaInitialized ? isolatedPrefillTpsEwma : 0
+    }
+
+    func _testSubmissionInstant(requestId: String) -> ContinuousClock.Instant? {
+        active[requestId]?.submittedAt
+    }
 
     /// Live provider request-ids (live co-residency test cancels by id).
     func _testActiveRequestIds() -> [String] { Array(active.keys) }

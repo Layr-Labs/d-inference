@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { PanelLeftOpen } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { Toasts } from "./Toasts";
-import { ProviderSlackPopup } from "./community/ProviderSlackPopup";
+import { SlackJoinPopup } from "./community/SlackJoinPopup";
 import { useStore, STORE_NAME } from "@/lib/store";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -53,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
       )}
       <main className="flex-1 flex flex-col overflow-y-auto">{children}</main>
-      <ProviderSlackPopup />
+      <SlackJoinPopup />
       <Toasts />
     </div>
   );

@@ -57,10 +57,8 @@ function extractTrustMeta(res: Response): TrustMetadata {
     secureEnclave: res.headers.get("x-provider-secure-enclave") === "true",
     mdaVerified: res.headers.get("x-provider-mda-verified") === "true",
     providerChip: res.headers.get("x-provider-chip") || "",
-    providerSerial: res.headers.get("x-provider-serial") || "",
     providerModel: res.headers.get("x-provider-model") || "",
     sePublicKey: res.headers.get("x-attestation-se-public-key") || undefined,
-    deviceSerial: res.headers.get("x-attestation-device-serial") || undefined,
   };
 }
 

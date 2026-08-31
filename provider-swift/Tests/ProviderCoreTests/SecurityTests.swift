@@ -279,12 +279,15 @@ private struct AttestationStatusFixtureInput: Decodable {
     let blob = AttestationBlob(
         authenticatedRootEnabled: true,
         binaryHash: "binhash",
+        chipFamily: "M5",
         chipName: "Apple M4 Max",
         encryptionPublicKey: "ZW5jcnlwdGlvbi1rZXk=",
         hardwareModel: "Mac16,5",
+        metallibHash: "metallibhash",
         osVersion: "15.3.0",
         publicKey: "cHVibGljLWtleQ==",
         rdmaDisabled: true,
+        runtimeCapabilities: [.appleM5, .mlxNAX],
         secureBootEnabled: true,
         secureEnclaveAvailable: true,
         serialNumber: "C02TESTSERIAL",
@@ -303,6 +306,9 @@ private struct AttestationStatusFixtureInput: Decodable {
     // Sanity: the blob still carries its real posture fields.
     #expect(object["sipEnabled"] as? Bool == true)
     #expect(object["rdmaDisabled"] as? Bool == true)
+    #expect(object["chipFamily"] as? String == "M5")
+    #expect(object["metallibHash"] as? String == "metallibhash")
+    #expect(object["runtimeCapabilities"] as? [String] == ["apple_m5", "mlx_nax"])
 }
 
 

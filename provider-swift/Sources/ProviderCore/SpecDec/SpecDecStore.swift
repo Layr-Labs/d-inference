@@ -406,6 +406,48 @@ enum SpecDecStore {
                 inlineIndexSHA256: indexDigest))
     }
 
+    /// Cheap tri-state discriminator used before inline inspection. Ordinary
+    /// Qwen targets can pair with separately published MTP artifacts, so a
+    /// config that parses and carries no `mtplx_mtp.included=true` must fall
+    /// through to the catalog resolver without being logged as an invalid
+    /// inline payload — but "no declaration" and "declaration could not be
+    /// validated" are different answers. A config the probe cannot read (or
+    /// one that declares a head but exceeds the inspection's strict byte cap)
+    /// must reach `inspectInlineArtifact`, whose named rejection surfaces as
+    /// `inline_artifact_invalid` instead of being misreported as
+    /// config-disabled or silently skipped.
+    enum InlineDeclarationProbe: Equatable {
+        /// Config parsed and declares `mtplx_mtp.included = true`.
+        case declared
+        /// Config parsed and declares nothing (or an explicit `false`).
+        case absent
+        /// Config missing, unparseable, or beyond even the loose probe bound
+        /// — an embedded head cannot be ruled out.
+        case undeterminable
+
+        /// Whether the funnel/auto gate must run full inline inspection.
+        var mayDeclareEmbeddedArtifact: Bool { self != .absent }
+    }
+
+    /// The probe reads with a deliberately looser bound than the inspection's
+    /// `maximumConfigBytes`: an oversized config may still carry a
+    /// declaration, and that case must be REJECTED loudly by inspection, not
+    /// classified as absent because the probe refused to look.
+    static let inlineProbeMaximumConfigBytes = 64 * 1024 * 1024
+
+    static func inlineDeclarationProbe(directory: URL) -> InlineDeclarationProbe {
+        let configURL = directory.standardizedFileURL
+            .appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+            data.count <= Self.inlineProbeMaximumConfigBytes,
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .undeterminable }
+        guard let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        else { return .absent }
+        return .declared
+    }
+
     private static func rejectInline(
         _ reason: String
     ) -> Result<SpecDecArtifact, InlineArtifactRejection> {
@@ -480,6 +522,7 @@ enum SpecDecStore {
                     directory: artifact.directory,
                     source: .catalog,
                     revision: reference.revision,
+                    sourceRevision: artifact.sourceRevision,
                     artifactBytes: verification.artifactBytes,
                     residentBytes: SpecDecLimits.residentEstimate(
                         artifactBytes: verification.artifactBytes),
@@ -508,6 +551,9 @@ enum SpecDecStore {
                 return .fallback(
                     .localArtifactInvalid,
                     detail: "local assistant changed after admission")
+            }
+            if let sourceRevision = artifact.sourceRevision {
+                return .resolved(refreshed.recordingSourceRevision(sourceRevision))
             }
             return .resolved(refreshed)
         case .inline:

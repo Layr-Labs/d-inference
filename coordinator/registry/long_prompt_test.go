@@ -346,3 +346,55 @@ func TestReserveProviderLongPromptColdLoadNotAmplifiedAway(t *testing.T) {
 		t.Fatalf("cold breakdown sum %v != CostMs %v", sum, coldDec.CostMs)
 	}
 }
+
+// TestRoutingCostPrefersObservedOverStaticPrefill is the regression test for the
+// base routing cost term. TestLongPromptPrefersObservedOverStaticPrefill above
+// only exercises the long-prompt bias, which is OFF by default
+// (defaultLongPromptThresholdTokens == 0, and longPromptPenalty returns 0 at a
+// non-positive threshold). With the bias off, the prefill contribution to cost is
+// thisReqMs alone — so if thisReqMs reads the static snap.prefillTPS, the measured
+// prefill EWMA cannot influence provider selection at all on a default
+// configuration, and a box whose live prefill has degraded keeps winning on the
+// strength of its registration benchmark.
+//
+// Same fixture shape as the long-prompt test, with the threshold pinned OFF and a
+// prompt well below any bias.
+func TestRoutingCostPrefersObservedOverStaticPrefill(t *testing.T) {
+	origThreshold, origWeight := longPromptThresholdTokens, longPromptPrefillWeight
+	defer func() { longPromptThresholdTokens, longPromptPrefillWeight = origThreshold, origWeight }()
+	// Pin the documented default: the long-prompt bias contributes nothing, so
+	// only the base cost term can express the prefill difference.
+	SetLongPromptThreshold(0)
+
+	reg := New(testLogger())
+	model := "routing-cost-observed-prefill-model"
+	// Static says A is the fast box; the live measured PREFILL says A is degraded
+	// (200) and B is fast (2000). Both idle and equal on decode, so the prefill
+	// signal is the only thing that differs.
+	staticFast := makeTokenBudgetProvider(t, reg, "static-fast-observed-slow", model, 100, 0, 200_000, 100)
+	staticFast.mu.Lock()
+	staticFast.PrefillTPS = 2_000
+	staticFast.BackendCapacity.Slots[0].ObservedPrefillTPS = 200 // degraded live prefill
+	staticFast.mu.Unlock()
+	observedFast := makeTokenBudgetProvider(t, reg, "static-slow-observed-fast", model, 100, 0, 200_000, 100)
+	observedFast.mu.Lock()
+	observedFast.PrefillTPS = 400
+	observedFast.BackendCapacity.Slots[0].ObservedPrefillTPS = 2_000 // fast live prefill
+	observedFast.mu.Unlock()
+
+	sel, dec := reg.ReserveProviderEx(model, &PendingRequest{
+		RequestID: "routing-cost-observed", Model: model, EstimatedPromptTokens: 4_000, RequestedMaxTokens: 256,
+	})
+	if sel == nil {
+		t.Fatalf("returned nil provider; decision=%+v", dec)
+	}
+	if sel.ID != observedFast.ID {
+		t.Fatalf("selected %q, want observed-fastest %q — the base cost term must price prefill with resolvePrefillTPS, not the static snap.prefillTPS; decision=%+v",
+			sel.ID, observedFast.ID, dec)
+	}
+	// The cost-breakdown invariant must still hold after the hoist.
+	sum := dec.StateMs + dec.QueueMs + dec.PendingMs + dec.BacklogMs + dec.ThisReqMs + dec.HealthMs
+	if diff := sum - dec.CostMs; diff > 0.001 || diff < -0.001 {
+		t.Fatalf("breakdown sum %f != CostMs %f", sum, dec.CostMs)
+	}
+}

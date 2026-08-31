@@ -3,14 +3,14 @@ package api
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 )
 
-// ServerConfig holds coordinator HTTP server and URL configuration.
-// Each field corresponds to a Set* method on Server that is called during
-// wiring in main.go.
+// ServerConfig holds coordinator HTTP server and URL configuration applied
+// when NewServer constructs an instance.
 type ServerConfig struct {
 	Port                string
 	ConsoleURL          string
@@ -22,7 +22,11 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
-	BaseRewards         BaseRewardsConfig
+	// FirstContentDeadlineBase is the ordinary-model fixed term in the
+	// request-absolute first-content budget. Exact-model policy may tighten it;
+	// zero keeps the ordinary coordinator default.
+	FirstContentDeadlineBase time.Duration
+	BaseRewards              BaseRewardsConfig
 	// MediaFetch is the remote media resolution config (mediafetch package).
 	// nil means "read it from the environment in NewServer", which keeps the
 	// bare ServerConfig{} literals used by tests working unchanged. main.go

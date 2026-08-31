@@ -26,7 +26,10 @@ public enum CoordinatorClientCodec {
         // authoritative: missing entries clear daemon-start hashes that could
         // no longer be verified. The advertised set may still be overridden on
         // reconnect; the live snapshot is applied to whichever set we send.
-        let baseModels = models ?? config.models
+        let baseModels = (models ?? config.models).filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: config.runtimeCapabilities)
+        }
         let effectiveModels: [ModelInfo]
         if let modelWeightHashOverrides {
             effectiveModels = baseModels.map { model in
@@ -46,12 +49,13 @@ public enum CoordinatorClientCodec {
             publicKey: config.publicKey,
             encryptedResponseChunks: true,
             walletAddress: config.walletAddress,
-            attestation: config.attestation,
+            attestation: config.registrationAttestation(),
             authToken: config.authToken,
             pythonHash: config.runtimeHashes?.pythonHash,
             runtimeHash: config.runtimeHashes?.runtimeHash,
             templateHashes: config.runtimeHashes?.templateHashes ?? [:],
             privacyCapabilities: privacyCapabilities,
+            runtimeCapabilities: config.runtimeCapabilities.sorted(),
             privateOnly: config.privateOnly,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv,
@@ -239,11 +243,8 @@ public enum CoordinatorClientCodec {
     private static func toolConstraintModelIDs(
         _ models: [ModelInfo]
     ) -> [String] {
-        models.filter {
-            Gemma4ToolConstraintContract.supports(modelType: $0.modelType)
-                && $0.toolConstraintTemplateHash
-                    == Gemma4ToolConstraintContract.pinnedTemplateSHA256
-        }.map(\.id).sorted()
+        models.filter(ToolChoiceEnforcementPolicy.advertisesCapability)
+            .map(\.id).sorted()
     }
 
     public static func encodeOutboundMessage(_ outbound: OutboundMessage) throws -> Data {

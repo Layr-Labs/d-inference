@@ -1,12 +1,14 @@
 package testbed
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -154,6 +156,7 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, DefaultTestModelID(), sc.ModelSpecs[0].ModelID)
 	assert.Equal(t, 1, sc.ModelSpecs[0].NumProviders)
 	assert.Equal(t, 1, sc.NumUsers)
+	assert.Equal(t, ProductionFirstContentDeadlineBase, sc.FirstContentDeadlineBase)
 	assert.Equal(t, 1, sc.TotalProviders())
 	assert.Equal(t, DefaultTestModelID(), sc.PrimaryModelID())
 	assert.Equal(t, []string{DefaultTestModelID()}, sc.AllModelIDs())
@@ -168,6 +171,32 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, 7, multiSpec.TotalProviders())
 	assert.Equal(t, []string{"model-a", "model-b"}, multiSpec.AllModelIDs())
 	assert.Equal(t, "model-a", multiSpec.PrimaryModelID())
+}
+
+func TestRunningCoordinatorUsesProductionFirstContentDeadline(t *testing.T) {
+	suite := NewSuite(DefaultSuiteConfig())
+	suite.Ctx = context.Background()
+	suite.PgStore = NewMemoryStore()
+	if err := suite.startCoordinator(); err != nil {
+		t.Fatalf("start coordinator: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = suite.Coordinator.Stop()
+		suite.Coordinator.Server.Close()
+	})
+
+	const promptTokens = 1_234
+	want := ProductionFirstContentDeadlineBase + promptTokens*time.Millisecond
+	if got := suite.Coordinator.Server.FirstContentDeadline("ordinary-e2e-model", promptTokens); got != want {
+		t.Fatalf("running E2E server deadline = %v, want %v", got, want)
+	}
+	qwenWant := modelpolicy.Qwen3VL30BA3BInstructCoordinatorFirstContentBase +
+		promptTokens*time.Millisecond
+	if got := suite.Coordinator.Server.FirstContentDeadline(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	); got != qwenWant {
+		t.Fatalf("running E2E Qwen3-VL deadline = %v, want %v", got, qwenWant)
+	}
 }
 
 // TestReportedPrivacyCapabilities pins the accessor contract the

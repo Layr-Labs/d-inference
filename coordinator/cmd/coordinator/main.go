@@ -57,27 +57,6 @@ import (
 	ddtracer "gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
-// defaultPrefillKeepaliveInterval is the on-by-default cadence for SSE prefill
-// keepalives. OpenRouter cancels silent upstream requests at approximately 10s,
-// so 5s leaves a full interval of margin while keeping the early-commit blast
-// radius to genuinely long prefills; tune via
-// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
-const defaultPrefillKeepaliveInterval = 5 * time.Second
-
-func parsePrefillKeepaliveInterval(value string) (time.Duration, error) {
-	if value == "" {
-		return defaultPrefillKeepaliveInterval, nil
-	}
-	interval, err := time.ParseDuration(value)
-	if err != nil {
-		return defaultPrefillKeepaliveInterval, fmt.Errorf("parse prefill keepalive interval: %w", err)
-	}
-	if interval < 0 {
-		return defaultPrefillKeepaliveInterval, fmt.Errorf("prefill keepalive interval must not be negative")
-	}
-	return interval, nil
-}
-
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
 	// with trace context injection so logs correlate with APM traces.
@@ -251,6 +230,20 @@ func main() {
 	// NewServer re-read the environment.
 	serverCfg := cfg.ServerConfig
 	serverCfg.MediaFetch = &cfg.MediaFetchCfg
+	// LIVE first-content deadline base — distinct from the shadow evaluator's
+	// base below. Validate and bind it to this Server instance before startup;
+	// production sets 9000ms, while an unset/invalid value keeps the intentional
+	// 5000ms ordinary-unit default. Exact model policy may tighten this base but
+	// never loosen a lower operator value. Every request adds 1ms per prompt token.
+	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
+		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
+			serverCfg.FirstContentDeadlineBase = time.Duration(base) * time.Millisecond
+			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
+		} else {
+			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
+				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
+		}
+	}
 	srv := api.NewServer(reg, st, serverCfg, logger)
 	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
@@ -418,8 +411,9 @@ func main() {
 	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
 	// (serve the best-available provider when one passes every routing/capacity
 	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
-	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
-	// provider-measured, so the hard gate over-rejected serveable requests.
+	// exceeds the pinned request-local model deadline. The estimate's prefill
+	// term is not provider-measured, so the hard gate over-rejected serveable
+	// requests.
 	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
 		srv.SetTTFTHardReject(true)
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
@@ -463,10 +457,11 @@ func main() {
 	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
 	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
 	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
-	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
-	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
-	//     ~10s+1ms/token; the live consumer.go ttftDeadline (5s base) is left
-	//     untouched. Used ONLY by the shadow evaluator.
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the
+	//     ordinary-model SLA base the shadow evaluator gates against. The
+	//     standard OpenRouter SLA is ~10s+1ms/token; exact-model policy can only
+	//     tighten that base. The instance-owned live first-content deadline
+	//     configured above is independent. Used ONLY by the shadow evaluator.
 	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
 	//     off => no evaluation; shadow/enforce => compute would_shed +
 	//     would_redirect_to_idle and emit routing.ttft_admission /
@@ -488,21 +483,6 @@ func main() {
 			logger.Info("TTFT shadow deadline base configured via EIGENINFERENCE_TTFT_DEADLINE_BASE_MS", "base_ms", base)
 		} else {
 			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_DEADLINE_BASE_MS; keeping default ~10s",
-				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
-		}
-	}
-	// LIVE TTFT deadline base — the HARD_REJECT cutoff. Distinct from the SHADOW
-	// base above: this sets consumer.go's ttftDeadline = base + 1ms*prompt_tokens,
-	// which drives the live preflight shed, the scheduler MaxTTFTMs candidate
-	// ceiling, and the queued-request ceiling. Default 5000 (5s) is unchanged;
-	// raising it (e.g. 9000) admits more long-prompt requests instead of 429ing
-	// them, at the cost of higher tail TTFT. Reuses the [1s,120s] validation.
-	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
-		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
-			api.SetTTFTLiveDeadlineBaseMs(base)
-			logger.Warn("LIVE TTFT deadline base OVERRIDDEN via EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (changes the HARD_REJECT cutoff)", "base_ms", base)
-		} else {
-			logger.Warn("invalid or out-of-range EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS; keeping default 5000",
 				"value", v, "min_ms", minTTFTDeadlineBaseMs, "max_ms", maxTTFTDeadlineBaseMs)
 		}
 	}
@@ -606,25 +586,6 @@ func main() {
 		} else {
 			logger.Warn("invalid EIGENINFERENCE_PROMPT_CALIBRATION; using default", "value", v)
 		}
-	}
-
-	// SSE keepalives during long prefill. ON by default at a 5s cadence, safely
-	// below OpenRouter's observed ~10s silent-upstream timeout. The first keepalive
-	// fires one interval in, so a STREAMING request that produces its first token
-	// quickly keeps clean deferred-commit / invisible-failover — only genuinely
-	// long prefills commit HTTP 200 early and emit ": keepalive" comments. Override
-	// the cadence (or set 0 to disable) via
-	// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration).
-	prefillKeepaliveValue := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL")
-	prefillKeepalive, err := parsePrefillKeepaliveInterval(prefillKeepaliveValue)
-	if err != nil {
-		logger.Warn("invalid EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL; using default (want a Go duration like 5s, or 0 to disable)", "value", prefillKeepaliveValue, "default", defaultPrefillKeepaliveInterval.String())
-	}
-	srv.SetPrefillKeepaliveInterval(prefillKeepalive)
-	if prefillKeepalive > 0 {
-		logger.Info("prefill SSE keepalives enabled", "interval", prefillKeepalive.String())
-	} else {
-		logger.Info("prefill SSE keepalives disabled")
 	}
 
 	// Load runtime template manifest from environment variable (optional override).
@@ -976,9 +937,9 @@ const (
 	// default (0 = term off) rather than silently distorting the shadow estimate.
 	maxTTFTOccupancyAlpha = 1e6
 	// minTTFTDeadlineBaseMs / maxTTFTDeadlineBaseMs bound
-	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. Below ~1s no first-token SLA is
-	// realistic; above ~120s the shadow gate is meaningless. The verified
-	// OpenRouter base is ~10s (telemetry-db findings §2).
+	// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS and
+	// EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS. Below ~1s no first-token SLA
+	// is realistic; above ~120s either gate is operationally meaningless.
 	minTTFTDeadlineBaseMs = 1000.0
 	maxTTFTDeadlineBaseMs = 120000.0
 )
@@ -1001,11 +962,11 @@ func validateTTFTOccupancyAlpha(raw string) (float64, bool) {
 	return v, true
 }
 
-// validateTTFTDeadlineBaseMs parses and range-checks
-// EIGENINFERENCE_TTFT_DEADLINE_BASE_MS. It returns (baseMs, ok): ok=false means
-// the raw value was unparseable, non-finite, or outside
-// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller should keep the
-// verified ~10s default.
+// validateTTFTDeadlineBaseMs parses and range-checks either shadow or live
+// first-content deadline base. It returns (baseMs, ok): ok=false means the raw
+// value was unparseable, non-finite, or outside
+// [minTTFTDeadlineBaseMs, maxTTFTDeadlineBaseMs], and the caller keeps its own
+// default.
 func validateTTFTDeadlineBaseMs(raw string) (float64, bool) {
 	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {

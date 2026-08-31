@@ -55,6 +55,10 @@ struct SpecDecArtifact: Sendable, Equatable {
     let directory: URL
     let source: SpecDecArtifactSource
     let revision: String
+    /// Immutable upstream artifact provenance when local staging intentionally
+    /// gives the load-security revision a content-derived `local-*` identity.
+    /// This field is diagnostic only and never replaces local digest equality.
+    let sourceRevision: String?
     let artifactBytes: UInt64
     let residentBytes: UInt64
     let manifestSHA256: String?
@@ -72,10 +76,20 @@ struct SpecDecArtifact: Sendable, Equatable {
     /// verify them. Local operator overrides intentionally have no catalog trust.
     let catalogReference: SpecDecArtifactReference?
 
+    /// Bytes this assistant adds ON TOP of the target's scanner-derived
+    /// weight estimate. Inline assistants live in the target checkpoint's
+    /// own indexed shards, so `ModelScanner` already counted their payload
+    /// in `sizeBytes` → `estimatedMemoryGb`; charging `residentBytes` again
+    /// double-counts one assistant footprint and can push an
+    /// otherwise-fitting target+assistant into
+    /// `assistant_memory_unavailable` near the cap.
+    var additionalWeightBytes: UInt64 { source == .inline ? 0 : residentBytes }
+
     init(
         directory: URL,
         source: SpecDecArtifactSource,
         revision: String,
+        sourceRevision: String? = nil,
         artifactBytes: UInt64,
         residentBytes: UInt64,
         manifestSHA256: String?,
@@ -87,6 +101,7 @@ struct SpecDecArtifact: Sendable, Equatable {
         self.directory = directory
         self.source = source
         self.revision = revision
+        self.sourceRevision = sourceRevision
         self.artifactBytes = artifactBytes
         self.residentBytes = residentBytes
         self.manifestSHA256 = manifestSHA256
@@ -94,6 +109,21 @@ struct SpecDecArtifact: Sendable, Equatable {
         self.localConfigSHA256 = localConfigSHA256
         self.inlineIndexSHA256 = inlineIndexSHA256
         self.catalogReference = catalogReference
+    }
+
+    func recordingSourceRevision(_ sourceRevision: String) -> Self {
+        Self(
+            directory: directory,
+            source: source,
+            revision: revision,
+            sourceRevision: sourceRevision,
+            artifactBytes: artifactBytes,
+            residentBytes: residentBytes,
+            manifestSHA256: manifestSHA256,
+            localWeightSHA256: localWeightSHA256,
+            localConfigSHA256: localConfigSHA256,
+            inlineIndexSHA256: inlineIndexSHA256,
+            catalogReference: catalogReference)
     }
 }
 
@@ -119,33 +149,55 @@ struct MTPActivationStatus: Sendable, Equatable {
     let reason: MTPFallbackReason?
     let source: SpecDecArtifactSource?
     let revision: String?
+    let sourceRevision: String?
     let artifactBytes: UInt64
     let assistantBytes: UInt64
+
+    init(
+        configured: Bool,
+        active: Bool,
+        reason: MTPFallbackReason?,
+        source: SpecDecArtifactSource?,
+        revision: String?,
+        sourceRevision: String? = nil,
+        artifactBytes: UInt64,
+        assistantBytes: UInt64
+    ) {
+        self.configured = configured
+        self.active = active
+        self.reason = reason
+        self.source = source
+        self.revision = revision
+        self.sourceRevision = sourceRevision
+        self.artifactBytes = artifactBytes
+        self.assistantBytes = assistantBytes
+    }
 
     static func disabled(_ reason: MTPFallbackReason, configured: Bool) -> Self {
         Self(
             configured: configured, active: false, reason: reason, source: nil,
-            revision: nil, artifactBytes: 0, assistantBytes: 0)
+            revision: nil, sourceRevision: nil, artifactBytes: 0, assistantBytes: 0)
     }
 
     static func candidate(_ artifact: SpecDecArtifact) -> Self {
         Self(
             configured: true, active: false, reason: nil, source: artifact.source,
-            revision: artifact.revision, artifactBytes: artifact.artifactBytes,
-            assistantBytes: 0)
+            revision: artifact.revision, sourceRevision: artifact.sourceRevision,
+            artifactBytes: artifact.artifactBytes, assistantBytes: 0)
     }
 
     func activated(assistantBytes: UInt64) -> Self {
         Self(
             configured: configured, active: true, reason: nil, source: source,
-            revision: revision, artifactBytes: artifactBytes,
-            assistantBytes: assistantBytes)
+            revision: revision, sourceRevision: sourceRevision,
+            artifactBytes: artifactBytes, assistantBytes: assistantBytes)
     }
 
     func fallingBack(_ reason: MTPFallbackReason) -> Self {
         Self(
             configured: configured, active: false, reason: reason, source: source,
-            revision: revision, artifactBytes: artifactBytes, assistantBytes: 0)
+            revision: revision, sourceRevision: sourceRevision,
+            artifactBytes: artifactBytes, assistantBytes: 0)
     }
 }
 

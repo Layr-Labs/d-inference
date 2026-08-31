@@ -25,7 +25,9 @@ extension ProviderLoop {
     internal func makePrefetchCoordinator() -> ModelPrefetchCoordinator {
         let me = self
         let prefetcher: any ModelPrefetcher =
-            CatalogModelPrefetcher(coordinatorURL: loopConfig.coordinatorURL)
+            CatalogModelPrefetcher(
+                coordinatorURL: loopConfig.coordinatorURL,
+                runtimeCapabilities: loopConfig.runtimeCapabilities)
         return ModelPrefetchCoordinator(
             prefetcher: prefetcher,
             preCheck: { modelId in await me.prefetchPreCheck(modelId: modelId) },
@@ -38,6 +40,12 @@ extension ProviderLoop {
     /// `.started` status is queued; the download runs on a low-priority task and
     /// never consumes a GPU slot or blocks inference.
     func handlePrefetchModelRequest(modelId: String, priority: Int, send: SendHandle) async {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        else {
+            rejectPermanentlyIneligiblePrefetch(modelId: modelId, send: send)
+            return
+        }
         guard let prefetchCoordinator else {
             // Defensive: prefetchCoordinator is built in run() before the event
             // loop starts, so this should be unreachable on the live path.
@@ -62,11 +70,13 @@ extension ProviderLoop {
         // a no-op (handleDesiredPrefetchFailure guards on the desired set).
         let sink = RetryNotifyingPrefetchSink(
             base: SendHandlePrefetchSink(send: send),
-            onFailed: { [weak self] failedModelId in
+            onFailed: { [weak self] failedModelId, error in
                 guard let self else { return }
-                Task { await self.handleDesiredPrefetchFailure(modelId: failedModelId, send: send) }
-            }
-        )
+                Task {
+                    await self.handleDesiredPrefetchFailure(
+                        modelId: failedModelId, error: error, send: send)
+                }
+            })
         await prefetchCoordinator.handlePrefetch(
             modelId: modelId,
             priority: priority,
@@ -74,14 +84,19 @@ extension ProviderLoop {
         )
     }
 
-    /// React to a terminal `.failed` prefetch status for a build. If the build
-    /// is still a desired target (and not stale), schedule a single
-    /// bounded-backoff retry — the resume-aware downloader continues from the
-    /// bytes already on disk, so retries are cheap. After the delay budget is
-    /// exhausted the provider stays on its current build until the next
-    /// desired_models push (operator re-POST or reconnect), which resets the
-    /// budget and retries immediately via reconcile.
-    private func handleDesiredPrefetchFailure(modelId: String, send: SendHandle) async {
+    /// React to a terminal `.failed` prefetch status for a build. Capability
+    /// mismatches are permanent and clear desired/retry state. Other failures
+    /// retain the bounded transient retry policy.
+    private func handleDesiredPrefetchFailure(
+        modelId: String, error: String?, send: SendHandle
+    ) async {
+        if error?.contains(ModelRuntimeIneligibleError.permanentFailureMarker) == true {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            desiredPrefetchTargets.remove(modelId)
+            staleDesiredPrefetches.insert(modelId)
+            clearDesiredPrefetchRetryState(for: modelId)
+            return
+        }
         guard !isShuttingDown,
               desiredPrefetchTargets.contains(modelId),
               !staleDesiredPrefetches.contains(modelId),
@@ -123,6 +138,25 @@ extension ProviderLoop {
         desiredPrefetchRetryTasks.removeValue(forKey: modelId)?.cancel()
         desiredPrefetchRetryAttempts.removeValue(forKey: modelId)
     }
+    private func rejectPermanentlyIneligiblePrefetch(
+        modelId: String, send: SendHandle
+    ) {
+        desiredSwapDrop.removeValue(forKey: modelId)
+        desiredPrefetchTargets.remove(modelId)
+        staleDesiredPrefetches.insert(modelId)
+        clearDesiredPrefetchRetryState(for: modelId)
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        let message = ModelRuntimeIneligibleError(
+            eligibility: eligibility).localizedDescription
+        logger.error(message)
+        send.send(.prefetchModelStatus(
+            modelId: modelId,
+            status: .failed,
+            bytesDone: 0,
+            bytesTotal: 0,
+            error: message))
+    }
 
     /// Pre-check used by the prefetch coordinator to short-circuit when a build
     /// is already available AND its integrity is already established. We only
@@ -157,6 +191,17 @@ extension ProviderLoop {
     /// utility priority) so hashing a multi-GB build never blocks inference or
     /// the event loop; only the small dictionary writes happen on the actor.
     func applyVerifiedPrefetch(modelId: String) async {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        else {
+            desiredSwapDrop.removeValue(forKey: modelId)
+            desiredPrefetchTargets.remove(modelId)
+            staleDesiredPrefetches.insert(modelId)
+            clearDesiredPrefetchRetryState(for: modelId)
+            logger.error(
+                "Ignoring verified prefetch for permanently ineligible model \(modelId)")
+            return
+        }
         if staleDesiredPrefetches.remove(modelId) != nil {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.info("Ignoring verified prefetch for stale desired build \(modelId); alias target changed before verification completed")
@@ -258,7 +303,11 @@ extension ProviderLoop {
     /// build is dropped; missing → background-prefetch it (applyVerifiedPrefetch
     /// advertises it + drops the previous build once verified).
     internal func reconcileDesiredModels(_ entries: [CoordinatorMessage.DesiredModelEntry], send: SendHandle) async {
-        let currentDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        let requestedDesired = Set(entries.map(\.desiredBuild).filter { !$0.isEmpty })
+        let currentDesired = Set(requestedDesired.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0, available: loopConfig.runtimeCapabilities)
+        })
         for stale in desiredPrefetchTargets.subtracting(currentDesired) {
             desiredSwapDrop.removeValue(forKey: stale)
             staleDesiredPrefetches.insert(stale)
@@ -269,6 +318,12 @@ extension ProviderLoop {
         for entry in entries {
             let desired = entry.desiredBuild
             guard !desired.isEmpty else { continue }
+            guard ModelRuntimeRequirements.isEligible(
+                modelID: desired, available: loopConfig.runtimeCapabilities)
+            else {
+                rejectPermanentlyIneligiblePrefetch(modelId: desired, send: send)
+                continue
+            }
             staleDesiredPrefetches.remove(desired)
             // A fresh declarative push resets the retry budget (and supersedes
             // any pending backoff timer — the loop below re-prefetches a missing

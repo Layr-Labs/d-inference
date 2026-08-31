@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import MLXLMServer
 import Testing
 @testable import ProviderCore
@@ -72,6 +73,46 @@ func multiModelEngineDispatchThrowsForMissingModel() async throws {
     } catch let error as MultiModelBatchSchedulerEngineError {
         #expect(error == .modelNotLoaded("missing/model"))
     }
+}
+
+@Test("deadline expiry after model reservation releases the pin and never submits")
+func multiModelDeadlineAfterReservationReleasesWithoutSubmit() async throws {
+    let gate = MultiModelDeadlineGate()
+    let releaseCounter = Counter()
+    let servingEngine = MultiModelDeadlineEngine()
+    let bridge = EngineV2Bridge(
+        engine: servingEngine,
+        modelId: "deadline-model",
+        tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()),
+        eosTokenIds: [])
+    let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
+        tokenizer: TokenizerHandle(MultiModelDeadlineTokenizer()),
+        engineV2Bridge: bridge)
+    let deadline = FirstContentDeadline(relativeBudgetMilliseconds: 10_000)
+    let engine = MultiModelBatchSchedulerEngine(
+        registryProvider: { @Sendable in ["deadline-model": entry] },
+        ensureLoaded: { @Sendable _ in },
+        reserveModel: { @Sendable _ in await gate.wait() },
+        releaseModel: { @Sendable _ in await releaseCounter.increment() },
+        firstContentDeadline: deadline)
+    let request = OpenAIChatCompletionRequest(
+        model: "deadline-model",
+        messages: [.init(role: .user, content: .text("hi"))])
+
+    let submission = Task {
+        try await engine.streamChatCompletion(request: request)
+    }
+    #expect(await gate.waitUntilEntered(timeout: .seconds(30)))
+    let clock = ContinuousClock()
+    try await clock.sleep(
+        until: deadline.instant.advanced(by: .milliseconds(1)))
+    await gate.release()
+
+    await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+        _ = try await submission.value
+    }
+    #expect(await releaseCounter.value == 1)
+    #expect(servingEngine.submissionCount == 0)
 }
 
 @Test("tokenize without a loaded model throws")
@@ -199,9 +240,9 @@ func templateContextForwardsReasoningEnabled() {
         reasoning: .init(enabled: false))
 
     let enabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: enabled, reasoningEffort: nil)
+        for: enabled, controls: .init())
     let disabledContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: disabled, reasoningEffort: nil)
+        for: disabled, controls: .init())
 
     #expect(enabledContext?["enable_thinking"] as? Bool == true)
     #expect(disabledContext?["enable_thinking"] as? Bool == false)
@@ -215,10 +256,97 @@ func templateContextComposesReasoningControls() {
         reasoning: .init(enabled: true))
 
     let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-        for: request, reasoningEffort: "high")
+        for: request, controls: .init(reasoningEffort: "high"))
 
     #expect(context?["enable_thinking"] as? Bool == true)
     #expect(context?["reasoning_effort"] as? String == "high")
+}
+
+@Test("GPT-OSS high reasoning effort is downgraded to medium")
+func templateContextDowngradesGPTOSSHighReasoningEffort() {
+    let request = OpenAIChatCompletionRequest(
+        model: "openai/gpt-oss-20b",
+        messages: [.init(role: .user, content: .text("hi"))])
+
+    let high = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, controls: .init(reasoningEffort: "high"))
+    let medium = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, controls: .init(reasoningEffort: "medium"))
+    let low = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, controls: .init(reasoningEffort: "low"))
+    let opaqueAlias = OpenAIChatCompletionRequest(
+        model: "opaque-alias",
+        messages: [.init(role: .user, content: .text("hi"))])
+    let identifiedByModelType = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: opaqueAlias,
+        controls: .init(reasoningEffort: "high"),
+        modelType: "gpt_oss")
+
+    #expect(high?["reasoning_effort"] as? String == "medium")
+    #expect(medium?["reasoning_effort"] as? String == "medium")
+    #expect(low?["reasoning_effort"] as? String == "low")
+    #expect(identifiedByModelType?["reasoning_effort"] as? String == "medium")
+}
+
+@Test("nested reasoning.enabled wins over raw-body template controls")
+func templateContextUsesReviewedNestedPrecedence() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("hi"))],
+        reasoning: .init(enabled: false))
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(
+            reasoningEffort: "high",
+            enableThinking: true,
+            preserveThinking: true),
+        hasMedia: true)
+
+    #expect(context?["enable_thinking"] as? Bool == false)
+    #expect(context?["reasoning_effort"] as? String == "high")
+    #expect(context?["preserve_thinking"] as? Bool == true)
+}
+
+@Test("forced Qwen tool choices render a tool-only prompt")
+func templateContextDisablesThinkingForForcedQwenTools() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("call the tool"))],
+        reasoning: .init(enabled: true))
+
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(
+            reasoningEffort: "high",
+            enableThinking: true,
+            preserveThinking: true),
+        modelType: "qwen3_5",
+        requiresToolCall: true)
+
+    #expect(context?["enable_thinking"] as? Bool == false)
+    #expect(context?["reasoning_effort"] as? String == "high")
+    #expect(context?["preserve_thinking"] as? Bool == true)
+}
+
+@Test("none off and zero disable; minimal remains an explicit effort")
+func templateContextNormalizesOnlyReviewedDisableSpellings() {
+    let request = OpenAIChatCompletionRequest(
+        model: "EigenLabs/Qwen3.8-27B-4bit",
+        messages: [.init(role: .user, content: .text("hi"))])
+    for value in ["none", " OFF ", "0"] {
+        let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+            for: request,
+            controls: .init(reasoningEffort: value),
+            hasMedia: true)
+        #expect(context?["enable_thinking"] as? Bool == false)
+    }
+
+    let minimal = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request,
+        controls: .init(reasoningEffort: "minimal"),
+        hasMedia: true)
+    #expect(minimal?["reasoning_effort"] as? String == "minimal")
+    #expect(minimal?["enable_thinking"] == nil)
 }
 
 // MARK: - Engine error mapping (P2 #6)
@@ -423,4 +551,71 @@ func nonHarmonyEOSIsUnchanged() {
 private actor Counter {
     private(set) var value: Int = 0
     func increment() { value += 1 }
+}
+
+private actor MultiModelDeadlineGate {
+    private var entered = false
+    private var released = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        entered = true
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func waitUntilEntered(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !entered, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return entered
+    }
+
+    func release() {
+        released = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending {
+            waiter.resume()
+        }
+    }
+}
+
+private final class MultiModelDeadlineEngine: CBv2Engine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _submissionCount = 0
+
+    var submissionCount: Int { lock.withLock { _submissionCount } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        lock.withLock { _submissionCount += 1 }
+        return AsyncStream { $0.finish() }
+    }
+
+    func cancel(_ id: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot {
+        .init(
+            activeRequests: 0,
+            waitingRequests: 0,
+            kvBytesInUse: 0,
+            kvBytesCapacity: 0,
+            activeTokens: 0)
+    }
+    func shutdown() async {}
+}
+
+private struct MultiModelDeadlineTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [1] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "x" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [1, 2, 3] }
 }

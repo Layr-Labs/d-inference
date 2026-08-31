@@ -32,7 +32,7 @@ func deliverTypedError(t *testing.T, srv *Server, provider *registry.Provider, m
 		RequestID:  requestID,
 		ProviderID: provider.ID,
 		Model:      model,
-		ChunkCh:    make(chan string, 1),
+		ChunkCh:    make(chan registry.ProviderChunk, 1),
 		CompleteCh: make(chan protocol.UsageInfo, 1),
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 	}

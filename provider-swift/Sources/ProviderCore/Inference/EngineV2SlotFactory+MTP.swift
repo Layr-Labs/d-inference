@@ -52,13 +52,19 @@ extension EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void
     ) throws -> any LanguageModel {
         guard isVLM else { return snapshot.model }
-        if snapshot.model is MLXVLM.Gemma4 {
+        if snapshot.model is MLXVLM.Gemma4 || snapshot.model is MLXVLM.Qwen3VL {
             do {
                 let target = try EngineV2Factory.directServingModel(
                     model: snapshot.model, isVLM: true)
-                logInfo(
-                    "engine_v2: \(modelId) using the Gemma 4 VLM-owned text tower "
-                        + "directly (shared identity and residency)")
+                if snapshot.model is MLXVLM.Qwen3VL {
+                    logInfo(
+                        "engine_v2: \(modelId) using the Qwen3-VL wrapper directly "
+                            + "(shared language and vision identity)")
+                } else {
+                    logInfo(
+                        "engine_v2: \(modelId) using the Gemma 4 VLM-owned text tower "
+                            + "directly (shared identity and residency)")
+                }
                 return target
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
@@ -69,7 +75,7 @@ extension EngineV2SlotFactory {
                 throw error
             }
         }
-        guard snapshot.model is MLXVLM.Qwen35MoE else {
+        guard snapshot.model is MLXVLM.Qwen35 else {
             let error = EngineV2VLMTextExtractionError.unsupportedWrapper(
                 String(describing: type(of: snapshot.model)))
             EngineV2Factory.emitRefusalTelemetry(
@@ -109,7 +115,7 @@ extension EngineV2SlotFactory {
         modelDirectory: URL? = nil,
         container: ModelContainer,
         specDecPreparation: SpecDecPreparation,
-        assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
+        assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }

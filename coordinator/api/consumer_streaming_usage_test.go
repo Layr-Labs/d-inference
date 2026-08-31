@@ -59,20 +59,20 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:  "job-1",
 		Model:      "gpt-oss-20b",
-		ChunkCh:    make(chan string, 8),
+		ChunkCh:    make(chan registry.ProviderChunk, 8),
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		CompleteCh: make(chan protocol.UsageInfo, 1),
 	}
 	// Provider streams a content delta, then the include_usage chunk WITHOUT a
 	// reasoning detail, then closes and reports the authoritative split via CompleteCh.
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`}
 	close(pr.ChunkCh)
 	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 50, ReasoningTokens: 8}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -95,13 +95,13 @@ func TestStreamingFramesCannotForwardUnvalidatedCachedTokens(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:  "cache-stream",
 		Model:      "model",
-		ChunkCh:    make(chan string, 4),
+		ChunkCh:    make(chan registry.ProviderChunk, 4),
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		CompleteCh: make(chan protocol.UsageInfo, 1),
 	}
-	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"},"finish_reason":null}],"usage":{"prompt_tokens_details":{"cached\u005ftokens":999,"audio_tokens":3}}}`
-	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens_details":{"\u0063ached_tokens":888,"audio_tokens":4}}}`
-	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_\u0074okens":777,"audio_tokens":5}}}`
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"},"finish_reason":null}],"usage":{"prompt_tokens_details":{"cached\u005ftokens":999,"audio_tokens":3}}}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens_details":{"\u0063ached_tokens":888,"audio_tokens":4}}}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_\u0074okens":777,"audio_tokens":5}}}`}
 	close(pr.ChunkCh)
 	pr.CompleteCh <- protocol.UsageInfo{
 		PromptTokens: 10, CompletionTokens: 2,
@@ -110,7 +110,7 @@ func TestStreamingFramesCannotForwardUnvalidatedCachedTokens(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
 	body := rec.Body.String()
 	for _, untrusted := range []string{"999", "888", "777"} {
 		if strings.Contains(body, untrusted) {
@@ -184,7 +184,7 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 	pr := &registry.PendingRequest{
 		RequestID:  "job-1",
 		Model:      "gpt-oss-20b",
-		ChunkCh:    make(chan string, 1),
+		ChunkCh:    make(chan registry.ProviderChunk, 1),
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 		CompleteCh: make(chan protocol.UsageInfo, 1),
 	}
@@ -197,7 +197,7 @@ func TestStreamingChatUsageOnlyFirstChunk(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk}, false)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, []string{firstChunk})
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"reasoning_tokens":8`) {
@@ -229,18 +229,18 @@ func TestStreamingChatSingleDoneSignatureBeforeIt(t *testing.T) {
 		Model:        "gpt-oss-20b",
 		SESignature:  "sig-abc",
 		ResponseHash: "hash-def",
-		ChunkCh:      make(chan string, 8),
+		ChunkCh:      make(chan registry.ProviderChunk, 8),
 		ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
 		CompleteCh:   make(chan protocol.UsageInfo, 1),
 	}
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
-	pr.ChunkCh <- "data: [DONE]" // the provider's own terminator — must be swallowed
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: [DONE]"} // the provider's own terminator — must be swallowed
 	close(pr.ChunkCh)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {
@@ -288,19 +288,19 @@ func TestStreamingChatSignatureRidesUsageChunk(t *testing.T) {
 		Model:        "gpt-oss-20b",
 		SESignature:  "sig-abc",
 		ResponseHash: "hash-def",
-		ChunkCh:      make(chan string, 8),
+		ChunkCh:      make(chan registry.ProviderChunk, 8),
 		ErrorCh:      make(chan protocol.InferenceErrorMessage, 1),
 		CompleteCh:   make(chan protocol.UsageInfo, 1),
 	}
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`
-	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`
-	pr.ChunkCh <- "data: [DONE]"
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-oss-20b","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":50,"total_tokens":60}}`}
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: [DONE]"}
 	close(pr.ChunkCh)
 	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 10, CompletionTokens: 50, ReasoningTokens: 8}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
-	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil)
 
 	body := rec.Body.String()
 	if got := strings.Count(body, "data: [DONE]"); got != 1 {

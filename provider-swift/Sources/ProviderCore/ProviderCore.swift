@@ -240,5 +240,20 @@ public enum ProviderCore {
     // 0.8.10 passes retained Gemma latch variables before exec in installer,
     // self-update, and paged-preflight runtime-smoke children so eager MLX
     // initialization cannot latch safe R1 off before validation runs.
-    public static let version = "0.8.10"
+    // 0.8.11 conserves the first-content deadline end to end, rejects
+    // unreachable work before the client clock expires, and defaults CBv2
+    // partial-prefill scheduling to FCFS with an explicit cap-zero rollback.
+    // 0.8.12 makes atomic first-token deadline admission the secure provider
+    // default for eligible text requests. Exact
+    // DARKBLOOM_PREFILL_DEADLINE_MODE=off is the direct forecast rollback;
+    // FCFS cap zero restores unlimited interleave and necessarily bypasses the
+    // bounded forecast while preserving hard absolute expiry.
+    // 0.8.13 serves Qwen image/video requests through the bounded vision path,
+    // including single-decode media ingest and first-content-safe video caps.
+    // 0.8.14 adds production EngineV2 support for Qwen3-VL-MoE and defaults
+    // verified inline Qwen MTP on through model-aware automatic policy.
+    // 0.8.15 serves the exact EigenLabs Qwen3.8 dense VLM on M5/NAX,
+    // preserves full-grid API video, and defaults its separately verified MTP
+    // artifact on with explicit config and environment rollback controls.
+    public static let version = "0.8.15"
 }

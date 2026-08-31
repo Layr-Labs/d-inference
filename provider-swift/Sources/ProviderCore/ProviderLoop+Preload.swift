@@ -27,6 +27,19 @@ extension ProviderLoop {
     /// `succeeded` -- the coordinator can use this as an idempotent
     /// "ensure warm" call.
     internal func handleLoadModelRequest(modelId: String, send: SendHandle) {
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
+        guard eligibility.isEligible else {
+            preloadTasks.removeValue(forKey: modelId)?.cancel()
+            preloadTaskIds.removeValue(forKey: modelId)
+            preloadStatusSubscribers.removeValue(forKey: modelId)
+            send.send(.loadModelStatus(
+                modelId: modelId,
+                status: .failed,
+                error: ModelRuntimeIneligibleError(
+                    eligibility: eligibility).localizedDescription))
+            return
+        }
         if isShuttingDown {
             send.send(.loadModelStatus(
                 modelId: modelId,

@@ -3,8 +3,8 @@ package api
 // request_introspection.go holds helpers for introspecting and lightly
 // reshaping inbound inference request bodies before routing/dispatch:
 // token and cost estimation (routing vs billing), media/tool detection,
-// remote media-URL rejection and
-// provider-serial allowlist parsing. Most are pure helpers with no Server
+// remote media-URL rejection, and private routing-field stripping. Most are
+// pure helpers with no Server
 // state; the pre-dispatch media-URL rejection (rejectRemoteMediaURLs) hangs
 // off *Server only to record rejection telemetry. Split out of consumer.go
 // to keep the request-handling orchestrator thin.
@@ -19,7 +19,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -30,7 +29,9 @@ import (
 // bounded number of soft tokens (Gemma 4 caps around a few hundred per image)
 // regardless of the base64 byte length, so counting a `data:` URI as text
 // inflates the estimate by orders of magnitude — distorting routing admission and
-// over-reserving balance. These flat per-media costs keep both sane.
+// over-reserving balance. Qwen's serving cap (8 frames, 512² pixels, temporal
+// patch 2, spatial merge 2) is at most ~1024 video soft tokens, so 1500 remains
+// conservative. These flat per-media costs keep both sane.
 const (
 	imagePromptTokenCost = 300
 	videoPromptTokenCost = 1500
@@ -505,51 +506,9 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 	return 256
 }
 
-func parseProviderSerialAllowlist(parsed map[string]any) ([]string, bool, error) {
-	var rawValues []any
-	provided := false
-	for _, key := range []string{"provider_serial", "provider_serials"} {
-		v, ok := parsed[key]
-		if !ok {
-			continue
-		}
-		provided = true
-		switch x := v.(type) {
-		case string:
-			rawValues = append(rawValues, x)
-		case []any:
-			rawValues = append(rawValues, x...)
-		default:
-			return nil, true, fmt.Errorf("%s must be a string or array of strings", key)
-		}
-	}
-	if !provided {
-		return nil, false, nil
-	}
-
-	seen := make(map[string]struct{}, len(rawValues))
-	ids := make([]string, 0, len(rawValues))
-	for _, raw := range rawValues {
-		id, ok := raw.(string)
-		if !ok {
-			return nil, true, fmt.Errorf("provider_serials must contain only strings")
-		}
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if _, exists := seen[id]; exists {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return nil, true, fmt.Errorf("provider_serials must include at least one provider serial")
-	}
-	return ids, true, nil
-}
-
+// stripProviderRoutingFields drops the retired consumer-side serial allowlist.
+// Stable hardware identity is coordinator-private and must never be forwarded
+// to a provider in the encrypted inference payload.
 func stripProviderRoutingFields(parsed map[string]any) bool {
 	changed := false
 	for _, key := range []string{"provider_serial", "provider_serials"} {

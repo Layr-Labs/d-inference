@@ -102,7 +102,7 @@ struct SendHandlePrefetchSink: PrefetchStatusSink {
 /// next coordinator push — the resume-aware downloader makes a retry cheap).
 struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
     let base: any PrefetchStatusSink
-    let onFailed: @Sendable (String) -> Void
+    let onFailed: @Sendable (String, String?) -> Void
     func emit(
         modelId: String,
         status: ProviderMessage.PrefetchModelStatus.Status,
@@ -112,7 +112,7 @@ struct RetryNotifyingPrefetchSink: PrefetchStatusSink {
     ) {
         base.emit(modelId: modelId, status: status, bytesDone: bytesDone, bytesTotal: bytesTotal, error: error)
         if status == .failed {
-            onFailed(modelId)
+            onFailed(modelId, error)
         }
     }
 }
@@ -506,7 +506,14 @@ public actor ProviderLoop {
         // `ensureModelLoaded` — never a silent degrade.
         var advertised: [String: ModelInfo] = [:]
         var unsupportedModelIds: [String] = []
+        var ineligibleModelIds: [String] = []
         for model in config.models where advertised[model.id] == nil {
+            guard ModelRuntimeRequirements.isEligible(
+                modelID: model.id, available: config.runtimeCapabilities)
+            else {
+                ineligibleModelIds.append(model.id)
+                continue
+            }
             if EngineV2SupportedModels.isSupported(modelType: model.modelType) {
                 advertised[model.id] = model
             } else {
@@ -554,6 +561,11 @@ public actor ProviderLoop {
                 "Not advertising \(unsupportedModelIds.count) model(s) without a CBv2 adapter "
                     + "(v0.7.5 serves everything through engine v2): "
                     + unsupportedModelIds.sorted().joined(separator: ", "))
+        }
+        if !ineligibleModelIds.isEmpty {
+            logger.error(
+                "Not advertising permanently ineligible model(s): "
+                    + ineligibleModelIds.sorted().joined(separator: ", "))
         }
     }
 

@@ -33,7 +33,7 @@ struct ASCIIConstraintTokenizer: MLXLMCommon.Tokenizer {
     ) throws -> [Int] { [] }
 }
 
-@Suite("Gemma CBv2 tool constraints")
+@Suite("Gemma CBv2 tool constraints", .serialized)
 struct GemmaToolConstraintTests {
     static let realGemmaModelID =
         "mlx-community/gemma-4-26B-A4B-it-qat-4bit"

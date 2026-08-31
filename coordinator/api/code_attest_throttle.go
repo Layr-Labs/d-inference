@@ -52,11 +52,12 @@ type codeAttestStore interface {
 //     (within budget) instead of being pinned to the 20-minute background budget,
 //     and jitter de-synchronises fleet-wide reconnects (e.g. post-deploy).
 type codeAttestThrottle struct {
-	mu              sync.Mutex
-	attested        map[string]codeAttestRecord      // seKey -> last successful attestation (reuse cache)
-	lastPush        map[string]time.Time             // seKey -> last push (device-level rate limit)
-	lastBudgetClear map[string]time.Time             // seKey -> last token-rotation budget reset (anti-DoS floor)
-	outstanding     map[string][]codeAttestChallenge // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
+	mu               sync.Mutex
+	attested         map[string]codeAttestRecord          // seKey -> last successful attestation (reuse cache)
+	lastPush         map[string]time.Time                 // seKey -> last push (device-level rate limit)
+	lastBudgetClear  map[string]time.Time                 // seKey -> last token-rotation budget reset (anti-DoS floor)
+	outstanding      map[string][]codeAttestChallenge     // seKey -> unexpired pushed, not-yet-verified challenges (alert mode can have several in flight)
+	resumeChallenges map[string]codeAttestResumeChallenge // nonce -> live WS/X25519 PoP
 
 	reuseWindow time.Duration
 
@@ -85,6 +86,7 @@ type codeAttestThrottle struct {
 	// Fix 5): a reply is accepted for as long as the push could still have been
 	// delivered.
 	challengeValidity time.Duration
+	resumeTimeout     time.Duration
 
 	maxAttempts int
 	now         func() time.Time
@@ -101,14 +103,26 @@ type codeAttestRecord struct {
 	at      time.Time
 	version string
 	token   string // APNs device token the proof was bound to ("" = legacy row from before token-binding)
+	nodeKey string // registration X25519 process key; strict protected-capability reuse binding
 }
 
 // codeAttestChallenge is a pushed-but-not-yet-verified code-identity challenge.
 // Keyed by SE key (not connection) so a reply that arrives on a reconnected
 // WebSocket still matches the nonce the coordinator pushed (W5b Fix 1).
 type codeAttestChallenge struct {
-	nonce string
-	at    time.Time
+	nonce   string
+	token   string
+	nodeKey string
+	at      time.Time
+}
+
+type codeAttestResumeChallenge struct {
+	providerID string
+	nodeKey    string
+	seKey      string
+	token      string
+	expiresAt  time.Time
+	done       chan struct{}
 }
 
 func newCodeAttestThrottle() *codeAttestThrottle {
@@ -116,6 +130,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		attested:               make(map[string]codeAttestRecord),
 		lastPush:               make(map[string]time.Time),
 		lastBudgetClear:        make(map[string]time.Time),
+		resumeChallenges:       make(map[string]codeAttestResumeChallenge),
 		outstanding:            make(map[string][]codeAttestChallenge),
 		reuseWindow:            30 * time.Minute,
 		backgroundPushCooldown: 20 * time.Minute, // <= 3 pushes/hour/device (APNs background budget)
@@ -124,6 +139,7 @@ func newCodeAttestThrottle() *codeAttestThrottle {
 		retrySpacing:           15 * time.Second, // poll/backoff cadence, separate from the budget
 		retryJitter:            15 * time.Second, // de-sync fleet retries -> retryDelay in [15s, 30s)
 		challengeValidity:      CodeAttestResponseTimeout,
+		resumeTimeout:          ChallengeResponseTimeout,
 		maxAttempts:            3,
 		now:                    time.Now,
 		jitter:                 defaultJitter,
@@ -159,6 +175,22 @@ func (t *codeAttestThrottle) reuseAttestation(seKey, version, token string) bool
 		return false
 	}
 	return r.token == "" || r.token == token
+}
+
+func (t *codeAttestThrottle) reuseAttestationForProcess(
+	seKey, version, token, nodeKey string,
+) bool {
+	if seKey == "" || version == "" || token == "" || nodeKey == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.attested[seKey]
+	return ok &&
+		t.now().Sub(r.at) < t.reuseWindow &&
+		r.version == version &&
+		r.token == token &&
+		r.nodeKey == nodeKey
 }
 
 // reuseAttestationCrossVersion is reuseAttestation without the version match —
@@ -250,6 +282,19 @@ func (t *codeAttestThrottle) recordAttested(seKey, version, token string) {
 	t.mu.Unlock()
 }
 
+func (t *codeAttestThrottle) recordAttestedForProcess(
+	seKey, version, token, nodeKey string,
+) {
+	if seKey == "" {
+		return
+	}
+	t.mu.Lock()
+	t.attested[seKey] = codeAttestRecord{
+		at: t.now(), version: version, token: token, nodeKey: nodeKey,
+	}
+	t.mu.Unlock()
+}
+
 // invalidateReuse drops any cached reuse record for a device so the NEXT
 // code-identity attempt cannot be short-circuited by reuseAttestation and must
 // run a real challenge round-trip. Used when a provider's APNs device token
@@ -291,7 +336,10 @@ func (t *codeAttestThrottle) seed(rows []store.CodeAttestation) int {
 		if cur, ok := t.attested[r.SEPubKey]; ok && !r.AttestedAt.After(cur.at) {
 			continue // keep the fresher in-memory record
 		}
-		t.attested[r.SEPubKey] = codeAttestRecord{at: r.AttestedAt, version: r.Version, token: r.APNsToken}
+		t.attested[r.SEPubKey] = codeAttestRecord{
+			at: r.AttestedAt, version: r.Version,
+			token: r.APNsToken, nodeKey: r.NodePublicKey,
+		}
 		n++
 	}
 	return n
@@ -323,6 +371,68 @@ func (t *codeAttestThrottle) recordChallenge(seKey, nonce string) {
 	}
 	t.outstanding[seKey] = append(kept, codeAttestChallenge{nonce: nonce, at: now})
 	t.mu.Unlock()
+}
+
+func (t *codeAttestThrottle) recordChallengeForIdentity(
+	seKey, nonce, token, nodeKey string,
+) {
+	if seKey == "" {
+		return
+	}
+	t.mu.Lock()
+	now := t.now()
+	old := t.outstanding[seKey]
+	kept := old[:0]
+	for _, challenge := range old {
+		if now.Sub(challenge.at) < t.challengeValidity {
+			kept = append(kept, challenge)
+		}
+	}
+	t.outstanding[seKey] = append(kept, codeAttestChallenge{
+		nonce: nonce, at: now, token: token, nodeKey: nodeKey,
+	})
+	t.mu.Unlock()
+}
+
+func (t *codeAttestThrottle) matchChallengeForIdentity(
+	seKey, nonce, token, nodeKey string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	for _, challenge := range t.outstanding[seKey] {
+		if challenge.nonce == nonce &&
+			now.Sub(challenge.at) < t.challengeValidity &&
+			(challenge.token == "" || challenge.token == token) &&
+			(challenge.nodeKey == "" || challenge.nodeKey == nodeKey) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *codeAttestThrottle) consumeChallengeForIdentity(
+	seKey, nonce, token, nodeKey string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	challenges := t.outstanding[seKey]
+	for i, challenge := range challenges {
+		if challenge.nonce == nonce &&
+			now.Sub(challenge.at) < t.challengeValidity &&
+			(challenge.token == "" || challenge.token == token) &&
+			(challenge.nodeKey == "" || challenge.nodeKey == nodeKey) {
+			challenges = append(challenges[:i], challenges[i+1:]...)
+			if len(challenges) == 0 {
+				delete(t.outstanding, seKey)
+			} else {
+				t.outstanding[seKey] = challenges
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // outstandingChallenge reports whether the device has ANY still-valid pushed
@@ -430,6 +540,103 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	}
 }
 
+// recordResumeChallenge stores a one-time, connection-bound X25519 PoP nonce
+// with the exact resume deadline. APNs challenges intentionally use the longer
+// challengeValidity window; live-connection resume proofs do not.
+func (t *codeAttestThrottle) recordResumeChallenge(
+	nonce, providerID, nodeKey, seKey, token string,
+) <-chan struct{} {
+	t.mu.Lock()
+	done := make(chan struct{})
+	t.resumeChallenges[nonce] = codeAttestResumeChallenge{
+		providerID: providerID, nodeKey: nodeKey, seKey: seKey,
+		token: token, expiresAt: t.now().Add(t.resumeTimeout), done: done,
+	}
+	t.mu.Unlock()
+	return done
+}
+
+func (t *codeAttestThrottle) clearResumeChallenges(providerID string) {
+	t.mu.Lock()
+	for nonce, challenge := range t.resumeChallenges {
+		if challenge.providerID == providerID {
+			close(challenge.done)
+			delete(t.resumeChallenges, nonce)
+		}
+	}
+	t.mu.Unlock()
+}
+
+func resumeChallengeMatches(
+	challenge codeAttestResumeChallenge,
+	providerID, nodeKey, seKey, token string,
+) bool {
+	return challenge.providerID == providerID &&
+		challenge.nodeKey == nodeKey &&
+		challenge.seKey == seKey &&
+		challenge.token == token
+}
+
+func (t *codeAttestThrottle) resumeChallengeExpiry(
+	nonce, providerID, nodeKey, seKey, token string,
+) (time.Time, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	if !ok || !resumeChallengeMatches(
+		challenge, providerID, nodeKey, seKey, token,
+	) {
+		return time.Time{}, false
+	}
+	return challenge.expiresAt, true
+}
+
+func (t *codeAttestThrottle) matchResumeChallenge(
+	nonce, providerID, nodeKey, seKey, token string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	return ok &&
+		t.now().Before(challenge.expiresAt) &&
+		resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token)
+}
+
+func (t *codeAttestThrottle) consumeResumeChallenge(
+	nonce, providerID, nodeKey, seKey, token string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	if !ok ||
+		!t.now().Before(challenge.expiresAt) ||
+		!resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token) {
+		return false
+	}
+	delete(t.resumeChallenges, nonce)
+	close(challenge.done)
+	return true
+}
+
+// expireResumeChallenge atomically lets only the deadline path claim a resume
+// nonce. A response racing the timer either consumes the still-live nonce first
+// or loses to this removal; neither path can both grant proof and start APNs.
+func (t *codeAttestThrottle) expireResumeChallenge(
+	nonce, providerID, nodeKey, seKey, token string,
+) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	challenge, ok := t.resumeChallenges[nonce]
+	if !ok ||
+		t.now().Before(challenge.expiresAt) ||
+		!resumeChallengeMatches(challenge, providerID, nodeKey, seKey, token) {
+		return false
+	}
+	delete(t.resumeChallenges, nonce)
+	close(challenge.done)
+	return true
+}
+
 // persistCodeAttestation best-effort writes a successful code-identity round-trip
 // to the store so it survives a coordinator restart/deploy (W5 Fix 2). It mirrors
 // the in-memory recordAttested and is called from the same event
@@ -439,7 +646,7 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 // Runs off the read loop (saferun.Go) so the DB write never stalls WebSocket
 // reads. SECURITY: writes only AFTER the full nonce-match + SE-signature
 // verification — never from an unverified heartbeat token.
-func (s *Server) persistCodeAttestation(seKey, version, token string) {
+func (s *Server) persistCodeAttestation(seKey, version, token, nodeKey string) {
 	if s == nil || s.codeAttestThrottle == nil || seKey == "" {
 		return
 	}
@@ -452,10 +659,11 @@ func (s *Server) persistCodeAttestation(seKey, version, token string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := st.UpsertCodeAttestation(ctx, store.CodeAttestation{
-			SEPubKey:   seKey,
-			Version:    version,
-			AttestedAt: at,
-			APNsToken:  token,
+			SEPubKey:      seKey,
+			Version:       version,
+			AttestedAt:    at,
+			APNsToken:     token,
+			NodePublicKey: nodeKey,
 		}); err != nil {
 			s.logger.Warn("code-attest: failed to persist reuse record", "error", err)
 		}

@@ -9,22 +9,23 @@ enum ProviderPromptContractPipeline {
         modelType: String?
     ) throws -> [Int] {
         let request = try ProviderLoop.decodeOpenAIRequest(body)
-        let reasoningEffort = ProviderLoop.extractReasoningEffort(from: body)
+        let templateControls = ProviderLoop.extractChatTemplateControls(from: body)
         let prepared = try ToolChoicePromptPolicy.prepare(request)
         return try tokenize(
             prepared: prepared,
             request: request,
             tokenizer: tokenizer,
             modelType: modelType,
-            reasoningEffort: reasoningEffort)
+            templateControls: templateControls)
     }
+
 
     static func tokenize(
         prepared: ToolChoicePromptPolicy.Prepared,
         request: OpenAIChatCompletionRequest,
         tokenizer: any MLXLMCommon.Tokenizer,
         modelType: String?,
-        reasoningEffort: String?
+        templateControls: ChatTemplateControls
     ) throws -> [Int] {
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let tools = prepared.tools?.map { $0.toolSpec() }
@@ -36,6 +37,9 @@ enum ProviderPromptContractPipeline {
             tools: ChatTemplateFixes.normalizeTools(tools, context: context),
             additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
                 for: request,
-                reasoningEffort: reasoningEffort))
+                controls: templateControls,
+                modelType: modelType,
+                hasMedia: MediaIngest.hasMedia(request),
+                requiresToolCall: prepared.requiresToolCall))
     }
 }

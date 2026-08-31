@@ -67,7 +67,7 @@ Queue loop:
 
 TTFT/speculation loop:
 
-- Knobs: `ttftDeadline = 5s + 1ms/input_token`, speculative backup at `0.5 * deadline`, preamble-content timeout, inference idle timeout in `coordinator/api/consumer.go:44`.
+- Knobs: pinned per-model first-content deadline from `coordinator/modelpolicy` plus `1ms/input_token`, speculative backup at `0.5 * deadline`, preamble-content timeout, and inference idle timeout in `coordinator/api/consumer.go`.
 - Signals: first-content time, speculative backup started, speculative backup won, first-content timeout, accepted-then-stall timeout.
 - Actuators: retry/failover for this request, warm-pool pressure for future requests.
 

@@ -69,6 +69,24 @@ func TestInstallScriptTemplating(t *testing.T) {
 			t.Error("install.sh still references __DARKBLOOM_R2_SITE_PACKAGES_CDN_URL__ -- handler dropped substitution")
 		}
 	})
+
+	t.Run("enrollment excludes hardware identity", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+		for _, forbidden := range []string{"IOPlatformSerialNumber", "serial_number", "$SERIAL"} {
+			if strings.Contains(body, forbidden) {
+				t.Errorf("install.sh exposes hardware identity through %q", forbidden)
+			}
+		}
+		if !strings.Contains(body, `PROFILE_PATH="$PROFILE_DIR/Darkbloom-Enroll.mobileconfig"`) {
+			t.Error("install.sh is missing the privacy-safe enrollment profile path")
+		}
+		if !strings.Contains(body, `-d '{}'`) {
+			t.Error("install.sh enrollment request is not identity-free")
+		}
+	})
 }
 
 func newTestServerWithBaseURL(t *testing.T, baseURL string) *httptest.Server {

@@ -68,15 +68,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     private let releaseModel: @Sendable (String) async -> Void
     private let defaultMaxTokens: Int
 
-    /// OpenAI `reasoning_effort` for this request (`low`/`medium`/`high`
-    /// for gpt-oss; model-specific otherwise). Injected verbatim into the
-    /// chat template's render context under the `reasoning_effort` key so
+    /// OpenAI `reasoning_effort` and Qwen template controls for this request
+    /// (`low`/`medium`/`high` for gpt-oss; model-specific otherwise).
+    /// GPT-OSS currently maps `high` to `medium` before Harmony rendering to
+    /// keep generation inside the upstream request deadline.
+    /// Controls are injected into the chat template's render context so
     /// templates that read it (gpt-oss / Harmony) emit the matching
     /// `Reasoning: <effort>` system directive. `nil` leaves the template
     /// at its built-in default. We do not validate the value here — the
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
-    private let reasoningEffort: String?
+    private let templateControls: ChatTemplateControls
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -110,6 +112,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// after the coordinator rejects client-forged copies. Direct local HTTP
     /// requests have no such trusted boundary and must reject that metadata.
     private let allowInternalToolSchemaMetadata: Bool
+    /// Absolute provider-local deadline derived once when the coordinator frame
+    /// was received. Nil for local HTTP and legacy coordinator requests.
+    private let firstContentDeadline: FirstContentDeadline?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -117,20 +122,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         reserveModel: @escaping @Sendable (String) async -> Void = { _ in },
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
-        reasoningEffort: String? = nil,
+        templateControls: ChatTemplateControls = .init(),
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
-        engineV2Usage: EngineV2RequestUsageSignal? = nil
+        engineV2Usage: EngineV2RequestUsageSignal? = nil,
+        firstContentDeadline: FirstContentDeadline? = nil
     ) {
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
         self.reserveModel = reserveModel
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = reasoningEffort
+        self.templateControls = templateControls
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -138,6 +144,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Vision = engineV2Vision
         self.engineV2Usage = engineV2Usage
         self.allowInternalToolSchemaMetadata = true
+        self.firstContentDeadline = firstContentDeadline
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -159,7 +166,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerResolution,
         availableModels: @escaping @Sendable () async -> [String],
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        templateControls: ChatTemplateControls = .init()
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -169,7 +177,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.reserveModel = { _ in }
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
-        self.reasoningEffort = nil
+        self.templateControls = templateControls
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -189,6 +197,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // cached_tokens — same scoping as `engineV2Logprobs`.
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
+        self.firstContentDeadline = nil
     }
 
     // MARK: - MLXServerEngine
@@ -204,6 +213,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     public func streamChatCompletion(
         request: OpenAIChatCompletionRequest
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        try checkFirstContentDeadline()
+
         // I1: prefer the atomic-`acquire` path. The legacy three-closure
         // path is racy across actor hops (ensureLoaded → lookup →
         // reserve) and is retained only for ProviderLoop where
@@ -226,9 +237,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             isVLM = acquired.isVLM
             engineV2Bridge = acquired.engineV2Bridge
             visionGate = acquired.visionGate
+            try await checkFirstContentDeadline(releasing: releaseBox)
         } else {
             try await ensureLoaded(modelId)
+            try checkFirstContentDeadline()
             let registry = await (registryProvider?() ?? [:])
+            try checkFirstContentDeadline()
             guard let entry = registry[modelId] else {
                 throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
             }
@@ -240,13 +254,16 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             isVLM = entry.isVLM
             engineV2Bridge = entry.engineV2Bridge
             visionGate = entry.visionGate
+            try await checkFirstContentDeadline(releasing: releaseBox)
         }
 
         let prepared: ToolChoicePromptPolicy.Prepared
         do {
+            try checkFirstContentDeadline()
             prepared = try ToolChoicePromptPolicy.prepare(
                 request,
                 allowInternalSchemaMetadata: allowInternalToolSchemaMetadata)
+            try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
             throw error
@@ -266,11 +283,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // forwards, but media must first run the wrapper's vision tower and
         // splice its embeddings; token-only preparation would discard media.
         if isVLM, let container, MediaIngest.hasMedia(request) {
+            try await checkFirstContentDeadline(releasing: releaseBox)
             var visionRequest = request
             visionRequest.messages = ChatTemplateFixes.normalizeMessages(
                 request.messages,
                 context: ChatTemplateFixContext(
                     modelId: request.model, modelType: modelType))
+            try await checkFirstContentDeadline(releasing: releaseBox)
             // `.auto` constrains nothing and `.none` hides the tools outright
             // (post-generation validation rejects any emitted call), so both
             // ride the media path unchanged. `.required`/`.named` need the
@@ -280,13 +299,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced tool_choice is not supported for multimodal requests")
             }
-            // Decode + validate inline media SYNCHRONOUSLY, before returning the
-            // stream. A MediaError (oversized/malformed/non-`data:` payload) thrown
-            // here propagates through this `async throws` to the caller — so both
-            // the buffered (non-streaming) and the SSE (streaming) HTTP paths, and
-            // the coordinator WebSocket path, surface the correct 4xx instead of a
-            // 200 with a truncated/error stream body. (Deferring the decode into
-            // the generation task would let the HTTP layer commit a 200 first.)
+            // Media is decoded exactly once by EngineV2VisionPrefill.prepare
+            // below, still synchronously inside this async-throws call before
+            // any stream is returned. Its MediaError therefore keeps the same
+            // clean pre-header 4xx contract without paying a second AVFoundation
+            // decode on the first-content critical path.
             // Reserve this vision request's unified memory against the 90% cap
             // BEFORE rasterizing. The vision path bypasses the batched
             // `submitTokenized` reservation, so it commits two kinds of memory the
@@ -321,6 +338,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             let mediaReserved = await mediaGate.reserve(
                 requestId: mediaReqId, mediaDecodeBytes: projectedBytes,
                 kvTokens: kvTokens)
+            do {
+                try checkFirstContentDeadline()
+            } catch {
+                if mediaReserved {
+                    await mediaGate.release(requestId: mediaReqId)
+                }
+                await releaseBox.fire()
+                throw error
+            }
             if !mediaReserved {
                 await releaseBox.fire()
                 let mib = projectedBytes / (1024 * 1024)
@@ -328,14 +354,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     "insufficient global kv cache headroom for vision request "
                     + "(media decode ~\(mib) MiB + generation KV) — retry after capacity frees")
             }
-            do {
-                try await MediaIngest.validateMedia(visionRequest)
-            } catch {
-                await mediaGate.release(requestId: mediaReqId)
-                await releaseBox.fire()
-                throw error
-            }
-
             // MEDIA → ENGINE V2: image, video, and mixed requests use the
             // wrapper's vision tower/projector, then prefill its same owned
             // text tower through CBv2. Per-image / per-video-frame embeddings
@@ -358,8 +376,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
+                    try checkFirstContentDeadline()
                     let visionPrepared = try await plumbing.prepare(
-                        container, visionRequest, reasoningEffort)
+                        container, visionRequest, templateControls)
+                    // MLX vision evaluation mutates container/Metal state and is
+                    // not safely cancellable. Reject immediately after it returns.
+                    try checkFirstContentDeadline()
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -376,12 +398,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // the post-throw paths they share with `prepare`
                     // failures) stay correct as written.
                     await mediaGate.release(requestId: mediaReqId)
+                    try checkFirstContentDeadline()
                     // No provider-side tool parsing on this path — matching
                     // the legacy vision path exactly: the VLM processor's
                     // chat templating never renders tool specs, so the model
                     // is never prompted into tool-call syntax on either
                     // vision path.
-                    let upstream = await bridge.submitTokenized(
+                    let upstream = try await bridge.submitTokenized(
                         promptTokens: visionPrepared.promptTokens,
                         request: Self.translate(
                             openAIRequest: visionRequest, defaultMaxTokens: defaultMaxTokens,
@@ -399,21 +422,30 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         // waits on an unset box.
                         usageSignal: engineV2Usage,
                         multimodal: visionPrepared.multimodalInput(),
-                        mediaKind: visionPrepared.mediaKind
+                        mediaKind: visionPrepared.mediaKind,
+                        firstContentDeadline: firstContentDeadline
                     )
+                    do {
+                        try checkFirstContentDeadline()
+                    } catch {
+                        await bridge.cancel(requestId: visionRequestId)
+                        throw error
+                    }
                     // Qwen3.6/DeepSeek-style templates pre-open a <think>
                     // block at the prompt tail (output carries only the
                     // close). Without a synthesized open, the downstream
                     // streaming think parser buffers the whole block —
                     // TTFT becomes the full thinking duration. Same probe
                     // as the text path below.
+                    try checkFirstContentDeadline()
                     let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
                     )
-                    return makeEventStream(
+                    try checkFirstContentDeadline()
+                    return try await makeDeadlineCheckedEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
                         toolHandler: nil,
@@ -421,6 +453,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         releaseBox: releaseBox,
                         synthesizeThinkOpen: synthesizeThinkOpen
                     )
+                } catch let failure as PreContentDeadlineFailure {
+                    await mediaGate.release(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    throw failure
                 } catch is CancellationError {
                     // The CALLER went away mid-construction — that is not a
                     // v2 failure, so don't burn a refusal ERROR. Release and
@@ -429,11 +465,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     await releaseBox.fire()
                     throw CancellationError()
                 } catch let mediaError as MediaIngest.MediaError {
-                    // Deterministic input fault (malformed/oversized media —
-                    // the same class `validateMedia` rejects above). Fails
-                    // identically on any provider, so it keeps its existing
-                    // 4xx mapping instead of becoming a misleading retriable
-                    // refusal.
+                    // Deterministic input fault from the preparer's single
+                    // decode pass. It fails identically on any provider, so it
+                    // keeps its 4xx mapping instead of becoming a misleading
+                    // retriable refusal.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw mediaError
@@ -511,12 +546,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let promptTokens: [Int]
         do {
+            try checkFirstContentDeadline()
             promptTokens = try ProviderPromptContractPipeline.tokenize(
                 prepared: prepared,
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                templateControls: templateControls)
+            try checkFirstContentDeadline()
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",
@@ -532,12 +569,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // `undecided` state buffering the ENTIRE block — the consumer's first
         // delta (TTFT) is delayed by the whole thinking duration. See
         // `ReasoningPromptProbe`.
+        do {
+            try checkFirstContentDeadline()
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
         let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
         )
+        do {
+            try checkFirstContentDeadline()
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
 
         // Resolve tool call format before submitting so a bad
         // `tool_call_parser` value does not leave an orphaned request.
@@ -545,14 +594,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         if prepared.tools?.isEmpty == false {
             let format: ToolCallFormat
             do {
+                try checkFirstContentDeadline()
                 format = try ServerToolParser.resolve(
                     requested: request.toolCallParser,
                     modelType: modelType
                 )
-                if prepared.mode.requiresInferenceGrammar, format != .gemma {
-                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                        "inference-enforced Gemma tool_choice requires the gemma tool parser")
-                }
+                try checkFirstContentDeadline()
+                let strategy = try ToolChoiceEnforcementPolicy.forcedStrategy(
+                    mode: prepared.mode,
+                    modelContext: ChatTemplateFixContext(
+                        modelId: request.model, modelType: modelType))
+                try ToolChoiceEnforcementPolicy.validateParser(
+                    format, strategy: strategy)
             } catch {
                 await releaseBox.fire()
                 throw error
@@ -567,6 +620,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         let tokenConstraint: (any CBv2TokenConstraint)?
         do {
+            try checkFirstContentDeadline()
             guard let bridge = engineV2Bridge else {
                 throw MultiModelBatchSchedulerEngineError.generationFailed(
                     "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
@@ -579,6 +633,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds)
+            try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
             throw error
@@ -598,32 +653,45 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let upstream: AsyncStream<GenerationEvent>
         let cancelUpstream: @Sendable () async -> Void
         if let bridge = engineV2Bridge {
-            upstream = await bridge.submitTokenized(
-                promptTokens: promptTokens,
-                // Sampling/stop/max-token translation reuses the OpenAI →
-                // internal request mapping (`EngineV2Translation` reads the
-                // internal shape). `logprobs`/`top_logprobs` and
-                // `logit_bias`/`seed` are not on the upstream request shape,
-                // so they arrive via the `engineV2Logprobs`/`engineV2Sampling`
-                // plumbing (decoded from the sealed body) and are overlaid
-                // here.
-                request: Self.translate(
-                    openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
-                    logprobs: engineV2Logprobs != nil ? true : nil,
-                    topLogprobs: engineV2Logprobs?.topLogprobs,
-                    logitBias: engineV2Sampling?.logitBias,
-                    seed: engineV2Sampling?.seed),
-                requestId: requestId,
-                // Same per-tenant scope the legacy submit threads into the
-                // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
-                // (TB-007/T-041 — LIVE as of v0.7.5 when PrefixCachePolicy
-                // funds the cache).
-                cacheScope: cacheScope,
-                cacheEnabled: cacheEnabled,
-                logprobsChannel: engineV2Logprobs?.channel,
-                usageSignal: engineV2Usage,
-                tokenConstraint: tokenConstraint
-            )
+            do {
+                try checkFirstContentDeadline()
+                upstream = try await bridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    // Sampling/stop/max-token translation reuses the OpenAI →
+                    // internal request mapping (`EngineV2Translation` reads the
+                    // internal shape). `logprobs`/`top_logprobs` and
+                    // `logit_bias`/`seed` are not on the upstream request shape,
+                    // so they arrive via the `engineV2Logprobs`/`engineV2Sampling`
+                    // plumbing (decoded from the sealed body) and are overlaid
+                    // here.
+                    request: Self.translate(
+                        openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
+                        logprobs: engineV2Logprobs != nil ? true : nil,
+                        topLogprobs: engineV2Logprobs?.topLogprobs,
+                        logitBias: engineV2Sampling?.logitBias,
+                        seed: engineV2Sampling?.seed),
+                    requestId: requestId,
+                    // Same per-tenant scope the legacy submit threads into the
+                    // checkpoint cache; the bridge maps it to CBv2Request.cacheSalt
+                    // (TB-007/T-041 — LIVE as of v0.7.5 when PrefixCachePolicy
+                    // funds the cache).
+                    cacheScope: cacheScope,
+                    cacheEnabled: cacheEnabled,
+                    logprobsChannel: engineV2Logprobs?.channel,
+                    usageSignal: engineV2Usage,
+                    tokenConstraint: tokenConstraint,
+                    firstContentDeadline: firstContentDeadline
+                )
+                do {
+                    try checkFirstContentDeadline()
+                } catch {
+                    await bridge.cancel(requestId: requestId)
+                    throw error
+                }
+            } catch {
+                await releaseBox.fire()
+                throw error
+            }
             cancelUpstream = { await bridge.cancel(requestId: requestId) }
         } else {
             // Fail-loud backstop: no engine at all on the entry. This can
@@ -634,7 +702,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
         }
 
-        return makeEventStream(
+        return try await makeDeadlineCheckedEventStream(
             upstream: upstream,
             cancelUpstream: cancelUpstream,
             toolHandler: toolHandler,
@@ -642,6 +710,58 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             releaseBox: releaseBox,
             synthesizeThinkOpen: synthesizeThinkOpen
         )
+    }
+
+    @inline(__always)
+    private func checkFirstContentDeadline() throws {
+        try firstContentDeadline?.check()
+    }
+
+    private func checkFirstContentDeadline(
+        releasing releaseBox: OneShotRelease
+    ) async throws {
+        do {
+            try checkFirstContentDeadline()
+        } catch {
+            await releaseBox.fire()
+            throw error
+        }
+    }
+
+    /// Build the outer event stream only while the absolute pre-content
+    /// deadline remains live. `makeEventStream` starts its forwarding task
+    /// synchronously, so an expiry observed after construction must cancel the
+    /// engine row and release the model pin before the throw escapes.
+    private func makeDeadlineCheckedEventStream(
+        upstream: AsyncStream<GenerationEvent>,
+        cancelUpstream: @escaping @Sendable () async -> Void,
+        toolHandler: BatchedToolStreamHandler?,
+        prepared: ToolChoicePromptPolicy.Prepared,
+        releaseBox: OneShotRelease,
+        synthesizeThinkOpen: Bool = false
+    ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
+        do {
+            try checkFirstContentDeadline()
+        } catch {
+            await cancelUpstream()
+            await releaseBox.fire()
+            throw error
+        }
+        let stream = makeEventStream(
+            upstream: upstream,
+            cancelUpstream: cancelUpstream,
+            toolHandler: toolHandler,
+            prepared: prepared,
+            releaseBox: releaseBox,
+            synthesizeThinkOpen: synthesizeThinkOpen)
+        do {
+            try checkFirstContentDeadline()
+            return stream
+        } catch {
+            await cancelUpstream()
+            await releaseBox.fire()
+            throw error
+        }
     }
 
     /// Translate an engine `GenerationEvent` stream into the upstream
@@ -785,9 +905,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     return
                 }
 
-                // Flush and validate parsed calls. Required/named/none are
-                // enforced in the sampler; this remains the parser/schema
-                // boundary for auto plus defense in depth for every mode.
+                // Flush and validate parsed calls. Gemma required/named are
+                // sampler-constrained; Qwen required/named are prompt-forced
+                // and fail closed here before a call is exposed. This remains
+                // defense in depth for every mode.
                 let toolCalls = toolHandler?.finish() ?? []
                 if prepared.mode == .auto,
                     let residual = toolHandler?.takeResidualText(),
@@ -809,7 +930,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     continuation.finish(throwing: error)
                     return
                 }
-                if prepared.mode.requiresInferenceGrammar {
+                if prepared.mode.requiresInferenceConstraint {
                     emitToolConstraintTelemetry(
                         operation: "tool_constraint_valid",
                         reason: prepared.mode.telemetryValue)

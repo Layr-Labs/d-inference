@@ -242,4 +242,5 @@ darkbloom report --last 6h
 
 Reports are sent only by this explicit command; automatic reporting is disabled.
 The collector includes only `dev.darkbloom.provider` unified logs, preserves
-macOS privacy redaction, and indexes the upload by the device serial number.
+macOS privacy redaction, and returns an opaque report ID to share with support.
+The upload neither sends nor returns the hardware serial number.

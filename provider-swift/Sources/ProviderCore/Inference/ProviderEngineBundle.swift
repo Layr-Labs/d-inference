@@ -13,6 +13,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let fallbackReason: MTPFallbackReason?
     public let assistantSource: SpecDecArtifactSource?
     public let assistantRevision: String?
+    public let assistantSourceRevision: String?
     public let assistantArtifactBytes: UInt64
     public let assistantResidentBytes: UInt64
     public let selectedDepth: Int
@@ -63,6 +64,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         }
         self.assistantSource = status.source
         self.assistantRevision = status.revision
+        self.assistantSourceRevision = status.sourceRevision
         self.assistantArtifactBytes = status.artifactBytes
         self.assistantResidentBytes = status.assistantBytes
         self.selectedDepth = metrics?.selectedDepth ?? 0

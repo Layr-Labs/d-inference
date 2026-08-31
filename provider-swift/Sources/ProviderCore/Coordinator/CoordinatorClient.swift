@@ -109,7 +109,10 @@ public actor CoordinatorClient {
         self.config = config
         self.stats = stats
         self.state = state
-        self.advertisedModelStore = AdvertisedModelStore(config.models)
+        self.advertisedModelStore = AdvertisedModelStore(config.models.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: config.runtimeCapabilities)
+        })
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
 
         // Inference-chunk fast path. The encode closure is the same pure static
@@ -154,6 +157,13 @@ public actor CoordinatorClient {
     /// the coordinator's advertised inventory on the next reconnect.
     @discardableResult
     public func advertiseModel(_ model: ModelInfo) -> Bool {
+        guard ModelRuntimeRequirements.isEligible(
+            modelID: model.id, available: config.runtimeCapabilities)
+        else {
+            logger.error(
+                "advertiseModel(\(model.id)): permanently ineligible; refusing advertisement")
+            return false
+        }
         let isNew = advertisedModelStore.add(model)
         if isNew {
             logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")

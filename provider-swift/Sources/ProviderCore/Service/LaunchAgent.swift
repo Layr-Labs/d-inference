@@ -287,7 +287,17 @@ public enum LaunchAgent: Sendable {
     /// These controls only matter in the daemon, so launchd must preserve them.
     /// Prefix-cache disk/stats tuning, the legacy request-timeout diagnostic
     /// switch, and the update-check opt-out are also runtime process policy.
+    /// `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS`: the production cap defaults to
+    /// one; exact `0` is the immediate rollback to unlimited interleave.
+    /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
+    /// admission-mode control. Both must persist in the provider job because
+    /// launchd restarts (including watchdog recovery) reuse this plist.
     /// Config-backed and benchmark-only controls are intentionally excluded.
+    static let inferencePassthroughEnvKeys = [
+        EngineV2Factory.maxPartialPrefillsKey,
+        PrefillDeadlineMode.environmentKey,
+    ]
+
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_PREFIX_CACHE_DISK_GB",
@@ -303,7 +313,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_ACTIVATION_RESERVE_GB",
         "DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT",
         "DARKBLOOM_NO_UPDATE_CHECK",
-    ]
+    ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)

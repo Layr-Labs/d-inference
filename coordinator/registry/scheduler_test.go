@@ -424,6 +424,44 @@ func TestReserveProviderReturnsTTFTRejectionsWhenAllTooSlow(t *testing.T) {
 	}
 }
 
+func TestReserveProviderVisionIgnoresTextOnlyTTFTCeiling(t *testing.T) {
+	reg := New(testLogger())
+	model := "vision-ttft-projection-incomplete"
+	p := makeSchedulerProvider(t, reg, "vision-provider", model, 100)
+	p.mu.Lock()
+	p.PrefillTPS = 0.2
+	p.Models[0].IsVision = true
+	p.mu.Unlock()
+
+	text := &PendingRequest{
+		RequestID:             "text-hard-gated",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		MaxTTFTMs:             10_000,
+	}
+	if selected, decision := reg.ReserveProviderEx(model, text); selected != nil || decision.TTFTRejections != 1 {
+		t.Fatalf("text request selected=%v decision=%+v, want one TTFT rejection", selected, decision)
+	}
+
+	media := &PendingRequest{
+		RequestID:             "media-advisory-only",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    128,
+		MaxTTFTMs:             10_000,
+		RequiresVision:        true,
+	}
+	selected, decision := reg.ReserveProviderEx(model, media)
+	if selected == nil {
+		t.Fatalf("vision request rejected by incomplete TTFT projection: %+v", decision)
+	}
+	if decision.TTFTRejections != 0 {
+		t.Fatalf("vision TTFTRejections = %d, want 0", decision.TTFTRejections)
+	}
+	selected.RemovePending(media.RequestID)
+}
+
 func TestReserveProviderHonorsAllowedProviderSerials(t *testing.T) {
 	reg := New(testLogger())
 	model := "targeted-model"

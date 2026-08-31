@@ -59,6 +59,12 @@ actor SpecDecArtifactFunnel {
         /// artifacts may carry their assistant inline in the same indexed
         /// shards; nil preserves the external Gemma assistant flow.
         let modelDirectory: URL?
+        /// The caller's ONE authoritative declaration probe for
+        /// `modelDirectory`, taken at the same moment `enabled` was computed.
+        /// The funnel never re-probes: a second read racing a config change
+        /// could flip an embedded-only `auto` decision into a catalog
+        /// resolution the mode does not permit.
+        let inlineDeclaration: SpecDecStore.InlineDeclarationProbe
         let allowDownload: Bool
         let environment: [String: String]
 
@@ -68,6 +74,7 @@ actor SpecDecArtifactFunnel {
             enabled: Bool,
             localPath: String?,
             modelDirectory: URL? = nil,
+            inlineDeclaration: SpecDecStore.InlineDeclarationProbe = .absent,
             allowDownload: Bool,
             environment: [String: String]
         ) {
@@ -76,6 +83,7 @@ actor SpecDecArtifactFunnel {
             self.enabled = enabled
             self.localPath = localPath
             self.modelDirectory = modelDirectory
+            self.inlineDeclaration = inlineDeclaration
             self.allowDownload = allowDownload
             self.environment = environment
         }
@@ -144,14 +152,19 @@ actor SpecDecArtifactFunnel {
                 artifact: nil,
                 status: .disabled(.catalogUnavailable, configured: request.enabled))
         }
+        guard Self.killSwitchEnabled(environment: request.environment) else {
+            return .init(
+                artifact: nil,
+                status: .disabled(
+                    .killSwitchDisabled,
+                    configured: request.enabled))
+        }
         guard request.enabled else {
             return .init(artifact: nil, status: .disabled(.configDisabled, configured: false))
         }
-        guard Self.killSwitchEnabled(environment: request.environment) else {
-            return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
-        }
         if Self.isQwen35Target(modelType: request.modelType),
-            let directory = request.modelDirectory
+            let directory = request.modelDirectory,
+            request.inlineDeclaration.mayDeclareEmbeddedArtifact
         {
             switch SpecDecStore.inspectInlineArtifact(directory: directory) {
             case .failure:
@@ -163,7 +176,9 @@ actor SpecDecArtifactFunnel {
                 return .init(artifact: artifact, status: .candidate(artifact))
             }
         }
-        guard Self.isGemma4Target(modelType: request.modelType) else {
+        guard Self.isGemma4Target(modelType: request.modelType)
+            || Self.isQwen35Target(modelType: request.modelType)
+        else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
         }
 
@@ -354,8 +369,10 @@ actor SpecDecArtifactFunnel {
     }
 
     static func isQwen35Target(modelType: String?) -> Bool {
-        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            == "qwen3_5_moe"
+        guard let modelType = modelType?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else { return false }
+        return modelType == "qwen3_5" || modelType == "qwen3_5_moe"
     }
 
     static func killSwitchEnabled(environment: [String: String]) -> Bool {

@@ -5,27 +5,13 @@ import Testing
 @Suite("Enrollment service")
 struct EnrollmentTests {
 
-    @Test("hardware serial number is non-empty on macOS")
-    func hardwareSerialReadable() {
-        // CI runners on macos-26-xlarge always have a serial; fail loudly
-        // if ioreg parsing breaks. On the rare CI image without a serial,
-        // skip rather than fail.
-        guard let serial = macHardwareSerialNumber() else {
-            // ioreg returned nothing parseable -- accept on minimal CI.
-            return
-        }
-        #expect(!serial.isEmpty)
-        #expect(!serial.contains(" "))
-        #expect(serial.count >= 8, "serial '\(serial)' looks too short")
-    }
-
     @Test("attestation serial parser reads ioreg output")
     func attestationSerialParserReadsIOReg() {
         let output = """
         +-o IOPlatformExpertDevice  <class IOPlatformExpertDevice, id 0x100000100, registered, matched, active, busy 0 (41 ms), retain 39>
-            "IOPlatformSerialNumber" = "WV0NCDC2TX"
+            "IOPlatformSerialNumber" = "TESTDEVICE01"
         """
-        #expect(parseSerialNumberFromIOReg(output) == "WV0NCDC2TX")
+        #expect(parseSerialNumberFromIOReg(output) == "TESTDEVICE01")
     }
 
     @Test("attestation serial parser reads system_profiler output")
@@ -37,15 +23,14 @@ struct EnrollmentTests {
 
                   Model Name: Mac Studio
                   Chip: Apple M3 Ultra
-                  Serial Number (system): WV0NCDC2TX
+                  Serial Number (system): TESTDEVICE01
         """
-        #expect(parseSerialNumberFromSystemProfiler(output) == "WV0NCDC2TX")
+        #expect(parseSerialNumberFromSystemProfiler(output) == "TESTDEVICE01")
     }
 
     @Test("EnrollmentError descriptions are stable")
     func enrollmentErrorDescriptions() {
         let cases: [(EnrollmentError, String)] = [
-            (.serialNumberUnavailable, "Could not read hardware serial number from ioreg."),
             (.coordinatorRequestFailed("nope"), "Failed to reach coordinator: nope"),
             (.coordinatorReturnedHTTP(503, body: "x"), "Coordinator returned HTTP 503: x"),
             (.profileWriteFailed("eperm"), "Failed to write enrollment profile: eperm"),

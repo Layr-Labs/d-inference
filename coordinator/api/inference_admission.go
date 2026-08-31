@@ -594,16 +594,19 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		}
 	}
 	if ttftTooSlow(bestTTFT, hasTTFT, ttftThreshold) {
-		if !s.ttftHardReject {
-			// Soft TTFT gate (default): a provider passed every routing and
-			// capacity gate, and pr.MaxTTFTMs is left 0 in soft mode, so the
-			// dispatch path serves the best-available provider instead of
-			// re-rejecting (P1 fix). Do NOT divert to an older alias build here
-			// (P2 fix) — the desired build is routable. A soft-serve over the
-			// deadline is still a TTFT near-miss, so feed the autoscaler so it
-			// grows warm capacity for this model.
-			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
-			s.triggerWarmPool()
+		if !s.hardTTFTGateApplies(p.requiresVision) {
+			// Soft TTFT path: either global hard rejection is disabled (the
+			// default), or this is media whose decode+tower costs are absent
+			// from the token-prefill estimate. pr.MaxTTFTMs stays 0, so dispatch
+			// serves the best available provider while the request-absolute
+			// first-content clock remains authoritative. Do not divert a
+			// routable desired build to an older alias.
+			// Keep the text soft-gate pressure signal, but do not teach the warm
+			// pool from a media projection that omits decode and tower work.
+			if !p.requiresVision {
+				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.triggerWarmPool()
+			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
 		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel

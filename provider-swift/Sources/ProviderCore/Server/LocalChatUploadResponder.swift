@@ -51,11 +51,18 @@ where Inner.Context == BasicRequestContext {
 
     public let inner: Inner
     let service: MLXOpenAIService
+    let serviceForTemplateControls: @Sendable (ChatTemplateControls) -> MLXOpenAIService
     let maxUploadBytes: Int
 
-    init(inner: Inner, service: MLXOpenAIService, maxUploadBytes: Int = localInferenceMaxUploadBytes) {
+    init(
+        inner: Inner,
+        service: MLXOpenAIService,
+        maxUploadBytes: Int = localInferenceMaxUploadBytes,
+        serviceForTemplateControls: (@Sendable (ChatTemplateControls) -> MLXOpenAIService)? = nil
+    ) {
         self.inner = inner
         self.service = service
+        self.serviceForTemplateControls = serviceForTemplateControls ?? { _ in service }
         self.maxUploadBytes = maxUploadBytes
     }
 
@@ -97,11 +104,15 @@ where Inner.Context == BasicRequestContext {
             case .success(let decoded): requests = decoded
             case .failure(let badRequest): return badRequest
             }
+            let controls = LocalChatTemplateControls.batch(
+                from: Data(buffer: buffer), count: requests.count)
             // Mirror of the upstream batch handler: sequential
             // createChatCompletion calls, one JSON array response.
             var responses: [OpenAIChatCompletionResponse] = []
-            for chatRequest in requests {
-                responses.append(try await service.createChatCompletion(request: chatRequest))
+            for (index, chatRequest) in requests.enumerated() {
+                responses.append(
+                    try await serviceForTemplateControls(controls[index])
+                        .createChatCompletion(request: chatRequest))
             }
             return try Self.jsonResponse(responses)
         }
@@ -111,14 +122,17 @@ where Inner.Context == BasicRequestContext {
         case .success(let decoded): chatRequest = decoded
         case .failure(let badRequest): return badRequest
         }
+        let requestService = serviceForTemplateControls(
+            LocalChatTemplateControls.single(from: Data(buffer: buffer)))
         // Same service entry points as the upstream handler; pre-stream
         // throws (unknown model, admission refusal) travel to
         // `CORSResponder`'s status mapping unchanged.
         if chatRequest.stream == true {
-            let frames = try await service.streamChatCompletionFrames(request: chatRequest)
+            let frames = try await requestService.streamChatCompletionFrames(request: chatRequest)
             return Self.sseResponse(frames)
         }
-        return try Self.jsonResponse(try await service.createChatCompletion(request: chatRequest))
+        return try Self.jsonResponse(
+            try await requestService.createChatCompletion(request: chatRequest))
     }
 
     /// Decode with Hummingbird's default `requestDecoder` configuration

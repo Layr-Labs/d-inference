@@ -223,10 +223,37 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	var pushes int32
 	// onSend completes the round-trip for whichever provider is currently attesting.
 	var current *registry.Provider
+	currentPriv := kPriv
 	srv.SetCodeAttestor(&fakeCodeAttestor{onSend: func(_, _, pubKeyB64, nonceB64 string) error {
 		atomic.AddInt32(&pushes, 1)
-		return completeRoundTrip(t, srv, current, "p1", kPriv, seKey, pubKeyB64, nonceB64)
+		return completeRoundTrip(t, srv, current, "p1", currentPriv, seKey, pubKeyB64, nonceB64)
 	}})
+	srv.codeResumeSender = func(
+		_ string,
+		message protocol.CodeAttestationResumeChallenge,
+	) error {
+		recovered, err := e2e.DecryptWithPrivateKey(
+			&e2e.EncryptedPayload{
+				EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
+				Ciphertext:         message.CodeChallenge.Ciphertext,
+			},
+			currentPriv,
+		)
+		if err != nil {
+			return err
+		}
+		nonce := string(recovered)
+		srv.handleCodeAttestationResponse(
+			"p1",
+			current,
+			&protocol.CodeAttestationResponseMessage{
+				Type:      protocol.TypeCodeAttestationResponse,
+				Nonce:     nonce,
+				Signature: signSEOverString(t, seKey, nonce),
+			},
+		)
+		return nil
+	}
 
 	// Connection 1: a real round-trip → exactly one push, attested.
 	p1 := newCodeAttestProvider(kPubB64, sePubB64)
@@ -251,6 +278,273 @@ func TestCodeAttestLoopReusesRecentAttestation(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&pushes); got != 1 {
 		t.Fatalf("connection 2 must NOT send another push (reuse); total pushes=%d", got)
+	}
+
+	// Connection 3 advertises protected runtime capabilities but retains the
+	// exact process X25519 key. It reuses the process-bound proof without
+	// spending another throttled push.
+	p3 := newCodeAttestProvider(kPubB64, sePubB64)
+	p3.Version = "0.6.0"
+	p3.ReportedRuntimeCapabilities = []string{
+		registry.ProviderCapabilityAppleM5,
+		registry.ProviderCapabilityMLXNAX,
+	}
+	current = p3
+	srv.codeAttestLoop(context.Background(), "p1", p3)
+	if !p3.GetCodeAttested() || !p3.GetFreshCodeAttested() {
+		t.Fatal("same-process protected reconnect should reuse bound proof")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 1 {
+		t.Fatalf("same-process reconnect unexpectedly pushed; total=%d", got)
+	}
+	kPubB64New, kPrivNew, _, _ := providerKeyMaterial(t)
+	copiedPublic := newCodeAttestProvider(kPubB64, sePubB64)
+	copiedPublic.Version = "0.6.0"
+	copiedPublic.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = copiedPublic, kPrivNew
+	if srv.sendCodeIdentityResumeChallenge(
+		context.Background(), "p1", copiedPublic, kPubB64, sePubB64,
+		copiedPublic.APNsDeviceToken,
+	) || copiedPublic.GetFreshCodeAttested() {
+		t.Fatal("copied public key without old X25519 private key passed resume PoP")
+	}
+
+	// General reuse cannot authorize a genuinely new process; it must push.
+	p4 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p4.Version = "0.6.0"
+	p4.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p4, kPrivNew
+	srv.codeAttestThrottle.backgroundPushCooldown = 0
+	srv.codeAttestLoop(context.Background(), "p1", p4)
+	if !p4.GetFreshCodeAttested() {
+		t.Fatal("new process should complete a fresh proof")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 2 {
+		t.Fatalf("new process should force exactly one fresh push; total=%d", got)
+	}
+
+	// Same-process resume that gets no reply falls back to APNs on this live
+	// connection after the bounded timeout. A late resume reply cannot replay.
+	var timedOutResumeNonce string
+	srv.codeAttestThrottle.resumeTimeout = time.Millisecond
+	srv.codeAttestThrottle.retrySpacing = time.Millisecond
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		recovered, err := e2e.DecryptWithPrivateKey(
+			&e2e.EncryptedPayload{
+				EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
+				Ciphertext:         message.CodeChallenge.Ciphertext,
+			},
+			kPrivNew,
+		)
+		timedOutResumeNonce = string(recovered)
+		return err
+	}
+	p5 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p5.Version = "0.6.0"
+	p5.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p5, kPrivNew
+	srv.codeAttestLoop(context.Background(), "p1", p5)
+	deadline := time.Now().Add(time.Second)
+	for !p5.GetFreshCodeAttested() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !p5.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 3 {
+		t.Fatalf("resume timeout did not APNs-fallback: fresh=%v pushes=%d",
+			p5.GetFreshCodeAttested(), atomic.LoadInt32(&pushes))
+	}
+	srv.handleCodeAttestationResponse("p1", p5, &protocol.CodeAttestationResponseMessage{
+		Type:      protocol.TypeCodeAttestationResponse,
+		Nonce:     timedOutResumeNonce,
+		Signature: signSEOverString(t, seKey, timedOutResumeNonce),
+	})
+	if got := atomic.LoadInt32(&pushes); got != 3 {
+		t.Fatalf("late resume reply changed fallback state: pushes=%d", got)
+	}
+
+	// A resume transport failure falls through to APNs immediately.
+	srv.codeResumeSender = func(
+		string, protocol.CodeAttestationResumeChallenge,
+	) error {
+		return errors.New("resume send failed")
+	}
+	p6 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p6.Version = "0.6.0"
+	p6.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p6, kPrivNew
+	srv.codeAttestLoop(context.Background(), "p1", p6)
+	if !p6.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 4 {
+		t.Fatalf("resume send failure did not immediately fall back: fresh=%v pushes=%d",
+			p6.GetFreshCodeAttested(), atomic.LoadInt32(&pushes))
+	}
+
+	// Cancellation after the timer consumes the resume nonce but before fallback
+	// must not send or charge APNs on behalf of a dead connection.
+	srv.codeResumeSender = func(
+		string, protocol.CodeAttestationResumeChallenge,
+	) error {
+		return nil // no response; let the resume timer win
+	}
+	resumeCtx, cancelResume := context.WithCancel(context.Background())
+	fallbackReached := make(chan struct{})
+	srv.codeResumeFallbackBeforeAPNs = func() {
+		cancelResume()
+		close(fallbackReached)
+	}
+	srv.codeAttestThrottle.mu.Lock()
+	lastPushBefore := srv.codeAttestThrottle.lastPush[sePubB64]
+	srv.codeAttestThrottle.mu.Unlock()
+	p7 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p7.Version = "0.6.0"
+	p7.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p7, kPrivNew
+	srv.codeAttestLoop(resumeCtx, "p1", p7)
+	select {
+	case <-fallbackReached:
+	case <-time.After(time.Second):
+		t.Fatal("resume timeout did not reach cancellation seam")
+	}
+	time.Sleep(10 * time.Millisecond)
+	srv.codeAttestThrottle.mu.Lock()
+	lastPushAfter := srv.codeAttestThrottle.lastPush[sePubB64]
+	srv.codeAttestThrottle.mu.Unlock()
+	if got := atomic.LoadInt32(&pushes); got != 4 ||
+		!lastPushAfter.Equal(lastPushBefore) ||
+		p7.GetFreshCodeAttested() {
+		t.Fatalf("canceled fallback spent APNs budget: pushes=%d before=%v after=%v fresh=%v",
+			got, lastPushBefore, lastPushAfter, p7.GetFreshCodeAttested())
+	}
+
+	// Cancellation inside the resume write failure must also stop before APNs.
+	srv.codeResumeFallbackBeforeAPNs = nil
+	writeCtx, cancelWrite := context.WithCancel(context.Background())
+	srv.codeResumeSender = func(
+		string, protocol.CodeAttestationResumeChallenge,
+	) error {
+		cancelWrite()
+		return errors.New("connection canceled during resume write")
+	}
+	p8 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p8.Version = "0.6.0"
+	p8.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p8, kPrivNew
+	srv.codeAttestLoop(writeCtx, "p1", p8)
+	srv.codeAttestThrottle.mu.Lock()
+	lastPushAfterWriteCancel := srv.codeAttestThrottle.lastPush[sePubB64]
+	srv.codeAttestThrottle.mu.Unlock()
+	if got := atomic.LoadInt32(&pushes); got != 4 ||
+		!lastPushAfterWriteCancel.Equal(lastPushBefore) ||
+		p8.GetFreshCodeAttested() {
+		t.Fatalf("canceled resume write spent APNs budget: pushes=%d before=%v after=%v fresh=%v",
+			got, lastPushBefore, lastPushAfterWriteCancel,
+			p8.GetFreshCodeAttested())
+	}
+
+	// Token rotation after cache match but before resume creation invalidates the
+	// captured identity and falls through to a fresh APNs proof.
+	p9 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p9.Version = "0.6.0"
+	p9.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p9, kPrivNew
+	srv.codeResumeBeforeIdentityCheck = func() {
+		p9.Mu().Lock()
+		p9.APNsDeviceToken = "rotated-token"
+		p9.Mu().Unlock()
+		srv.codeResumeBeforeIdentityCheck = nil
+	}
+	srv.codeResumeSender = func(
+		string, protocol.CodeAttestationResumeChallenge,
+	) error {
+		return errors.New("resume sender must not run after identity rotation")
+	}
+	srv.codeAttestLoop(context.Background(), "p1", p9)
+	if !p9.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 5 {
+		t.Fatalf("pre-record token rotation did not APNs-fallback: fresh=%v pushes=%d",
+			p9.GetFreshCodeAttested(), atomic.LoadInt32(&pushes))
+	}
+
+	// Rotation after the resume was sent clears that one-time proof and arms a
+	// fresh APNs loop; the late old-token response cannot grant it.
+	p10 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p10.Version = "0.6.0"
+	p10.APNsDeviceToken = "rotated-token"
+	p10.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p10, kPrivNew
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		recovered, err := e2e.DecryptWithPrivateKey(
+			&e2e.EncryptedPayload{
+				EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
+				Ciphertext:         message.CodeChallenge.Ciphertext,
+			},
+			kPrivNew,
+		)
+		if err != nil {
+			return err
+		}
+		srv.maybeRearmCodeAttest(
+			context.Background(), "p1", p10,
+			&protocol.HeartbeatMessage{APNsDeviceToken: "rotated-again"},
+		)
+		nonce := string(recovered)
+		srv.handleCodeAttestationResponse(
+			"p1", p10, &protocol.CodeAttestationResponseMessage{
+				Type:      protocol.TypeCodeAttestationResponse,
+				Nonce:     nonce,
+				Signature: signSEOverString(t, seKey, nonce),
+			},
+		)
+		return nil
+	}
+	srv.codeAttestLoop(context.Background(), "p1", p10)
+	deadline = time.Now().Add(time.Second)
+	for !p10.GetFreshCodeAttested() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !p10.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 6 {
+		t.Fatalf("pre-response token rotation did not APNs-fallback: fresh=%v pushes=%d",
+			p10.GetFreshCodeAttested(), atomic.LoadInt32(&pushes))
+	}
+
+	// A malformed SE signature does not consume/cancel the resume challenge;
+	// its timer remains armed and falls back to fresh APNs.
+	p11 := newCodeAttestProvider(kPubB64New, sePubB64)
+	p11.Version = "0.6.0"
+	p11.APNsDeviceToken = "rotated-again"
+	p11.ReportedRuntimeCapabilities = p3.ReportedRuntimeCapabilities
+	current, currentPriv = p11, kPrivNew
+	srv.codeResumeSender = func(
+		_ string, message protocol.CodeAttestationResumeChallenge,
+	) error {
+		recovered, err := e2e.DecryptWithPrivateKey(
+			&e2e.EncryptedPayload{
+				EphemeralPublicKey: message.CodeChallenge.EphemeralPublicKey,
+				Ciphertext:         message.CodeChallenge.Ciphertext,
+			},
+			kPrivNew,
+		)
+		if err != nil {
+			return err
+		}
+		srv.handleCodeAttestationResponse(
+			"p1", p11, &protocol.CodeAttestationResponseMessage{
+				Type:      protocol.TypeCodeAttestationResponse,
+				Nonce:     string(recovered),
+				Signature: base64.StdEncoding.EncodeToString([]byte("bad")),
+			},
+		)
+		return nil
+	}
+	srv.codeAttestLoop(context.Background(), "p1", p11)
+	deadline = time.Now().Add(time.Second)
+	for !p11.GetFreshCodeAttested() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !p11.GetFreshCodeAttested() || atomic.LoadInt32(&pushes) != 7 {
+		t.Fatalf("invalid resume signature did not APNs-fallback: fresh=%v pushes=%d",
+			p11.GetFreshCodeAttested(), atomic.LoadInt32(&pushes))
 	}
 }
 
@@ -333,6 +627,23 @@ func TestCodeAttestReconnectMidFlightDoesNotStrand(t *testing.T) {
 		t.Fatal("conn1 must not be attested (it dropped before replying)")
 	}
 
+	// A different process key K2 on the same SE device/token cannot consume K1's
+	// challenge or inherit its proof.
+	kPubB64New, _, _, _ := providerKeyMaterial(t)
+	wrongProcess := newCodeAttestProvider(kPubB64New, sePubB64)
+	srv.handleCodeAttestationResponse(
+		"conn2-wrong",
+		wrongProcess,
+		&protocol.CodeAttestationResponseMessage{
+			Type:      protocol.TypeCodeAttestationResponse,
+			Nonce:     pushedNonce,
+			Signature: signSEOverString(t, seKey, pushedNonce),
+		},
+	)
+	if wrongProcess.GetCodeAttested() {
+		t.Fatal("K2 consumed an APNs challenge encrypted to K1")
+	}
+
 	// Connection 2 is a fresh connection from the SAME device (same SE key). The
 	// provider's reply to conn1's challenge now lands here.
 	conn2 := newCodeAttestProvider(kPubB64, sePubB64)
@@ -347,6 +658,24 @@ func TestCodeAttestReconnectMidFlightDoesNotStrand(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&pushes); got != 1 {
 		t.Fatalf("reconnect must NOT burn another push; pushes=%d", got)
+	}
+
+	// K2 becomes eligible only after its own freshly encrypted APNs challenge.
+	srv.sendCodeIdentityChallenge(context.Background(), "conn2-wrong", wrongProcess)
+	srv.handleCodeAttestationResponse(
+		"conn2-wrong",
+		wrongProcess,
+		&protocol.CodeAttestationResponseMessage{
+			Type:      protocol.TypeCodeAttestationResponse,
+			Nonce:     pushedNonce,
+			Signature: signSEOverString(t, seKey, pushedNonce),
+		},
+	)
+	if !wrongProcess.GetCodeAttested() {
+		t.Fatal("K2 did not attest after its own fresh APNs challenge")
+	}
+	if got := atomic.LoadInt32(&pushes); got != 2 {
+		t.Fatalf("fresh K2 challenge push count=%d, want 2", got)
 	}
 }
 

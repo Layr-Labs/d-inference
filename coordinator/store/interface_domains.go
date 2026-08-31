@@ -685,11 +685,8 @@ type ProviderStore interface {
 
 	// --- Provider Log Reports ---
 
-	// StoreLogReport stores a provider log report.
-	StoreLogReport(serialNumber, providerID, accountID string, logData []byte) error
-
-	// GetLogReports retrieves log reports for a serial number, newest first.
-	GetLogReports(serialNumber string, limit int) ([]LogReport, error)
+	// StoreLogReport stores a provider log report and returns its support ID.
+	StoreLogReport(accountID string, logData []byte) (int64, error)
 
 	// GetLogReport retrieves a single log report by ID.
 	GetLogReport(id int64) (*LogReport, error)

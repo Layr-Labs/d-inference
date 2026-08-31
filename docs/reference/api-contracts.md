@@ -54,8 +54,8 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `response_format` | object | no | `json_object`, `json_schema` |
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
-| `provider_serial` / `provider_serials` | string / array | no | Darkbloom-specific routing allowlist; stripped before forwarding |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
+| `metadata_details` | bool | no | When `true`, include a JSON `metadata` object with the committed `X-Provider-*` / `X-Timing` / `X-Inference-Job-ID` values plus region/country GeoIP of the serving provider. City, coordinates, lookup source, raw IPs, and provider-supplied case-insensitive variants of `metadata` are omitted. Equivalent header: `X-Darkbloom-Metadata-Details: true` (OpenAI `extra_headers`). The coordinator consumes the flag before provider encryption. Default `false`. See [`response_metadata.go:52-100`](../../coordinator/api/response_metadata.go#L52-L100), [`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276), [`chat_metadata_stream.go:14-82`](../../coordinator/api/chat_metadata_stream.go#L14-L82), and [`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379). |
 
 The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).
 
@@ -97,13 +97,58 @@ Rollback is fail closed: first stop admitting new constrained traffic or point t
     "completion_tokens_details": { "reasoning_tokens": 0 }
   },
   "se_signature": "...",
-  "response_hash": "..."
+  "response_hash": "...",
+  "metadata": {
+    "provider_id": "...",
+    "provider_attested": true,
+    "provider_trust_level": "hardware",
+    "provider_encrypted": true,
+    "provider_chip": "Apple M4 Max",
+    "provider_machine_model": "Mac16,7",
+    "provider_secure_enclave": true,
+    "provider_mda_verified": true,
+    "attestation_se_public_key": "...",
+    "job_id": "...",
+    "location": {
+      "region": "Texas",
+      "region_code": "TX",
+      "country": "United States",
+      "country_code": "US",
+      "timezone": "America/Chicago"
+    },
+    "timing": {
+      "parse_us": 120,
+      "reserve_us": 80,
+      "route_us": 400,
+      "queue_us": 0,
+      "encrypt_us": 50,
+      "dispatch_us": 30,
+      "provider_us": 180000
+    }
+  }
 }
 ```
 
+`metadata` is omitted unless the caller opted in with `metadata_details=true`
+or `X-Darkbloom-Metadata-Details: true`. It never includes device serials,
+city, raw IPs, coordinates, GeoIP lookup source, or provider-supplied
+case-insensitive variants of `metadata`. `location` is region/country-level GeoIP of the serving provider
+when known
+([`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276)).
+
 #### Response (streaming)
 
-`Content-Type: text/event-stream`. Each event is a JSON `chat.completion.chunk`. The coordinator appends a single `data: [DONE]` terminator and may splice in `se_signature` / `response_hash` on the terminal usage chunk. See [`consumer.go:1614-1865`](../../coordinator/api/consumer.go).
+`Content-Type: text/event-stream`. Each event is a JSON
+`chat.completion.chunk`. The coordinator removes any provider-supplied
+top-level `metadata` before relay
+([`consumer.go:2099-2127`](../../coordinator/api/consumer.go#L2099-L2127),
+[`consumer.go:2240-2281`](../../coordinator/api/consumer.go#L2240-L2281)).
+On successful completion it attaches the authoritative opt-in metadata to the
+terminal usage or extras chunk before one `data: [DONE]`
+([`consumer.go:2191-2222`](../../coordinator/api/consumer.go#L2191-L2222)).
+If a committed stream fails, the authoritative metadata event is emitted
+immediately before the terminal in-band error
+([`chat_metadata_stream.go:94-117`](../../coordinator/api/chat_metadata_stream.go#L94-L117)).
 
 ### `POST /v1/responses`
 
@@ -231,6 +276,7 @@ If the consumer does not set a max-output bound, the coordinator injects one so 
 | `X-Darkbloom-Route` | `self` requests self-routing to an owned provider (free); see [`self-route`](../provider/self-route.md) |
 | `X-Inference-Job-ID` | Provider-side job UUID for the winning attempt |
 | `X-Timing` | Per-request latency decomposition (when emitted by middleware) |
+| `X-Darkbloom-Metadata-Details` | `true` asks `POST /v1/chat/completions` to copy the consumer-safe `X-Provider-*` / `X-Timing` details into the JSON `metadata` object. Equivalent body flag: `metadata_details`. |
 
 ## Error format
 

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import darkbloom
@@ -27,5 +28,11 @@ struct ReportCommandTests {
             "--last", "24h",
         ])
         #expect(!arguments.contains("--debug"))
+    }
+
+    @Test("upload response returns a support ID without a serial")
+    func uploadResponseUsesReportID() throws {
+        let data = Data(#"{"status":"stored","report_id":42,"size_bytes":128}"#.utf8)
+        #expect(try Report.decodeUploadReportID(data) == 42)
     }
 }

@@ -375,7 +375,7 @@ func TestPendingRequests(t *testing.T) {
 
 	pr := &PendingRequest{
 		RequestID:  "req-1",
-		ChunkCh:    make(chan string, 1),
+		ChunkCh:    make(chan ProviderChunk, 1),
 		CompleteCh: make(chan protocol.UsageInfo, 1),
 		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
 	}

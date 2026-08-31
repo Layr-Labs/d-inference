@@ -97,7 +97,7 @@ Provider test directories are posture declarations:
 
 | Directory | Gate and prerequisites |
 |---|---|
-| `ProviderCoreTests/Live/` | `DARKBLOOM_LIVE_MLX_TESTS=1`; Apple Silicon, a source-matched metallib, and the selected checkpoint in the local Hugging Face cache. Large Gemma cases also require `DARKBLOOM_LIVE_MLX_GEMMA=1`; two-model cases also require `DARKBLOOM_LIVE_MLX_MULTI_MODEL=1`. |
+| `ProviderCoreTests/Live/` | `DARKBLOOM_LIVE_MLX_TESTS=1`; Apple Silicon, a source-matched metallib, and the selected checkpoint in the local Hugging Face cache. Large Gemma cases also require `DARKBLOOM_LIVE_MLX_GEMMA=1`; two-model cases also require `DARKBLOOM_LIVE_MLX_MULTI_MODEL=1`; the Qwen production artifact canaries also require `DARKBLOOM_LIVE_MLX_QWEN36=1` or `DARKBLOOM_LIVE_MLX_QWEN38=1`. |
 | `ProviderCoreTests/Hardware/` | `DARKBLOOM_HARDWARE_TESTS=1`; a usable Secure Enclave and Keychain. |
 | `ProviderCoreFoundationTests/Resource/` | `DARKBLOOM_RESOURCE_TESTS=1`; sufficient memory for the explicit resource bound. |
 | `DarkbloomCLITests/Integration/` | `DARKBLOOM_CLI_INTEGRATION_TESTS=1`; executes the built `darkbloom` binary. |
@@ -135,6 +135,12 @@ DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_PAGED_DIVERGENCE_PROBE=1 \
   swift test --filter PagedDivergenceProbeTests
 DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_LIVE_MLX_GEMMA=1 \
   swift test --filter Gemma4DecodeProfileTests
+DARKBLOOM_QWEN_FCFS_LIVE=1 \
+  DARKBLOOM_QWEN_FCFS_MODEL_PATH=/path/to/snapshot \
+  DARKBLOOM_QWEN_FCFS_MODEL_ID=EigenLabs/Qwen3.6-35B \
+  DARKBLOOM_QWEN_FCFS_EXPECTED_MODEL_HASH=<aggregate-sha256> \
+  DARKBLOOM_QWEN_FCFS_SOURCE_SHA=<git-sha> \
+  swift test --filter SchedulerPrefillDecisionLiveTests
 ```
 
 The supervised MTP probes must run through the process-group timeout wrapper,

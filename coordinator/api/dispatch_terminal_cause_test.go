@@ -63,6 +63,25 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 	}
 }
 
+func TestShouldStopFailover_DeadlineReasonOverridesAdmissionTimeoutCause(t *testing.T) {
+	msg := typedAdmissionTimeoutMsg()
+	msg.ErrorReason = errorReasonDeadlineUnreachable
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
+	d.setLastInferenceError(nil, msg)
+
+	if d.shouldStopFailover() {
+		t.Fatal("deadline refusal must continue to another untried provider")
+	}
+	if !d.lastFailureDeadline {
+		t.Fatal("deadline refusal was not latched for exhausted-candidate terminal")
+	}
+	if d.capacityRetries != 0 {
+		t.Fatalf(
+			"deadline refusal consumed %d generic capacity retries, want 0",
+			d.capacityRetries)
+	}
+}
+
 // TestShouldStopFailover_Legacy503UsesBoundedCapacityCompatibility pins the
 // mixed-fleet contract: legacy prose is ignored, while bounded 503 status may
 // select the capacity class during rolling upgrade.

@@ -88,7 +88,7 @@ cold-dispatch flags use their own parser that disables only on
 
 | Flag | Default | What it does | Blast radius | Disable / revert |
 |---|---|---|---|---|
-| `EIGENINFERENCE_TTFT_HARD_REJECT` | `false` (soft) | `true` restores the legacy **hard 429** when estimated TTFT exceeds the `5s+1ms/tok` deadline (`main.go:301`) | **Global kill-switch** — reverts the headline behaviour to `master` | This *is* the revert: set `=true` |
+| `EIGENINFERENCE_TTFT_HARD_REJECT` | `false` (soft) | `true` restores the legacy **hard 429** when estimated TTFT exceeds the pinned request-local model deadline | **Global kill-switch** — reverts the headline behaviour to `master` | This *is* the revert: set `=true` |
 | `EIGENINFERENCE_PREFILL_DECODE_RATIO` | `12` (`scheduler.go:1106`) | Prefill-TPS = decode×ratio fallback when no measured prefill rate (`main.go:309`) | Changes TTFT estimate for unmeasured providers | Set `=4` for `master` behaviour |
 | `EIGENINFERENCE_MIN_DECODE_TPS` | `15` (quality bar **ON**) | Per-request sustained-decode floor; soft preference, never fails closed (`main.go:318-332`) | Quality of admitted streams. **Keep ON when opening floodgates.** | `0` disables the floor |
 

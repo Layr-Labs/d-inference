@@ -15,7 +15,7 @@ import Testing
 @testable import ProviderCore
 
 // A real, round-trip-verified 1x1 PNG (red pixel) — same fixture as
-// MediaIngestTests; passes `validateMedia`'s real decode.
+// MediaIngestTests.
 let visionTinyPNGDataURI =
     "data:image/png;base64,"
     + "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAAXNSR0IArs4c6QAAAERl"
@@ -24,9 +24,7 @@ let visionTinyPNGDataURI =
     + "AElFTkSuQmCC"
 
 // A real, round-trip-verified 64x64 H.264 mp4 (3 solid-gray frames) — same
-// fixture as MediaIngestTests; passes `validateMedia`'s real
-// AVFoundation metadata probe, so video-bearing requests reach the v2
-// routing branch in these tests.
+// fixture as MediaIngestTests.
 let visionTinyMP4DataURI =
     "data:video/mp4;base64,"
     + "AAAAHGZ0eXBtcDQyAAAAAWlzb21tcDQxbXA0MgAAAAFtZGF0AAAAAAAAAK4AAAA7BgUyR1ZK3FxMQz+U78URPNFDqAEAAAMAAQMAAAMAAQIAAeYACwAAAwAA"
@@ -287,7 +285,7 @@ func visionMakeRoutingEngine(
     plumbing: EngineV2VisionPlumbing?,
     modelType: String = "gemma4",
     visionGate: VisionMemoryGate? = nil,
-    reasoningEffort: String? = nil
+    templateControls: ChatTemplateControls = .init()
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
@@ -302,7 +300,7 @@ func visionMakeRoutingEngine(
             ]
         },
         defaultMaxTokens: 64,
-        reasoningEffort: reasoningEffort,
+        templateControls: templateControls,
         engineV2Vision: plumbing
     )
 }
@@ -587,13 +585,13 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, templateControls in
+                effort.set(templateControls.reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = visionMakeRoutingEngine(
             container: visionMakeStubContainer(), bridge: bridge, plumbing: plumbing,
-            reasoningEffort: "medium")
+            templateControls: .init(reasoningEffort: "medium"))
 
         _ = try await visionCollectContent(
             try await router.streamChatCompletion(request: visionImageRequest()))
@@ -622,9 +620,8 @@ struct EngineV2VisionRoutingTests {
             container: visionMakeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // The real tinyMP4 passes `validateMedia`'s AVFoundation probe, so
-        // the request reaches the v2 branch (a pre-release draft gated video to legacy
-        // here; v0.7.5 routes it through the engine).
+        // A pre-release draft gated video to legacy here; v0.7.5 routes it
+        // through the engine.
         let request = visionImageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(visionTinyMP4DataURI),
         ])

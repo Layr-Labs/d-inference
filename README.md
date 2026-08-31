@@ -107,7 +107,7 @@ flowchart TB
     CHAL -.-> HW
 ```
 
-Providers carry one of three trust levels, surfaced to consumers on every response via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`):
+Providers carry one of three trust levels, surfaced on provider-committed responses via the `X-Provider-Trust-Level` header (alongside `X-Provider-Attested`, `X-Provider-Encrypted`, `X-Provider-Chip`, and `X-Provider-Secure-Enclave`). Pre-commit validation and capacity errors have no selected provider and no provider headers. `POST /v1/chat/completions` can copy the committed header fields into a JSON `metadata` object when the caller sets `metadata_details: true` (or `X-Darkbloom-Metadata-Details: true`). The same object also includes region/country GeoIP of the serving provider (`metadata.location`; not a header; no city, coordinates, lookup source, or raw IPs). See [`dispatch.go:3371-3379`](coordinator/api/dispatch.go#L3371-L3379) and [`response_metadata.go:209-276`](coordinator/api/response_metadata.go#L209-L276).
 
 | Level | Verification |
 |-------|--------------|
@@ -115,7 +115,7 @@ Providers carry one of three trust levels, surfaced to consumers on every respon
 | `self_signed` | Secure Enclave P-256 signature + periodic challenge-response |
 | `hardware` | MDM enrollment + Apple Managed Device Attestation (MDA) certificate chain |
 
-The strongest production gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. The full attestation chain for any provider is publicly verifiable at **`GET /v1/providers/attestation`**.
+The strongest live-network gate is **APNs code-identity attestation**, which proves the running provider binary is genuine and team-provisioned. Privacy-redacted provider trust status is public at **`GET /v1/providers/attestation`**; hardware serials, UDIDs, and raw Apple certificates remain private to providers and the coordinator.
 
 ## Quickstart (consumers)
 
@@ -168,7 +168,7 @@ OpenAI-compatible, with Anthropic Messages support. Inference endpoints require 
 | `GET /v1/models/catalog` | *Public* — full model catalog with Darkbloom metadata |
 | `GET /v1/pricing` | *Public* — live per-token pricing |
 | `GET /v1/encryption-key` | *Public* — coordinator X25519 key for optional sender-side sealing |
-| `GET /v1/providers/attestation` | *Public* — provider attestation chains for verification |
+| `GET /v1/providers/attestation` | *Public* — privacy-redacted provider attestation status |
 | `GET /v1/payments/balance`, `GET /v1/payments/usage` | Account balance and usage |
 
 Supported across the inference endpoints: **streaming (SSE)**, **tool / function calling**, **vision / multimodal** input, **reasoning models**, and server-side **continuous batching** for throughput. `n > 1` is rejected with `400` (on chat completions and the Responses API). Unimplemented OpenAI endpoints (e.g. `/v1/embeddings`) return a structured `404`.

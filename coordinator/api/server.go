@@ -149,9 +149,11 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // dominated paged's throughput and prefix-adoption wins. Paged remains
 // fully supported behind an explicit `engine_v2_kv_backend = "paged"` (see
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
+// 0.8.15 adds the exact Qwen3.8 dense VLM/NAX target and verified inline MTP
+// assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.10"
+var LatestProviderVersion = "0.8.15"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -201,8 +203,11 @@ type Server struct {
 	exactCacheStatusCache         ExactCacheStatus
 	exactCacheStatusCacheExpires  time.Time
 	codeAttestor                  apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeAttestThrottle            *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache               *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	codeResumeSender              func(string, protocol.CodeAttestationResumeChallenge) error
+	codeResumeBeforeIdentityCheck func()              // test seam between cache match and challenge record
+	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
+	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -236,8 +241,9 @@ type Server struct {
 	binaryHashEnforce bool
 
 	// ttftHardReject controls how the per-request TTFT admission ceiling
-	// (5s+1ms/token) behaves when the best ESTIMATED time-to-first-token exceeds
-	// it. The estimate's prefill term is not provider-measured and runs ~10x
+	// (configured base + 1ms/token) behaves when the best ESTIMATED
+	// time-to-first-token exceeds it. The estimate's prefill term is not
+	// provider-measured and runs ~10x
 	// pessimistic (see resolvedPrefillTPS), which made the legacy hard gate 429
 	// the majority of serveable requests above ~550 prompt tokens. Default false:
 	// the ceiling is a SOFT routing preference — when at least one provider passed
@@ -245,6 +251,13 @@ type Server struct {
 	// provider instead of being rejected. Set true
 	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
 	ttftHardReject bool
+
+	// firstContentDeadlineBase is the ordinary-model fixed term in the
+	// request-absolute first-content budget. It is immutable after startup and
+	// instance-owned; exact-model policy can only tighten it. Concurrent test
+	// servers can exercise production and unit-test postures without racing on
+	// process-global state.
+	firstContentDeadlineBase time.Duration
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator
 	// takes out of public/prefer-owner routing: every matching request is answered
@@ -279,17 +292,6 @@ type Server struct {
 	// to maxDispatchAttempts. Set EIGENINFERENCE_DISABLE_CLIENT_ERROR_STOP=true to
 	// restore the pre-fix behavior (string-only classifyRejection failover).
 	disableClientErrorStop bool
-
-	// prefillKeepaliveInterval enables SSE keepalives during long prefill:
-	// when > 0, a STREAMING request that has been dispatched but not yet produced
-	// its first content chunk commits HTTP 200 and emits ": keepalive" SSE comments
-	// every interval until the first chunk or a terminal error, so OpenRouter's
-	// fetch timeout does not fire and fail us over mid-prefill. The zero value
-	// disables it; production sets it ON (defaultPrefillKeepaliveInterval, 10s, in
-	// cmd/coordinator). 0 keeps the deferred-commit / invisible-failover behavior.
-	// Set via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration). See
-	// prefill_keepalive.go.
-	prefillKeepaliveInterval time.Duration
 
 	// knownRuntimeManifest holds accepted runtime component hashes.
 	// When set, providers whose runtime hashes don't match are marked as
@@ -710,26 +712,32 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	if cfg.MediaFetch != nil {
 		mediaFetchCfg = *cfg.MediaFetch
 	}
+	firstContentDeadlineBase := cfg.FirstContentDeadlineBase
+	if firstContentDeadlineBase <= 0 {
+		firstContentDeadlineBase = defaultFirstContentDeadlineBase
+	}
 
 	s := &Server{
-		registry:             reg,
-		store:                st,
-		ledger:               payments.NewLedger(st),
-		logger:               logger,
-		mux:                  http.NewServeMux(),
-		knownRuntimeManifest: &RuntimeManifest{},
-		metrics:              NewMetrics(),
-		readCache:            newTTLCache(),
-		geoResolver:          newProviderGeoResolverFromEnv(logger),
-		apiKeyCache:          make(map[string]apiKeyCacheEntry),
-		codeAttestThrottle:   newCodeAttestThrottle(),
-		trustReuseCache:      newTrustReuseCache(),
-		settlements:          newSettlementHolder(),
-		zombieCanceller:      newZombieStreamCanceller(),
-		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
-		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:        mediafetch.NewResolver(mediaFetchCfg, logger),
+		registry:                 reg,
+		store:                    st,
+		ledger:                   payments.NewLedger(st),
+		logger:                   logger,
+		mux:                      http.NewServeMux(),
+		knownRuntimeManifest:     &RuntimeManifest{},
+		metrics:                  NewMetrics(),
+		readCache:                newTTLCache(),
+		geoResolver:              newProviderGeoResolverFromEnv(logger),
+		apiKeyCache:              make(map[string]apiKeyCacheEntry),
+		codeAttestThrottle:       newCodeAttestThrottle(),
+		trustReuseCache:          newTrustReuseCache(),
+		settlements:              newSettlementHolder(),
+		zombieCanceller:          newZombieStreamCanceller(),
+		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
+		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
+		firstContentDeadlineBase: firstContentDeadlineBase,
 	}
+	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -755,6 +763,26 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	s.releaseKey = cfg.ReleaseKey
 
 	return s
+}
+
+func (s *Server) handleRuntimeCapabilitiesPromoted(providerID string) {
+	provider := s.registry.GetProvider(providerID)
+	if provider == nil {
+		return
+	}
+	provider.Mu().Lock()
+	backend, version := provider.Backend, provider.Version
+	provider.Mu().Unlock()
+	if !s.providerSupportsDesiredModels(backend, version) {
+		return
+	}
+	entries := s.registry.DesiredModelsForProvider(providerID)
+	if err := s.registry.SendDesiredModels(providerID, entries); err != nil {
+		s.logger.Warn("failed to refresh desired_models after capability promotion",
+			"provider_id", providerID,
+			"error", err,
+		)
+	}
 }
 
 // submitTelemetry enqueues a best-effort telemetry write onto the non-blocking
@@ -1011,6 +1039,8 @@ func (s *Server) SyncModelCatalog() {
 			WeightHash: row.ActiveVersion.AggregateSHA256,
 			SizeGB:     float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
 			MinRAMGB:   row.MinRAMGB,
+			RequiredProviderCapabilities: append(
+				[]string{}, row.RequiredProviderCapabilities...),
 		})
 	}
 	// Advance the prompt-artifact generation before publishing new routing
@@ -1023,6 +1053,11 @@ func (s *Server) SyncModelCatalog() {
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
 	s.syncModelAliases(registryRows)
+	// Catalog capability changes can invalidate an in-flight desired-model
+	// prefetch even when alias pointers did not change. Re-publish the filtered
+	// desired state immediately; newly ineligible providers receive an empty
+	// set, which cancels stale reconciliation work.
+	s.fanOutDesiredModels()
 	s.invalidateCatalogCache()
 }
 
@@ -1088,6 +1123,7 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
+	s.readCache.Invalidate("stats:v1")
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.
@@ -1159,16 +1195,6 @@ func (s *Server) SetServabilityGate(enabled bool) {
 // to maxDispatchAttempts). Default (false) = stop enabled. Call before serving.
 func (s *Server) SetDisableClientErrorStop(disabled bool) {
 	s.disableClientErrorStop = disabled
-}
-
-// SetPrefillKeepaliveInterval sets the prefill SSE keepalive cadence.
-// <= 0 disables it. Production enables it by default (see cmd/coordinator). See
-// the prefillKeepaliveInterval field. Call before serving starts.
-func (s *Server) SetPrefillKeepaliveInterval(d time.Duration) {
-	if d < 0 {
-		d = 0
-	}
-	s.prefillKeepaliveInterval = d
 }
 
 // SetLongPromptThreshold configures the estimated-prompt-token count at/above
@@ -1419,16 +1445,22 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 		version := provider.Version
 		backend := provider.Backend
 
+		// Manifest policy is coordinator-owned and can be withdrawn, rotated,
+		// or rolled back independently of the connected process. Rebuild all
+		// policy-derived state from scratch, but preserve FreshCodeAttested:
+		// that proof remains bound to this connection's token, keys, and code.
+		// The token/key/code/trust invalidation paths clear it separately.
+		provider.RuntimeVerified = false
+		provider.RuntimeManifestChecked = false
+		provider.MetallibVerified = false
+		provider.RuntimeCapabilities = nil
+
 		if s.knownRuntimeManifest == nil {
-			// Manifest was withdrawn — deroute provider until the next
-			// successful challenge re-verifies it.
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
+			// Manifest was withdrawn — keep the process proof, but deroute the
+			// provider until policy once again approves its reported runtime.
 		} else if s.minProviderVersion != "" &&
 			version != "" &&
 			semverLess(version, s.minProviderVersion) {
-			provider.RuntimeVerified = false
-			provider.RuntimeManifestChecked = false
 			s.ddIncr("provider_version_below_minimum", []string{"gate:manifest_sync", "version:" + version})
 		} else {
 			runtimeOK, _ := s.verifyRuntimeHashesForBackend(
@@ -1437,13 +1469,34 @@ func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
 				runtimeHash,
 				templateHashes,
 			)
-			if !runtimeOK {
-				provider.RuntimeVerified = false
-				provider.RuntimeManifestChecked = false
-			}
+			provider.RuntimeVerified = runtimeOK
+			provider.RuntimeManifestChecked = runtimeOK
+			provider.MetallibVerified = runtimeOK &&
+				runtimeManifestApprovesMetallib(
+					s.knownRuntimeManifest, templateHashes)
 		}
 		provider.Mu().Unlock()
+		if err := s.registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+			s.logger.Warn("runtime policy capability reconciliation failed",
+				"provider_id", providerID, "error", err)
+		}
+		if cleared := s.registry.ClearIneligiblePendingModelLoads(providerID); cleared > 0 {
+			s.logger.Info("cleared pending model loads after runtime policy revocation",
+				"provider_id", providerID, "count", cleared)
+		}
 	}
+}
+
+func runtimeManifestApprovesMetallib(
+	manifest *RuntimeManifest,
+	reported map[string]string,
+) bool {
+	if manifest == nil {
+		return false
+	}
+	expected := strings.TrimSpace(manifest.TemplateHashes["mlx_metallib"])
+	got := strings.TrimSpace(reported["mlx_metallib"])
+	return expected != "" && got != "" && strings.EqualFold(expected, got)
 }
 
 // RuntimeManifest holds the set of accepted hashes for provider runtime components.
@@ -1802,15 +1855,15 @@ func (s *Server) routes() {
 	// Alias-aware owned live-model ids for the console's self-route key picker.
 	s.mux.HandleFunc("GET /v1/me/self-route-models", s.requirePrivyAuth(s.handleMySelfRouteModels))
 	// Ownership-checked hard delete of a retired/offline machine's record(s).
-	s.mux.HandleFunc("DELETE /v1/me/providers/{serial}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
+	s.mux.HandleFunc("DELETE /v1/me/providers/{id}", s.requirePrivyAuth(s.rateLimitFinancial(s.handleDeleteMyProvider)))
 
 	// MDM enrollment — generates the per-device .mobileconfig (SCEP + MDM).
 	// No auth needed — trust comes from MDM SecurityInfo verification after
 	// enrollment, not from possession of the profile.
 	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 
-	// Attestation verification — public, no auth needed.
-	// Users can independently verify Apple's MDA certificate chain.
+	// Attestation status — public, no auth needed. Raw device identity and MDA
+	// certificates remain coordinator-private because the leaf embeds serial/UDID.
 	s.mux.HandleFunc("GET /v1/providers/attestation", s.handleProviderAttestation)
 
 	// Capacity snapshot — no auth needed. Upstream routers poll this.
@@ -1951,7 +2004,6 @@ func (s *Server) routes() {
 
 	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
-	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
 
 	// Metrics snapshot (admin only)
@@ -2546,7 +2598,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+metadataDetailsHeader)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 

@@ -140,6 +140,17 @@ struct GemmaOptimizationReport: Sendable, Equatable {
 
 enum EngineV2SlotFactory {
 
+    static func shouldLogPrefillDeadlineProjectionBypass(
+        configuredMode: PrefillDeadlineMode?,
+        environment: [String: String]
+    ) -> Bool {
+        PrefillDeadlineMode.resolve(
+            configured: configuredMode,
+            environment: environment) == .enforce
+            && !EngineV2Factory.prefillDeadlineProjectionSupported(
+                environment: environment)
+    }
+
     /// Narrow assembly seams for production-order regression tests. Normal
     /// callers use the empty value and execute only concrete production code.
     struct AssemblyOverrides {
@@ -175,8 +186,8 @@ enum EngineV2SlotFactory {
     /// - Parameters:
     ///   - modelId: catalog id the slot serves under.
     ///   - modelType: `model_type` from config.json (EOS policy input).
-    ///   - isVLM: config declares `vision_config` — the engine directly uses
-    ///     the `Gemma4TextModel` owned by the loaded VLM wrapper.
+    ///   - isVLM: config declares `vision_config` — Gemma serves its owned
+    ///     text tower, while Qwen3-VL serves the loaded wrapper directly.
     ///   - modelDirectory: checkpoint dir (prompt-contract identity input).
     ///   - tokenizer: the container's tokenizer handle.
     ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,
@@ -190,8 +201,9 @@ enum EngineV2SlotFactory {
     ///     their ledger).
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
-    ///   - environment: prefix-cache policy environment
-    ///     (`DARKBLOOM_PREFIX_CACHE*`); injectable for tests.
+    ///   - environment: runtime policy environment (including prefix-cache,
+    ///     MTP, KV-backend, and prefill-deadline controls); injectable for
+    ///     tests.
     ///   - emitTelemetry: injectable sink (tests); nil ⇒ shared client.
     ///   - makeEngineOverride: scripted engine builder for tests
     ///     ((modelId, engine capacity) — mirrors
@@ -213,6 +225,7 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
@@ -233,6 +246,7 @@ enum EngineV2SlotFactory {
             kvBudget: kvBudget,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
+            prefillDeadlineMode: prefillDeadlineMode,
             weightHash: weightHash,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
@@ -260,6 +274,7 @@ enum EngineV2SlotFactory {
         kvBudget: GlobalKVCacheBudget?,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
         weightHash: String? = nil,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel? = nil,
@@ -267,7 +282,7 @@ enum EngineV2SlotFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
-        assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
+        assistantLoader: any ProviderMTPAssistantLoading = ProductionProviderMTPAssistantLoader(),
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> ProviderEngineBundle {
@@ -598,6 +613,20 @@ enum EngineV2SlotFactory {
             throw EngineV2ProductionError.noKVHeadroom
         }
 
+        let resolvedPartialPrefillCap =
+            EngineV2Factory.maxConcurrentPartialPrefills(
+                environment: environment)
+        if shouldLogPrefillDeadlineProjectionBypass(
+            configuredMode: prefillDeadlineMode,
+            environment: environment)
+        {
+            logInfo(
+                "engine_v2_prefill_deadline model_id=\(modelId) "
+                    + "effective=ordinary_submit "
+                    + "reason=partial_prefill_projection_unsupported "
+                    + "max_concurrent_partial_prefills="
+                    + (resolvedPartialPrefillCap.map(String.init) ?? "unlimited"))
+        }
 
         let bridge = try EngineV2Factory.makeBridge(
             modelId: modelId,
@@ -606,6 +635,8 @@ enum EngineV2SlotFactory {
             extraEOSTokens: snapshot.extraEOSTokens,
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: maxConcurrentRequests,
+            prefillDeadlineMode: prefillDeadlineMode,
+            runtimePolicyEnvironment: environment,
             kvBytesPerToken: processKVBytesPerToken,
             auxiliaryBytesPerToken: assistantStateBytesPerToken,
             auxiliaryTokenGranularity: assistantStateTokenGranularity,

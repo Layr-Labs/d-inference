@@ -550,7 +550,7 @@ func (r *Registry) warmPoolFleetSnapshot(now time.Time) map[string]warmPoolModel
 		p.mu.Lock()
 		models := make([]string, 0, len(p.Models))
 		for _, m := range p.Models {
-			if r.modelAllowedByCatalogLocked(m) {
+			if r.providerModelAllowedByCatalogLocked(p, m) {
 				models = append(models, m.ID)
 			}
 		}

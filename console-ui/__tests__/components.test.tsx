@@ -15,7 +15,6 @@ function makeTrust(overrides: Partial<TrustMetadata> = {}): TrustMetadata {
     secureEnclave: false,
     mdaVerified: false,
     providerChip: "",
-    providerSerial: "",
     providerModel: "",
     ...overrides,
   };

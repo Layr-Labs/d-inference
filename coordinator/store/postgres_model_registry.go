@@ -33,15 +33,15 @@ func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) erro
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, status, description, runtime_parameters, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, COALESCE(NULLIF($14::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
+		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, required_provider_capabilities, status, description, runtime_parameters, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE(NULLIF($15::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
 		ON CONFLICT (id) DO UPDATE SET
 		  display_name = $2, family = $3, architecture = $4, quantization = $5, max_context_length = $6,
-		  max_output_length = $7, min_ram_gb = $8, capabilities = $9,
-		  description = $11, runtime_parameters = $12, metadata = $13, updated_at = NOW()`,
+		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, required_provider_capabilities = $10,
+		  description = $12, runtime_parameters = $13, metadata = $14, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
 		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, canonicalModelCapabilities(entry.Capabilities),
-		entry.Status, entry.Description, runtimeParameters, metadata, entry.CreatedAt)
+		canonicalModelCapabilities(entry.RequiredProviderCapabilities), entry.Status, entry.Description, runtimeParameters, metadata, entry.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert model registry entry: %w", err)
 	}
@@ -67,15 +67,15 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		return err
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, status, description, runtime_parameters, metadata, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+		INSERT INTO model_registry (id, display_name, family, architecture, quantization, max_context_length, max_output_length, min_ram_gb, capabilities, required_provider_capabilities, status, description, runtime_parameters, metadata, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE SET
 		  display_name = $2, family = $3, architecture = $4, quantization = $5, max_context_length = $6,
-		  max_output_length = $7, min_ram_gb = $8, capabilities = $9,
-		  description = $11, runtime_parameters = $12, metadata = $13, updated_at = NOW()`,
+		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, required_provider_capabilities = $10,
+		  description = $12, runtime_parameters = $13, metadata = $14, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
 		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, canonicalModelCapabilities(entry.Capabilities),
-		entry.Status, entry.Description, entryRuntimeParameters, entryMetadata)
+		canonicalModelCapabilities(entry.RequiredProviderCapabilities), entry.Status, entry.Description, entryRuntimeParameters, entryMetadata)
 	if err != nil {
 		return fmt.Errorf("store: upsert model in version tx: %w", err)
 	}
@@ -298,8 +298,8 @@ func (s *PostgresStore) MarkPublishingAPIKeyUsed(id string) error {
 
 const activeModelRegistryQuery = `
 	SELECT mr.id, mr.display_name, mr.family, mr.architecture, mr.quantization, mr.max_context_length,
-	       mr.max_output_length, mr.min_ram_gb, mr.capabilities, mr.status, mr.description,
-	       mr.runtime_parameters, mr.metadata, mr.created_at, mr.updated_at,
+	       mr.max_output_length, mr.min_ram_gb, mr.capabilities, mr.required_provider_capabilities,
+	       mr.status, mr.description, mr.runtime_parameters, mr.metadata, mr.created_at, mr.updated_at,
 	       mv.id, mv.model_id, mv.version, mv.r2_prefix, mv.aggregate_sha256,
 	       mv.total_size_bytes, mv.file_count, mv.status, mv.uploaded_by,
 	       mv.uploaded_at, mv.promoted_at, mv.metadata
@@ -314,8 +314,8 @@ func scanModelRegistryRecord(row scanner) (*ModelRegistryRecord, error) {
 	var entryRuntimeParameters, entryMetadata, versionMetadata []byte
 	err := row.Scan(
 		&rec.ID, &rec.DisplayName, &rec.Family, &rec.Architecture, &rec.Quantization, &rec.MaxContextLength,
-		&rec.MaxOutputLength, &rec.MinRAMGB, &rec.Capabilities, &rec.Status, &rec.Description,
-		&entryRuntimeParameters, &entryMetadata, &rec.CreatedAt, &rec.UpdatedAt,
+		&rec.MaxOutputLength, &rec.MinRAMGB, &rec.Capabilities, &rec.RequiredProviderCapabilities,
+		&rec.Status, &rec.Description, &entryRuntimeParameters, &entryMetadata, &rec.CreatedAt, &rec.UpdatedAt,
 		&version.ID, &version.ModelID, &version.Version, &version.R2Prefix, &version.AggregateSHA256,
 		&version.TotalSizeBytes, &version.FileCount, &version.Status, &version.UploadedBy,
 		&version.UploadedAt, &version.PromotedAt, &versionMetadata,

@@ -236,7 +236,8 @@ func TestRoutingMetrics_SelectedTraversesDispatch(t *testing.T) {
 		{"routing.decisions", "model:" + model},
 		{"routing.provider_selected", "provider_id:" + provider.registryID},
 		{"routing.provider_selected", "model:" + model},
-		{"routing.cost_ms", "provider_id:" + provider.registryID},
+		// routing.cost_ms is gone: #704 deleted the legacy consumer.go dispatch
+		// path that emitted it; the shared ladder emits decisions + selection only.
 	}
 	for _, check := range checks {
 		matches := findMetrics(packets, check.metric)

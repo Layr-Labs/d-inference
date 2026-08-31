@@ -38,7 +38,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		t.Fatalf("NewPostgres: %v", err)
 	}
 
-	if _, err := s.pool.Exec(ctx, "TRUNCATE "+strings.Join(postgresContractTables, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+	if err := resetPostgresContractTables(ctx, s); err != nil {
 		s.Close()
 		postgresTestMu.Unlock()
 		t.Fatalf("reset PostgreSQL contract tables: %v", err)
@@ -47,7 +47,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
-		_, cleanupErr := s.pool.Exec(cleanupCtx, "TRUNCATE "+strings.Join(postgresContractTables, ", ")+" RESTART IDENTITY CASCADE")
+		cleanupErr := resetPostgresContractTables(cleanupCtx, s)
 		s.Close()
 		postgresTestMu.Unlock()
 		if cleanupErr != nil {
@@ -55,6 +55,22 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		}
 	})
 	return s
+}
+
+// resetPostgresContractTables truncates all application data tables, then
+// restores invariant rows that completed one-time migrations guarantee.
+// Migration markers survive the truncate (schema_migrations is not listed),
+// and the usage-totals migration's guard treats "marker applied but
+// usage_totals counter row missing" as corruption on the next NewPostgres —
+// so the counter row must be re-seeded exactly as the migration left it.
+func resetPostgresContractTables(ctx context.Context, s *PostgresStore) error {
+	if _, err := s.pool.Exec(ctx, "TRUNCATE "+strings.Join(postgresContractTables, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `INSERT INTO usage_totals (id) VALUES (1) ON CONFLICT (id) DO NOTHING`); err != nil {
+		return fmt.Errorf("re-seed usage_totals counter row: %w", err)
+	}
+	return nil
 }
 
 // Compile-time interface checks (replace the old TestMemoryStoreImplementsInterface

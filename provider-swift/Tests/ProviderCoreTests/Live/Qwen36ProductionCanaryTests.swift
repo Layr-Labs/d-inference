@@ -4,12 +4,73 @@ import Foundation
 import MLX
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 import Testing
 
 @testable import ProviderCore
 
 @Suite("Qwen3.6 production artifact canary", .serialized)
 struct Qwen36ProductionCanaryTests {
+    @Test(
+        "720p inline video serves through EngineV2 inside the 11-second clock",
+        .enabled(
+            if: Qwen36ProductionCanary.enabled,
+            "set DARKBLOOM_LIVE_MLX_TESTS=1 and DARKBLOOM_LIVE_MLX_QWEN36=1 to run the local real-artifact Qwen video canary")
+    )
+    func videoServesInsideFirstContentClock() async throws {
+        let fixture = try await Qwen36ProductionCanary.load()
+        let colors: [(r: UInt8, g: UInt8, b: UInt8)] = [
+            (255, 0, 0), (255, 0, 0), (255, 0, 0), (255, 0, 0), (255, 0, 0),
+            (0, 0, 255), (0, 0, 255), (0, 0, 255), (0, 0, 255), (0, 0, 255),
+        ]
+        let clip = try await makeSolidColorClip(
+            colors: colors, fps: 2, width: 1280, height: 720)
+        let bundle = try await fixture.makeBundle(
+            preparation: .init(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)))
+        do {
+            let probe = Qwen36ProductionCanaryVisionProbe()
+            let scheduler = fixture.scheduler(
+                bundle: bundle,
+                vision: EngineV2VisionPlumbing(
+                    prepare: { container, request, templateControls in
+                        let prepared = try await EngineV2VisionPrefill.prepare(
+                            container: container,
+                            request: request,
+                            templateControls: templateControls)
+                        probe.recordPrepared(spanCount: prepared.spans.count)
+                        return prepared
+                    },
+                    emitTelemetry: { _ in probe.recordRefusal() }),
+                firstContentDeadline: FirstContentDeadline(
+                    relativeBudgetMilliseconds: 11_000))
+
+            let startedAt = ContinuousClock.now
+            let result = try await Qwen36ProductionCanary.collect(
+                scheduler,
+                request: fixture.videoRequest(dataURI(forMP4: clip)))
+            let elapsed = startedAt.duration(to: .now)
+            print("QWEN_VIDEO_CANARY request_elapsed=\(elapsed)")
+
+            let firstContentLatency = try #require(result.firstContentLatency)
+            #expect(firstContentLatency < .seconds(11))
+            let groundedColors = result.text.lowercased()
+                .split(whereSeparator: { !$0.isLetter })
+                .map(String.init)
+            #expect(groundedColors == ["red", "blue"])
+            #expect(probe.preparedCount == 1)
+            #expect(probe.lastSpanCount == Qwen3VLProcessor.maxVideoFrames / 2)
+            #expect(probe.refusalCount == 0)
+            #expect(result.info?.completionTokens ?? 0 > 0)
+            #expect(await fixture.kvBudget.outstandingReservedBytes() == 0)
+        } catch {
+            await Qwen36ProductionCanary.retire(bundle)
+            throw error
+        }
+        await Qwen36ProductionCanary.retire(bundle)
+    }
+
     @Test(
         "combined VLM and inline MTP serve through the production bundle",
         .enabled(
@@ -57,11 +118,11 @@ struct Qwen36ProductionCanaryTests {
             let visionScheduler = fixture.scheduler(
                 bundle: targetBundle,
                 vision: EngineV2VisionPlumbing(
-                    prepare: { container, request, reasoningEffort in
+                    prepare: { container, request, templateControls in
                         let prepared = try await EngineV2VisionPrefill.prepare(
                             container: container,
                             request: request,
-                            reasoningEffort: reasoningEffort)
+                            templateControls: templateControls)
                         visionProbe.recordPrepared(spanCount: prepared.spans.count)
                         return prepared
                     },
@@ -300,18 +361,23 @@ private enum Qwen36ProductionCanary {
             imageURL: imageURL,
             container: container,
             targetSizing: sizing,
-            tokenizer: tokenizer)
+            tokenizer: tokenizer,
+            kvBudget: GlobalKVCacheBudget())
     }
 
     static func collect(
         _ engine: MultiModelBatchSchedulerEngine,
         request: OpenAIChatCompletionRequest
     ) async throws -> Qwen36ProductionCanaryServerResult {
+        let startedAt = ContinuousClock.now
         let stream = try await engine.streamChatCompletion(request: request)
         var result = Qwen36ProductionCanaryServerResult()
         for try await event in stream {
             switch event {
             case .content(let text):
+                if result.firstContentLatency == nil, !text.isEmpty {
+                    result.firstContentLatency = startedAt.duration(to: .now)
+                }
                 result.text += text
             case .toolCall(let call):
                 result.toolCalls.append(call)
@@ -433,6 +499,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
     let container: ModelContainer
     let targetSizing: SlotSizingSnapshot
     let tokenizer: TokenizerHandle
+    let kvBudget: GlobalKVCacheBudget
 
     func makeBundle(preparation: SpecDecPreparation) async throws -> ProviderEngineBundle {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
@@ -459,7 +526,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
                 sizing: sizing,
                 kvBytesCapacity: grant,
                 maxConcurrentRequests: 2,
-                kvBudget: nil,
+                kvBudget: kvBudget,
                 specDecPreparation: preparation,
                 preparedModel: prepared,
                 environment: [
@@ -494,18 +561,24 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
 
     func scheduler(
         bundle: ProviderEngineBundle,
-        vision: EngineV2VisionPlumbing? = nil
+        vision: EngineV2VisionPlumbing? = nil,
+        firstContentDeadline: FirstContentDeadline? = nil
     ) -> MultiModelBatchSchedulerEngine {
         let entry = MultiModelBatchSchedulerEngine.ModelRegistryEntry(
             tokenizer: tokenizer,
             modelType: Qwen36ProductionCanary.modelType,
             container: container,
             isVLM: true,
-            engineV2Bridge: bundle.bridge)
+            engineV2Bridge: bundle.bridge,
+            visionGate: VisionMemoryGate(
+                kvBudget: kvBudget,
+                fp16KVBytesPerToken: targetSizing.fp16KVBytesPerToken,
+                contextLength: targetSizing.maxContextLength))
         return MultiModelBatchSchedulerEngine(
             registryProvider: { [entry] in [Qwen36ProductionCanary.modelID: entry] },
             defaultMaxTokens: 512,
-            engineV2Vision: vision)
+            engineV2Vision: vision,
+            firstContentDeadline: firstContentDeadline)
     }
 
     func textRequest() -> OpenAIChatCompletionRequest {
@@ -545,6 +618,24 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
             topK: 0,
             minP: 0,
             maxTokens: 128)
+    }
+
+    func videoRequest(_ uri: String) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: Qwen36ProductionCanary.modelID,
+            messages: [.init(
+                role: .user,
+                content: .parts([
+                    .text(
+                        "Name the two solid colors shown in order. "
+                            + "Reply with only the two lowercase color names."),
+                    .videoURL(uri),
+                ]))],
+            temperature: 0,
+            topP: 1,
+            topK: 0,
+            minP: 0,
+            maxTokens: 32)
     }
 
     func toolRequest() -> OpenAIChatCompletionRequest {
@@ -614,7 +705,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
             request: request,
             tokenizer: tokenizer.inner,
             modelType: Qwen36ProductionCanary.modelType,
-            reasoningEffort: nil)
+            templateControls: .init())
     }
 
     func cancelAfterFirstDelta(
@@ -670,6 +761,7 @@ private struct Qwen36ProductionCanaryServerResult {
     var text = ""
     var toolCalls: [ToolCall] = []
     var info: ServerGenerationInfo?
+    var firstContentLatency: Duration?
 }
 
 private struct Qwen36ProductionCanaryCancellationResult {

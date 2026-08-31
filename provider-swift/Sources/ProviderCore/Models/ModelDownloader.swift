@@ -27,12 +27,14 @@ public struct ModelDownloader: Sendable {
     internal let urlSession: URLSession
     internal let catalogClient: ModelCatalogClient?
     internal let concurrency: Int
+    internal let runtimeCapabilities: Set<ProviderRuntimeCapability>
 
     public init(
         r2CDNURL: String? = nil,
         urlSession: URLSession = .shared,
         catalogClient: ModelCatalogClient? = nil,
-        concurrency: Int = 4
+        concurrency: Int = 4,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = []
     ) {
         if let r2CDNURL { self.r2CDNURL = r2CDNURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
         else if let env = ProcessInfo.processInfo.environment["DARKBLOOM_R2_CDN_URL"], !env.isEmpty {
@@ -43,6 +45,7 @@ public struct ModelDownloader: Sendable {
         self.urlSession = urlSession
         self.catalogClient = catalogClient
         self.concurrency = max(1, concurrency)
+        self.runtimeCapabilities = runtimeCapabilities
     }
 
     /// Download a catalog model into the local HuggingFace cache.
@@ -61,6 +64,14 @@ public struct ModelDownloader: Sendable {
         model: CatalogModel,
         onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
     ) async throws {
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: model.id,
+            catalogRequirements: model.requiredProviderCapabilities,
+            available: runtimeCapabilities)
+        guard eligibility.isEligible else {
+            throw ModelCatalogError.ineligible(
+                ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
+        }
         if model.r2Prefix != nil, model.aggregateSHA256 != nil {
             let manifest: ModelManifest
             if let catalogClient {

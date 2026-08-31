@@ -198,6 +198,8 @@ extension ProviderLoop {
     internal func ensureModelLoaded(
         modelId: String, allowEviction: Bool = true
     ) async throws {
+        try ModelRuntimeRequirements.requireEligible(
+            modelID: modelId, available: loopConfig.runtimeCapabilities)
         if isShuttingDown {
             throw CancellationError()
         }
@@ -337,7 +339,7 @@ extension ProviderLoop {
             // fits; otherwise this load continues target-only.
             mtpPreparation = await admitSpecDecIfMemoryAllows(
                 mtpPreparation, targetRequiredGb: requiredGb)
-            let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
+            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 

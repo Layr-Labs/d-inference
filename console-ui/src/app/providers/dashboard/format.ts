@@ -7,7 +7,6 @@ export {
   formatRelative,
   formatNumber,
   abbreviateNumber,
-  maskSerial,
   shortModelName,
   pct,
   clampPct,

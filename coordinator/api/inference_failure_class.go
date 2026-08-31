@@ -121,6 +121,10 @@ const (
 	// rejectionTransientCapacity: a provider/time-specific shortage. Failover may
 	// help, bounded by maxCapacityClassRetries.
 	rejectionTransientCapacity
+	// rejectionDeadlineUnreachable: this provider cannot produce first content
+	// within the request's remaining absolute budget. Another provider may land,
+	// so fail over without consuming the generic transient-capacity retry cap.
+	rejectionDeadlineUnreachable
 )
 
 // classifyRejection refines a pre-content provider error into the dispatch
@@ -169,6 +173,8 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 		return rejectionDeterministicUnservable
 	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy":
 		return rejectionTransientCapacity
+	case errorReasonDeadlineUnreachable:
+		return rejectionDeadlineUnreachable
 	case "request_exceeds_batch_token_budget":
 		if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
 			return rejectionTransientCapacity

@@ -140,7 +140,8 @@ func (r *Registry) FleetCapacitySnapshot() FleetCapacity {
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		if !r.publiclyRoutableLocked(p, now) {
+		if !r.publiclyRoutableLocked(p, now) ||
+			!r.providerServesAnyCatalogModelLocked(p) {
 			p.mu.Unlock()
 			continue
 		}

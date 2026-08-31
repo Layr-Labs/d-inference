@@ -64,14 +64,59 @@ type CompletionTokensDetails struct {
 
 // ChatCompletionResponse is an OpenAI-compatible chat completion response.
 type ChatCompletionResponse struct {
-	ID           string                 `json:"id"`
-	Object       string                 `json:"object"`
-	Created      int64                  `json:"created"`
-	Model        string                 `json:"model"`
-	Choices      []ChatCompletionChoice `json:"choices"`
-	Usage        ChatCompletionUsage    `json:"usage"`
-	SESignature  string                 `json:"se_signature,omitempty"`
-	ResponseHash string                 `json:"response_hash,omitempty"`
+	ID           string                  `json:"id"`
+	Object       string                  `json:"object"`
+	Created      int64                   `json:"created"`
+	Model        string                  `json:"model"`
+	Choices      []ChatCompletionChoice  `json:"choices"`
+	Usage        ChatCompletionUsage     `json:"usage"`
+	SESignature  string                  `json:"se_signature,omitempty"`
+	ResponseHash string                  `json:"response_hash,omitempty"`
+	Metadata     *ChatCompletionMetadata `json:"metadata,omitempty"`
+}
+
+// RequestTimingDetails is the X-Timing latency decomposition, in microseconds.
+// media_fetch_us is omitted when the request did not fetch remote media.
+type RequestTimingDetails struct {
+	ParseUs      int64 `json:"parse_us"`
+	ReserveUs    int64 `json:"reserve_us"`
+	MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
+	RouteUs      int64 `json:"route_us"`
+	QueueUs      int64 `json:"queue_us"`
+	EncryptUs    int64 `json:"encrypt_us"`
+	DispatchUs   int64 `json:"dispatch_us"`
+	ProviderUs   int64 `json:"provider_us"`
+}
+
+// ChatCompletionMetadata is the opt-in consumer-safe provider, attestation,
+// timing, and coarse location block returned on POST /v1/chat/completions when
+// the caller sets metadata_details=true (or X-Darkbloom-Metadata-Details: true).
+// Provider/attestation/timing match the X-Provider-* / X-Timing headers.
+// Location is region/country GeoIP only — city, coordinates, lookup source,
+// and raw IPs are omitted. Device serials are never included.
+type ChatCompletionMetadata struct {
+	ProviderID             string                  `json:"provider_id,omitempty"`
+	ProviderAttested       bool                    `json:"provider_attested"`
+	ProviderTrustLevel     string                  `json:"provider_trust_level,omitempty"`
+	ProviderEncrypted      bool                    `json:"provider_encrypted"`
+	ProviderChip           string                  `json:"provider_chip,omitempty"`
+	ProviderMachineModel   string                  `json:"provider_machine_model,omitempty"`
+	ProviderSecureEnclave  *bool                   `json:"provider_secure_enclave,omitempty"`
+	ProviderMDAVerified    bool                    `json:"provider_mda_verified"`
+	AttestationSEPublicKey string                  `json:"attestation_se_public_key,omitempty"`
+	JobID                  string                  `json:"job_id,omitempty"`
+	Timing                 *RequestTimingDetails   `json:"timing,omitempty"`
+	Location               *ProviderApproxLocation `json:"location,omitempty"`
+}
+
+// ProviderApproxLocation is the region/country-level GeoIP area of the serving
+// provider. City, coordinates, lookup source, and raw IPs are omitted.
+type ProviderApproxLocation struct {
+	Region      string `json:"region,omitempty"`
+	RegionCode  string `json:"region_code,omitempty"`
+	Country     string `json:"country,omitempty"`
+	CountryCode string `json:"country_code,omitempty"`
+	Timezone    string `json:"timezone,omitempty"`
 }
 
 // ── Responses API ────────────────────────────────────────────────────

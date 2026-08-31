@@ -8,6 +8,35 @@ require_cmd() {
   fi
 }
 
+normalize_required_provider_capabilities() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+if not raw.strip():
+    print("")
+    raise SystemExit
+
+seen = set()
+normalized = []
+for raw_capability in raw.split(","):
+    capability = raw_capability.strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", capability):
+        print(
+            "Required provider capabilities must be comma-separated "
+            "lowercase capability names.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if capability not in seen:
+        seen.add(capability)
+        normalized.append(capability)
+
+print(",".join(normalized))
+PY
+}
+
 require_cmd swift
 require_cmd aws
 require_cmd gcloud
@@ -22,6 +51,20 @@ R2_BUCKET="${R2_BUCKET:-darkbloom-models}"
 read -r -p "Model directory: " MODEL_DIR
 read -r -p "Model id (for example mlx-community/foo): " MODEL_ID
 read -r -p "Version (no slashes): " VERSION
+
+DEFAULT_REQUIRED_PROVIDER_CAPABILITIES=""
+if [[ "$MODEL_ID" == "EigenLabs/Qwen3.8-27B-4bit" ]]; then
+  DEFAULT_REQUIRED_PROVIDER_CAPABILITIES="apple_m5,mlx_nax"
+fi
+
+if [[ -n "$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES" ]]; then
+  read -r -p "Required provider capabilities (comma-separated) [$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES]: " REQUIRED_PROVIDER_CAPABILITIES
+  REQUIRED_PROVIDER_CAPABILITIES="${REQUIRED_PROVIDER_CAPABILITIES:-$DEFAULT_REQUIRED_PROVIDER_CAPABILITIES}"
+else
+  read -r -p "Required provider capabilities (comma-separated, optional): " REQUIRED_PROVIDER_CAPABILITIES
+fi
+
+REQUIRED_PROVIDER_CAPABILITIES="$(normalize_required_provider_capabilities "$REQUIRED_PROVIDER_CAPABILITIES")"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
   printf 'Model directory does not exist: %s\n' "$MODEL_DIR" >&2
@@ -101,6 +144,7 @@ Register with GitHub Actions:
     -f architecture="<architecture>" \
     -f quantization="<quantization>" \
     -f capabilities_csv="tools,reasoning" \
+    -f required_provider_capabilities="$REQUIRED_PROVIDER_CAPABILITIES" \
     -f max_context_length="<max context tokens>" \
     -f max_output_length="<max output tokens>" \
     -f min_ram_gb="<minimum RAM GB>" \

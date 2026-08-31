@@ -124,7 +124,11 @@ func TestQueuedRequestGetsProviderWhenIdle(t *testing.T) {
 		Models: []protocol.ModelInfo{{ID: "test-model"}},
 	}
 
-	// Assignment may already be available when a waiter starts.
+	// Assignment may already be available when a waiter starts. The scheduler
+	// publishes the reservation before signaling the waiter.
+	if !req.offerAssignment(provider, nil) {
+		t.Fatal("offerAssignment refused a live waiter")
+	}
 	req.ResponseCh <- provider
 
 	// WaitForProviderContext should succeed.

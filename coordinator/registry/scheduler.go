@@ -508,8 +508,9 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// observation (API layer, RecordTTFTObservation) can be joined to it.
 	// Warm-slot winners only (StateMs == 0): a cold dispatch's actual includes
 	// model-load time the flow estimate does not model, which would poison the
-	// ratio sample.
-	if bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+	// ratio sample. Text only: media decode and vision-tower work are also absent
+	// from the projection and must not train the text-prefill calibrator.
+	if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
 		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
 	}
 	decision := RoutingDecision{
@@ -650,7 +651,10 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	bestTTFTMs := 0.0
 	breakerRejected := 0
 	now := time.Now()
-	enforceTTFT := pr.MaxTTFTMs > 0
+	// Vision preparation is absent from the token-prefill projection, so media
+	// estimates are advisory even if a caller accidentally supplies a ceiling.
+	// The request-absolute first-content deadline remains authoritative.
+	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
@@ -1579,7 +1583,14 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	} else {
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)
 	}
-	thisReqMs := float64(reqPrompt)/snap.prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	// Prefill resolves through resolvePrefillTPS for BOTH the base cost term and
+	// the long-prompt bias below, so provider ranking follows the live measured
+	// prefill EWMA when a slot reports one and only falls back to the static
+	// registration/x12 chain when it does not. Reading snap.prefillTPS directly
+	// here pinned the dominant prefill term to the static rate, which left a box
+	// whose measured prefill had degraded looking as cheap as its benchmark.
+	prefillTPS := resolvePrefillTPS(snap)
+	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
 	// Long-prompt fastest-tier preference: amplify the first-token-blocking time
 	// for very long prompts so the provider that reaches first token soonest is
 	// strongly preferred, reducing pre-first-token client_gone. The amplified
@@ -1594,7 +1605,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// the fastest warm provider. Folded into thisReqMs so the cost breakdown
 	// invariant (sum of terms == Total) holds. Returns 0 — and so leaves the cost
 	// byte-for-byte unchanged — for short prompts and when the knob is off.
-	prefillMs := float64(reqPrompt) / resolvePrefillTPS(snap) * 1000.0
+	prefillMs := float64(reqPrompt) / prefillTPS * 1000.0
 	ttftBlockMs := prefillMs
 	if !snap.modelLoaded {
 		// A cold provider must load before it can prefill; amplify its full
@@ -2399,10 +2410,10 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 // It is used ONLY by the shadow evaluator today; a future enforce step will wire
 // it (against the verified ~10s base) into the live path. Keeping the occupancy
 // term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the 5s ttftDeadline), so if the term leaked into
-// ttftMsFromSnapshot, raising alpha would tighten the live 5s ceiling and
-// over-shed ~2x (telemetry-db findings §2). The term may therefore only ever
-// reach the shadow estimate, never breakdown.TTFTMs.
+// (pr.MaxTTFTMs set from the pinned request-local deadline), so if the term
+// leaked into ttftMsFromSnapshot, raising alpha would tighten the live ceiling
+// and over-shed ~2x (telemetry-db findings §2). The term may therefore only
+// ever reach the shadow estimate, never breakdown.TTFTMs.
 func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	base := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if base <= 0 {
@@ -2434,8 +2445,8 @@ func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int)
 // Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
 // occupancy is 0 (an idle box never pays the term, so route-to-idle is
 // preserved). The deadline this is gated against in the shadow evaluator is the
-// verified ~10s base, NOT the code's 5s internal budget; gating an occupancy
-// estimate fit to the 5s base over-sheds ~2x (telemetry-db findings §2).
+// model's upstream SLA (standard ~10s), not the shorter live coordinator cutoff.
+// Conflating those clocks over-sheds (telemetry-db findings §2).
 func ttftOccupancyMs(snap routingSnapshot) float64 {
 	alpha := ttftOccupancyAlpha
 	if alpha <= 0 {
@@ -2515,6 +2526,14 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 					RequestedMaxTokens: defaultRequestedMaxTokens,
 				}
 			}
+			// Queue time spends the same absolute first-content clock as
+			// parsing, admission, and provider dispatch. Refresh immediately
+			// before reservation so hard TTFT admission never reuses the
+			// enqueue-time ceiling.
+			if !req.Pending.RefreshFirstContentBudget(time.Now()) {
+				req.failWithReason(ErrQueueFirstContentDeadline)
+				continue
+			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
 			if provider == nil {
 				if req.Pending.Traits.RequiresToolConstraint &&
@@ -2540,24 +2559,25 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 			req.Decision = decision
 			requeueSkipped()
 
-			select {
-			case <-req.Done():
+			releaseReservation := func() {
 				provider.RemovePending(req.Pending.RequestID)
 				r.SetProviderIdle(provider.ID)
-				continue
-			default:
 			}
-
+			if !req.offerAssignment(provider, releaseReservation) {
+				releaseReservation()
+				continue
+			}
+			if req.beforeAssignmentSend != nil {
+				req.beforeAssignmentSend()
+			}
 			select {
 			case req.ResponseCh <- provider:
-				// Successfully assigned.
+				// The reservation remains scheduler-owned until the waiter
+				// acknowledges it in WaitForProviderContext. Cancellation after
+				// this buffered send rejects the published assignment and runs
+				// releaseReservation exactly once.
 			case <-req.Done():
-				provider.RemovePending(req.Pending.RequestID)
-				r.SetProviderIdle(provider.ID)
-				continue
-			default:
-				provider.RemovePending(req.Pending.RequestID)
-				r.SetProviderIdle(provider.ID)
+				req.rejectAssignment()
 				continue
 			}
 		}

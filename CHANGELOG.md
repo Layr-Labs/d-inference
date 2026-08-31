@@ -1,5 +1,211 @@
 # Changelog
 
+## Release candidate v0.8.15 (not shipped; 2026-08-28)
+
+- **Exact Qwen3.8 dense VLM artifact** — Providers serve
+  `EigenLabs/Qwen3.8-27B-4bit` at immutable revision
+  `301e9e2767fd0efcfab7883004720ba3c9a552a1`. The dense Qwen3.5 text target
+  is extracted from the loaded VLM wrapper for ContinuousBatchingV2 while
+  retaining shared immutable weights, recurrent/KV sizing, causal visual spans,
+  request-owned M-RoPE state, cancellation, deadline, and MLX fault boundaries.
+  Image processing remains one tower invocation per image. API video remains
+  one full T×H×W tower invocation per video followed by ordered frame-output
+  splitting; console/UI video upload is not enabled.
+- **Exact separate Qwen3.8 MTP artifact, model-specific default on** —
+  `EigenLabs/Qwen3.8-27B-MTP-4bit` at immutable revision
+  `329261c5e0b3f9c233485e682cb3b67b88c20a55` is loaded only as a proposal
+  assistant; the target remains authoritative for acceptance and output.
+  Absent MTP config enables this exact target only. Explicit `mtp_mode = "off"`
+  (including `darkbloom beta disable mtp`) and the
+  `DARKBLOOM_CBV2_MTP=0` process kill switch independently restore target-only
+  decoding. Explicit `on` remains available for other supported targets.
+  Missing, malformed, unavailable, incompatible, or memory-inadmissible
+  assistant state falls back to target-only decoding with a stable reason.
+- **Unified Qwen template and tool controls** — Remote encrypted text/vision,
+  local single/batch, and prompt recount paths share one template-control
+  value. Nested `reasoning.enabled` wins over top-level or
+  `chat_template_kwargs.enable_thinking`; only `none`, `off`, and `0` disable
+  through `reasoning_effort`, `minimal` is preserved, media defaults thinking
+  off only with no explicit control, and `preserve_thinking` is forwarded.
+  Forced Qwen tool calls remain withheld until XML parsing, function selection,
+  and schema validation succeed; the exact concrete model advertises the
+  capability only for the `qwen3_coder` XML parser contract.
+- **Capability-gated rollout and integrity** — The exact concrete model is
+  restricted by the shared provider capability evaluator to Apple M5 with the
+  approved NAX runtime. `video_preprocessor_config.json` is included in model
+  integrity manifests. Provider version advances to `0.8.15`; no protocol
+  fields are added.
+
+## Release candidate v0.8.14 (not shipped; 2026-08-26)
+
+- **Qwen3-VL 30B-A3B production serving** — The exact
+  `qwen3_vl_moe` architecture is admitted through the contiguous
+  ContinuousBatchingV2 path. Text decode uses per-row M-RoPE positions; image
+  prefill carries causal visual spans, every DeepStack level, and the model's
+  embedding activation dtype. Homogeneous routed-expert gate/up projections are
+  fused at load time, reducing each MoE layer from three gathered projections
+  to two while retaining a strict split fallback for heterogeneous
+  quantization. Paged KV, video, packed prefill, prefix reuse, compiled decode,
+  and MTP remain fail-closed for this family.
+- **Qwen 3.5/3.6 inline MTP defaults to automatic** — New
+  `mtp_mode = "auto" | "on" | "off"` keeps Gemma opt-in while valid inline
+  `qwen3_5_moe` artifacts activate by default. Explicit `off` and
+  `DARKBLOOM_CBV2_MTP=0` remain independent rollback controls. Config schema
+  v3 migrates the legacy generated `mtp = false` default to `auto` so upgraded
+  providers receive the policy, retains legacy `true` as `on`, and preserves a
+  new explicit `mtp_mode = "off"` override.
+- Provider and coordinator fallback version authorities move together to
+  `0.8.14`; there is no new wire protocol.
+
+## Release candidate v0.8.13 (not shipped; 2026-08-25)
+
+- **Qwen 3.5 video + grounded image captions** — Qwen vision prefill no
+  longer fail-closes video as `invalid media input`. The tower runs one
+  video (full T×H×W grid) at a time and carves the contiguous
+  `<|video_pad|>` run into per-frame spans. Image decode applies EXIF
+  orientation on the full raster (not a JPEG thumbnail). Media requests
+  default `enable_thinking=false` unless the client sets
+  `reasoning.enabled`. Qwen decodes media once and uniformly samples at most
+  8 video frames at no more than 512² pixels each, bounding its unfused
+  vision score tensor to 512 MiB. Coordinator remote-media fetch is bounded
+  by the leftover first-content clock minus an inference reserve, and media
+  bypasses the text-only estimated-TTFT hard gate while retaining the same
+  request-absolute deadline. Its incomplete estimates do not train text TTFT
+  calibration or emit synthetic warm-pool pressure.
+- **Current MLX-LM main pin** — `libs/mlx-swift-lm` advances to `fe01df9`,
+  containing the merged Qwen prefill/decode optimization
+  ([mlx-swift-lm#120](https://github.com/Layr-Labs/mlx-swift-lm/pull/120))
+  and bounded video-tower input fix
+  ([mlx-swift-lm#123](https://github.com/Layr-Labs/mlx-swift-lm/pull/123)),
+  plus Qwen3-VL 30B-A3B support
+  ([mlx-swift-lm#122](https://github.com/Layr-Labs/mlx-swift-lm/pull/122)).
+- Provider and coordinator fallback version authorities move together to
+  `0.8.13`; there is no new protocol.
+
+## v0.8.12 (shipped; 2026-08-25)
+
+> **Post-publication status:** `v0.8.12` was tagged, published, and registered
+> before the Qwen media fixes above. Those fixes therefore ship in v0.8.13.
+
+- **Default atomic first-token deadline admission on** — Explicit typed TOML is
+  authoritative: `"off"` disables and `"enforce"` enforces regardless of the
+  legacy environment. An absent key inherits that environment, where only exact
+  lowercase `off` disables and every other value securely enforces. Optional
+  serialization preserves absence. Edit `provider.toml` and use ordinary
+  `darkbloom restart` for rollback, restore, or legacy-environment inheritance;
+  the linked report gives the exact settings.
+- **Keep the safety envelope unchanged** — Forecasting still requires a
+  propagated deadline, an initialized isolated cold-prefill EWMA, a text-only
+  request, phase-specific rates, and an authoritative capacity-guaranteed
+  scheduler projection. Multimodal requests remain outside forecast admission.
+- **Keep cap-0 a functional serving rollback** —
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0` still restores unlimited partial
+  prefill interleave. That posture cannot produce the proven bounded projection,
+  so it bypasses forecast admission and uses ordinary submission while hard
+  absolute expiry remains active. It does not rewrite the deadline-mode setting.
+- Provider and coordinator fallback version authorities move together to
+  `0.8.12`; there is no new protocol.
+
+Release rationale, limitations, compatibility, and rollout gates:
+[`docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md`](docs/reports/2026-08-25-v0.8.12-prefill-deadline-admission.md).
+
+## v0.8.11 (shipped; 2026-08-24)
+
+> **Post-publication status (2026-08-25):** `v0.8.11` was tagged, published, and
+> registered as the active provider release. The candidate notes below are
+> retained as the pre-publication decision record; their blocker/no-shipment
+> language describes the state when they were written. The shipped resolver
+> still defaulted atomic deadline admission to `off`; v0.8.12 is the activation
+> change.
+
+### Candidate integration status
+
+- **v0.8.11 enables FCFS partial-prefill scheduling globally** — Production
+  resolves `maxConcurrentPartialPrefills` to `1` for every CBv2 model. Operators
+  can immediately restore the historical unlimited interleave with
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0`; other explicit non-positive or
+  malformed values also fail open to unlimited behavior.
+- **Deadline conservation and atomic admission plumbing ships
+  provider-default-off** — Remaining first-content budget propagation is
+  additive and fail-open for older peers. The queue-excluded prefill EWMA,
+  engine atomic forecast API, and provider wiring are integrated, but forecast
+  enforcement remains disabled unless exact mode `enforce` is selected.
+  Default-on FCFS is the separate global scheduling policy above.
+- **FCFS evidence remains a release blocker** — Cap 1 can improve mean burst
+  TTFT, but it can also remove Qwen packed-prefill cohorts and head-of-line-block
+  short prompts. The only real-model attempt was aborted after approximately
+  27 minutes at 13% battery and produced no artifact. No signed-candidate
+  cap-0/cap-1 report or representative non-Qwen evidence exists yet.
+
+### Coordinator candidate fixes
+
+- **Enforce one request-absolute first-content deadline** —
+  Queueing, provider acceptance, boilerplate/preamble frames, speculative
+  dispatch, and blocked provider writes must not reset the clock. Expiry must
+  cancel in-flight work and return the existing retryable `429` contract
+  without feeding provider-fault breakers unless the provider received a full
+  attributable wait window.
+- **Price routing from live prefill behavior** — The base request-cost
+  term now uses the same measured-preferred prefill resolver as TTFT estimation,
+  falling back to the static registration rate when no observation exists.
+
+### Provider candidate fixes
+
+- **Default partial-prefill concurrency to one with an immediate rollback** —
+  The production factory applies cap 1 globally. Exact environment override
+  `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=0` restores unlimited interleave without
+  a code change.
+- **Honor the coordinator's remaining first-content clock** —
+  A positive wire budget becomes one provider-local monotonic deadline. The
+  provider refuses expired pre-submit work and releases any partial
+  admission/cache resources instead of restarting the budget at model load or
+  engine submission when enforcement is enabled. Default-off and absent
+  metadata paths remain fail-open; coordinator cancellation remains the
+  authority after submission.
+- **Add an honest FCFS evaluation harness** — The opt-in five-workload matrix
+  compares caps 0 and 1, cryptographically records the selected checkpoint,
+  omits local model paths, records source/binary/build/hardware/OS/power/thermal
+  posture, and evaluates the documented 5% throughput and TTFT thresholds. Its
+  schema distinguishes simulation, unsigned local evidence, and evidence
+  captured by the signed packaged main executable. Signed Qwen evidence remains
+  model-family evidence only and never sets global release certification.
+- **Add a fail-closed signed-artifact FCFS command** — Run the exact packaged
+  candidate with:
+
+  ```bash
+  "$SIGNED_APP/Contents/MacOS/darkbloom" benchmark \
+    --scheduler-prefill-decision \
+    --model "$QWEN_MODEL_ID" \
+    --expected-model-aggregate-sha256 "$QWEN_MODEL_AGGREGATE_SHA256" \
+    --expected-registered-binary-sha256 "$REGISTERED_DARKBLOOM_SHA256" \
+    --expected-version 0.8.11 \
+    --source-sha "$SOURCE_SHA" \
+    --decision-iterations 10 \
+    --kv-backend auto \
+    --output "$QWEN_SIGNED_REPORT"
+  ```
+
+  It accepts no weights path and resolves the canonical registry ID internally.
+  It exits successfully only after packaged signature, identifier/team,
+  registered binary hash, version, model hash, posture, and policy checks pass.
+
+### Release requirements
+
+- Pass coordinator/provider focused tests, protocol symmetry, mixed-version
+  behavior, full builds, system E2E, signed artifact checks, and rollback gates
+  recorded in
+  `docs/reports/2026-08-24-qwen-openrouter-timeout-fix-and-release.md`.
+- Do not ship the default-on FCFS policy until an externally captured
+  signed-candidate artifact passes the cap-0/cap-1 criteria on representative
+  Qwen hardware, plus equivalent latency/throughput/head-of-line evidence for
+  every affected non-Qwen CBv2 family or a separately reviewed model-scoped
+  policy. The unsigned local harness cannot satisfy this requirement.
+
+---
+
+The entries below are earlier shipped releases. At the time the v0.8.11
+candidate notes above were recorded, the latest shipped provider was `v0.8.10`.
+
 ## v0.8.10 (2026-08-21)
 
 ### Provider (Swift)

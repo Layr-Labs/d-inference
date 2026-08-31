@@ -136,7 +136,7 @@ struct EngineV2VisionErrorSecurityTests {
             })
     }
 
-    @Test("unsupported Qwen video maps to deterministic 400 without refusal telemetry")
+    @Test("injected unsupportedMedia maps to deterministic 400 without refusal telemetry")
     func unsupportedVideoMapsTo400() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = visionMakeBridge(engine: engine)
@@ -144,7 +144,7 @@ struct EngineV2VisionErrorSecurityTests {
         let plumbing = EngineV2VisionPlumbing(
             prepare: { _, _, _ in
                 throw EngineV2VisionPrefillError.unsupportedMedia(
-                    "Qwen35MoE video media is not production-proven")
+                    "Qwen3-VL video media is not production-proven")
             },
             emitTelemetry: telemetry.callback())
         let router = visionMakeRoutingEngine(
@@ -183,7 +183,6 @@ struct EngineV2VisionErrorSecurityTests {
             container: visionMakeStubContainer(),
             bridge: bridge, plumbing: plumbing)
 
-        // Real tinyMP4 so validateMedia passes and the preparer is reached.
         let request = visionImageRequest(parts: [
             .text("what happens in this clip?"), .videoURL(visionTinyMP4DataURI),
         ])
@@ -239,14 +238,15 @@ struct EngineV2VisionErrorSecurityTests {
         #expect(counter.count == 0)
     }
 
-    @Test("garbage inline video still dies in validateMedia (4xx) before the preparer")
-    func garbageVideoRejectedBeforePreparer() async throws {
+    @Test("MediaError from the single v2 preparer remains a pre-stream 4xx")
+    func garbageVideoRejectedByPreparer() async throws {
         let engine = VisionScriptedEngine(script: .stream([]))
         let bridge = visionMakeBridge(engine: engine)
         let counter = VisionPrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, _ in
+            prepare: { _, request, _ in
                 counter.increment()
+                _ = try await MediaIngest.buildUserInput(from: request)
                 throw VisionStubProcessorError()
             },
             emitTelemetry: { _ in }
@@ -254,9 +254,9 @@ struct EngineV2VisionErrorSecurityTests {
         let router = visionMakeRoutingEngine(
             container: visionMakeStubContainer(),
             bridge: bridge, plumbing: plumbing)
-        // The garbage inline video dies in `validateMedia` (a 400-class
-        // MediaError) BEFORE the v2 attempt — the preparer must not fire
-        // and the engine must stay untouched.
+        // The production preparer owns decode and model preparation in one
+        // pass. Its MediaError must escape this async-throws call before a
+        // stream is returned, and the engine must stay untouched.
         let request = visionImageRequest(parts: [
             .imageURL(visionTinyPNGDataURI), .videoURL("data:video/mp4;base64,AAAA"),
         ])
@@ -269,7 +269,7 @@ struct EngineV2VisionErrorSecurityTests {
         } catch {
             Issue.record("expected MediaError, got \(error)")
         }
-        #expect(counter.count == 0)
+        #expect(counter.count == 1)
         #expect(engine.submitted.isEmpty)
     }
 

@@ -40,6 +40,53 @@ import Testing
     #expect(decoded.backend.maxModelSlots == 5)
 }
 
+@Test func prefillDeadlineModePreservesAbsentInheritance() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(config.backend.prefillDeadlineMode == nil)
+    #expect(
+        PrefillDeadlineMode.resolve(
+            configured: config.backend.prefillDeadlineMode,
+            environment: [:]) == .enforce)
+
+    let serialized = ConfigManager.serialize(config)
+    #expect(!serialized.contains("prefill_deadline_mode"))
+    #expect(ConfigManager.parse(serialized).backend.prefillDeadlineMode == nil)
+}
+
+@Test func prefillDeadlineModeParsesAndSerializes() throws {
+    let disabled = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "off"
+    """)
+    #expect(disabled.backend.prefillDeadlineMode == .off)
+    let enforced = ConfigManager.parse("""
+    [backend]
+    prefill_deadline_mode = "enforce"
+    """)
+    #expect(enforced.backend.prefillDeadlineMode == .enforce)
+
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .off),
+        coordinator: CoordinatorSettings())
+    let serialized = ConfigManager.serialize(original)
+    #expect(serialized.contains("prefill_deadline_mode = 'off'"))
+    #expect(
+        ConfigManager.parse(serialized).backend.prefillDeadlineMode == .off)
+
+    let enforcing = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(prefillDeadlineMode: .enforce),
+        coordinator: CoordinatorSettings())
+    let enforcingTOML = ConfigManager.serialize(enforcing)
+    #expect(enforcingTOML.contains("prefill_deadline_mode = 'enforce'"))
+    #expect(
+        ConfigManager.parse(enforcingTOML).backend.prefillDeadlineMode == .enforce)
+}
+
 // v0.8.0 removed KV quantization from the product. Effectively every
 // provider.toml in the field carries `kv_quant` because the serializer used
 // to round-trip it, so an UPGRADING provider must load such a config without
@@ -66,6 +113,7 @@ import Testing
     #expect(config.backend.maxModelSlots == 7)
     #expect(config.backend.idleTimeoutMins == 30)
     #expect(config.backend.engineV2KVBackend == "paged")
+    #expect(config.backend.mtpMode == .on)
     #expect(config.backend.mtp == true)
 }
 
@@ -383,15 +431,15 @@ import Testing
     }
 }
 
-// The guard against the exact failure this release exists to avoid: bumping
-// the default constant without adding a migration step reaches fresh installs
-// only and silently leaves the whole fleet where it was.
-@Test func newestMigrationStepLandsOnTheCurrentDefault() throws {
-    let newest = try #require(ConcurrencyDefaultMigration.steps.last)
-    #expect(newest.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
-    // And it carries the file to the schema version this binary speaks, so no
-    // second boot is needed to finish the job.
-    #expect(newest.toVersion == ProviderConfig.currentConfigVersion)
+// Guard both generated-value migrations against drifting from the defaults
+// and schema generation they are meant to establish.
+@Test func migrationStepsLandOnTheirCurrentPolicies() throws {
+    let newestConcurrency = try #require(ConcurrencyDefaultMigration.steps.last)
+    #expect(newestConcurrency.toCap == BackendSettings.defaultEngineV2MaxConcurrent)
+    #expect(newestConcurrency.toVersion <= ProviderConfig.currentConfigVersion)
+    #expect(
+        MTPModeDefaultMigration.targetConfigVersion
+            == ProviderConfig.currentConfigVersion)
 }
 
 // The stamp has to survive the serializer, or a deliberate cap could never be
@@ -436,7 +484,8 @@ struct MTPConfigKeyTests {
         #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
     }
 
-    @Test("absent keys default to mtp=false, no drafter path")
+
+    @Test("absent mode defaults on for embedded Qwen3.5-family heads only")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -447,91 +496,226 @@ struct MTPConfigKeyTests {
             port = 8100
             """)
 
+        #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5", embeddedArtifactDeclared: true))
+        #expect(config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5_moe", embeddedArtifactDeclared: true))
+        // No embedded declaration → auto never asks, even for Qwen.
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: "qwen3_5", embeddedArtifactDeclared: false))
+        #expect(!config.backend.mtpMode.enablesMTP(
+            forModelType: nil, embeddedArtifactDeclared: true))
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
-    @Test("present keys decode")
-    func decodesPresentKeys() {
-        let config = ConfigManager.parse(
+    @Test("explicit auto, on, and off modes decode")
+    func decodesModes() {
+        for (raw, expected) in [
+            ("auto", MTPMode.auto),
+            ("on", MTPMode.on),
+            ("off", MTPMode.off),
+        ] {
+            let config = ConfigManager.parse(
+                """
+                [provider]
+                name = "test-provider"
+
+                [backend]
+                mtp_mode = "\(raw)"
+                """)
+            #expect(config.backend.mtpMode == expected)
+        }
+    }
+
+    @Test("legacy booleans migrate by config generation and mtp_mode stays authoritative")
+    func legacyPrecedence() {
+        let legacyOn = ConfigManager.parse(
             """
+            config_version = 2
             [provider]
             name = "test-provider"
-
             [backend]
             mtp = true
-            mtp_drafter_path = "/opt/drafters/gemma4-assistant-4bit"
             """)
-
-        #expect(config.backend.mtp == true)
-        #expect(config.backend.mtpDrafterPath == "/opt/drafters/gemma4-assistant-4bit")
-    }
-
-    @Test("mtp works without a drafter path (fleet spec_dec path)")
-    func mtpWithoutPath() {
-        let config = ConfigManager.parse(
+        let generatedLegacyOff = ConfigManager.parse(
             """
+            config_version = 2
             [provider]
             name = "test-provider"
-
             [backend]
+            mtp = false
+            """)
+        let currentLegacyOff = ConfigManager.parse(
+            """
+            config_version = 3
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = false
+            """)
+        let modeWins = ConfigManager.parse(
+            """
+            config_version = 2
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp_mode = "off"
             mtp = true
             """)
 
-        #expect(config.backend.mtp == true)
-        #expect(config.backend.mtpDrafterPath == nil)
+        #expect(legacyOn.backend.mtpMode == .on)
+        #expect(generatedLegacyOff.backend.mtpMode == .auto)
+        #expect(currentLegacyOff.backend.mtpMode == .off)
+        #expect(modeWins.backend.mtpMode == .off)
     }
 
-    // ConfigManager.parse falls back to a full default config on any decode
-    // failure (documented behavior: a malformed provider.toml must never
-    // brick a provider) — so a wrongly-typed value yields the safe default
-    // (MTP off), never a crash or a half-parsed config.
-    @Test("wrongly-typed mtp value falls back to defaults (off)")
-    func invalidMTPValueFallsBack() {
+    @Test("automatic mode requires an embedded head AND a Qwen3.5-family model type")
+    func targetPolicy() {
+        // Embedded (mtplx_mtp-declaring) checkpoints of the Qwen 3.5 family —
+        // dense (9B, 27B) and MoE (3.5/3.6 35B) — self-activate under `auto`.
+        // The family gate is hardcoded to Qwen for now and widens only when
+        // another family actually ships embedded artifacts.
+        let familyModelTypes = ["qwen3_5_moe", "qwen3_5"]
+        let nonFamilyModelTypes: [String?] = [
+            "gemma4",
+            "gemma4_text",
+            "gpt_oss",
+            "qwen3_vl_moe",
+            nil,
+            "  ",
+        ]
+
+        for modelType in familyModelTypes {
+            #expect(
+                MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true),
+                "embedded family checkpoint must draft under auto: \(modelType)")
+            // Without the embedded declaration, auto never asks — no catalog
+            // lookup, no prefetch. Separately published assistants need `on`.
+            #expect(
+                !MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: false),
+                "family checkpoint without an embedded head stays target-only: \(modelType)")
+            #expect(MTPMode.on.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: false))
+            #expect(!MTPMode.off.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: true))
+        }
+        for modelType in nonFamilyModelTypes {
+            #expect(
+                !MTPMode.auto.enablesMTP(
+                    forModelType: modelType, embeddedArtifactDeclared: true),
+                "non-family model_type must not draft under auto: \(modelType ?? "nil")")
+            #expect(MTPMode.on.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: false))
+            #expect(!MTPMode.off.enablesMTP(
+                forModelType: modelType, embeddedArtifactDeclared: true))
+        }
+        // Model-type matching is case/whitespace-insensitive like every other
+        // model_type comparison in the funnel.
+        #expect(MTPMode.auto.enablesMTP(
+            forModelType: " QWEN3_5_MOE ", embeddedArtifactDeclared: true))
+        #expect(MTPMode.auto.enablesMTP(
+            forModelType: "Qwen3_5", embeddedArtifactDeclared: true))
+    }
+
+    @Test("provider and standalone configs use the same target decision")
+    func providerAndStandaloneSharePolicy() {
+        let backend = BackendSettings(mtpMode: .auto)
+        let standalone = StandaloneServerConfig(mtpMode: backend.mtpMode)
+
+        for modelType in ["qwen3_5_moe", "qwen3_5", "gemma4", nil] as [String?] {
+            for embedded in [true, false] {
+                #expect(
+                    backend.mtpMode.enablesMTP(
+                        forModelType: modelType, embeddedArtifactDeclared: embedded)
+                        == standalone.mtpMode.enablesMTP(
+                            forModelType: modelType, embeddedArtifactDeclared: embedded))
+            }
+        }
+    }
+
+    @Test("process environment remains a final negative-polarity kill switch")
+    func killSwitchPolicy() {
+        #expect(SpecDecArtifactFunnel.killSwitchEnabled(environment: [:]))
+        for value in ["0", "false", "no", "off", " OFF "] {
+            #expect(
+                !SpecDecArtifactFunnel.killSwitchEnabled(
+                    environment: ["DARKBLOOM_CBV2_MTP": value]))
+        }
+        #expect(
+            SpecDecArtifactFunnel.killSwitchEnabled(
+                environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+    }
+
+    @Test("invalid mode falls back to the safe default configuration")
+    func invalidModeFallsBack() {
         let config = ConfigManager.parse(
             """
             [provider]
             name = "test-provider"
-
             [backend]
-            mtp = "yes"
+            mtp_mode = "sometimes"
             """)
 
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode == .auto)
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
-    @Test("wrongly-typed mtp_drafter_path falls back to defaults")
-    func invalidDrafterPathFallsBack() {
-        let config = ConfigManager.parse(
-            """
-            [provider]
-            name = "test-provider"
-
-            [backend]
-            mtp = true
-            mtp_drafter_path = 42
-            """)
-
-        #expect(config.backend.mtp == false)
-        #expect(config.backend.mtpDrafterPath == nil)
-    }
-
-    @Test("serialization round-trips both keys")
+    @Test("serialization emits only the tri-state key")
     func serializationRoundTrips() {
         let original = ProviderConfig(
             provider: ProviderSettings(name: "test-provider"),
-            backend: BackendSettings(mtp: true, mtpDrafterPath: "/tmp/drafter"),
+            backend: BackendSettings(mtpMode: .on, mtpDrafterPath: "/tmp/drafter"),
             coordinator: CoordinatorSettings()
         )
 
         let toml = ConfigManager.serialize(original)
         let decoded = ConfigManager.parse(toml)
 
-        #expect(toml.contains("mtp = true"))
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(toml.contains("mtp_drafter_path"))
-        #expect(decoded.backend.mtp == true)
+        #expect(decoded.backend.mtpMode == .on)
         #expect(decoded.backend.mtpDrafterPath == "/tmp/drafter")
+    }
+
+    @Test("legacy input normalizes to mtp_mode when saved")
+    func legacySerializationNormalizes() {
+        let decoded = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = true
+            """)
+        let toml = ConfigManager.serialize(decoded)
+
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
+    }
+
+    @Test("generated legacy false normalizes once and re-saves idempotently")
+    func generatedLegacyFalseNormalizesIdempotently() {
+        let decoded = ConfigManager.parse(
+            """
+            config_version = 2
+            [provider]
+            name = "test-provider"
+            [backend]
+            mtp = false
+            """)
+
+        let firstSave = ConfigManager.serialize(decoded)
+        let secondSave = ConfigManager.serialize(ConfigManager.parse(firstSave))
+
+        #expect(decoded.backend.mtpMode == .auto)
+        #expect(firstSave.contains("config_version = 3"))
+        #expect(firstSave.contains("mtp_mode = 'auto'"))
+        #expect(!firstSave.contains("\nmtp = "))
+        #expect(secondSave == firstSave)
     }
 
     @Test("nil drafter path is not emitted")
@@ -544,6 +728,8 @@ struct MTPConfigKeyTests {
 
         let toml = ConfigManager.serialize(original)
 
+        #expect(toml.contains("mtp_mode = 'auto'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(!toml.contains("mtp_drafter_path"))
     }
 }

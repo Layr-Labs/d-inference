@@ -89,7 +89,8 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 		errorReasonRequestExceedsNode,
 		errorReasonRequestExceedsNodeBudget,
 		errorReasonRequestExceedsBatchBudget,
-		errorReasonCapacityBusy:
+		errorReasonCapacityBusy,
+		errorReasonDeadlineUnreachable:
 		return protocol.FailureCodeCapacity
 	case errorReasonCancelled:
 		return protocol.FailureCodeCancelled
@@ -241,7 +242,8 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 			errorReasonRequestExceedsNode,
 			errorReasonRequestExceedsNodeBudget,
 			errorReasonRequestExceedsBatchBudget,
-			errorReasonCapacityBusy:
+			errorReasonCapacityBusy,
+			errorReasonDeadlineUnreachable:
 			return reason
 		default:
 			return errorReasonCapacityTimeout

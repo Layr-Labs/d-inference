@@ -54,6 +54,48 @@ private func qwenTargetFixtureJSON(
         """.utf8)
 }
 
+private func qwen3VLMoEFixture() throws -> MLXVLM.Qwen3VL {
+    let data = Data(
+        """
+        {
+          "model_type": "qwen3_vl_moe",
+          "text_config": {
+            "model_type": "qwen3_vl_moe_text",
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 1,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "max_position_embeddings": 64,
+            "vocab_size": 32,
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "decoder_sparse_step": 1,
+            "mlp_only_layers": [],
+            "moe_intermediate_size": 4,
+            "norm_topk_prob": true
+          },
+          "vision_config": {
+            "model_type": "qwen3_vl_moe",
+            "depth": 1,
+            "hidden_size": 8,
+            "hidden_act": "gelu_pytorch_tanh",
+            "intermediate_size": 16,
+            "out_hidden_size": 8,
+            "num_heads": 1,
+            "patch_size": 2,
+            "spatial_merge_size": 1,
+            "temporal_patch_size": 1,
+            "num_position_embeddings": 8,
+            "deepstack_visual_indexes": []
+          }
+        }
+        """.utf8)
+    return MLXVLM.Qwen3VL(
+        try JSONDecoder().decode(MLXVLM.Qwen3VLConfiguration.self, from: data))
+}
+
 private func qwenTargetFixtureDirectory(configData: Data) throws -> URL {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("qwen-target-extraction-\(UUID().uuidString)", isDirectory: true)
@@ -80,6 +122,13 @@ private final class QwenPrefixCacheConstructionProbe: @unchecked Sendable {
 
 @Suite("Qwen VLM target-only extraction", .serialized)
 struct QwenVLMTargetExtractionTests {
+    init() {
+        // The tiny synthetic modules here still evaluate MLX arrays, so the
+        // GPU library must sit beside the active test runner like every
+        // other MLX-touching suite (LiveInferenceFixtures.swift:89).
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+    }
+
     @Test("Qwen config decodes through MLXLLM and target skeleton omits inline MTP")
     func qwenConfigBuildsTargetOnlySkeleton() throws {
         let previousMTPState = _qwen35MTPEnabled
@@ -220,20 +269,45 @@ struct QwenVLMTargetExtractionTests {
         #expect(defaultModule.bits == 4)
     }
 
-    @Test("plain Qwen wrapper is refused; only the combined MoE wrapper dispatches")
-    func plainQwenWrapperRefused() throws {
+    @Test("dense Qwen wrapper extracts to the wired dense target")
+    func denseQwenWrapperExtracts() throws {
         let configData = qwenTargetFixtureJSON()
         let wrapperConfig = try JSONDecoder.json5().decode(
             MLXVLM.Qwen35Configuration.self, from: configData)
         let directory = try qwenTargetFixtureDirectory(configData: configData)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        #expect(throws: EngineV2VLMTextExtractionError.self) {
-            _ = try EngineV2VLMTextExtraction.extractTextModel(
-                from: MLXVLM.Qwen35(wrapperConfig),
-                modelDirectory: directory,
-                environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
-        }
+        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+            from: MLXVLM.Qwen35(wrapperConfig),
+            modelDirectory: directory,
+            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
+
+        #expect(extraction.family == .qwen35Dense)
+        #expect(extraction.servingModel is Qwen35Model)
+    }
+
+    @Test("dense Qwen uses the long-context solo prefill stripe")
+    func denseQwenUsesLongContextSoloStripe() throws {
+        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
+            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let dense = Qwen35Model(config)
+        let moe = Qwen35MoEModel(config)
+
+        let denseScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: dense,
+            environment: [:])
+        let moeScheduler = EngineV2Factory.productionSchedulerConfig(
+            maxConcurrentRequests: 2,
+            model: moe,
+            environment: [:])
+
+        #expect(
+            denseScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultDenseQwenSoloPrefillStripeTokens)
+        #expect(
+            moeScheduler.soloPrefillStripeTokens
+                == EngineV2Factory.defaultSoloPrefillStripeTokens)
     }
 
     @Test("benchmark resolution uses the same extracted Qwen target")
@@ -252,7 +326,81 @@ struct QwenVLMTargetExtractionTests {
         #expect(serving is Qwen35MoEModel)
     }
 
-    @Test("production factory accepts only the wired Qwen MoE target family")
+    @Test("Qwen3-VL MoE stays the direct serving model in production and benchmarks")
+    func qwen3VLDirectServingResolution() throws {
+        let wrapper = try qwen3VLMoEFixture()
+        let direct = try EngineV2Factory.directServingModel(model: wrapper, isVLM: true)
+        let benchmark = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper, isVLM: true, modelDirectory: nil)
+
+        #expect(ObjectIdentifier(direct) == ObjectIdentifier(wrapper))
+        #expect(ObjectIdentifier(benchmark) == ObjectIdentifier(wrapper))
+    }
+
+    @Test("slot preparation keeps the loaded Qwen3-VL wrapper as its target")
+    func qwen3VLSlotServingResolution() async throws {
+        let wrapper = try qwen3VLMoEFixture()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/qwen3-vl-moe"),
+                model: wrapper,
+                processor: QwenExtractionProcessor(),
+                tokenizer: StubBridgeTokenizer()))
+        let prepared = try await EngineV2SlotFactory.prepareProductionModel(
+            modelId: "tiny/qwen3-vl-moe",
+            isVLM: true,
+            container: container,
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.targetUnsupported, configured: false)))
+
+        let sizing = await SlotSizingSnapshot.build(
+            container: container,
+            modelPath: nil,
+            fallbackDefaultMaxTokens: 64)
+        let expectedKVRate = SlotSizingSnapshot.fp16KVBytesPerToken(
+            layerKinds: wrapper.cbv2LayerKinds)
+
+        #expect(ObjectIdentifier(prepared.snapshot.model) == ObjectIdentifier(wrapper))
+        #expect(ObjectIdentifier(prepared.servingModel) == ObjectIdentifier(wrapper))
+        #expect(prepared.assistant == nil)
+        #expect(prepared.mtpStatus.active == false)
+        #expect(expectedKVRate > 0)
+        #expect(sizing.fp16KVBytesPerToken == expectedKVRate)
+    }
+
+    @Test("Qwen3-VL MoE constructs the contiguous production backend and vetoes paged KV")
+    func qwen3VLProductionBackend() throws {
+        let wrapper = try qwen3VLMoEFixture()
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: wrapper,
+            tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: 1 << 20,
+            maxConcurrentRequests: 2,
+            kvBackend: .contiguous)
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(EngineV2Factory.cbv2LayerKinds(model: wrapper)?.count == 1)
+        #expect(EngineV2Factory.adoptionBoundTokens(model: wrapper) == 0)
+
+        var preflightCalled = false
+        let paged = try EngineV2Factory.prepareProductionBackend(
+            model: try qwen3VLMoEFixture(),
+            kvBytesCapacity: 1 << 20,
+            maxConcurrentRequests: 2,
+            kvBackend: .paged,
+            pagedPreflightOverride: { _ in preflightCalled = true })
+        #expect(paged.kind == .contiguous)
+        #expect(paged.fallbackReason == "model_capability")
+        #expect(paged.modelCapabilities.supportsPrefixReuse == false)
+        #expect(paged.modelCapabilities.supportsPagedKV == false)
+        #expect(paged.modelCapabilities.supportsCompiledDecode == false)
+        #expect(paged.modelCapabilities.supportsPackedPrefill == false)
+        #expect(paged.modelCapabilities.supportsMTP == false)
+        #expect(preflightCalled == false)
+    }
+
+
+    @Test("production factory accepts wired Qwen dense and MoE target families")
     func factoryAcceptanceAndRefusal() throws {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
@@ -269,13 +417,15 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
         #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
 
-        #expect(throws: EngineV2ProductionError.self) {
-            _ = try EngineV2Factory.prepareProductionBackend(
-                model: Qwen35Model(config),
-                kvBytesCapacity: 1 << 20,
-                maxConcurrentRequests: 2,
-                kvBackend: EngineV2KVBackendSelection.contiguous)
-        }
+        let dense = try EngineV2Factory.prepareProductionBackend(
+            model: Qwen35Model(config),
+            kvBytesCapacity: 1 << 20,
+            maxConcurrentRequests: 2,
+            kvBackend: EngineV2KVBackendSelection.contiguous)
+
+        #expect(dense.kind == EngineV2KVBackendKind.contiguous)
+        #expect(dense.layerKinds.count == 1)
+        #expect(dense.modelCapabilities.supportsPrefixReuse == false)
     }
 
     @Test("Qwen core capability veto forces paged selection to contiguous before preflight")

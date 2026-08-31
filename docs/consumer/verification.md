@@ -1,6 +1,6 @@
 # Verifying Provider Attestation
 
-Consumers and operators can independently verify provider attestation state.
+Consumers can inspect privacy-redacted provider trust status.
 
 ## Public attestation endpoint
 
@@ -8,31 +8,45 @@ Consumers and operators can independently verify provider attestation state.
 curl https://api.darkbloom.dev/v1/providers/attestation
 ```
 
-Returns, per provider:
-
-- Secure Enclave P-256 public key,
-- hardware info (chip, model, serial, system volume hash),
-- security state (SIP, SecureBoot, ARV, SE),
-- MDM verification status,
-- Apple MDA certificate chain (base64 DER),
-- MDA-extracted properties (serial, UDID, OS version, SepOS version).
-
-## Verify the MDA chain yourself
-
-1. Download Apple's Enterprise Attestation Root CA from
-   [apple.com/certificateauthority](https://www.apple.com/certificateauthority/).
-2. Decode the `mda_cert_chain_b64` certificates from base64 to DER.
-3. Verify the cert chain against Apple's root CA using any x509 library.
-4. Check that the serial number in the Apple cert matches the provider's
-   self-reported attestation.
+The response includes each provider's opaque connection ID, Secure Enclave
+public key, hardware class, security posture, and coordinator-verified MDM/MDA
+status. It deliberately excludes hardware serial numbers, UDIDs, and raw Apple
+MDA certificates. Apple's MDA leaf certificate embeds those identifiers, so
+publishing the chain would disclose them even if the JSON fields were removed.
 
 ## What verification tells you
 
-- `hardware` trust means the device is genuine Apple hardware with SIP on and
-  Secure Boot Full, verified by Apple's MDA certificate chain.
+- `hardware` trust means the coordinator verified MDM security posture and the
+  Apple MDA certificate chain before admitting the provider at hardware trust.
 - `self_signed` trust means the provider sent a SE-signed attestation and is
   passing periodic challenge-response, but has not completed MDM/MDA.
 - `none` means no attestation was provided.
+
+The coordinator performs Apple certificate-chain and serial cross-checks
+privately. Consumers receive the resulting status, not the identity-bearing
+certificate material.
+
+## Per-response proof
+
+Inference responses expose the provider's Secure Enclave public key and signed
+response receipt without exposing its device serial. Consumers can verify that
+receipt against the published key.
+
+On a provider-committed response, the consumer-safe provider fields
+(`provider_id`, `provider_attested`, `provider_trust_level`,
+`attestation_se_public_key`, timing) are exposed through `X-Provider-*` /
+`X-Timing` headers. Pre-commit validation, capacity, and availability errors do
+not have a selected provider and therefore do not have provider headers
+([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
+
+Region/country GeoIP of the serving provider is included only in the opt-in
+JSON `metadata.location` object (no city, coordinates, lookup source, or raw
+IP). To read these fields from an OpenAI SDK that does not surface custom
+headers, send `metadata_details: true` (or
+`X-Darkbloom-Metadata-Details: true`) on `POST /v1/chat/completions` and read
+the JSON `metadata` object
+([`response_metadata.go:209-276`](../../coordinator/api/response_metadata.go#L209-L276)).
+See [`api-contracts.md`](../reference/api-contracts.md).
 
 ## Code-identity attestation
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-03
 **Scope:** production `provider_sessions` (Jun 27 – Jul 3, 2026), coordinator WS lifecycle (`coordinator/api/provider.go`, `coordinator/registry/registry.go`), provider reconnect logic (`provider-swift/Sources/ProviderCore/Coordinator/`)
-**Data source:** prod Postgres, read-only. 31,202 sessions across 509 distinct serials in the window (median 18 sessions/machine, mean 61, max 728).
+**Data source:** prod Postgres, read-only. 31,202 sessions across 509 distinct machines in the window (median 18 sessions/machine, mean 61, max 728). Device identifiers are intentionally omitted.
 
 ## TL;DR
 
@@ -57,24 +57,24 @@ For the 120–180 s spike specifically: 93.9% show >2 min of silence before clos
 
 The two populations also differ in reconnect behavior: eviction-like closes are followed by long gaps (sleep), live closes by near-instant reconnects (process restart / update / brief network blip).
 
-### 4. Top-20 churning serials
+### 4. Top-20 churning machines
 
-The top 20 serials account for 8,839 sessions (28% of the week). 19 of 20 show the same signature — p50 duration 135–165 s, majority of sessions in the 120–180 s bucket, `disconnect` reason, eviction-like staleness (7,316 of their 8,839 closes are eviction-like vs 927 live):
+The top 20 machines account for 8,839 sessions (28% of the week). 19 of 20 show the same signature — p50 duration 135–165 s, majority of sessions in the 120–180 s bucket, `disconnect` reason, eviction-like staleness (7,316 of their 8,839 closes are eviction-like vs 927 live):
 
-| serial (prefix) | sessions | p50 dur | sessions in 120–180 s | latest version |
+| anonymized machine | sessions | p50 dur | sessions in 120–180 s | latest version |
 |---|---|---|---|---|
-| K66KK9JVDF | 727 | 150 s | 456 | 0.7.3 |
-| D71W2TF6FX | 604 | 138 s | 429 | 0.7.3 |
-| W6VXLXHG4L | 594 | 149 s | 428 | 0.7.3 |
-| LCD7VCQ5KK | 576 | 142 s | 379 | 0.7.3 |
-| DY62JNVWDF | 538 | 145 s | 331 | 0.7.3 |
-| G272CLWML2 | 514 | **16 s** | 16 | 0.7.1 |
-| CT62WWY4GJ | 477 | 141 s | 462 | 0.7.2 |
+| machine 1 | 727 | 150 s | 456 | 0.7.3 |
+| machine 2 | 604 | 138 s | 429 | 0.7.3 |
+| machine 3 | 594 | 149 s | 428 | 0.7.3 |
+| machine 4 | 576 | 142 s | 379 | 0.7.3 |
+| machine 5 | 538 | 145 s | 331 | 0.7.3 |
+| machine 6 | 514 | **16 s** | 16 | 0.7.1 |
+| machine 7 | 477 | 141 s | 462 | 0.7.2 |
 | … | | | | |
 
 Version correlation: none that matters — churners run current builds (0.7.x). Machines whose latest version is 0.7.1/0.7.2 average higher (112–120 sessions/machine) than 0.7.3 (62), but that is confounded by 0.7.1/0.7.2 selecting for always-on boxes that churn through wake cycles all week; the top churner runs 0.7.3.
 
-**Outlier `G272CLWML2`** (514 sessions, p50 16 s): a distinct pathology. Sessions live 15–60 s, die on a *live* socket error 11–16 s after connect, at an exact ~6-minute cadence for hours (11:06:42, 11:12:44, 11:18:45, …). That periodicity is a local crash/restart or network-path failure loop on that one box — provider-side investigation (its crash logs / `provider_log_reports`), not a coordinator behavior.
+**Outlier machine 6** (514 sessions, p50 16 s): a distinct pathology. Sessions live 15–60 s, die on a *live* socket error 11–16 s after connect, at an exact ~6-minute cadence for hours (11:06:42, 11:12:44, 11:18:45, …). That periodicity is a local crash/restart or network-path failure loop on that one box — provider-side investigation (its crash logs / `provider_log_reports`), not a coordinator behavior.
 
 ### 5. Reconnect gaps (all sessions, same-serial disconnect → next connect)
 
@@ -102,7 +102,7 @@ Composite timeline that produces the observed 120–180 s sessions: box wakes �
 
 ### Live closes (28%) — natural ends and restart loops
 
-Socket dies while heartbeats are current: provider process stop/update (WS close frame), crash (TCP reset — the `G272CLWML2` loop), or genuine network loss. p50 duration 35 min, reconnect gap p50 29 s. This population is the ordinary lifecycle plus a tail of per-box pathologies; pre-fix it was indistinguishable from eviction in the DB.
+Socket dies while heartbeats are current: provider process stop/update (WS close frame), crash (TCP reset — the machine 6 loop), or genuine network loss. p50 duration 35 min, reconnect gap p50 29 s. This population is the ordinary lifecycle plus a tail of per-box pathologies; pre-fix it was indistinguishable from eviction in the DB.
 
 ### `coordinator_restart` (2%)
 
@@ -132,7 +132,7 @@ No protocol messages changed, no WS restructure, no session resume, no registry/
 | 2 | Label the stale-eviction path distinctly (e.g. `stale_eviction` instead of `disconnect` in `registry.Disconnect`, or a reason parameter) | coordinator (`registry/` — **owned by the breaker-state agent, do not touch in this PR**) | Completes the taxonomy; today eviction is only identifiable as "the reason nothing else claimed". |
 | 3 | Session resume / stable provider identity across reconnects (keyed by serial or SE key rather than per-connection UUID) | coordinator (protocol + registry; explicitly out of scope here) | The real churn *cost* is state loss + cardinality, not the reconnects themselves. A sleeping Mac fleet will always churn; making reconnects cheap is the durable fix. The breaker-state agent's work is the first slice of this. |
 | 4 | Sleep prevention hardening: `caffeinate -s` is AC-only — consider `-i`-scoped assertions plus surfacing "this box sleeps constantly" to operators (`darkbloom doctor` check; the top 20 serials = 28% of all churn) | provider | Attacks the root cause on the heavy-churn cohort. Needs Swift changes; not this PR. |
-| 5 | Investigate `G272CLWML2`-class outliers (exact 6-min live-close loop) via `provider_log_reports` | provider / ops | One box ≈ 500 sessions/week; likely crash-restart loop. |
+| 5 | Investigate machine-6-class outliers (exact 6-min live-close loop) via `provider_log_reports` | provider / ops | One box ≈ 500 sessions/week; likely crash-restart loop. |
 | 6 | Optional: raise eviction grace for boxes with clean heartbeat history, or make eviction latency adaptive | coordinator (registry) | Low value until #3 lands — longer grace merely delays the same eviction and keeps unroutable boxes in candidate sets. Not recommended now. |
 
 ## Appendix: environment notes

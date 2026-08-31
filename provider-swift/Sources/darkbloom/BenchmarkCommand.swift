@@ -23,6 +23,31 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum tokens to generate per iteration.")
     var maxTokens = ModelBenchmark.defaultMaxTokens
 
+    @Flag(name: .long, help: """
+        Run the fail-closed signed-candidate cap-0/cap-1 scheduler-prefill \
+        evaluation. This mode only runs from the packaged signed \
+        Darkbloom.app main executable.
+        """)
+    var schedulerPrefillDecision = false
+
+    @Option(name: .long, help: "Signed decision: expected registered model aggregate SHA-256.")
+    var expectedModelAggregateSHA256: String?
+
+    @Option(name: .long, help: "Signed decision: expected registered signed darkbloom binary SHA-256.")
+    var expectedRegisteredBinarySHA256: String?
+
+    @Option(name: .long, help: "Signed decision: exact expected ProviderCore version.")
+    var expectedVersion: String?
+
+    @Option(name: .long, help: "Signed decision: source commit SHA (40 or 64 lowercase hex).")
+    var sourceSHA: String?
+
+    @Option(name: .long, help: "Signed decision: measured iterations per cap/workload cell (minimum/default 10).")
+    var decisionIterations = SchedulerPrefillDecisionReport.minimumLiveIterations
+
+    @Option(name: .long, help: "Signed decision: write JSON atomically to this file; omit for stdout.")
+    var output: String?
+
     // MARK: - Throughput sweep mode (prefill tok/s × prompt length; decode tok/s × batch size)
 
     @Flag(name: .long, help: """
@@ -62,8 +87,9 @@ struct Benchmark: AsyncParsableCommand {
         KV backend EVERY engine this command builds is built with — \
         auto|contiguous|paged (default auto, which resolves to CONTIGUOUS as \
         of v0.8.1 — pass --kv-backend paged to measure the paged arm). \
-        Applies to --sweep, --scheduler-prefill and \
-        --arrival-invariance alike, so the three phases of a wrapper run can \
+        Applies to --sweep, --scheduler-prefill, \
+        --scheduler-prefill-decision, and --arrival-invariance alike, so \
+        benchmark phases can \
         never measure different arms. An explicit paged selection FAILS the \
         run rather than degrading: if paged cannot be served, engine \
         construction throws, the cell records no samples, and the command \
@@ -127,6 +153,15 @@ struct Benchmark: AsyncParsableCommand {
     var parityPrefixTokens = 28672
 
     mutating func run() async throws {
+        if let conflict = benchmarkModeConflict() {
+            printError(conflict)
+            throw ExitCode(2)
+        }
+        if schedulerPrefillDecision {
+            try await runSignedSchedulerPrefillDecision()
+            return
+        }
+
         let snapshot = try loadRuntimeSnapshot(
             configPath: configOptions.config,
             migrateOnDisk: false)
@@ -238,5 +273,19 @@ struct Benchmark: AsyncParsableCommand {
         )
 
         report.printTable()
+    }
+
+    func benchmarkModeConflict() -> String? {
+        let selected = [
+            (schedulerPrefillDecision, "--scheduler-prefill-decision"),
+            (sweep, "--sweep"),
+            (schedulerPrefill, "--scheduler-prefill"),
+            (arrivalInvariance, "--arrival-invariance"),
+            (parity, "--parity"),
+        ].compactMap { $0.0 ? $0.1 : nil }
+        guard selected.count <= 1 else {
+            return "benchmark modes are mutually exclusive: \(selected.joined(separator: ", "))"
+        }
+        return nil
     }
 }

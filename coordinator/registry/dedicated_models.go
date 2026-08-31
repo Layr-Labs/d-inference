@@ -74,7 +74,7 @@ func (r *Registry) dedicatedPatternForLocked(model string) (string, bool) {
 func (r *Registry) providerDedicatedToPatternLocked(p *Provider, pattern string) bool {
 	advertised := 0
 	for _, m := range p.Models {
-		if !r.modelAllowedByCatalogLocked(m) {
+		if !r.providerModelAllowedByCatalogLocked(p, m) {
 			continue
 		}
 		advertised++

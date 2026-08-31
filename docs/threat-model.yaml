@@ -486,10 +486,10 @@ trust_boundaries:
       - "No MDM command UUID correlation: the webhook response is not bound to a specific
         outbound command. A replay of any old SecurityInfo webhook response for the same
         UDID would be accepted."
-      - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key is
-        publicly visible in the provider's attestation blob. An attacker who captures the
-        attestation can pre-compute the expected freshness code, potentially forging a
-        cert with a matching OID value."
+      - "The MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
+        visible in the privacy-redacted public attestation status. An attacker can
+        pre-compute the expected freshness code, potentially forging a cert with a
+        matching OID value."
       - "No OCSP/CRL checks on the Apple MDA certificate chain. A revoked Apple
         intermediate CA would be accepted until the embedded root is manually updated."
       - "x509.Verify() is called with ExtKeyUsageAny, which does not enforce leaf or
@@ -712,8 +712,8 @@ trust_boundaries:
         string could theoretically produce the same signed bytes as a different
         (nonce, timestamp) pair, though in practice base64 nonces (44 chars) and RFC3339
         timestamps are statistically non-overlapping."
-      - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key is publicly
-        visible in the attestation blob returned by GET /v1/providers/attestation.
+      - "MDA freshness code is sha256(SE_public_key_bytes). The SE public key remains
+        visible in the privacy-redacted GET /v1/providers/attestation status response.
         An attacker can pre-compute the expected freshness code for any known provider."
       - "No OCSP or CRL checks on the Apple Enterprise Attestation Root CA chain. A
         compromised or revoked Apple intermediate CA certificate would be accepted by the

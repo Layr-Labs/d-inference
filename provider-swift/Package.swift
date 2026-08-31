@@ -96,6 +96,12 @@ let package = Package(
             path: "Sources/ProviderCoreFoundation"
         ),
 
+        .target(
+            name: "ProviderMetallibControl",
+            path: "Sources/ProviderMetallibControl",
+            publicHeadersPath: "include"
+        ),
+
         // ----------------------------------------------------------------
         // ProviderCore: shared library that holds protocol, hardware,
         // crypto, models, security, telemetry, coordinator client,
@@ -107,6 +113,7 @@ let package = Package(
             name: "ProviderCore",
             dependencies: [
                 "ProviderCoreFoundation",
+                "ProviderMetallibControl",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -283,5 +290,6 @@ let package = Package(
             ],
             path: "Tests/DarkbloomPublishTests"
         ),
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

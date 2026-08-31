@@ -154,6 +154,9 @@ public enum EngineV2Factory {
         extraEOSTokens: [String] = [],
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
+        prefillDeadlineMode: PrefillDeadlineMode? = nil,
+        runtimePolicyEnvironment: [String: String] =
+            ProcessInfo.processInfo.environment,
         kvBytesPerToken: Int = 0,
         auxiliaryBytesPerToken: Int = 0,
         auxiliaryTokenGranularity: Int = 1,
@@ -179,6 +182,12 @@ public enum EngineV2Factory {
                 extraEOSTokens: extraEOSTokens,
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
+                prefillDeadlineMode: PrefillDeadlineMode.resolve(
+                    configured: prefillDeadlineMode,
+                    environment: runtimePolicyEnvironment),
+                prefillDeadlineProjectionEnabled:
+                    prefillDeadlineProjectionSupported(
+                        environment: runtimePolicyEnvironment),
                 kvBytesPerToken: kvBytesPerToken,
                 fixedRequestBytes: build.fixedRequestBytes,
                 auxiliaryBytesPerToken: auxiliaryBytesPerToken,

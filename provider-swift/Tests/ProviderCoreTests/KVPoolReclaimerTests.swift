@@ -132,8 +132,16 @@ struct KVPoolReclaimerTests {
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
-        let reclaim = Task { await reclaimer.sweep() }
+        let reclaim = Task.detached(priority: .high) { await reclaimer.sweep() }
         await gate.waitUntilClearStarted()
+        // Failsafe: if the snapshot below ever queues behind the parked GPU
+        // clear (the regression this test exposes), release the gate after a
+        // generous bound so the run fails on the ordering assertions instead
+        // of deadlocking the suite.
+        let failsafe = Task {
+            try? await taskSleep(.seconds(5))
+            gate.releaseClear()
+        }
 
         // The clear is still parked. A lock-backed heartbeat snapshot must
         // return before the clear is released; otherwise this call deadlocks
@@ -145,6 +153,7 @@ struct KVPoolReclaimerTests {
         #expect(duringClear.reclaims == 0)
 
         gate.releaseClear()
+        failsafe.cancel()
         await gate.waitUntilClearCompleted()
         #expect(await reclaim.value)
         #expect(reclaimer.telemetrySnapshot().reclaims == 1)

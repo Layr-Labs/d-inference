@@ -31,11 +31,11 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 
@@ -49,14 +49,20 @@ const (
 	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
 	inferenceTimeout = 600 * time.Second
 
-	// preambleContentTimeout is the budget from the first boilerplate chunk to
-	// the first CONTENT chunk when the TTFT deadline has already expired. A
-	// provider that produced only preamble (role delta / Responses lifecycle)
-	// has written ZERO bytes to the client, so a role-then-stall zombie must
-	// fail over instead of pinning the request for the full inferenceTimeout.
-	// 90s comfortably covers the measured pre-content tail (vision prefill is
-	// 6-30s); genuine cold model loads signal via AcceptedCh and keep the full
-	// inferenceTimeout.
+	// defaultFirstContentDeadlineBase preserves the ordinary coordinator and
+	// unit-test budget. Production overrides it to 9s through validated startup
+	// configuration; exact model overrides live in modelpolicy and every request
+	// adds 1ms per estimated prompt token.
+	defaultFirstContentDeadlineBase = 5 * time.Second
+
+	// preambleContentTimeout is the relative cap from the first boilerplate
+	// chunk to the first CONTENT chunk. A provider that produced only preamble
+	// (role delta / Responses lifecycle) has written ZERO bytes to the client,
+	// so a role-then-stall zombie must fail over instead of pinning the request
+	// for the full inferenceTimeout. 90s covers the measured pre-content tail
+	// (vision prefill is 6-30s). When ReceivedAt is stamped this cap cannot
+	// exceed leftover request-absolute first-token budget: AcceptedCh is not a
+	// completion token and must not reset that clock.
 	preambleContentTimeout = 90 * time.Second
 
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
@@ -98,7 +104,8 @@ const (
 	// preambles are one chunk (chat role delta) or two (Responses
 	// created/in_progress), so the cap exists only to stop a misbehaving
 	// provider from growing the held buffer for the whole inference window.
-	// Past the cap the chunk commits the dispatch — the pre-deferral behavior.
+	// Excess boilerplate is dropped while the first-content clock continues;
+	// it must never be mistaken for content and commit a bad provider.
 	maxHeldBoilerplate = 8
 
 	// cancelWriteTimeout bounds how long a cancel write to the provider can
@@ -109,34 +116,17 @@ const (
 
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
-// ttftLiveDeadlineBaseMs is the base term (ms) of the LIVE TTFT admission
-// deadline: ttftDeadline = base + 1ms*estimatedPromptTokens. It governs the live
-// HARD_REJECT cutoff — the preflight bestTTFT shed, the scheduler MaxTTFTMs
-// candidate ceiling, and the queued-request ceiling all derive from
-// ttftDeadline. Default 5000 preserves the historical 5s behavior; override via
-// EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS (wired in cmd/coordinator) so the
-// base can be retuned without a rebuild — e.g. to ~9s/10s, since prod telemetry
-// shows client_gone cancels fit 10000 + 1ms*prompt_tokens and the 5s base
-// over-sheds ~2x. Set once at startup, read-only on routing paths thereafter —
-// mirrors registry.ttftDeadlineBaseMs (the shadow base) and prefillToDecodeRatio.
-var ttftLiveDeadlineBaseMs float64 = 5000
-
-// SetTTFTLiveDeadlineBaseMs overrides the live TTFT deadline base (ms). Values
-// <= 0 are ignored (keep the 5s default). Must be called before serving starts.
-func SetTTFTLiveDeadlineBaseMs(ms float64) {
-	if ms > 0 {
-		ttftLiveDeadlineBaseMs = ms
+// FirstContentDeadline returns this server's request-absolute first-content
+// budget for a concrete model. The ordinary base is instance-owned so
+// production-like E2E servers can use the production value without mutating
+// concurrent unit tests. Exact-model overrides and the fixed 1ms/token slope
+// are centralized in modelpolicy.
+func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) time.Duration {
+	base := s.firstContentDeadlineBase
+	if base <= 0 {
+		base = defaultFirstContentDeadlineBase
 	}
-}
-
-// ttftDeadline returns the TTFT budget for a request based on prompt size:
-// ttftLiveDeadlineBaseMs + 1ms per estimated input token. The base is
-// configurable (see ttftLiveDeadlineBaseMs); the per-token slope is fixed at 1ms
-// to match the verified OpenRouter cancel slope.
-func ttftDeadline(estimatedPromptTokens int) time.Duration {
-	base := time.Duration(ttftLiveDeadlineBaseMs) * time.Millisecond
-	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
-	return base + perToken
+	return modelpolicy.CoordinatorFirstContentDeadline(model, estimatedPromptTokens, base)
 }
 
 // shedIfModelRejected answers a public/prefer-owner request with 429 +
@@ -203,11 +193,16 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 	}
 }
 
-func writeProviderInferenceRequest(ctx context.Context, provider *registry.Provider, data []byte) error {
+func writeProviderInferenceRequestDeferred(
+	ctx context.Context,
+	provider *registry.Provider,
+	builder registry.TextFrameBuilder,
+	onHandoff registry.TextFrameHandoff,
+) (registry.TextFrameWriteMetadata, error) {
 	if provider == nil || provider.Conn == nil {
-		return errors.New("provider websocket is not connected")
+		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
 	}
-	return provider.WriteText(ctx, data)
+	return provider.WriteTextDeferred(ctx, builder, onHandoff)
 }
 
 // cancelDispatch cleans up a speculative dispatch participant that lost the
@@ -223,12 +218,34 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 	if provider == nil || pr == nil {
 		return
 	}
+	pr.ResolveSpeculativeEmptyCompletion(false)
 	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
 	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
 		s.refundProviderExtra(pr)
 	}
+}
+
+// cancelDispatchForFirstContentTimeout atomically arbitrates timeout cleanup
+// against provider ingress. false means an on-time event or another terminal
+// already owns the request, so the wait loop must keep draining its channels.
+func (s *Server) cancelDispatchForFirstContentTimeout(
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+) bool {
+	if provider == nil || pr == nil {
+		return false
+	}
+	removed, deferred := provider.RemovePendingForFirstContentTimeout(pr.RequestID)
+	if deferred || removed == nil {
+		return false
+	}
+	pr.ResolveSpeculativeEmptyCompletion(false)
+	s.registry.SetProviderIdle(provider.ID)
+	s.sendProviderCancel(provider, pr.RequestID)
+	s.refundProviderExtra(pr)
+	return true
 }
 
 // refundProviderExtra refunds the provider-specific surcharge charged on top of
@@ -308,17 +325,17 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if providerID == "" || pr == nil {
 		return
 	}
-	// Deterministic request/model-capability faults (isNonProviderFaultErrorReason:
-	// jinja_* template-render failures, tool_noncompliance) never feed the
-	// provider-health breakers — the provider executed faithfully; the request
-	// shape or the model's sampled output is what failed. Gating HERE (the single
-	// breaker chokepoint) mirrors the dispatch-funnel gate
+	// Structured health-neutral outcomes (isProviderHealthNeutralErrorReason:
+	// jinja_* template-render failures, tool_noncompliance, and the
+	// request-clock-specific deadline_unreachable refusal) never feed provider
+	// health or capacity trackers. Gating HERE (the single breaker chokepoint)
+	// mirrors the dispatch-funnel gate
 	// (dispatchState.noteProviderError) and the reputation exemption
 	// (handleInferenceError), and closes the generic-inference path
 	// (/v1/messages, /v1/completions), which calls noteInferenceError directly on
 	// pre-commit provider errors. Capacity-class rejections never carry these
-	// reasons, so the capacity-reject cooldown feed below is unaffected.
-	if isNonProviderFaultErrorReason(errReason) {
+	// reasons except deadline_unreachable, whose exclusion is intentional.
+	if isProviderHealthNeutralErrorReason(errReason) {
 		return
 	}
 	// Typed terminal-cause gate (the deadline-incident fix): the provider told
@@ -560,6 +577,12 @@ const errModelTooLarge = "model too large for any available provider"
 // queueing for a provider that would miss the OpenRouter SLA target.
 const errTTFTTooSlow = "all available providers exceed the TTFT target"
 
+// errFirstContentDeadlineExpired is returned when the request-absolute
+// first-content clock runs out before an inference_request reaches the provider
+// wire. No provider work was started, so callers surface a deadline 429 without
+// charging provider health.
+const errFirstContentDeadlineExpired = "first-content deadline expired before provider dispatch"
+
 // consumerModel returns the model name to echo back to the consumer: the public
 // alias they requested when set, otherwise the concrete build id (raw-id
 // requests and any internal caller that didn't populate PublicModel).
@@ -636,8 +659,9 @@ const (
 // route this request to Previous instead of returning a fast 429 / slow stream.
 // Hard constraints and permanent model-too-large failures are handled by the
 // caller and do not use this fallback. The TTFT estimate for Previous is also
-// returned so the caller does not need to recompute it. ttftThreshold is only
-// consulted in aliasFallbackTTFT mode.
+// returned so the caller does not need to recompute it. ttftThreshold is the
+// request-local deadline pinned before admission and is only consulted in
+// aliasFallbackTTFT mode.
 func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
@@ -672,6 +696,17 @@ func ttftTooSlow(bestTTFT time.Duration, hasTTFT bool, threshold time.Duration) 
 	return hasTTFT && bestTTFT > threshold
 }
 
+// hardTTFTGateApplies reports whether the scheduler's token-prefill estimate is
+// authoritative enough to reject this request before dispatch. Media requests
+// run CPU decode plus a separate vision tower before text prefill; neither cost
+// exists in estimatedTTFTFromSnapshot, so treating that partial estimate as a
+// hard ceiling rejects healthy video/image requests on a number that cannot
+// predict their TTFT. They still use the best-available provider and remain
+// bounded by the same request-absolute first-content deadline.
+func (s *Server) hardTTFTGateApplies(requiresVision bool) bool {
+	return s.ttftHardReject && !requiresVision
+}
+
 func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateModel string, alternate time.Duration, alternateOK bool) (string, time.Duration) {
 	if alternateOK && alternate < primary {
 		return alternateModel, alternate
@@ -694,6 +729,18 @@ func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.D
 	return seconds
 }
 
+// writeFirstTokenTimeout writes the OpenRouter-compatible retryable 429 used
+// when a request-absolute first-token clock expires after dispatch. Chat
+// exhausted already uses this shape (Retry-After + rate_limit_exceeded);
+// /v1/completions and /v1/messages must match so aggregators retry instead
+// of treating the timeout as a provider 504.
+func (s *Server) writeFirstTokenTimeout(w http.ResponseWriter, model, message string) {
+	retryAfter := s.estimateRetryAfter(model)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		message, withCode("rate_limit_exceeded")))
+}
+
 func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
 	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -703,9 +750,7 @@ func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel stri
 		withCode("rate_limit_exceeded")))
 }
 
-// ttftTooSlowMessage is the single wording for a fleet-wide TTFT rejection, so
-// the status-coded response and the in-band SSE form (used when a prefill
-// keepalive already froze the status code) cannot drift apart.
+// ttftTooSlowMessage is the single wording for a fleet-wide TTFT rejection.
 func ttftTooSlowMessage(publicModel string, bestTTFT, threshold time.Duration, retryAfter int) string {
 	return fmt.Sprintf(
 		"all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds",
@@ -780,6 +825,7 @@ func (s *Server) dispatchOneProvider(
 	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
+	requestDeadline time.Duration,
 	requestedMaxTokens int,
 	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
@@ -800,6 +846,12 @@ func (s *Server) dispatchOneProvider(
 	lastErr string,
 	lastErrCode int,
 ) {
+	receivedAt := timingReceivedAt(timing)
+	_, dispatchable := firstContentBudgetMillis(receivedAt, requestDeadline)
+	if !dispatchable {
+		return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+	}
+
 	requestID := uuid.New().String()
 	pr = &registry.PendingRequest{
 		RequestID: requestID,
@@ -831,11 +883,15 @@ func (s *Server) dispatchOneProvider(
 		PreferOwner:            policy.prefer,
 		OwnerAccountID:         policy.ownerAccountID,
 		FreeSelfRoute:          policy.enabled,
+		MetadataDetails:        metadataDetailsFromRequest(r),
 		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan string, chunkBufferSize),
+		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
 		CompleteCh:             make(chan protocol.UsageInfo, 1),
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		Timing:                 timing,
+	}
+	if !receivedAt.IsZero() {
+		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -847,8 +903,13 @@ func (s *Server) dispatchOneProvider(
 	// dispatch serves the best-available provider instead of re-rejecting an
 	// over-threshold request the preflight already chose to soft-serve. (Mirrors
 	// queueMaxTTFTMs, which already returns 0 in soft mode.)
-	if !policy.enabled && !policy.prefer && s.ttftHardReject {
-		pr.MaxTTFTMs = float64(ttftDeadline(estimatedPromptTokens).Milliseconds())
+	if !policy.enabled && !policy.prefer && s.hardTTFTGateApplies(requiresVision) {
+		pr.MaxTTFTMs = float64(requestDeadline.Milliseconds())
+	}
+	// Refresh immediately before reservation: every retry spends the same
+	// absolute clock, so the scheduler must never see the original ceiling.
+	if !pr.RefreshFirstContentBudget(time.Now()) {
+		return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 	}
 	// Routing v2 W2: soft per-request decode floor (0 = off). Applies to all
 	// routes; it only ranks providers, never rejects.
@@ -880,8 +941,7 @@ func (s *Server) dispatchOneProvider(
 	pendingCleanup := true
 	cleanupPending := func() {
 		if pendingCleanup {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
+			s.releaseUnsentDispatch(provider, pr)
 			pendingCleanup = false
 		}
 	}
@@ -992,33 +1052,61 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
 	}
-	wireMsg := providerInferenceWireMessage(
-		requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr)
-
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	// pr.ReservedMicroUSD was already set in the struct literal and may have
 	// been increased by reserveAdditionalForProvider above. Don't overwrite.
 
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		refundExtra()
-		cleanupPending()
-		return nil, nil, decision, "failed to marshal request", http.StatusInternalServerError
-	}
-	if pr.Timing != nil {
-		pr.Timing.DispatchedAt = time.Now()
-	}
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
+	// Bound the provider write by the request-absolute first-token clock (see
+	// firstTokenWriteContext): a congested write lane must not silently eat
+	// the budget while the aggregator's cancel clock keeps running.
+	writeCtx, cancelWrite := firstTokenWriteContext(
+		r.Context(), receivedAt, requestDeadline)
+	_, writeErr := writeProviderInferenceRequestDeferred(
+		writeCtx,
+		provider,
+		providerInferenceFrameBuilder(
+			requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, pr),
+		func(metadata registry.TextFrameWriteMetadata) {
+			if pr.Timing != nil {
+				pr.Timing.DispatchedAt = metadata.DequeuedAt
+			}
+		},
+	)
+	cancelWrite()
+	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
+		if errors.Is(writeErr, context.DeadlineExceeded) ||
+			errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
+			// The writer either discarded the frame before handoff or aborted
+			// its connection during an in-flight write. Cancel defensively in
+			// case the provider decoded the final bytes before disconnect.
+			s.sendProviderCancel(provider, requestID)
+			return nil, nil, decision, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+		}
 		return nil, nil, decision, "failed to send request to provider", http.StatusBadGateway
 	}
 	pendingCleanup = false
 
 	return provider, pr, decision, "", 0
+}
+
+// releaseUnsentDispatch returns a reservation after frame construction or
+// socket handoff fails. Resolving speculative completion arbitration first
+// guarantees a provider completion already waiting off the read loop cannot
+// remain stranded after pending state is removed.
+func (s *Server) releaseUnsentDispatch(
+	provider *registry.Provider,
+	pr *registry.PendingRequest,
+) {
+	if provider == nil || pr == nil {
+		return
+	}
+	pr.ResolveSpeculativeEmptyCompletion(false)
+	provider.RemovePending(pr.RequestID)
+	s.registry.SetProviderIdle(provider.ID)
 }
 
 // penaltySafeProviderVersion is the first provider release whose VLM penalty
@@ -1421,6 +1509,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	_, reasoningProvided := parsed["reasoning"]
 
 	// Accept either chat completions format (messages) or Responses API format
@@ -1461,22 +1550,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
-	if err != nil {
-		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "bad_param",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
+	var allowedProviderSerials []string
+	stripped := stripProviderRoutingFields(parsed)
+	if applyMetadataDetailsRequest(r, parsed) {
+		stripped = true
 	}
-	if hasProviderAllowlist && stripProviderRoutingFields(parsed) {
+	if stripped {
 		rawBody, _ = marshalForwardBody(parsed)
 	}
 
@@ -1495,13 +1574,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	isResponsesAPI := input != nil && len(messages) == 0
 	constraintBody := originalRawBody
 	if isResponsesAPI {
-		constraintBody, err = promptcontract.LowerProviderBody(
+		loweredConstraintBody, err := promptcontract.LowerProviderBody(
 			promptcontract.EndpointResponses, originalRawBody)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse(
 				"invalid_request_error", err.Error()))
 			return
 		}
+		constraintBody = loweredConstraintBody
 	}
 	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
 	if validationErr != nil {
@@ -1513,7 +1593,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	if requiresToolConstraint && requiresVision {
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error",
@@ -1530,8 +1610,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
-	// that routing constraints (serial allowlist / self-route) are known so the
-	// pick only considers builds the constrained provider set can actually
+	// that coordinator routing constraints and self-route policy are known so
+	// the pick only considers builds the constrained provider set can actually
 	// serve. From here on `model` is the build (routing/billing/serving) while
 	// `publicModel` is echoed back so the consumer never sees the quant.
 	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
@@ -1555,13 +1635,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	serviceChatConsumer := r.URL.Path == "/v1/chat/completions" &&
 		user != nil && user.Role == store.RoleService
-	rawBody, _, err = applyResolvedModelReasoningPolicy(
+	preparedBody, _, err := applyResolvedModelReasoningPolicy(
 		parsed, rawBody, model, serviceChatConsumer, reasoningProvided)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse(
 			"server_error", "failed to prepare inference request"))
 		return
 	}
+	rawBody = preparedBody
 
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
@@ -1582,20 +1663,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inject model-specific defaults from the registry: reasoning_parser
-	// and max_tokens bound. Single DB lookup (cached for platform prices).
+	// Inject model-specific request defaults from the registry, then apply the
+	// model's max_tokens bound. Single DB lookup (cached for platform prices).
 	maxOutputBound := defaultMaxOutputTokens
 	// modelMaxContext is the model's max context window (0 = unknown), used by the
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
+	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
-		// Reasoning parser from runtime_parameters.
-		if _, hasRP := parsed["reasoning_parser"]; !hasRP && rec.RuntimeParameters != nil {
-			if rp, ok := rec.RuntimeParameters["reasoning_parser"]; ok {
-				parsed["reasoning_parser"] = rp
-				rawBody, _ = marshalForwardBody(parsed)
-			}
+		resolvedRuntimeParameters = rec.RuntimeParameters
+		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
+			rawBody, _ = marshalForwardBody(parsed)
 		}
 		// Use the registry's max_output_length as the default max_tokens
 		// bound instead of the hardcoded 8192. This lets models like
@@ -1605,6 +1684,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			maxOutputBound = rec.MaxOutputLength
 		}
 		modelMaxContext = rec.MaxContextLength
+	}
+	if err := validateResolvedToolConstraintParser(
+		parsed, validatedMode, model, s.registry.ModelType(model),
+		resolvedRuntimeParameters,
+	); err != nil {
+		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+		writeToolConstraintValidationError(w, err)
+		return
 	}
 
 	// Bound the generation so the pre-flight reservation covers it. If the
@@ -1621,7 +1708,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	deadline := ttftDeadline(estimatedPromptTokens)
+	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
@@ -1629,7 +1716,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	providerBody := rawBody
 	if isResponsesAPI {
-		providerBody, err = promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
+		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
 		if err != nil {
 			s.recordRejection(rejectionInfo{
 				r:                     r,
@@ -1650,6 +1737,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return
 		}
+		providerBody = loweredProviderBody
 	}
 	providerBodyForModel := func(candidateModel string) ([]byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
@@ -1657,6 +1745,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
 		if marshalErr == nil {
 			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
@@ -1772,6 +1866,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		publicModel:           publicModel,
 		stream:                stream,
 		estimatedPromptTokens: estimatedPromptTokens,
+		firstContentDeadline:  deadline,
 		requestedMaxTokens:    requestedMaxTokens,
 		hasTools:              hasTools,
 		requiresVision:        requiresVision,
@@ -1867,6 +1962,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// onModelFallback callback. resolvedModel uses the new build to match the
 	// pre-extraction behavior.
 	onModelFallback := func(newModel string) bool {
+		var runtimeParameters map[string]any
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
+		}
 		body, _ := marshalForwardBody(parsed)
 		body, _, _ = applyResolvedModelReasoningPolicy(
 			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
@@ -1947,6 +2058,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		parallelToolCalls:      parallelToolCalls,
 		isResponsesAPI:         isResponsesAPI,
 		stream:                 stream,
+		metadataDetails:        metadataDetailsFromRequest(r),
 		policy:                 policy,
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
@@ -1965,13 +2077,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // Any firstChunks (held preamble + first content chunk) are written in order
 // before reading further chunks from the channel. This allows the dispatch
 // loop to "peek" at chunks for retry decisions without losing them.
-func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
+func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+	s.handleStreamingResponseWithFirstChunkAndError(w, r, pr, firstChunks, nil)
+}
+
+func (s *Server) handleStreamingResponseWithFirstChunkAndError(
+	w http.ResponseWriter,
+	r *http.Request,
+	pr *registry.PendingRequest,
+	firstChunks []string,
+	initialError *protocol.InferenceErrorMessage,
+) {
 	if pr.ConsumerEndpoint == completionsEndpoint || pr.ConsumerEndpoint == messagesEndpoint {
-		s.handleGenericEndpointStreamingResponse(w, r, pr, firstChunks, headerWritten)
+		s.handleGenericEndpointStreamingResponseWithError(
+			w, r, pr, firstChunks, initialError)
 		return
 	}
 	if pr.IsResponsesAPI {
-		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
+		s.handleResponsesStreamingResponseWithFirstChunk(
+			w, r, pr, firstChunks, initialError)
 		return
 	}
 
@@ -1981,12 +2105,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		return
 	}
 
-	// When a prefill keepalive already committed the SSE 200 header, skip the
-	// header write (a second WriteHeader would be superfluous) and stream straight
-	// into the held first chunks; otherwise write it now.
-	if !headerWritten {
-		writeSSEResponseHeader(w, pr.RequestID)
-	}
+	writeSSEResponseHeader(w, pr.RequestID)
 	flusher.Flush()
 
 	// Detect Responses API format to skip appending chat-completions-style
@@ -2011,13 +2130,19 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	// preamble first, then the committing content chunk), each through the
 	// same per-chunk special-casing the relay loop below applies.
 	for _, firstChunk := range firstChunks {
-		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
+		if firstChunk == "" {
 			continue
 		}
-		firstChunk = sanitizeStreamCacheDetails(firstChunk)
 		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
 		}
+		if !sawResponsesAPI {
+			firstChunk, _ = stripSSEDoneEvents(firstChunk)
+			if strings.TrimSpace(firstChunk) == "" {
+				continue
+			}
+		}
+		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
 		// A usage-only first chunk (no content/reasoning deltas streamed before it)
 		// is still terminal usage — hold it so the reasoning breakdown is spliced in
 		// at stream end instead of being emitted raw without reasoning_tokens.
@@ -2036,6 +2161,10 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 		}
 	}
+	if initialError != nil {
+		s.writeChatStreamProviderError(w, flusher, pr, *initialError)
+		return
+	}
 
 	// Use a timer that resets on each chunk so long-running generations
 	// (e.g. chain-of-thought models) don't hit a global timeout.
@@ -2044,23 +2173,12 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 
 	for {
 		select {
-		case chunk, ok := <-pr.ChunkCh:
+		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
 				select {
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
-						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-						errData, _ := json.Marshal(map[string]any{
-							"error": map[string]any{
-								"message": clientSafeInferenceErrorMessage(errMsg),
-								"type":    "provider_error",
-							},
-						})
-						fmt.Fprintf(w, "data: %s\n\n", errData)
-						flusher.Flush()
+						s.writeChatStreamProviderError(w, flusher, pr, errMsg)
 						return
 					}
 				default:
@@ -2068,8 +2186,8 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
-					flusher.Flush()
+					s.writeChatStreamTerminalError(
+						w, flusher, pr, "provider_error", "provider ended without completion")
 					return
 				}
 				// Channel closed — inference complete.
@@ -2111,24 +2229,24 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 							pendingUsage["se_signature"] = pr.SESignature
 							pendingUsage["response_hash"] = pr.ResponseHash
 						}
+						attachChatCompletionMetadata(pendingUsage, pr)
 						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
 							fmt.Fprintf(w, "%s\n\n", out)
 							flusher.Flush()
 						}
-					} else if pr.SESignature != "" {
-						// No held usage chunk to ride on: emit the signature as a
-						// fully-shaped chat.completion.chunk (id/object/created/model/
-						// choices) so strict decoders parse it; the extra fields are
-						// additive. It precedes the single [DONE] below.
-						sigEvent, _ := json.Marshal(map[string]any{
-							"id":            "chatcmpl-" + pr.RequestID,
-							"object":        "chat.completion.chunk",
-							"created":       time.Now().Unix(),
-							"model":         consumerModel(pr),
-							"choices":       []any{},
-							"se_signature":  pr.SESignature,
-							"response_hash": pr.ResponseHash,
-						})
+					} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
+						// No held usage chunk to ride on: emit the signature and/or
+						// opt-in metadata as a fully-shaped chat.completion.chunk
+						// (id/object/created/model/choices) so strict decoders parse
+						// it; the extra fields are additive. It precedes the single
+						// [DONE] below.
+						event := newChatCompletionExtrasEvent(pr)
+						if pr.SESignature != "" {
+							event["se_signature"] = pr.SESignature
+							event["response_hash"] = pr.ResponseHash
+						}
+						attachChatCompletionMetadata(event, pr)
+						sigEvent, _ := json.Marshal(event)
 						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
 					}
@@ -2138,6 +2256,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				}
 				return
 			}
+			chunk := providerChunk.Data
 			// Every chunk is a liveness signal — re-arm the idle timeout up front,
 			// before deciding whether to forward or hold it, so holding the terminal
 			// usage chunk still resets the window that bounds the wait for the
@@ -2156,17 +2275,21 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 					sawResponsesAPI = true
 				}
 			}
-			chunk = sanitizeStreamCacheDetails(chunk)
-			// Swallow the provider's own "data: [DONE]" terminator. The
+			// Swallow provider-owned [DONE] events, including SSE groups decorated
+			// with event/id/comment fields, while retaining any sibling event. The
 			// coordinator appends terminal events of its own (held usage with
 			// the reasoning breakdown, SE signature) and then emits exactly ONE
 			// [DONE] — forwarding the provider's produced a stream shaped
 			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
 			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
 			// signature event).
-			if !sawResponsesAPI && isSSEDoneChunk(chunk) {
-				continue
+			if !sawResponsesAPI {
+				chunk, _ = stripSSEDoneEvents(chunk)
+				if strings.TrimSpace(chunk) == "" {
+					continue
+				}
 			}
+			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
 			// Hold the terminal usage chunk (chat completions only) so we can splice
 			// in the reasoning breakdown at stream end; forwarding it inline would
 			// emit it without reasoning_tokens.
@@ -2194,26 +2317,14 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			errData, _ := json.Marshal(map[string]any{
-				"error": map[string]any{
-					"message": clientSafeInferenceErrorMessage(errMsg),
-					"type":    "provider_error",
-				},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", errData)
-			flusher.Flush()
+			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
 			return
 
 		case <-timer.C:
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
-			fmt.Fprintf(w, "data: {\"error\":{\"message\":\"request timed out\",\"type\":\"timeout\"}}\n\n")
-			flusher.Flush()
+			s.writeChatStreamTerminalError(w, flusher, pr, "timeout", "request timed out")
 			return
 
 		case <-r.Context().Done():
@@ -2222,17 +2333,34 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 	}
 }
 
-func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
+func (s *Server) writeChatStreamProviderError(
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	pr *registry.PendingRequest,
+	errMsg protocol.InferenceErrorMessage,
+) {
+	s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+	s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+	s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
+	s.writeChatStreamTerminalError(
+		w, flusher, pr, "provider_error", clientSafeInferenceErrorMessage(errMsg))
+}
+
+func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
+	w http.ResponseWriter,
+	r *http.Request,
+	pr *registry.PendingRequest,
+	firstChunks []string,
+	initialError *protocol.InferenceErrorMessage,
+) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "streaming not supported"))
 		return
 	}
 
-	// Skip the header write when a prefill keepalive already committed the SSE 200.
-	if !headerWritten {
-		writeSSEResponseHeader(w, pr.RequestID)
-	}
+	writeSSEResponseHeader(w, pr.RequestID)
 
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
@@ -2244,13 +2372,21 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			emitter.handleChunk(sanitizeStreamCacheDetails(firstChunk))
 		}
 	}
+	if initialError != nil {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, *initialError))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
+		return
+	}
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
 	for {
 		select {
-		case chunk, ok := <-pr.ChunkCh:
+		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
 				var usage protocol.UsageInfo
 				completed := false
@@ -2272,6 +2408,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				emitter.finish(usage)
 				return
 			}
+			chunk := providerChunk.Data
 			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
 			if !timer.Stop() {
 				select {
@@ -2310,6 +2447,16 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 // Any firstChunks (held preamble + first content chunk consumed during
 // dispatch) seed the collected chunks in order.
 func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string) {
+	s.handleNonStreamingResponseWithFirstChunkAndError(w, r, pr, firstChunks, nil)
+}
+
+func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
+	w http.ResponseWriter,
+	r *http.Request,
+	pr *registry.PendingRequest,
+	firstChunks []string,
+	initialError *protocol.InferenceErrorMessage,
+) {
 	ctx, cancel := context.WithTimeout(r.Context(), inferenceTimeout)
 	defer cancel()
 
@@ -2319,10 +2466,17 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			chunks = append(chunks, firstChunk)
 		}
 	}
+	if initialError != nil {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, *initialError))
+		s.writeGenericProviderError(w, *initialError)
+		return
+	}
 
 	for {
 		select {
-		case chunk, ok := <-pr.ChunkCh:
+		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
 				select {
 				case errMsg, ok := <-pr.ErrorCh:
@@ -2427,6 +2581,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								obj["se_signature"] = pr.SESignature
 								obj["response_hash"] = pr.ResponseHash
 							}
+							if isChatCompletionsConsumer(pr) {
+								attachChatCompletionMetadata(obj, pr)
+							}
 							s.noteInferenceSuccess(pr)
 							writeJSON(w, http.StatusOK, obj)
 							return
@@ -2459,7 +2616,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						pr.ConsumerEndpoint == messagesEndpoint {
 						resp = buildGenericEndpointResponse(pr, msg, usage)
 					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						chatResp := buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						applyChatCompletionMetadataToResponse(&chatResp, pr)
+						resp = chatResp
 					}
 					s.noteInferenceSuccess(pr)
 					writeJSON(w, http.StatusOK, resp)
@@ -2475,6 +2634,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				}
 				return
 			}
+			chunk := providerChunk.Data
 			chunks = append(chunks, chunk)
 
 		case errMsg, ok := <-pr.ErrorCh:
@@ -3104,18 +3264,43 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 	obj["usage"] = usageObj
 }
 
-// parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
-// + a non-null usage object, carrying the final usage and no content delta) and
-// returns the parsed object. ok is false for any other chunk. Parsing here once
-// lets the caller hold the object and finalize it at stream end without re-parsing.
-// isSSEDoneChunk reports whether a provider stream chunk is the SSE
-// "data: [DONE]" terminator (with or without the data: prefix). The
-// coordinator owns stream termination — provider terminators are swallowed
-// so coordinator-appended events (held usage, SE signature) never trail a
-// [DONE] that SDKs treat as final.
-func isSSEDoneChunk(chunk string) bool {
-	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(chunk), "data:"))
-	return line == "[DONE]"
+func isSSEDoneEventGroup(group string) bool {
+	lines := strings.Split(group, "\n")
+	data := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if value, ok := sseDataValue(line); ok {
+			data = append(data, value)
+		}
+	}
+	if len(data) > 0 {
+		return strings.TrimSpace(strings.Join(data, "\n")) == "[DONE]"
+	}
+	return len(lines) == 1 &&
+		strings.TrimSpace(strings.TrimPrefix(group, "\uFEFF")) == "[DONE]"
+}
+
+// stripSSEDoneEvents removes provider-owned SSE terminators while preserving
+// sibling events in the same chunk. The coordinator owns stream termination so
+// authoritative usage, signature, and metadata events always precede [DONE].
+func stripSSEDoneEvents(chunk string) (string, bool) {
+	if !strings.Contains(chunk, "[DONE]") {
+		return chunk, false
+	}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
+	groups := strings.Split(normalized, "\n\n")
+	kept := make([]string, 0, len(groups))
+	removed := false
+	for _, group := range groups {
+		if isSSEDoneEventGroup(group) {
+			removed = true
+			continue
+		}
+		kept = append(kept, group)
+	}
+	if !removed {
+		return chunk, false
+	}
+	return strings.Join(kept, "\n\n"), true
 }
 
 // isResponsesAPIEventChunk reports whether a streamed chunk is a Responses API
@@ -3230,6 +3415,10 @@ func isBoilerplateChunk(chunk string) bool {
 	return true
 }
 
+// parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
+// + a non-null usage object, carrying the final usage and no content delta) and
+// returns the parsed object. ok is false for any other chunk. Parsing here once
+// lets the caller hold the object and finalize it at stream end without re-parsing.
 func parseUsageOnlyStreamChunk(chunk string) (obj map[string]any, ok bool) {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Cheap gate: skip the parse for content deltas and usage:null chunks.
@@ -3848,29 +4037,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	endpointKind := promptcontract.EndpointCompletions
 	if endpoint == "/v1/messages" {
 		endpointKind = promptcontract.EndpointMessages
 	}
 
-	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
-	if err != nil {
-		s.recordRejection(rejectionInfo{
-			r:               r,
-			stage:           "validation",
-			reasonCode:      "bad_param",
-			httpStatus:      http.StatusBadRequest,
-			keyID:           keyIDFromContext(r.Context()),
-			consumerKeyHash: store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:  model,
-			params:          rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
-		return
-	}
-	if hasProviderAllowlist {
-		stripProviderRoutingFields(parsed)
-	}
+	var allowedProviderSerials []string
+	stripProviderRoutingFields(parsed)
+	applyMetadataDetailsRequest(r, parsed)
 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)
@@ -3905,7 +4080,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
 	s.recordToolConstraintMetric(validatedMode, "requested")
-	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresToolConstraint := validatedMode.requiresInferenceConstraint()
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
 	aliasTraits := registry.RequestTraits{
@@ -3973,6 +4148,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	genericMaxOutput := defaultMaxOutputTokens
 	modelMaxContext := 0
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		// Keep generic endpoints aligned with chat completions: parser defaults
+		// are catalog-owned request semantics, not provider inference guesses.
+		runtimeDefaults.apply(parsed, rec.RuntimeParameters)
 		if rec.MaxOutputLength > 0 {
 			genericMaxOutput = rec.MaxOutputLength
 		}
@@ -3984,7 +4162,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	genericDeadline := ttftDeadline(estimatedPromptTokens)
+	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
@@ -4024,37 +4202,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	timing.ReservedAt = time.Now()
-	rejectionForGeneric := func(stage, reason string, status, retryAfterMs int) rejectionInfo {
-		return rejectionInfo{
-			r:                     r,
-			stage:                 stage,
-			reasonCode:            reason,
-			httpStatus:            status,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKey),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                stream,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			selfRouteOnly:         policy.enabled,
-			preferOwner:           policy.prefer,
-			params:                rejectionSamplingParams(parsed),
-			retryAfterMs:          retryAfterMs,
-		}
-	}
-	rejectionForGenericWithDecision := func(stage, reason string, status, retryAfterMs int, decision registry.RoutingDecision) rejectionInfo {
-		info := rejectionForGeneric(stage, reason, status, retryAfterMs)
-		info.servabilityComputed = true
-		info.candidateCount = decision.CandidateCount
-		info.capacityRejections = decision.CapacityRejections
-		info.modelTooLargeRejections = decision.ModelTooLargeRejections
-		info.visionRejections = decision.VisionRejections
-		info.bestTTFTMs = decision.BestTTFTMs
-		return info
-	}
 
 	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
@@ -4062,6 +4209,12 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			candidateParsed[key] = value
 		}
 		candidateParsed["model"] = candidateModel
+		candidateDefaults := runtimeDefaults
+		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
+		} else {
+			candidateDefaults.apply(candidateParsed, nil)
+		}
 		endpointBody, _ := marshalForwardBody(candidateParsed)
 		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
 			endpointKind, endpointBody)
@@ -4088,9 +4241,24 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	var endpointBody, inferenceBody []byte
 	var loweringErr error
-	var providerBodyOverflowErr error
 	routingTraits := routingTraitsForModel(model)
 	refreshGenericBody := func(newModel string) bool {
+		var runtimeParameters map[string]any
+		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {
+			runtimeParameters = rec.RuntimeParameters
+			runtimeDefaults.apply(parsed, runtimeParameters)
+		} else {
+			runtimeDefaults.apply(parsed, nil)
+		}
+		if err := validateResolvedToolConstraintParser(
+			parsed, validatedMode, newModel, s.registry.ModelType(newModel),
+			runtimeParameters,
+		); err != nil {
+			s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+			writeToolConstraintValidationError(w, err)
+			refundReservation()
+			return false
+		}
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
@@ -4100,7 +4268,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		routingTraits.ParallelToolCalls = parallelToolCalls
 		return true
 	}
-	refreshGenericBody(model)
+	if !refreshGenericBody(model) {
+		return
+	}
 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
@@ -4127,13 +4297,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	cachePlan := registry.CachePlan{}
-	consumerEndpoint := ""
-	var requestedStopSequences []string
+	// Response framing is determined by the caller-facing endpoint, never by
+	// whether its request shape could be lowered for cache participation.
+	consumerEndpoint, requestedStopSequences := genericResponseMetadata(endpoint, parsed)
 	if loweringErr == nil {
-		consumerEndpoint = endpoint
-		if endpoint == messagesEndpoint {
-			requestedStopSequences = requestedMessagesStopSequences(parsed)
-		}
 		cachePlan = s.planCacheRoute(
 			r.Context(), consumerKey, model, inferenceBody, requiresVision)
 	} else {
@@ -4143,406 +4310,24 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		inferenceBody = endpointBody
 	}
 
-	requestID := uuid.New().String()
-	pr := &registry.PendingRequest{
-		RequestID:              requestID,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		ConsumerEndpoint:       consumerEndpoint,
-		RequestedStopSequences: requestedStopSequences,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		CachePlan:              cachePlan,
-		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
-		Traits:               routingTraits,
-		RequestedMaxTokens:   requestedMaxTokens,
-		TokenAdmission:       tokenAdmission,
-		ReservedMicroUSD:     reservedMicroUSD,
-		BaseReservedMicroUSD: reservedMicroUSD,
-		ServiceReservation:   serviceReservation,
-		AcceptedCh:           make(chan struct{}, 1),
-		ChunkCh:              make(chan string, chunkBufferSize),
-		CompleteCh:           make(chan protocol.UsageInfo, 1),
-		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
-		Timing:               timing,
+	// Generic endpoints use the same dispatch state machine as chat. This keeps
+	// queue deadlines, speculative failover, pre-content boilerplate handling,
+	// typed deadline refusals, and terminal 429 semantics identical.
+	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		modelMaxContext = rec.MaxContextLength
 	}
-	// Public inference routes (not self-route / prefer-owner) enforce the
-	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
-	// check authoritative: the router cannot select a provider whose estimated
-	// TTFT is above the threshold.
-	// Routing v2 (P1 fix): enforce the TTFT ceiling only in HARD mode; soft mode
-	// leaves MaxTTFTMs 0 so dispatch serves the best-available provider.
-	if !policy.enabled && !policy.prefer && s.ttftHardReject {
-		pr.MaxTTFTMs = float64(genericDeadline.Milliseconds())
-	}
-	// Routing v2 W2: soft per-request decode floor (0 = off).
-	pr.MinDecodeTPS = s.minDecodeTPS
-
-	// refundExtra credits back the provider-specific surcharge that
-	// reserveAdditionalForProvider may have added on top of the base
-	// reservation. Without this, failing after the extra charge leaks
-	// the difference between pr.ReservedMicroUSD and the original
-	// reservedMicroUSD.
-	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
-	}
-	writeProviderReservationFailure := func(err error) {
-		refundExtra()
-		refundReservation()
-		if errors.Is(err, store.ErrInsufficientBalance) {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_funds",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        publicModel,
-				resolvedModel:         model,
-				stream:                stream,
-				estimatedPromptTokens: estimatedPromptTokens,
-				requestedMaxTokens:    requestedMaxTokens,
-				requiresVision:        requiresVision,
-				hasTools:              hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
-				pr, "insufficient_funds", http.StatusPaymentRequired))
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this provider price — add funds at /billing or lower max_tokens",
-				withCode("insufficient_quota")))
-			return
-		}
-		s.logger.Error("provider reservation failed (DB error)",
-			"consumer_key", consumerKey, "error", err)
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
-			pr, "provider_error", http.StatusServiceUnavailable))
-		s.writeServiceUnavailable(w, model)
-	}
-
-	var provider *registry.Provider
-	var decision registry.RoutingDecision
-	var excludeProviders []string
-	var lastProviderReservationErr error
-	var lastProviderReservationProvider *registry.Provider
-	var lastProviderReservationDecision registry.RoutingDecision
-	var lastBodyOverflowProvider *registry.Provider
-	var lastBodyOverflowDecision registry.RoutingDecision
-	recordPreparationRoute := func(
-		provider *registry.Provider,
-		decision registry.RoutingDecision,
-		bodyTooLarge bool,
-	) {
-		if provider == nil {
-			return
-		}
-		routeState := &dispatchState{
-			s:                      s,
-			r:                      r,
-			model:                  model,
-			publicModel:            publicModel,
-			consumerKey:            consumerKey,
-			consumerLocation:       consumerLocation,
-			estimatedPromptTokens:  estimatedPromptTokens,
-			requestedMaxTokens:     requestedMaxTokens,
-			requiresVision:         requiresVision,
-			hasTools:               hasTools,
-			requiresToolConstraint: requiresToolConstraint,
-			toolChoiceMode:         string(validatedMode),
-			toolChoiceName:         toolChoiceName,
-			parallelToolCalls:      parallelToolCalls,
-			policy:                 policy,
-			cachePlan:              cachePlan,
-			requestID:              requestID,
-			attempt:                pr.Attempt,
-			provider:               provider,
-			pr:                     pr,
-		}
-		if bodyTooLarge {
-			routeState.recordProviderBodyTooLargeRoute(provider, pr, decision)
-		} else {
-			routeState.recordRoutingDecisionFor(
-				provider, pr, requestID, pr.Attempt, decision, "", "")
-		}
-	}
-reserveProvider:
-	provider = nil
-	for selections, pricingFailures := 0, 0; selections < maxDispatchAttempts && pricingFailures < 3; selections++ {
-		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeProviders...)
-		if provider == nil {
-			break
-		}
-		if _, err := providerBodySizeError(
-			inferenceBody, requiresVision, provider); err != nil {
-			if !errors.Is(err, errProviderBodyTooLarge) {
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				refundExtra()
-				refundReservation()
-				writeJSON(w, http.StatusInternalServerError, errorResponse(
-					"internal_error", "failed to size provider request"))
-				return
-			}
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			refundExtra()
-			lastBodyOverflowProvider = provider
-			lastBodyOverflowDecision = decision
-			excludeProviders = append(excludeProviders, provider.ID)
-			pr.ExcludedProviderIDs = append(pr.ExcludedProviderIDs, provider.ID)
-			providerBodyOverflowErr = err
-			provider = nil
-			continue
-		}
-
-		// Settles FREE when served by the caller's own machine: exclusive
-		// self-route always, or a prefer request whose selected provider is owned
-		// (settlement refunds to zero). Skip the payout warning + custom-price
-		// top-up then (the top-up could otherwise 429 the free owned route).
-		settlesFree := policy.enabled
-		if !settlesFree && policy.prefer {
-			provider.Mu().Lock()
-			settlesFree = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
-			provider.Mu().Unlock()
-		}
-
-		if s.billing != nil && !settlesFree && !providerHasPayoutDestination(provider) {
-			s.logger.Warn("provider missing payout destination, crediting to internal ledger",
-				"provider_id", provider.ID)
-		}
-
-		// Custom pricing check — provider may charge more than the platform
-		// rate. Skipped for free (owned) requests, which settle at zero cost.
-		if s.billing != nil && !settlesFree {
-			if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				excludeProviders = append(excludeProviders, provider.ID)
-				if !errors.Is(err, store.ErrInsufficientBalance) {
-					s.logger.Error("provider reservation failed (DB error)",
-						"request_id", requestID,
-						"provider_id", provider.ID,
-						"error", err,
-					)
-				}
-				lastProviderReservationProvider = provider
-				lastProviderReservationDecision = decision
-				lastProviderReservationErr = err
-				pricingFailures++
-				provider = nil
-				continue
-			}
-		}
-
-		// Provider passed all checks.
-		break
-	}
-	if provider == nil {
-		// Providers are available but all exceed the TTFT ceiling. Fail fast
-		// with a retryable 429 rather than queueing for a provider that would
-		// miss the OpenRouter SLA target.
-		if decision.TTFTRejections > 0 {
-			bestTTFT := time.Duration(decision.BestTTFTMs * float64(time.Millisecond))
-			refundReservation()
-			s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
-			return
-		}
-
-		// No online provider can physically fit this model — queueing/retrying
-		// can't help, so fast-fail with a clear, non-retryable error instead of
-		// blocking for 120s then 503-ing. Mirrors the streaming dispatch path.
-		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_too_large"})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
-				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
-				withCode("model_unavailable")))
-			return
-		}
-		preparationErr := exhaustedProviderPreparationError(
-			decision, lastProviderReservationErr, providerBodyOverflowErr)
-		if preparationErr != nil && !errors.Is(preparationErr, errProviderBodyTooLarge) {
-			recordPreparationRoute(
-				lastProviderReservationProvider, lastProviderReservationDecision, false)
-			writeProviderReservationFailure(preparationErr)
-			return
-		}
-		if errors.Is(preparationErr, errProviderBodyTooLarge) {
-			refundReservation()
-			if lastBodyOverflowProvider != nil {
-				recordPreparationRoute(
-					lastBodyOverflowProvider, lastBodyOverflowDecision, true)
-			}
-			rejection := rejectionForGeneric(
-				"validation", "payload_too_large", http.StatusRequestEntityTooLarge, 0)
-			rejection.requestBodyBytes = oversizedProviderBodyBytes(providerBodyOverflowErr)
-			rejection.servabilityComputed = true
-			s.recordRejection(rejection)
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
-				"invalid_request_error", providerBodyOverflowErr.Error(),
-				withCode("payload_too_large")))
-			return
-		}
-		queuedReq := &registry.QueuedRequest{
-			RequestID:  requestID,
-			Model:      model,
-			Pending:    pr,
-			ResponseCh: make(chan *registry.Provider, 1),
-		}
-		timing.QueuedAt = time.Now()
-		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
-			retryAfter := s.estimateRetryAfter(model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:over_capacity"})
-			s.recordRejection(rejectionForGenericWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
-			if policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity — retry shortly", withCode("machine_busy")))
-			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity and queue is full", publicModel),
-					withCode("rate_limit_exceeded")))
-			}
-			return
-		}
-		s.recordWarmPoolQueueState(model)
-		// Routing v2 W3: the model now has queued demand — proactively warm a cold
-		// provider for it (TriggerModelSwaps) instead of waiting for the next
-		// heartbeat, so the queued request drains onto it sooner.
-		s.kickColdDispatch(model)
-		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
-		routeState := &dispatchState{
-			s:                      s,
-			r:                      r,
-			model:                  model,
-			publicModel:            publicModel,
-			consumerKey:            consumerKey,
-			consumerLocation:       consumerLocation,
-			estimatedPromptTokens:  estimatedPromptTokens,
-			requestedMaxTokens:     requestedMaxTokens,
-			requiresVision:         requiresVision,
-			hasTools:               hasTools,
-			requiresToolConstraint: requiresToolConstraint,
-			toolChoiceMode:         string(validatedMode),
-			toolChoiceName:         toolChoiceName,
-			parallelToolCalls:      parallelToolCalls,
-			policy:                 policy,
-			cachePlan:              cachePlan,
-			requestID:              requestID,
-			attempt:                pr.Attempt,
-			pr:                     pr,
-		}
-		routeState.recordRoutingDecisionFor(nil, pr, requestID, pr.Attempt, decision, "", "queued")
-		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				s.recordWarmPoolQueueState(model)
-				s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
-				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
-				refundReservation()
-				return
-			}
-			if errors.Is(err, registry.ErrQueueTTFTTooSlow) {
-				// Deterministic drain-time TTFT rejection: every eligible
-				// provider fails only the TTFT ceiling, so answer with the
-				// standard ttft_too_slow 429 instead of waiting out the queue.
-				s.recordWarmPoolQueueState(model)
-				s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "error", "ttft_too_slow", http.StatusTooManyRequests))
-				s.registry.RecordWarmPoolTTFTMiss(model, genericDeadline)
-				s.triggerWarmPool()
-				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
-				retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, genericDeadline)
-				refundReservation()
-				s.recordRejection(rejectionForGenericWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
-				s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
-				return
-			}
-			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
-				s.recordWarmPoolQueueState(model)
-				s.updateInferenceRouteOutcomeForPending(
-					pr, pendingRouteOutcome(
-						pr, "error", "model_capability_unsupported",
-						http.StatusServiceUnavailable))
-				refundReservation()
-				s.recordRejection(rejectionForGenericWithDecision(
-					"queue", "model_capability_unsupported",
-					http.StatusServiceUnavailable, 0, queuedReq.Decision))
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse(
-					"model_unavailable",
-					fmt.Sprintf(
-						"no online provider for model %q supports inference-time tool_choice enforcement",
-						publicModel),
-					withParam("model")))
-				return
-			}
-			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
-			retryAfter := s.estimateRetryAfter(model)
-			s.registry.RecordWarmPoolQueueTimeout(model, time.Since(queuedReq.EnqueuedAt))
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			refundReservation()
-			s.recordRejection(rejectionForGenericWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
-			if policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
-			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", publicModel),
-					withCode("rate_limit_exceeded")))
-			}
-			return
-		}
-		s.recordWarmPoolQueueState(model)
-		decision = queuedReq.Decision
-		_, sizeErr := providerBodySizeError(inferenceBody, requiresVision, provider)
-		if sizeErr != nil {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			if !errors.Is(sizeErr, errProviderBodyTooLarge) {
-				refundReservation()
-				writeJSON(w, http.StatusInternalServerError, errorResponse(
-					"internal_error", "failed to size provider request"))
-				return
-			}
-			lastBodyOverflowProvider = provider
-			lastBodyOverflowDecision = decision
-			excludeProviders = append(excludeProviders, provider.ID)
-			pr.ExcludedProviderIDs = append(pr.ExcludedProviderIDs, provider.ID)
-			providerBodyOverflowErr = sizeErr
-			goto reserveProvider
-		}
-	}
-	timing.RoutedAt = time.Now()
-	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})
-	s.ddIncr("routing.provider_selected", []string{"provider_id:" + provider.ID, "model:" + model})
-	s.ddHistogram("routing.cost_ms", decision.CostMs, []string{"model:" + model, "provider_id:" + provider.ID})
-	if decision.EffectiveTPS > 0 {
-		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
-	}
-	routeState := &dispatchState{
+	d := &dispatchState{
 		s:                      s,
+		w:                      w,
 		r:                      r,
 		model:                  model,
 		publicModel:            publicModel,
+		rawBody:                inferenceBody,
 		consumerKey:            consumerKey,
 		consumerLocation:       consumerLocation,
+		reservedMicroUSD:       reservedMicroUSD,
+		tokenAdmission:         tokenAdmission,
+		serviceReservation:     serviceReservation,
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
@@ -4551,360 +4336,19 @@ reserveProvider:
 		toolChoiceMode:         string(validatedMode),
 		toolChoiceName:         toolChoiceName,
 		parallelToolCalls:      parallelToolCalls,
+		consumerEndpoint:       consumerEndpoint,
+		requestedStopSequences: requestedStopSequences,
+		stream:                 stream,
+		metadataDetails:        metadataDetailsFromRequest(r),
 		policy:                 policy,
+		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
-		requestID:              requestID,
-		attempt:                pr.Attempt,
-		provider:               provider,
-		pr:                     pr,
+		timing:                 timing,
+		deadline:               genericDeadline,
+		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
+		modelMaxContext:        modelMaxContext,
+		refundReservation:      refundReservation,
+		excludeProviders:       make(map[string]struct{}),
 	}
-	routeState.recordRoutingDecisionFor(provider, pr, requestID, pr.Attempt, decision, "", "")
-	pendingCleanup := true
-	cleanupPending := func() {
-		if pendingCleanup {
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			pendingCleanup = false
-		}
-	}
-	defer cleanupPending()
-	// Settles FREE when served by the caller's own machine (exclusive self-route,
-	// or a prefer request whose selected provider is owned — settlement refunds
-	// to zero). Skip the payout warning + custom-price top-up then.
-	settlesFreeDirect := policy.enabled
-	if !settlesFreeDirect && policy.prefer {
-		provider.Mu().Lock()
-		settlesFreeDirect = policy.ownerAccountID != "" && provider.AccountID == policy.ownerAccountID
-		provider.Mu().Unlock()
-	}
-	if s.billing != nil && !settlesFreeDirect && !providerHasPayoutDestination(provider) {
-		s.logger.Warn("provider missing payout destination, crediting to internal ledger",
-			"provider_id", provider.ID)
-	}
-	// Free (owned) requests settle at zero cost — no provider-price top-up.
-	if s.billing != nil && !settlesFreeDirect {
-		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
-			cleanupPending()
-			writeProviderReservationFailure(err)
-			return
-		}
-	}
-
-	if provider.PublicKey == "" {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_missing", http.StatusServiceUnavailable))
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("encryption_required",
-			"no provider with E2E encryption available"))
-		return
-	}
-
-	providerPubKey, err := e2e.ParsePublicKey(provider.PublicKey)
-	if err != nil {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "provider public key invalid"))
-		return
-	}
-
-	sessionKeys, err := e2e.GenerateSessionKeys()
-	if err != nil {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to generate session keys"))
-		return
-	}
-
-	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.ddIncr("routing.cache_prepare_error", nil)
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to prepare cache-safe request"))
-		return
-	}
-	// Version-gated penalty strip for vision requests (Anthropic /v1/messages
-	// carries image blocks); this handler seals separately from dispatchOneProvider.
-	inferenceBody, err = bodyForCacheAttempt(inferenceBody, requiresVision, provider, pr)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		if errors.Is(err, errProviderBodyTooLarge) {
-			s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
-				pr, errorClassClientError, http.StatusRequestEntityTooLarge))
-			rejection := rejectionForGeneric(
-				"validation", "payload_too_large", http.StatusRequestEntityTooLarge, 0)
-			rejection.requestBodyBytes = oversizedProviderBodyBytes(err)
-			rejection.servabilityComputed = true
-			s.recordRejection(rejection)
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
-				"invalid_request_error", err.Error(), withCode("payload_too_large")))
-			return
-		}
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
-			pr, "provider_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(
-			"internal_error", "failed to prepare provider request"))
-		return
-	}
-	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "encryption_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse("encryption_error", "failed to encrypt request"))
-		return
-	}
-	timing.EncryptedAt = time.Now()
-	wireMsg := providerInferenceWireMessage(
-		requestID,
-		encrypted.EphemeralPublicKey,
-		encrypted.Ciphertext,
-		pr,
-	)
-
-	pr.SessionPrivKey = &sessionKeys.PrivateKey
-	data, err := json.Marshal(wireMsg)
-	if err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to marshal inference request"))
-		return
-	}
-	timing.DispatchedAt = time.Now()
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusBadGateway))
-		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "failed to send request to provider"))
-		return
-	}
-	pendingCleanup = false
-
-	s.logger.Info("inference request dispatched",
-		"request_id", requestID,
-		"model", model,
-		"provider_id", provider.ID,
-		"endpoint", endpoint,
-		"stream", stream,
-	)
-
-	// Dynamic TTFT deadline — wait for the first chunk or accepted signal
-	// before committing. This mirrors the chat completions path but without
-	// speculative dispatch (single attempt). If the provider misses the
-	// TTFT deadline, the request fails instead of streaming forever.
-	ttftTimer := time.NewTimer(genericDeadline)
-	var firstChunk string
-	committed := false
-	accepted := false
-
-	select {
-	case <-pr.AcceptedCh:
-		ttftTimer.Stop()
-		accepted = true
-	case chunk, ok := <-pr.ChunkCh:
-		ttftTimer.Stop()
-		if ok {
-			firstChunk = chunk
-			pr.MarkFirstChunkArrived()
-			// Stamp the actual_ttft_ms anchor at first CONTENT, before the
-			// committedRouteOutcome write below — the generic (/v1/completions,
-			// /v1/messages) path has no dispatch preamble filter, so without this
-			// stamp applyPendingRouteTelemetry would persist actual_ttft_ms as
-			// 0/NULL for successful generic requests. MarkContentCommitted marks
-			// this attempt committed so handleComplete's fallback is scoped to it.
-			pr.MarkFirstContentArrived()
-			pr.MarkContentCommitted()
-			// First chunk == the provider ACCEPTED and is serving: clear the
-			// pair's capacity-reject streak NOW, not at completion — a long
-			// generic (/v1/completions, /v1/messages) stream on a busy box must
-			// keep vouching for the pair while the box legitimately sheds
-			// concurrent dispatches, exactly like the chat path's
-			// commitFirstContent. Without this, generic-only traffic recorded
-			// accepts only at clean completion, so sheds during a long stream
-			// could masquerade as the zero-accepts black-hole signature. (The
-			// generic path has no preamble filter, so this is the first chunk of
-			// ANY kind rather than strictly first content — fine as an accept
-			// signal: a black hole capacity-rejects, it never emits a chunk.)
-			if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
-				pr.MarkRateOutcomeCounted()
-			}
-			committed = true
-		} else {
-			select {
-			case errMsg := <-pr.ErrorCh:
-				provider.RemovePending(requestID)
-				s.registry.SetProviderIdle(provider.ID)
-				s.sendProviderCancel(provider, requestID)
-				refundExtra()
-				refundReservation()
-				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-				s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-				s.writeGenericProviderError(w, errMsg)
-				return
-			default:
-				committed = true
-			}
-		}
-	case errMsg := <-pr.ErrorCh:
-		ttftTimer.Stop()
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
-		refundExtra()
-		refundReservation()
-		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-		s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-		s.writeGenericProviderError(w, errMsg)
-		return
-	case <-ttftTimer.C:
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
-		refundExtra()
-		refundReservation()
-		s.ddIncr("inference.dispatches", []string{"status:timeout"})
-		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
-		return
-	case <-r.Context().Done():
-		ttftTimer.Stop()
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
-		refundExtra()
-		refundReservation()
-		s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
-		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
-		return
-	}
-
-	// If provider accepted (model reload), wait for first chunk with extended deadline.
-	if accepted && !committed {
-		chunkTimer := time.NewTimer(inferenceTimeout)
-		select {
-		case chunk, ok := <-pr.ChunkCh:
-			chunkTimer.Stop()
-			if ok {
-				firstChunk = chunk
-				pr.MarkFirstChunkArrived()
-				// Stamp the actual_ttft_ms anchor + mark this attempt committed at
-				// first CONTENT (see the pre-accept branch above), and record the
-				// capacity-cooldown ACCEPT at first content for the same reason.
-				pr.MarkFirstContentArrived()
-				pr.MarkContentCommitted()
-				if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
-					pr.MarkRateOutcomeCounted()
-				}
-				committed = true
-			} else {
-				select {
-				case errMsg := <-pr.ErrorCh:
-					provider.RemovePending(requestID)
-					s.registry.SetProviderIdle(provider.ID)
-					s.sendProviderCancel(provider, requestID)
-					refundExtra()
-					refundReservation()
-					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-					s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-					s.writeGenericProviderError(w, errMsg)
-					return
-				default:
-					committed = true
-				}
-			}
-		case errMsg := <-pr.ErrorCh:
-			chunkTimer.Stop()
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			s.sendProviderCancel(provider, requestID)
-			refundExtra()
-			refundReservation()
-			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-			s.writeGenericProviderError(w, errMsg)
-			return
-		case <-chunkTimer.C:
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			s.sendProviderCancel(provider, requestID)
-			refundExtra()
-			refundReservation()
-			// Accepted-then-silent is a provider-at-fault 504 — feed the
-			// breaker (single-attempt path: no retry here, but repeated
-			// stalls must still accumulate into the routing cooldown). No
-			// provider message on this synthetic timeout, so errStr is "".
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
-			s.ddIncr("inference.dispatches", []string{"status:timeout"})
-			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
-			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
-			return
-		case <-r.Context().Done():
-			chunkTimer.Stop()
-			provider.RemovePending(requestID)
-			s.registry.SetProviderIdle(provider.ID)
-			s.sendProviderCancel(provider, requestID)
-			refundExtra()
-			refundReservation()
-			s.emitClientGone(model, estimatedPromptTokens, providerChipFamily(provider), phaseBeforeFirstToken)
-			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "cancelled", "client_gone", 0))
-			return
-		}
-	}
-
-	if !committed {
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, providerFailedPendingRouteOutcome(pr, "error", "provider_incomplete", http.StatusServiceUnavailable))
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("provider_error", "failed to get first chunk from provider"))
-		return
-	}
-	s.updateInferenceRouteOutcomeForPending(pr, committedRouteOutcome(pr))
-
-	// Free the slot, stop the provider, and preserve billing on a mid-stream
-	// disconnect (park-before-remove + post-terminal sweep; see the
-	// chat-completions path for the full rationale).
-	defer func() {
-		if stale := provider.GetPending(requestID); stale != nil {
-			s.holdForSettlement(stale)
-		} else {
-			refundPr := pr
-			saferun.Go(s.logger, "api.postTerminalSweep", func() {
-				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
-			})
-		}
-		provider.RemovePending(requestID)
-		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
-	}()
-
-	var firstChunks []string
-	if firstChunk != "" {
-		firstChunks = []string{firstChunk}
-	}
-	if stream {
-		// The generic (/v1/completions, /v1/messages) path does not run prefill
-		// keepalives, so the SSE header has not been written yet.
-		s.handleStreamingResponseWithFirstChunk(w, r, pr, firstChunks, false)
-	} else {
-		s.handleNonStreamingResponseWithFirstChunk(w, r, pr, firstChunks)
-	}
+	d.run()
 }

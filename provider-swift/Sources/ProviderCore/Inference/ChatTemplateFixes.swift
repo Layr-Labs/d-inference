@@ -23,14 +23,15 @@ enum ChatTemplateFixes {
         context: ChatTemplateFixContext
     ) throws -> [[String: any Sendable]] {
         let sanitized = sanitizeJinjaMessages(messages)
-        let normalized = Qwen35TemplateFix.applies(to: context)
+        var normalized = Qwen35TemplateFix.applies(to: context)
             ? Qwen35TemplateFix.normalizeMessages(sanitized)
             : sanitized
-        try validateGenericToolHistory(normalized)
 
         if GPTOSSHarmonyTemplateFix.applies(to: context) {
-            return try GPTOSSHarmonyTemplateFix.normalizeMessages(normalized)
+            normalized = try GPTOSSHarmonyTemplateFix.normalizeMessages(normalized)
         }
+        try validateGenericToolHistory(normalized)
+
         if Gemma4TemplateFix.applies(to: context) {
             return try Gemma4TemplateFix.normalizeMessages(normalized)
         }

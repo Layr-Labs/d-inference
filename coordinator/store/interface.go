@@ -593,35 +593,37 @@ type StripeWithdrawal struct {
 // ModelType determines routing: "text" for chat/completions, "embedding" for
 // vector search, etc.
 type SupportedModel struct {
-	ID           string  `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
-	S3Name       string  `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
-	DisplayName  string  `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
-	ModelType    string  `json:"model_type"`   // "text", "embedding", "tts"
-	SizeGB       float64 `json:"size_gb"`      // Disk/memory size in GB
-	Architecture string  `json:"architecture"` // e.g. "9B dense", "2B conformer"
-	Description  string  `json:"description"`  // e.g. "Balanced", "Fast reasoning"
-	MinRAMGB     int     `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
-	Active       bool    `json:"active"`       // Whether available for use
-	WeightHash   string  `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
+	ID                           string   `json:"id"`           // HuggingFace path (e.g. "mlx-community/Qwen3.5-9B-MLX-4bit")
+	S3Name                       string   `json:"s3_name"`      // CDN key for download (e.g. "Qwen3.5-9B-MLX-4bit")
+	DisplayName                  string   `json:"display_name"` // Human-readable (e.g. "Qwen3.5 9B")
+	ModelType                    string   `json:"model_type"`   // "text", "embedding", "tts"
+	SizeGB                       float64  `json:"size_gb"`      // Disk/memory size in GB
+	Architecture                 string   `json:"architecture"` // e.g. "9B dense", "2B conformer"
+	Description                  string   `json:"description"`  // e.g. "Balanced", "Fast reasoning"
+	MinRAMGB                     int      `json:"min_ram_gb"`   // Minimum system RAM for auto-selection
+	Active                       bool     `json:"active"`       // Whether available for use
+	WeightHash                   string   `json:"weight_hash"`  // Expected SHA-256 fingerprint of model weight files
+	RequiredProviderCapabilities []string `json:"required_provider_capabilities"`
 }
 
 // ModelRegistryEntry is the canonical admin-managed model catalog row.
 type ModelRegistryEntry struct {
-	ID                string         `json:"id"`
-	DisplayName       string         `json:"display_name"`
-	Family            string         `json:"family"`
-	Architecture      string         `json:"architecture"`
-	Quantization      string         `json:"quantization"`
-	MaxContextLength  int            `json:"max_context_length"`
-	MaxOutputLength   int            `json:"max_output_length"`
-	MinRAMGB          int            `json:"min_ram_gb"`
-	Capabilities      []string       `json:"capabilities"`
-	Status            string         `json:"status"`
-	Description       string         `json:"description"`
-	RuntimeParameters map[string]any `json:"runtime_parameters"`
-	Metadata          map[string]any `json:"metadata"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	ID                           string         `json:"id"`
+	DisplayName                  string         `json:"display_name"`
+	Family                       string         `json:"family"`
+	Architecture                 string         `json:"architecture"`
+	Quantization                 string         `json:"quantization"`
+	MaxContextLength             int            `json:"max_context_length"`
+	MaxOutputLength              int            `json:"max_output_length"`
+	MinRAMGB                     int            `json:"min_ram_gb"`
+	Capabilities                 []string       `json:"capabilities"`
+	RequiredProviderCapabilities []string       `json:"required_provider_capabilities"`
+	Status                       string         `json:"status"`
+	Description                  string         `json:"description"`
+	RuntimeParameters            map[string]any `json:"runtime_parameters"`
+	Metadata                     map[string]any `json:"metadata"`
+	CreatedAt                    time.Time      `json:"created_at"`
+	UpdatedAt                    time.Time      `json:"updated_at"`
 }
 
 // ModelVersion is an uploaded manifest version for a registered model.
@@ -921,12 +923,10 @@ type ProviderLocation struct {
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
-// LogReport represents a stored provider log report. LogData is only populated
-// when fetching a single report by ID (GetLogReport), not when listing.
+// LogReport represents a stored provider log report retrieved by its opaque
+// support ID.
 type LogReport struct {
 	ID           int64     `json:"id"`
-	SerialNumber string    `json:"serial_number"`
-	ProviderID   string    `json:"provider_id"`
 	AccountID    string    `json:"account_id"`
 	LogSizeBytes int64     `json:"log_size_bytes"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -955,10 +955,11 @@ type ReputationRecord struct {
 // persisted row can only ever let the coordinator skip a redundant push — never
 // extend or fabricate trust.
 type CodeAttestation struct {
-	SEPubKey   string    `json:"se_pubkey"`   // base64 Secure Enclave P-256 public key (bound at registration)
-	Version    string    `json:"version"`     // provider binary version that attested
-	AttestedAt time.Time `json:"attested_at"` // instant of the successful round-trip
-	APNsToken  string    `json:"apns_token"`  // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+	SEPubKey      string    `json:"se_pubkey"`       // base64 Secure Enclave P-256 public key (bound at registration)
+	Version       string    `json:"version"`         // provider binary version that attested
+	AttestedAt    time.Time `json:"attested_at"`     // instant of the successful round-trip
+	APNsToken     string    `json:"apns_token"`      // APNs device token the proof was bound to; reuse requires it to match the new registration token (Codex #7). "" = legacy row from before token-binding.
+	NodePublicKey string    `json:"node_public_key"` // registration X25519 process key; protected-capability reuse requires exact match
 }
 
 // ProviderTrustReuse is the persistent representation of one device's most recent

@@ -1,6 +1,11 @@
 package registry
 
-import "strings"
+import (
+	"strings"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+)
 
 // Phase-0 SLA-aware, occupancy-aware admission — SHADOW + MEASUREMENT slice.
 //
@@ -13,8 +18,9 @@ import "strings"
 //   - WouldShed: the occupancy-aware TTFT estimate
 //     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
 //     non-zero only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the chosen
-//     provider exceeds the verified ~10s deadline base (NOT the code's 5s internal
-//     budget — gating at 5s over-sheds ~2x per telemetry-db findings §2). The
+//     provider exceeds the model's upstream deadline base (standard ~10s;
+//     exact-model policies may be shorter). This is NOT the live coordinator
+//     cutoff, which preserves response headroom inside the upstream SLA. The
 //     occupancy term is intentionally confined to this shadow estimate so it can
 //     never tighten the live HARD_REJECT ceiling fed by ttftMsFromSnapshot.
 //   - IdleAlternativeExists: the chosen provider already carries occupying peers
@@ -67,11 +73,11 @@ func ParseTTFTAdmissionMode(s string) TTFTAdmissionMode {
 	}
 }
 
-// defaultTTFTDeadlineBaseMs is the verified OpenRouter SLA base. Cancels fit
-// `10000 + 1ms·prompt_tokens` at a median ratio of 1.002 (telemetry-db findings
-// §2); the coordinator's internal `ttftDeadline` (consumer.go) still uses a 5s
-// base, which would over-shed ~2x if used as the gate — so the shadow evaluator
-// uses THIS base, decoupled from consumer.go.
+// defaultTTFTDeadlineBaseMs is the verified standard OpenRouter SLA base.
+// Standard-model cancels fit `10000 + 1ms·prompt_tokens` at a median ratio of
+// 1.002 (telemetry-db findings §2). The live coordinator cutoff is selected
+// separately with response headroom; exact-model policy can tighten either
+// clock without conflating the two.
 const defaultTTFTDeadlineBaseMs = 10000.0
 
 // Both are configured once at startup (from main.go env wiring) and read-only on
@@ -106,15 +112,14 @@ func TTFTDeadlineBaseMs() float64 {
 	return ttftDeadlineBaseMs
 }
 
-// ttftDeadlineMsForPrompt is the shadow gate's per-request SLA in ms:
-// base + 1ms·prompt_tokens, matching the per-token slope of consumer.ttftDeadline
-// but with the verified ~10s base instead of 5s. Used ONLY by the shadow
-// evaluator — the live consumer.go ttftDeadline path is untouched.
-func ttftDeadlineMsForPrompt(promptTokens int) float64 {
-	if promptTokens < 0 {
-		promptTokens = 0
-	}
-	return ttftDeadlineBaseMs + float64(promptTokens)
+// ttftDeadlineMsForPrompt is the shadow gate's per-request upstream SLA in ms.
+// Ordinary models use the configured ~10s base; exact per-model overrides use
+// the same shared policy table as the live coordinator clock. This remains
+// shadow only and does not change routing decisions.
+func ttftDeadlineMsForPrompt(model string, promptTokens int) float64 {
+	defaultBase := time.Duration(ttftDeadlineBaseMs * float64(time.Millisecond))
+	deadline := modelpolicy.UpstreamFirstContentDeadline(model, promptTokens, defaultBase)
+	return float64(deadline) / float64(time.Millisecond)
 }
 
 // ttftShadowEval is the result of the read-only Phase-0 evaluation. It is copied
@@ -170,9 +175,9 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
-	// live 5s HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
+	// live request-local HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
 	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
-	deadline := ttftDeadlineMsForPrompt(reqPrompt)
+	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	occ := snapshotOccupancy(snap)
 
 	eval := ttftShadowEval{

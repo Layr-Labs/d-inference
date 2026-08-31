@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -66,6 +67,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		}
 	}
 	const reqPrompt = 1000
+	const model = "ordinary-shadow-model"
 
 	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
 	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
@@ -86,7 +88,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	}
 
 	// Strictly increasing in occupancy, crossing the deadline at a knee.
-	deadline := ttftDeadlineMsForPrompt(reqPrompt)
+	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	last := -1.0
 	knee := -1
 	for b := 0; b <= 8; b++ {
@@ -105,6 +107,33 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
 	if idle := occupancyAwareTTFTMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
 		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
+	}
+}
+
+func TestTTFTShadowDeadlineUsesExactModelPolicy(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	const promptTokens = 321
+
+	if got, want := ttftDeadlineMsForPrompt(
+		"ordinary-shadow-model", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("ordinary shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 5_321.0; got != want {
+		t.Fatalf("Qwen3-VL shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID+"-preview", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("lookalike shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	SetTTFTDeadlineBaseMs(3_000)
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 3_321.0; got != want {
+		t.Fatalf("tight global shadow deadline = %.0fms, want %.0fms", got, want)
 	}
 }
 

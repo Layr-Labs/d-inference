@@ -2410,10 +2410,10 @@ func ttftMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 // It is used ONLY by the shadow evaluator today; a future enforce step will wire
 // it (against the verified ~10s base) into the live path. Keeping the occupancy
 // term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the 5s ttftDeadline), so if the term leaked into
-// ttftMsFromSnapshot, raising alpha would tighten the live 5s ceiling and
-// over-shed ~2x (telemetry-db findings §2). The term may therefore only ever
-// reach the shadow estimate, never breakdown.TTFTMs.
+// (pr.MaxTTFTMs set from the pinned request-local deadline), so if the term
+// leaked into ttftMsFromSnapshot, raising alpha would tighten the live ceiling
+// and over-shed ~2x (telemetry-db findings §2). The term may therefore only
+// ever reach the shadow estimate, never breakdown.TTFTMs.
 func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int) float64 {
 	base := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if base <= 0 {
@@ -2445,8 +2445,8 @@ func occupancyAwareTTFTMsFromSnapshot(snap routingSnapshot, reqPromptTokens int)
 // Returns 0 when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA is 0 (the default) or
 // occupancy is 0 (an idle box never pays the term, so route-to-idle is
 // preserved). The deadline this is gated against in the shadow evaluator is the
-// verified ~10s base, NOT the code's 5s internal budget; gating an occupancy
-// estimate fit to the 5s base over-sheds ~2x (telemetry-db findings §2).
+// model's upstream SLA (standard ~10s), not the shorter live coordinator cutoff.
+// Conflating those clocks over-sheds (telemetry-db findings §2).
 func ttftOccupancyMs(snap routingSnapshot) float64 {
 	alpha := ttftOccupancyAlpha
 	if alpha <= 0 {

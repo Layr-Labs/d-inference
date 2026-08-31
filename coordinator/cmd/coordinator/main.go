@@ -233,7 +233,8 @@ func main() {
 	// LIVE first-content deadline base — distinct from the shadow evaluator's
 	// base below. Validate and bind it to this Server instance before startup;
 	// production sets 9000ms, while an unset/invalid value keeps the intentional
-	// 5000ms ordinary-unit default. Every request adds 1ms per prompt token.
+	// 5000ms ordinary-unit default. Exact model policy may tighten this base but
+	// never loosen a lower operator value. Every request adds 1ms per prompt token.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
 		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
 			serverCfg.FirstContentDeadlineBase = time.Duration(base) * time.Millisecond
@@ -410,8 +411,9 @@ func main() {
 	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
 	// (serve the best-available provider when one passes every routing/capacity
 	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
-	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
-	// provider-measured, so the hard gate over-rejected serveable requests.
+	// exceeds the pinned request-local model deadline. The estimate's prefill
+	// term is not provider-measured, so the hard gate over-rejected serveable
+	// requests.
 	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
 		srv.SetTTFTHardReject(true)
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
@@ -455,9 +457,10 @@ func main() {
 	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
 	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
 	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
-	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
-	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
-	//     ~10s+1ms/token; the instance-owned live first-content deadline
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the
+	//     ordinary-model SLA base the shadow evaluator gates against. The
+	//     standard OpenRouter SLA is ~10s+1ms/token; exact-model policy can only
+	//     tighten that base. The instance-owned live first-content deadline
 	//     configured above is independent. Used ONLY by the shadow evaluator.
 	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
 	//     off => no evaluation; shadow/enforce => compute would_shed +

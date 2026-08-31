@@ -252,10 +252,11 @@ type Server struct {
 	// (EIGENINFERENCE_TTFT_HARD_REJECT=true) to restore the legacy hard 429.
 	ttftHardReject bool
 
-	// firstContentDeadlineBase is the fixed term in the request-absolute
-	// first-content budget. It is immutable after startup and instance-owned:
-	// concurrent test servers can exercise production and unit-test postures
-	// without racing on process-global state.
+	// firstContentDeadlineBase is the ordinary-model fixed term in the
+	// request-absolute first-content budget. It is immutable after startup and
+	// instance-owned; exact-model policy can only tighten it. Concurrent test
+	// servers can exercise production and unit-test postures without racing on
+	// process-global state.
 	firstContentDeadlineBase time.Duration
 
 	// rejectModels are requested aliases or resolved model IDs the coordinator

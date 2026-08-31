@@ -22,8 +22,9 @@ type ServerConfig struct {
 	AdminEmails         []string
 	ReleaseKey          string
 	ServiceReservations bool
-	// FirstContentDeadlineBase is the fixed term in the request-absolute
-	// first-content budget. Zero keeps the ordinary coordinator default.
+	// FirstContentDeadlineBase is the ordinary-model fixed term in the
+	// request-absolute first-content budget. Exact-model policy may tighten it;
+	// zero keeps the ordinary coordinator default.
 	FirstContentDeadlineBase time.Duration
 	BaseRewards              BaseRewardsConfig
 	// MediaFetch is the remote media resolution config (mediafetch package).

@@ -235,7 +235,7 @@ The relevant environment controls are:
 | Env flag | Type | Default | Effect |
 |---|---|---|---|
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
-| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | milliseconds | `5000` in code; `9000` in production | Sets the fixed term in the live request-absolute first-content budget. The coordinator adds `1ms × estimated_prompt_tokens`; invalid values keep the 5000ms ordinary default. |
+| `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` | milliseconds | `5000` in code; `9000` in production | Sets the ordinary-model fixed term in the live request-absolute first-content budget. The coordinator adds `1ms × estimated_prompt_tokens`; invalid values keep the 5000ms ordinary default. Exact-model policy is a tightening ceiling, so a lower global value still wins. |
 
 Streaming deliberately writes no status, headers, SSE comments, or body bytes
 before the first content-bearing provider chunk. Role-only and lifecycle
@@ -244,13 +244,18 @@ still be returned as a real HTTP 429 instead of an already-committed HTTP 200
 ([`coordinator/api/dispatch_terminal_write.go`](../../coordinator/api/dispatch_terminal_write.go),
 [`coordinator/api/consumer.go`](../../coordinator/api/consumer.go)).
 
-The first-content clock is `request received_at + configured base +
-1ms × estimated_prompt_tokens`. It is absolute across queueing, provider-writer
+The first-content clock is `request received_at + selected model base +
+1ms × estimated_prompt_tokens`. The standard upstream base is 10000ms and
+production uses a 9000ms live base so it can return a retryable response first.
+The exact `qwen3-vl-30b-a3b-instruct` policy uses a 5000ms upstream base and a
+4000ms live base, retaining the same response headroom. The duration is selected
+once before deadline-bound work and is absolute across queueing, provider-writer
 handoff, speculative dispatch, failover, and accepted/boilerplate events; none of
-those phases resets it. Production binds the 9000ms base to each server instance
-before startup, avoiding mutable process-global deadline state
+those phases resets or lengthens it. Production binds the ordinary 9000ms base
+to each server instance before startup, avoiding mutable process-global deadline state
 ([`coordinator/api/first_token_clock.go`](../../coordinator/api/first_token_clock.go),
-[`coordinator/api/server_config.go`](../../coordinator/api/server_config.go)).
+[`coordinator/api/server_config.go`](../../coordinator/api/server_config.go),
+[`coordinator/modelpolicy/first_content_deadline.go`](../../coordinator/modelpolicy/first_content_deadline.go)).
 
 Both counters keep the metadata-only, low-cardinality invariant: `request_outcome`
 carries only `model`, `class` and `kv_backend`, and `unservable_reclassified` only

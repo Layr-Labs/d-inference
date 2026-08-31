@@ -17,8 +17,9 @@ included as the base of this branch.
   `machine_busy`=0.** Not a capacity problem.
 - **Acceptance cliff at ~550–650 prompt tokens** (served p95 prompt=611; rejected
   median=1,576). Cause: TTFT gate estimates prefill as `decode×4 ≈ 100 tok/s`
-  while the deadline (`5s+1ms/tok`) implies ~1,000 tok/s. **No provider reports a
-  measured prefill rate**, so the ×4 fallback is the production path.
+  while the then-live ordinary deadline (`5s+1ms/tok`) implied ~1,000 tok/s.
+  **No provider reports a measured prefill rate**, so the ×4 fallback is the
+  production path.
 - **Utilization ~12–19%**: 137 routable, 90 warm, 16 active, 0 queued, token
   budget 99.94% free. 84% of served requests went to **idle (warm)** providers.
 - **gemma decode anomaly**: gemma-4-26b-qat-4bit and gpt-oss-20b are **both
@@ -76,7 +77,9 @@ vs small (batch→tok/s) table). Start with: report `solo_decode_tps` +
 
 For request `(model M, prompt P, max_tokens, traits)`:
 
-1. `deadline = 5s + 1ms·P` (SLA contract, unchanged).
+1. Select and pin `deadline = modelpolicy.coordinator_base(M) + 1ms·P` once.
+   Production ordinary models use a 9s base; exact Qwen3-VL Instruct uses 4s
+   inside its 5s upstream SLA. A tighter global operator base still wins.
 2. `candidates` = providers serving M passing all gates (trust, attestation,
    privacy, freshness, traits) **and** with a free concurrency slot.
 3. Per candidate, from monitors compute **projected per-request decode** (at

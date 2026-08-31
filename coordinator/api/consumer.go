@@ -31,6 +31,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -50,7 +51,8 @@ const (
 
 	// defaultFirstContentDeadlineBase preserves the ordinary coordinator and
 	// unit-test budget. Production overrides it to 9s through validated startup
-	// configuration; every request adds 1ms per estimated prompt token.
+	// configuration; exact model overrides live in modelpolicy and every request
+	// adds 1ms per estimated prompt token.
 	defaultFirstContentDeadlineBase = 5 * time.Second
 
 	// preambleContentTimeout is the relative cap from the first boilerplate
@@ -115,16 +117,16 @@ const (
 var thinkBlockPattern = regexp.MustCompile(`(?is)<think>(.*?)</think>\s*`)
 
 // FirstContentDeadline returns this server's request-absolute first-content
-// budget. The base is instance-owned so production-like E2E servers can use the
-// production value without mutating concurrent unit tests. The per-token slope
-// is fixed at 1ms to match the verified OpenRouter cancel slope.
-func (s *Server) FirstContentDeadline(estimatedPromptTokens int) time.Duration {
+// budget for a concrete model. The ordinary base is instance-owned so
+// production-like E2E servers can use the production value without mutating
+// concurrent unit tests. Exact-model overrides and the fixed 1ms/token slope
+// are centralized in modelpolicy.
+func (s *Server) FirstContentDeadline(model string, estimatedPromptTokens int) time.Duration {
 	base := s.firstContentDeadlineBase
 	if base <= 0 {
 		base = defaultFirstContentDeadlineBase
 	}
-	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
-	return base + perToken
+	return modelpolicy.CoordinatorFirstContentDeadline(model, estimatedPromptTokens, base)
 }
 
 // shedIfModelRejected answers a public/prefer-owner request with 429 +
@@ -657,8 +659,9 @@ const (
 // route this request to Previous instead of returning a fast 429 / slow stream.
 // Hard constraints and permanent model-too-large failures are handled by the
 // caller and do not use this fallback. The TTFT estimate for Previous is also
-// returned so the caller does not need to recompute it. ttftThreshold is only
-// consulted in aliasFallbackTTFT mode.
+// returned so the caller does not need to recompute it. ttftThreshold is the
+// request-local deadline pinned before admission and is only consulted in
+// aliasFallbackTTFT mode.
 func (s *Server) maybeFallbackAlias(parsed map[string]any, mode aliasFallbackMode, publicModel, currentModel string, estimatedPromptTokens, requestedMaxTokens int, ttftThreshold time.Duration, traits registry.RequestTraits, requiresVision bool, allowedProviderSerials []string) (string, int, int, int, time.Duration, bool, bool) {
 	if publicModel == "" || publicModel == currentModel {
 		return currentModel, 0, 0, 0, 0, false, false
@@ -822,6 +825,7 @@ func (s *Server) dispatchOneProvider(
 	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
 	estimatedPromptTokens int,
+	requestDeadline time.Duration,
 	requestedMaxTokens int,
 	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
@@ -842,7 +846,6 @@ func (s *Server) dispatchOneProvider(
 	lastErr string,
 	lastErrCode int,
 ) {
-	requestDeadline := s.FirstContentDeadline(estimatedPromptTokens)
 	receivedAt := timingReceivedAt(timing)
 	_, dispatchable := firstContentBudgetMillis(receivedAt, requestDeadline)
 	if !dispatchable {
@@ -1705,7 +1708,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	deadline := s.FirstContentDeadline(estimatedPromptTokens)
+	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
@@ -1863,6 +1866,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		publicModel:           publicModel,
 		stream:                stream,
 		estimatedPromptTokens: estimatedPromptTokens,
+		firstContentDeadline:  deadline,
 		requestedMaxTokens:    requestedMaxTokens,
 		hasTools:              hasTools,
 		requiresVision:        requiresVision,
@@ -4158,7 +4162,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
-	genericDeadline := s.FirstContentDeadline(estimatedPromptTokens)
+	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return

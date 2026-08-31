@@ -417,8 +417,24 @@ func main() {
 	// predicate zeroed network capacity twice).
 	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
 	case "enforce":
+		// A restarted coordinator boots with an EMPTY provider registry: zero
+		// evidence exists until reconnected providers complete their first
+		// challenge. Enforcing from the first request would 429 the whole
+		// fleet for minutes — so enforcement always waits out a boot grace
+		// (default 20m ≈ four challenge cycles) during which routing behaves
+		// exactly like shadow while evidence coverage rebuilds.
+		grace := 20 * time.Minute
+		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+				grace = d
+			} else {
+				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
+			}
+		}
 		reg.SetReleasePolicyEnforcement(true)
-		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route")
+		reg.SetReleasePolicyEnforceAfter(time.Now().Add(grace))
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route after the boot grace",
+			"boot_grace", grace.String())
 	case "", "shadow":
 		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
 	default:

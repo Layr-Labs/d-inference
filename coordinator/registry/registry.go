@@ -1008,6 +1008,15 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
+	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+}
+
+// providerSupportsPrivateTextModeLocked is the chokepoint body with the
+// evidence gate explicit: enforceEvidence=false is the SHADOW/baseline surface
+// (used live in shadow mode and by ApplicationEvidenceModelCoverage to compute
+// the per-model flip criterion); enforceEvidence=true additionally requires
+// generation-current application evidence. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -1021,12 +1030,12 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	}
 	// A configured release policy makes current active-release application
 	// evidence mandatory independently of the APNs rollout deadline — but only
-	// once enforcement is switched on. In shadow mode (the default) the
-	// predicate is still evaluated so operators can compare
-	// CountProvidersWithCurrentApplicationEvidence against the connected fleet
-	// BEFORE flipping enforcement; a provider failing it keeps routing.
+	// once enforcement is switched on AND past any enforce-after delay. In
+	// shadow (the default) the predicate is still evaluated and counted
+	// (ApplicationEvidenceModelCoverage, CountProvidersWithCurrentApplicationEvidence)
+	// so operators prove coverage BEFORE anything can be derouted.
 	if r.releasePolicyRequired &&
-		r.releasePolicyEnforced &&
+		enforceEvidence &&
 		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
 		return false
 	}
@@ -1596,6 +1605,7 @@ func (r *Registry) SetReleasePolicyGeneration(
 	r.mu.Lock()
 	r.releasePolicyGeneration = generation
 	r.releasePolicyRequired = required
+	enforced := r.releasePolicyEnforcedLocked()
 	for id, provider := range r.providers {
 		provider.mu.Lock()
 		evidence := provider.ApplicationEvidence
@@ -1605,7 +1615,14 @@ func (r *Registry) SetReleasePolicyGeneration(
 			continue
 		}
 		provider.ApplicationEvidence = ApplicationEvidence{}
-		provider.RuntimeCapabilities = nil
+		// Capability invalidation is an ENFORCE-mode consequence: capabilities
+		// gate capability-required catalog models, so clearing them in shadow
+		// would let evidence bookkeeping remove real capacity — exactly what
+		// shadow mode promises not to do. The re-challenge kicked below
+		// re-reconciles capabilities within one challenge round-trip anyway.
+		if enforced {
+			provider.RuntimeCapabilities = nil
+		}
 		provider.mu.Unlock()
 		if required {
 			needChallenge = append(needChallenge, id)
@@ -1639,11 +1656,28 @@ func (r *Registry) providerHoldsCurrentApplicationEvidenceLocked(p *Provider) bo
 // SetReleasePolicyEnforcement switches the release-policy routing gate between
 // SHADOW (false, default: evidence derived/granted/swept and counted but never
 // blocks routing) and ENFORCE (true: the routing chokepoint requires current
-// evidence). Thread-safe.
+// evidence once any configured enforce-after delay has passed). Thread-safe.
 func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
 	r.mu.Lock()
 	r.releasePolicyEnforced = enforced
 	r.mu.Unlock()
+}
+
+// SetReleasePolicyEnforceAfter defers enforcement until t (zero = immediate).
+// Set at startup so a restart into enforce mode keeps routing like shadow
+// until the reconnected fleet has completed its first challenge cycles and
+// re-earned evidence. Thread-safe.
+func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
+	r.mu.Lock()
+	r.releasePolicyEnforceAfter = t
+	r.mu.Unlock()
+}
+
+// releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
+// now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforced &&
+		!time.Now().Before(r.releasePolicyEnforceAfter)
 }
 
 // ReleasePolicyEnforced reports whether missing application evidence currently
@@ -1651,7 +1685,55 @@ func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
 func (r *Registry) ReleasePolicyEnforced() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.releasePolicyEnforced
+	return r.releasePolicyEnforcedLocked()
+}
+
+// ModelEvidenceCoverage is the per-model shadow→enforce acceptance record:
+// Routable counts providers passing every routing gate EXCEPT the evidence
+// gate for that catalog-allowed model; WithEvidence counts the subset also
+// holding generation-current application evidence. Enforcement is safe for a
+// model only when WithEvidence ≈ Routable.
+type ModelEvidenceCoverage struct {
+	Routable     int `json:"routable"`
+	WithEvidence int `json:"with_evidence"`
+}
+
+// ApplicationEvidenceModelCoverage computes ModelEvidenceCoverage for every
+// catalog-allowed model advertised by a connected provider, using the same
+// liveness surface as public capacity with the evidence gate bypassed — so the
+// flip criterion cannot be masked by fleet-wide averages hiding one model
+// family's uncovered providers. Thread-safe.
+func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCoverage {
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ModelEvidenceCoverage)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		baseline := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			!p.PrivateOnly &&
+			trustRank(p.TrustLevel) >= trustRank(r.MinTrustLevel) &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextModeLocked(p, false) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		holds := baseline && r.providerHoldsCurrentApplicationEvidenceLocked(p)
+		if baseline {
+			for _, model := range p.Models {
+				if !r.providerModelAllowedByCatalogLocked(p, model) {
+					continue
+				}
+				coverage := out[model.ID]
+				coverage.Routable++
+				if holds {
+					coverage.WithEvidence++
+				}
+				out[model.ID] = coverage
+			}
+		}
+		p.mu.Unlock()
+	}
+	return out
 }
 
 // CountProvidersWithCurrentApplicationEvidence returns (holding, connected):
@@ -2026,6 +2108,13 @@ type Registry struct {
 	// in shadow before it is allowed to deroute anything (2026-08-31 incident:
 	// an unprovable evidence predicate zeroed network capacity twice).
 	releasePolicyEnforced bool
+	// releasePolicyEnforceAfter delays enforcement past process start: a
+	// coordinator restarted with enforcement configured boots with an EMPTY
+	// in-memory registry (zero evidence), so enforcing from the first request
+	// would 429 every reconnecting provider until its first challenge —
+	// recreating the exact transient the shadow rollout exists to prevent.
+	// Zero means enforce immediately (tests, in-process flips).
+	releasePolicyEnforceAfter time.Time
 
 	modelCatalog map[string]CatalogEntry
 

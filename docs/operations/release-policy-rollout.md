@@ -1,114 +1,135 @@
 # Release-Policy Gate Rollout (Application Evidence)
 
-Status: authoritative for the first deployment of any coordinator containing
-the release-policy routing gate (`releasePolicyRequired` +
-`ApplicationEvidence`, introduced by #778, made deployable by
-`fix/release-policy-fleet-compat`).
+Authoritative procedure for the first deployment of any coordinator containing
+the release-policy routing gate, and for the later enforcement flip. Follows
+[`coordinator-deploy.md`](coordinator-deploy.md) for the mechanics of every
+swap; this document adds the gate-specific stages and acceptance criteria.
 
-## Background — why this runbook exists
+Canonical code (code wins over this doc):
 
-On 2026-08-31 two candidate coordinators built from master connected the full
-production fleet (~1,250 providers) and admitted **zero** of them for routing.
-`/v1/models/capacity` returned no models and every inference request received
-429 until rollback. Root cause chain:
+| Behavior | Code |
+|---|---|
+| Mode parsing + boot grace | `coordinator/cmd/coordinator/main.go` (`EIGENINFERENCE_RELEASE_POLICY_MODE` switch) |
+| Routing chokepoint + evidence gate | `coordinator/registry/registry.go:providerSupportsPrivateTextModeLocked` |
+| Live-enforcement predicate (mode + enforce-after) | `coordinator/registry/registry.go:releasePolicyEnforcedLocked` |
+| Evidence derivation + typed outcomes | `coordinator/api/server.go:deriveApprovedReleaseTransition`, `releaseMetallibMatches` |
+| Sweep re-proof / invalidation | `coordinator/api/server.go:releaseEvidenceStillApproved`, `coordinator/registry/registry.go:SetReleasePolicyGeneration` |
+| Coverage counters | `coordinator/registry/registry.go:CountProvidersWithCurrentApplicationEvidence`, `ApplicationEvidenceModelCoverage`; served by `coordinator/api/stats.go` |
 
-1. Release rows carry CI-fabricated per-model-family `template_hashes`
-   (`qwen3.5`, `trinity`, `gemma4`, `minimax`) hashed from CDN jinja files by
-   `release-swift.yml`. No provider build has ever reported those keys — the
-   provider's entire challenge template vocabulary is `{"mlx_metallib"}`, and
-   `python_hash`/`runtime_hash` are hardcoded nil (there is no Python runtime).
-2. `releaseRuntimeMatches` required the provider's challenge to echo **every**
-   release-row template hash → application evidence was underivable for 100%
-   of the fleet by construction.
-3. The routing chokepoint made evidence mandatory whenever any release row
-   exists (`releasePolicyRequired`, data-driven, no kill switch) → zero
-   routable providers, zero capacity, all-429.
-4. Every rejection branch returned a bare `false` — the failure was
-   undiagnosable from the outside during both deploys.
+## Background
 
-The fix changed the contract:
+On 2026-08-31 two candidate coordinators connected ~1,250 providers and
+admitted zero for routing: release rows carried CI-fabricated per-model-family
+`template_hashes` no provider has ever reported, the evidence gate demanded
+them, and every rejection was an untyped `false`. `/v1/models/capacity`
+returned no models and all inference received 429 until rollback
+(`docs/reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`).
 
-- Application evidence proves exactly: **SE-signed challenge binary hash
-  matches an active release row for (version, platform, backend), and the
-  release's metallib hash matches the provider's reported `mlx_metallib`.**
-- Python/runtime/per-family-template facts are gone from evidence derivation,
-  the sweep re-proof (`releaseEvidenceStillApproved`), the
-  `ApplicationEvidence` struct, and release CI registration.
-- Every derivation outcome is a typed counter:
-  `release_evidence.outcome{outcome:granted|precondition|invalid_binary_hash|
-  policy_unavailable|policy_not_required|process_identity|runtime_gate|
-  version_floor|registration_hash_mismatch|no_active_release|metallib_mismatch}`.
-- The routing gate has two modes via `EIGENINFERENCE_RELEASE_POLICY_MODE`:
-  - `shadow` (default, and default when unset/invalid): evidence is derived,
-    granted, swept, and counted, but NEVER blocks routing. Routing behavior is
-    identical to the pre-release-policy coordinator.
-  - `enforce`: the routing chokepoint requires generation-current evidence.
-- Coverage instrumentation: `/v1/stats` exposes
-  `application_evidence_providers`, `application_evidence_connected`, and
-  `release_policy_enforced`.
+The reworked contract: application evidence proves that the SE-signed
+challenge `binary_hash` matches an **active release row** for (version,
+platform, backend) and that the release's `metallib_hash` matches the
+provider's reported `mlx_metallib` — nothing else. The gate has two modes via
+`EIGENINFERENCE_RELEASE_POLICY_MODE`:
 
-## Invariants (do not violate)
+- `shadow` (default, also on unset/invalid): evidence is derived, granted,
+  swept, and counted, but never blocks routing or clears runtime capabilities.
+- `enforce`: after a boot grace (default 20m,
+  `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`), the chokepoint requires
+  generation-current evidence and policy sweeps clear capabilities with
+  invalidated evidence.
 
-- A brand-new global trust gate MUST ship in shadow first. Enforcement is a
-  separate, human-approved action taken only after coverage is proven on the
-  live fleet.
+## Invariants
+
+- A new global trust gate MUST ship in shadow first; enforcement is a separate
+  human-approved action after live coverage is proven.
 - Never add a release-row fact to evidence derivation unless the production
-  provider build demonstrably reports it (verify in
-  `provider-swift/Sources/ProviderCore/Security/` before trusting a fixture).
-- `releaseEvidenceStillApproved` and `deriveApprovedReleaseTransition` must
-  compare the same fact set; retuning one side alone silently desyncs the
-  sweep from the grant and wipes evidence every policy rebuild.
-- Production deploys follow `docs/operations/coordinator-deploy.md` (human
-  approval, prechecks, rollback state). This runbook adds gate-specific
-  acceptance criteria; it does not replace the deploy runbook.
-
-## Stage 0 — preflight (before any swap)
-
-1. Candidate image built by the repository trigger from the exact reviewed
-   merge SHA; digest verified against Artifact Registry.
-2. `EIGENINFERENCE_RELEASE_POLICY_MODE` is `shadow` or absent in
-   `/etc/d-inference/env`.
-3. Startup log line confirms mode: `release-policy routing gate in SHADOW
-   mode` (or the loud ENFORCED warning — abort if present).
-4. Capture the current-production baseline for acceptance comparison:
-   `/v1/models/capacity` (models, routable_providers per model) and
-   `/v1/stats` (`active_providers`).
+  provider build demonstrably reports it (check
+  `provider-swift/Sources/ProviderCore/Security/` and
+  `ProviderLoop+AttestationChallenge.swift` first).
+- `deriveApprovedReleaseTransition` and `releaseEvidenceStillApproved` MUST
+  compare the same fact set; changing one side alone desyncs grant from sweep
+  and wipes evidence every policy rebuild.
+- Enforcement flips happen via env + container recreate; the boot grace exists
+  because a restarted coordinator has an empty registry (zero evidence) and
+  would otherwise 429 the fleet until first challenges complete. Do not set
+  the grace below the default for a production flip.
 
 ## Stage 1 — shadow deployment
 
-Perform the approved swap per the deploy runbook. Acceptance within 20
-minutes (one full challenge cycle is 5 minutes; trust reconstruction dominates
-the first minutes):
+### Prerequisites
+
+- Candidate image built by the repository trigger from the exact reviewed
+  merge SHA; digest verified in Artifact Registry.
+- `/etc/d-inference/env` has `EIGENINFERENCE_RELEASE_POLICY_MODE=shadow` (or
+  the variable absent).
+- All prechecks from [`coordinator-deploy.md`](coordinator-deploy.md)
+  (database locks, env integrity, rollback state captured).
+- Baseline captured for comparison: `/v1/models/capacity` (models +
+  routable_providers per model) and `/v1/stats` (`active_providers`).
+
+### Steps
+
+1. Perform the approved swap per [`coordinator-deploy.md`](coordinator-deploy.md).
+2. Confirm the startup log prints `release-policy routing gate in SHADOW mode`
+   (an `ENFORCED` warning here means the env is wrong — roll back).
+
+### Verification (within 20 minutes; challenges run every 5)
 
 | Check | Requirement |
 |---|---|
 | `/health`, `/readyz` | ok, expected build commit |
-| `/v1/models/capacity` | all expected models present; routable counts near the pre-swap baseline (shadow mode cannot zero this) |
-| `/v1/stats` `application_evidence_connected` | near pre-swap `active_providers` |
-| `/v1/stats` `application_evidence_providers` | climbing toward connected as challenges complete; expect ≥90% of connected within ~20 min |
-| `release_evidence.outcome` in Datadog | `granted` dominates; every non-granted reason explained (e.g. `version_floor` for pre-floor stragglers, `no_active_release` for unregistered dev builds) |
+| `/v1/models/capacity` | all expected models present; routable counts near baseline (shadow cannot zero this) |
+| `/v1/stats` `application_evidence_connected` | ≈ pre-swap `active_providers` |
+| `/v1/stats` `application_evidence_providers` | climbing toward connected; ≥90% within ~20 min |
+| `/v1/stats` `application_evidence_models` | for EVERY model: `with_evidence` ≈ `routable` (per-model criterion — a small family's uncovered providers must not hide inside the fleet average) |
+| Datadog `release_evidence.outcome` | `granted` dominates; every other reason explained (`version_floor` stragglers, `no_active_release` dev builds) |
 | Real inference | succeeds on every model family |
 
-If `application_evidence_providers` stalls near zero: the gate is still
-incompatible with the fleet. Routing is unharmed (shadow), production stays
-up. Diagnose from the outcome counters — do NOT flip enforce, do NOT iterate
-by redeploying guesses.
+If coverage stalls near zero: routing is unharmed; diagnose from the outcome
+counters. Do NOT flip enforce and do NOT redeploy guesses.
 
-## Stage 2 — enforcement flip (separate approval)
+### Rollback
 
-Only after Stage 1 acceptance has held for at least 24 hours:
+Shadow-stage failures are ordinary deploy failures. Before any rollback:
+
+1. Export evidence FIRST: `sudo docker logs coordinator > /tmp/candidate-<ts>.log`,
+   plus `/v1/stats` and the outcome counters.
+2. Then run the canonical rollback in
+   [`coordinator-deploy.md`](coordinator-deploy.md). It replaces the container
+   named `coordinator` with the previous image; the failed candidate container
+   is preserved under a `coordinator_fallback_<ts>`-style name by the
+   procedure's container swap. Do not `docker rm` any preserved candidate or
+   fallback container until its logs and state are archived (the 2026-08-31
+   investigation lost primary evidence to exactly that).
+
+## Stage 2 — enforcement flip
+
+### Prerequisites
+
+- Stage 1 verification has held for ≥ 24 hours.
+- Per-model coverage (`application_evidence_models`) shows
+  `with_evidence` ≈ `routable` for every model, and fleet-wide
+  `application_evidence_providers` ≈ `application_evidence_connected`.
+- Human approval for the flip as a distinct operation.
+
+### Steps
 
 1. Set `EIGENINFERENCE_RELEASE_POLICY_MODE=enforce` in
-   `/etc/d-inference/env`; recreate the container per the deploy runbook.
-2. Acceptance: identical to Stage 1 PLUS routable provider counts within a
-   few percent of `application_evidence_providers`, no capacity drop, no 429
-   rate change.
-3. Rollback lever: set the mode back to `shadow` and recreate — no image
-   change required.
+   `/etc/d-inference/env`. Leave
+   `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` unset (20m default) unless a
+   longer grace is wanted.
+2. Recreate the container per [`coordinator-deploy.md`](coordinator-deploy.md).
+3. Confirm the startup log prints the ENFORCED warning with `boot_grace=20m0s`.
 
-## Failure handling
+### Verification
 
-On any acceptance failure: preserve the candidate container (rename, do not
-remove) and export its logs plus `/v1/stats` and the outcome counters BEFORE
-starting the previous image. The 2026-08-31 investigation was materially
-slowed because failed candidates were destroyed during rollback.
+- During the grace: routing identical to shadow (`release_policy_enforced`
+  in `/v1/stats` stays `false`); coverage rebuilds as providers re-challenge.
+- After the grace elapses: `release_policy_enforced` flips `true`; routable
+  provider counts stay within a few percent of `application_evidence_providers`;
+  no capacity drop; no 429-rate change; per-model capacity unchanged.
+
+### Rollback
+
+Set `EIGENINFERENCE_RELEASE_POLICY_MODE=shadow` and recreate the container —
+no image change. This is the incident lever if enforcement ever misbehaves.

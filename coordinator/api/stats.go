@@ -238,8 +238,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	codeAttestationEnforced := s.registry.CodeAttestationEnforced()
 
 	// --- Release-policy application-evidence coverage (the shadow→enforce
-	// acceptance instrument: enforcement is safe only once holding ≈ connected) ---
+	// acceptance instrument: enforcement is safe only once holding ≈ connected
+	// fleet-wide AND with_evidence ≈ routable for EVERY model, so one model
+	// family's uncovered providers cannot hide inside a healthy average) ---
 	evidenceProviders, evidenceConnected := s.registry.CountProvidersWithCurrentApplicationEvidence()
+	evidenceModels := s.registry.ApplicationEvidenceModelCoverage()
 	releasePolicyEnforced := s.registry.ReleasePolicyEnforced()
 
 	// --- Network utilization (demand/capacity across warm-serving + token-budget axes) ---
@@ -263,6 +266,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"application_evidence_providers": evidenceProviders,
 		"application_evidence_connected": evidenceConnected,
 		"release_policy_enforced":        releasePolicyEnforced,
+		"application_evidence_models":    evidenceModels,
 		"total_gpu_cores":                totalGPUCores,
 		"total_cpu_cores":                totalCPUCores,
 		"total_memory_gb":                totalMemoryGB,

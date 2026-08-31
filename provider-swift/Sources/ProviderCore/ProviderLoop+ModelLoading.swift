@@ -203,6 +203,17 @@ extension ProviderLoop {
             throw CancellationError()
         }
 
+        // A model mid-retirement (failed its load self-test; drain and
+        // coordinator un-advertisement in flight) must not accept NEW work
+        // through the resident-slot fast path below — the 404 the
+        // retirement promises only lands after the drain. "slot" in the
+        // message maps this to 503 via loadErrorStatusCode: transient, the
+        // coordinator reroutes to a provider whose build passed.
+        guard !retiringModels.contains(modelId) else {
+            throw InferenceError.invalidModelDirectory(
+                "Model '\(modelId)' slot is retiring after a failed self-test")
+        }
+
         while modelsUnloading.contains(modelId) {
             await waitForModelUnload(modelId)
             if isShuttingDown { throw CancellationError() }
@@ -1001,6 +1012,13 @@ extension ProviderLoop {
     /// conservative: anything that *could* succeed (including via eviction of
     /// an idle model) is admitted and left for the post-accept load path.
     internal func fastAdmissionReject(modelId: String) async -> Bool {
+        // Mid-retirement (failed self-test, drain in flight): the resident
+        // slot LOOKS serviceable but serving it would hand out a build that
+        // failed its serving-path self-test — reject fast so the
+        // coordinator reroutes now instead of accepting-then-failing.
+        if retiringModels.contains(modelId) {
+            return true
+        }
         // Already resident — definitely serviceable.
         if modelSlots[modelId] != nil {
             return false

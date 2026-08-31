@@ -453,3 +453,10 @@ extension ProviderLoop {
         engineV2LastRecoveryAt[modelId] = instant
     }
 }
+
+extension ProviderLoop {
+    /// Test seam: mark a model as mid-retirement (failed self-test drain).
+    func markRetiringForTesting(_ modelId: String) {
+        retiringModels.insert(modelId)
+    }
+}

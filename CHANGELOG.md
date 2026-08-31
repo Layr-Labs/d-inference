@@ -1,5 +1,40 @@
 # Changelog
 
+## Release candidate v0.8.16 (not shipped; 2026-08-31)
+
+- **Per-model activation floors + measured resident weights** — the flat
+  5.5 GiB activation reserve is now resolved per serving set from measured
+  per-model floors (gpt-oss-20b: 3.5 GiB — its 24 GB catalog tier goes from
+  arithmetically unserveable to reachable, #653/#683), and the load gate's
+  weights figure uses measured MLX residency for measured text-only
+  artifacts (gpt-oss-20b: 11.5 GiB vs the 13.5 padded estimate). The
+  coordinator mirrors both tables per (binary version, model) —
+  `servabilityActivationFloor` / `servabilityColdWeightsGiB`, gated at
+  0.8.16 — across the cold token-budget estimate AND the cold-load admit
+  gate. Vision-capable models (the qwens, the gemma VLM builds) keep the
+  flat floor and padded weights until vision-inclusive measurements exist;
+  measured text baselines and the full sweep live in
+  `docs/reports/2026-08-30-activation-floor-measurements.md`.
+- **Serving-set reserve race hardening** — epoch-stamped reserve pushes
+  (cross-actor delivery is not FIFO), in-flight loads join the reserve
+  basis, failed-load cleanup holds the load gate through its awaits,
+  shrink paths regrow survivor grants, and failed-self-test retirement is
+  fail-closed end to end: durable failed-hash record (slot-bound hash or
+  refuse-all sentinel) consulted at every prefetch guard, a retirement
+  tombstone spanning foreign-owned drains, registration convergence on the
+  announce-undo, and new-inference rejection on both resident-slot fast
+  paths while a retirement drains.
+- **MLX-LM pin advances past the 0.32.2 core bump** — on top of #790's
+  `libs/mlx-swift-lm` pin (`81dd564`, which already carried Qwen3-VL CBv2
+  DeepStack #125 and the dense Qwen3.8 MTP artifacts #118), this release
+  moves to `30da946`: the gather-QMM sorted-hint lane
+  ([#126](https://github.com/Layr-Labs/mlx-swift-lm/pull/126)), vision batch
+  performance ([#127](https://github.com/Layr-Labs/mlx-swift-lm/pull/127)),
+  a serving-correctness batch
+  ([#128](https://github.com/Layr-Labs/mlx-swift-lm/pull/128)), and the
+  bench-harness hybrid-trunk paged fix
+  ([#129](https://github.com/Layr-Labs/mlx-swift-lm/pull/129)).
+
 ## Release candidate v0.8.15 (not shipped; 2026-08-28)
 
 - **Exact Qwen3.8 dense VLM artifact** — Providers serve

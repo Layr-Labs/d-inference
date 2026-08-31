@@ -89,9 +89,14 @@ floor) with the default retune explicitly DEFERRED; 3c resolved by discovery.**
   `qwen3-vl-30b-a3b-instruct` at advertise time (dark fleet-wide). The
   ENGINE-side adapter has since landed in mlx-swift-lm (#125, Qwen3-VL CBv2
   DeepStack — included in this branch's submodule pin), but the PROVIDER
-  still gates it off: `EngineV2SupportedModels` (gpt_oss/gemma4/gemma4_text/
-  qwen3_5_moe) and the `makeProductionEngine` family switch need wiring +
-  measurement before the catalog entry can serve. Follow-up, not this PR.
+  still gates it off: the supported-family predicate
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift:41`,
+  `isSupported` over gpt_oss/gemma4/gemma4_text/qwen3_5_moe) and the
+  production family switch
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift:656`
+  region, `case let qwen as Qwen35MoEModel` — no `qwen3_vl_moe` arm) need
+  wiring + measurement before the catalog entry can serve. Follow-up, not
+  this PR.
 
 ### Original phase text (for context)
 

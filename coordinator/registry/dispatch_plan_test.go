@@ -444,6 +444,82 @@ func TestConcurrentPrimaryScansRerankUntilUntriedCapacity(t *testing.T) {
 	}
 }
 
+// TestCommitCapacityRejectionSurvivesCandidateExclusion proves a provider that
+// becomes full between scan and commit remains classified as transient capacity
+// after it is excluded from the next scan.
+func TestCommitCapacityRejectionSurvivesCandidateExclusion(t *testing.T) {
+	reg := New(testLogger())
+	model := "commit-rejection-counters"
+	p := planTestProvider(t, reg, "only", model, 0)
+	scanned := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	reg.reservationAfterScan = func(string) {
+		once.Do(func() {
+			close(scanned)
+			<-release
+		})
+	}
+	type result struct {
+		provider *Provider
+		decision RoutingDecision
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		provider, decision := reg.ReserveProviderEx(
+			model, planTestRequest("commit-capacity-reject", 100, 100))
+		resultCh <- result{provider: provider, decision: decision}
+	}()
+	<-scanned
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = 100
+	p.mu.Unlock()
+	close(release)
+
+	got := <-resultCh
+	if got.provider != nil {
+		t.Fatalf("provider=%q, want nil after commit-time capacity loss", got.provider.ID)
+	}
+	if got.decision.CapacityRejections != 1 {
+		t.Fatalf("CapacityRejections=%d, want 1 preserved across exclusion", got.decision.CapacityRejections)
+	}
+}
+
+// TestCommitRejectsExpiredFirstContentDeadline proves scan and write-lock wait
+// time cannot produce a doomed pending debit after the absolute clock expires.
+func TestCommitRejectsExpiredFirstContentDeadline(t *testing.T) {
+	reg := New(testLogger())
+	model := "commit-deadline"
+	p := planTestProvider(t, reg, "deadline-provider", model, 0)
+	pr := planTestRequest("commit-deadline-request", 100, 100)
+	pr.FirstContentDeadline = time.Now().Add(time.Minute)
+
+	scanned := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	reg.reservationAfterScan = func(string) {
+		once.Do(func() {
+			close(scanned)
+			<-release
+		})
+	}
+	selected := make(chan *Provider, 1)
+	go func() {
+		provider, _, _ := reg.ReserveProviderWithPlan(model, pr)
+		selected <- provider
+	}()
+	<-scanned
+	pr.FirstContentDeadline = time.Now().Add(-time.Second)
+	close(release)
+
+	if provider := <-selected; provider != nil {
+		t.Fatalf("provider=%q, want nil after deadline expired before commit", provider.ID)
+	}
+	if pending := p.PendingCount(); pending != 0 {
+		t.Fatalf("pending=%d, want no debit for expired request", pending)
+	}
+}
+
 // TestHeartbeatResyncRestoresProviderReportedTruth: while a reservation is in
 // the heartbeat dark window, its coordinator-side debit gates admission; once
 // the provider's heartbeat reports the admitted work, committedTokenBudget

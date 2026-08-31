@@ -376,6 +376,7 @@ const (
 	reservationCommitted reservationCommitOutcome = iota
 	reservationNeedsRescan
 	reservationCandidateRejected
+	reservationDeadlineExpired
 )
 
 type providerReservationScan struct {
@@ -422,24 +423,34 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	}
 
 	excluded := append([]string(nil), excludeIDs...)
+	carried := RoutingDecision{Model: model}
 	var last providerReservationScan
+	failedDecision := func() RoutingDecision {
+		decision := routingDecisionForFailedScan(model, last.candidates)
+		addRoutingRejections(&decision, carried)
+		return decision
+	}
 	for pr.RefreshFirstContentBudget(time.Now()) {
 		last = r.scanProviderReservation(model, pr, excluded...)
 		if last.selected == nil {
-			return nil, routingDecisionForFailedScan(model, last.candidates), nil
+			return nil, failedDecision(), nil
 		}
 
-		provider, candidate, outcome := r.commitProviderReservation(
+		provider, candidate, outcome, rejected := r.commitProviderReservation(
 			model, pr, last, excluded...)
 		switch outcome {
 		case reservationNeedsRescan:
 			continue
 		case reservationCandidateRejected:
+			addRoutingRejections(&carried, rejected)
 			excluded = append(excluded, last.selected.provider.ID)
 			continue
+		case reservationDeadlineExpired:
+			return nil, failedDecision(), nil
 		case reservationCommitted:
 			decision := routingDecisionForCandidate(
 				model, provider, candidate, last.candidates)
+			addRoutingRejections(&decision, carried)
 			r.currentTTFTShadow(
 				model, pr, candidate, excluded...).applyTo(&decision)
 			var plan *DispatchPlan
@@ -452,7 +463,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		}
 	}
 
-	return nil, routingDecisionForFailedScan(model, last.candidates), nil
+	return nil, failedDecision(), nil
 }
 
 // scanProviderReservation performs the expensive fleet walk under a shared
@@ -513,22 +524,29 @@ func (r *Registry) commitProviderReservation(
 	pr *PendingRequest,
 	scan providerReservationScan,
 	excludeIDs ...string,
-) (*Provider, *routingCandidate, reservationCommitOutcome) {
+) (*Provider, *routingCandidate, reservationCommitOutcome, RoutingDecision) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// The shared scan and write-lock wait consume the same absolute request
+	// clock as queueing and provider handoff. Never debit capacity for work whose
+	// first-content budget is already gone.
+	if !pr.RefreshFirstContentBudget(time.Now()) {
+		return nil, nil, reservationDeadlineExpired, RoutingDecision{}
+	}
 
 	// Cache routing reconfiguration after the shared scan invalidates its cost
 	// ordering. Retry from a new scan rather than committing a stale discount.
 	if r.cacheRouting != scan.cacheTracker || r.cacheRoutingMode != scan.cacheMode {
-		return nil, nil, reservationNeedsRescan
+		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 	selected := scan.selected
 	if selected == nil || selected.provider == nil {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 	p := selected.provider
 	if current, ok := r.providers[p.ID]; !ok || current != p {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 
 	// A breaker bypass is valid only while breaker-open providers remain the
@@ -541,13 +559,13 @@ func (r *Registry) commitProviderReservation(
 		if normalWinner != nil || !shouldBypassBreakerFailOpen(
 			normalWinner, normal.breakerRejected,
 			normal.capacityRejections, normal.ttftRejections) {
-			return nil, nil, reservationNeedsRescan
+			return nil, nil, reservationNeedsRescan, RoutingDecision{}
 		}
 	}
 
 	owned := providerOwnedBy(p, pr.OwnerAccountID)
 	if pr.SelfRouteOnly && !owned {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 	if len(pr.AllowedProviderSerials) > 0 {
 		allowed := make(map[string]struct{}, len(pr.AllowedProviderSerials))
@@ -555,30 +573,33 @@ func (r *Registry) commitProviderReservation(
 			allowed[serial] = struct{}{}
 		}
 		if !providerMatchesAllowedSerial(p, allowed) {
-			return nil, nil, reservationCandidateRejected
+			return nil, nil, reservationCandidateRejected, RoutingDecision{}
 		}
 	}
 	relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 	snapshot, ok := r.snapshotProviderLockedEx(
 		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker)
 	if !ok {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 	if pr.RequiresVision {
 		p.mu.Lock()
 		servesVision := r.providerServesVisionModelLocked(p, model, relaxTrust)
 		p.mu.Unlock()
 		if !servesVision {
-			return nil, nil, reservationCandidateRejected
+			return nil, nil, reservationCandidateRejected,
+				routingDecisionForCommitRejection(model, rejectVisionUnsupported, false)
 		}
 	}
-	candidate, _, ok := r.buildCandidateWithReason(snapshot, pr)
+	candidate, reason, ok := r.buildCandidateWithReason(snapshot, pr)
 	if !ok {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected,
+			routingDecisionForCommitRejection(model, reason, false)
 	}
 	if pr.MaxTTFTMs > 0 && !pr.RequiresVision && snapshot.hasBackendCapacity &&
 		candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected,
+			routingDecisionForCommitRejection(model, rejectNone, true)
 	}
 	r.applyCacheRoutingDiscount(p, model, pr, snapshot, candidate)
 
@@ -589,7 +610,7 @@ func (r *Registry) commitProviderReservation(
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
 		candidate.costMs != selected.costMs {
-		return nil, nil, reservationNeedsRescan
+		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 
 	p.mu.Lock()
@@ -597,7 +618,7 @@ func (r *Registry) commitProviderReservation(
 	if !r.providerCanAdmitLockedEx(
 		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
-		return nil, nil, reservationCandidateRejected
+		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 
 	pr.ProviderID = p.ID
@@ -621,7 +642,7 @@ func (r *Registry) commitProviderReservation(
 		pr.CacheSelectionEstimatedTTFTSavedMs = candidate.cacheEstimatedTTFTSavedMs
 		pr.CacheSelectionSelected = true
 	}
-	return p, candidate, reservationCommitted
+	return p, candidate, reservationCommitted, RoutingDecision{}
 }
 
 // currentTTFTShadow recomputes the observational signal from the winner's
@@ -644,6 +665,35 @@ func (r *Registry) currentTTFTShadow(
 		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
 	}
 	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
+}
+
+func routingDecisionForCommitRejection(model string, reason candidateRejection, ttft bool) RoutingDecision {
+	decision := RoutingDecision{Model: model}
+	switch reason {
+	case rejectCapacity:
+		decision.CapacityRejections = 1
+	case rejectModelTooLarge:
+		decision.ModelTooLargeRejections = 1
+	case rejectVisionUnsupported:
+		decision.VisionRejections = 1
+	}
+	if ttft {
+		decision.TTFTRejections = 1
+	}
+	return decision
+}
+
+func addRoutingRejections(dst *RoutingDecision, src RoutingDecision) {
+	if dst == nil {
+		return
+	}
+	dst.CapacityRejections += src.CapacityRejections
+	dst.ModelTooLargeRejections += src.ModelTooLargeRejections
+	dst.VisionRejections += src.VisionRejections
+	dst.TTFTRejections += src.TTFTRejections
+	if dst.BestTTFTMs == 0 {
+		dst.BestTTFTMs = src.BestTTFTMs
+	}
 }
 
 func routingDecisionForFailedScan(model string, scan candidateScan) RoutingDecision {

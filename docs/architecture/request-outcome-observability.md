@@ -29,7 +29,7 @@ The model must answer three separate questions:
 | Client response relay | `coordinator/api/consumer.go` (`handleStreamingResponseWithFirstChunk`, `handleResponsesStreamingResponseWithFirstChunk`, `handleNonStreamingResponseWithFirstChunk`) | The relay can emit in-band provider errors, stream timeouts, or return on `r.Context().Done()` after response commit. These are client outcomes, but route final status can remain the earlier success written at commit time. |
 | Settlement after disconnect | `coordinator/api/settlement.go` (`holdForSettlement`, `claimSettlement`) | A post-commit client disconnect is parked so a late provider terminal can charge or refund correctly. Billing is handled, but the disconnect is not visible as a request outcome class such as `client_gone_after_commit_provider_completed` or `no_terminal_after_cancel`. |
 | Provider disconnect cleanup | `coordinator/registry/registry.go` (`Disconnect`) | Disconnect injects a provider error into pending requests and closes channels. The flow should classify pre-commit vs post-commit disconnects rather than letting a prewritten success stand. |
-| Generic endpoints | `coordinator/api/consumer.go` (`handleGenericInference`, `handleCompletions`, `handleAnthropicMessages`) | `/v1/completions` and `/v1/messages` use a direct single-attempt flow and do not call `recordRoutingDecision`, so they lack `inference_routes` rows and final outcome updates. |
+| Generic endpoints | `coordinator/api/consumer.go` (`handleGenericInference`) | `/v1/completions` and `/v1/messages` reuse the same `dispatchState` as chat, including `recordRoutingDecision` and outcome updates. The route row now also stores `endpoint`. |
 | Speculative backup dispatch | `coordinator/api/dispatch.go` (`runSpeculative`, `runRace`) | The primary route row is recorded by `dispatchPrimary`. A speculative backup can win and swap `d.requestID` to the backup job, but that backup can lack its own route row, making the final outcome update a no-op for the winning job. |
 | Provider aggregate stats | `coordinator/registry/reputation.go`, `coordinator/registry/registry.go` (`RecordJobSuccess`, `RecordJobFailure`), `coordinator/api/stats.go` | Provider aggregates track success/failure and latency but not client cancellations, post-commit drops, no-terminal-after-cancel, or disconnect counters. Client behavior and provider faults need separate counters. |
 | Rejection ledger | `coordinator/api/rejection_telemetry.go`, `coordinator/api/consumer.go`, `coordinator/api/server.go` rate-limit helpers | The rejection ledger is partially wired for inference validation, balance, and capacity exits. Some middleware and helper exits still return errors before full request-shape and servability metadata can be recorded. |
@@ -66,12 +66,12 @@ The route row should also persist the raw dimensions that explain the summary:
 
 | Field | Purpose |
 |---|---|
-| `client_outcome` | Client-visible terminal state independent of provider and billing. |
-| `provider_outcome` | Provider terminal state independent of client connection state. |
-| `billing_outcome` | Settlement result independent of client and provider status. |
+| `client_outcome` | Client-visible terminal state independent of provider and billing. **Persisted** on `inference_routes` and derived at outcome write from `final_status` + `error_class`. |
+| `provider_outcome` | Provider terminal state independent of client connection state. **Persisted** on `inference_routes`. |
+| `billing_outcome` | Settlement result independent of client and provider status. **Persisted** on `inference_routes`. |
 | `response_committed` | Whether headers or stream content were committed before the terminal outcome. |
-| `terminal_source` | Which subsystem produced the final transition: `client`, `provider`, `coordinator_timeout`, `settlement_grace`, `disconnect_cleanup`, `billing`. |
-| `endpoint` | The surface that received the request, so generic endpoints are not indistinguishable from chat completions. |
+| `terminal_source` | Which subsystem produced the final transition: `client`, `provider`, `coordinator_timeout`, `coordinator`. **Persisted** on `inference_routes`. |
+| `endpoint` | The surface that received the request, so generic endpoints are not indistinguishable from chat completions. **Persisted** on `inference_routes`. |
 | `client_request_id` | Stable HTTP request correlation ID from middleware, distinct from provider job IDs used by retry and backup attempts. |
 | `provider_request_id` | Provider job ID for the dispatched attempt. This is the current `PendingRequest.RequestID` used by route rows. |
 

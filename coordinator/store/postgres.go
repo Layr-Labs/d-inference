@@ -872,6 +872,44 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			used_backup BOOL,
 			backup_won BOOL,
 			error_reason TEXT,
+			capacity_rate_ms DOUBLE PRECISION,
+			capacity_reject_rate DOUBLE PRECISION,
+			affinity_tier TEXT,
+			affinity_discount_ms DOUBLE PRECISION,
+			media_fetch_ms DOUBLE PRECISION,
+			cache_outcome TEXT,
+			cache_tier TEXT,
+			cached_tokens INTEGER,
+			prefill_tokens_saved INTEGER,
+			cache_stage_ms DOUBLE PRECISION,
+			client_outcome TEXT,
+			provider_outcome TEXT,
+			billing_outcome TEXT,
+			response_committed BOOL,
+			is_final_attempt BOOL,
+			total_attempts INTEGER,
+			endpoint TEXT,
+			kv_backend TEXT,
+			kv_backend_fallback TEXT,
+			free_for_load_gb DOUBLE PRECISION,
+			wedge_suspected BOOL,
+			total_pending INTEGER,
+			effective_prefill_tps DOUBLE PRECISION,
+			static_prefill_tps DOUBLE PRECISION,
+			cache_estimated_ttft_saved_ms DOUBLE PRECISION,
+			near_tie_count INTEGER,
+			tie_break_reason TEXT,
+			shadow_would_shed BOOL,
+			shadow_idle_alternative BOOL,
+			shadow_estimate_ms DOUBLE PRECISION,
+			shadow_deadline_ms DOUBLE PRECISION,
+			breaker_rejections INTEGER,
+			soft_filter_rejections INTEGER,
+			terminal_source TEXT,
+			reserved_micro_usd BIGINT,
+			settled_micro_usd BIGINT,
+			overage_micro_usd BIGINT,
+			refund_micro_usd BIGINT,
 			UNIQUE(request_id, attempt)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_created ON inference_routes(created_at DESC)`,
@@ -917,6 +955,44 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// DAR-341: normalized provider/coordinator error reason. Nullable and
 		// appended so fresh DBs match upgraded DB column order for SELECT * scans.
 		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS error_reason TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS capacity_rate_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS capacity_reject_rate DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS affinity_tier TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS affinity_discount_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS media_fetch_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cache_outcome TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cache_tier TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cached_tokens INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS prefill_tokens_saved INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cache_stage_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS client_outcome TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS provider_outcome TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS billing_outcome TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS response_committed BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS is_final_attempt BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS total_attempts INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS endpoint TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS kv_backend TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS kv_backend_fallback TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS free_for_load_gb DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS wedge_suspected BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS total_pending INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS effective_prefill_tps DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS static_prefill_tps DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS cache_estimated_ttft_saved_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS near_tie_count INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS tie_break_reason TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS shadow_would_shed BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS shadow_idle_alternative BOOL`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS shadow_estimate_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS shadow_deadline_ms DOUBLE PRECISION`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS breaker_rejections INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS soft_filter_rejections INTEGER`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS terminal_source TEXT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS reserved_micro_usd BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS settled_micro_usd BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS overage_micro_usd BIGINT`,
+		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS refund_micro_usd BIGINT`,
 		// Route keys are memory-only HMACs. Scrub legacy persisted SHA-256
 		// prompt-cache identifiers once. The trigger also clears writes from an
 		// older coordinator during blue-green overlap or emergency rollback while
@@ -973,6 +1049,84 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_model ON request_rejections(resolved_model, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_status ON request_rejections(http_status, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_request_rejections_servable ON request_rejections(could_have_served, created_at DESC) WHERE could_have_served = true`,
+
+		// Per-candidate scheduler scores for ranking regret / cost-model
+		// calibration. One row per (attempt × considered provider).
+		`CREATE TABLE IF NOT EXISTS inference_route_candidates (
+			id BIGSERIAL PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			attempt INTEGER NOT NULL,
+			provider_id TEXT NOT NULL,
+			rank INTEGER,
+			selected BOOL NOT NULL DEFAULT FALSE,
+			eligible BOOL NOT NULL DEFAULT FALSE,
+			rejection_reason TEXT,
+			cost_ms DOUBLE PRECISION,
+			state_ms DOUBLE PRECISION,
+			queue_ms DOUBLE PRECISION,
+			pending_ms DOUBLE PRECISION,
+			backlog_ms DOUBLE PRECISION,
+			this_req_ms DOUBLE PRECISION,
+			health_ms DOUBLE PRECISION,
+			capacity_rate_ms DOUBLE PRECISION,
+			ttft_ms DOUBLE PRECISION,
+			effective_queue INTEGER,
+			effective_tps DOUBLE PRECISION,
+			static_tps DOUBLE PRECISION,
+			batch_size INTEGER,
+			chip_family TEXT,
+			hardware_tier TEXT,
+			memory_gb INTEGER,
+			slot_state TEXT,
+			memory_pressure DOUBLE PRECISION,
+			thermal_state TEXT,
+			gpu_memory_active_gb DOUBLE PRECISION,
+			free_for_load_gb DOUBLE PRECISION,
+			wedge_suspected BOOL,
+			affinity_applied BOOL,
+			affinity_discount_ms DOUBLE PRECISION,
+			capacity_reject_rate DOUBLE PRECISION,
+			effective_prefill_tps DOUBLE PRECISION,
+			static_prefill_tps DOUBLE PRECISION,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(request_id, attempt, provider_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_route_candidates_created ON inference_route_candidates(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inference_route_candidates_request ON inference_route_candidates(request_id, attempt)`,
+		`ALTER TABLE inference_route_candidates ADD COLUMN IF NOT EXISTS effective_prefill_tps DOUBLE PRECISION`,
+		`ALTER TABLE inference_route_candidates ADD COLUMN IF NOT EXISTS static_prefill_tps DOUBLE PRECISION`,
+
+		// Sampled heartbeat snapshots, independent of requests.
+		`CREATE TABLE IF NOT EXISTS provider_capacity_samples (
+			id BIGSERIAL PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			provider_version TEXT,
+			provider_status TEXT,
+			provider_trust_level TEXT,
+			hardware_chip_family TEXT,
+			hardware_tier TEXT,
+			memory_gb INTEGER,
+			current_model TEXT,
+			warm_model_count INTEGER,
+			slot_count INTEGER,
+			backend_running INTEGER,
+			backend_waiting INTEGER,
+			observed_decode_tps DOUBLE PRECISION,
+			active_token_budget_used BIGINT,
+			active_token_budget_max BIGINT,
+			queued_token_budget BIGINT,
+			memory_pressure DOUBLE PRECISION,
+			cpu_usage DOUBLE PRECISION,
+			thermal_state TEXT,
+			gpu_memory_active_gb DOUBLE PRECISION,
+			gpu_memory_peak_gb DOUBLE PRECISION,
+			gpu_memory_cache_gb DOUBLE PRECISION,
+			free_for_load_gb DOUBLE PRECISION,
+			wedge_suspected BOOL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_capacity_samples_created ON provider_capacity_samples(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_capacity_samples_provider ON provider_capacity_samples(provider_id, created_at DESC)`,
 
 		// APNs code-identity attestation reuse cache (W5 Fix 2). Persists the
 		// in-memory reuse cache so a blue-green deploy / restart does not wipe it
@@ -1688,7 +1842,15 @@ const inferenceRouteSelectColumns = `
 			created_at, updated_at,
 			provider_region, consumer_region,
 			parse_ms, reserve_ms, route_ms, encrypt_ms, queue_wait_ms, dispatch_ms, actual_decode_tps,
-			admitted_but_failed, used_backup, backup_won, error_reason`
+			admitted_but_failed, used_backup, backup_won, error_reason,
+			capacity_rate_ms, capacity_reject_rate, affinity_tier, affinity_discount_ms,
+			media_fetch_ms, cache_outcome, cache_tier, cached_tokens, prefill_tokens_saved, cache_stage_ms,
+			client_outcome, provider_outcome, billing_outcome, response_committed, is_final_attempt, total_attempts,
+			endpoint, kv_backend, kv_backend_fallback, free_for_load_gb, wedge_suspected, total_pending,
+			effective_prefill_tps, static_prefill_tps, cache_estimated_ttft_saved_ms,
+			near_tie_count, tie_break_reason, shadow_would_shed, shadow_idle_alternative,
+			shadow_estimate_ms, shadow_deadline_ms, breaker_rejections, soft_filter_rejections,
+			terminal_source, reserved_micro_usd, settled_micro_usd, overage_micro_usd, refund_micro_usd`
 
 // RecordInferenceRoute writes the routing decision snapshot for a request
 // attempt. Callers keep this best-effort by logging returned errors off the
@@ -1725,7 +1887,12 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 			estimated_prompt_tokens, requested_max_tokens,
 			requires_vision, has_tools, self_route_only, prefer_owner,
 			created_at, updated_at,
-			provider_region, consumer_region, error_reason
+			provider_region, consumer_region, error_reason,
+			capacity_rate_ms, capacity_reject_rate, affinity_tier, affinity_discount_ms,
+			endpoint, kv_backend, kv_backend_fallback, free_for_load_gb, wedge_suspected, total_pending,
+			effective_prefill_tps, static_prefill_tps, cache_estimated_ttft_saved_ms,
+			near_tie_count, tie_break_reason, shadow_would_shed, shadow_idle_alternative,
+			shadow_estimate_ms, shadow_deadline_ms, breaker_rejections, soft_filter_rejections
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
 			$9, $10, $11, $12, $13, $14, $15, $16, $17,
@@ -1739,7 +1906,12 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 			$47, $48,
 			$49, $50, $51, $52,
 			$53, $54,
-			$55, $56, $57
+			$55, $56, $57,
+			$58, $59, $60, $61,
+			$62, $63, $64, $65, $66, $67,
+			$68, $69, $70,
+			$71, $72, $73, $74,
+			$75, $76, $77, $78
 		) ON CONFLICT (request_id, attempt) DO UPDATE SET
 			provider_id = EXCLUDED.provider_id,
 			model = EXCLUDED.model,
@@ -1794,6 +1966,27 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 			provider_region = EXCLUDED.provider_region,
 			consumer_region = EXCLUDED.consumer_region,
 			`+inferenceRouteErrorReasonUpsertAssignment+`,
+			capacity_rate_ms = EXCLUDED.capacity_rate_ms,
+			capacity_reject_rate = EXCLUDED.capacity_reject_rate,
+			affinity_tier = EXCLUDED.affinity_tier,
+			affinity_discount_ms = EXCLUDED.affinity_discount_ms,
+			endpoint = EXCLUDED.endpoint,
+			kv_backend = EXCLUDED.kv_backend,
+			kv_backend_fallback = EXCLUDED.kv_backend_fallback,
+			free_for_load_gb = EXCLUDED.free_for_load_gb,
+			wedge_suspected = EXCLUDED.wedge_suspected,
+			total_pending = EXCLUDED.total_pending,
+			effective_prefill_tps = EXCLUDED.effective_prefill_tps,
+			static_prefill_tps = EXCLUDED.static_prefill_tps,
+			cache_estimated_ttft_saved_ms = EXCLUDED.cache_estimated_ttft_saved_ms,
+			near_tie_count = EXCLUDED.near_tie_count,
+			tie_break_reason = EXCLUDED.tie_break_reason,
+			shadow_would_shed = EXCLUDED.shadow_would_shed,
+			shadow_idle_alternative = EXCLUDED.shadow_idle_alternative,
+			shadow_estimate_ms = EXCLUDED.shadow_estimate_ms,
+			shadow_deadline_ms = EXCLUDED.shadow_deadline_ms,
+			breaker_rejections = EXCLUDED.breaker_rejections,
+			soft_filter_rejections = EXCLUDED.soft_filter_rejections,
 			updated_at = EXCLUDED.updated_at`,
 		record.RequestID, record.Attempt, record.ProviderID, record.Model, record.PublicModel, record.ConsumerKeyHash, record.KeyID, record.Outcome,
 		record.CostMs, record.StateMs, record.QueueMs, record.PendingMs, record.BacklogMs, record.ThisReqMs, record.HealthMs, record.TTFTMs, record.BestTTFTMs,
@@ -1808,6 +2001,11 @@ func (s *PostgresStore) RecordInferenceRoute(record *InferenceRouteRecord) error
 		record.RequiresVision, record.HasTools, record.SelfRouteOnly, record.PreferOwner,
 		createdAt, updatedAt,
 		record.ProviderRegion, record.ConsumerRegion, record.ErrorReason,
+		record.CapacityRateMs, record.CapacityRejectRate, record.AffinityTier, record.AffinityDiscountMs,
+		record.Endpoint, record.KVBackend, record.KVBackendFallback, record.FreeForLoadGB, record.WedgeSuspected, record.TotalPending,
+		record.EffectivePrefillTPS, record.StaticPrefillTPS, record.CacheEstimatedTTFTSavedMs,
+		record.NearTieCount, record.TieBreakReason, record.ShadowWouldShed, record.ShadowIdleAlternative,
+		record.ShadowEstimateMs, record.ShadowDeadlineMs, record.BreakerRejections, record.SoftFilterRejections,
 	)
 	if err != nil {
 		return fmt.Errorf("store: record inference route: %w", err)
@@ -1853,6 +2051,23 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 			admitted_but_failed = COALESCE(admitted_but_failed, FALSE) OR $21,
 			used_backup = COALESCE(used_backup, FALSE) OR $22,
 			backup_won = COALESCE(backup_won, FALSE) OR $23,
+			media_fetch_ms = CASE WHEN $25 <> 0 THEN $25 ELSE media_fetch_ms END,
+			cache_outcome = CASE WHEN $26 <> '' THEN $26 ELSE cache_outcome END,
+			cache_tier = CASE WHEN $26 <> '' THEN $27 ELSE cache_tier END,
+			cached_tokens = CASE WHEN $26 <> '' THEN $28 ELSE cached_tokens END,
+			prefill_tokens_saved = CASE WHEN $26 <> '' THEN $29 ELSE prefill_tokens_saved END,
+			cache_stage_ms = CASE WHEN $26 <> '' THEN $30 ELSE cache_stage_ms END,
+			client_outcome = CASE WHEN $31 <> '' THEN $31 ELSE client_outcome END,
+			provider_outcome = CASE WHEN $32 <> '' THEN $32 ELSE provider_outcome END,
+			billing_outcome = CASE WHEN $33 <> '' THEN $33 ELSE billing_outcome END,
+			response_committed = COALESCE(response_committed, FALSE) OR $34,
+			is_final_attempt = COALESCE(is_final_attempt, FALSE) OR $35,
+			total_attempts = CASE WHEN $36 <> 0 THEN $36 ELSE total_attempts END,
+			terminal_source = CASE WHEN $37 <> '' THEN $37 ELSE terminal_source END,
+			reserved_micro_usd = CASE WHEN $38 <> 0 THEN $38 ELSE reserved_micro_usd END,
+			settled_micro_usd = CASE WHEN $39 <> 0 THEN $39 ELSE settled_micro_usd END,
+			overage_micro_usd = CASE WHEN $40 <> 0 THEN $40 ELSE overage_micro_usd END,
+			refund_micro_usd = CASE WHEN $41 <> 0 THEN $41 ELSE refund_micro_usd END,
 			updated_at = NOW()
 		 WHERE request_id = $1 AND attempt = $2`,
 		requestID, attempt,
@@ -1861,6 +2076,9 @@ func (s *PostgresStore) UpdateInferenceRouteOutcome(requestID string, attempt in
 		outcome.ParseMs, outcome.ReserveMs, outcome.RouteMs, outcome.EncryptMs, outcome.QueueWaitMs, outcome.DispatchMs, outcome.ActualDecodeTPS,
 		outcome.AdmittedButFailed, outcome.UsedBackup, outcome.BackupWon,
 		outcome.CompletionTokensSet,
+		outcome.MediaFetchMs, outcome.CacheOutcome, outcome.CacheTier, outcome.CachedTokens, outcome.PrefillTokensSaved, outcome.CacheStageMs,
+		outcome.ClientOutcome, outcome.ProviderOutcome, outcome.BillingOutcome, outcome.ResponseCommitted, outcome.IsFinalAttempt, outcome.TotalAttempts,
+		outcome.TerminalSource, outcome.ReservedMicroUSD, outcome.SettledMicroUSD, outcome.OverageMicroUSD, outcome.RefundMicroUSD,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update inference route outcome: %w", err)
@@ -1909,6 +2127,44 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		var admittedButFailed *bool
 		var usedBackup *bool
 		var backupWon *bool
+		var capacityRateMs *float64
+		var capacityRejectRate *float64
+		var affinityTier *string
+		var affinityDiscountMs *float64
+		var mediaFetchMs *float64
+		var cacheOutcome *string
+		var cacheTier *string
+		var cachedTokens *int
+		var prefillTokensSaved *int
+		var cacheStageMs *float64
+		var clientOutcome *string
+		var providerOutcome *string
+		var billingOutcome *string
+		var responseCommitted *bool
+		var isFinalAttempt *bool
+		var totalAttempts *int
+		var endpoint *string
+		var kvBackend *string
+		var kvBackendFallback *string
+		var freeForLoadGB *float64
+		var wedgeSuspected *bool
+		var totalPending *int
+		var effectivePrefillTPS *float64
+		var staticPrefillTPS *float64
+		var cacheEstimatedTTFTSavedMs *float64
+		var nearTieCount *int
+		var tieBreakReason *string
+		var shadowWouldShed *bool
+		var shadowIdleAlternative *bool
+		var shadowEstimateMs *float64
+		var shadowDeadlineMs *float64
+		var breakerRejections *int
+		var softFilterRejections *int
+		var terminalSource *string
+		var reservedMicroUSD *int64
+		var settledMicroUSD *int64
+		var overageMicroUSD *int64
+		var refundMicroUSD *int64
 
 		if err := rows.Scan(
 			&id,
@@ -1929,6 +2185,14 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 			&providerRegion, &consumerRegion,
 			&parseMs, &reserveMs, &routeMs, &encryptMs, &queueWaitMs, &dispatchMs, &actualDecodeTPS,
 			&admittedButFailed, &usedBackup, &backupWon, &errorReason,
+			&capacityRateMs, &capacityRejectRate, &affinityTier, &affinityDiscountMs,
+			&mediaFetchMs, &cacheOutcome, &cacheTier, &cachedTokens, &prefillTokensSaved, &cacheStageMs,
+			&clientOutcome, &providerOutcome, &billingOutcome, &responseCommitted, &isFinalAttempt, &totalAttempts,
+			&endpoint, &kvBackend, &kvBackendFallback, &freeForLoadGB, &wedgeSuspected, &totalPending,
+			&effectivePrefillTPS, &staticPrefillTPS, &cacheEstimatedTTFTSavedMs,
+			&nearTieCount, &tieBreakReason, &shadowWouldShed, &shadowIdleAlternative,
+			&shadowEstimateMs, &shadowDeadlineMs, &breakerRejections, &softFilterRejections,
+			&terminalSource, &reservedMicroUSD, &settledMicroUSD, &overageMicroUSD, &refundMicroUSD,
 		); err != nil {
 			continue
 		}
@@ -1998,6 +2262,120 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 		}
 		if backupWon != nil {
 			outcome.BackupWon = *backupWon
+		}
+		if capacityRateMs != nil {
+			r.CapacityRateMs = *capacityRateMs
+		}
+		if capacityRejectRate != nil {
+			r.CapacityRejectRate = *capacityRejectRate
+		}
+		if affinityTier != nil {
+			r.AffinityTier = *affinityTier
+		}
+		if affinityDiscountMs != nil {
+			r.AffinityDiscountMs = *affinityDiscountMs
+		}
+		if mediaFetchMs != nil {
+			outcome.MediaFetchMs = *mediaFetchMs
+		}
+		if cacheOutcome != nil {
+			outcome.CacheOutcome = *cacheOutcome
+		}
+		if cacheTier != nil {
+			outcome.CacheTier = *cacheTier
+		}
+		if cachedTokens != nil {
+			outcome.CachedTokens = *cachedTokens
+		}
+		if prefillTokensSaved != nil {
+			outcome.PrefillTokensSaved = *prefillTokensSaved
+		}
+		if cacheStageMs != nil {
+			outcome.CacheStageMs = *cacheStageMs
+		}
+		if clientOutcome != nil {
+			outcome.ClientOutcome = *clientOutcome
+		}
+		if providerOutcome != nil {
+			outcome.ProviderOutcome = *providerOutcome
+		}
+		if billingOutcome != nil {
+			outcome.BillingOutcome = *billingOutcome
+		}
+		if responseCommitted != nil {
+			outcome.ResponseCommitted = *responseCommitted
+		}
+		if isFinalAttempt != nil {
+			outcome.IsFinalAttempt = *isFinalAttempt
+		}
+		if totalAttempts != nil {
+			outcome.TotalAttempts = *totalAttempts
+		}
+		if terminalSource != nil {
+			outcome.TerminalSource = *terminalSource
+		}
+		if reservedMicroUSD != nil {
+			outcome.ReservedMicroUSD = *reservedMicroUSD
+		}
+		if settledMicroUSD != nil {
+			outcome.SettledMicroUSD = *settledMicroUSD
+		}
+		if overageMicroUSD != nil {
+			outcome.OverageMicroUSD = *overageMicroUSD
+		}
+		if refundMicroUSD != nil {
+			outcome.RefundMicroUSD = *refundMicroUSD
+		}
+		if endpoint != nil {
+			r.Endpoint = *endpoint
+		}
+		if kvBackend != nil {
+			r.KVBackend = *kvBackend
+		}
+		if kvBackendFallback != nil {
+			r.KVBackendFallback = *kvBackendFallback
+		}
+		if freeForLoadGB != nil {
+			r.FreeForLoadGB = *freeForLoadGB
+		}
+		if wedgeSuspected != nil {
+			r.WedgeSuspected = *wedgeSuspected
+		}
+		if totalPending != nil {
+			r.TotalPending = *totalPending
+		}
+		if effectivePrefillTPS != nil {
+			r.EffectivePrefillTPS = *effectivePrefillTPS
+		}
+		if staticPrefillTPS != nil {
+			r.StaticPrefillTPS = *staticPrefillTPS
+		}
+		if cacheEstimatedTTFTSavedMs != nil {
+			r.CacheEstimatedTTFTSavedMs = *cacheEstimatedTTFTSavedMs
+		}
+		if nearTieCount != nil {
+			r.NearTieCount = *nearTieCount
+		}
+		if tieBreakReason != nil {
+			r.TieBreakReason = *tieBreakReason
+		}
+		if shadowWouldShed != nil {
+			r.ShadowWouldShed = *shadowWouldShed
+		}
+		if shadowIdleAlternative != nil {
+			r.ShadowIdleAlternative = *shadowIdleAlternative
+		}
+		if shadowEstimateMs != nil {
+			r.ShadowEstimateMs = *shadowEstimateMs
+		}
+		if shadowDeadlineMs != nil {
+			r.ShadowDeadlineMs = *shadowDeadlineMs
+		}
+		if breakerRejections != nil {
+			r.BreakerRejections = *breakerRejections
+		}
+		if softFilterRejections != nil {
+			r.SoftFilterRejections = *softFilterRejections
 		}
 		applyInferenceRouteOutcomeToRecord(&r, outcome)
 		records = append(records, r)

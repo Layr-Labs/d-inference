@@ -48,6 +48,8 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"stripe_withdrawals",
 		"provider_sessions",
 		"inference_routes",
+		"inference_route_candidates",
+		"provider_capacity_samples",
 		"request_rejections",
 		"provider_trust_reuse",
 		"provider_floor_draws",

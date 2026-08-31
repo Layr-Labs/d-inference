@@ -925,18 +925,15 @@ func (s *Server) dispatchOneProvider(
 
 	provider, decision = s.registry.ReserveProviderEx(model, pr, excludeList()...)
 	if provider == nil {
-		// Providers serve this model but none can physically fit it: don't make
-		// the caller queue/retry for something that will never load.
+		// Keep pr so fail-fast telemetry can join candidate rows on
+		// PendingRequest.RequestID even when nobody is reserved.
 		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
-			return nil, nil, decision, errModelTooLarge, http.StatusServiceUnavailable
+			return nil, pr, decision, errModelTooLarge, http.StatusServiceUnavailable
 		}
-		// Providers are available but all exceed the TTFT ceiling. Fail fast
-		// with a retryable 429 rather than queueing or routing to a slow
-		// provider.
 		if decision.TTFTRejections > 0 {
-			return nil, nil, decision, errTTFTTooSlow, http.StatusTooManyRequests
+			return nil, pr, decision, errTTFTTooSlow, http.StatusTooManyRequests
 		}
-		return nil, nil, decision, "no provider available", http.StatusServiceUnavailable
+		return nil, pr, decision, "no provider available", http.StatusServiceUnavailable
 	}
 	pendingCleanup := true
 	cleanupPending := func() {

@@ -254,6 +254,22 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	if got := settleTTFT429Routes(t, st); got != 1 {
 		t.Errorf("ttft_429 route rows = %d, want exactly 1 (exactly one reservation scan)", got)
 	}
+	cands := st.InferenceRouteCandidatesSince(time.Time{})
+	if len(cands) == 0 {
+		t.Fatal("ttft_429 must persist rejected candidate rows; empty request_id drops them")
+	}
+	sawTTFT := false
+	for _, c := range cands {
+		if c.RequestID == "" {
+			t.Fatal("candidate request_id must be the minted PendingRequest id, not empty")
+		}
+		if c.RejectionReason == store.CandidateRejectTTFT {
+			sawTTFT = true
+		}
+	}
+	if !sawTTFT {
+		t.Fatalf("candidates = %+v, want a ttft rejection_reason", cands)
+	}
 }
 
 // TestTTFTTerminalRejectKillSwitch pins the env wiring: default ON, only an

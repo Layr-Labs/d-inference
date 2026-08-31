@@ -183,6 +183,22 @@ type TelemetryStore interface {
 	// RejectionRecordsSince returns rejection records created at or after the
 	// given time. Zero since returns all records.
 	RejectionRecordsSince(since time.Time) []RejectionRecord
+
+	// RecordInferenceRouteCandidates writes the scored/rejected candidate
+	// snapshots for one request attempt. Best-effort.
+	RecordInferenceRouteCandidates(records []InferenceRouteCandidateRecord) error
+
+	// InferenceRouteCandidatesSince returns candidate rows created at or after
+	// the given time. Zero since returns all records (capped).
+	InferenceRouteCandidatesSince(since time.Time) []InferenceRouteCandidateRecord
+
+	// RecordProviderCapacitySample writes one sampled heartbeat snapshot.
+	// Best-effort.
+	RecordProviderCapacitySample(record *ProviderCapacitySample) error
+
+	// ProviderCapacitySamplesSince returns capacity samples created at or after
+	// the given time. Zero since returns all records (capped).
+	ProviderCapacitySamplesSince(since time.Time) []ProviderCapacitySample
 }
 
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).

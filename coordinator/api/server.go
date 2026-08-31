@@ -373,6 +373,9 @@ type Server struct {
 	// main.go wires it up.
 	emitter *telemetry.Emitter
 
+	// capacitySampler rate-limits request-independent heartbeat snapshots.
+	capacitySampler *capacitySampler
+
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
@@ -738,6 +741,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:          newZombieStreamCanceller(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		capacitySampler:          newCapacitySampler(),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
 	}
@@ -2036,6 +2040,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
+	s.mux.HandleFunc("GET /v1/admin/candidates", s.handleAdminCandidates)
+	s.mux.HandleFunc("GET /v1/admin/candidates/export", s.handleAdminCandidatesExport)
+	s.mux.HandleFunc("GET /v1/admin/capacity-samples", s.handleAdminCapacitySamples)
+	s.mux.HandleFunc("GET /v1/admin/capacity-samples/export", s.handleAdminCapacitySamplesExport)
 
 	// Catch-all for unimplemented OpenAI-compatible endpoints.
 	// Registered last (old-style pattern) so explicit method+path routes

@@ -150,6 +150,7 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
+	applyOutcomeDimensions(outcome)
 	s.submitTelemetry("updateInferenceRoute", func() {
 		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes outcome update failed",
@@ -194,6 +195,7 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 			s.emitCacheSelectionTerminal(pr, protocol.UsageInfo{}, false, false)
 		}
 	}
+	s.emitPredictionTelemetry(pr, outcome)
 	s.updateInferenceRouteOutcomeWithModel(pr.RequestID, pr.Attempt, pr.Model, outcome)
 }
 
@@ -203,10 +205,11 @@ func routeOutcome(status, class string, code int) *store.InferenceRouteOutcome {
 
 func routeOutcomeWithReason(status, class string, code int, providerReason, errorText string) *store.InferenceRouteOutcome {
 	return &store.InferenceRouteOutcome{
-		FinalStatus: status,
-		ErrorCode:   code,
-		ErrorClass:  class,
-		ErrorReason: inferenceErrorReason(providerReason, status, class, code, errorText),
+		FinalStatus:    status,
+		ErrorCode:      code,
+		ErrorClass:     class,
+		ErrorReason:    inferenceErrorReason(providerReason, status, class, code, errorText),
+		TerminalSource: terminalSourceFor(status, class),
 		// Terminal cancel/error/timeout rows deliver 0 tokens; force-persist that
 		// 0 (instead of leaving completion_tokens NULL) so the incident-majority
 		// 0-token cancels are visible. Success writes its real count separately
@@ -281,6 +284,7 @@ func applyAttemptUsage(out *store.InferenceRouteOutcome, usage *protocol.UsageIn
 	out.CompletionTokens = usage.CompletionTokens
 	out.CompletionTokensSet = true
 	out.ReasoningTokens = usage.ReasoningTokens
+	applyCacheUsageTelemetry(out, *usage)
 }
 
 func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -383,10 +387,13 @@ func completeRouteOutcome(pr *registry.PendingRequest, usage protocol.UsageInfo,
 		CompletionTokensSet: true,
 		ReasoningTokens:     usage.ReasoningTokens,
 		CostMicroUSD:        costMicroUSD,
+		TerminalSource:      terminalSourceFor(status, errorClass),
+		SettledMicroUSD:     costMicroUSD,
 	}
 	if errorClass != "" {
 		out.ErrorReason = inferenceErrorReason("", status, errorClass, 0, "")
 	}
+	applyCacheUsageTelemetry(out, usage)
 	applyPendingRouteTelemetry(out, pr)
 	return out
 }
@@ -446,6 +453,9 @@ func applyPendingRouteTelemetry(out *store.InferenceRouteOutcome, pr *registry.P
 	}
 	out.UsedBackup = pr.UsedBackup
 	out.BackupWon = pr.BackupWon
+	if out.ReservedMicroUSD == 0 && pr.ReservedMicroUSD > 0 {
+		out.ReservedMicroUSD = pr.ReservedMicroUSD
+	}
 	if pr.Timing == nil {
 		return
 	}

@@ -45,19 +45,19 @@ extension ProviderLoop {
         modelDirectory: URL? = nil,
         allowDownload: Bool = true
     ) async -> SpecDecPreparation {
-        let embeddedDeclared = modelDirectory.map {
+        let inlineDeclaration = modelDirectory.map {
             SpecDecStore.inlineDeclarationProbe(directory: $0)
-                .mayDeclareEmbeddedArtifact
-        } ?? false
+        } ?? .absent
         let prepared = await specDecFunnel.prepare(
             .init(
                 modelId: modelId,
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: modelInfo.modelType,
-                    embeddedArtifactDeclared: embeddedDeclared),
+                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
+                inlineDeclaration: inlineDeclaration,
                 allowDownload: allowDownload,
                 environment: ProcessInfo.processInfo.environment))
         let reason = prepared.status.reason?.rawValue ?? "ready"
@@ -77,6 +77,10 @@ extension ProviderLoop {
         targetRequiredGb: Double
     ) async -> SpecDecPreparation {
         guard let artifact = preparation.artifact else { return preparation }
+        // Inline assistants ride the target checkpoint's own shards, already
+        // counted by the scanner in targetRequiredGb — no additional charge
+        // (SpecDecArtifact.additionalWeightBytes).
+        guard artifact.additionalWeightBytes > 0 else { return preparation }
         guard Self.assistantMemoryFits(
             availableGb: await availableMemoryGb(),
             targetRequiredGb: targetRequiredGb,

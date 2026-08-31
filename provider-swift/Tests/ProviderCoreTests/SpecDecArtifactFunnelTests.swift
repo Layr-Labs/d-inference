@@ -238,6 +238,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: true,
                 environment: [:]))
 
@@ -263,6 +264,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: true,
                 environment: [:]))
 
@@ -286,6 +288,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: false,
                 environment: [:]))
 
@@ -311,6 +314,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: false,
                 environment: [:]))
 
@@ -335,6 +339,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: false,
                 environment: [:]))
 
@@ -372,6 +377,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: snapshot,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: snapshot),
                 allowDownload: true,
                 environment: [:]))
         let artifact = try #require(prepared.artifact)
@@ -422,6 +428,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: snapshot,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: snapshot),
                 allowDownload: true,
                 environment: [:]))
         #expect(prepared.artifact == nil)
@@ -761,6 +768,7 @@ struct InlineDeclarationProbeTests {
             enabled: true,
             localPath: nil,
             modelDirectory: directory,
+            inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
             allowDownload: false,
             environment: ["DARKBLOOM_CBV2_MTP": "1"]))
         await funnel.shutdown()
@@ -774,5 +782,55 @@ struct InlineDeclarationProbeTests {
         let directory = try makeQwenTarget(configJSON: oversizedConfigJSON(declaring: false))
         defer { try? FileManager.default.removeItem(at: directory) }
         #expect(SpecDecStore.inlineDeclarationProbe(directory: directory) == .absent)
+    }
+}
+
+@Suite("Single-probe inline decision")
+struct SingleProbeInlineDecisionTests {
+    /// The funnel must trust the caller's probe and never re-read config.json:
+    /// under `auto`, a re-probe racing a config change could turn an
+    /// embedded-only decision into a catalog resolution the mode forbids.
+    @Test("a request carrying .absent skips inline inspection even when the directory declares a head")
+    func funnelTrustsCallerProbe() async throws {
+        let directory = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":true,"prefix":"mtp."},"mtplx_mtp_quantization":{},"text_config":{"model_type":"qwen3_5_text"}}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-single-probe-\(UUID().uuidString)", isDirectory: true)
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(storeRoot: store), catalog: nil)
+        let prepared = await funnel.prepare(.init(
+            modelId: "local/declared-but-probe-absent",
+            modelType: "qwen3_5",
+            enabled: true,
+            localPath: nil,
+            modelDirectory: directory,
+            inlineDeclaration: .absent,
+            allowDownload: false,
+            environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+        await funnel.shutdown()
+        try? FileManager.default.removeItem(at: store)
+        #expect(prepared.artifact == nil)
+        // Never inline_artifact_invalid: the funnel did not inspect. With no
+        // catalog configured the request lands on the catalog-disabled reason.
+        #expect(prepared.status.reason == .catalogDisabled)
+    }
+
+    @Test("inline assistants charge zero additional weight bytes")
+    func inlineArtifactChargesNothingExtra() {
+        let directory = URL(fileURLWithPath: "/tmp/x")
+        let inline = SpecDecArtifact(
+            directory: directory, source: .inline, revision: "inline-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(inline.additionalWeightBytes == 0)
+        let staged = SpecDecArtifact(
+            directory: directory, source: .local, revision: "local-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(staged.additionalWeightBytes == 200)
+        let catalog = SpecDecArtifact(
+            directory: directory, source: .catalog, revision: "cat-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(catalog.additionalWeightBytes == 200)
     }
 }

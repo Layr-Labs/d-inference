@@ -76,6 +76,15 @@ struct SpecDecArtifact: Sendable, Equatable {
     /// verify them. Local operator overrides intentionally have no catalog trust.
     let catalogReference: SpecDecArtifactReference?
 
+    /// Bytes this assistant adds ON TOP of the target's scanner-derived
+    /// weight estimate. Inline assistants live in the target checkpoint's
+    /// own indexed shards, so `ModelScanner` already counted their payload
+    /// in `sizeBytes` → `estimatedMemoryGb`; charging `residentBytes` again
+    /// double-counts one assistant footprint and can push an
+    /// otherwise-fitting target+assistant into
+    /// `assistant_memory_unavailable` near the cap.
+    var additionalWeightBytes: UInt64 { source == .inline ? 0 : residentBytes }
+
     init(
         directory: URL,
         source: SpecDecArtifactSource,

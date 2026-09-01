@@ -129,6 +129,7 @@ let package = Package(
                 "SandboxRuntime",
                 "SandboxRuntimeLume",
                 "SandboxGuestProtocol",
+                "SandboxGuestAgentCore",
             ],
             path: "Tests/SandboxRuntimeLumeTests"
         ),

@@ -115,47 +115,23 @@ extension LumeVirtualMachineRuntime {
                     "guest commands require a running VM"
                 )
             }
-            let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+            // Encode before the durable claim: a request that cannot be
+            // prepared must not leave an unresolvable claim in the journal.
+            let transport = guestCommandTransport()
+            let prepared = try transport.prepare(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(
                 installationID: identity.installationID,
                 request: request
             )
-            let sshTimeoutSeconds = request.timeoutSeconds + 5
             guestCommandMayBeRunning = true
-            let result = try await Self.runGuestSSH(
-                runner: processRunner,
-                executable: configuration.executable,
-                storagePath: configuration.storageDirectory.path,
-                environment: workspace.environment,
-                name: name,
-                encodedCommand: encodedCommand,
-                lumeTimeoutSeconds: sshTimeoutSeconds,
-                hostTimeoutSeconds: request.timeoutSeconds + 10,
-                maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
+            let envelope = try await transport.deliver(
+                virtualMachineName: name,
+                prepared: prepared,
+                guestTimeoutSeconds: request.timeoutSeconds
             )
-            guard !result.standardOutputTruncated,
-                  !result.standardErrorTruncated
-            else {
-                throw SandboxRuntimeError.malformedOutput(
-                    "Lume guest-command output exceeded the capture limit"
-                )
-            }
-            guard result.exitCode == 0 else {
-                let standardError = String(
-                    decoding: result.standardError,
-                    as: UTF8.self
-                ).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw SandboxRuntimeError.commandFailed(
-                    command: "lume ssh",
-                    exitCode: result.exitCode,
-                    stderr: standardError
-                )
-            }
-            let decoded = try LumeGuestCommandResultDecoder.decode(
-                result.standardOutput
-            )
-            try commandClaim.complete(envelope: result.standardOutput)
+            let decoded = try LumeGuestCommandResultDecoder.decode(envelope)
+            try commandClaim.complete(envelope: envelope)
             if decoded.timedOut {
                 throw SandboxRuntimeError.operationTimedOut(
                     "\(name) guest command"
@@ -294,6 +270,12 @@ extension LumeVirtualMachineRuntime {
         try await cleanup.value
     }
 
+    /// Runs a raw `lume ssh` invocation.
+    ///
+    /// Only cancellation uses this now. Cancellation is inherently
+    /// transport-specific — it boots out a launchd job by label — and the
+    /// agent protocol has no cancel frame yet, so it stays on the bootstrap
+    /// path rather than being forced through the transport seam.
     private static func runGuestSSH(
         runner: SandboxProcessRunner,
         executable: URL,
@@ -318,6 +300,20 @@ extension LumeVirtualMachineRuntime {
             environment: environment,
             timeoutSeconds: hostTimeoutSeconds,
             maximumOutputBytes: maximumOutputBytes
+        )
+    }
+
+    /// The transport this runtime delivers guest commands over.
+    ///
+    /// SSH stays the default. The vsock transport is selected per sandbox once
+    /// a guest channel has been handed over, and cannot be until the signed
+    /// agent is baked into the image.
+    func guestCommandTransport() -> any LumeGuestCommandTransport {
+        LumeGuestSSHTransport(
+            runner: processRunner,
+            executable: configuration.executable,
+            storagePath: configuration.storageDirectory.path,
+            environment: workspace.environment
         )
     }
 }

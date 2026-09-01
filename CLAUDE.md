@@ -68,9 +68,18 @@ scripts/
 ├── smoke-dev.sh      Dev-coordinator smoke test
 └── entitlements.plist Hardened Runtime entitlements (network, keychain)
 
+tools/systemmap/      Deterministic Darkbloom system-map generator (own Go module, so go/packages
+                      never reaches the coordinator). Derives the route table, auth gates, and the
+                      state each endpoint touches into a clustered knowledge graph + inventory.json.
+                      Output is git-ignored — CI builds it per PR and publishes it to Pages; only
+                      docs/reference/api-map/{overlay.json,README.md} are committed. Coordinator is the
+                      first extracted service; the IR is service-agnostic so provider/UI extractors
+                      add clusters, not schema
+
 docs/                 Architecture docs, deploy runbook, MDM notes, threat model
 .github/workflows/    CI (ci.yml), integration tests (integration.yml), Swift release (release-swift.yml),
-                      model registration (register-model.yml), threat model review (threat-model-review.yml)
+                      model registration (register-model.yml), threat model review (threat-model-review.yml),
+                      system map publication (pages-systemmap.yml)
 ```
 
 ### External Dependencies (`.external/`)
@@ -250,6 +259,7 @@ Always think from first principles. When fixing a bug or designing a feature:
 - Provider bundle semantics span multiple files: `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in `coordinator/api/server.go`. Keep them in sync.
 - Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI.
 - Device linking changes span coordinator device auth endpoints and provider `login`/`logout` commands.
+- Coordinator routes, `Server` state, SQL, and outbound hosts are published in the generated Darkbloom system map. The map itself is **never committed** — it is git-ignored, built by the CI `System Map` job for every PR (downloadable artifact) and published to Pages from master. What you must update when you change any of them is the curated half: node labels, clusters, namespaces, auth classes and prose in `docs/reference/api-map/overlay.json`. Verify with `make -C tools/systemmap check` (renders the map, writes nothing, fails when source contains something the overlay does not explain) or `make -C tools/systemmap` to also write it locally for reading. `tools/systemmap` is a separate Go module, so `go test ./...` at the repo root does not cover it — use `make -C tools/systemmap test`.
 
 ## Testing New Features
 

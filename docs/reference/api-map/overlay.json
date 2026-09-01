@@ -1,0 +1,3174 @@
+{
+  "service": {
+    "id": "coordinator",
+    "title": "Coordinator control plane",
+    "language": "go",
+    "root": "coordinator",
+    "routeTable": {
+      "package": "coordinator/api",
+      "type": "Server",
+      "method": "routes",
+      "mux": "mux"
+    }
+  },
+  "repo": {
+    "remote": "https://github.com/Layr-Labs/d-inference"
+  },
+  "clusters": {
+    "coordinator": {
+      "title": "Coordinator process",
+      "kind": "service",
+      "color": "#59a8ff",
+      "desc": "One Go process: the HTTP surface plus all the state that dies with it."
+    },
+    "postgres": {
+      "title": "PostgreSQL",
+      "kind": "datastore",
+      "color": "#4fd1c5",
+      "desc": "The managed database the coordinator owns. Everything durable lives here."
+    },
+    "sidecar": {
+      "title": "Prompt sidecar",
+      "kind": "service",
+      "color": "#9b87f5",
+      "desc": "Rust process on the same host, reached over a Unix socket."
+    },
+    "fleet": {
+      "title": "Provider fleet",
+      "kind": "external",
+      "color": "#67d391",
+      "desc": "Apple Silicon nodes on the far end of the provider WebSocket. Plaintext never leaves them."
+    },
+    "mdm": {
+      "title": "MicroMDM",
+      "kind": "external",
+      "color": "#f06b9a",
+      "desc": "Device-management service backing hardware attestation."
+    },
+    "thirdparty": {
+      "title": "Third parties",
+      "kind": "external",
+      "color": "#ffb454",
+      "desc": "Services outside the system entirely: Privy, Stripe, Apple, R2, Datadog."
+    }
+  },
+  "categories": {
+    "prompt": {
+      "title": "Prompt sidecar",
+      "color": "#9b87f5",
+      "desc": "Unix-socket prompt planning and contract lifecycle",
+      "cluster": "sidecar"
+    },
+    "mdm": {
+      "title": "MicroMDM",
+      "color": "#f06b9a",
+      "desc": "Device posture, commands, push and webhook state",
+      "cluster": "mdm"
+    },
+    "mem": {
+      "title": "In memory",
+      "color": "#59a8ff",
+      "desc": "Ephemeral coordinator process state",
+      "cluster": "coordinator"
+    },
+    "pg": {
+      "title": "PostgreSQL",
+      "color": "#4fd1c5",
+      "desc": "Durable tables in the external database",
+      "cluster": "postgres"
+    },
+    "ext": {
+      "title": "External",
+      "color": "#ffb454",
+      "desc": "Third-party and platform services",
+      "cluster": "thirdparty"
+    },
+    "provider": {
+      "title": "Provider node",
+      "color": "#67d391",
+      "desc": "Coordinator/provider WebSocket protocol",
+      "cluster": "fleet"
+    }
+  },
+  "categoryDocs": {
+    "mem": {
+      "title": "In-memory coordinator state",
+      "overview": "Ephemeral Go objects inside one coordinator process. They make routing, streaming, caching, throttling, and concurrent coordination fast; they are not a second database.",
+      "construction": "Usually constructed in api.NewServer or registry.New, then shared by HTTP handlers, provider WebSocket loops, and background controllers.",
+      "walk": "Maps and slices are looked up or iterated under mutexes; hot counters use atomics; producer/consumer handoffs use bounded channels. Each construct page names the actual type and guard.",
+      "durability": "Most state starts empty after restart. A few caches are deliberately re-seeded from PostgreSQL, but live sockets, queues, pending requests, EWMAs, and rate-limit buckets cannot be restored."
+    },
+    "pg": {
+      "title": "PostgreSQL durable state",
+      "overview": "Named SQL tables in the coordinator’s production store. Each node is a durable relation, not an in-process object.",
+      "construction": "Schema creation and migrations live in coordinator/store/postgres.go and coordinator/store/migrations. Store methods hide SQL from handlers.",
+      "walk": "Handlers call typed Store methods that SELECT, INSERT, UPDATE, UPSERT, or transact. R/W/RW badges summarize the API namespace’s access, not PostgreSQL lock modes.",
+      "durability": "Rows survive coordinator restarts and are the source of truth for identities, billing, releases, model registry, and historical telemetry."
+    },
+    "ext": {
+      "title": "External systems",
+      "overview": "A network or platform boundary outside the coordinator process: SaaS APIs, Apple services, model/object hosting, geo lookup, or consumer-provided HTTPS media.",
+      "construction": "Clients are configured from deployment environment and use HTTP/APNs/vendor protocols. A node means “the handler crosses this boundary,” not that the service lives in coordinator memory.",
+      "walk": "CALL edges identify endpoints that invoke, validate data from, redirect to, or return URLs for that system. Failure behavior differs by node and is described on its page.",
+      "durability": "The external system owns its own lifecycle and storage; the coordinator keeps only bounded client/cache state."
+    },
+    "mdm": {
+      "title": "MicroMDM device-management plane",
+      "overview": "MicroMDM is a separate Apple MDM server process packaged beside the coordinator. It enrolls provider Macs and supplies independent device posture evidence.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "walk": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "durability": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart."
+    },
+    "prompt": {
+      "title": "Prompt-contract sidecar",
+      "overview": "A child process reached through a Unix-domain HTTP socket. It renders/tokenizes prompts, computes contract/cache boundaries, and manages optimizer artifacts without putting that work in the coordinator hot path.",
+      "construction": "promptcontract.Supervisor starts and restarts the child; the client uses /run/darkbloom/promptsidecar.sock with separate plan, health, and control transports.",
+      "walk": "The coordinator calls health, plan, and preload endpoints; the supervisor polls readiness/RSS and restarts unhealthy children; the artifact provisioner fetches manifests/objects to bounded SSD cache.",
+      "durability": "The child is replaceable. Contract/artifact cache may survive on configured SSD, while process health and in-flight calls do not."
+    },
+    "provider": {
+      "title": "Provider protocol boundary",
+      "overview": "The persistent WebSocket control/data protocol between the Go coordinator and each Swift provider node at /ws/provider.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "walk": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "durability": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable."
+    }
+  },
+  "labels": {
+    "ext.apple": "Apple APNs / MDM attestation",
+    "ext.datadog": "Datadog Agent + intake APIs",
+    "ext.geo": "Trusted geo headers + ip-api.com",
+    "ext.media": "Consumer media URLs (HTTPS)",
+    "ext.privy": "Privy JWT + user/OTP REST",
+    "ext.r2": "Cloudflare R2 / model CDN",
+    "ext.stripe": "Stripe Checkout + Connect",
+    "mdm.commands": "POST /v1/commands — SecurityInfo",
+    "mdm.devices": "POST /v1/devices",
+    "mdm.push": "GET /push/{udid} — APNs check-in",
+    "mdm.raw_command": "POST /v1/commands/{udid} — device attestation",
+    "mdm.waiters": "Security/MDA waiters + command UUIDs",
+    "mem.alias_lock": "Cross-endpoint alias mutation lock",
+    "mem.api_key_cache": "API-key auth cache + generation",
+    "mem.cache_routing": "Prefix-cache holder tracker + activation gate",
+    "mem.capacity": "TPS EWMA + provider/model capacity",
+    "mem.challenges": "Outstanding attestation challenges + reply channels",
+    "mem.chunk_keys": "Per-request shared chunk-key cache",
+    "mem.code_attest": "APNs code-attest throttle/reuse cache",
+    "mem.dispatch": "Per-request dispatch state machine + plan",
+    "mem.drain": "Drain flag + HTTP in-flight counter",
+    "mem.exact_cache": "Exact-cache gauge + status TTL cache",
+    "mem.hash_policy": "Binary/runtime policy maps + reject-model set",
+    "mem.media_resolver": "Remote-media SSRF-safe resolver",
+    "mem.metrics": "Metrics counters/histograms/rings",
+    "mem.model_state": "Model catalog + alias + pending-load state",
+    "mem.pending": "Per-request accepted/chunk/terminal channels",
+    "mem.price_cache": "Per-model price lookup cache (30s)",
+    "mem.provider_writer": "Two-lane provider WebSocket write queues",
+    "mem.queue": "RequestQueue + admission/backlog",
+    "mem.read_cache": "Read-heavy response TTL cache",
+    "mem.registry": "Live provider registry + WS connections",
+    "mem.route_sink": "Bounded routing telemetry worker queue",
+    "mem.rpm": "Consumer/service/financial/key RPM buckets",
+    "mem.service_reservations": "Service-account reservation manager",
+    "mem.settlements": "Late-terminal settlement holder",
+    "mem.stored_providers": "Stored-provider reconnect lookup",
+    "mem.telemetry_limit": "Telemetry submitter limiter",
+    "mem.token_limits": "Account/key token buckets + output estimator",
+    "mem.trust_reuse": "Device trust-reuse cache",
+    "mem.ttft": "TTFT prediction/calibration windows",
+    "mem.usage_log": "In-memory per-consumer usage log",
+    "mem.warm_pool": "Warm-pool controller state + queue pressure",
+    "mem.x25519": "Coordinator X25519 key",
+    "mem.zombie_cancel": "Zombie-stream cancel throttle",
+    "prompt.artifacts": "Artifact provisioner/cache — R2 to SSD",
+    "prompt.plan": "POST /v1/plan — render/tokenize/hash",
+    "prompt.preload": "POST /v1/preload — contract IDs",
+    "prompt.supervisor": "Child supervisor — restart/RSS/readiness",
+    "provider.inference_down": "inference_request + cancel",
+    "provider.inference_up": "accepted/chunk/complete/error",
+    "provider.models": "desired/load/prefetch + status",
+    "provider.register": "register + heartbeat + capacity",
+    "provider.socket": "WSS /ws/provider",
+    "provider.trust": "attestation/trust/runtime status",
+    "mdm.client": "MicroMDM client state (waiters, command tracking)"
+  },
+  "depDocs": {
+    "ext.apple": {
+      "overview": "Apple services provide APNs delivery and device/MDM attestation infrastructure.",
+      "represents": "APNs pushes that wake enrolled Macs plus Apple-backed certificate/attestation evidence.",
+      "construction": "APNs/MDM clients use deployment certificates/keys and device identities.",
+      "access": "Trust verification triggers pushes/commands and validates returned evidence; unavailable verification fails or degrades according to trust policy, never silently fabricates proof.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Apple and device enrollment own the external lifecycle.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/apns/client.go:1",
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "ext.datadog": {
+      "overview": "Datadog is the remote observability sink.",
+      "represents": "DogStatsD metrics, logs intake, traces, and operational events.",
+      "construction": "A datadog.Client and telemetry.Emitter are optional deployment-configured clients.",
+      "access": "Coordinator emits best-effort; failures are logged and do not block inference.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Datadog retains remote telemetry; local counters reset.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/telemetry/emitter.go:3",
+        "coordinator/datadog/client.go:1"
+      ]
+    },
+    "ext.geo": {
+      "overview": "Geo is provider location enrichment from trusted proxy headers with optional public IP lookup.",
+      "represents": "Coarse country/region/city fields used for fleet visibility/routing metadata—not browser geolocation.",
+      "construction": "providerGeoResolver is configured at Server creation.",
+      "access": "Registration/connection handling reads trusted headers or calls ip-api.com, then writes provider location and invalidates stats cache. Failure leaves location unknown.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Lookup results are bounded/cacheable enrichment.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/api/server.go:727",
+        "coordinator/api/provider.go:844"
+      ]
+    },
+    "ext.media": {
+      "overview": "Consumer media URLs are untrusted HTTPS inputs embedded in multimodal inference requests.",
+      "represents": "Remote image/media bytes that must be fetched, validated, size-bounded, and inlined before encrypted dispatch.",
+      "construction": "mediafetch.Resolver applies scheme, DNS/IP, redirect, port, timeout, concurrency, and byte-budget policy.",
+      "access": "Every URL is resolved and checked against SSRF policy; any fetch error cancels the batch and the request fails before provider dispatch.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Bytes live only for one request.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mediafetch/resolver.go:255",
+        "coordinator/mediafetch/budget.go:3"
+      ]
+    },
+    "ext.privy": {
+      "overview": "Privy is the customer identity provider.",
+      "represents": "ES256 user JWT verification plus REST calls for first-login user details and admin email OTP flows.",
+      "construction": "auth.PrivyAuthenticator is configured with the Privy app ID and verification key.",
+      "access": "JWTs are verified locally; selected user/OTP operations call Privy HTTPS APIs. Identity-dependent requests fail closed when verification cannot complete.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Privy owns sessions; the coordinator persists its own user mapping.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/auth/privy.go:1"
+      ]
+    },
+    "ext.r2": {
+      "overview": "Cloudflare R2 is object storage and the public model/artifact CDN.",
+      "represents": "Release binaries, model manifests/files, and prompt-sidecar optimizer artifacts addressed by URLs.",
+      "construction": "CI publishes with R2 credentials; the coordinator stores/returns URLs and the artifact provisioner fetches allowed objects.",
+      "access": "Most consumer catalog calls return metadata/URLs rather than proxying model bytes; artifact provisioning performs bounded downloads.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Objects are durable outside the coordinator.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/promptcontract/artifact_cache.go:1",
+        ".github/workflows/release-swift.yml:30"
+      ]
+    },
+    "ext.stripe": {
+      "overview": "Stripe is the fiat deposit and provider payout rail.",
+      "represents": "Checkout sessions, webhook events, Connect accounts, transfers, and payout status.",
+      "construction": "billing Stripe clients use secret deployment credentials; webhook handlers verify Stripe signatures.",
+      "access": "Billing endpoints call Stripe REST; webhooks drive durable billing state. Invalid signatures fail closed; vendor failures return billing errors without bypassing ledger checks.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Stripe owns payment objects; coordinator tables mirror/reconcile application state.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/billing/stripe.go:19",
+        "coordinator/billing/stripe_connect.go:22"
+      ]
+    },
+    "mdm.commands": {
+      "overview": "The MicroMDM command submission endpoint.",
+      "represents": "Queues SecurityInfo and related commands whose result provides independent SIP/Secure Boot posture.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "access": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "mdm.devices": {
+      "overview": "The MicroMDM device inventory endpoint.",
+      "represents": "Finds an enrolled Mac by serial/UDID and verifies that MDM knows the device.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "access": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "mdm.push": {
+      "overview": "The MicroMDM/APNs push trigger.",
+      "represents": "Asks the enrolled Mac to check in so queued MDM commands are delivered.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "access": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "mdm.raw_command": {
+      "overview": "A targeted raw-command path for one UDID.",
+      "represents": "Carries Apple device-attestation commands not represented by the simpler command helper.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "access": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "mdm.waiters": {
+      "overview": "Temporary in-process MDM response correlation.",
+      "represents": "Mutex-protected command UUID and channel records connect an outbound SecurityInfo/MDA command to its later webhook.",
+      "construction": "The deployment start script launches MicroMDM with persistent /data/micromdm state. coordinator/mdm is an HTTP client and response correlator, not the MDM server itself.",
+      "access": "The coordinator looks up enrolled devices, sends SecurityInfo or raw attestation commands, triggers APNs check-in, and receives webhook responses matched by command UUID.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "MicroMDM persists enrollment/device state. In-process command waiters are temporary and are lost on coordinator restart.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1"
+      ]
+    },
+    "mem.alias_lock": {
+      "overview": "A cross-endpoint transaction lock for model-alias changes.",
+      "represents": "One Server-level mutex, not a data collection: it protects the validate → persist → registry-resync critical section shared by alias create/update/delete endpoints.",
+      "construction": "Server.modelAliasMutationMu is embedded in Server.",
+      "access": "Every alias mutation endpoint locks before reading dependent alias/catalog state, writing PostgreSQL, and fanning out desired model state.",
+      "concurrency": "A plain mutex deliberately serializes rare administrative mutations; routing reads use registry snapshots and do not take this lock.",
+      "lifecycle": "Process lifetime, held only for one mutation critical section.",
+      "restart": "The lock resets; alias truth is reloaded from PostgreSQL.",
+      "sources": [
+        "coordinator/api/server.go:184",
+        "coordinator/api/model_alias_handlers.go:1"
+      ]
+    },
+    "mem.api_key_cache": {
+      "overview": "The hot-path authentication cache for customer API keys, including negative lookups.",
+      "represents": "Raw-token lookup keys map to an APIKey record (or nil for known-invalid), cached time, and a generation number.",
+      "construction": "Server creates map[string]apiKeyCacheEntry; TTL is 60 seconds and maximum size is 1,000.",
+      "access": "Authentication reads under RLock and validates TTL/generation; misses query PostgreSQL then fill. Any create/delete/update bumps one generation to invalidate the whole logical cache.",
+      "concurrency": "apiKeyCacheMu guards the map; generation closes the stale-read race between concurrent authentication and key mutation HTTP handlers.",
+      "lifecycle": "Entries expire after 60 seconds; size is bounded; mutation invalidates by generation.",
+      "restart": "Starts empty. PostgreSQL api_keys remains authoritative.",
+      "sources": [
+        "coordinator/api/server.go:56",
+        "coordinator/api/server.go:65",
+        "coordinator/api/server.go:378"
+      ]
+    },
+    "mem.cache_routing": {
+      "overview": "Where a prefix-cache copy of a prompt currently lives, plus the two gates that decide whether cache-aware routing participates in a given request.",
+      "represents": "Per-prefix holder sets with attempt records, donation/hit/miss counters, per-(provider,model) v2 capability rejections and sequence numbers; alongside a deterministic HMAC sampling percentage and a token bucket bounding sidecar plan QPS.",
+      "construction": "registry.cacheRoutingTracker is built with a TTL and holder cap; registry.cacheActivationGate is built from the configured rollout percentage and max QPS. Both are owned by Registry.",
+      "access": "Cache-plan admission consults the activation gate; routing reads holder sets to prefer a provider that already has the prefix; provider prefix-cache status/update frames add, refresh and remove holders; stats endpoints read the counters.",
+      "concurrency": "Each struct has its own mutex. HTTP dispatch goroutines read while provider WebSocket readers write holder state, so the tracker sweeps and bounds itself under the same lock.",
+      "lifecycle": "Holders expire by TTL and are bounded by holder/entry/attempt caps with heap-ordered eviction; the gate's bucket refills continuously. Both only ever decline cache participation — never ordinary inference.",
+      "restart": "Starts empty: the fleet re-advertises its prefix caches, and the rollout gate reopens at its configured percentage.",
+      "sources": [
+        "coordinator/registry/cache_routing.go:239",
+        "coordinator/registry/cache_activation.go:44",
+        "coordinator/registry/cache_routing.go:1"
+      ]
+    },
+    "mem.capacity": {
+      "overview": "The coordinator’s current estimate of how much inference work each provider/model can accept and how fast it will run.",
+      "represents": "Heartbeat-reported engine slots, token budgets and queue depth plus measured TPS/prefill/TTFT exponential moving averages used by admission and ranking.",
+      "construction": "Fields live on Provider and registry calibration/scheduler structures; updates are derived from heartbeats and completed requests.",
+      "access": "Heartbeat handling writes advertised capacity; routing snapshots read it; completion paths fold observations into EWMAs; fleet capacity endpoints aggregate snapshots.",
+      "concurrency": "Provider fields are read/written under the Provider mutex; calibration maps have their own locks. Updates come from WebSocket readers while HTTP handlers route concurrently.",
+      "lifecycle": "Live estimates decay or become irrelevant when a provider disconnects; calibration records are capped/TTL-swept where applicable.",
+      "restart": "Live capacity starts empty and is relearned from reconnecting providers; durable reputation may seed part of the routing picture.",
+      "sources": [
+        "coordinator/registry/registry.go:478",
+        "coordinator/registry/ttft_calibration.go:80",
+        "coordinator/registry/scheduler.go:1"
+      ]
+    },
+    "mem.challenges": {
+      "overview": "The outstanding attestation challenges a provider connection has been sent but has not yet answered.",
+      "represents": "A nonce-keyed map of pendingChallenge records, each holding the nonce, the signed timestamp, when it was sent, and the channel the response is delivered on.",
+      "construction": "api.challengeTracker is created per provider WebSocket connection; a record is added when a challenge frame is written and removed when the matching response arrives or the wait times out.",
+      "access": "The provider handler adds a challenge before writing it, then blocks on the record's response channel; the WebSocket read loop looks the nonce up and hands the response over. Consecutive timeouts escalate to a forced reconnect.",
+      "concurrency": "One mutex guards the pending map. The verifying goroutine and the socket read loop are different goroutines, and the response channel is the handoff between them.",
+      "lifecycle": "One challenge round-trip: added on send, removed on response, timeout, or connection teardown. Challenges are issued on registration and then every five minutes.",
+      "restart": "Starts empty; reconnecting providers are challenged immediately.",
+      "sources": [
+        "coordinator/api/provider.go:90",
+        "coordinator/api/provider.go:98",
+        "coordinator/api/provider.go:1"
+      ]
+    },
+    "mem.chunk_keys": {
+      "overview": "A memoization layer that avoids repeating X25519 scalar multiplication for every encrypted chunk in one stream.",
+      "represents": "A map keyed by the request private-key identity to a peer public key and precomputed 32-byte shared key.",
+      "construction": "api.chunkKeyCache is zero-value ready, mutex-protected, and capped at 8,192 entries.",
+      "access": "The first chunk derives and inserts; later chunks look up after validating the peer key; terminal cleanup forgets the entry. The cap triggers bounded eviction rather than growth.",
+      "concurrency": "One mutex protects lookup/insert/forget because provider WebSocket and stream-terminal paths can touch it concurrently.",
+      "lifecycle": "One live request/stream; explicitly forgotten at terminal and bounded globally.",
+      "restart": "Starts empty. Derived secrets are intentionally not persisted.",
+      "sources": [
+        "coordinator/api/chunk_key_cache.go:13",
+        "coordinator/api/chunk_key_cache.go:27",
+        "coordinator/api/chunk_key_cache.go:40"
+      ]
+    },
+    "mem.code_attest": {
+      "overview": "APNs code-identity attestation throttling and safe reuse for provider reconnects.",
+      "represents": "Per-device challenge budget, in-flight challenge records, and last successful code-attestation records keyed by secure identity.",
+      "construction": "codeAttestThrottle owns mutex-protected maps and is created with Server; durable rows can seed the reuse cache.",
+      "access": "Provider verification checks fresh reuse, rate-limits APNs pushes, records nonce/challenge, consumes response, persists success, and invalidates on untrust/version mismatch.",
+      "concurrency": "One mutex coordinates provider WebSocket verification goroutines and seeding. Reuse never bypasses fresh nonce/identity gates.",
+      "lifecycle": "Success has a bounded reuse window with jitter; challenge and rate-limit entries expire.",
+      "restart": "Cache is seeded from PostgreSQL code_attestations, but stale rows fall through to live verification.",
+      "sources": [
+        "coordinator/api/code_attest_throttle.go:54",
+        "coordinator/api/code_attest_throttle.go:100",
+        "coordinator/api/code_attest_throttle.go:422"
+      ]
+    },
+    "mem.dispatch": {
+      "overview": "The per-request state of the dispatch loop: which provider is being tried, what has already been tried, and the ranked alternates a retry may fall back to.",
+      "represents": "api.dispatchState carries the immutable request inputs (model, reservation, admission, deadline, cache plan, tool constraints) plus the mutable attempt fields — selected provider, held pre-content chunks, commit flag, last error classification, excluded providers and retry counters. registry.DispatchPlan holds the ranked alternate candidates, a cursor, the set already attempted, and one refresh allowance.",
+      "construction": "runDispatch builds one dispatchState per request; newDispatchPlan builds the plan from the same candidate scan that chose the winner, keeping the lowest-cost non-winner entries without sorting the full pool.",
+      "access": "The dispatch loop reserves the next plan entry, streams, and on a pre-content failure classifies the error and advances the cursor; the speculative-backup goroutine and the capacity-probe collector confirm or demote entries concurrently.",
+      "concurrency": "DispatchPlan.mu is a leaf lock — taken strictly after the registry lock, never the other way — because a request's retry loop, its speculative goroutine and the probe collector all touch the plan. dispatchState is otherwise owned by the request goroutine, with a hedge-advance channel for the speculative handoff.",
+      "lifecycle": "One request. The plan allows a bounded number of alternates and a single full re-scan refresh; capacity-class retries are bounded so a fleet-wide transient cannot storm.",
+      "restart": "Purely per-request; nothing survives the process.",
+      "sources": [
+        "coordinator/api/dispatch.go:91",
+        "coordinator/registry/dispatch_plan.go:131",
+        "coordinator/registry/dispatch_plan.go:158"
+      ]
+    },
+    "mem.drain": {
+      "overview": "The graceful-shutdown gate that stops new inference admission while counting requests already inside the HTTP pipeline.",
+      "represents": "A draining boolean/atomic and an in-flight request counter used by readiness, middleware, and shutdown waiting.",
+      "construction": "Fields belong to Server and are initialized with the server; shutdown flips the gate before waiting for the counter.",
+      "access": "Middleware increments/decrements around requests. Admission/readiness checks the drain state. Shutdown waits until the count reaches zero or a deadline.",
+      "concurrency": "Atomic operations avoid a global request lock and make it safe across all HTTP goroutines and the shutdown goroutine.",
+      "lifecycle": "Process lifetime; once draining begins it remains set until exit.",
+      "restart": "Always starts non-draining with zero in-flight requests.",
+      "sources": [
+        "coordinator/api/server.go:170",
+        "coordinator/api/server.go:1358"
+      ]
+    },
+    "mem.exact_cache": {
+      "overview": "Operational state describing exact/prefix-cache availability, not a cache of consumer responses.",
+      "represents": "Provider cache capability/receipt gauges plus a short TTL snapshot returned by the cache-status API and prompt-sidecar metrics.",
+      "construction": "Provider receipt state lives in the registry; the API status handler builds and temporarily caches an aggregate snapshot.",
+      "access": "Provider prefix-cache frames update receipts; routing reads them when preferring reusable context; GET /v1/cache/status aggregates fleet and sidecar state.",
+      "concurrency": "Provider cache fields use Provider locking; the aggregate status cache has its own mutex/TTL path. WebSocket receipt updates race safely with HTTP inspection.",
+      "lifecycle": "Receipts are bounded/live evidence and disappear with provider state; the status response has a short TTL.",
+      "restart": "Starts empty and is relearned from provider frames; it is not restored as authoritative state.",
+      "sources": [
+        "coordinator/api/exact_cache_status.go:90",
+        "coordinator/registry/cache_receipts_v2.go:1"
+      ]
+    },
+    "mem.hash_policy": {
+      "overview": "The active allow/deny policy for provider binaries, runtime manifests, templates, and temporarily shed models.",
+      "represents": "Sets/maps of accepted hashes and reject-model IDs plus booleans indicating whether a policy is configured.",
+      "construction": "Server maps are populated from active releases/Postgres and optional environment overrides; reject models come from operational configuration.",
+      "access": "Registration and attestation read hash sets; release/config changes replace maps; request admission checks the reject-model set.",
+      "concurrency": "Dedicated RWMutexes protect binary/runtime policy maps. Updates replace map snapshots rather than mutating while readers walk them.",
+      "lifecycle": "Lives until configuration/release changes or process exit.",
+      "restart": "Rebuilt from active releases and environment configuration; not authoritative independent storage.",
+      "sources": [
+        "coordinator/api/server.go:218",
+        "coordinator/api/server.go:249",
+        "coordinator/cmd/coordinator/main.go:389"
+      ]
+    },
+    "mem.media_resolver": {
+      "overview": "The SSRF-safe fetch and rewrite pipeline for HTTPS image/media URLs embedded in consumer requests.",
+      "represents": "A Resolver with URL policy, DNS/IP validation, global and per-request semaphores, byte budgets, deadlines, and fetched media buffers.",
+      "construction": "mediafetch.NewResolver is built from environment/config when Server is created.",
+      "access": "Before dispatch it discovers remote media, validates scheme/host/port and resolved IPs, fetches concurrently within limits, enforces aggregate bytes, and inlines normalized data.",
+      "concurrency": "A global semaphore bounds fleet-wide outbound fetches; per-request concurrency and a shared byteBudget coordinate readers. Resolver configuration is immutable.",
+      "lifecycle": "Fetched bytes live only for the request; redirects, deadlines and size caps bound work.",
+      "restart": "Starts with no fetched media; nothing is persisted.",
+      "sources": [
+        "coordinator/mediafetch/resolver.go:257",
+        "coordinator/mediafetch/budget.go:3",
+        "coordinator/api/server.go:735"
+      ]
+    },
+    "mem.metrics": {
+      "overview": "Process-local observability accumulated by coordinator code paths.",
+      "represents": "Named counters, histogram buckets/samples, gauges and bounded timing/ring data exposed to admin metrics and periodically forwarded to Datadog.",
+      "construction": "api.Metrics is constructed with Server and registers gauges after dependencies are wired.",
+      "access": "Request/provider/background paths increment or observe metrics; snapshot code copies maps under a read lock; a gauge loop periodically emits point-in-time values.",
+      "concurrency": "Metrics.mu is an RWMutex; callers across HTTP, WebSocket, and background goroutines update the same registry safely.",
+      "lifecycle": "Process lifetime; bounded histogram/ring structures prevent unbounded growth.",
+      "restart": "Resets on restart. Datadog is the durable/remote sink where configured.",
+      "sources": [
+        "coordinator/api/metrics.go:24",
+        "coordinator/api/server.go:724"
+      ]
+    },
+    "mem.model_state": {
+      "overview": "The in-process model catalog and rollout/routing state used to resolve a public model name into provider builds.",
+      "represents": "Catalog membership, alias targets, desired/previous rollout builds, provider model inventories, and short-lived pending-load reservations.",
+      "construction": "Catalog and aliases are loaded from Postgres into Registry maps; pending model-load entries are created by warm-pool/cold-dispatch planning.",
+      "access": "Request admission resolves aliases and checks catalog membership; provider model updates replace advertised inventory; controllers iterate demand and model state to load/prefetch/evict.",
+      "concurrency": "Registry and Provider mutexes protect their respective maps. Alias mutations are serialized separately by Server.modelAliasMutationMu before persistence and resync.",
+      "lifecycle": "Catalog/aliases persist until changed; pending loads expire after two minutes (or a shorter memory-backoff restamp).",
+      "restart": "Catalog and aliases are rebuilt from Postgres. Live provider inventories and pending loads are rebuilt only as providers reconnect/heartbeat.",
+      "sources": [
+        "coordinator/api/server.go:1033",
+        "coordinator/registry/registry.go:1532",
+        "coordinator/registry/pending_model_loads.go:1"
+      ]
+    },
+    "mem.pending": {
+      "overview": "The rendezvous state connecting one dispatched inference request to asynchronous provider frames.",
+      "represents": "A PendingRequest per request ID, containing accepted, chunk, completion, and error signaling plus terminal/accounting state. Providers also index their pending requests.",
+      "construction": "Created immediately before dispatch and attached to the chosen provider; channels are bounded so the provider read loop never depends on an unbounded consumer.",
+      "access": "The HTTP dispatch loop waits on channels. The provider WebSocket read loop looks up request ID and sends accepted/chunk/terminal events. Cancellation/disconnect closes or removes the record.",
+      "concurrency": "Provider-local pending maps are protected by the Provider mutex; per-request atomics/once-style terminal gates prevent duplicate closure. WebSocket readers and HTTP stream writers access the same object concurrently.",
+      "lifecycle": "One request lifetime. It is removed after terminal completion/error/cancel; a late terminal may be parked briefly in the settlement holder.",
+      "restart": "Starts empty. In-flight streams fail when the process stops.",
+      "sources": [
+        "coordinator/registry/registry.go:65",
+        "coordinator/api/dispatch.go:1",
+        "coordinator/api/provider.go:1767"
+      ]
+    },
+    "mem.price_cache": {
+      "overview": "A short-lived in-process cache of per-account model prices, so pricing does not cost a database round trip on every inference request.",
+      "represents": "A map keyed \"accountID:model\" to input/output micro-USD prices and the time they were read.",
+      "construction": "The map and its RWMutex live on store.PostgresStore and are created with the store; entries are filled lazily on the first lookup for a key.",
+      "access": "GetModelPrice reads under a read lock and, on miss or expiry, queries model_prices and fills under a write lock. SetModelPrice deletes the key after writing the row, so a price change is not shadowed by a stale entry.",
+      "concurrency": "An RWMutex: many request goroutines read concurrently; fills and invalidations take the write lock. A miss is not singleflighted, so a cold key can produce a few duplicate queries.",
+      "lifecycle": "Thirty-second TTL, checked on read, plus explicit invalidation on price mutation. Entries are never swept in the background.",
+      "restart": "Starts empty; every price is re-read from PostgreSQL on first use.",
+      "sources": [
+        "coordinator/store/postgres.go:40",
+        "coordinator/store/postgres.go:3253",
+        "coordinator/store/postgres.go:3247"
+      ]
+    },
+    "mem.provider_writer": {
+      "overview": "The two-lane serializer in front of each provider WebSocket: one goroutine owns the socket, and every frame the coordinator sends passes through it.",
+      "represents": "A providerWriter per connection holding the socket, a control channel, a data queue, liveness/deadline atomics and the writer's stop/done channels; plus one providerWriteRequest per frame with its payload, completion channel, handoff channels and an ownership state machine.",
+      "construction": "Created with the provider connection in the registry; callers submit frames through WriteText / WriteTextControl / EnqueueText rather than touching the socket.",
+      "access": "Inference request bodies and model commands go to the data lane; attestation challenges, cancels and trust/runtime-status frames go to the control lane and are served with strict priority. A single watchdog goroutine per connection enforces per-frame write deadlines.",
+      "concurrency": "This is the concurrency boundary itself: the channels serialize many HTTP and scheduler goroutines onto one writer, frame ownership transitions are atomics, and an accept mutex plus a dead flag close the submit path exactly once. FIFO holds within a lane only — ordering across lanes is unspecified, and control priority is non-preemptive.",
+      "lifecycle": "One provider connection. Frames leave on write completion, cancellation, or the per-frame deadline (up to ~30s for a multi-MiB sealed vision payload).",
+      "restart": "Recreated on every reconnect; nothing queued survives a disconnect.",
+      "sources": [
+        "coordinator/registry/provider_writer.go:81",
+        "coordinator/registry/provider_writer.go:45",
+        "coordinator/registry/provider_writer.go:1"
+      ]
+    },
+    "mem.queue": {
+      "overview": "A bounded waiting room for inference requests that have no immediately admissible provider.",
+      "represents": "Per-model FIFO slices of QueuedRequest values, including deadline and wake-up/result channels.",
+      "construction": "registry.RequestQueue owns map[string][]*QueuedRequest and is built from environment-sized depth and maximum-wait settings.",
+      "access": "Enqueue appends to one model queue; provider/capacity changes dequeue candidates; cancellation and expiry remove entries; depth/stat methods inspect queues.",
+      "concurrency": "One RequestQueue.mu mutex serializes all model queues. HTTP request goroutines enqueue/wait while provider and scheduler paths wake or remove entries.",
+      "lifecycle": "Default maximum depth is 32 per model. Entries leave on assignment, request cancellation, or max-wait timeout.",
+      "restart": "Starts empty; queued HTTP requests are process-local and are not recoverable.",
+      "sources": [
+        "coordinator/registry/queue.go:137",
+        "coordinator/registry/queue.go:151",
+        "coordinator/registry/queue.go:160"
+      ]
+    },
+    "mem.read_cache": {
+      "overview": "A small shared TTL cache for expensive read-heavy JSON responses.",
+      "represents": "Serialized response bytes keyed by semantic names such as stats, leaderboard, network totals, release and runtime-manifest keys.",
+      "construction": "api.ttlCache owns a map of value + expiry and is created once on Server.",
+      "access": "Handlers perform Get, compute on miss, then Set with endpoint-specific TTL; mutation paths call Invalidate. Expired entries are rejected/removed lazily.",
+      "concurrency": "An RWMutex protects the map. Many HTTP goroutines can read; a miss can still cause duplicate concurrent fills because this is not singleflight.",
+      "lifecycle": "Endpoint TTLs range from short operational snapshots to minutes; invalidation is explicit at mutation boundaries.",
+      "restart": "Starts empty and repopulates from durable/live sources.",
+      "sources": [
+        "coordinator/api/cache.go:16",
+        "coordinator/api/leaderboard.go:67",
+        "coordinator/api/release_handlers.go:461"
+      ]
+    },
+    "mem.registry": {
+      "overview": "The live routing index for provider machines currently connected to the coordinator.",
+      "represents": "A map from provider ID to a Provider object: its WebSocket writer, advertised models, hardware, trust, health, capacity, pending requests, and routing reputation.",
+      "construction": "registry.Registry owns map[string]*Provider; each Provider is a long-lived mutable object created when a provider Register frame succeeds.",
+      "access": "Registration inserts; routing snapshots or scans eligible providers; heartbeat and protocol frames update a provider; disconnect removes it. Fleet views walk the map and then snapshot individual providers.",
+      "concurrency": "Registry.mu is an RWMutex over membership and shared registry indexes. Each Provider has its own mutex; the socket writer uses bounded channel lanes. Callers must not hold the registry lock while doing network I/O.",
+      "lifecycle": "Created at coordinator startup. Entries live for one WebSocket session and are evicted on disconnect or stale-heartbeat cleanup.",
+      "restart": "Starts empty. Persisted provider identity/reputation can be restored when a machine reconnects, but the live socket and routing membership cannot.",
+      "sources": [
+        "coordinator/registry/registry.go:478",
+        "coordinator/registry/registry.go:1294",
+        "coordinator/api/provider.go:1"
+      ]
+    },
+    "mem.route_sink": {
+      "overview": "A best-effort asynchronous write queue that keeps routing telemetry and rejection persistence off inference latency paths.",
+      "represents": "A bounded channel of functions consumed by a fixed worker pool.",
+      "construction": "telemetrySink is created with a fixed capacity and worker count in NewServer.",
+      "access": "Request paths enqueue non-blockingly; workers execute store writes; shutdown drains/stops according to server lifecycle.",
+      "concurrency": "Channel ownership provides concurrency; fixed workers bound DB concurrency and memory. When full, telemetry is dropped rather than blocking inference.",
+      "lifecycle": "Process lifetime; queued work is transient and bounded.",
+      "restart": "Starts empty. Dropped/unflushed best-effort telemetry is not recovered.",
+      "sources": [
+        "coordinator/api/telemetry_sink.go:42",
+        "coordinator/api/server.go:427",
+        "coordinator/api/server.go:734"
+      ]
+    },
+    "mem.rpm": {
+      "overview": "Request-count rate limits that protect consumer, service, financial, telemetry, and per-key entry points.",
+      "represents": "Sharded token buckets keyed by account, key, IP, submitter, or financial operation; each bucket tracks tokens and last refill/seen time.",
+      "construction": "ratelimit.Limiter instances are constructed from config; per-key overrides use the same bucket mechanism with rates supplied per call.",
+      "access": "Middleware/handlers call Allow or Reserve by identity; periodic pruners walk shards and delete idle buckets.",
+      "concurrency": "Shard mutexes permit unrelated identities to proceed concurrently while serializing the same bucket. Pruners run in background goroutines.",
+      "lifecycle": "Buckets refill continuously and idle buckets are pruned; limits are process-local enforcement state.",
+      "restart": "All buckets start full/empty according to limiter semantics; no rate-limit debt is persisted.",
+      "sources": [
+        "coordinator/ratelimit/limiter.go:1",
+        "coordinator/cmd/coordinator/main.go:346"
+      ]
+    },
+    "mem.service_reservations": {
+      "overview": "Temporary credit reservations for service-account inference so concurrent requests cannot overspend the same backing balance.",
+      "represents": "A manager tracks reservation IDs/amounts around the durable store’s reserve/finalize operations.",
+      "construction": "serviceReservationManager is created with Store and reservation config as part of Server.",
+      "access": "Inference admission reserves before dispatch; terminal settlement finalizes or releases. The manager coordinates retries and idempotent cleanup.",
+      "concurrency": "Manager state is shared by concurrent HTTP/terminal goroutines and uses its own synchronization plus durable store transaction boundaries.",
+      "lifecycle": "One inference/accounting lifecycle; cleanup occurs on completion, error, or timeout.",
+      "restart": "In-memory coordination resets, while the durable ledger/store remains authoritative and reconciles accounting.",
+      "sources": [
+        "coordinator/api/reservations.go:11",
+        "coordinator/api/server.go:733"
+      ]
+    },
+    "mem.settlements": {
+      "overview": "A short grace holder for requests whose consumer stream disappeared before the provider’s terminal usage frame arrived.",
+      "represents": "request ID → *registry.PendingRequest, preserving enough accounting context to settle late terminal usage once.",
+      "construction": "settlementHolder owns a mutex and pending map and is created with Server.",
+      "access": "Consumer cancellation parks a request; provider terminal handling takes/removes it; a grace timer evicts unresolved entries.",
+      "concurrency": "One mutex protects the map across HTTP cancellation, provider WebSocket terminal frames, and timer goroutines. Finalization separately guards double counting.",
+      "lifecycle": "Only the late-terminal grace window; entries are removed on terminal or timer expiry.",
+      "restart": "Starts empty. Any unsettled process-local grace entries are lost, though durable accounting already committed remains.",
+      "sources": [
+        "coordinator/api/settlement.go:22",
+        "coordinator/api/provider.go:1767"
+      ]
+    },
+    "mem.stored_providers": {
+      "overview": "A startup lookup that reconnects a live provider identity with its durable provider record.",
+      "represents": "Persisted ProviderRecord values indexed by serial number and Secure Enclave public key.",
+      "construction": "Registry.LoadStoredProviders reads the store once and Server stores the resulting lookup map.",
+      "access": "Provider registration looks up serial/SE key to restore account linkage, trust/reputation context and known identity; it is not the live routing registry.",
+      "concurrency": "Built before serving and then treated as a read-mostly snapshot; provider registration goroutines only read it.",
+      "lifecycle": "Process-lifetime snapshot. New durable writes do not turn it into live socket state.",
+      "restart": "Rebuilt from PostgreSQL on every startup.",
+      "sources": [
+        "coordinator/api/server.go:336",
+        "coordinator/api/server.go:741",
+        "coordinator/api/provider.go:2595"
+      ]
+    },
+    "mem.telemetry_limit": {
+      "overview": "Per-submitter protection for the client telemetry ingestion endpoint.",
+      "represents": "Identity-keyed rate-limit buckets tracking recent submissions.",
+      "construction": "A telemetryLimiter is created with Server from fixed/configured limits.",
+      "access": "The telemetry handler checks the submitter before parsing/forwarding; idle state is reaped according to limiter behavior.",
+      "concurrency": "Internal locking makes concurrent telemetry POSTs for the same or different submitters safe.",
+      "lifecycle": "Buckets refill/expire in process.",
+      "restart": "Starts fresh; Datadog/process logs, not the limiter, are the telemetry record.",
+      "sources": [
+        "coordinator/api/server.go:361",
+        "coordinator/api/server.go:725",
+        "coordinator/api/telemetry_handlers.go:1"
+      ]
+    },
+    "mem.token_limits": {
+      "overview": "Token-volume admission limits, separate from requests-per-minute.",
+      "represents": "Per-account and per-key input/output token buckets plus prompt/output estimates used before dispatch and corrected after usage is known.",
+      "construction": "TokenLimiter composes input/output Limiter instances; KeyTokenLimiter holds per-key override buckets.",
+      "access": "Admission peeks/reserves estimated tokens; completion charges/reconciles actual output; pruners remove idle identities.",
+      "concurrency": "Sharded locks and same-account atomic admission prevent concurrent requests from both passing a stale peek. Background pruners run independently.",
+      "lifecycle": "Buckets refill by configured tokens/second and idle records are pruned.",
+      "restart": "Starts fresh; token budget state is not durable billing state.",
+      "sources": [
+        "coordinator/ratelimit/token_limiter.go:23",
+        "coordinator/ratelimit/token_limiter.go:38",
+        "coordinator/cmd/coordinator/main.go:325"
+      ]
+    },
+    "mem.trust_reuse": {
+      "overview": "A restart-herd suppressor that reuses recent full MDM trust evidence only after fresh identity/runtime proof.",
+      "represents": "Secure-Enclave-keyed records of serial, binary hash, posture, verification time and bounded reuse metadata.",
+      "construction": "trustReuseCache owns a mutex and record map, is created with Server, and is seeded from provider_trust_reuse rows.",
+      "access": "Reconnect checks for a fresh record, still runs live SE challenge/runtime gates, may grant reuse, writes through after full verification, and invalidates on untrust.",
+      "concurrency": "One mutex guards reads, writes and seeding across concurrent provider registrations. Cached evidence cannot grant hardware identity by itself.",
+      "lifecycle": "Bounded reuse window; stale/mismatched records force full live MicroMDM/APNs verification.",
+      "restart": "Rebuilt from PostgreSQL, then revalidated against fresh connection evidence.",
+      "sources": [
+        "coordinator/api/trust_reuse.go:68",
+        "coordinator/api/trust_reuse.go:94",
+        "coordinator/api/trust_reuse.go:290"
+      ]
+    },
+    "mem.ttft": {
+      "overview": "The correction factor between predicted and observed time-to-first-token, learned per model and chip class.",
+      "represents": "Sliding ratio windows keyed by (model, chip) and a pending map joining each reserved attempt's raw TTFT prediction to the first-content observation that arrives later.",
+      "construction": "registry.ttftCalibrator is a process-wide instance shared by the scheduler (predictions) and the API layer (observations).",
+      "access": "Reservation records the raw warm-slot estimate for a request attempt; first content records the actual, folds the clamped ratio into that window, and routing multiplies future estimates by it. Retry-After and TTFT-feasibility decisions read the calibrated value.",
+      "concurrency": "An RWMutex: scheduler goroutines read windows while provider read loops record observations. Pending predictions are capped and swept under the same lock.",
+      "lifecycle": "Ratios are clamped to a sane band so one pathological sample cannot distort routing; pending predictions expire by sweep when their observation never arrives.",
+      "restart": "Starts uncalibrated (ratio 1.0) and relearns from live traffic.",
+      "sources": [
+        "coordinator/registry/ttft_calibration.go:157",
+        "coordinator/registry/ttft_calibration.go:172",
+        "coordinator/registry/ttft_calibration.go:181"
+      ]
+    },
+    "mem.usage_log": {
+      "overview": "A per-consumer log of recent inference usage kept alongside the durable ledger.",
+      "represents": "payments.Ledger's map from consumer ID to UsageEntry records (model, prompt/completion tokens, cost, timestamp). Balances and ledger entries themselves are not here — those are SQL.",
+      "construction": "Created with the Ledger, which otherwise delegates every balance mutation to the store.",
+      "access": "Completion paths append an entry; usage endpoints read a consumer's slice.",
+      "concurrency": "An RWMutex guards the map because many request goroutines append while read endpoints iterate.",
+      "lifecycle": "Process lifetime, append-only per consumer — this is an observability convenience, not the accounting record.",
+      "restart": "Lost on restart. Money is unaffected: balances and ledger entries live in PostgreSQL.",
+      "sources": [
+        "coordinator/payments/payments.go:38",
+        "coordinator/payments/payments.go:71",
+        "coordinator/payments/payments.go:78"
+      ]
+    },
+    "mem.warm_pool": {
+      "overview": "The demand signal and control state behind pre-warming models on providers before requests for them arrive.",
+      "represents": "Per-model pressure buckets (capacity rejects, TTFT misses, cold dispatches, load successes/failures and a smoothed arrival rate), the latest planning snapshots cached for observability, and a per-model queue-pressure view (depth and oldest age).",
+      "construction": "registry.warmPoolController owns a warmPoolState, a syncQueuePressure view, a tick mutex and a trigger channel; it is built from WarmPoolConfig and holds the Registry it acts on.",
+      "access": "Dispatch and queue paths record spill events and queue pressure; the controller ticks, converts demand to a target concurrency by Little's Law and pushes load_model to providers; utilization/stats endpoints read the cached snapshots instead of re-running a planning pass (which has load side effects).",
+      "concurrency": "Separate locks for the pressure state, the queue view, the cached snapshots and the tick itself — the tick mutex makes planning single-flight while request goroutines keep recording events. Snapshots are cached read-only precisely so observability cannot trigger model loads.",
+      "lifecycle": "Continuous; arrival rates decay by EWMA and service time is clamped so the demand-to-concurrency conversion cannot run away. An observe-only mode records without acting.",
+      "restart": "Starts with no pressure history and relearns from live spill events.",
+      "sources": [
+        "coordinator/registry/warm_pool_controller.go:18",
+        "coordinator/registry/warm_pool_state.go:45",
+        "coordinator/registry/warm_pool_controller.go:36"
+      ]
+    },
+    "mem.x25519": {
+      "overview": "The coordinator side of end-to-end encrypted inference transport.",
+      "represents": "A 32-byte X25519 private/public key pair used to derive per-provider/per-request shared keys; plaintext prompts remain hidden from the coordinator in sealed flows.",
+      "construction": "Generated or loaded during Server construction/configuration and exposed through the encryption-key endpoint as public material only.",
+      "access": "Dispatch/decryption paths read the private key to derive NaCl box shared keys; consumers/providers use the public key in the wire contract.",
+      "concurrency": "The key is immutable after initialization, so concurrent request goroutines read it without mutation.",
+      "lifecycle": "Server/session lifetime according to deployment key configuration.",
+      "restart": "If generated in memory it rotates on restart; if supplied by deployment configuration it is reloaded. Per-request derived keys are never durable.",
+      "sources": [
+        "coordinator/internal/e2e/e2e.go:126",
+        "coordinator/api/server.go:270"
+      ]
+    },
+    "mem.zombie_cancel": {
+      "overview": "A bounded cancel retransmission throttle for streams that keep producing chunks after the consumer is gone.",
+      "represents": "request ID → last cancel time, used to avoid flooding a provider socket with repeated cancel frames.",
+      "construction": "zombieStreamCanceller owns a mutex-protected timestamp map.",
+      "access": "Late chunk handling asks whether another cancel is allowed; allowed sends update the timestamp; cleanup/expiry removes old request IDs.",
+      "concurrency": "The mutex coordinates provider read-loop events and stream cleanup.",
+      "lifecycle": "One short throttle window per request; stale entries are removed/bounded.",
+      "restart": "Starts empty; cancellation hints are not durable.",
+      "sources": [
+        "coordinator/api/zombie_stream.go:21"
+      ]
+    },
+    "pg.api_keys": {
+      "overview": "The api_keys PostgreSQL table.",
+      "represents": "Durable api keys records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.balances": {
+      "overview": "The balances PostgreSQL table.",
+      "represents": "Durable balances records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.billing_sessions": {
+      "overview": "The billing_sessions PostgreSQL table.",
+      "represents": "Durable billing sessions records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.code_attest_push_budgets": {
+      "overview": "The code_attest_push_budgets PostgreSQL table.",
+      "represents": "Durable per-device APNs code-attestation push budgets used by the coordinator to rate-limit challenge pushes across restarts. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.code_attestations": {
+      "overview": "The code_attestations PostgreSQL table.",
+      "represents": "Durable code attestations records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.device_codes": {
+      "overview": "The device_codes PostgreSQL table.",
+      "represents": "Durable device codes records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.earnings_summary": {
+      "overview": "The earnings_summary PostgreSQL table.",
+      "represents": "Durable earnings summary records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.inference_routes": {
+      "overview": "The inference_routes PostgreSQL table.",
+      "represents": "Durable inference routes records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.invite_codes": {
+      "overview": "The invite_codes PostgreSQL table.",
+      "represents": "Durable invite codes records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.invite_redemptions": {
+      "overview": "The invite_redemptions PostgreSQL table.",
+      "represents": "Durable invite redemptions records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.ledger_entries": {
+      "overview": "The ledger_entries PostgreSQL table.",
+      "represents": "Durable ledger entries records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_active_versions": {
+      "overview": "The model_active_versions PostgreSQL table.",
+      "represents": "Durable model active versions records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_aliases": {
+      "overview": "The model_aliases PostgreSQL table.",
+      "represents": "Durable model aliases records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_prices": {
+      "overview": "The model_prices PostgreSQL table.",
+      "represents": "Durable model prices records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_registry": {
+      "overview": "The model_registry PostgreSQL table.",
+      "represents": "Durable model registry records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_version_files": {
+      "overview": "The model_version_files PostgreSQL table.",
+      "represents": "Durable model version files records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.model_versions": {
+      "overview": "The model_versions PostgreSQL table.",
+      "represents": "Durable model versions records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_earnings": {
+      "overview": "The provider_earnings PostgreSQL table.",
+      "represents": "Durable provider earnings records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_floor_draws": {
+      "overview": "The provider_floor_draws PostgreSQL table.",
+      "represents": "Durable provider floor draws records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_log_reports": {
+      "overview": "The provider_log_reports PostgreSQL table.",
+      "represents": "Durable provider log reports records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_payouts": {
+      "overview": "The provider_payouts PostgreSQL table.",
+      "represents": "Durable provider payout records (Stripe Connect transfers and withdrawal state) used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_reputation": {
+      "overview": "The provider_reputation PostgreSQL table.",
+      "represents": "Durable provider reputation records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_sessions": {
+      "overview": "The provider_sessions PostgreSQL table.",
+      "represents": "Durable provider sessions records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_tokens": {
+      "overview": "The provider_tokens PostgreSQL table.",
+      "represents": "Durable provider tokens records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_trust_reuse": {
+      "overview": "The provider_trust_reuse PostgreSQL table.",
+      "represents": "Durable provider trust reuse records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.provider_verification_jobs": {
+      "overview": "The provider_verification_jobs PostgreSQL table.",
+      "represents": "Durable queued MDM/MDA provider verification work (SecurityInfo and device-attestation follow-ups) used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.providers": {
+      "overview": "The providers PostgreSQL table.",
+      "represents": "Durable providers records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.publishing_api_keys": {
+      "overview": "The publishing_api_keys PostgreSQL table.",
+      "represents": "Durable publishing api keys records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.referrals": {
+      "overview": "The referrals PostgreSQL table.",
+      "represents": "Durable referrals records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.referrers": {
+      "overview": "The referrers PostgreSQL table.",
+      "represents": "Durable referrers records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.releases": {
+      "overview": "The releases PostgreSQL table.",
+      "represents": "Durable releases records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.request_rejections": {
+      "overview": "The request_rejections PostgreSQL table.",
+      "represents": "Durable request rejections records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.stripe_withdrawals": {
+      "overview": "The stripe_withdrawals PostgreSQL table.",
+      "represents": "Durable stripe withdrawals records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.usage": {
+      "overview": "The usage PostgreSQL table.",
+      "represents": "Durable usage records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.usage_totals": {
+      "overview": "The usage_totals PostgreSQL table.",
+      "represents": "Durable usage totals records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.users": {
+      "overview": "The users PostgreSQL table.",
+      "represents": "Durable users records used by the coordinator. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; append-only histories and mutable current-state rows are both managed transactionally by PostgreSQL.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:1"
+      ]
+    },
+    "prompt.artifacts": {
+      "overview": "Optimizer artifact provisioner/cache.",
+      "represents": "Downloads allow-listed R2 artifacts, verifies them, and stores bounded content on SSD for the sidecar.",
+      "construction": "promptcontract.Supervisor starts and restarts the child; the client uses /run/darkbloom/promptsidecar.sock with separate plan, health, and control transports.",
+      "access": "The coordinator calls health, plan, and preload endpoints; the supervisor polls readiness/RSS and restarts unhealthy children; the artifact provisioner fetches manifests/objects to bounded SSD cache.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The child is replaceable. Contract/artifact cache may survive on configured SSD, while process health and in-flight calls do not.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/promptcontract/client.go:20"
+      ]
+    },
+    "prompt.plan": {
+      "overview": "Prompt planning call.",
+      "represents": "Renders/tokenizes the request and returns hashes, token counts, cache boundaries, and contract metadata.",
+      "construction": "promptcontract.Supervisor starts and restarts the child; the client uses /run/darkbloom/promptsidecar.sock with separate plan, health, and control transports.",
+      "access": "The coordinator calls health, plan, and preload endpoints; the supervisor polls readiness/RSS and restarts unhealthy children; the artifact provisioner fetches manifests/objects to bounded SSD cache.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The child is replaceable. Contract/artifact cache may survive on configured SSD, while process health and in-flight calls do not.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/promptcontract/client.go:20"
+      ]
+    },
+    "prompt.preload": {
+      "overview": "Contract/artifact preload control call.",
+      "represents": "Warms contract IDs or optimizer artifacts before they are needed on the inference path.",
+      "construction": "promptcontract.Supervisor starts and restarts the child; the client uses /run/darkbloom/promptsidecar.sock with separate plan, health, and control transports.",
+      "access": "The coordinator calls health, plan, and preload endpoints; the supervisor polls readiness/RSS and restarts unhealthy children; the artifact provisioner fetches manifests/objects to bounded SSD cache.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The child is replaceable. Contract/artifact cache may survive on configured SSD, while process health and in-flight calls do not.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/promptcontract/client.go:20"
+      ]
+    },
+    "prompt.supervisor": {
+      "overview": "Child-process supervisor.",
+      "represents": "Starts the sidecar, probes readiness/RSS, and restarts it with bounded backoff when unhealthy.",
+      "construction": "promptcontract.Supervisor starts and restarts the child; the client uses /run/darkbloom/promptsidecar.sock with separate plan, health, and control transports.",
+      "access": "The coordinator calls health, plan, and preload endpoints; the supervisor polls readiness/RSS and restarts unhealthy children; the artifact provisioner fetches manifests/objects to bounded SSD cache.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The child is replaceable. Contract/artifact cache may survive on configured SSD, while process health and in-flight calls do not.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/promptcontract/client.go:20"
+      ]
+    },
+    "provider.inference_down": {
+      "overview": "Coordinator-to-provider inference frames.",
+      "represents": "inference_request starts work and cancel asks the provider to stop one request ID.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "provider.inference_up": {
+      "overview": "Provider-to-coordinator result frames.",
+      "represents": "accepted, response_chunk, complete and error drive the pending-request channels and terminal settlement.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "provider.models": {
+      "overview": "Desired/load/prefetch and model-status frames.",
+      "represents": "Coordinates which builds should be warm and reports what the provider actually has loaded.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "provider.register": {
+      "overview": "Provider registration and heartbeat frames.",
+      "represents": "Advertise hardware, versions, models, capacity and live health; updates the Registry.Provider snapshot.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "provider.socket": {
+      "overview": "The WSS /ws/provider session.",
+      "represents": "One authenticated/attested provider control and data channel, represented live in mem.registry.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "provider.trust": {
+      "overview": "Attestation and trust protocol frames.",
+      "represents": "Fresh nonce challenges, Secure Enclave/MDA evidence, runtime hashes, and resulting trust status gate routing.",
+      "construction": "A provider opens WSS, sends Register, then heartbeats and attestation/model/inference frames. The coordinator creates one live Registry.Provider and bounded two-lane writer.",
+      "access": "Coordinator→provider frames dispatch/cancel inference and manage models/trust. Provider→coordinator frames report acceptance, chunks, terminal usage, heartbeats, model state, and attestation evidence.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "The socket and live Provider object end on disconnect. The node reconnects and registers again; only selected identity/reputation/trust evidence is durable.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/protocol/messages.go:1"
+      ]
+    },
+    "mdm.client": {
+      "overview": "In-process state of the MicroMDM client: pending SecurityInfo/attestation waiters, tracked command UUIDs, and the webhook fan-out that resolves them.",
+      "represents": "Correlation state between a command the coordinator sent to MicroMDM and the check-in that answers it.",
+      "construction": "Created once with the client in NewServer from the MDM environment; waiters are registered per verification attempt and resolved or expired.",
+      "access": "The MDM webhook endpoint resolves waiters; the background verification scheduler registers them. A lost webhook expires the waiter rather than blocking a request.",
+      "concurrency": "Guarded by the client's own mutex; handlers never touch the maps directly.",
+      "lifecycle": "Per-attempt entries with timeouts; nothing survives a restart.",
+      "restart": "Rebuilt empty on restart: in-flight verification attempts are retried by the scheduler.",
+      "sources": [
+        "coordinator/mdm/mdm.go:1",
+        "coordinator/api/server.go:2436"
+      ]
+    }
+  },
+  "roles": [
+    {
+      "id": "customer-dashboard",
+      "title": "Customer dashboard",
+      "kind": "Human via browser",
+      "callers": [
+        "Customer dashboard"
+      ],
+      "summary": "An account owner uses an interactive Privy session for account, billing, key-management, and preference operations. A leaked API key cannot mint more keys.",
+      "credentials": [
+        "privy-jwt",
+        "api-key"
+      ],
+      "custody": "Privy manages the interactive session. The pinned console explicitly stores the active inference API key in browser localStorage in clear text and removes it on logout."
+    },
+    {
+      "id": "customer-api",
+      "title": "Customer API client",
+      "kind": "Machine client",
+      "callers": [
+        "Customer API client"
+      ],
+      "summary": "An application sends inference and model requests with an account-scoped API key. Per-key limits and spend attribution travel with the authenticated key record.",
+      "credentials": [
+        "api-key"
+      ],
+      "custody": "Raw key belongs in the client secret store; the coordinator retains only a SHA-256 hash and metadata."
+    },
+    {
+      "id": "upstream-router",
+      "title": "Upstream router",
+      "kind": "Service integration",
+      "callers": [
+        "Upstream router"
+      ],
+      "summary": "A trusted aggregator uses the same bearer-key plane as ordinary API clients, with router-specific telemetry and routing behavior.",
+      "credentials": [
+        "api-key"
+      ],
+      "custody": "Raw key belongs in the router secret manager; only the key hash and account metadata are durable server-side."
+    },
+    {
+      "id": "provider-operator",
+      "title": "Provider operator",
+      "kind": "Human via CLI",
+      "callers": [
+        "Provider operator"
+      ],
+      "summary": "The machine owner starts the device authorization flow, approves it in a browser, and receives a provider token linking that machine to an account.",
+      "credentials": [
+        "device-code",
+        "provider-token",
+        "privy-jwt"
+      ],
+      "custody": "The provider token is written to ~/.darkbloom/auth_token with mode 0600."
+    },
+    {
+      "id": "provider-node",
+      "title": "Provider node",
+      "kind": "Long-lived machine",
+      "callers": [
+        "Provider node"
+      ],
+      "summary": "A Swift provider opens the fleet WebSocket, presents its account-link token during registration, and proves machine identity/posture through attestation.",
+      "credentials": [
+        "provider-token",
+        "attestation-key"
+      ],
+      "custody": "Account token: owner-only file. Device private key: Secure Enclave with a Keychain reference; it is not exported."
+    },
+    {
+      "id": "provider-dashboard",
+      "title": "Provider dashboard",
+      "kind": "Human via browser",
+      "callers": [
+        "Provider dashboard"
+      ],
+      "summary": "An authenticated provider owner reads earnings, payout, trust, and machine state through account-scoped endpoints.",
+      "credentials": [
+        "privy-jwt",
+        "api-key",
+        "provider-token"
+      ],
+      "custody": "Normally an interactive Privy browser session. The earnings UI may fall back to the browser localStorage API key; low-volume general-bearer routes can also resolve an active provider token."
+    },
+    {
+      "id": "administrator",
+      "title": "Administrator",
+      "kind": "Privileged human / CLI",
+      "callers": [
+        "Administrator"
+      ],
+      "summary": "Administrators use either a configured Privy-admin identity or the break-glass administrator bearer key. Authentication is followed by an explicit admin authorization check.",
+      "credentials": [
+        "privy-jwt",
+        "admin-key"
+      ],
+      "custody": "Admin key is generated once, kept in deployment Secret Manager/KMS, and injected into the coordinator environment. The OTP-based admin CLI stores its Privy token at ~/.darkbloom/admin_token with mode 0600; an admin-key override is read from process environment."
+    },
+    {
+      "id": "model-publisher",
+      "title": "Model publisher / CI",
+      "kind": "Automation",
+      "callers": [
+        "Model publisher / CI"
+      ],
+      "summary": "Publishing automation registers and promotes model artifacts with a narrow publishing credential rather than broad customer credentials.",
+      "credentials": [
+        "publishing-key"
+      ],
+      "custody": "Raw key belongs in the CI secret store. Durable publishing keys are SHA-256 hashed in PostgreSQL; a bootstrap key may be injected via environment."
+    },
+    {
+      "id": "release-ci",
+      "title": "Release CI",
+      "kind": "Automation",
+      "callers": [
+        "Release CI"
+      ],
+      "summary": "GitHub Actions registers provider binary releases with a credential scoped to POST /v1/releases.",
+      "credentials": [
+        "release-key"
+      ],
+      "custody": "The same value is held in the GitHub environment secret and deployment Secret Manager, then injected into coordinator memory through its environment."
+    },
+    {
+      "id": "stripe",
+      "title": "Stripe",
+      "kind": "External service",
+      "callers": [
+        "Stripe"
+      ],
+      "summary": "Stripe calls billing webhooks. The coordinator does not trust source IP or a user bearer; it verifies each signed payload against the endpoint-specific webhook secret.",
+      "credentials": [
+        "stripe-signature"
+      ],
+      "custody": "Stripe holds the signing side; matching webhook secrets are copied from Stripe into deployment Secret Manager and injected into the coordinator environment."
+    },
+    {
+      "id": "micromdm",
+      "title": "MicroMDM",
+      "kind": "Co-located service",
+      "callers": [
+        "MicroMDM"
+      ],
+      "summary": "MicroMDM posts device command results to the coordinator. A shared webhook token is defense in depth on top of mandatory CommandUUID correlation.",
+      "credentials": [
+        "mdm-webhook",
+        "mdm-api-key"
+      ],
+      "custody": "Both daemons receive matching values from the deployment environment; the callback token stays on localhost and is placed in the generated webhook URL."
+    },
+    {
+      "id": "infrastructure",
+      "title": "Infrastructure automation",
+      "kind": "Operations service",
+      "callers": [
+        "Infrastructure automation"
+      ],
+      "summary": "Health, metrics, and operational probes primarily use public/read-only surfaces or deployment-scoped access according to the endpoint.",
+      "credentials": [],
+      "custody": "No credential for the classified public probes; network policy and deployment controls remain separate from application authentication."
+    },
+    {
+      "id": "public",
+      "title": "Public / auditor",
+      "kind": "Unauthenticated reader",
+      "callers": [
+        "Public / auditor",
+        "Any API client"
+      ],
+      "summary": "Public catalog, status, installation, and audit-style endpoints intentionally expose bounded non-secret information.",
+      "credentials": [],
+      "custody": "No application credential. Public does not mean unrestricted data: each handler defines a deliberately bounded response."
+    },
+    {
+      "id": "coordinator",
+      "title": "Coordinator service",
+      "kind": "Control-plane service",
+      "callers": [],
+      "summary": "The coordinator validates inbound identities and also holds narrowly scoped credentials for outbound calls to Privy, Stripe, and MicroMDM.",
+      "credentials": [
+        "privy-service",
+        "stripe-api-key",
+        "mdm-api-key"
+      ],
+      "custody": "Service credentials come from deployment Secret Manager/KMS into environment variables or an explicitly configured file; they are not client bearer credentials."
+    }
+  ],
+  "credentials": [
+    {
+      "id": "api-key",
+      "title": "Customer API key",
+      "class": "Long-lived bearer",
+      "issuer": "Coordinator",
+      "holder": "Customer API client / dashboard / upstream router",
+      "clientStorage": "Machine integrations use a client-owned secret manager or environment (exact store is external). The pinned customer/provider console stores its active inference key in browser localStorage in clear text.",
+      "serverStorage": "PostgreSQL api_keys.key_hash (SHA-256) plus prefix, owner, limits, expiry, and status; positive auth results also enter a short TTL in-memory cache keyed by the presented bearer.",
+      "validation": "requireAuth resolves the bearer through AuthenticateKey, then enforces disable/expiry and binds account/key metadata into request context.",
+      "lifetime": "No default expiry; optional expires_at plus disable, delete, and atomic rotation. Raw material is returned at issuance/rotation and is not recoverable from the database.",
+      "usedBy": [
+        "customer-dashboard",
+        "customer-api",
+        "upstream-router",
+        "provider-dashboard"
+      ],
+      "sources": [
+        {
+          "label": "Bearer fallback and API-key lookup",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/server.go#L2305"
+        },
+        {
+          "label": "Hashed api_keys table",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/store/postgres.go#L223"
+        },
+        {
+          "label": "Browser localStorage custody",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/console-ui/src/components/api-keys/useApiKeys.ts#L139"
+        }
+      ]
+    },
+    {
+      "id": "privy-jwt",
+      "title": "Privy access token",
+      "class": "Short-lived ES256 JWT",
+      "issuer": "Privy",
+      "holder": "Interactive customer, provider owner, or administrator",
+      "clientStorage": "Privy client/session layer in the dashboard or browser. Exact browser persistence is outside this repository and should not be inferred.",
+      "serverStorage": "The access token is not persisted by the coordinator. It keeps the Privy verification public key and maps the verified DID to a users row.",
+      "validation": "Local ES256 verification checks issuer privy.io, audience/app ID, signature, and claims; sensitive key-management routes reject non-Privy bearers.",
+      "lifetime": "Controlled by Privy token claims/session policy.",
+      "usedBy": [
+        "customer-dashboard",
+        "provider-operator",
+        "provider-dashboard",
+        "administrator"
+      ],
+      "sources": [
+        {
+          "label": "Local ES256 JWT verification",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/auth/privy.go#L78"
+        },
+        {
+          "label": "Privy-only middleware",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/server.go#L2385"
+        },
+        {
+          "label": "Privy verifier/service configuration",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/auth/config.go#L17"
+        }
+      ]
+    },
+    {
+      "id": "device-code",
+      "title": "Device authorization code",
+      "class": "Short-lived possession secret",
+      "issuer": "Coordinator",
+      "holder": "Provider CLI temporarily; user holds the human-readable approval code",
+      "clientStorage": "Provider process memory while polling. The approved long-lived token replaces it; the Swift flow does not persist the device_code.",
+      "serverStorage": "PostgreSQL device_codes currently stores device_code and user_code in plaintext until expiry/status transition.",
+      "validation": "The browser approval leg requires interactive Privy authentication; the polling leg proves possession of device_code.",
+      "lifetime": "15-minute RFC 8628-style exchange with a recommended 5-second poll interval. At this revision an approved record is not consumed, so repeated polling before expiry can mint additional provider tokens.",
+      "usedBy": [
+        "provider-operator"
+      ],
+      "sources": [
+        {
+          "label": "Provider device flow",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift#L1"
+        },
+        {
+          "label": "Device-code persistence",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/store/postgres.go#L583"
+        }
+      ]
+    },
+    {
+      "id": "provider-token",
+      "title": "Provider account-link token",
+      "class": "Long-lived bearer",
+      "issuer": "Coordinator after device approval",
+      "holder": "Provider operator and provider node",
+      "clientStorage": "Canonical ~/.darkbloom/auth_token, owner read/write only (0600); an override exists for isolated test harnesses.",
+      "serverStorage": "PostgreSQL provider_tokens.token_hash (SHA-256), account ID, label, active flag, and creation time.",
+      "validation": "Registration resolves AuthToken to an active provider-token row and stamps the resulting account ID; general bearer middleware can also resolve it for account-scoped low-volume calls.",
+      "lifetime": "No fixed expiry column. Server-side active/revocation state exists, but darkbloom logout at this revision only deletes the local file and does not revoke the stored token.",
+      "usedBy": [
+        "provider-operator",
+        "provider-node",
+        "provider-dashboard"
+      ],
+      "sources": [
+        {
+          "label": "0600 provider-token file",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/provider-swift/Sources/ProviderCore/Auth/DeviceAuth.swift#L7"
+        },
+        {
+          "label": "Hashed provider_tokens table",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/store/postgres.go#L594"
+        },
+        {
+          "label": "Registration token resolution",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/provider.go#L326"
+        }
+      ]
+    },
+    {
+      "id": "attestation-key",
+      "title": "Provider attestation identity",
+      "class": "Hardware-bound private key",
+      "issuer": "Provider device / Apple security hardware",
+      "holder": "Provider node",
+      "clientStorage": "Private key operations stay in Secure Enclave; the persistent reference and related material use the data-protection Keychain/access group.",
+      "serverStorage": "Coordinator stores bounded attestation/trust results and public identity/correlation state, not the device private key.",
+      "validation": "Fresh coordinator nonce is signed by the device and combined with runtime, MDM, and optional APNs code-identity checks before trust/routing upgrades.",
+      "lifetime": "Persistent device identity; trust evidence is refreshed and bounded independently.",
+      "usedBy": [
+        "provider-node"
+      ],
+      "sources": [
+        {
+          "label": "Secure Enclave and Keychain lookup",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/provider-swift/Sources/ProviderCore/Security/PersistentEnclaveKey.swift#L237"
+        },
+        {
+          "label": "Signed registration attestation",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/protocol/messages.go#L191"
+        }
+      ]
+    },
+    {
+      "id": "admin-key",
+      "title": "Administrator key",
+      "class": "Break-glass bearer",
+      "issuer": "Deployment operator",
+      "holder": "Administrator and coordinator",
+      "clientStorage": "Deployment Secret Manager/KMS; admin scripts may receive it through EIGENINFERENCE_ADMIN_KEY in a tightly scoped process environment.",
+      "serverStorage": "Injected as EIGENINFERENCE_ADMIN_KEY and held in coordinator memory; deployment may also seed its hashed API-key form for general auth compatibility.",
+      "validation": "Constant-time compare in requireAuth, followed by endpoint-specific administrator authorization. A configured Privy-admin identity is the non-key alternative.",
+      "lifetime": "Generated once in documented dev wiring; rotate by replacing the deployment secret and clients together.",
+      "usedBy": [
+        "administrator"
+      ],
+      "sources": [
+        {
+          "label": "Admin bearer branch",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/server.go#L2298"
+        },
+        {
+          "label": "Admin authorization alternatives",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/release_handlers.go#L558"
+        },
+        {
+          "label": "Deployment secret mapping",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/docs/operations/dev-environment.md#L153"
+        }
+      ]
+    },
+    {
+      "id": "publishing-key",
+      "title": "Model publishing key",
+      "class": "Scoped automation bearer",
+      "issuer": "Coordinator/admin or deployment bootstrap",
+      "holder": "Model publishing CI",
+      "clientStorage": "CI secret store (exact platform/location is deployment-specific). A bootstrap value may come from MODEL_REGISTRY_PUBLISHING_KEY.",
+      "serverStorage": "Durable keys are SHA-256 hashed in PostgreSQL publishing_api_keys. Bootstrap and administrator alternatives are environment/in-memory values.",
+      "validation": "Publishing handlers accept a matching active hashed publishing key, the bootstrap environment key, or the administrator key.",
+      "lifetime": "Durable keys can be disabled/rotated; bootstrap lifetime follows deployment secret rotation.",
+      "usedBy": [
+        "model-publisher"
+      ],
+      "sources": [
+        {
+          "label": "Publishing credential alternatives",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/model_registry_handlers.go#L497"
+        },
+        {
+          "label": "Hashed publishing_api_keys table",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/store/postgres.go#L468"
+        }
+      ]
+    },
+    {
+      "id": "release-key",
+      "title": "Release registration key",
+      "class": "Single-purpose CI bearer",
+      "issuer": "Deployment operator",
+      "holder": "Release GitHub Action and coordinator",
+      "clientStorage": "GitHub Actions secrets DEV_RELEASE_KEY / PROD_RELEASE_KEY, with legacy RELEASE_KEY fallback.",
+      "serverStorage": "Deployment Secret Manager/KMS → EIGENINFERENCE_RELEASE_KEY → coordinator memory; not stored in an application table.",
+      "validation": "Constant-time comparison inside POST /v1/releases; it does not grant administrator access.",
+      "lifetime": "No expiry or dual-key overlap is evident; rotate the GitHub and deployment copies together, then restart the coordinator.",
+      "usedBy": [
+        "release-ci"
+      ],
+      "sources": [
+        {
+          "label": "Release-only authorization",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/release_handlers.go#L69"
+        },
+        {
+          "label": "Release-key custody mapping",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/docs/operations/dev-environment.md#L157"
+        }
+      ]
+    },
+    {
+      "id": "stripe-signature",
+      "title": "Stripe webhook signature",
+      "class": "Per-request HMAC signature",
+      "issuer": "Stripe",
+      "holder": "Stripe and coordinator webhook verifier",
+      "clientStorage": "Stripe owns the signing system; no customer/browser key is involved.",
+      "serverStorage": "Endpoint-specific webhook secrets live in deployment Secret Manager/KMS and are injected as EIGENINFERENCE_STRIPE_WEBHOOK_SECRET and ...CONNECT_WEBHOOK_SECRET.",
+      "validation": "Coordinator verifies Stripe-Signature against the raw payload and the matching endpoint secret before any billing state transition.",
+      "lifetime": "Per-request signature; webhook secret rotates through Stripe and deployment configuration.",
+      "usedBy": [
+        "stripe"
+      ],
+      "sources": [
+        {
+          "label": "Stripe secret configuration",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/billing/config.go#L50"
+        },
+        {
+          "label": "Stripe secrets from Secret Manager",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/deploy/gcp/refresh-env.sh#L47"
+        }
+      ]
+    },
+    {
+      "id": "mdm-webhook",
+      "title": "MicroMDM webhook token",
+      "class": "Local shared secret + correlation",
+      "issuer": "Deployment operator",
+      "holder": "MicroMDM and coordinator",
+      "clientStorage": "When configured, start.sh injects it into MicroMDM’s localhost command-webhook URL as ?token= because the daemon cannot set a header. Actual deployment presence is uncertain.",
+      "serverStorage": "EIGENINFERENCE_MDM_WEBHOOK_SECRET in environment and coordinator memory. The visible dev refresh script does not provision it.",
+      "validation": "Constant-time token comparison occurs before reading the body; a one-shot, unexpired CommandUUID from a coordinator-issued command is still mandatory.",
+      "lifetime": "Optional deployment-scoped secret with no overlap rotation. CommandUUID correlation lasts 30 minutes and is consumed once.",
+      "usedBy": [
+        "micromdm"
+      ],
+      "sources": [
+        {
+          "label": "Webhook token and command correlation",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/api/server.go#L1650"
+        },
+        {
+          "label": "Local callback token wiring",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/deploy/start.sh#L37"
+        }
+      ]
+    },
+    {
+      "id": "mdm-api-key",
+      "title": "MicroMDM API key",
+      "class": "Service-to-service bearer",
+      "issuer": "Deployment operator",
+      "holder": "Coordinator and MicroMDM",
+      "clientStorage": "Not a user credential. Both local services receive byte-identical values from deployment configuration.",
+      "serverStorage": "Deployment Secret Manager/KMS → MICROMDM_API_KEY and EIGENINFERENCE_MDM_API_KEY environment variables.",
+      "validation": "MicroMDM validates coordinator API calls; mismatch makes device/trust lookups fail.",
+      "lifetime": "Deployment-scoped; rotate both service configurations atomically.",
+      "usedBy": [
+        "micromdm",
+        "coordinator"
+      ],
+      "sources": [
+        {
+          "label": "Coordinator MDM API configuration",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/mdm/config.go#L17"
+        },
+        {
+          "label": "Shared secret mapping",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/docs/operations/dev-environment.md#L164"
+        }
+      ]
+    },
+    {
+      "id": "privy-service",
+      "title": "Privy application secret + verification key",
+      "class": "Coordinator service credential",
+      "issuer": "Privy dashboard",
+      "holder": "Coordinator service",
+      "clientStorage": "Not distributed to API clients.",
+      "serverStorage": "Secret Manager/KMS → EIGENINFERENCE_PRIVY_APP_SECRET; verification public key comes from env or EIGENINFERENCE_PRIVY_VERIFICATION_KEY_FILE.",
+      "validation": "Public key verifies inbound ES256 tokens; app secret authenticates coordinator REST calls used to fetch user details/OTP operations.",
+      "lifetime": "Rotated in Privy and deployment configuration; public verifier material is not itself secret.",
+      "usedBy": [
+        "coordinator"
+      ],
+      "sources": [
+        {
+          "label": "Privy env/file loading",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/auth/config.go#L17"
+        },
+        {
+          "label": "Privy REST client",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/auth/privy.go#L157"
+        }
+      ]
+    },
+    {
+      "id": "stripe-api-key",
+      "title": "Stripe secret API key",
+      "class": "Coordinator outbound credential",
+      "issuer": "Stripe",
+      "holder": "Coordinator service",
+      "clientStorage": "Not distributed to browsers or webhook callers.",
+      "serverStorage": "Deployment Secret Manager/KMS → EIGENINFERENCE_STRIPE_SECRET_KEY → coordinator process environment/memory.",
+      "validation": "Stripe authenticates coordinator-created checkout, Connect, transfer, and dashboard API requests. It is distinct from webhook verification secrets.",
+      "lifetime": "Rotated through Stripe and deployment configuration.",
+      "usedBy": [
+        "coordinator"
+      ],
+      "sources": [
+        {
+          "label": "Stripe API and webhook configuration",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/coordinator/billing/config.go#L50"
+        },
+        {
+          "label": "Stripe secret injection",
+          "url": "https://github.com/Layr-Labs/d-inference/blob/080d7e66782b28ab038f34dfb5ce23469f19642b/deploy/gcp/refresh-env.sh#L47"
+        }
+      ]
+    }
+  ],
+  "cacheSemantics": {
+    "mem.api_key_cache": {
+      "lookup": "R",
+      "fill_update": "W",
+      "invalidate": "W",
+      "aggregate": "RW",
+      "citations": [
+        "coordinator/api/server.go:2213-2244",
+        "coordinator/api/server.go:2255-2265",
+        "coordinator/api/server.go:2305-2348"
+      ]
+    },
+    "mem.read_cache": {
+      "lookup": "R",
+      "fill_update": "W",
+      "invalidate": "W",
+      "aggregate": "RW",
+      "citations": [
+        "coordinator/api/server.go:364-367",
+        "coordinator/api/capacity.go:38-57",
+        "coordinator/api/leaderboard.go:67-108",
+        "coordinator/api/release_handlers.go:461-478",
+        "coordinator/api/release_cache.go:13-20",
+        "coordinator/api/server.go:1084-1093"
+      ]
+    },
+    "mem.exact_cache": {
+      "lookup": "R",
+      "fill_update": "W",
+      "aggregate": "RW",
+      "citations": [
+        "coordinator/api/exact_cache_status.go:119-129"
+      ]
+    },
+    "mem.media_resolver": {
+      "lookup": "R",
+      "fill_update": "W",
+      "aggregate": "RW",
+      "reason": "The inference path consults the resolver and may fetch/cache resolved remote media before dispatch.",
+      "citations": [
+        "coordinator/api/media_resolve.go:179-198",
+        "coordinator/api/server.go:434-441"
+      ]
+    }
+  },
+  "namespaces": [
+    {
+      "exact": "GET /health",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "GET /readyz",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "GET /install.sh",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "GET /v1/cache/status",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "GET /v1/encryption-key",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "GET /ws/provider",
+      "namespace": "System & transport"
+    },
+    {
+      "exact": "ANY /v1/",
+      "namespace": "Compatibility"
+    },
+    {
+      "exact": "GET /v1/models/capacity",
+      "namespace": "Public network data"
+    },
+    {
+      "exact": "GET /v1/providers/attestation",
+      "namespace": "Public network data"
+    },
+    {
+      "exact": "GET /v1/stats",
+      "namespace": "Public network data"
+    },
+    {
+      "exact": "GET /v1/leaderboard",
+      "namespace": "Public network data"
+    },
+    {
+      "prefix": "/v1/network/",
+      "namespace": "Public network data"
+    },
+    {
+      "prefix": "/v1/admin/auth/",
+      "namespace": "Admin authentication"
+    },
+    {
+      "prefix": "/v1/admin/models",
+      "namespace": "Model publishing"
+    },
+    {
+      "prefix": "/v1/admin/",
+      "namespace": "Administration"
+    },
+    {
+      "prefix": "/v1/billing/",
+      "namespace": "Billing & payouts"
+    },
+    {
+      "prefix": "/v1/payments/",
+      "namespace": "Billing & payouts"
+    },
+    {
+      "prefix": "/v1/auth/keys",
+      "namespace": "Identity & API keys"
+    },
+    {
+      "prefix": "/v1/keys",
+      "namespace": "Identity & API keys"
+    },
+    {
+      "exact": "GET /v1/key",
+      "namespace": "Identity & API keys"
+    },
+    {
+      "prefix": "/v1/models/catalog",
+      "namespace": "Model catalog"
+    },
+    {
+      "prefix": "/v1/runtime/manifest",
+      "namespace": "Model catalog"
+    },
+    {
+      "prefix": "/v1/models",
+      "namespace": "Inference API"
+    },
+    {
+      "prefix": "/v1/chat/",
+      "namespace": "Inference API"
+    },
+    {
+      "prefix": "/v1/completions",
+      "namespace": "Inference API"
+    },
+    {
+      "prefix": "/v1/messages",
+      "namespace": "Inference API"
+    },
+    {
+      "prefix": "/v1/responses",
+      "namespace": "Inference API"
+    },
+    {
+      "prefix": "/v1/pricing",
+      "namespace": "Pricing & growth"
+    },
+    {
+      "prefix": "/v1/referral/",
+      "namespace": "Pricing & growth"
+    },
+    {
+      "prefix": "/v1/invite/",
+      "namespace": "Pricing & growth"
+    },
+    {
+      "prefix": "/v1/me/",
+      "namespace": "Providers & devices"
+    },
+    {
+      "prefix": "/v1/provider/",
+      "namespace": "Providers & devices"
+    },
+    {
+      "prefix": "/v1/device/",
+      "namespace": "Providers & devices"
+    },
+    {
+      "prefix": "/v1/enroll",
+      "namespace": "Providers & devices"
+    },
+    {
+      "prefix": "/v1/mdm/",
+      "namespace": "Providers & devices"
+    },
+    {
+      "prefix": "/v1/releases",
+      "namespace": "Releases"
+    },
+    {
+      "prefix": "/api/version",
+      "namespace": "Releases"
+    },
+    {
+      "prefix": "/v1/telemetry/",
+      "namespace": "Telemetry & logs"
+    }
+  ],
+  "gates": [
+    "VerifyConnectWebhookSignature",
+    "VerifyWebhookSignature",
+    "isAdmin",
+    "isAdminAuthorized",
+    "mdmWebhookTokenValid",
+    "releaseKeyAuthorized",
+    "requireAdminKey",
+    "requirePublishingAPIKey"
+  ],
+  "gateDepth": 2,
+  "authRules": [
+    {
+      "handler": "handleProviderWS",
+      "auth": "Provider protocol",
+      "detail": "Provider WebSocket protocol authentication: provider token/registration identity plus coordinator trust and attestation checks."
+    },
+    {
+      "handler": "handleDeviceToken",
+      "auth": "Device code",
+      "detail": "Possession of the short-lived device_code secret issued by the coordinator."
+    },
+    {
+      "handler": "handleAdminAuthInit",
+      "auth": "Public OTP bootstrap",
+      "detail": "No prior authentication; starts Privy email OTP for a configured administrator account."
+    },
+    {
+      "handler": "handleAdminAuthVerify",
+      "auth": "OTP possession",
+      "detail": "Possession and successful verification of the Privy email OTP; returns an access token."
+    },
+    {
+      "handler": "handleProviderEarnings",
+      "auth": "Public address lookup",
+      "detail": "No bearer token; lookup is scoped by the supplied provider address."
+    },
+    {
+      "handler": "handleTelemetryIngest",
+      "auth": "Public (410)",
+      "detail": "No authentication. Compatibility tombstone always returns HTTP 410 before reading the body."
+    },
+    {
+      "anyGate": [
+        "VerifyWebhookSignature",
+        "VerifyConnectWebhookSignature"
+      ],
+      "auth": "Signed webhook",
+      "detail": "No user bearer token. Stripe-Signature is verified against the configured webhook secret before processing."
+    },
+    {
+      "anyGate": [
+        "mdmWebhookTokenValid"
+      ],
+      "auth": "MDM webhook",
+      "detail": "MicroMDM callback authentication, using the configured webhook shared secret when enabled and correlated command/device state."
+    },
+    {
+      "anyGate": [
+        "requirePublishingAPIKey"
+      ],
+      "auth": "Publishing key",
+      "detail": "Model publishing key, bootstrap publishing key, or configured administrator key, validated inside the publishing handler."
+    },
+    {
+      "anyGate": [
+        "releaseKeyAuthorized"
+      ],
+      "auth": "Release key",
+      "detail": "Scoped release-registration bearer key intended for release automation."
+    },
+    {
+      "middleware": [
+        "requirePrivyAuth"
+      ],
+      "auth": "Interactive Privy",
+      "detail": "Authorization: Bearer with an interactive Privy access token. ES256 JWT verification is local; API keys and provider tokens are rejected."
+    },
+    {
+      "middleware": [
+        "requireAuth"
+      ],
+      "anyGate": [
+        "isAdminAuthorized",
+        "requireAdminKey",
+        "isAdmin"
+      ],
+      "auth": "Administrator",
+      "detail": "General bearer authentication plus an administrator authorization check (configured admin key or Privy-authenticated configured administrator)."
+    },
+    {
+      "middleware": [
+        "requireAuth"
+      ],
+      "auth": "General bearer",
+      "detail": "Authorization: Bearer. requireAuth accepts a Privy JWT, administrator key, API key, or active provider token; handler authorization may narrow this further."
+    },
+    {
+      "anyGate": [
+        "isAdminAuthorized",
+        "requireAdminKey",
+        "isAdmin"
+      ],
+      "auth": "Admin key only",
+      "detail": "Handler-internal administrator gate: configured admin bearer key or a Privy-authenticated configured administrator."
+    },
+    {
+      "auth": "Public",
+      "detail": "No endpoint authentication. Any network client can call it."
+    }
+  ],
+  "deps": {
+    "analyze": [
+      "./coordinator/..."
+    ],
+    "traverse": [
+      "coordinator/api",
+      "coordinator/attestation",
+      "coordinator/auth",
+      "coordinator/apns",
+      "coordinator/billing",
+      "coordinator/datadog",
+      "coordinator/mdm",
+      "coordinator/mediafetch",
+      "coordinator/modelpolicy",
+      "coordinator/payments",
+      "coordinator/payments/baserewards",
+      "coordinator/profilesign",
+      "coordinator/promptcontract",
+      "coordinator/protocol",
+      "coordinator/ratelimit",
+      "coordinator/registry",
+      "coordinator/saferun",
+      "coordinator/stateexport",
+      "coordinator/store",
+      "coordinator/telemetry",
+      "coordinator/internal/e2e"
+    ],
+    "inherit": [
+      "coordinator/mdm",
+      "coordinator/promptcontract",
+      "coordinator/stateexport"
+    ],
+    "preferImpl": [
+      "Postgres"
+    ],
+    "strict": [
+      "coordinator/api:Server"
+    ],
+    "fields": {
+      "coordinator/api:Histogram.*": "mem.metrics",
+      "coordinator/api:Server.adminEmails": "@skip",
+      "coordinator/api:Server.adminKey": "@skip",
+      "coordinator/api:Server.allowDuplicateProviderSerials": "@skip",
+      "coordinator/api:Server.apiKeyCache": "mem.api_key_cache",
+      "coordinator/api:Server.apiKeyCacheGen": "mem.api_key_cache",
+      "coordinator/api:Server.apiKeyCacheMu": "mem.api_key_cache",
+      "coordinator/api:Server.baseRewards": "@through",
+      "coordinator/api:Server.baseURL": "@skip",
+      "coordinator/api:Server.billing": "@through",
+      "coordinator/api:Server.binaryHashEnforce": "@skip",
+      "coordinator/api:Server.binaryHashPolicyConfigured": "mem.hash_policy",
+      "coordinator/api:Server.binaryHashPolicyMu": "mem.hash_policy",
+      "coordinator/api:Server.challengeInterval": "@skip",
+      "coordinator/api:Server.chunkKeys": "mem.chunk_keys",
+      "coordinator/api:Server.codeAttestThrottle": "mem.code_attest",
+      "coordinator/api:Server.codeAttestor": "ext.apple",
+      "coordinator/api:Server.codeResumeBeforeIdentityCheck": "@skip",
+      "coordinator/api:Server.codeResumeFallbackBeforeAPNs": "@skip",
+      "coordinator/api:Server.codeResumeSender": "@skip",
+      "coordinator/api:Server.consoleURL": "@skip",
+      "coordinator/api:Server.consumerTokenLimiter": "mem.token_limits",
+      "coordinator/api:Server.coordinatorDraining": "mem.drain",
+      "coordinator/api:Server.coordinatorKey": "mem.x25519",
+      "coordinator/api:Server.corsOrigin": "@skip",
+      "coordinator/api:Server.dd": "ext.datadog",
+      "coordinator/api:Server.disableClientErrorStop": "@skip",
+      "coordinator/api:Server.emitter": "@through",
+      "coordinator/api:Server.exactCacheGaugeMu": "mem.exact_cache",
+      "coordinator/api:Server.exactCacheGaugeStatus": "mem.exact_cache",
+      "coordinator/api:Server.exactCacheStatusCache": "mem.exact_cache",
+      "coordinator/api:Server.exactCacheStatusCacheExpires": "mem.exact_cache",
+      "coordinator/api:Server.exactCacheStatusCacheMu": "mem.exact_cache",
+      "coordinator/api:Server.financialRateLimiter": "mem.rpm",
+      "coordinator/api:Server.firstContentDeadlineBase": "@skip",
+      "coordinator/api:Server.geoResolver": "ext.geo",
+      "coordinator/api:Server.hedgeGov": "mem.capacity",
+      "coordinator/api:Server.httpInflight": "mem.drain",
+      "coordinator/api:Server.keyRPMLimiter": "mem.rpm",
+      "coordinator/api:Server.keyTokenLimiter": "mem.token_limits",
+      "coordinator/api:Server.knownBinaryHashes": "mem.hash_policy",
+      "coordinator/api:Server.knownRuntimeManifest": "mem.hash_policy",
+      "coordinator/api:Server.ledger": "@through",
+      "coordinator/api:Server.logger": "@skip",
+      "coordinator/api:Server.manualBinaryHashPolicyConfigured": "mem.hash_policy",
+      "coordinator/api:Server.manualKnownBinaryHashes": "mem.hash_policy",
+      "coordinator/api:Server.mdmClient": "mdm.client",
+      "coordinator/api:Server.mdmScheduler": "mdm.waiters",
+      "coordinator/api:Server.mdmSchedulerConfig": "@skip",
+      "coordinator/api:Server.mdmWebhookSecret": "@skip",
+      "coordinator/api:Server.mediaResolver": "mem.media_resolver",
+      "coordinator/api:Server.metrics": "mem.metrics",
+      "coordinator/api:Server.minDecodeTPS": "@skip",
+      "coordinator/api:Server.minProviderVersion": "@skip",
+      "coordinator/api:Server.modelAliasMutationMu": "mem.alias_lock",
+      "coordinator/api:Server.mux": "@skip",
+      "coordinator/api:Server.outputAdmissionEstimator": "mem.token_limits",
+      "coordinator/api:Server.pendingHardUntrustKeyHashes": "mem.trust_reuse",
+      "coordinator/api:Server.privyAuth": "ext.privy",
+      "coordinator/api:Server.profileSigner": "@through",
+      "coordinator/api:Server.promptArtifacts": "prompt.artifacts",
+      "coordinator/api:Server.promptContract": "@through",
+      "coordinator/api:Server.promptPreloader": "prompt.preload",
+      "coordinator/api:Server.promptSupervisor": "prompt.supervisor",
+      "coordinator/api:Server.r2CDNURL": "@skip",
+      "coordinator/api:Server.rateLimiter": "mem.rpm",
+      "coordinator/api:Server.readCache": "mem.read_cache",
+      "coordinator/api:Server.registry": "mem.registry",
+      "coordinator/api:Server.rejectModels": "mem.hash_policy",
+      "coordinator/api:Server.releaseBinaryHashPolicyConfigured": "mem.hash_policy",
+      "coordinator/api:Server.releaseInventoryEverConfigured": "mem.hash_policy",
+      "coordinator/api:Server.releaseKey": "@skip",
+      "coordinator/api:Server.releaseKnownBinaryHashes": "mem.hash_policy",
+      "coordinator/api:Server.releasePolicySyncMu": "mem.hash_policy",
+      "coordinator/api:Server.releaseTrustPolicy": "mem.hash_policy",
+      "coordinator/api:Server.releaseTrustPolicyGeneration": "mem.hash_policy",
+      "coordinator/api:Server.routeTelemetry": "mem.route_sink",
+      "coordinator/api:Server.servabilityGate": "@skip",
+      "coordinator/api:Server.serviceRateLimiter": "mem.rpm",
+      "coordinator/api:Server.serviceReservations": "mem.service_reservations",
+      "coordinator/api:Server.serviceTokenLimiter": "mem.token_limits",
+      "coordinator/api:Server.settleGrace": "@skip",
+      "coordinator/api:Server.settlements": "mem.settlements",
+      "coordinator/api:Server.skipChallenge": "@skip",
+      "coordinator/api:Server.store": "@sql",
+      "coordinator/api:Server.storedProviders": "mem.stored_providers",
+      "coordinator/api:Server.telemetryLimiter": "mem.telemetry_limit",
+      "coordinator/api:Server.trustAuthority": "mem.trust_reuse",
+      "coordinator/api:Server.trustAuthorityMu": "mem.trust_reuse",
+      "coordinator/api:Server.trustCoverage": "mem.trust_reuse",
+      "coordinator/api:Server.trustCoverageCancel": "mem.trust_reuse",
+      "coordinator/api:Server.trustCoverageCtx": "mem.trust_reuse",
+      "coordinator/api:Server.trustCoverageMu": "mem.trust_reuse",
+      "coordinator/api:Server.trustReplayCancel": "mem.trust_reuse",
+      "coordinator/api:Server.trustReplayCtx": "mem.trust_reuse",
+      "coordinator/api:Server.trustReplayInFlight": "mem.trust_reuse",
+      "coordinator/api:Server.trustReplayMu": "mem.trust_reuse",
+      "coordinator/api:Server.trustReuseCache": "mem.trust_reuse",
+      "coordinator/api:Server.trustReuseJournal": "mem.trust_reuse",
+      "coordinator/api:Server.trustRevocationMu": "mem.trust_reuse",
+      "coordinator/api:Server.trustSafetyMu": "mem.trust_reuse",
+      "coordinator/api:Server.trustSafetyReplayBlocked": "mem.trust_reuse",
+      "coordinator/api:Server.trustSafetySticky": "mem.trust_reuse",
+      "coordinator/api:Server.ttftHardReject": "@skip",
+      "coordinator/api:Server.zombieCanceller": "mem.zombie_cancel",
+      "coordinator/api:challengeTracker.*": "mem.challenges",
+      "coordinator/api:codeAttestReservationLock.*": "mem.code_attest",
+      "coordinator/api:codeAttestResumeChallenge.*": "mem.code_attest",
+      "coordinator/api:pendingChallenge.*": "mem.challenges",
+      "coordinator/mediafetch:byteBudget.*": "mem.media_resolver",
+      "coordinator/payments:Ledger.*": "mem.usage_log",
+      "coordinator/payments:Ledger.store": "@sql",
+      "coordinator/registry:DispatchPlan.*": "mem.dispatch",
+      "coordinator/registry:Provider.*": "mem.registry",
+      "coordinator/registry:Provider.conn": "provider.socket",
+      "coordinator/registry:Provider.pendingReqs": "mem.pending",
+      "coordinator/registry:Provider.writer": "provider.socket",
+      "coordinator/registry:QueuedRequest.*": "mem.queue",
+      "coordinator/registry:QueuedRequest.Pending": "mem.pending",
+      "coordinator/registry:Registry.*": "mem.registry",
+      "coordinator/registry:Registry.capacityQuotes": "mem.capacity",
+      "coordinator/registry:Registry.dispatchLoadCooldowns": "mem.model_state",
+      "coordinator/registry:Registry.logger": "@skip",
+      "coordinator/registry:Registry.modelAliases": "mem.model_state",
+      "coordinator/registry:Registry.modelCatalog": "mem.model_state",
+      "coordinator/registry:Registry.pendingModelLoadStarted": "mem.model_state",
+      "coordinator/registry:Registry.pendingModelLoads": "mem.model_state",
+      "coordinator/registry:Registry.queue": "mem.queue",
+      "coordinator/registry:Registry.store": "@sql",
+      "coordinator/registry:Registry.tpsRegistry": "mem.capacity",
+      "coordinator/registry:Registry.warmPool": "mem.model_state",
+      "coordinator/registry:cacheActivationGate.*": "mem.cache_routing",
+      "coordinator/registry:cacheRoutingTracker.*": "mem.cache_routing",
+      "coordinator/registry:pendingQuote.*": "mem.capacity",
+      "coordinator/registry:providerWriteRequest.*": "mem.provider_writer",
+      "coordinator/registry:providerWriter.*": "mem.provider_writer",
+      "coordinator/registry:providerWriter.conn": "provider.socket",
+      "coordinator/registry:quoteTracker.*": "mem.capacity",
+      "coordinator/registry:syncQueuePressure.*": "mem.warm_pool",
+      "coordinator/registry:ttftCalibrator.*": "mem.ttft",
+      "coordinator/registry:warmPoolController.*": "mem.warm_pool",
+      "coordinator/registry:warmPoolController.registry": "@through",
+      "coordinator/registry:warmPoolState.*": "mem.warm_pool",
+      "coordinator/store:PostgresStore.priceCache": "mem.price_cache",
+      "coordinator/store:PostgresStore.priceCacheMu": "mem.price_cache"
+    },
+    "packageDefault": {
+      "coordinator/api": "@skip",
+      "coordinator/api/types": "@skip",
+      "coordinator/attestation": "@skip",
+      "coordinator/auth": "@skip",
+      "coordinator/apns": "@skip",
+      "coordinator/billing": "@skip",
+      "coordinator/config": "@skip",
+      "coordinator/datadog": "@skip",
+      "coordinator/env": "@skip",
+      "coordinator/internal/e2e": "@skip",
+      "coordinator/mediafetch": "@skip",
+      "coordinator/modelpolicy": "@skip",
+      "coordinator/payments": "@skip",
+      "coordinator/payments/baserewards": "@skip",
+      "coordinator/profilesign": "@skip",
+      "coordinator/protocol": "@skip",
+      "coordinator/ratelimit": "@skip",
+      "coordinator/registry": "mem.registry",
+      "coordinator/saferun": "@skip",
+      "coordinator/store": "@skip",
+      "coordinator/telemetry": "@skip"
+    },
+    "types": {
+      "coordinator/api:Metrics": "mem.metrics",
+      "coordinator/api:Histogram": "mem.metrics",
+      "coordinator/api:challengeTracker": "mem.challenges",
+      "coordinator/api:pendingChallenge": "mem.challenges",
+      "coordinator/api:codeAttestReservationLock": "mem.code_attest",
+      "coordinator/api:codeAttestResumeChallenge": "mem.code_attest",
+      "coordinator/api:dispatchState": "mem.dispatch",
+      "coordinator/api:ttlCache": "mem.read_cache",
+      "coordinator/api:chunkKeyCache": "mem.chunk_keys",
+      "coordinator/api:telemetrySink": "mem.route_sink",
+      "coordinator/api:telemetryLimiter": "mem.telemetry_limit",
+      "coordinator/api:settlementHolder": "mem.settlements",
+      "coordinator/api:zombieStreamCanceller": "mem.zombie_cancel",
+      "coordinator/api:hedgeGovernor": "mem.capacity",
+      "coordinator/api:codeAttestThrottle": "mem.code_attest",
+      "coordinator/api:trustReuseCache": "mem.trust_reuse",
+      "coordinator/api:mdmVerificationScheduler": "mdm.waiters",
+      "coordinator/api:serviceReservationManager": "mem.service_reservations",
+      "coordinator/registry:Registry": "mem.registry",
+      "coordinator/registry:RequestQueue": "mem.queue",
+      "coordinator/registry:TPSRegistry": "mem.capacity",
+      "coordinator/registry:PendingRequest": "mem.pending",
+      "coordinator/registry:QueuedRequest": "mem.queue",
+      "coordinator/registry:DispatchPlan": "mem.dispatch",
+      "coordinator/registry:cacheActivationGate": "mem.cache_routing",
+      "coordinator/registry:cacheRoutingTracker": "mem.cache_routing",
+      "coordinator/registry:pendingQuote": "mem.capacity",
+      "coordinator/registry:quoteTracker": "mem.capacity",
+      "coordinator/registry:providerWriter": "mem.provider_writer",
+      "coordinator/registry:providerWriteRequest": "mem.provider_writer",
+      "coordinator/registry:syncQueuePressure": "mem.warm_pool",
+      "coordinator/registry:warmPoolController": "mem.warm_pool",
+      "coordinator/registry:warmPoolState": "mem.warm_pool",
+      "coordinator/registry:ttftCalibrator": "mem.ttft",
+      "coordinator/payments:Ledger": "mem.usage_log",
+      "coordinator/mediafetch:byteBudget": "mem.media_resolver",
+      "coordinator/apns:APNsPushAttestor": "ext.apple",
+      "coordinator/mdm:Client": "mdm.client",
+      "coordinator/mdm:deviceAttestationWaiter": "mdm.waiters",
+      "coordinator/mdm:securityInfoWaiter": "mdm.waiters",
+      "coordinator/promptcontract:ArtifactCache": "prompt.artifacts",
+      "coordinator/promptcontract:artifactCall": "prompt.artifacts",
+      "coordinator/promptcontract:Client": "@through",
+      "coordinator/datadog:seriesBuffer": "ext.datadog",
+      "coordinator/ratelimit:Limiter": "mem.rpm",
+      "coordinator/ratelimit:TokenLimiter": "mem.token_limits",
+      "coordinator/ratelimit:KeyTokenLimiter": "mem.token_limits",
+      "coordinator/ratelimit:OutputAdmissionEstimator": "mem.token_limits",
+      "coordinator/mediafetch:Resolver": "mem.media_resolver",
+      "coordinator/internal/e2e:CoordinatorKey": "mem.x25519",
+      "coordinator/auth:PrivyAuth": "ext.privy",
+      "coordinator/datadog:Client": "ext.datadog",
+      "coordinator/promptcontract:Provisioner": "prompt.artifacts",
+      "coordinator/promptcontract:Supervisor": "prompt.supervisor",
+      "coordinator/promptcontract:PreloadController": "prompt.preload",
+      "nhooyr.io/websocket:Conn": "provider.socket"
+    },
+    "hosts": {
+      "auth.privy.io": "ext.privy",
+      "api.privy.io": "ext.privy",
+      "api.stripe.com": "ext.stripe",
+      "checkout.stripe.com": "ext.stripe",
+      "connect.stripe.com": "ext.stripe",
+      "dashboard.stripe.com": "ext.stripe",
+      "stripe.com": "ext.stripe",
+      "docs.stripe.com": "@skip",
+      "models.darkbloom.ai": "ext.r2",
+      "r2.cloudflarestorage.com": "ext.r2",
+      "ip-api.com": "ext.geo",
+      "pro.ip-api.com": "ext.geo",
+      "www.apple.com": "ext.apple",
+      "api.push.apple.com": "ext.apple",
+      "api.sandbox.push.apple.com": "ext.apple",
+      "console.darkbloom.dev": "@skip",
+      "app.darkbloom.dev": "@skip",
+      "api.darkbloom.dev": "@skip",
+      "staging.darkbloom.dev": "@skip",
+      "api.dev.darkbloom.xyz": "@skip",
+      "promptsidecar": "@skip"
+    },
+    "endpoints": {
+      "coordinator/mdm": {
+        "/v1/devices": "mdm.devices",
+        "/v1/commands": "mdm.commands",
+        "/v1/commands/": "mdm.raw_command",
+        "/push/": "mdm.push"
+      },
+      "coordinator/promptcontract": {
+        "http://promptsidecar/v1/plan": "prompt.plan",
+        "http://promptsidecar/v1/preload": "prompt.preload",
+        "http://promptsidecar/health": "prompt.supervisor"
+      }
+    },
+    "messages": {
+      "coordinator/protocol": {
+        "TypeAttestationChallenge": "provider.trust",
+        "TypeAttestationResponse": "provider.trust",
+        "TypeCancel": "provider.inference_down",
+        "TypeCancelRequest": "provider.inference_down",
+        "TypeCapacityProbe": "provider.register",
+        "TypeCapacityQuote": "provider.register",
+        "TypeCapacityQuoteRequest": "provider.register",
+        "TypeCodeAttestationChallenge": "provider.trust",
+        "TypeCodeAttestationResponse": "provider.trust",
+        "TypeDesiredModels": "provider.models",
+        "TypeHeartbeat": "provider.register",
+        "TypeInferenceAccepted": "provider.inference_up",
+        "TypeInferenceComplete": "provider.inference_up",
+        "TypeInferenceError": "provider.inference_up",
+        "TypeInferenceRequest": "provider.inference_down",
+        "TypeLoadModel": "provider.models",
+        "TypeModelsUpdate": "provider.models",
+        "TypePrefetchModel": "provider.models",
+        "TypePrefixCacheStatus": "provider.models",
+        "TypePrefixCacheUpdate": "provider.models",
+        "TypeRegister": "provider.register",
+        "TypeRegistered": "provider.register",
+        "TypeResponseChunk": "provider.inference_up",
+        "TypeRuntimeStatus": "provider.trust",
+        "TypeTrustStatus": "provider.trust"
+      }
+    },
+    "functions": {
+      "coordinator/mediafetch:Resolver.fetchOne": "ext.media"
+    }
+  },
+  "routes": {
+    "GET /api/version": {
+      "description": "Returns the current provider software version policy for update checks.",
+      "callers": [
+        "Provider node"
+      ]
+    },
+    "GET /health": {
+      "description": "Returns coordinator liveness and the current connected-provider count.",
+      "callers": [
+        "Infrastructure automation"
+      ]
+    },
+    "GET /install.sh": {
+      "description": "Returns a generated provider installation shell script with the coordinator base URL substituted.",
+      "callers": [
+        "Provider operator"
+      ]
+    },
+    "GET /readyz": {
+      "description": "Readiness probe that returns unavailable while the coordinator is draining.",
+      "callers": [
+        "Infrastructure automation"
+      ]
+    },
+    "ANY /v1/": {
+      "description": "Returns a structured OpenAI-style JSON 404 for otherwise unimplemented /v1 routes.",
+      "details": "Catch-all only; more-specific registered routes always win.",
+      "callers": [
+        "Any API client"
+      ]
+    },
+    "POST /v1/admin/auth/init": {
+      "description": "Starts admin CLI authentication by sending a Privy email OTP to an allowlisted administrator.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "POST /v1/admin/auth/verify": {
+      "description": "Verifies the admin OTP and returns an administrator session token.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/base-rewards": {
+      "description": "Returns base-reward settlement status and aggregates.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "POST /v1/admin/credit": {
+      "description": "Credits an account ledger as an administrative adjustment.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "POST /v1/admin/drain": {
+      "description": "Enters graceful drain mode so new inference dispatches stop before restart.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "DELETE /v1/admin/invite-codes": {
+      "description": "Deactivates an invite code.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/invite-codes": {
+      "description": "Lists administrator-issued invite codes.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "POST /v1/admin/invite-codes": {
+      "description": "Creates an administrator-issued invite code and credit policy.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/log-reports/{id}": {
+      "description": "Retrieves one provider log report for administrators.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/metrics": {
+      "description": "Returns an administrator-only coordinator metrics snapshot in JSON or Prometheus form.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/models/aliases": {
+      "description": "Lists standard public model aliases and rollout pointers.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "POST /v1/admin/models/aliases": {
+      "description": "Creates or updates a stable public model alias, desired build, fallback build, and provider desired-state fan-out.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "DELETE /v1/admin/models/aliases/{aliasID}": {
+      "description": "Deletes a standard model alias and pushes the revised desired-model state to providers.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "GET /v1/admin/models/openrouter-aliases": {
+      "description": "Lists model aliases exposed only in the OpenRouter feed.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "POST /v1/admin/models/openrouter-aliases": {
+      "description": "Creates or replaces an OpenRouter-only alias with marketplace and Hugging Face identities.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "DELETE /v1/admin/models/openrouter-aliases/{aliasID}": {
+      "description": "Deletes one OpenRouter-only model alias.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "POST /v1/admin/models/register": {
+      "description": "Registers and verifies a manifest-backed model version, pricing, files, and optional promotion.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "POST /v1/admin/models/": {
+      "description": "Applies a publishing-key-authorized action to one model: promote, status, runtime parameters, capabilities, deprecation date, OpenRouter slug, or Hugging Face ID.",
+      "details": "Effective path: /v1/admin/models/{modelID}/{action}. Actions: promote, status, runtime-parameters, capabilities, deprecation, openrouter-slug, hugging-face-id.",
+      "callers": [
+        "Model publisher / CI"
+      ]
+    },
+    "PUT /v1/admin/pricing": {
+      "description": "Sets platform default pricing for a model.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/rejections": {
+      "description": "Browses rejected-request metadata with reason, model, and counterfactual-capacity filters.",
+      "details": "Query: reason, model, could_have_served=true|false, since, limit.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/rejections/export": {
+      "description": "Streams rejected-request metadata as CSV or NDJSON.",
+      "details": "Same rejection filters plus format=csv|ndjson; default CSV.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "DELETE /v1/admin/releases": {
+      "description": "Deactivates a provider release.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/releases": {
+      "description": "Lists provider releases for administrators.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "POST /v1/admin/reward": {
+      "description": "Issues an administrative reward to an account or provider.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/routes": {
+      "description": "Browses metadata-only routing-decision records with filters and bounded pagination.",
+      "details": "Query: provider, model, outcome, final_status, since, limit. since accepts a Go duration or RFC3339; default 24h.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/routes/export": {
+      "description": "Streams routing-decision metadata as CSV or NDJSON for calibration and offline analysis.",
+      "details": "Same route filters plus format=csv|ndjson; default CSV. Store reads remain hard-capped.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/state-export": {
+      "description": "Streams a gated, encrypted export of sealed coordinator state for disaster recovery.",
+      "details": "Requires feature enablement, administrator authorization, and encrypted output protection.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "PUT /v1/admin/users/platform-fee": {
+      "description": "Sets a per-account platform fee override.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "PUT /v1/admin/users/role": {
+      "description": "Changes an account’s service role.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/utilization": {
+      "description": "Returns administrator-only demand, capacity, and utilization breakdowns.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "DELETE /v1/auth/keys": {
+      "description": "Revokes the account’s primary API key.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/auth/keys": {
+      "description": "Creates the account’s primary API key from an interactive user session.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/billing/methods": {
+      "description": "Lists billing and payout methods supported by the coordinator.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "DELETE /v1/billing/stripe/account": {
+      "description": "Detaches the interactive user’s Stripe Connect account when safe.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/billing/stripe/connect/webhook": {
+      "description": "Consumes and verifies Stripe Connect account and payout webhooks.",
+      "callers": [
+        "Stripe"
+      ]
+    },
+    "POST /v1/billing/stripe/create-session": {
+      "description": "Creates a Stripe checkout session for funding an account.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/billing/stripe/dashboard": {
+      "description": "Creates a short-lived Stripe Express dashboard link.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/billing/stripe/onboard": {
+      "description": "Starts Stripe Connect Express onboarding for provider payouts.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/billing/stripe/session": {
+      "description": "Returns the state of a Stripe funding checkout session.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/billing/stripe/status": {
+      "description": "Returns Stripe Connect onboarding and payout readiness.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/billing/stripe/webhook": {
+      "description": "Consumes and verifies Stripe payment webhooks to credit funded balances.",
+      "callers": [
+        "Stripe"
+      ]
+    },
+    "GET /v1/billing/stripe/withdrawals": {
+      "description": "Lists Stripe payout withdrawal history.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/billing/wallet/balance": {
+      "description": "Returns the authenticated billing wallet balance.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/billing/withdraw/stripe": {
+      "description": "Creates a withdrawal from provider earnings through Stripe Connect.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/cache/status": {
+      "description": "Reports aggregate prompt-sidecar and exact-prefix-cache rollout health without provider, model, or account identities.",
+      "details": "Response includes sidecar enabled/running/ready, generation, restart count, preloaded contracts, and rollout mode.",
+      "callers": [
+        "Infrastructure automation"
+      ]
+    },
+    "POST /v1/chat/completions": {
+      "description": "Dispatches an OpenAI Chat Completions or Responses request through provider selection and streams or returns the result.",
+      "details": "Body: OpenAI chat schema. Supports streaming. Middleware: drain gate, API auth, account rate limit, optional sealed transport.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "POST /v1/completions": {
+      "description": "Dispatches an OpenAI-compatible legacy text completion request.",
+      "details": "Body: legacy prompt/completion schema. Supports streaming.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "POST /v1/device/approve": {
+      "description": "Approves a device code from an interactive user session and links the provider to that account.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/device/code": {
+      "description": "Starts the provider device-authorization flow and returns a short user code plus polling secret.",
+      "callers": [
+        "Provider node"
+      ]
+    },
+    "POST /v1/device/token": {
+      "description": "Polls the device-authorization flow and returns a provider linking token after approval.",
+      "details": "The device_code is itself the polling credential until approval or expiry.",
+      "callers": [
+        "Provider node"
+      ]
+    },
+    "GET /v1/encryption-key": {
+      "description": "Publishes the coordinator X25519 public key for optional sender-to-coordinator request encryption.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "POST /v1/enroll": {
+      "description": "Generates a per-device Apple MDM enrollment profile.",
+      "callers": [
+        "Provider operator"
+      ]
+    },
+    "POST /v1/invite/redeem": {
+      "description": "Redeems an invite code and credits the authenticated account.",
+      "callers": [
+        "Customer dashboard",
+        "Administrator"
+      ]
+    },
+    "GET /v1/key": {
+      "description": "Returns OpenRouter-shaped metadata for the API key making the request.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/keys": {
+      "description": "Lists the interactive user’s named API keys and limits.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/keys": {
+      "description": "Creates a named, individually limited API key.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "DELETE /v1/keys/{id}": {
+      "description": "Deletes one owned API key.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/keys/{id}": {
+      "description": "Returns one owned API key’s metadata; secret material is not re-disclosed.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "PATCH /v1/keys/{id}": {
+      "description": "Updates one owned API key’s name, limits, or enabled state.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/keys/{id}/rotate": {
+      "description": "Rotates an owned API key and returns the replacement secret once.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/leaderboard": {
+      "description": "Returns a pseudonymized provider leaderboard by earnings, tokens, or completed jobs.",
+      "details": "Query: metric=earnings|tokens|jobs, window=24h|7d|30d|all, limit=N.",
+      "callers": [
+        "Public / auditor"
+      ]
+    },
+    "POST /v1/mdm/webhook": {
+      "description": "Accepts MicroMDM command-result webhooks used for provider device enrollment and attestation.",
+      "callers": [
+        "MicroMDM"
+      ]
+    },
+    "GET /v1/me/providers": {
+      "description": "Lists providers owned by the interactive user.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "DELETE /v1/me/providers/{id}": {
+      "description": "Hard-deletes an owned retired or offline provider record after ownership checks.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/me/self-route-models": {
+      "description": "Lists alias-aware live model IDs owned by the user for configuring self-route-only API keys.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/me/summary": {
+      "description": "Returns the interactive user’s provider, balance, earnings, and account summary.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/messages": {
+      "description": "Dispatches an Anthropic Messages-compatible request and translates the provider stream.",
+      "details": "Body: Anthropic Messages schema. Supports streaming.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models": {
+      "description": "Lists models available to the calling key, including live routing and pricing metadata.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models/capacity": {
+      "description": "Returns a short-lived per-model capacity snapshot for upstream routers.",
+      "details": "Designed for polling; cache lifetime is approximately 2 seconds and draining state is surfaced.",
+      "callers": [
+        "Upstream router"
+      ]
+    },
+    "GET /v1/models/catalog": {
+      "description": "Returns the public active model registry with metadata and platform pricing.",
+      "callers": [
+        "Provider node",
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models/catalog/manifest/": {
+      "description": "Returns the verified file manifest for one catalog model.",
+      "details": "Effective path: /v1/models/catalog/manifest/{id}; the handler parses the suffix after the registered subtree.",
+      "callers": [
+        "Provider node",
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models/catalog/": {
+      "description": "Returns one public model catalog record.",
+      "details": "Effective path: /v1/models/catalog/{id}; the exact /catalog route takes precedence.",
+      "callers": [
+        "Provider node",
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models/openrouter": {
+      "description": "Returns a pure OpenRouter-compatible model feed without Darkbloom-specific metadata.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/models/{id...}": {
+      "description": "Retrieves one model by a possibly slashed model ID.",
+      "details": "The Go 1.22 remainder wildcard permits slashed Hugging Face-style model IDs.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/network/series": {
+      "description": "Returns compact complete-bucket request and token time series for a bounded lookback window.",
+      "details": "Query: window=30m|24h|7d|30d. Buckets range from 1 minute to 12 hours; responses are cached for 1 minute.",
+      "callers": [
+        "Public / auditor"
+      ]
+    },
+    "GET /v1/network/totals": {
+      "description": "Returns cached network-wide aggregate usage and capacity totals.",
+      "callers": [
+        "Public / auditor"
+      ]
+    },
+    "GET /v1/payments/balance": {
+      "description": "Returns the authenticated account’s balance ledger summary.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/payments/usage": {
+      "description": "Returns usage records and token/cost aggregates for the authenticated account.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "DELETE /v1/pricing": {
+      "description": "Removes provider-specific pricing and restores platform defaults.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/pricing": {
+      "description": "Returns public platform pricing and the caller’s applicable provider overrides when available.",
+      "callers": [
+        "Provider dashboard",
+        "Public / auditor"
+      ]
+    },
+    "PUT /v1/pricing": {
+      "description": "Sets authenticated provider-specific input and output token prices.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/provider/account-earnings": {
+      "description": "Returns account-scoped provider earnings and payout totals.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "GET /v1/provider/earnings": {
+      "description": "Returns earnings for a provider identity supplied by the caller.",
+      "callers": [
+        "Provider dashboard"
+      ]
+    },
+    "POST /v1/provider/log-report": {
+      "description": "Uploads an explicit provider log report under authenticated account scope.",
+      "callers": [
+        "Provider node"
+      ]
+    },
+    "GET /v1/providers/attestation": {
+      "description": "Publishes independently verifiable provider hardware and Apple attestation evidence.",
+      "callers": [
+        "Public / auditor"
+      ]
+    },
+    "POST /v1/referral/apply": {
+      "description": "Applies a referral code to the authenticated account.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/referral/info": {
+      "description": "Returns the account’s referral relationship and code information.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/referral/register": {
+      "description": "Creates or returns the account’s referral code.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "GET /v1/referral/stats": {
+      "description": "Returns referral counts, credits, and reward statistics.",
+      "callers": [
+        "Customer dashboard"
+      ]
+    },
+    "POST /v1/releases": {
+      "description": "Registers a signed provider release and its download metadata.",
+      "details": "Authorization: scoped release registration key; intended for CI publishing.",
+      "callers": [
+        "Release CI"
+      ]
+    },
+    "GET /v1/releases/latest": {
+      "description": "Returns the latest active provider release for installers and update checks.",
+      "callers": [
+        "Provider operator",
+        "Provider node"
+      ]
+    },
+    "POST /v1/responses": {
+      "description": "Dispatches an OpenAI Responses API request through the same routing pipeline as chat completions.",
+      "details": "Body: OpenAI Responses schema; the shared handler auto-detects input versus messages. Supports streaming.",
+      "callers": [
+        "Customer API client"
+      ]
+    },
+    "GET /v1/runtime/manifest": {
+      "description": "Returns approved provider runtime hashes and runtime policy.",
+      "callers": [
+        "Provider node",
+        "Customer API client"
+      ]
+    },
+    "GET /v1/stats": {
+      "description": "Returns public network and provider hardware statistics, geospatial buckets, traffic flows, tokens, and power estimates.",
+      "details": "Public but privacy-bucketed where appropriate; cached for approximately 60 seconds.",
+      "callers": [
+        "Public / auditor"
+      ]
+    },
+    "POST /v1/telemetry/events": {
+      "description": "Compatibility tombstone: returns HTTP 410 before reading the body; client-owned telemetry ingestion is disabled.",
+      "details": "Deliberately retained for mixed-version clients but always responds Gone; coordinator-owned operational telemetry is separate.",
+      "callers": [
+        "Legacy client"
+      ]
+    },
+    "GET /ws/provider": {
+      "description": "Upgrades to the authenticated provider control-plane WebSocket used for registration, heartbeats, inference relay, and receipts.",
+      "callers": [
+        "Provider node"
+      ]
+    }
+  }
+}

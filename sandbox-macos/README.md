@@ -251,13 +251,24 @@ This is transport only: it establishes a byte channel and grants no execution
 authority, and guest commands remain disabled until the signed guest-control
 agent replaces Lume's shared bootstrap identity.
 
-The `darkbloom-guest-agent` product is the guest half of that channel. It binds
-`AF_VSOCK`, announces a versioned identity line, and echoes. It executes
-nothing: this slice proves the channel, and the executing agent is a separate
-piece of work that also needs randomized bootstrap credentials and an
-unprivileged guest user before it can carry tenant work. `AF_VSOCK` sockets
-exist only inside a virtual machine, so the agent exits with `ENODEV` on a host,
-which doubles as a cheap smoke check.
+`SandboxGuestProtocol` is the wire format spoken over that channel: a
+one-byte kind plus a four-byte big-endian length, a closed frame vocabulary,
+and a payload cap enforced from the header alone so an oversized frame is
+refused before a single byte is buffered. The command result envelope is
+deliberately byte-identical to the one the launchd bootstrap path already
+produces — same magic, schema version, snake_case keys, base64 streams, and
+length cross-checks — because `LumeGuestCommandJournal` persists raw envelope
+bytes and re-validates them on read. The transport moves; the format does not.
+
+The `darkbloom-guest-agent` product is the guest half. It binds `AF_VSOCK`,
+announces a versioned identity, and answers framed requests. It does **not**
+execute: a well-formed command is answered with an `execution_disabled`
+failure, because carrying tenant work also requires randomized bootstrap
+credentials and an unprivileged sandbox user, and executing before both exist
+would be exactly the boundary the host is refusing to cross. Host-inbound-only
+frame kinds arriving from the peer close the connection rather than being
+guessed at. `AF_VSOCK` sockets exist only inside a virtual machine, so the agent
+exits with `ENODEV` on a host, which doubles as a cheap smoke check.
 
 ## Pinned Lume substrate
 

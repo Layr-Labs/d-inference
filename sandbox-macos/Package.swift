@@ -7,6 +7,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "SandboxCore", targets: ["SandboxCore"]),
+        .library(name: "SandboxGuestProtocol", targets: ["SandboxGuestProtocol"]),
         .library(name: "SandboxSecurity", targets: ["SandboxSecurity"]),
         .library(name: "SandboxStorage", targets: ["SandboxStorage"]),
         .library(name: "SandboxRuntime", targets: ["SandboxRuntime"]),
@@ -20,6 +21,10 @@ let package = Package(
         .target(
             name: "SandboxCore",
             path: "Sources/SandboxCore"
+        ),
+        .target(
+            name: "SandboxGuestProtocol",
+            path: "Sources/SandboxGuestProtocol"
         ),
         .target(
             name: "SandboxSecurity",
@@ -73,7 +78,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "DarkbloomGuestAgent",
+            dependencies: ["SandboxGuestProtocol"],
             path: "Sources/DarkbloomGuestAgent"
+        ),
+        .testTarget(
+            name: "SandboxGuestProtocolTests",
+            dependencies: ["SandboxGuestProtocol"],
+            path: "Tests/SandboxGuestProtocolTests"
         ),
         .testTarget(
             name: "SandboxCoreTests",
@@ -97,7 +108,12 @@ let package = Package(
         ),
         .testTarget(
             name: "SandboxRuntimeLumeTests",
-            dependencies: ["SandboxCore", "SandboxRuntime", "SandboxRuntimeLume"],
+            dependencies: [
+                "SandboxCore",
+                "SandboxRuntime",
+                "SandboxRuntimeLume",
+                "SandboxGuestProtocol",
+            ],
             path: "Tests/SandboxRuntimeLumeTests"
         ),
         .testTarget(

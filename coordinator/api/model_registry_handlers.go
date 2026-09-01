@@ -16,28 +16,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const defaultModelRegistryCDNBaseURL = "https://models.darkbloom.ai"
 
 type registerModelRequest struct {
-	ModelID           string         `json:"model_id"`
-	Version           string         `json:"version"`
-	DisplayName       string         `json:"display_name"`
-	Family            string         `json:"family"`
-	Architecture      string         `json:"architecture"`
-	Quantization      string         `json:"quantization"`
-	MaxContextLength  int            `json:"max_context_length"`
-	MaxOutputLength   int            `json:"max_output_length"`
-	MinRAMGB          int            `json:"min_ram_gb"`
-	Capabilities      []string       `json:"capabilities"`
-	Description       string         `json:"description"`
-	RuntimeParameters map[string]any `json:"runtime_parameters"`
-	Metadata          map[string]any `json:"metadata"`
-	Promote           bool           `json:"promote"`
-	InputPrice        int64          `json:"input_price"`  // micro-USD per 1M tokens (required)
-	OutputPrice       int64          `json:"output_price"` // micro-USD per 1M tokens (required)
+	ModelID                      string         `json:"model_id"`
+	Version                      string         `json:"version"`
+	DisplayName                  string         `json:"display_name"`
+	Family                       string         `json:"family"`
+	Architecture                 string         `json:"architecture"`
+	Quantization                 string         `json:"quantization"`
+	MaxContextLength             int            `json:"max_context_length"`
+	MaxOutputLength              int            `json:"max_output_length"`
+	MinRAMGB                     int            `json:"min_ram_gb"`
+	Capabilities                 []string       `json:"capabilities"`
+	RequiredProviderCapabilities []string       `json:"required_provider_capabilities"`
+	Description                  string         `json:"description"`
+	RuntimeParameters            map[string]any `json:"runtime_parameters"`
+	Metadata                     map[string]any `json:"metadata"`
+	Promote                      bool           `json:"promote"`
+	InputPrice                   int64          `json:"input_price"`  // micro-USD per 1M tokens (required)
+	OutputPrice                  int64          `json:"output_price"` // micro-USD per 1M tokens (required)
 }
 
 type publishingActor struct {
@@ -116,15 +118,17 @@ func (s *Server) handleRegisterModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := &store.ModelRegistryEntry{
-		ID:                req.ModelID,
-		DisplayName:       req.DisplayName,
-		Family:            req.Family,
-		Architecture:      req.Architecture,
-		Quantization:      req.Quantization,
-		MaxContextLength:  req.MaxContextLength,
-		MaxOutputLength:   req.MaxOutputLength,
-		MinRAMGB:          req.MinRAMGB,
-		Capabilities:      req.Capabilities,
+		ID:               req.ModelID,
+		DisplayName:      req.DisplayName,
+		Family:           req.Family,
+		Architecture:     req.Architecture,
+		Quantization:     req.Quantization,
+		MaxContextLength: req.MaxContextLength,
+		MaxOutputLength:  req.MaxOutputLength,
+		MinRAMGB:         req.MinRAMGB,
+		Capabilities:     req.Capabilities,
+		RequiredProviderCapabilities: append(
+			[]string{}, req.RequiredProviderCapabilities...),
 		Status:            "beta",
 		Description:       req.Description,
 		RuntimeParameters: req.RuntimeParameters,
@@ -433,15 +437,17 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 // without dropping the others.
 func registryEntryFromRecord(rec *store.ModelRegistryRecord) *store.ModelRegistryEntry {
 	return &store.ModelRegistryEntry{
-		ID:                rec.ID,
-		DisplayName:       rec.DisplayName,
-		Family:            rec.Family,
-		Architecture:      rec.Architecture,
-		Quantization:      rec.Quantization,
-		MaxContextLength:  rec.MaxContextLength,
-		MaxOutputLength:   rec.MaxOutputLength,
-		MinRAMGB:          rec.MinRAMGB,
-		Capabilities:      rec.Capabilities,
+		ID:               rec.ID,
+		DisplayName:      rec.DisplayName,
+		Family:           rec.Family,
+		Architecture:     rec.Architecture,
+		Quantization:     rec.Quantization,
+		MaxContextLength: rec.MaxContextLength,
+		MaxOutputLength:  rec.MaxOutputLength,
+		MinRAMGB:         rec.MinRAMGB,
+		Capabilities:     rec.Capabilities,
+		RequiredProviderCapabilities: append(
+			[]string{}, rec.RequiredProviderCapabilities...),
 		Status:            rec.Status,
 		Description:       rec.Description,
 		RuntimeParameters: rec.RuntimeParameters,
@@ -596,6 +602,39 @@ func validateRegisterModelRequest(req registerModelRequest) error {
 	}
 	if req.OutputPrice <= 0 {
 		return fmt.Errorf("output_price is required and must be positive (micro-USD per 1M tokens)")
+	}
+	if err := validateRequiredProviderCapabilities(
+		req.ModelID, req.RequiredProviderCapabilities); err != nil {
+		return err
+	}
+	return nil
+}
+func validateRequiredProviderCapabilities(modelID string, capabilities []string) error {
+	seen := make(map[string]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		if capability == "" || capability != strings.TrimSpace(capability) {
+			return fmt.Errorf("required_provider_capabilities contains a malformed capability name")
+		}
+		switch capability {
+		case registry.ProviderCapabilityAppleM5, registry.ProviderCapabilityMLXNAX:
+		default:
+			return fmt.Errorf("required_provider_capabilities contains unknown capability %q", capability)
+		}
+		if _, duplicate := seen[capability]; duplicate {
+			return fmt.Errorf("required_provider_capabilities contains duplicate capability %q", capability)
+		}
+		seen[capability] = struct{}{}
+	}
+	if modelID == registry.Qwen38NAXModelID {
+		for _, required := range []string{
+			registry.ProviderCapabilityAppleM5,
+			registry.ProviderCapabilityMLXNAX,
+		} {
+			if _, ok := seen[required]; !ok {
+				return fmt.Errorf(
+					"model %q requires provider capability %q", modelID, required)
+			}
+		}
 	}
 	return nil
 }
@@ -831,6 +870,8 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 		"max_context_length": rec.MaxContextLength,
 		"max_output_length":  rec.MaxOutputLength,
 		"capabilities":       rec.Capabilities,
+		"required_provider_capabilities": append(
+			[]string{}, rec.RequiredProviderCapabilities...),
 		"runtime_parameters": rec.RuntimeParameters,
 		"metadata":           rec.Metadata,
 		"status":             rec.Status,
@@ -911,6 +952,8 @@ func supportedModelFromRegistryRecord(rec *store.ModelRegistryRecord) store.Supp
 		Description:  rec.Description,
 		MinRAMGB:     rec.MinRAMGB,
 		Active:       active,
+		RequiredProviderCapabilities: append(
+			[]string{}, rec.RequiredProviderCapabilities...),
 	}
 	if rec.ActiveVersion != nil {
 		model.S3Name = rec.ActiveVersion.R2Prefix

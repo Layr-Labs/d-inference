@@ -227,7 +227,7 @@ private func makeRoutingEngine(
     plumbing: EngineV2VisionPlumbing?,
     modelType: String = "gemma4",
     visionGate: VisionMemoryGate? = nil,
-    reasoningEffort: String? = nil
+    templateControls: ChatTemplateControls = .init()
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
@@ -242,7 +242,7 @@ private func makeRoutingEngine(
             ]
         },
         defaultMaxTokens: 64,
-        reasoningEffort: reasoningEffort,
+        templateControls: templateControls,
         engineV2Vision: plumbing
     )
 }
@@ -505,6 +505,28 @@ struct EngineV2VisionSpanCarvingTests {
             videoPlaceholderId: nil, videoSpanLengths: [])
         #expect(carved.map(\.span) == [CBv2ImageSpan(tokenOffset: 1, length: 2)])
     }
+
+    @Test("Qwen3-VL media guard refuses video with unsupported-media")
+    func qwen3VLVideoRefusal() {
+        let input = LMInput(
+            text: .init(tokens: MLXArray([Int32(1), 2])),
+            video: .init(
+                pixels: MLXArray([Float(1)]).reshaped([1, 1]),
+                frames: [THW(1, 1, 1)]))
+        do {
+            try EngineV2VisionPrefill.validateQwen3VLMedia(input)
+            Issue.record("expected unsupportedMedia")
+        } catch let error as EngineV2VisionPrefillError {
+            guard case .unsupportedMedia(let detail) = error else {
+                Issue.record("expected unsupportedMedia, got \(error)")
+                return
+            }
+            #expect(detail == "Qwen3-VL video media is not production-proven")
+        } catch {
+            Issue.record("expected EngineV2VisionPrefillError, got \(error)")
+        }
+    }
+
 }
 
 // MARK: - Media-kind classification
@@ -531,7 +553,7 @@ struct MediaKindClassificationTests {
             for: OpenAIChatCompletionRequest(
                 model: "qwen3.5-35b-a3b",
                 messages: [.init(role: .user, content: .text("hi"))]),
-            reasoningEffort: nil)
+            controls: .init())
         #expect(text?["enable_thinking"] == nil)
     }
 
@@ -539,7 +561,7 @@ struct MediaKindClassificationTests {
     func reasoningEffortTemplateContext() async throws {
         let request = imageRequest()
         let input = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: "high")
+            from: request, templateControls: .init(reasoningEffort: "high"))
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
     }
 
@@ -628,6 +650,7 @@ struct EngineV2BridgeMultimodalTests {
         #expect(submitted.promptTokens == prepared.promptTokens)
         let multimodal = try #require(submitted.multimodal)
         #expect(multimodal.spans == prepared.spans)
+        #expect(multimodal.deepstackEmbeddings == nil)
         let arrays = try multimodal.embeddings()
         #expect(arrays.count == 1)
         #expect(arrays[0].shape == embedding.shape)
@@ -645,43 +668,78 @@ struct EngineV2BridgeMultimodalTests {
         #expect(visionEvents.first?.requestId == "req-vision-1")
     }
 
-    @Test("Qwen position state rides the multimodal input into CBv2Request")
-    func qwenPositionStatePassthrough() async throws {
+    @Test("Qwen final embedding, every DeepStack level, and positions ride into CBv2Request")
+    func qwenPositionAndDeepstackPassthrough() async throws {
         let engine = VisionScriptedEngine(
             script: .stream([
                 .finished(
                     reason: .stop,
-                    usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
+                    usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
             ]))
         let bridge = makeBridge(engine: engine)
         let positions = CBv2PositionState(
             promptPositionIds: MLXArray([
-                Int32(0), 1, 2,
-                0, 4, 5,
-                0, 7, 8,
-            ]).reshaped([3, 1, 3]),
+                Int32(0), 1, 2, 3, 4,
+                0, 5, 6, 7, 8,
+                0, 9, 10, 11, 12,
+            ]).reshaped([3, 1, 5]),
             decodeDeltas: [-2])
-        let input = CBv2MultimodalInput(
-            spans: [CBv2ImageSpan(tokenOffset: 1, length: 1)],
+        let final = [Float(9), 10].map {
+            MLXArray(Array(repeating: $0, count: 4)).reshaped([1, 1, 4])
+        }
+        let deepstack = (0 ..< 3).map { level in
+            (0 ..< 2).map { span in
+                MLXArray(Array(
+                    repeating: Float(level * 10 + span + 1), count: 4
+                )).reshaped([1, 1, 4])
+            }
+        }
+        let prepared = EngineV2VisionPrefill.PreparedSubmission(
+            promptTokens: [1, 990, 2, 990, 3],
+            spans: [
+                CBv2ImageSpan(tokenOffset: 1, length: 1),
+                CBv2ImageSpan(tokenOffset: 3, length: 1),
+            ],
+            embeddings: final,
+            deepstackEmbeddings: deepstack,
             attention: .causal,
-            positionState: positions
-        ) { [MLXArray.ones([1, 1, 4])] }
+            positionState: positions,
+            mediaKind: .image)
         let stream = await bridge.submitTokenized(
-            promptTokens: [1, 990, 2],
+            promptTokens: prepared.promptTokens,
             request: ChatCompletionRequest(
                 model: "test/vlm-stub",
                 messages: [ChatMessage(role: "user", content: "x")],
                 max_tokens: 1),
-            requestId: "qwen-position-passthrough",
-            multimodal: input,
+            requestId: "qwen-position-deepstack-passthrough",
+            multimodal: prepared.multimodalInput(),
             mediaKind: .image)
         for await _ in stream {}
 
         let submitted = try #require(engine.submitted.first)
+        let multimodal = try #require(submitted.multimodal)
         let submittedPositions = try #require(submitted.positionState)
-        #expect(submitted.multimodal?.attention == .causal)
+        let submittedFinal = try multimodal.embeddings()
+        let deepstackProvider = try #require(multimodal.deepstackEmbeddings)
+        let submittedDeepstack = try deepstackProvider()
+        #expect(multimodal.attention == .causal)
         #expect(submittedPositions.decodeDeltas == [-2])
-        #expect(submittedPositions.promptLength == 3)
+        #expect(submittedPositions.promptLength == 5)
+        #expect(submittedFinal.count == 2)
+        for span in final.indices {
+            #expect(
+                submittedFinal[span].asArray(Float.self)
+                    == final[span].asArray(Float.self))
+        }
+        #expect(submittedDeepstack.count == 3)
+        for level in deepstack.indices {
+            #expect(submittedDeepstack[level].count == 2)
+            for span in deepstack[level].indices {
+                #expect(
+                    submittedDeepstack[level][span].asArray(Float.self)
+                        == deepstack[level][span].asArray(Float.self))
+            }
+        }
     }
 
     @Test("text submit keeps multimodal nil and emits no vision telemetry")
@@ -1069,7 +1127,7 @@ struct EngineV2VisionRoutingTests {
         let plumbing = EngineV2VisionPlumbing(
             prepare: { _, _, _ in
                 throw EngineV2VisionPrefillError.unsupportedMedia(
-                    "Qwen35MoE video media is not production-proven")
+                    "Qwen3-VL video media is not production-proven")
             },
             emitTelemetry: telemetry.callback())
         let router = makeRoutingEngine(
@@ -1109,13 +1167,13 @@ struct EngineV2VisionRoutingTests {
         }
         let effort = EffortBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, templateControls in
+                effort.set(templateControls.reasoningEffort)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = makeRoutingEngine(
             container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
-            reasoningEffort: "medium")
+            templateControls: .init(reasoningEffort: "medium"))
 
         _ = try await collectContent(
             try await router.streamChatCompletion(request: imageRequest()))

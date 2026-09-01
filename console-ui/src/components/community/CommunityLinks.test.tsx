@@ -11,6 +11,6 @@ describe("CommunityLinks", () => {
     render(<CommunityLinks />);
     const link = screen.getByLabelText("Join the Darkbloom Slack") as HTMLAnchorElement;
     expect(link.href).toBe(SLACK_INVITE_URL);
-    expect(link.href).toContain("zt-47hf6xy0n");
+    expect(link.href).toContain("zt-47wmq0xbr");
   });
 });

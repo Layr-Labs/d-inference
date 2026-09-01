@@ -40,6 +40,29 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 	}
 	keypair := value.(testProviderKeyPair)
 	const model = "endpoint-lowering-model"
+	entry := &store.ModelRegistryEntry{
+		ID: model, DisplayName: model, Status: "active",
+		RuntimeParameters: map[string]any{
+			"reasoning_parser": "qwen3",
+			"tool_call_parser": "qwen3_coder",
+		},
+	}
+	if err := st.SetModelVersion(entry, &store.ModelVersion{
+		ModelID: model, Version: "v1", R2Prefix: modelR2Prefix(model, "v1"),
+		AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready",
+	}, []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.PromoteModelVersion(model, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	const alias = "endpoint-lowering-alias"
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: alias, DesiredBuild: model, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
 	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model}}, publicKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	for _, id := range reg.ProviderIDs() {
@@ -105,7 +128,7 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			}
 
 			writeEncryptedTestChunk(t, ctx, conn, request, publicKey,
-				`data: {"id":"chatcmpl-endpoint","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
+				`data: {"id":"chatcmpl-endpoint","object":"chat.completion.chunk","created":1700000000,"model":"endpoint-lowering-model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 			complete, _ := json.Marshal(protocol.InferenceCompleteMessage{
 				Type:         protocol.TypeInferenceComplete,
 				RequestID:    request.RequestID,
@@ -119,13 +142,14 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name         string
-		path         string
-		requestBody  string
-		wantMessages []protocol.ChatMessage
-		absent       []string
-		wantResponse []string
-		absentResult []string
+		name                string
+		path                string
+		requestBody         string
+		wantMessages        []protocol.ChatMessage
+		absent              []string
+		wantRuntimeDefaults bool
+		wantResponse        []string
+		absentResult        []string
 	}{
 		{
 			name:        "completions stream",
@@ -134,9 +158,22 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Completion endpoint"},
 			},
-			absent:       []string{"prompt", "endpoint"},
-			wantResponse: []string{`"object":"text_completion"`, `"text":"ok"`, `data: [DONE]`},
-			absentResult: []string{`"delta":{"content":"ok"}`},
+			absent:              []string{"prompt", "endpoint"},
+			wantRuntimeDefaults: true,
+			wantResponse:        []string{`"object":"text_completion"`, `"text":"ok"`, `data: [DONE]`},
+			absentResult:        []string{`"delta":{"content":"ok"}`},
+		},
+		{
+			name:        "chat completions stream",
+			path:        "/v1/chat/completions",
+			requestBody: `{"model":"endpoint-lowering-alias","messages":[{"role":"user","content":"Chat endpoint"}],"max_tokens":32,"stream":true}`,
+			wantMessages: []protocol.ChatMessage{
+				{Role: "user", Content: "Chat endpoint"},
+			},
+			wantRuntimeDefaults: true,
+			wantResponse: []string{
+				`"object":"chat.completion.chunk"`, `"content":"ok"`, `data: [DONE]`,
+			},
 		},
 		{
 			name:        "responses",
@@ -145,8 +182,9 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Responses endpoint"},
 			},
-			absent:       []string{"input", "endpoint", "max_output_tokens"},
-			wantResponse: []string{`event: response.output_text.delta`, `"delta":"ok"`},
+			absent:              []string{"input", "endpoint", "max_output_tokens"},
+			wantRuntimeDefaults: true,
+			wantResponse:        []string{`event: response.output_text.delta`, `"delta":"ok"`},
 		},
 		{
 			name:        "messages stream",
@@ -156,7 +194,8 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 				{Role: "system", Content: "Be concise."},
 				{Role: "user", Content: "Messages endpoint"},
 			},
-			absent: []string{"system", "endpoint"},
+			absent:              []string{"system", "endpoint"},
+			wantRuntimeDefaults: true,
 			wantResponse: []string{
 				`event: message_start`,
 				`event: content_block_delta`,
@@ -173,9 +212,10 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Completion endpoint"},
 			},
-			absent:       []string{"prompt", "endpoint"},
-			wantResponse: []string{`"object":"text_completion"`, `"text":"ok"`},
-			absentResult: []string{`"object":"chat.completion"`},
+			absent:              []string{"prompt", "endpoint"},
+			wantRuntimeDefaults: true,
+			wantResponse:        []string{`"object":"text_completion"`, `"text":"ok"`},
+			absentResult:        []string{`"object":"chat.completion"`},
 		},
 		{
 			name:        "messages non-streaming",
@@ -184,7 +224,8 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Messages endpoint"},
 			},
-			absent: []string{"endpoint", "stop_sequences"},
+			absent:              []string{"endpoint", "stop_sequences"},
+			wantRuntimeDefaults: true,
 			wantResponse: []string{
 				`"type":"message"`, `"role":"assistant"`, `"type":"text"`, `"text":"ok"`,
 				`"stop_reason":"stop_sequence"`, `"stop_sequence":"\u003cEND\u003e"`,
@@ -252,6 +293,24 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			for _, key := range test.absent {
 				if _, exists := fields[key]; exists {
 					t.Errorf("provider body retained endpoint-native field %q: %s", key, result.body)
+				}
+			}
+			if test.wantRuntimeDefaults {
+				for key, want := range map[string]string{
+					"reasoning_parser": "qwen3",
+					"tool_call_parser": "qwen3_coder",
+				} {
+					raw, exists := fields[key]
+					if !exists {
+						t.Errorf("provider body missing registry default %q: %s", key, result.body)
+						continue
+					}
+					var got string
+					if err := json.Unmarshal(raw, &got); err != nil {
+						t.Errorf("provider body %s is not a string: %v", key, err)
+					} else if got != want {
+						t.Errorf("provider body %s = %q, want %q", key, got, want)
+					}
 				}
 			}
 		})

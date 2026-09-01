@@ -64,20 +64,37 @@ extension ProviderLoop {
         }
     }
 
-    /// Pull the OpenAI `reasoning_effort` field out of a raw request body.
-    ///
-    /// This lives outside `OpenAIChatCompletionRequest` (the upstream type
-    /// doesn't model it), so we decode it directly. Returns a trimmed,
-    /// non-empty string or `nil`. Extraction remains format-agnostic; the
-    /// prompt pipeline applies any model-specific serving policy before
-    /// rendering (currently GPT-OSS `high` → `medium`).
-    internal static func extractReasoningEffort(from data: Data) -> String? {
-        struct Probe: Decodable { let reasoning_effort: String? }
-        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
-              let raw = probe.reasoning_effort
-        else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    /// Recover Qwen3.8 template controls that intentionally are not protocol
+    /// fields. Each optional field is decoded independently so one malformed
+    /// value never discards another valid control. The top-level
+    /// `enable_thinking` spelling wins over the equivalent
+    /// `chat_template_kwargs` spelling; the typed nested `reasoning.enabled`
+    /// is applied later and wins over both.
+    internal static func extractChatTemplateControls(
+        from data: Data
+    ) -> ChatTemplateControls {
+        struct EffortProbe: Decodable { let reasoning_effort: String? }
+        struct ThinkingProbe: Decodable { let enable_thinking: Bool? }
+        struct PreserveProbe: Decodable { let preserve_thinking: Bool? }
+        struct KwargsProbe: Decodable {
+            struct Kwargs: Decodable { let enable_thinking: Bool? }
+            let chat_template_kwargs: Kwargs?
+        }
+
+        let decoder = JSONDecoder()
+        let rawEffort = (try? decoder.decode(EffortProbe.self, from: data))?
+            .reasoning_effort
+        let effort = rawEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let topLevel = (try? decoder.decode(ThinkingProbe.self, from: data))?
+            .enable_thinking
+        let kwargs = (try? decoder.decode(KwargsProbe.self, from: data))?
+            .chat_template_kwargs?.enable_thinking
+        return ChatTemplateControls(
+            reasoningEffort: effort?.isEmpty == false ? effort : nil,
+            enableThinking: topLevel ?? kwargs,
+            preserveThinking: (try? decoder.decode(PreserveProbe.self, from: data))?
+                .preserve_thinking)
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -127,19 +144,20 @@ extension ProviderLoop {
     /// stream / upstream regression). Re-runs the engine's exact applyChatTemplate
     /// path so the count matches what was prefilled; VLM parts aren't in the text
     /// template so vision under-counts (a floor, never an overcharge). 0 on failure.
+
     internal static func promptTokenFloor(
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,
         modelType: String?,
-        reasoningEffort: String?
+        templateControls: ChatTemplateControls
     ) -> Int {
         guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request,
-            reasoningEffort: reasoningEffort,
-            modelType: modelType)
+            for: request, controls: templateControls, modelType: modelType,
+            hasMedia: MediaIngest.hasMedia(request),
+            requiresToolCall: prepared.requiresToolCall)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.
@@ -151,5 +169,28 @@ extension ProviderLoop {
             additionalContext: additionalContext
         ) else { return 0 }
         return ids.count
+    }
+
+    /// The engine admission view of a request's token envelope: the templated
+    /// prompt recount (``promptTokenFloor`` — the same applyChatTemplate path
+    /// the engine prefills) plus the output reservation the scheduler applies
+    /// (`max_tokens`, or ``schedulerDefaultMaxTokens`` when the request omits
+    /// one). Feeds the busy-wait forecast on enriched token-budget rejections
+    /// (`CapacityRejectionEnrichment.enrich`). nil when the recount fails
+    /// (e.g. the failure WAS a render error) — no honest envelope exists, so
+    /// no forecast is invented.
+    internal static func admissionTokenEnvelope(
+        request: OpenAIChatCompletionRequest,
+        tokenizer: TokenizerHandle,
+        modelType: String?,
+        templateControls: ChatTemplateControls
+    ) -> Int64? {
+        let promptFloor = promptTokenFloor(
+            request: request,
+            tokenizer: tokenizer,
+            modelType: modelType,
+            templateControls: templateControls)
+        guard promptFloor > 0 else { return nil }
+        return Int64(promptFloor + max(0, request.maxTokens ?? schedulerDefaultMaxTokens))
     }
 }

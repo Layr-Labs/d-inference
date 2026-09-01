@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -24,6 +25,8 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/e2e/testbed/deps"
 )
+
+var ErrProviderIneligible = errors.New("provider lacks expected testbed capabilities")
 
 type tcpListener struct {
 	inner   net.Listener
@@ -102,8 +105,8 @@ type Provider struct {
 	done   chan struct{}
 
 	// generatedConfig holds the provider TOML this instance wrote into
-	// StateDir. Empty when no KV-backend / concurrency knob was set, which is
-	// the default and launches with no --config at all.
+	// StateDir. Every provider gets one so auto-update and auto-restart stay off;
+	// KV-backend / concurrency keys remain optional within it.
 	generatedConfig string
 	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
 	// was present at launch. The provider copies a --config file there when it
@@ -265,20 +268,26 @@ func (s *Suite) createUserPool() error {
 	s.Logger.Info("user pool created", "count", len(s.Users))
 	return nil
 }
-
 func (s *Suite) startCoordinator() error {
 	reg := registry.New(s.Logger)
 	reg.MinTrustLevel = registry.TrustLevel(TrustNone)
 
-	var catalog []registry.CatalogEntry
-	for _, id := range s.Config.AllModelIDs() {
-		catalog = append(catalog, registry.CatalogEntry{ID: id})
+	if len(s.Config.CatalogModels) == 0 {
+		var catalog []registry.CatalogEntry
+		for _, id := range s.Config.AllModelIDs() {
+			catalog = append(catalog, registry.CatalogEntry{ID: id})
+		}
+		reg.SetModelCatalog(catalog)
+	} else if err := seedCatalog(s.PgStore, s.Config.CatalogModels, s.Config.ModelAliases); err != nil {
+		return err
 	}
-	reg.SetModelCatalog(catalog)
 
 	srv := api.NewServer(reg, s.PgStore, api.ServerConfig{
 		FirstContentDeadlineBase: s.Config.FirstContentDeadlineBase,
 	}, s.Logger)
+	if len(s.Config.CatalogModels) > 0 {
+		srv.SyncModelCatalog()
+	}
 	srv.SetAdminKey("testbed-admin-key")
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
@@ -325,6 +334,7 @@ func (s *Suite) startProviders() error {
 			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
 				ModelIDs:                   modelIDs,
 				TrustLevel:                 TrustNone,
+				MTPDrafterPath:             s.Config.MTPDrafterPath,
 				AuthTokenPath:              authTokenPath,
 				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
 				KVBackend:                  s.Config.KVBackend,
@@ -390,19 +400,85 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 	// Snapshot each provider's self-reported privacy_capabilities BEFORE the
 	// force-trust mutation below overwrites it; see privacyAtRegistration.
 	snapshot := make(map[string]*protocol.PrivacyCapabilities)
+	var ineligible string
+	var capabilityProviderIDs []string
 
 	// Force-trust all providers and link them to a user account so the
-	// payout destination check passes when billing is enabled.
+	// payout destination check passes when billing is enabled. Capability-aware
+	// suites first validate the registration's hardware and runtime claims,
+	// then grant the stronger test trust required by protected catalog models.
 	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
+		defer p.Mu().Unlock()
 		if reported := p.PrivacyCapabilities; reported != nil {
 			copied := *reported
 			snapshot[p.ID] = &copied
 		} else {
 			snapshot[p.ID] = nil
 		}
+		if len(s.Config.ExpectedProviderCapabilities) > 0 {
+			reported := make(map[string]struct{}, len(p.ReportedRuntimeCapabilities))
+			for _, capability := range p.ReportedRuntimeCapabilities {
+				reported[capability] = struct{}{}
+			}
+			for _, capability := range s.Config.ExpectedProviderCapabilities {
+				if _, ok := reported[capability]; !ok && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s reported chip_family=%q and capabilities=%v; missing %q",
+						p.ID, p.Hardware.ChipFamily, p.ReportedRuntimeCapabilities, capability)
+				}
+				if capability == registry.ProviderCapabilityAppleM5 &&
+					p.Hardware.ChipFamily != "M5" && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s reported chip_family=%q, want M5",
+						p.ID, p.Hardware.ChipFamily)
+				}
+			}
+			metallibHash := p.TemplateHashes["mlx_metallib"]
+			if metallibHash == "" && ineligible == "" {
+				ineligible = fmt.Sprintf(
+					"provider %s did not bind mlx_metallib in its registration", p.ID)
+			}
+			verified := p.AttestationResult
+			if (verified == nil || !verified.Valid) && ineligible == "" {
+				ineligible = fmt.Sprintf(
+					"provider %s has no valid registration-verified attestation claims", p.ID)
+			}
+			if verified != nil && verified.Valid && ineligible == "" {
+				if verified.ChipFamily != p.Hardware.ChipFamily {
+					ineligible = fmt.Sprintf(
+						"provider %s signed chip_family=%q but reported %q",
+						p.ID, verified.ChipFamily, p.Hardware.ChipFamily)
+				}
+				signed := make(map[string]struct{}, len(verified.RuntimeCapabilities))
+				for _, capability := range verified.RuntimeCapabilities {
+					signed[capability] = struct{}{}
+				}
+				if len(signed) != len(reported) && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s signed capabilities=%v but reported %v",
+						p.ID, verified.RuntimeCapabilities, p.ReportedRuntimeCapabilities)
+				}
+				for capability := range reported {
+					if _, ok := signed[capability]; !ok && ineligible == "" {
+						ineligible = fmt.Sprintf(
+							"provider %s signed capabilities=%v but reported %v",
+							p.ID, verified.RuntimeCapabilities, p.ReportedRuntimeCapabilities)
+					}
+				}
+				if verified.MetallibHash != metallibHash && ineligible == "" {
+					ineligible = fmt.Sprintf(
+						"provider %s signed mlx_metallib=%q but reported %q",
+						p.ID, verified.MetallibHash, metallibHash)
+				}
+			}
+			if ineligible == "" {
+				capabilityProviderIDs = append(capabilityProviderIDs, p.ID)
+			}
+		} else {
+			p.TrustLevel = registry.TrustSelfSigned
+		}
 		p.Status = registry.StatusOnline
-		p.TrustLevel = registry.TrustSelfSigned
 		p.ChallengeVerifiedSIP = true
 		p.LastChallengeVerified = time.Now()
 		p.FailedChallenges = 0
@@ -421,8 +497,92 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		if p.AccountID == "" && len(s.Users) > 0 {
 			p.AccountID = s.Users[0].AccountID
 		}
-		p.Mu().Unlock()
 	})
+	if ineligible != "" {
+		return fmt.Errorf("%w: %s", ErrProviderIneligible, ineligible)
+	}
+	for _, providerID := range capabilityProviderIDs {
+		p := s.Coordinator.Registry.GetProvider(providerID)
+		if p == nil {
+			return fmt.Errorf("provider %s disconnected during capability admission", providerID)
+		}
+		p.SetAttested(true, registry.TrustHardware)
+		p.SetFreshCodeAttested()
+		p.Mu().Lock()
+		p.RuntimeVerified = true
+		p.RuntimeManifestChecked = true
+		p.MetallibVerified = true
+		p.Mu().Unlock()
+		if err := s.Coordinator.Registry.ReconcileAttestedRuntimeCapabilities(providerID); err != nil {
+			return fmt.Errorf("reconcile signed provider capabilities for %s: %w", providerID, err)
+		}
+		p.Mu().Lock()
+		effective := append([]string(nil), p.RuntimeCapabilities...)
+		p.Mu().Unlock()
+		for _, required := range s.Config.ExpectedProviderCapabilities {
+			found := false
+			for _, capability := range effective {
+				if capability == required {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf(
+					"signed capability reconciliation omitted %q for provider %s: %v",
+					required, providerID, effective)
+			}
+		}
+	}
+	if len(s.Config.ExpectedProviderCapabilities) > 0 {
+		models := s.Config.AllModelIDs()
+		desired := make([]protocol.DesiredModelEntry, 0, len(models))
+		covered := make(map[string]struct{}, len(s.Config.ModelAliases))
+		for _, alias := range s.Config.ModelAliases {
+			if !alias.Active {
+				continue
+			}
+			desired = append(desired, protocol.DesiredModelEntry{
+				ModelName: alias.AliasID, DesiredBuild: alias.DesiredBuild,
+				PreviousBuild: alias.PreviousBuild,
+			})
+			covered[alias.DesiredBuild] = struct{}{}
+			covered[alias.PreviousBuild] = struct{}{}
+		}
+		for _, model := range models {
+			if _, ok := covered[model]; !ok {
+				desired = append(desired, protocol.DesiredModelEntry{
+					ModelName: model, DesiredBuild: model,
+				})
+			}
+		}
+		for _, providerID := range s.Coordinator.Registry.ProviderIDs() {
+			if err := s.Coordinator.Registry.SendDesiredModels(providerID, desired); err != nil {
+				return fmt.Errorf("refresh protected model inventory on provider %s: %w", providerID, err)
+			}
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(deadline) {
+			snapshot := s.Coordinator.Registry.ModelProviderSnapshot()
+			ready := true
+			for _, model := range models {
+				if snapshot[model] == 0 {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		snapshot := s.Coordinator.Registry.ModelProviderSnapshot()
+		for _, model := range models {
+			if snapshot[model] == 0 {
+				return fmt.Errorf("protected model %q was not re-advertised after capability admission", model)
+			}
+		}
+	}
 	s.privacyMu.Lock()
 	s.privacyAtRegistration = snapshot
 	s.privacyMu.Unlock()
@@ -543,8 +703,8 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 
 	// The KV backend and the per-slot concurrency cap have no env-var or CLI
 	// equivalent (DARKBLOOM_CBV2_PAGED_KV can only force paged OFF), so
-	// selecting them means handing the provider a TOML. Unset knobs render no
-	// file and add no argument: the default launch stays byte-identical.
+	// selecting them adds keys to the testbed TOML. The file is always present
+	// because it also disables auto-update and the launchd watchdog.
 	generated, err := BuildProviderTOML(cfg, p.ProviderIndex)
 	if err != nil {
 		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)
@@ -611,6 +771,27 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	}(p.done)
 
 	return nil
+}
+
+// Running reports whether the real provider child is still alive.
+func (p *Provider) Running() bool {
+	if p.done == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// DaemonStatePath returns the isolated provider state snapshot path.
+func (p *Provider) DaemonStatePath() string {
+	if p.StateDir == "" {
+		return ""
+	}
+	return filepath.Join(p.StateDir, "daemon-state.json")
 }
 
 func (p *Provider) Stop() {

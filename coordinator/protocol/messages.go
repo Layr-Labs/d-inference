@@ -48,15 +48,26 @@ const (
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
 	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
 
+	// TypeCapacityQuote is the provider's answer to a capacity_probe: an
+	// admissibility verdict + calibrated TTFT estimate computed from its live
+	// capacity snapshot. See CapacityQuoteMessage.
+	TypeCapacityQuote = "capacity_quote"
+
 	// Coordinator → Provider.
-	TypeInferenceRequest     = "inference_request"
-	TypeCancel               = "cancel"
-	TypeAttestationChallenge = "attestation_challenge"
-	TypeRuntimeStatus        = "runtime_status"
-	TypeLoadModel            = "load_model"
-	TypePrefetchModel        = "prefetch_model"
-	TypeDesiredModels        = "desired_models"
-	TypeTrustStatus          = "trust_status"
+	TypeInferenceRequest               = "inference_request"
+	TypeCancel                         = "cancel"
+	TypeAttestationChallenge           = "attestation_challenge"
+	TypeCodeAttestationResumeChallenge = "code_attestation_resume_challenge"
+	TypeRuntimeStatus                  = "runtime_status"
+	TypeLoadModel                      = "load_model"
+	TypePrefetchModel                  = "prefetch_model"
+	TypeDesiredModels                  = "desired_models"
+
+	// TypeCapacityProbe asks a provider whether it could admit a request of a
+	// given bucketed shape right now. Carries shape metadata only — never
+	// prompt content or identity. See CapacityProbeMessage.
+	TypeCapacityProbe = "capacity_probe"
+	TypeTrustStatus   = "trust_status"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -185,6 +196,7 @@ type RegisterMessage struct {
 	Hardware                    Hardware                           `json:"hardware"`
 	Models                      []ModelInfo                        `json:"models"`
 	Backend                     string                             `json:"backend"`
+	RuntimeCapabilities         []string                           `json:"runtime_capabilities,omitempty"`      // connection-scoped hardware/runtime capabilities
 	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
 	PublicKey                   string                             `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
 	EncryptedResponseChunks     bool                               `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
@@ -197,7 +209,7 @@ type RegisterMessage struct {
 	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
 	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
 	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
-	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
+	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time forced-tool enforcement protocol version
 	ToolConstraintModels        []string                           `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
@@ -392,6 +404,15 @@ type BackendCapacity struct {
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
+	// CapacitySeq is a per-connection monotonically increasing sequence number
+	// stamped on every capacity snapshot the provider publishes. The
+	// coordinator applies snapshots by seq (stale/reordered seq → discard) so
+	// event-triggered heartbeats can't regress the ledger, and a connection
+	// that has reported any seq > 0 is thereby quote-capable
+	// (capacity_probe/capacity_quote). Zero means a legacy provider: the field
+	// is omitted from the wire and the coordinator keeps last-write-wins
+	// heartbeat semantics.
+	CapacitySeq uint64 `json:"capacity_seq,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -562,6 +583,33 @@ type InferenceErrorMessage struct {
 	// on the route row and emitted in telemetry, but it never feeds billing,
 	// refunds, reservations, provider earnings, or payouts.
 	AttemptUsage *UsageInfo `json:"attempt_usage,omitempty"`
+
+	// Enriched rejection (routing v2). A current provider that fast-rejects at
+	// its live admission gate says WHY in machine-readable form, turning every
+	// rejection into a fresh capacity sample for the coordinator's ledger,
+	// budget clamp, and failure taxonomy — the gray-box incident
+	// (registry/budget_clamp.go) was 11,581 opaque capacity 503s that had to
+	// be re-learned one bounce at a time. All four fields are additive and
+	// absent on legacy frames, so those decode byte-identically.
+	//
+	// RejectionReason is the bounded CapacityRejectionReason enum (shared with
+	// capacity_quote). AvailableTokenBudget is the live gate's remaining token
+	// headroom at rejection time — a POINTER because zero is a meaningful
+	// measurement, not an unset default: a busy slot with exactly zero tokens
+	// free must encode that zero (nil = legacy/unenriched, absent on the
+	// wire), or the coordinator falls back to the stale heartbeat budget and
+	// can misclassify a transient token_budget reject as fleet-deterministic
+	// (codex P1-4). FeasibleAfterMS is the provider's busy-wait
+	// forecast of when a request of this shape could next be admitted
+	// (duration, never a wall clock) — emitted on busy-slot token_budget
+	// rejections by quote-capable providers, from the same queue estimator
+	// their capacity quotes use. CapacitySeq names the capacity snapshot the
+	// gate decided from, letting the coordinator order the rejection against
+	// heartbeats.
+	RejectionReason      CapacityRejectionReason `json:"rejection_reason,omitempty"`
+	AvailableTokenBudget *int64                  `json:"available_token_budget,omitempty"`
+	FeasibleAfterMS      int64                   `json:"feasible_after_ms,omitempty"`
+	CapacitySeq          uint64                  `json:"capacity_seq,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +771,13 @@ type AttestationChallengeMessage struct {
 	Type      string `json:"type"`
 	Nonce     string `json:"nonce"`     // base64-encoded random 32-byte nonce
 	Timestamp string `json:"timestamp"` // ISO 8601 timestamp
+}
+
+// CodeAttestationResumeChallenge proves possession of the cached registration
+// X25519 private key over the live WebSocket without spending another APNs push.
+type CodeAttestationResumeChallenge struct {
+	Type          string           `json:"type"`
+	CodeChallenge EncryptedPayload `json:"code_challenge"`
 }
 
 // AttestationResponseMessage is sent by the provider in response to an
@@ -947,6 +1002,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg PrefixCacheReadyV2Message
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal prefix_cache_ready_v2: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeCapacityQuote:
+		var msg CapacityQuoteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal capacity_quote: %w", err)
 		}
 		pm.Payload = &msg
 

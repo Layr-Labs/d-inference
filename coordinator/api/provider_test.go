@@ -84,6 +84,99 @@ func TestProviderWebSocketConnect(t *testing.T) {
 	}
 }
 
+func TestProviderWebSocketRejectsSecondRegisterAndAllowsReconnect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(logger)
+	srv := NewServer(
+		reg,
+		store.NewMemory(store.Config{AdminKey: "test-key"}),
+		ServerConfig{},
+		logger,
+	)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipFamily: "M4"},
+		Models:   []protocol.ModelInfo{{ID: "ordinary-model"}},
+		Backend:  "mlx-swift",
+	}
+	firstData, _ := json.Marshal(first)
+	if err := conn.Write(ctx, websocket.MessageText, firstData); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	ids := reg.ProviderIDs()
+	if len(ids) != 1 {
+		t.Fatalf("provider IDs after first register = %v", ids)
+	}
+	registered := reg.GetProvider(ids[0])
+	if registered == nil {
+		t.Fatal("first registration missing")
+	}
+
+	second := first
+	second.Hardware.ChipFamily = "M5"
+	second.Models = []protocol.ModelInfo{{ID: registry.Qwen38NAXModelID}}
+	second.RuntimeCapabilities = []string{
+		registry.ProviderCapabilityAppleM5,
+		registry.ProviderCapabilityMLXNAX,
+	}
+	secondData, _ := json.Marshal(second)
+	if err := conn.Write(ctx, websocket.MessageText, secondData); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, readCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer readCancel()
+	for {
+		_, _, err = conn.Read(readCtx)
+		if err == nil {
+			// Registration starts the attestation challenge loop. Drain any
+			// already-enqueued challenge frame before observing the policy close.
+			continue
+		}
+		if status := websocket.CloseStatus(err); status != websocket.StatusPolicyViolation {
+			t.Fatalf("duplicate-register close status = %v, want policy violation; error=%v",
+				status, err)
+		}
+		break
+	}
+	registered.Mu().Lock()
+	if len(registered.Models) != 1 || registered.Models[0].ID != "ordinary-model" ||
+		len(registered.ReportedRuntimeCapabilities) != 0 {
+		t.Fatalf("duplicate register replaced state: models=%v capabilities=%v",
+			registered.Models, registered.ReportedRuntimeCapabilities)
+	}
+	registered.Mu().Unlock()
+	time.Sleep(100 * time.Millisecond)
+
+	reconnect, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reconnect.Close(websocket.StatusNormalClosure, "")
+	reconnectMsg := first
+	reconnectMsg.Models = []protocol.ModelInfo{{ID: "reconnected-model"}}
+	reconnectData, _ := json.Marshal(reconnectMsg)
+	if err := reconnect.Write(ctx, websocket.MessageText, reconnectData); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if reg.ProviderCount() != 1 {
+		t.Fatalf("provider count after legitimate reconnect = %d, want 1",
+			reg.ProviderCount())
+	}
+}
+
 func TestProviderHeartbeatBeforeRegistrationIsRejected(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)

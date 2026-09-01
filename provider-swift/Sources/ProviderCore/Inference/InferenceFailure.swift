@@ -77,19 +77,38 @@ public struct InferenceFailure: Sendable, Equatable {
     public let errorReason: InferenceErrorReason?
     public let terminalCause: InferenceTerminalCause?
     public let attemptUsage: UsageInfo?
+    /// Routing-v2 enriched capacity rejection (all nil away from the
+    /// capacity-shaped live-gate paths; omitted on the wire when nil so the
+    /// legacy frame shape is untouched). Stamped by
+    /// `CapacityRejectionEnrichment.enrich` at the ProviderLoop's
+    /// capacity-shaped rejection sites, from the published capacity snapshot
+    /// so every rejection is also a fresh state sample for the coordinator's
+    /// ledger/clamp/taxonomy.
+    public let rejectionReason: CapacityRejectionReason?
+    public let availableTokenBudget: Int64?
+    public let feasibleAfterMs: Int64?
+    public let capacitySeq: UInt64?
 
     public init(
         code: InferenceFailureCode,
         statusCode: UInt16,
         errorReason: InferenceErrorReason? = nil,
         terminalCause: InferenceTerminalCause? = nil,
-        attemptUsage: UsageInfo? = nil
+        attemptUsage: UsageInfo? = nil,
+        rejectionReason: CapacityRejectionReason? = nil,
+        availableTokenBudget: Int64? = nil,
+        feasibleAfterMs: Int64? = nil,
+        capacitySeq: UInt64? = nil
     ) {
         self.code = code
         self.statusCode = statusCode
         self.errorReason = errorReason
         self.terminalCause = terminalCause
         self.attemptUsage = attemptUsage
+        self.rejectionReason = rejectionReason
+        self.availableTokenBudget = availableTokenBudget
+        self.feasibleAfterMs = feasibleAfterMs
+        self.capacitySeq = capacitySeq
     }
 
     public var message: String { code.message }

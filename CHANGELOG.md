@@ -1,5 +1,62 @@
 # Changelog
 
+## Release candidate v0.8.15 (not shipped; 2026-08-28)
+
+- **Exact Qwen3.8 dense VLM artifact** — Providers serve
+  `EigenLabs/Qwen3.8-27B-4bit` at immutable revision
+  `301e9e2767fd0efcfab7883004720ba3c9a552a1`. The dense Qwen3.5 text target
+  is extracted from the loaded VLM wrapper for ContinuousBatchingV2 while
+  retaining shared immutable weights, recurrent/KV sizing, causal visual spans,
+  request-owned M-RoPE state, cancellation, deadline, and MLX fault boundaries.
+  Image processing remains one tower invocation per image. API video remains
+  one full T×H×W tower invocation per video followed by ordered frame-output
+  splitting; console/UI video upload is not enabled.
+- **Exact separate Qwen3.8 MTP artifact, model-specific default on** —
+  `EigenLabs/Qwen3.8-27B-MTP-4bit` at immutable revision
+  `329261c5e0b3f9c233485e682cb3b67b88c20a55` is loaded only as a proposal
+  assistant; the target remains authoritative for acceptance and output.
+  Absent MTP config enables this exact target only. Explicit `mtp_mode = "off"`
+  (including `darkbloom beta disable mtp`) and the
+  `DARKBLOOM_CBV2_MTP=0` process kill switch independently restore target-only
+  decoding. Explicit `on` remains available for other supported targets.
+  Missing, malformed, unavailable, incompatible, or memory-inadmissible
+  assistant state falls back to target-only decoding with a stable reason.
+- **Unified Qwen template and tool controls** — Remote encrypted text/vision,
+  local single/batch, and prompt recount paths share one template-control
+  value. Nested `reasoning.enabled` wins over top-level or
+  `chat_template_kwargs.enable_thinking`; only `none`, `off`, and `0` disable
+  through `reasoning_effort`, `minimal` is preserved, media defaults thinking
+  off only with no explicit control, and `preserve_thinking` is forwarded.
+  Forced Qwen tool calls remain withheld until XML parsing, function selection,
+  and schema validation succeed; the exact concrete model advertises the
+  capability only for the `qwen3_coder` XML parser contract.
+- **Capability-gated rollout and integrity** — The exact concrete model is
+  restricted by the shared provider capability evaluator to Apple M5 with the
+  approved NAX runtime. `video_preprocessor_config.json` is included in model
+  integrity manifests. Provider version advances to `0.8.15`; no protocol
+  fields are added.
+
+## Release candidate v0.8.14 (not shipped; 2026-08-26)
+
+- **Qwen3-VL 30B-A3B production serving** — The exact
+  `qwen3_vl_moe` architecture is admitted through the contiguous
+  ContinuousBatchingV2 path. Text decode uses per-row M-RoPE positions; image
+  prefill carries causal visual spans, every DeepStack level, and the model's
+  embedding activation dtype. Homogeneous routed-expert gate/up projections are
+  fused at load time, reducing each MoE layer from three gathered projections
+  to two while retaining a strict split fallback for heterogeneous
+  quantization. Paged KV, video, packed prefill, prefix reuse, compiled decode,
+  and MTP remain fail-closed for this family.
+- **Qwen 3.5/3.6 inline MTP defaults to automatic** — New
+  `mtp_mode = "auto" | "on" | "off"` keeps Gemma opt-in while valid inline
+  `qwen3_5_moe` artifacts activate by default. Explicit `off` and
+  `DARKBLOOM_CBV2_MTP=0` remain independent rollback controls. Config schema
+  v3 migrates the legacy generated `mtp = false` default to `auto` so upgraded
+  providers receive the policy, retains legacy `true` as `on`, and preserves a
+  new explicit `mtp_mode = "off"` override.
+- Provider and coordinator fallback version authorities move together to
+  `0.8.14`; there is no new wire protocol.
+
 ## Release candidate v0.8.13 (not shipped; 2026-08-25)
 
 - **Qwen 3.5 video + grounded image captions** — Qwen vision prefill no

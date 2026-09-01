@@ -39,10 +39,14 @@ struct BetaFeaturesTests {
         #expect(BetaFeatures.feature(id: "does-not-exist") == nil)
     }
 
-    @Test("mtp defaults to disabled")
-    func mtpDefaultsOff() {
+    @Test("mtp beta defaults to model-aware automatic posture")
+    func mtpDefaultsToAutomatic() {
+        let config = freshConfig()
         let feature = BetaFeatures.feature(id: "mtp")!
-        #expect(feature.isEnabled(in: freshConfig()) == false)
+        #expect(config.backend.mtpMode == .auto)
+        #expect(feature.isEnabled(in: config) == true)
+        #expect(feature.state(in: config) == .auto)
+        #expect(feature.state(in: config).displayValue == "auto (model-aware)")
         #expect(feature.requiresRestart == true)
     }
 
@@ -75,18 +79,20 @@ struct BetaFeaturesTests {
         #expect(config.gemmaOptimizations.weightedR1)
     }
 
-    @Test("apply toggles the backing config field both ways")
+    @Test("apply maps the boolean beta surface to explicit modes")
     func applyTogglesField() {
         let feature = BetaFeatures.feature(id: "mtp")!
         var config = freshConfig()
 
         feature.apply(true, to: &config)
-        #expect(config.backend.mtp == true)
+        #expect(config.backend.mtpMode == .on)
         #expect(feature.isEnabled(in: config) == true)
+        #expect(feature.state(in: config) == .on)
 
         feature.apply(false, to: &config)
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpMode == .off)
         #expect(feature.isEnabled(in: config) == false)
+        #expect(feature.state(in: config) == .off)
 
         // Retired ids resolve to nothing rather than a stale toggle.
         #expect(BetaFeatures.feature(id: "adaptive-prefill") == nil)
@@ -110,11 +116,11 @@ struct BetaFeaturesTests {
         #expect(config.gemmaOptimizations == before.gemmaOptimizations)
     }
 
-    @Test("enabledIDs reflects default-on and explicit beta settings")
+    @Test("enabledIDs includes automatic MTP because eligible models can use it")
     func enabledIDsReflectsConfig() {
         var config = freshConfig()
         #expect(BetaFeatures.enabledIDs(in: config) == [
-            "gemma-prefill-layer18", "gemma-weighted-r1",
+            "gemma-prefill-layer18", "gemma-weighted-r1", "mtp",
         ])
 
         BetaFeatures.feature(id: "gemma-weighted-r1")!.apply(false, to: &config)
@@ -133,7 +139,8 @@ struct BetaFeaturesTests {
         let toml = ConfigManager.serialize(config)
         let decoded = ConfigManager.parse(toml)
 
-        #expect(toml.contains("mtp"))
+        #expect(toml.contains("mtp_mode = 'on'"))
+        #expect(!toml.contains("\nmtp = "))
         #expect(feature.isEnabled(in: decoded) == true)
     }
 

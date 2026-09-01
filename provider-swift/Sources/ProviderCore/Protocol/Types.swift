@@ -758,6 +758,13 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
+    /// Per-connection, monotonically increasing sequence stamped on every
+    /// heartbeat's capacity payload (routing v2). Starts at 1 on each fresh
+    /// coordinator connection so the coordinator can discard loss/reorder of
+    /// out-of-band event heartbeats; 0 means "not stamped" and is OMITTED on
+    /// the wire (mirrors Go `capacity_seq,omitempty` — a session that has sent
+    /// any heartbeat with capacity_seq > 0 is thereby quote-capable).
+    public var capacitySeq: UInt64
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -767,6 +774,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
+        case capacitySeq = "capacity_seq"
     }
 
     public init(
@@ -776,7 +784,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
-        mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil
+        mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
+        capacitySeq: UInt64 = 0
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -785,10 +794,11 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
         self.mlxCacheReclaimer = mlxCacheReclaimer
+        self.capacitySeq = capacitySeq
     }
 
-    // Explicit decode so older payloads without `free_for_load_gb` or
-    // `mlx_cache_reclaimer` still decode. Encoding stays synthesized.
+    // Explicit decode so older payloads without `free_for_load_gb`,
+    // `mlx_cache_reclaimer`, or `capacity_seq` still decode.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
@@ -799,6 +809,24 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
+        self.capacitySeq = try c.decodeIfPresent(UInt64.self, forKey: .capacitySeq) ?? 0
+    }
+
+    // Explicit encode (the other fields' encoding is unchanged from the
+    // synthesized form): `capacity_seq` mirrors Go `omitempty` — an unstamped
+    // payload (0) keeps the legacy wire shape byte-identical.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(slots, forKey: .slots)
+        try c.encode(gpuMemoryActiveGb, forKey: .gpuMemoryActiveGb)
+        try c.encode(gpuMemoryPeakGb, forKey: .gpuMemoryPeakGb)
+        try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)
+        try c.encode(totalMemoryGb, forKey: .totalMemoryGb)
+        try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
+        try c.encodeIfPresent(mlxCacheReclaimer, forKey: .mlxCacheReclaimer)
+        if capacitySeq != 0 {
+            try c.encode(capacitySeq, forKey: .capacitySeq)
+        }
     }
 }
 

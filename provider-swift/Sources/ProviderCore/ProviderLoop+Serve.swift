@@ -107,15 +107,15 @@ extension ProviderLoop {
         await runStartupPreloadGate()
         preloadLivenessRefresh.cancel()
 
-        // 2. Build attestation blob for registration
-        let attestation = buildRegistrationAttestation()
-
-        // 3. Hash the colocated mlx.metallib so the coordinator (and any
-        // user inspecting attestation) can correlate the GPU kernel set
-        // with the binary. Reported under template_hashes["mlx_metallib"]
-        // so legacy providers and Swift providers can keep one protocol
-        // shape while the coordinator applies backend-specific enforcement.
+        // 2. Hash the exact mlx.metallib the live process will load. The same
+        // digest is sent as reported runtime evidence and embedded in the
+        // Secure-Enclave-signed attestation below.
         let runtimeWithMetallib = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
+
+        // 3. Capture immutable claims, but re-sign a fresh timestamp for every
+        // WebSocket registration/reconnect.
+        let registrationAttestation = makeRegistrationAttestationProvider(
+            runtimeHashes: runtimeWithMetallib)
         if let metallib = runtimeWithMetallib?.templateHashes["mlx_metallib"] {
             logger.info("mlx.metallib hash: \(metallib.prefix(16))...")
         } else {
@@ -147,11 +147,13 @@ extension ProviderLoop {
             heartbeatInterval: TimeInterval(loopConfig.config.coordinator.heartbeatIntervalSecs),
             publicKey: keyPair.publicKeyBase64,
             walletAddress: nil,
-            attestation: attestation,
+            attestation: nil,
+            registrationAttestation: registrationAttestation,
             authToken: loopConfig.authToken,
             runtimeHashes: runtimeWithMetallib,
             modelHashes: loopConfig.modelHashes,
             privacyCapabilities: privacyCapabilitiesForRegistration(),
+            runtimeCapabilities: loopConfig.runtimeCapabilities,
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
@@ -237,7 +239,8 @@ extension ProviderLoop {
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let toolSchemaMetadataProtocol, let firstContentDeadline
+                    let toolSchemaMetadataProtocol, let firstContentDeadline,
+                    let receivedAt
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -248,6 +251,7 @@ extension ProviderLoop {
                         prefixCacheProtocol: prefixCacheProtocol,
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
+                        receivedAt: receivedAt,
                         send: send
                     )
 
@@ -260,6 +264,9 @@ extension ProviderLoop {
                         timestamp: timestamp,
                         send: send
                     )
+
+                case .codeAttestationResumeChallenge(let challenge):
+                    handleCodeChallenge(challenge, send: send)
 
                 case .runtimeOutdated(let mismatches):
                     logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
@@ -300,9 +307,14 @@ extension ProviderLoop {
 
         logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
+        // Quote path mirror (routing v2): a shutting-down provider quotes
+        // `slot_state` rejections for the brief window the socket stays up.
+        state.refusingNewWork = true
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        trailingHeartbeatTask?.cancel()
+        trailingHeartbeatTask = nil
         capacityRefreshTask = nil
         autoUpdateTask?.cancel()
         autoUpdateTask = nil
@@ -436,20 +448,27 @@ extension ProviderLoop {
 
     // MARK: - Attestation
 
-    private func buildRegistrationAttestation() -> RawJSON? {
-        guard let builder = attestationBuilder else {
-            logger.info("No Secure Enclave identity -- registration without attestation")
-            return nil
-        }
-        do {
-            let jsonData = try builder.buildAttestationJSON(
-                encryptionPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash
-            )
+    private func makeRegistrationAttestationProvider(
+        runtimeHashes: RuntimeHashes?
+    ) -> @Sendable () -> RawJSON? {
+        let builder = attestationBuilder
+        let encryptionPublicKey = keyPair.publicKeyBase64
+        let signedBinaryHash = binaryHash
+        let chipFamily = loopConfig.hardware.chipFamily
+        let capabilities = loopConfig.runtimeCapabilities
+        let signedMetallibHash = runtimeHashes?.templateHashes["mlx_metallib"]
+        return {
+            guard let builder else { return nil }
+            guard let jsonData = try? builder.buildAttestationJSON(
+                encryptionPublicKey: encryptionPublicKey,
+                binaryHash: signedBinaryHash,
+                chipFamily: chipFamily,
+                runtimeCapabilities: capabilities,
+                metallibHash: signedMetallibHash
+            ) else {
+                return nil
+            }
             return RawJSON(rawBytes: jsonData)
-        } catch {
-            logger.error("Failed to build attestation: \(error)")
-            return nil
         }
     }
 

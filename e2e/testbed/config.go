@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // DefaultTestModelID is the checkpoint the testbed serves by default.
@@ -201,6 +203,10 @@ type ProviderConfig struct {
 	// 0 leaves the provider to pick, which is 4 as of v0.8.1 — see
 	// ResolveMaxConcurrent for why 0 is not a way to ask for 8.
 	MaxConcurrent int
+	// MTPDrafterPath is an explicit immutable local assistant snapshot. Empty
+	// preserves provider policy: exact-model automatic MTP may use catalog
+	// metadata and otherwise falls back to target-only decode.
+	MTPDrafterPath string
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -274,6 +280,18 @@ type SuiteConfig struct {
 	SeedBalance                int64
 	UseMemoryStore             bool
 	EnableEphemeralPrefixCache bool
+	// CatalogModels and ModelAliases seed the suite's isolated DB before the
+	// provider connects. Empty preserves the lightweight ID-only catalog used
+	// by the ordinary testbed.
+	CatalogModels []CatalogModel
+	ModelAliases  []store.ModelAlias
+	// ExpectedProviderCapabilities asks the testbed to admit only providers
+	// that actually reported every capability at registration. It is opt-in;
+	// ordinary suites retain the historical self-signed force-trust behavior.
+	ExpectedProviderCapabilities []string
+	// MTPDrafterPath is forwarded only when a test explicitly configured a
+	// local immutable assistant snapshot.
+	MTPDrafterPath string
 	// KVBackend / MaxConcurrent are forwarded verbatim to every provider this
 	// suite launches. See ProviderConfig for the zero-value semantics and the
 	// DARKBLOOM_CBV2_PAGED_KV gotcha.

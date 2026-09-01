@@ -93,6 +93,9 @@ public enum CoordinatorEvent: Sendable {
     /// 32-byte X25519 ephemeral public key, also decoded.
     /// Consumers (ProviderLoop) feed both directly to NodeKeyPair.decrypt
     /// without further base64 manipulation.
+    /// `receivedAt` is the monotonic instant the receive callback observed the
+    /// frame — the anchor for both the first-content deadline and the
+    /// provider's end-to-end TTFT samples (dispatch-received → first token).
     case inferenceRequest(
         requestId: String,
         ciphertext: Data,
@@ -101,10 +104,12 @@ public enum CoordinatorEvent: Sendable {
         cacheScope: String?,
         prefixCacheProtocol: Int?,
         toolSchemaMetadataProtocol: Int?,
-        firstContentDeadline: FirstContentDeadline?
+        firstContentDeadline: FirstContentDeadline?,
+        receivedAt: ContinuousClock.Instant
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
+    case codeAttestationResumeChallenge(EncryptedPayload)
     case runtimeOutdated(mismatches: [RuntimeMismatch])
     /// Coordinator-driven preload. Provider should eagerly load the model
     /// (off-thread) and reply with a `loadModelStatus` outbound message
@@ -136,10 +141,14 @@ public struct CoordinatorClientConfig: Sendable {
     public let publicKey: String?
     public let walletAddress: String?
     public let attestation: RawJSON?
+    /// Called for every WebSocket registration, including reconnects. Production
+    /// re-signs a fresh timestamp while preserving the same bound claims.
+    public let registrationAttestation: @Sendable () -> RawJSON?
     public let authToken: String?
     public let runtimeHashes: RuntimeHashes?
     public let modelHashes: [String: String]
     public let privacyCapabilities: PrivacyCapabilities?
+    public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// When true, this machine registers as private-only: the coordinator
     /// serves it exclusively to its owner's self-route requests, never the
     /// public fleet.
@@ -159,10 +168,12 @@ public struct CoordinatorClientConfig: Sendable {
         publicKey: String? = nil,
         walletAddress: String? = nil,
         attestation: RawJSON? = nil,
+        registrationAttestation: (@Sendable () -> RawJSON?)? = nil,
         authToken: String? = nil,
         runtimeHashes: RuntimeHashes? = nil,
         modelHashes: [String: String] = [:],
         privacyCapabilities: PrivacyCapabilities? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil
@@ -175,10 +186,12 @@ public struct CoordinatorClientConfig: Sendable {
         self.publicKey = publicKey
         self.walletAddress = walletAddress
         self.attestation = attestation
+        self.registrationAttestation = registrationAttestation ?? { attestation }
         self.authToken = authToken
         self.runtimeHashes = runtimeHashes
         self.modelHashes = modelHashes
         self.privacyCapabilities = privacyCapabilities
+        self.runtimeCapabilities = runtimeCapabilities
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment

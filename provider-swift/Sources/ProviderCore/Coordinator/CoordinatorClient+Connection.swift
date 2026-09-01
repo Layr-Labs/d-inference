@@ -104,6 +104,12 @@ extension CoordinatorClient {
             // Nil the stored reference so sendOnCurrentConnection fast-returns
             // during the reconnect window instead of firing on a cancelled connection.
             self.nwConnection = nil
+            // Routing v2: this connection's capacity-seq session is over. A
+            // reconnect re-registers and restarts seq at 1; the published
+            // quote snapshot is dropped with it so quotes never answer from a
+            // session the new coordinator connection has not seen.
+            self.sessionRegistered = false
+            self.state.resetCapacitySession()
             // Detach the inference-chunk fast path from this connection (drops any
             // queued chunks; their requests are cancelled on disconnect). Guarded
             // by identity so a concurrent reconnect's freshly-bound writer isn't
@@ -159,6 +165,11 @@ extension CoordinatorClient {
 
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
+        // Fresh capacity-seq session for this connection (routing v2): seq
+        // restarts at 1 on the first heartbeat and out-of-band event
+        // heartbeats are permitted from here on.
+        state.resetCapacitySession()
+        sessionRegistered = true
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is

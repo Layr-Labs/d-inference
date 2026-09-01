@@ -1,6 +1,11 @@
 package registry
 
-import "strings"
+import (
+	"strings"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
+)
 
 // Phase-0 SLA-aware, occupancy-aware admission — SHADOW + MEASUREMENT slice.
 //
@@ -13,8 +18,9 @@ import "strings"
 //   - WouldShed: the occupancy-aware TTFT estimate
 //     (occupancyAwareTTFTMsFromSnapshot = base + the occupancy term, which is
 //     non-zero only when EIGENINFERENCE_TTFT_OCCUPANCY_ALPHA > 0) for the chosen
-//     provider exceeds the verified ~10s deadline base (NOT the code's 5s internal
-//     budget — gating at 5s over-sheds ~2x per telemetry-db findings §2). The
+//     provider exceeds the model's upstream deadline base (standard ~10s;
+//     exact-model policies may be shorter). This is NOT the live coordinator
+//     cutoff, which preserves response headroom inside the upstream SLA. The
 //     occupancy term is intentionally confined to this shadow estimate so it can
 //     never tighten the live HARD_REJECT ceiling fed by ttftMsFromSnapshot.
 //   - IdleAlternativeExists: the chosen provider already carries occupying peers
@@ -67,11 +73,11 @@ func ParseTTFTAdmissionMode(s string) TTFTAdmissionMode {
 	}
 }
 
-// defaultTTFTDeadlineBaseMs is the verified OpenRouter SLA base. Cancels fit
-// `10000 + 1ms·prompt_tokens` at a median ratio of 1.002 (telemetry-db findings
-// §2); the coordinator's internal `ttftDeadline` (consumer.go) still uses a 5s
-// base, which would over-shed ~2x if used as the gate — so the shadow evaluator
-// uses THIS base, decoupled from consumer.go.
+// defaultTTFTDeadlineBaseMs is the verified standard OpenRouter SLA base.
+// Standard-model cancels fit `10000 + 1ms·prompt_tokens` at a median ratio of
+// 1.002 (telemetry-db findings §2). The live coordinator cutoff is selected
+// separately with response headroom; exact-model policy can tighten either
+// clock without conflating the two.
 const defaultTTFTDeadlineBaseMs = 10000.0
 
 // Both are configured once at startup (from main.go env wiring) and read-only on
@@ -106,15 +112,14 @@ func TTFTDeadlineBaseMs() float64 {
 	return ttftDeadlineBaseMs
 }
 
-// ttftDeadlineMsForPrompt is the shadow gate's per-request SLA in ms:
-// base + 1ms·prompt_tokens, matching the per-token slope of consumer.ttftDeadline
-// but with the verified ~10s base instead of 5s. Used ONLY by the shadow
-// evaluator — the live consumer.go ttftDeadline path is untouched.
-func ttftDeadlineMsForPrompt(promptTokens int) float64 {
-	if promptTokens < 0 {
-		promptTokens = 0
-	}
-	return ttftDeadlineBaseMs + float64(promptTokens)
+// ttftDeadlineMsForPrompt is the shadow gate's per-request upstream SLA in ms.
+// Ordinary models use the configured ~10s base; exact per-model overrides use
+// the same shared policy table as the live coordinator clock. This remains
+// shadow only and does not change routing decisions.
+func ttftDeadlineMsForPrompt(model string, promptTokens int) float64 {
+	defaultBase := time.Duration(ttftDeadlineBaseMs * float64(time.Millisecond))
+	deadline := modelpolicy.UpstreamFirstContentDeadline(model, promptTokens, defaultBase)
+	return float64(deadline) / float64(time.Millisecond)
 }
 
 // ttftShadowEval is the result of the read-only Phase-0 evaluation. It is copied
@@ -147,17 +152,17 @@ func (e ttftShadowEval) applyTo(d *RoutingDecision) {
 // candidate WITHOUT changing the routing decision. Returns the zero value (a
 // no-op for applyTo) when the admission mode is off.
 //
-// Caller holds r.mu and NO provider lock — the peer scan in
-// loadedIdleAlternativeExistsLocked snapshots each provider under its own p.mu,
-// so taking a provider lock here would risk holding two at once. winner.snapshot
-// is the PRE-reserve snapshot, so the winner's occupancy excludes the request
-// about to be admitted (the b, not b+1, the new request actually waits behind).
-//
-// excludeIDs are the same retry/speculative-backup exclusions ReserveProviderEx
-// passed to the real selector; they are threaded into the idle-spread scan so a
-// provider the selector would never have considered is never counted as a
-// routable idle alternative.
-func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, winner *routingCandidate, excludeIDs ...string) ttftShadowEval {
+// Caller holds r.mu and no provider lock. scan is the exact post-narrowing pool
+// that produced winner, so the idle-spread signal reuses it instead of walking
+// the fleet a second time. winner.snapshot is the PRE-reserve snapshot, so its
+// occupancy excludes the request about to be admitted (the b, not b+1, the new
+// request actually waits behind).
+func (r *Registry) evaluateTTFTShadowLocked(
+	model string,
+	pr *PendingRequest,
+	winner *routingCandidate,
+	scan candidateScan,
+) ttftShadowEval {
 	mode := ttftAdmissionMode
 	if mode == TTFTAdmissionOff || winner == nil || pr == nil {
 		return ttftShadowEval{}
@@ -170,9 +175,9 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 	// Occupancy-aware estimate (base + occupancy term). The occupancy term lives
 	// here, in the SHADOW path only — ttftMsFromSnapshot (the live cost / ceiling /
 	// bestTTFT input) stays occupancy-free so raising alpha cannot tighten the
-	// live 5s HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
+	// live request-local HARD_REJECT ceiling. See occupancyAwareTTFTMsFromSnapshot.
 	estimate := occupancyAwareTTFTMsFromSnapshot(snap, reqPrompt)
-	deadline := ttftDeadlineMsForPrompt(reqPrompt)
+	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	occ := snapshotOccupancy(snap)
 
 	eval := ttftShadowEval{
@@ -191,9 +196,27 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 	// to. When herded, check whether an instantly-usable loaded-idle peer for the
 	// same model was routable.
 	if occ > 0 {
-		eval.IdleAlternativeExists = r.loadedIdleAlternativeExistsLocked(model, pr, winner.provider, excludeIDs...)
+		eval.IdleAlternativeExists = loadedIdleAlternativeExistsFromScan(scan, winner.provider)
 	}
 	return eval
+}
+
+// loadedIdleAlternativeExistsFromScan derives the shadow spread signal from the
+// selector's already-filtered pool. The scan and its snapshots are immutable.
+func loadedIdleAlternativeExistsFromScan(scan candidateScan, winner *Provider) bool {
+	winnerID := ""
+	if winner != nil {
+		winnerID = winner.ID
+	}
+	for _, candidate := range scan.pool {
+		if candidate.provider == nil || candidate.provider.ID == winnerID {
+			continue
+		}
+		if candidate.snapshot.modelLoaded && snapshotOccupancy(candidate.snapshot) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // loadedIdleAlternativeExistsLocked reports whether some provider OTHER than the
@@ -210,21 +233,6 @@ func (r *Registry) evaluateTTFTShadowLocked(model string, pr *PendingRequest, wi
 // can never count a peer the scheduler would have rejected. Caller holds r.mu and
 // no provider lock.
 func (r *Registry) loadedIdleAlternativeExistsLocked(model string, pr *PendingRequest, winner *Provider, excludeIDs ...string) bool {
-	winnerID := ""
-	if winner != nil {
-		winnerID = winner.ID
-	}
-	scan := r.scanCandidatesLocked(model, pr, false, excludeIDs...)
-	for _, c := range scan.pool {
-		if c.provider == nil || c.provider.ID == winnerID {
-			continue
-		}
-		// Instantly usable: the model is resident AND no work is occupying the box
-		// (a herded peer is not a spread target). The candidate already passed
-		// every selection gate via scanCandidatesLocked.
-		if c.snapshot.modelLoaded && snapshotOccupancy(c.snapshot) == 0 {
-			return true
-		}
-	}
-	return false
+	return loadedIdleAlternativeExistsFromScan(
+		r.scanCandidatesLocked(model, pr, false, excludeIDs...), winner)
 }

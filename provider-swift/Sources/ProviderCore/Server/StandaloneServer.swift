@@ -66,6 +66,7 @@ public struct StandaloneServerConfig: Sendable {
     /// Detected local hardware. Was the adaptive-prefill ladder seed;
     /// retained for CLI compatibility, currently unused on the v2 path.
     public let hardware: HardwareInfo?
+    public let runtimeCapabilities: Set<ProviderRuntimeCapability>
     /// Box-wide concurrent-decode cap per v2 engine
     /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
     /// ``BackendSettings/defaultEngineV2MaxConcurrent`` rather than a literal:
@@ -80,9 +81,11 @@ public struct StandaloneServerConfig: Sendable {
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
     public let prefillDeadlineMode: PrefillDeadlineMode?
-    /// MTP beta configuration. Defaults off; the CLI/config owner passes these
-    /// through when standalone MTP is intentionally enabled.
-    public let mtp: Bool
+    /// MTP policy inherited from provider config. Automatic mode enables only
+    /// inline Qwen 3.5/3.6 MoE MTP; Gemma remains explicitly opt-in.
+    public let mtpMode: MTPMode
+    /// Source-compatible view for callers that still inspect the old boolean.
+    public var mtp: Bool { mtpMode == .on }
     public let mtpDrafterPath: String?
 
     public init(
@@ -91,12 +94,14 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         hardware: HardwareInfo? = nil,
+        runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
-        mtp: Bool = false,
+        mtp: Bool? = nil,
+        mtpMode: MTPMode = .auto,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -104,12 +109,13 @@ public struct StandaloneServerConfig: Sendable {
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
         self.hardware = hardware
+        self.runtimeCapabilities = runtimeCapabilities
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
         self.engineV2KVBackendByModel = engineV2KVBackendByModel
         self.prefillDeadlineMode = prefillDeadlineMode
-        self.mtp = mtp
+        self.mtpMode = mtp.map { $0 ? .on : .off } ?? mtpMode
         self.mtpDrafterPath = mtpDrafterPath
     }
 }
@@ -261,7 +267,8 @@ public actor StandaloneServer {
         // that always fail. Mirrors `ProviderLoop.init`; the CLI
         // (`darkbloom start --local`) applies the same filter with an
         // operator-facing error and refuses to start when nothing remains.
-        self.models = Self.filterSupported(models)
+        self.models = Self.filterSupported(
+            models, runtimeCapabilities: config.runtimeCapabilities)
         self.kvBudget = GlobalKVCacheBudget()
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
@@ -277,8 +284,24 @@ public actor StandaloneServer {
     /// Drop models without a CBv2 adapter from the served catalog, with a
     /// WARN naming each so the operator sees why a model on disk is absent
     /// from `/v1/models`.
-    private static func filterSupported(_ models: [ModelInfo]) -> [ModelInfo] {
-        let (supported, unsupported) = EngineV2SupportedModels.partition(models)
+    private static func filterSupported(
+        _ models: [ModelInfo],
+        runtimeCapabilities: Set<ProviderRuntimeCapability>
+    ) -> [ModelInfo] {
+        let eligible = models.filter {
+            ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: runtimeCapabilities)
+        }
+        let ineligible = models.filter {
+            !ModelRuntimeRequirements.isEligible(
+                modelID: $0.id, available: runtimeCapabilities)
+        }
+        if !ineligible.isEmpty {
+            let ids = ineligible.map(\.id).sorted().joined(separator: ", ")
+            standaloneLogger.error(
+                "Not serving permanently ineligible model(s): \(ids)")
+        }
+        let (supported, unsupported) = EngineV2SupportedModels.partition(eligible)
         if !unsupported.isEmpty {
             let ids = unsupported.map(\.id).sorted().joined(separator: ", ")
             standaloneLogger.warning(
@@ -318,7 +341,8 @@ public actor StandaloneServer {
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init.
     public func setModels(_ newModels: [ModelInfo]) {
-        self.models = Self.filterSupported(newModels)
+        self.models = Self.filterSupported(
+            newModels, runtimeCapabilities: config.runtimeCapabilities)
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -752,7 +776,7 @@ public actor StandaloneServer {
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
-                    ?? Gemma4ProviderMTPAssistantLoader(),
+                    ?? ProductionProviderMTPAssistantLoader(),
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 logInfo: { standaloneLogger.info("\($0)") },
                 logWarning: { standaloneLogger.warning("\($0)") })
@@ -1076,9 +1100,10 @@ public actor StandaloneServer {
         do {
             try await ensureModelLoaded(modelId)
         } catch StandaloneServerError.modelNotFound {
-            // Unknown model id → 404 via mapInferenceErrorToStatus.
-            // StandaloneServerError never crosses the HTTP layer;
-            // translate to the typed engine error.
+            // StandaloneServerError never crosses the HTTP layer.
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        } catch is ModelRuntimeIneligibleError {
+            // Permanently ineligible models are absent from the local catalog.
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
         } catch let StandaloneServerError.capacityUnavailable(message) {
             // Cache full / memory-headroom / re-slice-floor / engine
@@ -1196,6 +1221,8 @@ public actor StandaloneServer {
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
     func ensureModelLoaded(_ modelId: String) async throws {
+        try ModelRuntimeRequirements.requireEligible(
+            modelID: modelId, available: config.runtimeCapabilities)
         try Task.checkCancellation()
         if slots[modelId] != nil, !evictingModels.contains(modelId) {
             touchSlot(modelId)
@@ -1274,7 +1301,13 @@ public actor StandaloneServer {
                     // that loads can actually serve (matches the runtime KV gate).
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
-            if let artifact = mtpPreparation.artifact {
+            // Inline assistants ride the target checkpoint's own shards,
+            // already counted in estimatedMemoryGb -> targetRequiredGb; only
+            // separately staged assistants add bytes on top
+            // (SpecDecArtifact.additionalWeightBytes).
+            if let artifact = mtpPreparation.artifact,
+                artifact.additionalWeightBytes > 0
+            {
                 if !ProviderLoop.assistantMemoryFits(
                     availableGb: await availableMemoryGb(),
                     targetRequiredGb: targetRequiredGb,
@@ -1286,7 +1319,7 @@ public actor StandaloneServer {
                         "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantMemoryUnavailable.rawValue) assistant_bytes=\(artifact.residentBytes)")
                 }
             }
-            let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
+            let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
 
             // Keep incoming weights visible to the process-wide KV ledger while

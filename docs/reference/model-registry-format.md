@@ -53,6 +53,12 @@ v2/<readable-slug>--<first-12-hex-of-sha256(model_id)>/<version>
 
 The publish script performs steps 1–3 and prints a sample `gh workflow run register-model.yml` invocation for step 4.
 
+The script prompts for required provider capabilities, trims and de-duplicates the
+comma-separated names, and rejects malformed values before hashing or upload. It
+defaults to no requirements for existing models. For the exact
+`EigenLabs/Qwen3.8-27B-4bit` model only, the generated registration command
+includes `-f required_provider_capabilities="apple_m5,mlx_nax"`.
+
 ## Registration request
 
 `POST /v1/admin/models/register`
@@ -69,6 +75,7 @@ The publish script performs steps 1–3 and prints a sample `gh workflow run reg
 | `max_output_length` | integer | yes | > 0 |
 | `min_ram_gb` | integer | yes | > 0 |
 | `capabilities` | array | no | Capability strings |
+| `required_provider_capabilities` | array | no | Provider capability names required for routing; defaults to `[]` |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | Merged into provider request at dispatch |
 | `metadata` | object | no | Opaque metadata (Hugging Face ID, deprecation date, OpenRouter slug, etc.) |

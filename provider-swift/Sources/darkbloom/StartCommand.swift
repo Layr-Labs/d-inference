@@ -82,9 +82,12 @@ struct Start: AsyncParsableCommand {
         }
 
         // These controls are process-start latches in MLX/MLXLM. Project the
-        // authoritative TOML before requireMetal() performs the first MLX touch.
+        // authoritative TOML, bind the immutable default runtime metallib, and
+        // only then let requireMetal() perform the first MLX touch.
+        let boundMetallibHash: String?
         do {
-            try Self.prepareServeRuntime(settings: snapshot.config.gemmaOptimizations)
+            boundMetallibHash = try Self.prepareServeRuntime(
+                settings: snapshot.config.gemmaOptimizations)
         } catch {
             printError("Cannot start: \(error)")
             throw ExitCode.failure
@@ -94,7 +97,12 @@ struct Start: AsyncParsableCommand {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
         }
-
+        // Diagnose once from the already-bound immutable snapshot and carry
+        // this exact set through every serving mode and registration path.
+        let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectPrepared(
+            hardware: hardware,
+            boundMetallibHash: boundMetallibHash
+        )
         // One WARN per retired knob still set, BEFORE the serving-mode split:
         // `--local` builds no ProviderLoop, so emitting these from the serve
         // loop left standalone operators with no notice at all.
@@ -106,43 +114,50 @@ struct Start: AsyncParsableCommand {
             try await runLocalStandalone(
                 snapshot: snapshot,
                 config: effectiveConfig,
-                hardware: hardware
+                hardware: hardware,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else if foreground {
             try await runForeground(
                 snapshot: snapshot,
                 hardware: hardware,
                 config: effectiveConfig,
-                coordinatorURL: effectiveCoordinator
+                coordinatorURL: effectiveCoordinator,
+                runtimeCapabilities: runtimeCapabilities
             )
         } else {
             try await launchDaemon(
                 snapshot: snapshot,
                 config: effectiveConfig,
                 coordinatorURL: effectiveCoordinator,
-                configPath: configOptions.config == nil ? nil : snapshot.configPath
+                configPath: configOptions.config == nil ? nil : snapshot.configPath,
+                runtimeCapabilities: runtimeCapabilities
             )
         }
     }
 
     /// Backward-compatible forwarding shim for the process-start environment
-    /// projection. The real seam (and its ordering contract: config projection
-    /// strictly BEFORE the first MLX touch; a rejected projection throws
-    /// before `requireMetal()`) lives in `ServeRuntimePreparer.prepareRuntime`
-    /// so `benchmark` mirrors the serve path without referencing `Start`.
-    /// Tests target `ServeRuntimePreparer` directly.
+    /// projection and metallib binding. The real seam (and its ordering
+    /// contract: config projection, then binding, then the first MLX touch)
+    /// lives in `ServeRuntimePreparer.prepareRuntime` so `benchmark` mirrors the
+    /// serve path without referencing `Start`. Tests target both seams.
+    @discardableResult
     internal static func prepareServeRuntime(
         settings: GemmaOptimizationSettings,
         apply: (GemmaOptimizationSettings) throws -> Void = {
             try GemmaOptimizationEnvironment.apply($0)
         },
+        bindMetallib: () -> String? = {
+            bindRuntimeMetallibForMLX(from: nil)
+        },
         requireMetal: () throws -> Void = {
             _ = try GPUEnforcement.requireMetal()
         }
-    ) throws {
+    ) throws -> String? {
         try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             apply: apply,
+            bindMetallib: bindMetallib,
             requireMetal: requireMetal
         )
     }

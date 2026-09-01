@@ -518,8 +518,10 @@ for key in \
 done
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
-# No bytes are emitted before first content. Keep the production absolute-clock
-# base at 9s; the coordinator adds 1ms per estimated prompt token.
+# No bytes are emitted before first content. Keep the ordinary-model production
+# absolute-clock base at 9s; the coordinator adds 1ms per estimated prompt token.
+# Exact model policies may tighten this base (Qwen3-VL Instruct: 4s live inside
+# its 5s upstream SLA), and a lower global base still wins.
 if ! sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' \
   /etc/d-inference/env; then
   echo "production first-content deadline is not the required 9000ms" >&2
@@ -583,7 +585,9 @@ Rules learned the hard way:
   content-bearing chunk, preserving a real HTTP 429 on pre-content exhaustion.
   Its request-absolute clock starts at HTTP receipt and is not reset by queueing,
   provider acceptance, boilerplate, writer handoff, speculation, or failover.
-  Production sets the base to 9000ms and adds 1ms per estimated prompt token
+  Production sets the ordinary-model base to 9000ms and adds 1ms per estimated
+  prompt token. Exact model policy can only tighten it; Qwen3-VL Instruct uses
+  a 4000ms live base inside its 5000ms upstream SLA
   ([`coordinator/api/first_token_clock.go`](../../coordinator/api/first_token_clock.go),
   [`coordinator/api/dispatch_terminal_write.go`](../../coordinator/api/dispatch_terminal_write.go)).
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`

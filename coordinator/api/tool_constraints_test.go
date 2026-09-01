@@ -208,6 +208,84 @@ func TestValidateToolConstraintRequestAcceptsNormalizedSubset(t *testing.T) {
 	}
 }
 
+func TestValidateToolConstraintRequestAcceptsForcedQwenParserAliases(t *testing.T) {
+	const prefix = `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"weather"}}],"tool_choice":"required","tool_call_parser":`
+	for _, parser := range []string{
+		"qwen3_coder", "qwen3_5", "qwen-xml", "xml_function",
+	} {
+		t.Run(parser, func(t *testing.T) {
+			body := []byte(prefix + fmt.Sprintf("%q}", parser))
+			mode, err := validateToolConstraintRequest(body)
+			if err != nil || mode != toolChoiceRequired {
+				t.Fatalf("Qwen parser alias rejected: mode=%q err=%v", mode, err)
+			}
+		})
+	}
+}
+
+func TestValidateToolConstraintRequestRejectsReasoningOnlyQwenParser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"weather"}}],"tool_choice":"required","tool_call_parser":"qwen3"}`)
+	if _, err := validateToolConstraintRequest(body); err == nil {
+		t.Fatal("qwen3 JSON parser unexpectedly accepted for inference-enforced tool choice")
+	}
+}
+
+func TestValidateResolvedToolConstraintParserBindsModelFamily(t *testing.T) {
+	tests := []struct {
+		name              string
+		parser            string
+		modelID           string
+		modelType         string
+		runtimeParameters map[string]any
+		wantError         bool
+	}{
+		{
+			name:   "Qwen parser on Qwen",
+			parser: "qwen3_coder", modelID: registry.Qwen38NAXModelID,
+		},
+		{
+			name:   "Gemma parser on Qwen",
+			parser: "gemma", modelID: registry.Qwen38NAXModelID, wantError: true,
+		},
+		{
+			name:   "Gemma parser on Gemma",
+			parser: "gemma4", modelType: "gemma4",
+		},
+		{
+			name:   "Qwen parser on Gemma",
+			parser: "qwen_xml", modelType: "gemma4_text", wantError: true,
+		},
+		{
+			name:   "runtime default defines family",
+			parser: "qwen3_coder", modelID: "opaque-build",
+			runtimeParameters: map[string]any{"tool_call_parser": "qwen3_coder"},
+		},
+		{
+			name:   "runtime default rejects other family",
+			parser: "gemma", modelID: "opaque-build",
+			runtimeParameters: map[string]any{"tool_call_parser": "qwen3_coder"},
+			wantError:         true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateResolvedToolConstraintParser(
+				map[string]any{"tool_call_parser": test.parser},
+				toolChoiceRequired,
+				test.modelID,
+				test.modelType,
+				test.runtimeParameters,
+			)
+			if test.wantError && err == nil {
+				t.Fatal("mismatched parser unexpectedly accepted")
+			}
+			if !test.wantError && err != nil {
+				t.Fatalf("matching parser rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateToolHistoryAllowsTrailingAssistantContinuation(t *testing.T) {
 	body := []byte(`{
 		"model":"m",

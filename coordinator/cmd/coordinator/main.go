@@ -37,7 +37,6 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/api"
 	"github.com/eigeninference/d-inference/coordinator/apns"
-	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/config"
@@ -229,11 +228,13 @@ func main() {
 	// AppConfig; hand the validated value to the server instead of letting
 	// NewServer re-read the environment.
 	serverCfg := cfg.ServerConfig
+	serverCfg.DurableTrustReuse = cfg.StoreConfig.DatabaseURL != ""
 	serverCfg.MediaFetch = &cfg.MediaFetchCfg
 	// LIVE first-content deadline base — distinct from the shadow evaluator's
 	// base below. Validate and bind it to this Server instance before startup;
 	// production sets 9000ms, while an unset/invalid value keeps the intentional
-	// 5000ms ordinary-unit default. Every request adds 1ms per prompt token.
+	// 5000ms ordinary-unit default. Exact model policy may tighten this base but
+	// never loosen a lower operator value. Every request adds 1ms per prompt token.
 	if v := os.Getenv("EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS"); v != "" {
 		if base, ok := validateTTFTDeadlineBaseMs(v); ok {
 			serverCfg.FirstContentDeadlineBase = time.Duration(base) * time.Millisecond
@@ -391,13 +392,59 @@ func main() {
 
 	// Server configuration applied from config.ServerConfig during NewServer().
 
-	// Sync known-good provider hashes from active releases in the store.
-	srv.SyncBinaryHashes()
-	srv.SyncRuntimeManifest()
+	// Sync known-good provider hashes from active releases in the store. Release
+	// inventory is a routing authority; an unreadable inventory must fail startup.
+	if err := srv.SyncBinaryHashes(); err != nil {
+		logger.Error("refusing to start: release policy inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
+	if err := srv.SyncRuntimeManifest(); err != nil {
+		logger.Error("refusing to start: runtime release inventory is unavailable", "error", err)
+		os.Exit(1)
+	}
 	if hashList := os.Getenv("EIGENINFERENCE_KNOWN_BINARY_HASHES"); hashList != "" {
 		hashes := strings.Split(hashList, ",")
 		srv.AddKnownBinaryHashes(hashes)
 		logger.Info("additional binary hashes from env var", "count", len(hashes))
+	}
+	// Release-policy routing gate mode. SHADOW (default): application evidence
+	// is derived, granted, swept, and counted (release_evidence.outcome metrics
+	// + /v1/stats application_evidence_providers) but NEVER blocks routing —
+	// identical routing behavior to the pre-release-policy coordinator. ENFORCE:
+	// the routing chokepoint requires generation-current evidence. Enforcement
+	// must only be enabled after a shadow deployment shows evidence coverage
+	// near the connected fleet size (2026-08-31: enforcing an unproven evidence
+	// predicate zeroed network capacity twice).
+	switch mode := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_MODE"); mode {
+	case "enforce":
+		// A restarted coordinator boots with an EMPTY provider registry: zero
+		// evidence exists until reconnected providers complete their first
+		// challenge. Enforcing from the first request would 429 the whole
+		// fleet for minutes — so enforcement always waits out a boot grace
+		// (default 20m ≈ four challenge cycles) during which routing behaves
+		// exactly like shadow while evidence coverage rebuilds.
+		// The override is RAISE-ONLY, mirroring DARKBLOOM_ACTIVATION_RESERVE_GB:
+		// a shorter grace recreates the empty-registry 429 interval the grace
+		// exists to prevent, so values below the default clamp up to it.
+		const minEnforceGrace = 20 * time.Minute
+		grace := minEnforceGrace
+		if v := os.Getenv("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= minEnforceGrace {
+				grace = d
+			} else if err == nil {
+				logger.Warn("EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE below the 20m minimum; clamping up", "value", v)
+			} else {
+				logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE; keeping default 20m", "value", v)
+			}
+		}
+		reg.SetReleasePolicyEnforcement(true)
+		reg.SetReleasePolicyEnforceAfter(time.Now().Add(grace))
+		logger.Warn("release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — providers without current application evidence will not route after the boot grace",
+			"boot_grace", grace.String())
+	case "", "shadow":
+		logger.Info("release-policy routing gate in SHADOW mode (default): evidence tracked and counted, never blocks routing; set EIGENINFERENCE_RELEASE_POLICY_MODE=enforce after coverage is proven")
+	default:
+		logger.Warn("invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode", "value", mode)
 	}
 	// v0.6.0: self-reported binaryHash is demoted to drift telemetry by default
 	// (APNs code-identity attestation is the real signal). Set this to re-enable
@@ -410,8 +457,9 @@ func main() {
 	// Routing: TTFT admission ceiling mode. Default is a SOFT routing preference
 	// (serve the best-available provider when one passes every routing/capacity
 	// gate). Set this to restore the legacy HARD 429 when the best estimated TTFT
-	// exceeds the 5s+1ms/token deadline. The estimate's prefill term is not
-	// provider-measured, so the hard gate over-rejected serveable requests.
+	// exceeds the pinned request-local model deadline. The estimate's prefill
+	// term is not provider-measured, so the hard gate over-rejected serveable
+	// requests.
 	if os.Getenv("EIGENINFERENCE_TTFT_HARD_REJECT") == "true" {
 		srv.SetTTFTHardReject(true)
 		logger.Warn("TTFT hard-reject ENABLED via EIGENINFERENCE_TTFT_HARD_REJECT (legacy 429-on-slow-estimate; soft preference is the default)")
@@ -455,9 +503,10 @@ func main() {
 	//     candidate-loop ceiling, and the preflight bestTTFT — byte-for-byte the
 	//     pre-Phase-0 value. Reuses the occupancy the snapshot already tracks
 	//     (max(pendingForModel, backend_running+backend_waiting)); herd-aware.
-	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the SLA
-	//     base the shadow evaluator gates against. The verified OpenRouter SLA is
-	//     ~10s+1ms/token; the instance-owned live first-content deadline
+	//   - EIGENINFERENCE_TTFT_DEADLINE_BASE_MS (float, default 10000): the
+	//     ordinary-model SLA base the shadow evaluator gates against. The
+	//     standard OpenRouter SLA is ~10s+1ms/token; exact-model policy can only
+	//     tighten that base. The instance-owned live first-content deadline
 	//     configured above is independent. Used ONLY by the shadow evaluator.
 	//   - EIGENINFERENCE_TTFT_ADMISSION_MODE (off|shadow|enforce, default off):
 	//     off => no evaluation; shadow/enforce => compute would_shed +
@@ -675,47 +724,15 @@ func main() {
 	if mdmCfg.URL != "" {
 		mdmClient := mdm.NewClient(mdmCfg.URL, mdmCfg.APIKey, logger)
 
-		mdmClient.SetOnMDA(func(udid string, certChain [][]byte) {
-			// Parse + verify the Apple cert chain once (not per provider).
-			mdaResult, err := attestation.VerifyMDADeviceAttestation(certChain)
-			if err != nil {
-				logger.Error("late MDA cert parse error", "udid", udid, "error", err)
-				return
-			}
-			if !mdaResult.Valid {
-				return
-			}
-			// Attach the proof only to a connection that currently holds hardware
-			// trust, atomically (trust check + writes under one lock). A late
-			// DevicePropertiesAttestation can arrive after the device reconnected as
-			// self_signed (RestoreProviderState caps it); attaching MDA to a
-			// self_signed provider is the drift this fix removes — and a separate
-			// check-then-write would be a TOCTOU. MDA is re-earned live once hardware
-			// is re-granted this connection.
-			reg.ForEachProvider(func(p *registry.Provider) {
-				if p.SetMDAProofIfHardware(certChain, mdaResult) {
-					// Persist now so the late-arriving chain is durable for reuse on
-					// the next reconnect, rather than waiting on a throttled heartbeat.
-					reg.PersistProvider(p)
-					logger.Info("late MDA cert stored on provider",
-						"provider_id", p.ID,
-						"serial", mdaResult.DeviceSerial,
-						"udid", mdaResult.DeviceUDID,
-						"os_version", mdaResult.OSVersion,
-					)
-				}
-			})
-		})
+		mdmClient.SetOnMDA(srv.ApplyLateMDA)
 
-		// Register callback for late-arriving SecurityInfo responses. When APN
-		// delivery is slow (device sleeping, Power Nap cycle), the synchronous 90s
-		// wait may time out but the webhook arrives later. The Server method
-		// retroactively upgrades the matching self_signed provider — mirroring the
-		// synchronous success path (status guard + trust_status notification) so the
-		// two paths can't drift.
+		// Register callbacks for responses that arrive after the synchronous wait.
+		// The server accepts them only for the exact current scheduler command
+		// binding after the connection's phase-1 challenge has settled.
 		mdmClient.SetOnLateSecurityInfo(srv.ApplyLateSecurityInfo)
 
 		srv.SetMDMClient(mdmClient)
+		srv.StartMDMScheduler()
 		// Optional shared secret for the MicroMDM webhook. Defense-in-depth on
 		// top of the mandatory solicited-command (CommandUUID) gate: configure
 		// MicroMDM's command-webhook-url with ?token=<secret> and set this to
@@ -780,15 +797,16 @@ func main() {
 		logger.Info("APNs code-identity attestation not configured — providers route without code-identity proof")
 	}
 
-	// DAR-326 Phase 0: seed the provider trust-reuse cache from the store (and wire
-	// write-through + the hard-untrust invalidation hook). This lets a planned
-	// coordinator restart / blue-green swap skip a fleet-wide live MDM SecurityInfo
-	// + APNs re-verification herd: a reconnecting, recently-fully-verified provider
-	// is granted hardware from its record once a fresh live SE challenge re-proves
-	// identity + posture. Durable in prod (Postgres store; see the store selection
-	// above); a no-op only under the in-memory store fallback. Independent of the
-	// APNs attestor — MDM verification runs whenever an MDM client is configured.
-	srv.SeedTrustReuseCache(ctx)
+	// Seed durable trust reuse only after the fsync-backed hard-untrust journal is
+	// available and replayed. A pending or malformed journal must block startup;
+	// accepting providers before replay could resurrect a stale hardware row.
+	if err := srv.SeedTrustReuseCache(ctx); err != nil {
+		logger.Error("refusing to start: trust-reuse revocation journal is not safe",
+			"health_reason", "trust_reuse_revocation_journal_unavailable",
+			"error", err,
+		)
+		os.Exit(1)
+	}
 
 	// Start background eviction of stale providers.
 	reg.StartEvictionLoop(ctx, 90*time.Second)

@@ -95,6 +95,7 @@ func addProvider(reg *registry.Registry, id, providerKey, serial, hardwareModel 
 	msg := &protocol.RegisterMessage{
 		Type:                    protocol.TypeRegister,
 		Hardware:                protocol.Hardware{MachineModel: hardwareModel, MemoryGB: memGB},
+		Models:                  []protocol.ModelInfo{{ID: "test-model"}},
 		Backend:                 registry.BackendMLXSwift,
 		PublicKey:               providerKey,
 		EncryptedResponseChunks: true,

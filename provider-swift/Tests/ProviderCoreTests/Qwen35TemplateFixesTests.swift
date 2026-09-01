@@ -55,7 +55,11 @@ struct Qwen35TemplateFixesTests {
         #expect(Qwen35TemplateFix.applies(
             to: .init(modelId: nil, modelType: "qwen3_5_moe")))
         #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: nil, modelType: "qwen3_5")))
+        #expect(Qwen35TemplateFix.applies(
             to: .init(modelId: "mlx-community/Qwen3.6-35B", modelType: nil)))
+        #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: "EigenLabs/Qwen3.8-27B-4bit", modelType: nil)))
         #expect(!Qwen35TemplateFix.applies(
             to: .init(modelId: "qwen3-8b", modelType: "qwen3")))
         #expect(!Qwen35TemplateFix.applies(
@@ -236,8 +240,101 @@ struct Qwen35TemplateFixesTests {
             request: request,
             tokenizer: TokenizerHandle(QwenSystemFirstTokenizer()),
             modelType: "qwen3_5_moe",
-            reasoningEffort: nil)
+            templateControls: .init())
         #expect(floor == 3)
+    }
+
+    // MARK: - Qwen3-VL multi-system regression (OpenRouter failure case)
+    //
+    // Qwen3-VL's chat template consumes a system message only at
+    // messages[0]. A mid-conversation system turn was silently DROPPED from
+    // the rendered prompt, so the model never saw the instruction it was
+    // later asked about. These tests pin the applicability gate and the
+    // merged prompt shape for the exact failing history.
+
+    private let qwen3VLContext = ChatTemplateFixContext(
+        modelId: "qwen3-vl-30b-a3b-instruct",
+        modelType: "qwen3_vl_moe")
+
+    @Test func appliesToQwen3VLMoeModelType() {
+        #expect(Qwen35TemplateFix.applies(to: qwen3VLContext))
+        #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: nil, modelType: "qwen3_vl_moe")))
+        #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: "qwen3-vl-30b-a3b-instruct", modelType: nil)))
+        #expect(Qwen35TemplateFix.applies(
+            to: .init(modelId: "EigenLabs/Qwen3.5-35B-A3B-MLX-VL-4bit-g64", modelType: nil)))
+    }
+
+    @Test func qwen3VLMidConversationSystemMessageReachesPrompt() throws {
+        // The exact OpenRouter failing shape: a later system turn carrying an
+        // instruction the model is subsequently asked to recall.
+        let normalized = try ChatTemplateFixes.normalizeMessages(
+            [
+                message("system", "base policy"),
+                message("user", "first question"),
+                message("system", "the secret word is periwinkle"),
+                message("assistant", "first answer"),
+                message("user", "what is the secret word?"),
+            ],
+            context: qwen3VLContext)
+
+        #expect(roles(normalized) == ["system", "user", "assistant", "user"])
+        let systemContent = try #require(normalized[0]["content"] as? String)
+        #expect(systemContent.contains("base policy"))
+        #expect(systemContent.contains("periwinkle"))
+        #expect(
+            systemContent == "base policy\n\nthe secret word is periwinkle",
+            "merged system content must preserve history order and separator")
+        #expect(normalized[1]["content"] as? String == "first question")
+        #expect(normalized[2]["content"] as? String == "first answer")
+        #expect(normalized[3]["content"] as? String == "what is the secret word?")
+    }
+
+    @Test func qwen3VLTypedMessagesPreserveLaterSystemInstruction() {
+        // The multimodal (UserInput) path uses the typed normalizer; vision
+        // requests must not lose a later system instruction either.
+        let normalized = ChatTemplateFixes.normalizeMessages(
+            [
+                .init(role: .system, content: .text("base policy")),
+                .init(role: .user, content: .text("first question")),
+                .init(role: .system, content: .text("the secret word is periwinkle")),
+                .init(role: .assistant, content: .text("first answer")),
+                .init(role: .user, content: .text("what is the secret word?")),
+            ],
+            context: qwen3VLContext)
+
+        #expect(normalized.map(\.role) == [.system, .user, .assistant, .user])
+        #expect(
+            normalized[0].content
+                == .text("base policy\n\nthe secret word is periwinkle"))
+    }
+
+    @Test func qwen3VLNormalizedHistoryPassesLeadingSystemTemplateContract() throws {
+        // End-to-end shape: the model's own Jinja template (mirrored by
+        // QwenSystemFirstTokenizer) rejects a history with a non-leading
+        // system message. Normalization must make the SAME history
+        // acceptable to that contract, and the merged system content must
+        // still carry the later instruction.
+        let raw = [
+            ["role": "user", "content": "question"] as [String: any Sendable],
+            ["role": "system", "content": "the secret word is periwinkle"]
+                as [String: any Sendable],
+        ]
+
+        let tokenizer = QwenSystemFirstTokenizer()
+        #expect(throws: QwenTemplateTestError.systemMessageNotFirst) {
+            _ = try tokenizer.applyChatTemplate(
+                messages: raw, tools: nil, additionalContext: nil)
+        }
+
+        let normalized = try ChatTemplateFixes.normalizeMessages(raw, context: qwen3VLContext)
+        let tokens = try tokenizer.applyChatTemplate(
+            messages: normalized, tools: nil, additionalContext: nil)
+        #expect(tokens == [1, 2, 3])
+        #expect(
+            (normalized[0]["content"] as? String)?.contains("periwinkle") == true,
+            "later system instruction must survive normalization")
     }
 
 }

@@ -36,6 +36,14 @@ extension ModelDownloader {
         manifest: ModelManifest,
         onByteProgress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws {
+        let eligibility = ModelRuntimeRequirements.evaluate(
+            modelID: model.id,
+            catalogRequirements: model.requiredProviderCapabilities,
+            available: runtimeCapabilities)
+        guard eligibility.isEligible else {
+            throw ModelCatalogError.ineligible(
+                ModelRuntimeIneligibleError(eligibility: eligibility).localizedDescription)
+        }
         guard manifest.modelID == model.id else {
             throw ModelCatalogError.downloadFailed("manifest model_id \(manifest.modelID) does not match catalog id \(model.id)")
         }

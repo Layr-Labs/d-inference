@@ -170,6 +170,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case prefixCacheReady(PrefixCacheReady)
     case prefixCacheLookupV2(PrefixCacheLookupV2)
     case prefixCacheReadyV2(PrefixCacheReadyV2)
+    case capacityQuote(CapacityQuote)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -187,6 +188,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
+        public var runtimeCapabilities: [ProviderRuntimeCapability]
         /// When true, this machine serves only its owner's self-route requests,
         /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
         public var privateOnly: Bool
@@ -222,6 +224,7 @@ public enum ProviderMessage: Sendable, Equatable {
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
+            runtimeCapabilities: [ProviderRuntimeCapability] = [],
             privateOnly: Bool = false,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil,
@@ -247,6 +250,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
+            self.runtimeCapabilities = runtimeCapabilities.sorted()
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
@@ -376,6 +380,24 @@ public enum ProviderMessage: Sendable, Equatable {
         /// persists/telemeters it but never bills from it. Omitted on the wire
         /// when nil (legacy providers, or a terminal with no usage).
         public let attemptUsage: UsageInfo?
+        /// Routing-v2 enriched capacity rejection (additive, all omitted when
+        /// absent so legacy frames stay byte-identical; mirrors the Go
+        /// `omitempty` additions on InferenceErrorMessage). Populated only on
+        /// capacity-shaped live-gate rejections, from the published capacity
+        /// snapshot, so every rejection doubles as a fresh state sample.
+        public let rejectionReason: CapacityRejectionReason?
+        /// Live admittable token budget of the rejected model's slot at the
+        /// moment of rejection (max − used − queued, floored at 0). Presence
+        /// semantics on the wire: nil is omitted, but an EXPLICIT ZERO is
+        /// encoded — a busy slot with zero free tokens must say so, or the
+        /// coordinator falls back to its stale heartbeat budget.
+        public let availableTokenBudget: Int64?
+        /// Estimated milliseconds until the request would become admissible
+        /// (duration, never a wall clock). Omitted when inestimable.
+        public let feasibleAfterMs: Int64?
+        /// `capacity_seq` of the published snapshot this rejection was
+        /// evaluated against, so the coordinator can order it with heartbeats.
+        public let capacitySeq: UInt64?
 
         public init(
             requestId: String,
@@ -387,6 +409,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.errorReason = failure.errorReason
             self.terminalCause = failure.terminalCause
             self.attemptUsage = failure.attemptUsage
+            self.rejectionReason = failure.rejectionReason
+            self.availableTokenBudget = failure.availableTokenBudget
+            self.feasibleAfterMs = failure.feasibleAfterMs
+            self.capacitySeq = failure.capacitySeq
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -398,7 +424,11 @@ public enum ProviderMessage: Sendable, Equatable {
             statusCode: UInt16,
             errorReason: InferenceErrorReason?,
             terminalCause: InferenceTerminalCause?,
-            attemptUsage: UsageInfo?
+            attemptUsage: UsageInfo?,
+            rejectionReason: CapacityRejectionReason?,
+            availableTokenBudget: Int64?,
+            feasibleAfterMs: Int64?,
+            capacitySeq: UInt64?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -406,6 +436,10 @@ public enum ProviderMessage: Sendable, Equatable {
             self.errorReason = errorReason
             self.terminalCause = terminalCause
             self.attemptUsage = attemptUsage
+            self.rejectionReason = rejectionReason
+            self.availableTokenBudget = availableTokenBudget
+            self.feasibleAfterMs = feasibleAfterMs
+            self.capacitySeq = capacitySeq
         }
     }
 
@@ -705,6 +739,59 @@ public enum ProviderMessage: Sendable, Equatable {
             self.signature = signature
         }
     }
+
+    /// Reply to a `CoordinatorMessage.CapacityProbe` (routing v2). Computed
+    /// from the lock-free published capacity snapshot — never by running
+    /// inference, loading a model, or allocating KV. Mirrors
+    /// CapacityQuoteMessage (Go); every field except `rejection_reason` is
+    /// always on the wire (Go has no `omitempty` on them).
+    public struct CapacityQuote: Sendable, Equatable {
+        /// Echo of the probe's random, request-local id. Never a stable
+        /// request/consumer identifier.
+        public var quoteId: String
+        /// Sequence of the published capacity snapshot this quote was
+        /// computed from. Carried so ordering against heartbeats is possible;
+        /// the coordinator currently trusts the 250ms probe window and does
+        /// not compare seqs.
+        public var capacitySeq: UInt64
+        public var admissibleNow: Bool
+        /// Bounded reason; nil (omitted) exactly when `admissibleNow`.
+        public var rejectionReason: CapacityRejectionReason?
+        /// End-to-end TTFT distribution quantiles (dispatch-received →
+        /// first token) from completed real requests — never a sum of
+        /// per-stage p95s, and durations only (never wall clocks).
+        public var ttftP50Ms: Double
+        public var ttftP90Ms: Double
+        /// Estimated wait before the request could start (0 when admissible).
+        public var queueEstMs: Double
+        /// Live admittable token budget (max − used − queued, floored at 0).
+        public var availableTokenBudget: Int64
+        public var confidence: CapacityQuoteConfidence
+
+        public init(
+            quoteId: String,
+            capacitySeq: UInt64,
+            admissibleNow: Bool,
+            rejectionReason: CapacityRejectionReason? = nil,
+            ttftP50Ms: Double,
+            ttftP90Ms: Double,
+            queueEstMs: Double,
+            availableTokenBudget: Int64,
+            confidence: CapacityQuoteConfidence
+        ) {
+            self.quoteId = quoteId
+            self.capacitySeq = capacitySeq
+            self.admissibleNow = admissibleNow
+            // Pin the contract at the type boundary: a reason rides the wire
+            // exactly when the quote is a rejection.
+            self.rejectionReason = admissibleNow ? nil : rejectionReason
+            self.ttftP50Ms = ttftP50Ms
+            self.ttftP90Ms = ttftP90Ms
+            self.queueEstMs = queueEstMs
+            self.availableTokenBudget = availableTokenBudget
+            self.confidence = confidence
+        }
+    }
 }
 
 // MARK: - ProviderMessage Codable
@@ -726,6 +813,7 @@ extension ProviderMessage: Codable {
         case prefixCacheReady = "prefix_cache_ready"
         case prefixCacheLookupV2 = "prefix_cache_lookup_v2"
         case prefixCacheReadyV2 = "prefix_cache_ready_v2"
+        case capacityQuote = "capacity_quote"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -743,6 +831,7 @@ extension ProviderMessage: Codable {
         case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
+        case runtimeCapabilities = "runtime_capabilities"
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
@@ -776,6 +865,18 @@ extension ProviderMessage: Codable {
         case errorReason = "error_reason"
         case terminalCause = "terminal_cause"
         case attemptUsage = "attempt_usage"
+        // Enriched capacity rejection (InferenceError) + CapacityQuote
+        case rejectionReason = "rejection_reason"
+        case availableTokenBudget = "available_token_budget"
+        case feasibleAfterMs = "feasible_after_ms"
+        case capacitySeq = "capacity_seq"
+        // CapacityQuote
+        case quoteId = "quote_id"
+        case admissibleNow = "admissible_now"
+        case ttftP50Ms = "ttft_p50_ms"
+        case ttftP90Ms = "ttft_p90_ms"
+        case queueEstMs = "queue_est_ms"
+        case confidence
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -833,6 +934,9 @@ extension ProviderMessage: Codable {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
+            if !r.runtimeCapabilities.isEmpty {
+                try container.encode(r.runtimeCapabilities.sorted(), forKey: .runtimeCapabilities)
+            }
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
             }
@@ -903,6 +1007,23 @@ extension ProviderMessage: Codable {
             // wire shape is byte-identical (mirrors Go `omitempty`).
             try container.encodeIfPresent(e.terminalCause?.rawValue, forKey: .terminalCause)
             try container.encodeIfPresent(e.attemptUsage, forKey: .attemptUsage)
+            // Enriched capacity-rejection additions (routing v2). Nil stays
+            // off the wire so a legacy frame re-encodes byte-identically.
+            try container.encodeIfPresent(e.rejectionReason?.rawValue, forKey: .rejectionReason)
+            // available_token_budget carries PRESENCE semantics, not Go
+            // omitempty: an explicit zero is real state — "busy slot, zero
+            // free tokens right now" — and must reach the coordinator.
+            // Omitting it made the coordinator fall back to the stale
+            // heartbeat budget, which could misclassify this transient
+            // reject as deterministic and stop failover. The Go mirror is
+            // `*int64` (nil omitted, zero encoded) for the same reason.
+            try container.encodeIfPresent(e.availableTokenBudget, forKey: .availableTokenBudget)
+            if let feasibleAfterMs = e.feasibleAfterMs, feasibleAfterMs != 0 {
+                try container.encode(feasibleAfterMs, forKey: .feasibleAfterMs)
+            }
+            if let seq = e.capacitySeq, seq != 0 {
+                try container.encode(seq, forKey: .capacitySeq)
+            }
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1015,6 +1136,19 @@ extension ProviderMessage: Codable {
             try container.encode(
                 receipt.expectedPrefillTokensSaved, forKey: .expectedPrefillTokensSaved)
             try container.encodeIfPresent(receipt.stageMs, forKey: .stageMs)
+
+        case .capacityQuote(let q):
+            try container.encode(TypeValue.capacityQuote, forKey: .type)
+            try container.encode(q.quoteId, forKey: .quoteId)
+            try container.encode(q.capacitySeq, forKey: .capacitySeq)
+            try container.encode(q.admissibleNow, forKey: .admissibleNow)
+            // Omitted exactly when admissible (Go `omitempty`).
+            try container.encodeIfPresent(q.rejectionReason, forKey: .rejectionReason)
+            try container.encode(q.ttftP50Ms, forKey: .ttftP50Ms)
+            try container.encode(q.ttftP90Ms, forKey: .ttftP90Ms)
+            try container.encode(q.queueEstMs, forKey: .queueEstMs)
+            try container.encode(q.availableTokenBudget, forKey: .availableTokenBudget)
+            try container.encode(q.confidence, forKey: .confidence)
         }
     }
 
@@ -1040,6 +1174,8 @@ extension ProviderMessage: Codable {
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
                 templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
                 privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                runtimeCapabilities: try container.decodeIfPresent(
+                    [ProviderRuntimeCapability].self, forKey: .runtimeCapabilities) ?? [],
                 privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment),
@@ -1113,13 +1249,22 @@ extension ProviderMessage: Codable {
             // the legacy string/status heuristics, exactly like an absent field.
             let terminalCause = (try container.decodeIfPresent(String.self, forKey: .terminalCause))
                 .flatMap(InferenceTerminalCause.init(rawValue:))
+            // Unknown rejection_reason strings likewise decode to nil.
+            let rejectionReason = (try container.decodeIfPresent(String.self, forKey: .rejectionReason))
+                .flatMap(CapacityRejectionReason.init(rawValue:))
             self = .inferenceError(InferenceError(
                 decodedRequestId: try container.decode(String.self, forKey: .requestId),
                 failureCode: failureCode,
                 statusCode: try container.decode(UInt16.self, forKey: .statusCode),
                 errorReason: errorReason,
                 terminalCause: terminalCause,
-                attemptUsage: try container.decodeIfPresent(UsageInfo.self, forKey: .attemptUsage)
+                attemptUsage: try container.decodeIfPresent(UsageInfo.self, forKey: .attemptUsage),
+                rejectionReason: rejectionReason,
+                availableTokenBudget: try container.decodeIfPresent(
+                    Int64.self, forKey: .availableTokenBudget),
+                feasibleAfterMs: try container.decodeIfPresent(
+                    Int64.self, forKey: .feasibleAfterMs),
+                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq)
             ))
 
         case .attestationResponse:
@@ -1250,6 +1395,21 @@ extension ProviderMessage: Codable {
                     UInt64.self, forKey: .expectedPrefillTokensSaved),
                 stageMs: try container.decodeIfPresent(Double.self, forKey: .stageMs)
             ))
+
+        case .capacityQuote:
+            self = .capacityQuote(CapacityQuote(
+                quoteId: try container.decode(String.self, forKey: .quoteId),
+                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq) ?? 0,
+                admissibleNow: try container.decode(Bool.self, forKey: .admissibleNow),
+                rejectionReason: try container.decodeIfPresent(
+                    CapacityRejectionReason.self, forKey: .rejectionReason),
+                ttftP50Ms: try container.decodeIfPresent(Double.self, forKey: .ttftP50Ms) ?? 0,
+                ttftP90Ms: try container.decodeIfPresent(Double.self, forKey: .ttftP90Ms) ?? 0,
+                queueEstMs: try container.decodeIfPresent(Double.self, forKey: .queueEstMs) ?? 0,
+                availableTokenBudget: try container.decodeIfPresent(
+                    Int64.self, forKey: .availableTokenBudget) ?? 0,
+                confidence: try container.decode(CapacityQuoteConfidence.self, forKey: .confidence)
+            ))
         }
     }
 }
@@ -1260,11 +1420,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case inferenceRequest(InferenceRequest)
     case cancel(Cancel)
     case attestationChallenge(AttestationChallenge)
+    case codeAttestationResumeChallenge(CodeAttestationResumeChallenge)
     case runtimeStatus(RuntimeStatus)
     case loadModel(LoadModel)
     case prefetchModel(PrefetchModel)
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
+    case capacityProbe(CapacityProbe)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
@@ -1299,6 +1461,50 @@ public enum CoordinatorMessage: Sendable, Equatable {
         }
     }
 
+    /// Routing-v2 capacity probe (coordinator → provider). Carries BUCKETED
+    /// request-shape metadata ONLY — by protocol contract it never contains
+    /// prompt text, ciphertext, image bytes, tool bodies, consumer/account
+    /// identity, or the public request ID (`quoteId` is random and
+    /// request-local). The provider answers with a `capacityQuote` computed
+    /// from its published capacity snapshot. Mirrors CapacityProbeMessage (Go).
+    public struct CapacityProbe: Sendable, Equatable {
+        /// Prompt-size bucket granularity: estimates are rounded UP to a
+        /// multiple of this, so non-serving providers learn shape only.
+        public static let promptBucketTokens = 512
+
+        public var quoteId: String
+        public var model: String
+        /// Prompt token estimate rounded UP to a multiple of
+        /// ``promptBucketTokens`` by the coordinator.
+        public var promptTokensBucket: Int
+        public var maxOutputTokens: Int
+        /// Omitted when false (Go `omitempty`).
+        public var requiresVision: Bool
+        /// Omitted when zero (Go `omitempty`).
+        public var visionImageCount: Int
+        /// Remaining first-content budget of the request being routed, as a
+        /// duration (never a wall-clock timestamp — clock skew).
+        public var deadlineRemainingMs: Int64
+
+        public init(
+            quoteId: String,
+            model: String,
+            promptTokensBucket: Int,
+            maxOutputTokens: Int,
+            requiresVision: Bool = false,
+            visionImageCount: Int = 0,
+            deadlineRemainingMs: Int64
+        ) {
+            self.quoteId = quoteId
+            self.model = model
+            self.promptTokensBucket = promptTokensBucket
+            self.maxOutputTokens = maxOutputTokens
+            self.requiresVision = requiresVision
+            self.visionImageCount = visionImageCount
+            self.deadlineRemainingMs = deadlineRemainingMs
+        }
+    }
+
     public struct Cancel: Sendable, Equatable {
         public var requestId: String
         public init(requestId: String) { self.requestId = requestId }
@@ -1310,6 +1516,13 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public init(nonce: String, timestamp: String) {
             self.nonce = nonce
             self.timestamp = timestamp
+        }
+    }
+
+    public struct CodeAttestationResumeChallenge: Sendable, Equatable {
+        public var codeChallenge: EncryptedPayload
+        public init(codeChallenge: EncryptedPayload) {
+            self.codeChallenge = codeChallenge
         }
     }
 
@@ -1394,11 +1607,13 @@ extension CoordinatorMessage: Codable {
         case inferenceRequest = "inference_request"
         case cancel
         case attestationChallenge = "attestation_challenge"
+        case codeAttestationResumeChallenge = "code_attestation_resume_challenge"
         case runtimeStatus = "runtime_status"
         case loadModel = "load_model"
         case prefetchModel = "prefetch_model"
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
+        case capacityProbe = "capacity_probe"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1412,12 +1627,21 @@ extension CoordinatorMessage: Codable {
         case prefixCacheProtocol = "prefix_cache_protocol"
         case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
+        case codeChallenge = "code_challenge"
         case verified, mismatches
         case modelId = "model_id"
         case priority
         case trustLevel = "trust_level"
         case status, reason
         case models
+        // CapacityProbe
+        case quoteId = "quote_id"
+        case model
+        case promptTokensBucket = "prompt_tokens_bucket"
+        case maxOutputTokens = "max_output_tokens"
+        case requiresVision = "requires_vision"
+        case visionImageCount = "vision_image_count"
+        case deadlineRemainingMs = "deadline_remaining_ms"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1447,6 +1671,11 @@ extension CoordinatorMessage: Codable {
             try container.encode(TypeValue.attestationChallenge, forKey: .type)
             try container.encode(a.nonce, forKey: .nonce)
             try container.encode(a.timestamp, forKey: .timestamp)
+
+        case .codeAttestationResumeChallenge(let challenge):
+            try container.encode(
+                TypeValue.codeAttestationResumeChallenge, forKey: .type)
+            try container.encode(challenge.codeChallenge, forKey: .codeChallenge)
 
         case .runtimeStatus(let s):
             try container.encode(TypeValue.runtimeStatus, forKey: .type)
@@ -1478,6 +1707,21 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+
+        case .capacityProbe(let p):
+            try container.encode(TypeValue.capacityProbe, forKey: .type)
+            try container.encode(p.quoteId, forKey: .quoteId)
+            try container.encode(p.model, forKey: .model)
+            try container.encode(p.promptTokensBucket, forKey: .promptTokensBucket)
+            try container.encode(p.maxOutputTokens, forKey: .maxOutputTokens)
+            // Mirror the Go `omitempty` tags on the vision shape fields.
+            if p.requiresVision {
+                try container.encode(true, forKey: .requiresVision)
+            }
+            if p.visionImageCount != 0 {
+                try container.encode(p.visionImageCount, forKey: .visionImageCount)
+            }
+            try container.encode(p.deadlineRemainingMs, forKey: .deadlineRemainingMs)
         }
     }
 
@@ -1506,11 +1750,35 @@ extension CoordinatorMessage: Codable {
                 requestId: try container.decode(String.self, forKey: .requestId)
             ))
 
+        case .capacityProbe:
+            self = .capacityProbe(CapacityProbe(
+                quoteId: try container.decode(String.self, forKey: .quoteId),
+                model: try container.decode(String.self, forKey: .model),
+                promptTokensBucket: try container.decodeIfPresent(
+                    Int.self, forKey: .promptTokensBucket) ?? 0,
+                maxOutputTokens: try container.decodeIfPresent(
+                    Int.self, forKey: .maxOutputTokens) ?? 0,
+                requiresVision: try container.decodeIfPresent(
+                    Bool.self, forKey: .requiresVision) ?? false,
+                visionImageCount: try container.decodeIfPresent(
+                    Int.self, forKey: .visionImageCount) ?? 0,
+                deadlineRemainingMs: try container.decodeIfPresent(
+                    Int64.self, forKey: .deadlineRemainingMs) ?? 0
+            ))
+
         case .attestationChallenge:
             self = .attestationChallenge(AttestationChallenge(
                 nonce: try container.decode(String.self, forKey: .nonce),
                 timestamp: try container.decode(String.self, forKey: .timestamp)
             ))
+
+        case .codeAttestationResumeChallenge:
+            self = .codeAttestationResumeChallenge(
+                CodeAttestationResumeChallenge(
+                    codeChallenge: try container.decode(
+                        EncryptedPayload.self, forKey: .codeChallenge)
+                )
+            )
 
         case .runtimeStatus:
             self = .runtimeStatus(RuntimeStatus(

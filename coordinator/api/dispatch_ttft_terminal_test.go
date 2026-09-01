@@ -211,7 +211,7 @@ func TestDispatch_TTFTRejectAttempt0_SingleReservationAnd429(t *testing.T) {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	refunds := 0
-	deadline := srv.FirstContentDeadline(6)
+	deadline := srv.FirstContentDeadline(model, 6)
 	d := &dispatchState{
 		s:                     srv,
 		w:                     w,

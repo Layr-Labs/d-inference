@@ -112,6 +112,21 @@ public enum SchedulerPrefillBenchmark {
         }
         let baseTokens = facts.baseTokens
 
+        // The production factory selects the dense-Qwen long-context stripe
+        // from the resolved serving model, not from the VLM wrapper. Record
+        // the same effective value in the benchmark receipt so a default
+        // production run cannot be reported as the generic 2,048-token arm.
+        let effectiveSoloPrefillStripeTokens = try await container.perform {
+            context -> Int? in
+            let servingModel = try EngineV2Factory.benchmarkServingModel(
+                model: context.model,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory)
+            return EngineV2Factory.soloPrefillStripeTokens(
+                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize,
+                model: servingModel)
+        }
+
         log("kv backend selection \(kvBackend.rawValue)")
 
         // Warm-up (kernel compiles, Metal pipelines) — not recorded. It is
@@ -163,8 +178,7 @@ public enum SchedulerPrefillBenchmark {
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
-            soloPrefillStripeTokens: EngineV2Factory.soloPrefillStripeTokens(
-                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize),
+            soloPrefillStripeTokens: effectiveSoloPrefillStripeTokens,
             samples: samples
         )
     }

@@ -14,6 +14,7 @@ extension Start {
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
         hardware: HardwareInfo,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
@@ -22,7 +23,8 @@ extension Start {
             from: snapshot.models,
             config: config,
             modelOverrides: model,
-            includeDisabled: all
+            includeDisabled: all,
+            runtimeCapabilities: runtimeCapabilities
         )
 
         // v0.7.5 ONE ENGINE, fail loud: the standalone server serves
@@ -91,12 +93,13 @@ extension Start {
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
                 hardware: hardware,
+                runtimeCapabilities: runtimeCapabilities,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.backend.prefillDeadlineMode,
-                mtp: config.backend.mtp,
+                mtpMode: config.backend.mtpMode,
                 mtpDrafterPath: config.backend.mtpDrafterPath
             ),
             models: advertised
@@ -147,17 +150,28 @@ extension Start {
         hardware: HardwareInfo,
         config: ProviderConfig,
         coordinatorURL: String,
+        runtimeCapabilities: Set<ProviderRuntimeCapability>,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
         let selectedModels: [ModelInfo]
         if !model.isEmpty {
-            selectedModels = advertisedModels(from: snapshot.models, config: config, modelOverrides: model)
+            selectedModels = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                modelOverrides: model,
+                runtimeCapabilities: runtimeCapabilities)
         } else if all {
-            selectedModels = snapshot.models
+            selectedModels = snapshot.models.filter {
+                ModelRuntimeRequirements.isEligible(
+                    modelID: $0.id, available: runtimeCapabilities)
+            }
         } else {
-            selectedModels = advertisedModels(from: snapshot.models, config: config)
+            selectedModels = advertisedModels(
+                from: snapshot.models,
+                config: config,
+                runtimeCapabilities: runtimeCapabilities)
         }
 
         guard !selectedModels.isEmpty else {
@@ -284,6 +298,7 @@ extension Start {
             config: config,
             authToken: authToken,
             runtimeHashes: runtimeHashes,
+            runtimeCapabilities: runtimeCapabilities,
             modelHashes: modelHashes,
             modelHashFingerprints: modelHashFingerprints,
             localEndpoint: localEndpointConfig

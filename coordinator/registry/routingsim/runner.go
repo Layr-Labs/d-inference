@@ -3,6 +3,7 @@ package routingsim
 import (
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -23,12 +24,12 @@ const (
 	OutcomeTTFTTooSlow Outcome = "ttft_too_slow"
 )
 
-// TTFTDeadline replicates api.ttftDeadline locally: 5s base + 1ms per estimated
-// prompt token. Replicated (not imported) so the harness has no dependency on
-// the unexported api package and cannot drift silently — the calibration test
-// would catch a formula change as a moved cliff.
-func TTFTDeadline(promptTokens int) time.Duration {
-	return 5*time.Second + time.Duration(promptTokens)*time.Millisecond
+// TTFTDeadline mirrors the ordinary API test posture (5s base) plus the shared
+// exact-model overrides. Keeping the policy in modelpolicy prevents this
+// simulation harness from silently using the standard deadline for a model
+// with a shorter upstream SLA.
+func TTFTDeadline(model string, promptTokens int) time.Duration {
+	return modelpolicy.CoordinatorFirstContentDeadline(model, promptTokens, 5*time.Second)
 }
 
 // ClassifyWithGate runs the REAL preflight capacity check for one arrival and
@@ -49,7 +50,7 @@ func ClassifyWithGate(reg *registry.Registry, a Arrival, softTTFT bool) Outcome 
 	if candidateCount == 0 && capacityRejections > 0 {
 		return OutcomeMachineBusy
 	}
-	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.PromptTokens) {
+	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.Model, a.PromptTokens) {
 		return OutcomeTTFTTooSlow
 	}
 	return OutcomeServed

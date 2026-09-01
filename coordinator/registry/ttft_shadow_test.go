@@ -1,9 +1,14 @@
 package registry
 
 import (
+	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -66,6 +71,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 		}
 	}
 	const reqPrompt = 1000
+	const model = "ordinary-shadow-model"
 
 	// The occupancy term must add to the SHADOW estimate at b>0 (compare alpha on
 	// vs off). The LIVE estimate (ttftMsFromSnapshot) must NOT move with alpha.
@@ -86,7 +92,7 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	}
 
 	// Strictly increasing in occupancy, crossing the deadline at a knee.
-	deadline := ttftDeadlineMsForPrompt(reqPrompt)
+	deadline := ttftDeadlineMsForPrompt(model, reqPrompt)
 	last := -1.0
 	knee := -1
 	for b := 0; b <= 8; b++ {
@@ -105,6 +111,33 @@ func TestTTFTEstimateOccupancyTermActiveAndMonotonic(t *testing.T) {
 	// b=0 (idle) must stay well under the deadline — route-to-idle is preserved.
 	if idle := occupancyAwareTTFTMsFromSnapshot(mk(0), reqPrompt); idle > deadline {
 		t.Fatalf("idle box (b=0) must be under the deadline, got %f > %f", idle, deadline)
+	}
+}
+
+func TestTTFTShadowDeadlineUsesExactModelPolicy(t *testing.T) {
+	withTTFTConfig(t, 0, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	const promptTokens = 321
+
+	if got, want := ttftDeadlineMsForPrompt(
+		"ordinary-shadow-model", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("ordinary shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 5_321.0; got != want {
+		t.Fatalf("Qwen3-VL shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID+"-preview", promptTokens,
+	), 10_321.0; got != want {
+		t.Fatalf("lookalike shadow deadline = %.0fms, want %.0fms", got, want)
+	}
+	SetTTFTDeadlineBaseMs(3_000)
+	if got, want := ttftDeadlineMsForPrompt(
+		modelpolicy.Qwen3VL30BA3BInstructModelID, promptTokens,
+	), 3_321.0; got != want {
+		t.Fatalf("tight global shadow deadline = %.0fms, want %.0fms", got, want)
 	}
 }
 
@@ -555,5 +588,71 @@ func TestLoadedIdleAlternativeHonorsMinDecodeTPS(t *testing.T) {
 	plain := &PendingRequest{RequestID: "rmd2", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 128}
 	if !idleAlt(plain) {
 		t.Fatal("a plain retry must count the slow idle peer (proves it is otherwise eligible)")
+	}
+}
+
+// TestConcurrentReservationShadowUsesCommitTimeOccupancy proves a scan cohort
+// cannot publish the empty-fleet shadow snapshot after an earlier commit adds a
+// pending debit to the same winner. The second request must rescan and report
+// occupancy one.
+func TestConcurrentReservationShadowUsesCommitTimeOccupancy(t *testing.T) {
+	withTTFTConfig(t, 50, defaultTTFTDeadlineBaseMs, TTFTAdmissionShadow)
+	reg := New(testLogger())
+	model := "shadow-commit-occupancy"
+	p := planTestProvider(t, reg, "shadow-provider", model, 0)
+	p.mu.Lock()
+	p.BackendCapacity.Slots[0].MaxConcurrency = 2
+	p.mu.Unlock()
+
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var initialScans atomic.Int32
+	reg.reservationAfterScan = func(string) {
+		if initialScans.Add(1) > 2 {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}
+
+	type result struct {
+		requestID string
+		provider  *Provider
+		decision  RoutingDecision
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			requestID := fmt.Sprintf("shadow-commit-%d", i)
+			provider, decision, _ := reg.ReserveProviderWithPlan(
+				model, planTestRequest(requestID, 100, 100))
+			results <- result{requestID: requestID, provider: provider, decision: decision}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("reservation scans did not overlap")
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(results)
+
+	occupancies := make(map[int]int, 2)
+	for res := range results {
+		if res.provider == nil {
+			t.Fatalf("request %q failed reservation", res.requestID)
+		}
+		occupancies[res.decision.ShadowOccupancy]++
+		res.provider.RemovePending(res.requestID)
+	}
+	if occupancies[0] != 1 || occupancies[1] != 1 {
+		t.Fatalf("shadow occupancies=%v, want one commit at 0 and one at 1", occupancies)
 	}
 }

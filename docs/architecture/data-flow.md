@@ -36,7 +36,7 @@ Before dispatch, the handler:
 
 ## 3. Provider Selection
 
-The production dispatch hot path calls `Registry.ReserveProviderEx` (`coordinator/registry/scheduler.go:213-292`). The candidate cost is the sum of (`coordinator/registry/scheduler.go:802-894`):
+The production primary dispatch path calls `Registry.ReserveProviderWithPlan` (`coordinator/registry/dispatch_plan.go:317-325`); its shared `reserveProvider` implementation performs a concurrent read-locked fleet scan followed by a short, deadline-checked, fully revalidated atomic commit (`coordinator/registry/scheduler.go:414-668`). The resulting request-local plan supplies bounded alternatives without a full re-scan (`coordinator/registry/dispatch_plan.go:151-205,326-565`). Candidate cost is the sum of (`coordinator/registry/scheduler.go:1721-1854`):
 
 | Term | Meaning |
 |---|---|
@@ -80,7 +80,7 @@ Key provider-side behavior:
 
 * Model loading is on-demand. The provider can hold up to `maxModelSlots` models (default 3) and evicts idle models LRU-style (`coordinator/registry/scheduler.go:765-768`).
 * The provider-side load gate requires `weights_gb + 2.0` GB of headroom after the OS reserve and in-flight KV reservations, which is stricter than the coordinator's admission gate (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift:19-24`).
-* If the model is not resident, the provider loads it; the coordinator waits up to the TTFT deadline (5 s + 1 ms per input token) and can start a speculative backup dispatch at 50% of the deadline (`coordinator/api/consumer.go:72-76`, `ttftDeadline`).
+* If the model is not resident, the provider loads it; the coordinator waits up to the request-local TTFT deadline and can start a speculative backup dispatch at 50% of that deadline. The standard upstream SLA is 10 s + 1 ms per estimated prompt token and production keeps 1 s of response headroom with a 9 s live base. Exact-model ceilings can be shorter: `qwen3-vl-30b-a3b-instruct` uses a 5 s upstream base and a 4 s live base. (`coordinator/modelpolicy/first_content_deadline.go`, `coordinator/api/first_token_clock.go`).
 
 ## 6. Response Relay to Consumer
 

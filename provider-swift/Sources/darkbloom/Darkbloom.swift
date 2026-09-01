@@ -183,8 +183,8 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 ///    file there (keeping the old one for backward compat).
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
-/// 3. **Schema migration**: bring `config_version` up to date, applying any
-///    `ConcurrencyDefaultMigration` step the old stamp calls for.
+/// 3. **Schema migration**: bring `config_version` up to date, applying the
+///    generated-value migrations selected by the old stamp.
 func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
@@ -229,12 +229,11 @@ func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderC
         }
     }
 
-    // --- 3. config_version migration (+ concurrency default) ---
-    // Runs on any out-of-date file, even one whose concurrency line needs no
-    // change. The stamp is the whole point: it is what lets a LATER hand-edit
-    // back to the old cap stick, instead of being migrated again on the next
-    // boot. The in-memory value already changed at decode
-    // (`ProviderConfig.init(from:)`); this only makes it durable and visible.
+    // --- 3. config_version migration (+ generated defaults) ---
+    // Runs on any out-of-date file, even one whose generated values need no
+    // change. The stamp is what lets a LATER hand-edit stick instead of being
+    // migrated again on the next boot. Decode-time migration already changed
+    // the in-memory value; this only makes it durable and visible.
     var appliedSteps = migrateConfigSchema(in: configPath)
     if copiedToCanonical {
         // Both paths hold the same content, so the same step applies to both.
@@ -287,23 +286,20 @@ private func rewriteStaleURLs(in path: URL) -> String? {
     }
 }
 
-/// Bring a `provider.toml`'s `config_version` up to date on disk, applying any
-/// concurrency-default step the old stamp calls for. Returns the cap-bearing
-/// steps applied — empty when only the stamp moved, or when nothing was
-/// needed. An already-current or unreadable file is left untouched, so each
-/// step runs at most once per config.
+/// Bring a `provider.toml`'s `config_version` up to date on disk, applying the
+/// generated-value migrations selected by the old stamp. Returns cap-bearing
+/// concurrency steps — empty when only MTP/the stamp moved, or when nothing
+/// was needed. An already-current or unreadable file is left untouched, so
+/// each migration runs at most once per config.
 ///
 /// Text surgery rather than `ConfigManager.save`, for the same reason
 /// `rewriteStaleURLs` is: a `TOMLEncoder` round-trip would drop the
 /// operator's comments AND their retired `[backend]` keys, and startup still
 /// needs those keys present in order to warn about them.
 ///
-/// The matching and rewriting live in ProviderCore
-/// (`ConcurrencyDefaultMigration`), shared with the decode-time change in
-/// `ProviderConfig.init(from:)`: the two halves once disagreed on
-/// `= 4 # comment` (changed in memory, never rewritten on disk), which stamped
-/// the file and silently reverted the box from boot 2 on. This function owns
-/// only the file I/O.
+/// Matching and rewriting live in ProviderCore, shared with the decode-time
+/// changes in `ProviderConfig.init(from:)`; the two representations must not
+/// disagree before the new stamp spends the old schema evidence.
 ///
 /// Internal rather than `private` (unlike `rewriteStaleURLs`) so
 /// `DarkbloomCLITests` can drive it over a temp file: it edits an operator's
@@ -333,17 +329,24 @@ func advertisedModels(
     from models: [ModelInfo],
     config: ProviderConfig,
     modelOverrides: [String] = [],
-    includeDisabled: Bool = false
+    includeDisabled: Bool = false,
+    runtimeCapabilities: Set<ProviderRuntimeCapability>? = nil
 ) -> [ModelInfo] {
+    let selected: [ModelInfo]
     if !modelOverrides.isEmpty {
         let byID = Dictionary(uniqueKeysWithValues: models.map { ($0.id, $0) })
-        return modelOverrides.compactMap { byID[$0] }
+        selected = modelOverrides.compactMap { byID[$0] }
+    } else if includeDisabled || config.backend.enabledModels.isEmpty {
+        selected = models
+    } else {
+        let enabled = Set(config.backend.enabledModels)
+        selected = models.filter { enabled.contains($0.id) }
     }
-    guard !includeDisabled, !config.backend.enabledModels.isEmpty else {
-        return models
+    guard let runtimeCapabilities else { return selected }
+    return selected.filter {
+        ModelRuntimeRequirements.isEligible(
+            modelID: $0.id, available: runtimeCapabilities)
     }
-    let enabled = Set(config.backend.enabledModels)
-    return models.filter { enabled.contains($0.id) }
 }
 
 func attachWeightHashes(to models: [ModelInfo]) -> (

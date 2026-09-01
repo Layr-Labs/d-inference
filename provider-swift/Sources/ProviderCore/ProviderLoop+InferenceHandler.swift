@@ -43,7 +43,11 @@ extension ProviderLoop {
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
-                failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                failure: CapacityRejectionEnrichment.enrich(
+                    InferenceFailure(code: .capacity, statusCode: 503),
+                    modelId: nil,
+                    published: state.publishedCapacity,
+                    fallbackReason: .slotState)),
             fallbackFailure: .capacity,
             send: send)
         return true
@@ -73,7 +77,11 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: Self.inferenceFailure(for: failure)),
+                    failure: CapacityRejectionEnrichment.enrich(
+                        Self.inferenceFailure(for: failure),
+                        modelId: nil,
+                        published: state.publishedCapacity,
+                        fallbackReason: .deadline)),
                 fallbackFailure: .capacity,
                 send: send)
             return true
@@ -156,6 +164,7 @@ extension ProviderLoop {
         prefixCacheProtocol: Int? = nil,
         toolSchemaMetadataProtocol: Int? = nil,
         firstContentDeadline: FirstContentDeadline? = nil,
+        receivedAt: ContinuousClock.Instant = .now,
         send: SendHandle
     ) async {
         logger.info("Processing inference request: \(requestId)")
@@ -198,7 +207,11 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                    failure: CapacityRejectionEnrichment.enrich(
+                        InferenceFailure(code: .capacity, statusCode: 503),
+                        modelId: nil,
+                        published: state.publishedCapacity,
+                        fallbackReason: .slotState)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -315,14 +328,10 @@ extension ProviderLoop {
             return
         }
 
-        // `reasoning_effort` is not part of the upstream
-        // `OpenAIChatCompletionRequest` shape, so decode it directly from
-        // the request body and thread it into the chat template's render
-        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads the effective value to set the reasoning budget
-        // (`high` currently serves as `medium`); other models ignore the
-        // extra template variable.
-        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        // Recover the one out-of-band template-control value once from the
+        // authenticated plaintext body. The same value is used by text,
+        // vision, and both prompt-token recount paths.
+        let templateControls = Self.extractChatTemplateControls(from: decryptedData)
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -354,6 +363,10 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        // Warm/cold classification for the TTFT tracker, captured BEFORE the
+        // load step: a cold sample includes model-load latency and must never
+        // calibrate warm quotes.
+        let modelWasResidentAtDispatch = modelSlots[modelId] != nil
         let fastAdmissionRejected = await fastAdmissionReject(modelId: modelId)
         if rejectIfFirstContentDeadlineExpired(
             firstContentDeadline,
@@ -370,7 +383,11 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
+                    failure: CapacityRejectionEnrichment.enrich(
+                        InferenceFailure(code: .capacity, statusCode: 503),
+                        modelId: modelId,
+                        published: state.publishedCapacity,
+                        fallbackReason: .memoryCap)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -438,7 +455,11 @@ extension ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
-            let failure = Self.loadInferenceFailure(for: error)
+            let failure = CapacityRejectionEnrichment.enrich(
+                Self.loadInferenceFailure(for: error),
+                modelId: modelId,
+                published: state.publishedCapacity,
+                fallbackReason: .memoryCap)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
@@ -492,6 +513,18 @@ extension ProviderLoop {
         let registry = self.cancellationRegistry
         let signingIdentity = self.signer
         let log = self.logger
+        // TTFT tracking inputs (routing v2): the tracker feeds capacity-quote
+        // quantiles from completed real requests. `receivedAt` was anchored by
+        // the CoordinatorClient's receive callback, so the recorded duration
+        // is genuinely dispatch-received → first content token, end to end.
+        // Batch occupancy comes from the latest capacity rebuild — a cheap
+        // lock read that intentionally avoids an engine-actor hop; it can lag
+        // one rebuild behind the engine's row count, which shifts a sample by
+        // at most one batch bucket.
+        let ttftTracker = state.ttftTracker
+        let dispatchReceivedAt = receivedAt
+        let activeRequestsAtDispatch = Int(
+            state.backendCapacity?.slots.first { $0.model == modelId }?.numRunning ?? 0)
         let tokenizer = slot.tokenizer
         // Read modelType from the loaded SLOT, not advertisedModels: the latter
         // goes nil in the hard-swap drop window while the slot is still resident,
@@ -564,7 +597,11 @@ extension ProviderLoop {
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            failure: Self.inferenceFailure(for: failure)),
+                            failure: CapacityRejectionEnrichment.enrich(
+                                Self.inferenceFailure(for: failure),
+                                modelId: modelId,
+                                published: me.state.publishedCapacity,
+                                fallbackReason: .deadline)),
                         fallbackFailure: .capacity,
                         send: send)
                     return true
@@ -666,7 +703,7 @@ extension ProviderLoop {
                 reserveModel: { _ in },
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
-                reasoningEffort: reasoningEffort,
+                templateControls: templateControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 engineV2Logprobs: logprobsChannel.map {
@@ -751,7 +788,11 @@ extension ProviderLoop {
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            failure: Self.inferenceFailure(for: failure)),
+                            failure: CapacityRejectionEnrichment.enrich(
+                                Self.inferenceFailure(for: failure),
+                                modelId: modelId,
+                                published: me.state.publishedCapacity,
+                                fallbackReason: .deadline)),
                         fallbackFailure: .capacity,
                         send: send)
                     return
@@ -796,7 +837,23 @@ extension ProviderLoop {
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
-                        failure: failure),
+                        // Enrich the capacity-shaped engine rejections (queue
+                        // full, token budget, KV headroom — the live gate's
+                        // fast rejects) with the published snapshot; non-
+                        // capacity failures pass through unchanged. The token
+                        // envelope (evaluated lazily, token_budget shape only)
+                        // lets the enrichment stamp a real feasible_after_ms
+                        // busy-wait forecast.
+                        failure: CapacityRejectionEnrichment.enrich(
+                            failure,
+                            modelId: modelId,
+                            published: me.state.publishedCapacity,
+                            fallbackReason: .tokenBudget,
+                            neededTokens: Self.admissionTokenEnvelope(
+                                request: streamingRequest,
+                                tokenizer: tokenizer,
+                                modelType: modelType,
+                                templateControls: templateControls))),
                     fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
                     send: send)
                 return
@@ -816,6 +873,11 @@ extension ProviderLoop {
             // fully refund). MLX streams ~1 token per frame, so this slightly
             // under-counts vs. true tokenization but never bills $0 for work.
             var contentFrameCount = 0
+            // End-to-end TTFT (dispatch-received → first content token),
+            // captured at the first content-bearing frame and committed to
+            // the tracker only on clean completion (routing v2 quotes must
+            // calibrate on completed real requests). Duration only.
+            var firstContentElapsedMs: Double?
             // Accumulated `reasoning_content` deltas (gpt-oss analysis
             // channel, Qwen3/DeepSeek <think>, Gemma4 channels). Re-tokenized
             // at completion to report an accurate `reasoning_tokens` count —
@@ -901,6 +963,14 @@ extension ProviderLoop {
                             frameHadContent = true
                         }
                         if frameHadContent {
+                            // First content frame (both counters flip here,
+                            // so one check suffices).
+                            if contentFrameCount == 0 {
+                                let elapsed = ContinuousClock.Instant.now - dispatchReceivedAt
+                                firstContentElapsedMs =
+                                    Double(elapsed.components.seconds) * 1000.0
+                                    + Double(elapsed.components.attoseconds) / 1e15
+                            }
                             contentFrameCount += 1
                         }
                         if let usage = parsed.usage {
@@ -1055,7 +1125,7 @@ extension ProviderLoop {
                     request: streamingRequest,
                     tokenizer: tokenizer,
                     modelType: modelType,
-                    reasoningEffort: reasoningEffort
+                    templateControls: templateControls
                 ))
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
@@ -1111,7 +1181,7 @@ extension ProviderLoop {
                         request: streamingRequest,
                         tokenizer: tokenizer,
                         modelType: modelType,
-                        reasoningEffort: reasoningEffort
+                        templateControls: templateControls
                     )
                     if promptTokens > 0 {
                         log.warning(
@@ -1154,6 +1224,19 @@ extension ProviderLoop {
             // Update stats
             providerStats.incrementRequestsServed()
             providerStats.addTokensGenerated(UInt64(max(completionTokens, 0)))
+
+            // Commit the TTFT sample (routing v2): completed real requests
+            // only — a cancelled stream's first-token timing is still real,
+            // but the plan calibrates quotes on clean completions so partial
+            // settles cannot skew the distribution during incident churn.
+            if !cancelledMidStream, let ttftMs = firstContentElapsedMs {
+                ttftTracker.record(
+                    model: modelId,
+                    warm: modelWasResidentAtDispatch,
+                    promptTokens: promptTokens,
+                    activeRequestsAtDispatch: activeRequestsAtDispatch,
+                    ttftMs: ttftMs)
+            }
 
             // Update state
             await me.updateAggregateCapacity()

@@ -31,7 +31,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -115,6 +114,7 @@ type dispatchState struct {
 	consumerEndpoint       string
 	requestedStopSequences []string
 	stream                 bool
+	metadataDetails        bool
 	policy                 selfRoutePolicy
 	allowedProviderSerials []string
 	cachePlan              registry.CachePlan
@@ -150,6 +150,12 @@ type dispatchState struct {
 	// budget" rejection as deterministic (budget >= context) vs transient
 	// (budget < context — this node was memory-pressured).
 	lastErrProviderBudget int64
+	// lastErrRejectionReason is the typed CapacityRejectionReason from the
+	// last provider error ("" for legacy providers). classifyRejection
+	// treats a typed token_budget as AUTHORITATIVE transient: the provider's
+	// live gate named the shortage, so a deterministic-unservable verdict
+	// must never be re-derived from the stale heartbeat budget fallback.
+	lastErrRejectionReason protocol.CapacityRejectionReason
 	// lastErrTerminalCause is the typed terminal_cause from the last provider
 	// error ("" for legacy providers). shouldStopFailover trusts a typed
 	// admission_timeout as transient capacity directly — the provider's engine
@@ -215,6 +221,48 @@ type dispatchState struct {
 	// the request reaches a slot, which tags unknown on both dimensions.
 	servedKVSlot dispatchSlotAttribution
 
+	// ---- Routing v2 wave-2 plan/hedge state ----
+	// plan is the bounded dispatch plan retained by the FIRST full-scan
+	// reservation (registry.ReserveProviderWithPlan): up to eight provisional
+	// alternates from the same scan that chose the primary. Retries and the
+	// speculative backup consume it (ReserveNextFromPlan, then one refresh)
+	// before any rescan. nil for queue-path and no-reservation flows —
+	// selection behavior is then exactly legacy.
+	plan *registry.DispatchPlan
+	// planRefreshUsed latches the request's single RefreshDispatchPlan across
+	// BOTH consumers (failover retries and the speculative backup). The plan
+	// object enforces once-per-plan-chain; this enforces once-per-request.
+	planRefreshUsed bool
+	// probesLaunched: the one parallel capacity-probe round has started
+	// (maybeProbePlanCandidates). One round per request, launched only after
+	// the primary frame handoff so probes never add primary latency.
+	probesLaunched bool
+	// hedgeAdvanceCh delivers the probe round's refined ABSOLUTE speculative
+	// launch instant (hedgeLaunchAt) when a confirmed backup's quoted q90
+	// proves the 50% point too late to be useful. Buffered 1, written at most
+	// once by the quote collector; nil until probes launch. waitFirstChunk
+	// consumes at most one value under only-earlier / only-once /
+	// never-after-fire guards; without a value the 50% default stands.
+	hedgeAdvanceCh chan time.Time
+	// hedgeGovernorVerdict is the governor's decision for this request's
+	// speculative launch ("" = the governor never ran: no speculative point
+	// reached, or an owner-served prefer request). Telemetry/log only.
+	hedgeGovernorVerdict string
+	// providerDispatches counts inference frames actually handed to a
+	// provider — primary, queued, plan-retry, and speculative-backup sends
+	// alike, incremented in the write handoff callback that stamps
+	// Timing.DispatchedAt. Client-visible exhaustion messages report this
+	// machine count; route rows keep the loop index d.attempt untouched.
+	providerDispatches int
+	// visionImageCount is the number of media parts in the request (0 for
+	// text-only), carried into capacity probes as count-only shape metadata.
+	visionImageCount int
+	// lastErrFeasibleAfterMS is the enriched rejection's forecast of when a
+	// request of this shape could next be admitted (0 = absent/legacy),
+	// captured by setLastInferenceError and surfaced into the exhaustion
+	// 429's Retry-After.
+	lastErrFeasibleAfterMS int64
+
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
 	preambleLiveness bool
@@ -251,6 +299,7 @@ func (d *dispatchState) configurePending(pr *registry.PendingRequest) {
 	pr.ConsumerEndpoint = d.consumerEndpoint
 	pr.RequestedStopSequences = append(
 		pr.RequestedStopSequences[:0], d.requestedStopSequences...)
+	pr.MetadataDetails = d.metadataDetails
 }
 
 func (d *dispatchState) excludedProviderIDs() []string {
@@ -614,6 +663,7 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	// fault): clear any budget captured from a prior attempt so it never bleeds
 	// into a later classification.
 	d.lastErrProviderBudget = 0
+	d.lastErrRejectionReason = ""
 	// Same bleed-through rule for the typed terminal fields: a coordinator-
 	// synthesized error is not a provider terminal, so a stale typed cause from
 	// a prior attempt must not reclassify it (shouldStopFailover trusts a typed
@@ -623,6 +673,7 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	d.lastErrTerminalCause = ""
 	d.lastErrCoordinatorCause = ""
 	d.lastErrAttemptUsage = nil
+	d.lastErrFeasibleAfterMS = 0
 	d.lastFailureDeadline = false
 }
 
@@ -656,6 +707,7 @@ func isGenuinePreContentFault(
 	}
 	return classifyRejection(
 		msg.ErrorReason, msg.Error, providerBudget, modelContext,
+		msg.RejectionReason,
 	) == rejectionNotCapacity
 }
 
@@ -798,14 +850,27 @@ func (d *dispatchState) latchProviderBodyTooLarge(errText string) {
 func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
 	providerBudget := providerReportedBudget(provider, d.model)
+	if msg.AvailableTokenBudget != nil {
+		// Enriched rejection (routing v2): the LIVE gate budget at rejection
+		// time beats the last heartbeat's snapshot — this closes the
+		// documented stale-snapshot LIMITATION in classifyRejection, where a
+		// budget that shrank below the model context between heartbeats
+		// misclassified a node-pressured reject as fleet-deterministic. The
+		// wire field is a pointer precisely so an EXPLICIT zero survives:
+		// it means "this node has no headroom RIGHT NOW" (maximally
+		// transient, budget frees as sequences retire), never "unknown".
+		providerBudget = *msg.AvailableTokenBudget
+	}
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
 	d.lastFailureDeadline = isDeadlineUnreachableErrorReason(msg.ErrorReason)
 	d.lastErrProviderBudget = providerBudget
+	d.lastErrRejectionReason = msg.RejectionReason
 	d.lastErrTerminalCause = msg.TerminalCause
 	d.lastErrCoordinatorCause = msg.CoordinatorCause
 	d.lastErrAttemptUsage = msg.AttemptUsage
+	d.lastErrFeasibleAfterMS = msg.FeasibleAfterMS
 	d.captureGenuineFault(provider, msg, providerBudget)
 }
 
@@ -1077,23 +1142,47 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	routeRequestID := ""
 	routeAttempt := attempt
 	var routeProvider *registry.Provider
-	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
-		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
-		d.traits(),
-		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
-		d.attempt,
-		func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
-			routeProvider = provider
-			routeRecorded = true
-			if pr != nil {
-				d.configurePending(pr)
-				routeRequestID = pr.RequestID
-				routeAttempt = pr.Attempt
-			}
-			d.recordRoutingDecisionFor(provider, pr, routeRequestID, routeAttempt, decision, "", "")
-		},
-	)
+	recordRoute := func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
+		routeProvider = provider
+		routeRecorded = true
+		if pr != nil {
+			d.configurePending(pr)
+			routeRequestID = pr.RequestID
+			routeAttempt = pr.Attempt
+		}
+		d.recordRoutingDecisionFor(provider, pr, routeRequestID, routeAttempt, decision, "", "")
+	}
+	// Routing v2 W2: retry attempts consume the retained plan — the next
+	// revalidated entry, then the request's single refresh — BEFORE any full
+	// rescan (identity retention; the rescan herd is the failure the plan
+	// exists to end). The machinery only changes WHERE the next provider
+	// comes from: when it yields nothing, the legacy scan below runs
+	// unchanged, keeping every terminal classification (model_too_large,
+	// ttft_too_slow, queueing) byte-identical.
+	planTried := false
+	if attempt > 0 {
+		d.provider, d.pr, decision, dispatchErr, dispatchErrCode, planTried =
+			d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, recordRoute)
+	}
+	if !planTried {
+		var plan *registry.DispatchPlan
+		d.provider, d.pr, decision, plan, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
+			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+			d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+			d.traits(),
+			d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
+			d.attempt,
+			recordRoute,
+			d.noteProviderDispatched,
+		)
+		if d.plan == nil {
+			// Adopt the FIRST retained plan only. Once the plan chain
+			// (entries + one refresh) is spent, later fallback scans stay
+			// pure legacy — adopting their plans would resurrect the
+			// machinery past its bounded refresh.
+			d.plan = plan
+		}
+	}
 	d.dispatchErr = dispatchErr
 	d.dispatchErrCode = dispatchErrCode
 	if !routeRecorded {
@@ -1213,6 +1302,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			PreferOwner:            d.policy.prefer,
 			OwnerAccountID:         d.policy.ownerAccountID,
 			FreeSelfRoute:          d.policy.enabled,
+			MetadataDetails:        d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
 				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,
@@ -1480,6 +1570,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.requestID, encrypted.EphemeralPublicKey, encrypted.Ciphertext, d.pr),
 			func(metadata registry.TextFrameWriteMetadata) {
 				d.timing.DispatchedAt = metadata.DequeuedAt
+				d.noteProviderDispatched()
 			},
 		)
 		cancelWrite()
@@ -1506,6 +1597,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	// exhaustion ladder can still attribute the outcome after a failover has
 	// cleared d.provider/d.pr (v0.8.0 paged rollout, Gate G5).
 	d.noteServingSlot()
+	// Routing v2 W2: the primary frame is handed off — confirm the retained
+	// alternates in parallel with the in-flight prompt (one probe round per
+	// request; zero added primary latency by construction).
+	d.maybeProbePlanCandidates()
 	return outcomeProceed
 }
 
@@ -1633,7 +1728,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// through the legacy capacity substrings, gets classified as a generic
 	// fault, and walks the unbounded fault-failover ladder to a final 503
 	// instead of the bounded capacity retries and uptime-neutral 429.
-	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext)
+	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext, d.lastErrRejectionReason)
 	if kind != rejectionDeadlineUnreachable &&
 		d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
 		kind = rejectionTransientCapacity
@@ -1703,7 +1798,14 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bo
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
 	msg = normalizeInferenceErrorForInternalUse(msg)
-	d.captureGenuineFault(provider, msg, providerReportedBudget(provider, d.model))
+	// Same budget preference as setLastInferenceError: the enriched LIVE
+	// gate budget (explicit zero included) supersedes the stale heartbeat
+	// snapshot for this loser's classification.
+	budget := providerReportedBudget(provider, d.model)
+	if msg.AvailableTokenBudget != nil {
+		budget = *msg.AvailableTokenBudget
+	}
+	d.captureGenuineFault(provider, msg, budget)
 	if d.unservable || d.terminalClientError {
 		return
 	}
@@ -1727,8 +1829,7 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.latchTerminalAttribution(provider)
 		return
 	}
-	budget := providerReportedBudget(provider, d.model)
-	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext) {
+	switch classifyRejection(msg.ErrorReason, msg.Error, budget, d.modelMaxContext, msg.RejectionReason) {
 	case rejectionDeadlineUnreachable:
 		// A race loser that could not meet the remaining absolute deadline is
 		// health-neutral and non-deterministic across providers. It must not
@@ -1785,6 +1886,11 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 	deadlineWait := d.firstTokenWait(d.deadline)
 	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWait())
 	deadlineTimer := time.NewTimer(deadlineWait)
+	// Routing v2 W2: the probe round may deliver ONE refined (strictly
+	// earlier) absolute speculative launch instant. Read through a local so
+	// the arm disarms itself after its single use; a nil channel (no probe
+	// round) never fires.
+	hedgeAdvance := d.hedgeAdvanceCh
 	// preambleLiveness records that held boilerplate earned a legacy bounded
 	// extension. AcceptedCh never earns or resets a content wait.
 	// A preamble-then-stall with leftover budget is still bounded by
@@ -1862,6 +1968,34 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
+
+		case at := <-hedgeAdvance:
+			// One-shot re-arm of the speculative timer to the probe round's
+			// refined launch instant. Guards, in order: only once (the local
+			// disarms), only with the absolute clock stamped (mirrors
+			// first_token_clock.go invariant 5), only strictly EARLIER than
+			// the armed point, and never after the timer fired — Stop()
+			// reports whether the timer was still pending; a spent fire stays
+			// buffered in C for its own arm and must not be re-armed over.
+			// Never past the deadline by construction: hedgeLaunchAt's
+			// ceiling is deadline/2. speculativeAt is updated so every
+			// downstream remaining-window computation, the launch-now check
+			// above, and telemetry agree with the re-armed timer; without a
+			// delivered value it stays the 50% default — exact legacy timing.
+			hedgeAdvance = nil
+			receivedAt := timingReceivedAt(d.timing)
+			if receivedAt.IsZero() || !at.Before(receivedAt.Add(d.speculativeAt)) {
+				continue
+			}
+			if !speculativeTimer.Stop() {
+				continue
+			}
+			d.speculativeAt = at.Sub(receivedAt)
+			if d.speculativeAt < 0 {
+				d.speculativeAt = 0
+			}
+			speculativeTimer.Reset(d.firstTokenSpeculativeWait())
+			continue
 
 		case <-speculativeTimer.C:
 			if pr.FirstContentIngressArrivedByDeadline() {
@@ -1973,6 +2107,33 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		provider.Mu().Unlock()
 	}
 
+	// Hedge governor (Routing v2 Phase 4): insurance must never amplify an
+	// overload. A non-allow verdict suppresses the backup entirely and falls
+	// through the nil-backup branch below — byte-identical to today's
+	// "no backup available" path. The owner-served prefer skip above stays
+	// governor-blind: it is a product rule, not a capacity decision.
+	//
+	// The verdict and the budget-slot increment are ONE atomic governor
+	// operation (tryAcquireHedge): concurrent slow requests can no longer
+	// each read the last free slot and all launch past the fleet-wide cap.
+	// An acquired slot is released exactly once — below when no backup
+	// actually dispatches, at race resolution otherwise.
+	hedgeLaunched := false
+	if !skipBackup && s.hedgeGov != nil {
+		verdict, acquired := d.tryAcquireBackupHedge(provider.ID)
+		d.hedgeGovernorVerdict = verdict.String()
+		hedgeLaunched = acquired
+		if verdict != hedgeAllow {
+			s.ddIncr("routing.hedge_governor_suppressed", []string{"model:" + d.model, "verdict:" + verdict.String()})
+			s.logger.Info("speculative_backup_suppressed",
+				"request_id", d.requestID,
+				"primary_provider", provider.ID,
+				"verdict", verdict.String(),
+			)
+			skipBackup = true
+		}
+	}
+
 	if !skipBackup {
 		d.pr.EnableSpeculativeEmptyCompletionArbitration()
 		backupExclude := make(map[string]struct{}, len(d.excludeProviders)+1)
@@ -1981,31 +2142,51 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		}
 		backupExclude[provider.ID] = struct{}{}
 
-		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
-			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
-			d.traits(),
-			d.allowedProviderSerials, d.isResponsesAPI, d.policy,
-			&registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt},
-			d.serviceReservation,
-			d.cachePlan,
-			backupExclude,
-			d.attempt,
-			func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
-				attemptedBackupProvider = provider
-				if pr != nil {
-					pr.EnableSpeculativeEmptyCompletionArbitration()
-					d.configurePending(pr)
-					backupRouteRecorded = true
-					backupRouteRequestID = pr.RequestID
-					backupRouteAttempt = pr.Attempt
-				}
-				d.recordRoutingDecisionFor(provider, pr, "", d.attempt, decision, "", "")
-			},
-		)
+		recordBackupRoute := func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
+			attemptedBackupProvider = provider
+			if pr != nil {
+				pr.EnableSpeculativeEmptyCompletionArbitration()
+				d.configurePending(pr)
+				backupRouteRecorded = true
+				backupRouteRequestID = pr.RequestID
+				backupRouteAttempt = pr.Attempt
+			}
+			d.recordRoutingDecisionFor(provider, pr, "", d.attempt, decision, "", "")
+		}
+		// Routing v2 W2: the backup consumes the retained plan first — the
+		// next confirmed/revalidated entry, then the request's single refresh
+		// — falling back to the legacy full scan only when the plan machinery
+		// yields nothing (prefer-owner and legacy fleets keep their exact
+		// selection behavior). The backup shares only ReceivedAt with the
+		// primary's clock, as before.
+		backupTiming := &registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt}
+		planTried := false
+		backupProvider, backupPR, _, backupErr, backupErrCode, planTried =
+			d.dispatchFromPlanMachinery(backupTiming, backupExclude, recordBackupRoute)
+		if !planTried {
+			backupProvider, backupPR, _, _, backupErr, backupErrCode = s.dispatchOneProvider(
+				r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+				d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+				d.traits(),
+				d.allowedProviderSerials, d.isResponsesAPI, d.policy,
+				backupTiming,
+				d.serviceReservation,
+				d.cachePlan,
+				backupExclude,
+				d.attempt,
+				recordBackupRoute,
+				d.noteProviderDispatched,
+			)
+		}
 	}
 
 	if backupProvider == nil {
+		if hedgeLaunched {
+			// The governor admitted a hedge that never dispatched — release
+			// its budget slot immediately. No outcome is recorded: no race
+			// ran, so there is nothing to fold into the win-rate EWMA.
+			s.hedgeGov.noteHedgeResolved()
+		}
 		if d.pr != nil {
 			d.pr.ResolveSpeculativeEmptyCompletion(true)
 		}
@@ -2036,7 +2217,16 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		"ttft_deadline_ms", d.deadline.Milliseconds(),
 		"speculative_at_ms", d.speculativeAt.Milliseconds(),
 	)
-	return d.runRace(backupProvider, backupPR)
+	outcome := d.runRace(backupProvider, backupPR)
+	if hedgeLaunched {
+		// Exactly-once hedge accounting: every runRace exit — win, loss,
+		// retry, client-gone, empty-completion promotion, and the failed-racer
+		// sub-waits — returns through here, and BackupWon is the winner marker
+		// every backup-win path sets before committing.
+		s.hedgeGov.noteHedgeResolved()
+		s.hedgeGov.recordHedgeOutcome(d.model, backupPR.BackupWon)
+	}
+	return outcome
 }
 
 // waitNoBackup is the speculative-no-backup branch (`noBackupWait`): keep waiting
@@ -3212,10 +3402,10 @@ exhausted:
 		// backend was chosen or degraded into (v0.8.0 paged rollout).
 		kvBackend := d.exhaustedKVBackendAttribution(failure, stickyFault)
 		s.emitRequest(r.Context(), protocol.SeverityError, d.requestID,
-			fmt.Sprintf("inference failed after %d attempt(s)", d.attempt+1),
+			fmt.Sprintf("inference failed after %d attempt(s)", d.exhaustionAttemptCount()),
 			map[string]any{
 				"reason":      "dispatch_exhausted",
-				"attempt":     d.attempt + 1,
+				"attempt":     d.exhaustionAttemptCount(),
 				"status_code": statusCode,
 				"last_error":  failure.errText,
 				"kv_backend":  kvBackend.Backend,
@@ -3229,6 +3419,21 @@ exhausted:
 		d.recordDispatchedRequestOutcome(kvBackend, classifyOutcomeByCode(statusCode))
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
+			if d.lastErrFeasibleAfterMS > 0 {
+				// Enriched rejection (routing v2): the rejecting provider
+				// forecast when a request of this shape could next be admitted
+				// — an honest Retry-After beats the queue-depth heuristic.
+				// Clamped to the heuristic's own [2,30]s band so a
+				// provider-authored value can neither hammer nor park clients.
+				hinted := int((d.lastErrFeasibleAfterMS + 999) / 1000)
+				if hinted < 2 {
+					hinted = 2
+				}
+				if hinted > 30 {
+					hinted = 30
+				}
+				retryAfter = hinted
+			}
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
 			if !stickyFault && (d.unservable || failure.deadline) {
@@ -3245,7 +3450,7 @@ exhausted:
 		}
 		rateLimitMessage := fmt.Sprintf(
 			"all providers at capacity after %d attempt(s): %s",
-			d.attempt+1, failure.errText)
+			d.exhaustionAttemptCount(), failure.errText)
 		if reason == rejectionReasonDeadlineUnreachable {
 			rateLimitMessage = fmt.Sprintf(
 				"no provider could produce first content within the remaining deadline for model %q",
@@ -3273,7 +3478,7 @@ exhausted:
 			}
 		} else {
 			writeJSON(w, statusCode, errorResponse("provider_error",
-				fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, failure.errText)))
+				fmt.Sprintf("inference failed after %d attempt(s): %s", d.exhaustionAttemptCount(), failure.errText)))
 		}
 		return
 	}
@@ -3366,94 +3571,15 @@ func (d *dispatchState) writeCommittedResponse() {
 		s.registry.RecordLatency(provider.ID, sample)
 	}
 
-	// Write provider attestation headers now that we're committed.
-	provider.Mu().Lock()
-	pubKey := provider.PublicKey
-	attested := provider.Attested
-	trustLevel := provider.TrustLevel
-	attestResult := provider.AttestationResult
-	mdaVerified := provider.MDAVerified
-	provider.Mu().Unlock()
-
-	providerID := provider.ID
-	chipName := provider.Hardware.ChipName
-	machineModel := provider.Hardware.MachineModel
-	if pubKey != "" {
-		w.Header().Set("X-Provider-Encrypted", "true")
-	}
-	if attested {
-		w.Header().Set("X-Provider-Attested", "true")
-	} else {
-		w.Header().Set("X-Provider-Attested", "false")
-	}
-	w.Header().Set("X-Provider-Trust-Level", string(trustLevel))
-	w.Header().Set("X-Provider-Id", providerID)
-	w.Header().Set("X-Provider-Chip", chipName)
-	w.Header().Set("X-Provider-Model", machineModel)
-	if attestResult != nil {
-		if attestResult.SecureEnclaveAvailable {
-			w.Header().Set("X-Provider-Secure-Enclave", "true")
-		} else {
-			w.Header().Set("X-Provider-Secure-Enclave", "false")
-		}
-	}
-	if mdaVerified {
-		w.Header().Set("X-Provider-Mda-Verified", "true")
-	}
-	// SE public key for attestation receipt verification.
-	// Consumers can use this to verify SE signatures on response hashes.
-	if attestResult != nil && attestResult.PublicKey != "" {
-		w.Header().Set("X-Attestation-Se-Public-Key", attestResult.PublicKey)
-	}
-
-	// Latency decomposition header for observability.
-	if timing := pr.Timing; timing != nil {
-		type timingJSON struct {
-			ParseUs   int64 `json:"parse_us"`
-			ReserveUs int64 `json:"reserve_us"`
-			// MediaFetchUs covers the post-reservation remote media download +
-			// inline step (media_resolve.go); omitted for the (typical) request
-			// that fetched nothing.
-			MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
-			RouteUs      int64 `json:"route_us"`
-			QueueUs      int64 `json:"queue_us"`
-			EncryptUs    int64 `json:"encrypt_us"`
-			DispatchUs   int64 `json:"dispatch_us"`
-			ProviderUs   int64 `json:"provider_us"`
-		}
-		tj := timingJSON{}
-		if !timing.ParsedAt.IsZero() {
-			tj.ParseUs = timing.ParsedAt.Sub(timing.ReceivedAt).Microseconds()
-		}
-		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
-			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
-		}
-		// Media fetch (when present) sits between reserve and route; anchor the
-		// route segment past it so a download never inflates route_us.
-		routeAnchor := timing.ReservedAt
-		if !timing.MediaFetchedAt.IsZero() && !timing.ReservedAt.IsZero() {
-			tj.MediaFetchUs = timing.MediaFetchedAt.Sub(timing.ReservedAt).Microseconds()
-			routeAnchor = timing.MediaFetchedAt
-		}
-		if !timing.RoutedAt.IsZero() && !routeAnchor.IsZero() {
-			tj.RouteUs = timing.RoutedAt.Sub(routeAnchor).Microseconds()
-		}
-		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
-			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()
-		}
-		if !timing.EncryptedAt.IsZero() && !timing.RoutedAt.IsZero() {
-			tj.EncryptUs = timing.EncryptedAt.Sub(timing.RoutedAt).Microseconds()
-		}
-		if !timing.DispatchedAt.IsZero() && !timing.EncryptedAt.IsZero() {
-			tj.DispatchUs = timing.DispatchedAt.Sub(timing.EncryptedAt).Microseconds()
-		}
-		if !timing.FirstChunkAt.IsZero() && !timing.DispatchedAt.IsZero() {
-			tj.ProviderUs = timing.FirstChunkAt.Sub(timing.DispatchedAt).Microseconds()
-		}
-		if tjJSON, err := json.Marshal(tj); err == nil {
-			w.Header().Set("X-Timing", string(tjJSON))
-		}
-	}
+	// Write provider attestation headers now that we're committed. When the
+	// caller opted into metadata_details, snapshot the same consumer-safe
+	// fields onto the pending request so chat-completions writers can attach
+	// them to the JSON body (OpenAI SDKs often hide custom headers).
+	info := collectCommittedProviderInfo(provider)
+	writeCommittedProviderHeaders(w, info)
+	writeTimingHeader(w, pr.Timing)
+	writeInferenceJobIDHeader(w, pr.RequestID)
+	snapshotChatCompletionMetadata(pr, info)
 
 	// On return (disconnect/timeout/completion): free the slot, tell the
 	// provider to stop, and preserve billing for a mid-stream disconnect.

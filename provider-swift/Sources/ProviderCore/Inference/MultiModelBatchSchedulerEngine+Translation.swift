@@ -12,33 +12,83 @@ import Foundation
 import MLXLMCommon
 import MLXLMServer
 
+/// Template-only controls recovered from the sealed OpenAI body. They remain
+/// out-of-band because the upstream request type does not model the top-level
+/// Qwen3.8 fields. `enableThinking` is already resolved across top-level and
+/// `chat_template_kwargs`; the typed request's nested `reasoning.enabled`
+/// remains authoritative when the template context is built.
+public struct ChatTemplateControls: Sendable, Equatable {
+    public let reasoningEffort: String?
+    public let enableThinking: Bool?
+    public let preserveThinking: Bool?
+
+    public init(
+        reasoningEffort: String? = nil,
+        enableThinking: Bool? = nil,
+        preserveThinking: Bool? = nil
+    ) {
+        self.reasoningEffort = reasoningEffort
+        self.enableThinking = enableThinking
+        self.preserveThinking = preserveThinking
+    }
+
+    var effortDisablesThinking: Bool {
+        guard let value = reasoningEffort?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        else { return false }
+        return ["none", "off", "0"].contains(value)
+    }
+
+    var hasExplicitThinkingControl: Bool {
+        enableThinking != nil || reasoningEffort != nil
+    }
+}
+
 extension MultiModelBatchSchedulerEngine {
 
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?,
+        controls: ChatTemplateControls,
         modelType: String? = nil,
-        hasMedia: Bool = false
+        hasMedia: Bool = false,
+        requiresToolCall: Bool = false
     ) -> [String: any Sendable]? {
         var context: [String: any Sendable] = [:]
         let fixContext = ChatTemplateFixContext(
             modelId: request.model,
             modelType: modelType)
         if let effectiveEffort = GPTOSSHarmonyTemplateFix.effectiveReasoningEffort(
-            reasoningEffort,
+            controls.reasoningEffort,
             context: fixContext)
         {
             context["reasoning_effort"] = effectiveEffort
         }
-        if let reasoningEnabled = request.reasoning?.enabled {
-            context["enable_thinking"] = reasoningEnabled
-        } else if hasMedia {
-            // Qwen 3.5/3.6 templates default thinking ON when this key is
-            // absent. A long ungrounded think block both misses vision
-            // captions (OpenRouter flower regex) and burns the first-content
-            // clock on video. Clients that want thinking send
-            // `reasoning.enabled`.
+
+        // Reviewed precedence: the typed nested control wins over both raw-body
+        // aliases; explicit booleans win over effort shorthands; only the exact
+        // none/off/0 spellings disable through reasoning_effort. `minimal` is
+        // preserved as an effort value and intentionally is not rewritten to
+        // false.
+        if requiresToolCall && Qwen35TemplateFix.applies(to: fixContext) {
+            // Qwen's XML tool parser treats reasoning before <tool_call> as
+            // visible prose. Required/named tool_choice cannot expose prose,
+            // so the forced-tool contract takes precedence over thinking
+            // controls and renders a tool-only prompt.
             context["enable_thinking"] = false
+        } else if let nested = request.reasoning?.enabled {
+            context["enable_thinking"] = nested
+        } else if let explicit = controls.enableThinking {
+            context["enable_thinking"] = explicit
+        } else if controls.effortDisablesThinking {
+            context["enable_thinking"] = false
+        } else if hasMedia && !controls.hasExplicitThinkingControl {
+            // Qwen templates default thinking on. Grounded media defaults off
+            // only when the caller supplied no thinking control at all.
+            context["enable_thinking"] = false
+        }
+        if let preserveThinking = controls.preserveThinking {
+            context["preserve_thinking"] = preserveThinking
         }
         return context.isEmpty ? nil : context
     }

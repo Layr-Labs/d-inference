@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"github.com/google/uuid"
 )
 
 // defaultTrustReuseWindow is how long a successful FULL live MDM verification is
@@ -18,111 +21,144 @@ import (
 // proof. Kept SHORT (Threat-Model #3): the reuse must not be able to span a
 // SIP-disable reboot cycle (where a box reboots into Recovery, disables SIP, and
 // reconnects), so a window comfortably under a realistic reboot+reconnect is used.
+// Tightened from 10m to 5m once connection-continuity reuse (see
+// trustReuseReconnectGapFromEnv) started covering the legitimate operational
+// reconnect cases, so the pure wall-clock staleness bound can be stricter.
 // Overridable via EIGENINFERENCE_TRUST_REUSE_WINDOW.
-const defaultTrustReuseWindow = 10 * time.Minute
+const defaultTrustReuseWindow = 5 * time.Minute
 
-// trustReuseGrantWait bounds how long the per-connection mdmVerificationLoop
-// defers to the live SE challenge's trust-reuse fast-skip for a known, recently
-// fully-verified device before falling back to the full live MDM round-trip. The
-// SE challenge round-trip is sub-second, so this is rarely fully consumed; it
-// exists only so this loop does not race AHEAD of the challenge and re-run the
-// live MDM verify the fast-skip is meant to avoid — the fleet-wide MDM/APNs herd
-// on a planned coordinator restart/swap that this feature targets.
+// Connection-continuity reuse (the "continuity" decision): a provider that was
+// live-verified, stayed continuously connected and hardware-trusted (the
+// coordinator advances a durable ContinuousCoverageUntil watermark while it
+// observes the live SE-challenged connection), and reconnects after a
+// coordinator-MEASURED offline gap of at most the reconnect-gap allowance may
+// reuse its device evidence even when HardwareProofVerifiedAt has fallen out
+// of the wall-clock window. SECURITY INVARIANT (Threat-Model T-036):
+// SIP/Secure Boot can only change in RecoveryOS; entering and leaving Recovery
+// on Apple Silicon (One True Recovery: manual power-button entry, credentialed
+// csrutil/bputil, two boot transitions) takes >= ~3 minutes and drops any
+// WebSocket, so a contiguous coordinator-measured offline gap <= 120s cannot
+// span a posture flip. The gap is never provider-claimed. The 120s ceiling is
+// therefore a HARD security bound: EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
+// values above it clamp DOWN (with a warning), never up.
+const defaultTrustReuseReconnectGap = 90 * time.Second
+const maxTrustReuseReconnectGap = 120 * time.Second
+
+const clockSkewTolerance = 2 * time.Minute
+const trustReuseDeleteAttempts = 3
 const (
-	trustReuseGrantWait = 10 * time.Second
-	trustReuseGrantPoll = 100 * time.Millisecond
+	trustSafetyJournalHealthReason = "trust_reuse_revocation_journal_unavailable"
+	trustSafetyReplayHealthReason  = "trust_reuse_revocation_replay_pending"
 )
 
-// clockSkewTolerance lets a record whose VerifiedAt is slightly in the FUTURE
-// (coordinator/provider clock skew, or a small NTP step) still count as fresh,
-// while rejecting one dated implausibly far in the future — a corrupt/forged
-// VerifiedAt that would otherwise keep a record "fresh" long past the real
-// window. Applied identically in reuseTrust / hasFreshRecord / seed (DAR-326
-// FIX 2): a record is fresh iff age in [-clockSkewTolerance, reuseWindow).
-const clockSkewTolerance = 2 * time.Minute
-
-// trustReuseDeleteAttempts / trustReuseDeleteRetryBackoff bound the INLINE
-// persisted-delete retry on hard untrust (DAR-326 FIX 1). The hard-untrust hook
-// runs off all registry locks and a hard untrust is rare, so a brief blocking,
-// retried delete is safe — and keeps "hard untrust always takes effect" durable
-// across a coordinator restart even through a transient DB blip. The backoff is a
-// var so tests can shorten it.
-const trustReuseDeleteAttempts = 3
-
 var trustReuseDeleteRetryBackoff = 200 * time.Millisecond
+var trustReuseReplayInitialBackoff = time.Second
 
-// trustReuseStore is the minimal slice of store.Store the trust-reuse cache needs
-// to survive coordinator restarts/blue-green deploys (DAR-326 Phase 0). store.Store
-// satisfies it; tests can inject a fake. SECURITY: persistence is a performance
-// optimization (avoid a fleet-wide live MDM re-verification within the reuse
-// window) — it is NEVER consulted to grant hardware trust. The reuse decision
-// (reuseTrust) re-applies, behind a live SE challenge, the identity + binary +
-// fresh-posture + freshness gates on every read, so a stale/wrong-binary/expired
-// persisted row falls through to a real, full live MDM verification.
+type trustReuseDecision string
+
+const (
+	trustReuseDecisionSameBinary                trustReuseDecision = "same_binary"
+	trustReuseDecisionApprovedReleaseTransition trustReuseDecision = "approved_release_transition"
+	// Continuity decisions admit via the connection-continuity premise (the
+	// wall-clock window is stale but the coordinator-measured offline gap is
+	// within the reconnect-gap allowance). Distinct labels keep both premises
+	// observable in logs/metrics.
+	trustReuseDecisionContinuity                  trustReuseDecision = "continuity"
+	trustReuseDecisionContinuityReleaseTransition trustReuseDecision = "continuity_release_transition"
+)
+
+type trustReuseReason string
+
+const (
+	trustReuseReasonAllowed              trustReuseReason = "allowed"
+	trustReuseReasonMissingIdentity      trustReuseReason = "missing_identity"
+	trustReuseReasonNoDeviceEvidence     trustReuseReason = "no_device_evidence"
+	trustReuseReasonSerialMismatch       trustReuseReason = "serial_mismatch"
+	trustReuseReasonRevoked              trustReuseReason = "durably_revoked"
+	trustReuseReasonNotHardware          trustReuseReason = "not_hardware"
+	trustReuseReasonRecordedPostureBad   trustReuseReason = "recorded_posture_bad"
+	trustReuseReasonProofExpired         trustReuseReason = "hardware_proof_expired"
+	trustReuseReasonTransitionUnapproved trustReuseReason = "release_transition_unapproved"
+	trustReuseReasonRevocationSafety     trustReuseReason = "revocation_safety_latch"
+)
+
+type approvedReleaseTransitionFact struct {
+	Approved                 bool
+	BinaryHash               string
+	Version                  string
+	Platform                 string
+	Backend                  string
+	PolicyGeneration         uint64
+	ApprovedFromBinaryHashes map[string]struct{}
+}
+
+type trustReuseInput struct {
+	SEPubKey          string
+	Serial            string
+	FreshBinaryHash   string
+	ReleaseTransition approvedReleaseTransitionFact
+}
+
+type trustReuseResult struct {
+	Decision trustReuseDecision
+	Reason   trustReuseReason
+	Record   trustReuseRecord
+}
+
 type trustReuseStore interface {
 	ListProviderTrustReuse(ctx context.Context) ([]store.ProviderTrustReuse, error)
-	UpsertProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse) error
-	DeleteProviderTrustReuse(ctx context.Context, seKey string) error
+	UpsertProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) (store.ProviderTrustReuseWriteResult, error)
+	RecoverProviderTrustReuse(ctx context.Context, rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) (store.ProviderTrustReuseWriteResult, error)
+	AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error
+	RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (store.ProviderTrustReuse, error)
 }
 
-// trustReuseCache lets a planned coordinator restart/swap skip a fleet-wide live
-// MDM SecurityInfo + APNs re-verification herd. It mirrors the code-identity reuse
-// cache (codeAttestThrottle): one durable record per device of its most recent
-// FULL live MDM verification, keyed by the Secure Enclave public key — the stable
-// per-device identity that survives reconnects AND coordinator restarts.
-//
-// On reconnect today, every provider's per-connection mdmVerificationLoop fires a
-// live MDM SecurityInfo round-trip (and APNs push) almost immediately; doing that
-// across the whole fleet at once (a restart/blue-green swap) is the herd. With a
-// fresh record, once the live SE challenge re-proves identity + posture, the
-// coordinator grants hardware from the record and the MDM loop skips its live
-// round-trip.
-//
-// SECURITY — the skip is a gated optimization, never a trust shortcut:
-//   - The live SE challenge ALWAYS runs first (never skipped). The fast-skip only
-//     happens AFTER it passes (verifyChallengeResponse -> tryTrustReuseFastSkip).
-//   - reuseTrust re-checks, on every read: SE-key + serial identity match (a), the
-//     binary hash in the FRESH signed challenge == the one proven at the last MDM
-//     verification (b), the recorded posture was good + trust was hardware, and the
-//     freshness window (d). The caller additionally requires fresh good posture
-//     cryptographically bound to the SE key (c) and that the provider is not
-//     hard-untrusted (e). Any miss falls through to the full live MDM verify —
-//     byte-identical to today.
-//   - A hard untrust deletes the record (in-memory + persisted), so it can never
-//     reseed and fast-skip after a restart. First-ever verification (no record)
-//     always does the full live MDM.
 type trustReuseCache struct {
 	mu      sync.Mutex
-	records map[string]trustReuseRecord // seKey -> last successful FULL live MDM verification
+	records map[string]trustReuseRecord
 
-	reuseWindow time.Duration
-
-	now func() time.Time
-
-	// store persists the reuse cache across restarts/deploys. nil until wired by
-	// Server.SeedTrustReuseCache at startup (and nil in unit tests that construct a
-	// bare cache), so every persistence path is nil-safe — the in-memory reuse
-	// cache works identically with or without a store.
-	store trustReuseStore
+	reuseWindow  time.Duration
+	reconnectGap time.Duration
+	now          func() time.Time
+	store        trustReuseStore
 }
 
-// trustReuseRecord is the in-memory form of store.ProviderTrustReuse: what was
-// proven about a device at its last FULL live MDM verification.
 type trustReuseRecord struct {
-	serial         string
-	trustLevel     string
-	binaryHash     string // normalized SHA-256 hex of the provider binary at last verification
-	sipEnabled     bool
-	secureBootFull bool
-	mdaUDID        string
-	at             time.Time
+	serial                     string
+	trustLevel                 string
+	lastVerifiedBinaryHash     string
+	sipEnabled                 bool
+	secureBootFull             bool
+	mdaUDID                    string
+	hardwareProofVerifiedAt    time.Time
+	continuousCoverageUntil    time.Time
+	applicationProofVerifiedAt *time.Time
+	evidenceGeneration         uint64
+	revocationGeneration       uint64
+	revocationEventID          string
+	revokedAt                  *time.Time
 }
 
 func newTrustReuseCache() *trustReuseCache {
+	return newTrustReuseCacheWithWindow(trustReuseWindowFromEnv())
+}
+
+// newTrustReuseCacheWithWindow pins the fast-skip freshness window verbatim.
+// Tests use it to model a specific deployment window; production goes through
+// newTrustReuseCache, i.e. the reviewed 5-minute default (Threat-Model #3 /
+// T-036: must not span a SIP-disable reboot cycle) or the operator's
+// EIGENINFERENCE_TRUST_REUSE_WINDOW override. The continuity reconnect-gap
+// allowance always comes from the (hard-clamped) environment default.
+func newTrustReuseCacheWithWindow(window time.Duration) *trustReuseCache {
+	if window <= 0 {
+		window = defaultTrustReuseWindow
+	}
+	gap, _ := trustReuseReconnectGapFromEnv()
 	return &trustReuseCache{
-		records:     make(map[string]trustReuseRecord),
-		reuseWindow: trustReuseWindowFromEnv(),
-		now:         time.Now,
+		records:      make(map[string]trustReuseRecord),
+		reuseWindow:  window,
+		reconnectGap: gap,
+		now:          time.Now,
 	}
 }
 
@@ -137,51 +173,117 @@ func trustReuseWindowFromEnv() time.Duration {
 	return defaultTrustReuseWindow
 }
 
-// reuseTrust reports whether the device has a record-side basis to skip a live MDM
-// re-verification: a fresh record (within the window) for the SAME SE key + serial,
-// earned at HARDWARE trust with good recorded posture, whose recorded binary hash
-// matches the one in the fresh SIGNED challenge (freshBinaryHash, already
-// normalized by the caller). It does NOT check the fresh posture or hard-untrust
-// state — those are the caller's gates (c)/(e) — keeping this method a pure,
-// clock-driven record lookup that mirrors codeAttestThrottle.reuseAttestation.
-// SECURITY: every field here re-validates the persisted/seeded record on read, so a
-// seeded row can never by itself grant trust.
-func (c *trustReuseCache) reuseTrust(seKey, serial, freshBinaryHash string) (trustReuseRecord, bool) {
-	if seKey == "" || serial == "" || freshBinaryHash == "" {
-		return trustReuseRecord{}, false
+// trustReuseReconnectGapFromEnv reads EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP
+// (a Go duration), falling back to defaultTrustReuseReconnectGap when
+// unset/invalid, and hard-clamps the result into [0, maxTrustReuseReconnectGap].
+// The 120s ceiling is the RecoveryOS-physics security bound (see the constant
+// docs above): values above it clamp DOWN, reported via the second return so
+// the caller can log a warning. A zero allowance disables continuity reuse.
+func trustReuseReconnectGapFromEnv() (time.Duration, bool) {
+	gap := defaultTrustReuseReconnectGap
+	if v := os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			gap = d
+		}
+	}
+	if gap < 0 {
+		gap = 0
+	}
+	if gap > maxTrustReuseReconnectGap {
+		return maxTrustReuseReconnectGap, true
+	}
+	return gap, false
+}
+
+func (c *trustReuseCache) decideTrustReuse(input trustReuseInput) trustReuseResult {
+	if input.SEPubKey == "" || input.Serial == "" || input.FreshBinaryHash == "" {
+		return trustReuseResult{Reason: trustReuseReasonMissingIdentity}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	r, ok := c.records[seKey]
+	r, ok := c.records[input.SEPubKey]
 	if !ok {
-		return trustReuseRecord{}, false
+		return trustReuseResult{Reason: trustReuseReasonNoDeviceEvidence}
 	}
-	if r.serial != serial { // (a) identity: serial bound to the same SE key
-		return trustReuseRecord{}, false
+	if r.serial != input.Serial {
+		return trustReuseResult{Reason: trustReuseReasonSerialMismatch}
 	}
-	if r.trustLevel != string(registry.TrustHardware) { // only a full MDM/hardware verification is reusable
-		return trustReuseRecord{}, false
+	if r.revokedAt != nil {
+		return trustReuseResult{Reason: trustReuseReasonRevoked}
 	}
-	if r.binaryHash == "" || r.binaryHash != freshBinaryHash { // (b) code identity unchanged
-		return trustReuseRecord{}, false
+	if r.trustLevel != string(registry.TrustHardware) {
+		return trustReuseResult{Reason: trustReuseReasonNotHardware}
 	}
-	if !r.sipEnabled || !r.secureBootFull { // recorded posture must have been good (defensive)
-		return trustReuseRecord{}, false
+	if !r.sipEnabled || !r.secureBootFull {
+		return trustReuseResult{Reason: trustReuseReasonRecordedPostureBad}
 	}
-	// (d) freshness window, with clock-skew tolerance: reject a record dated
-	// implausibly far in the FUTURE (corrupt/forged VerifiedAt) as well as an
-	// expired one.
-	if age := c.now().Sub(r.at); age < -clockSkewTolerance || age >= c.reuseWindow {
-		return trustReuseRecord{}, false
+	continuity, freshOK := c.freshnessLocked(r)
+	if !freshOK {
+		return trustReuseResult{Reason: trustReuseReasonProofExpired}
 	}
-	return r, true
+	if r.lastVerifiedBinaryHash == input.FreshBinaryHash {
+		decision := trustReuseDecisionSameBinary
+		if continuity {
+			decision = trustReuseDecisionContinuity
+		}
+		return trustReuseResult{
+			Decision: decision,
+			Reason:   trustReuseReasonAllowed,
+			Record:   r,
+		}
+	}
+	if _, approvedFrom := input.ReleaseTransition.ApprovedFromBinaryHashes[r.lastVerifiedBinaryHash]; input.ReleaseTransition.Approved && approvedFrom &&
+		input.ReleaseTransition.BinaryHash == input.FreshBinaryHash {
+		decision := trustReuseDecisionApprovedReleaseTransition
+		if continuity {
+			decision = trustReuseDecisionContinuityReleaseTransition
+		}
+		return trustReuseResult{
+			Decision: decision,
+			Reason:   trustReuseReasonAllowed,
+			Record:   r,
+		}
+	}
+	return trustReuseResult{Reason: trustReuseReasonTransitionUnapproved}
 }
 
-// hasFreshRecord reports whether a fresh, hardware, identity-matching record
-// exists for a device. It is a SUBSET of reuseTrust (no binary/posture check) used
-// ONLY to decide whether the mdmVerificationLoop should briefly defer to the SE
-// challenge's fast-skip. It is a timing hint, never a trust decision — the actual
-// grant always goes through reuseTrust + the caller's full gates.
+// freshnessLocked evaluates the two admission premises against the caller's
+// record. ok is true when either holds; continuity reports that the record was
+// admitted by the connection-continuity premise (wall-clock window stale, but
+// the coordinator-measured offline gap now-ContinuousCoverageUntil is within
+// the reconnect-gap allowance). A hardware proof dated in the FUTURE beyond
+// skew tolerance is corrupt/forged and never admits via either premise.
+// Caller holds c.mu.
+func (c *trustReuseCache) freshnessLocked(r trustReuseRecord) (continuity, ok bool) {
+	now := c.now()
+	age := now.Sub(r.hardwareProofVerifiedAt)
+	if age < -clockSkewTolerance {
+		return false, false
+	}
+	if age < c.reuseWindow {
+		return false, true
+	}
+	if c.reconnectGap <= 0 || r.continuousCoverageUntil.IsZero() {
+		return false, false
+	}
+	gap := now.Sub(r.continuousCoverageUntil)
+	if gap < -clockSkewTolerance || gap > c.reconnectGap {
+		return false, false
+	}
+	return true, true
+}
+
+func (c *trustReuseCache) reuseTrust(seKey, serial, freshBinaryHash string, facts ...approvedReleaseTransitionFact) (trustReuseRecord, bool) {
+	var fact approvedReleaseTransitionFact
+	if len(facts) > 0 {
+		fact = facts[0]
+	}
+	result := c.decideTrustReuse(trustReuseInput{
+		SEPubKey: seKey, Serial: serial, FreshBinaryHash: freshBinaryHash,
+		ReleaseTransition: fact,
+	})
+	return result.Record, result.Decision != ""
+}
 func (c *trustReuseCache) hasFreshRecord(seKey, serial string) bool {
 	if seKey == "" || serial == "" {
 		return false
@@ -189,83 +291,295 @@ func (c *trustReuseCache) hasFreshRecord(seKey, serial string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r, ok := c.records[seKey]
-	if !ok || r.serial != serial || r.trustLevel != string(registry.TrustHardware) {
+	if !ok || r.serial != serial || r.revokedAt != nil ||
+		r.trustLevel != string(registry.TrustHardware) {
 		return false
 	}
-	// Fresh iff within the window and not implausibly future-dated (clock skew).
-	age := c.now().Sub(r.at)
-	return age >= -clockSkewTolerance && age < c.reuseWindow
+	_, ok = c.freshnessLocked(r)
+	return ok
 }
 
-// recordTrust updates the in-memory reuse record for a device after a successful
-// FULL live MDM verification. Mirrors codeAttestThrottle.recordAttested; the
-// durable write-through is Server.persistTrustReuse, called alongside it.
+func trustReuseRecordFromStore(rec store.ProviderTrustReuse) trustReuseRecord {
+	return trustReuseRecord{
+		serial:                     rec.Serial,
+		trustLevel:                 rec.TrustLevel,
+		lastVerifiedBinaryHash:     rec.LastVerifiedBinaryHash,
+		sipEnabled:                 rec.SIPEnabled,
+		secureBootFull:             rec.SecureBootFull,
+		mdaUDID:                    rec.MDAUDID,
+		hardwareProofVerifiedAt:    rec.HardwareProofVerifiedAt,
+		applicationProofVerifiedAt: rec.ApplicationProofVerifiedAt,
+		continuousCoverageUntil:    coverageFromStore(rec.ContinuousCoverageUntil),
+		evidenceGeneration:         rec.EvidenceGeneration,
+		revocationGeneration:       rec.RevocationGeneration,
+		revocationEventID:          rec.RevocationEventID,
+		revokedAt:                  rec.RevokedAt,
+	}
+}
+
+func coverageFromStore(until *time.Time) time.Time {
+	if until == nil {
+		return time.Time{}
+	}
+	return *until
+}
+
+func coverageToStore(until time.Time) *time.Time {
+	if until.IsZero() {
+		return nil
+	}
+	return &until
+}
+
+// advanceCoverage moves the in-memory continuity watermark forward for the
+// given identities. Mirrors the store's monotonic guard: never backward, never
+// on a tombstoned or non-hardware record.
+func (c *trustReuseCache) advanceCoverage(seKeys []string, until time.Time) {
+	if until.IsZero() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, seKey := range seKeys {
+		r, ok := c.records[seKey]
+		if !ok || r.revokedAt != nil ||
+			r.trustLevel != string(registry.TrustHardware) ||
+			!until.After(r.continuousCoverageUntil) {
+			continue
+		}
+		r.continuousCoverageUntil = until
+		c.records[seKey] = r
+	}
+}
+
 func (c *trustReuseCache) recordTrust(rec store.ProviderTrustReuse) {
 	if rec.SEPubKey == "" {
 		return
 	}
 	c.mu.Lock()
-	c.records[rec.SEPubKey] = trustReuseRecord{
-		serial:         rec.Serial,
-		trustLevel:     rec.TrustLevel,
-		binaryHash:     rec.BinaryHash,
-		sipEnabled:     rec.SIPEnabled,
-		secureBootFull: rec.SecureBootFull,
-		mdaUDID:        rec.MDAUDID,
-		at:             rec.VerifiedAt,
+	defer c.mu.Unlock()
+	if current, ok := c.records[rec.SEPubKey]; ok {
+		if current.revokedAt != nil ||
+			current.revocationGeneration != rec.RevocationGeneration {
+			return
+		}
 	}
-	c.mu.Unlock()
+	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
 }
 
-// invalidateReuse drops any cached reuse record for a device so the NEXT reconnect
-// cannot be short-circuited by reuseTrust and must run a full live MDM
-// verification. Used on HARD untrust (posture/binary/identity mismatch). This
-// drops only the IN-MEMORY record; the caller (Server.invalidateTrustReuse) also
-// deletes the PERSISTED row so a coordinator restart cannot reseed and fast-skip
-// on a stale, pre-untrust record. Mirrors codeAttestThrottle.invalidateReuse.
-func (c *trustReuseCache) invalidateReuse(seKey string) {
+func (c *trustReuseCache) recoverTrust(rec store.ProviderTrustReuse, expectedRevocationGeneration uint64) bool {
+	if rec.SEPubKey == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if current, ok := c.records[rec.SEPubKey]; ok &&
+		current.revocationGeneration != expectedRevocationGeneration {
+		return false
+	}
+	rec.RevocationGeneration = expectedRevocationGeneration
+	rec.RevokedAt = nil
+	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
+	return true
+}
+
+func (c *trustReuseCache) revocationState(seKey string) (uint64, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec := c.records[seKey]
+	return rec.revocationGeneration, rec.revocationEventID
+}
+
+func (c *trustReuseCache) isRevoked(seKey string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec, ok := c.records[seKey]
+	return ok && rec.revokedAt != nil
+}
+
+func (c *trustReuseCache) invalidateReuse(seKey, revocationEventID string) uint64 {
+	if seKey == "" || revocationEventID == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	rec := c.records[seKey]
+	if rec.revocationEventID == revocationEventID {
+		return rec.revocationGeneration
+	}
+	rec.trustLevel = ""
+	rec.revocationGeneration++
+	rec.revocationEventID = revocationEventID
+	now := c.now().UTC()
+	rec.revokedAt = &now
+	c.records[seKey] = rec
+	return rec.revocationGeneration
+}
+
+func (c *trustReuseCache) installRevocationGeneration(seKey string, generation uint64) {
 	if seKey == "" {
 		return
 	}
 	c.mu.Lock()
-	delete(c.records, seKey)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	rec := c.records[seKey]
+	if rec.revocationGeneration > generation {
+		return
+	}
+	rec.trustLevel = ""
+	rec.revocationGeneration = generation
+	now := c.now().UTC()
+	rec.revokedAt = &now
+	c.records[seKey] = rec
 }
 
-// seed loads persisted trust-reuse records into the in-memory cache at startup.
-// It applies the SAME freshness window used on read, so only rows that could still
-// be reused are kept, and never overwrites a fresher in-memory record (a device
-// that reconnected and re-verified before seeding finished). Returns the number of
-// rows seeded. Mirrors codeAttestThrottle.seed. SECURITY: seeding only populates
-// the cache that reuseTrust re-validates (identity + binary + posture + freshness)
-// behind a live SE challenge on every read — it cannot by itself grant hardware.
+func (c *trustReuseCache) installAuthoritativeTrustReuse(rec store.ProviderTrustReuse) {
+	if rec.SEPubKey == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current := c.records[rec.SEPubKey]
+	if current.revocationGeneration > rec.RevocationGeneration {
+		return
+	}
+	c.records[rec.SEPubKey] = trustReuseRecordFromStore(rec)
+}
+
+// seed installs persisted rows into the cache at startup. Every keyed row is
+// RETAINED — including rows whose freshness has lapsed — because a row's
+// RevocationGeneration is durable CAS state, not just reuse evidence: dropping
+// an expired row for a previously-revoked-then-recovered device would make the
+// next full live MDM grant submit expected generation zero, lose the recovery
+// CAS against the durable row, and be misclassified as a transient failure
+// (Codex P1). Staleness never grants anything: decideTrustReuse and
+// hasFreshRecord re-run the freshness/continuity gates on every read, so a
+// retained expired/future-dated row is pure generation state. The return value
+// counts only rows currently admissible for reuse (logging).
 func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
 	n := 0
-	for _, r := range rows {
-		if r.SEPubKey == "" {
+	for _, row := range rows {
+		if row.SEPubKey == "" {
 			continue
 		}
-		if age := now.Sub(r.VerifiedAt); age < -clockSkewTolerance || age >= c.reuseWindow {
-			continue // outside the reuse window, or implausibly future-dated — never reusable
+		incoming := trustReuseRecordFromStore(row)
+		current, ok := c.records[row.SEPubKey]
+		if ok && current.revocationGeneration > incoming.revocationGeneration {
+			continue
 		}
-		if cur, ok := c.records[r.SEPubKey]; ok && !r.VerifiedAt.After(cur.at) {
-			continue // keep the fresher in-memory record
+		if ok && current.revocationGeneration == incoming.revocationGeneration {
+			if current.revokedAt != nil {
+				continue
+			}
+			if !incoming.hardwareProofVerifiedAt.After(current.hardwareProofVerifiedAt) {
+				continue
+			}
 		}
-		c.records[r.SEPubKey] = trustReuseRecord{
-			serial:         r.Serial,
-			trustLevel:     r.TrustLevel,
-			binaryHash:     r.BinaryHash,
-			sipEnabled:     r.SIPEnabled,
-			secureBootFull: r.SecureBootFull,
-			mdaUDID:        r.MDAUDID,
-			at:             r.VerifiedAt,
+		c.records[row.SEPubKey] = incoming
+		if incoming.revokedAt == nil {
+			if _, admissible := c.freshnessLocked(incoming); admissible {
+				n++
+			}
 		}
-		n++
 	}
 	return n
+}
+
+func (s *Server) latchTrustSafety(err error) {
+	if s == nil {
+		return
+	}
+	s.trustSafetyMu.Lock()
+	s.trustSafetySticky = true
+	s.trustSafetyMu.Unlock()
+	if s.logger != nil {
+		s.logger.Error("trust-reuse safety latch engaged",
+			"health_reason", trustSafetyJournalHealthReason,
+			"error", err,
+		)
+	}
+}
+
+func (s *Server) setTrustReplayBlocked(blocked bool) {
+	if s == nil {
+		return
+	}
+	s.trustSafetyMu.Lock()
+	s.trustSafetyReplayBlocked = blocked
+	s.trustSafetyMu.Unlock()
+}
+
+func (s *Server) trustSafetyStatus() (bool, string) {
+	if s == nil {
+		return false, ""
+	}
+	s.trustSafetyMu.RLock()
+	defer s.trustSafetyMu.RUnlock()
+	if s.trustSafetySticky {
+		return true, trustSafetyJournalHealthReason
+	}
+	if s.trustSafetyReplayBlocked {
+		return true, trustSafetyReplayHealthReason
+	}
+	return false, ""
+}
+
+func (s *Server) setPendingHardUntrustEntries(entries []hardUntrustJournalEntry) {
+	if s == nil {
+		return
+	}
+	pending := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		pending[entry.SEKeySHA256]++
+	}
+	s.trustSafetyMu.Lock()
+	s.pendingHardUntrustKeyHashes = pending
+	s.trustSafetyMu.Unlock()
+}
+
+func (s *Server) trustReuseIdentityPending(seKey string) bool {
+	if s == nil || seKey == "" {
+		return false
+	}
+	digest := hashSEPublicKey(seKey)
+	s.trustSafetyMu.RLock()
+	defer s.trustSafetyMu.RUnlock()
+	return s.pendingHardUntrustKeyHashes[digest] > 0
+}
+
+// InitializeTrustReuseJournal creates and validates the local durable journal.
+// Production calls this through SeedTrustReuseCache before the HTTP listener is
+// started.
+func (s *Server) InitializeTrustReuseJournal() error {
+	if s == nil || s.trustReuseJournal == nil {
+		return nil
+	}
+	if err := s.trustReuseJournal.Initialize(); err != nil {
+		s.latchTrustSafety(err)
+		return fmt.Errorf("initialize trust-reuse revocation journal: %w", err)
+	}
+	if fileJournal, ok := s.trustReuseJournal.(*fileHardUntrustJournal); ok {
+		s.trustAuthorityMu.Lock()
+		if s.trustAuthority == nil {
+			authority, lockErr := acquireTrustAuthorityLock(fileJournal.Path())
+			if lockErr != nil {
+				s.trustAuthorityMu.Unlock()
+				s.latchTrustSafety(lockErr)
+				return fmt.Errorf("acquire single trust authority: %w", lockErr)
+			}
+			s.trustAuthority = authority
+		}
+		s.trustAuthorityMu.Unlock()
+	}
+	entries, err := s.trustReuseJournal.Load()
+	if err != nil {
+		s.latchTrustSafety(err)
+		return fmt.Errorf("load trust-reuse revocation journal: %w", err)
+	}
+	s.setPendingHardUntrustEntries(entries)
+	return nil
 }
 
 // SeedTrustReuseCache wires durable invalidation on hard untrust, wires the store
@@ -287,246 +601,516 @@ func (c *trustReuseCache) seed(rows []store.ProviderTrustReuse) int {
 // pass. SEC-004: a forged localhost MDM webhook that drove a grant would be
 // persisted + reseeded here (amplified across restarts); bounded by the
 // localhost-only webhook, fully mitigated by authenticating it (tracked separately).
-func (s *Server) SeedTrustReuseCache(ctx context.Context) {
+func (s *Server) SeedTrustReuseCache(ctx context.Context) error {
 	if s == nil || s.trustReuseCache == nil {
-		return
+		return nil
 	}
-	// Wire durable invalidation UNCONDITIONALLY — independent of store presence. A
-	// HARD untrust must always drop the in-memory record (and, when a store is
-	// wired, the persisted row too), so a hard-untrusted device cannot fast-skip on
-	// reconnect even under the memory-store fallback (FIX 5).
+	s.trustRevocationMu.Lock()
+	defer s.trustRevocationMu.Unlock()
 	if s.registry != nil {
 		s.registry.SetHardUntrustHook(s.invalidateTrustReuse)
 	}
-	// Persistence + startup seeding require a store; the in-memory reuse cache works
-	// identically with or without one.
-	if s.store == nil {
-		return
+	if err := s.InitializeTrustReuseJournal(); err != nil {
+		return err
 	}
-	// Wire the write-through path so future successful verifications are persisted.
+	if s.store == nil {
+		if s.trustReuseJournal != nil {
+			entries, err := s.trustReuseJournal.Load()
+			if err != nil {
+				s.latchTrustSafety(err)
+				return err
+			}
+			if len(entries) > 0 {
+				s.setTrustReplayBlocked(true)
+				return fmt.Errorf("trust-reuse revocation replay requires a durable store")
+			}
+		}
+		return nil
+	}
 	s.trustReuseCache.store = s.store
+
+	var journalEntries []hardUntrustJournalEntry
+	if s.trustReuseJournal != nil {
+		var err error
+		journalEntries, err = s.trustReuseJournal.Load()
+		if err != nil {
+			s.latchTrustSafety(err)
+			return fmt.Errorf("load trust-reuse revocation journal: %w", err)
+		}
+		s.setPendingHardUntrustEntries(journalEntries)
+	}
 
 	rows, err := s.store.ListProviderTrustReuse(ctx)
 	if err != nil {
+		if len(journalEntries) > 0 {
+			s.setTrustReplayBlocked(true)
+			return fmt.Errorf("list trust-reuse rows for revocation replay: %w", err)
+		}
 		s.logger.Warn("trust-reuse: failed to seed reuse cache from store", "error", err)
-		return
+		return nil
 	}
-	n := s.trustReuseCache.seed(rows)
+
+	excluded := make(map[int]struct{})
+	var replayErr error
+	for _, entry := range journalEntries {
+		matched := false
+		replayed := true
+		for index, row := range rows {
+			if row.SEPubKey == "" || hashSEPublicKey(row.SEPubKey) != entry.SEKeySHA256 {
+				continue
+			}
+			matched = true
+			excluded[index] = struct{}{}
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				s.store, row.SEPubKey, entry.RevocationID)
+			if err != nil {
+				replayed = false
+				if replayErr == nil {
+					replayErr = fmt.Errorf("replay hard-untrust revocation: %w", err)
+				}
+				continue
+			}
+			s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+		}
+		// A hard untrust during a store outage for an identity with no
+		// provider_trust_reuse row leaves an entry that matches nothing above.
+		// Entries carrying the plaintext SE key create the missing tombstone
+		// (RevokeProviderTrustReuse upserts on absence) and converge; legacy
+		// digest-only entries stay pending and keep denying via the pending set.
+		if !matched && entry.SEPubKey != "" {
+			matched = true
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				s.store, entry.SEPubKey, entry.RevocationID)
+			if err != nil {
+				replayed = false
+				if replayErr == nil {
+					replayErr = fmt.Errorf("replay hard-untrust revocation: %w", err)
+				}
+			} else {
+				s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+			}
+		}
+		if !matched || !replayed {
+			continue
+		}
+		remaining, err := s.trustReuseJournal.Remove(entry)
+		if err != nil {
+			s.latchTrustSafety(err)
+			if replayErr == nil {
+				replayErr = fmt.Errorf("remove replayed trust-reuse revocation: %w", err)
+			}
+			continue
+		}
+		s.setPendingHardUntrustEntries(remaining)
+	}
+
+	seedRows := make([]store.ProviderTrustReuse, 0, len(rows))
+	for index, row := range rows {
+		if _, skip := excluded[index]; skip || s.trustReuseIdentityPending(row.SEPubKey) {
+			continue
+		}
+		seedRows = append(seedRows, row)
+	}
+	if replayErr != nil {
+		s.setTrustReplayBlocked(true)
+		return replayErr
+	}
+	s.setTrustReplayBlocked(false)
+	n := s.trustReuseCache.seed(seedRows)
 	if n > 0 {
 		s.logger.Info("trust-reuse: seeded reuse cache from persisted records (survives deploys)", "records", n)
 	}
+	return nil
 }
 
-// recordTrustReuse writes a successful FULL live MDM verification to the reuse
-// cache — in-memory AND a SYNCHRONOUS, epoch-checked durable write-through — so a
-// planned coordinator restart/swap can fast-skip the live MDM round-trip for this
-// device within the freshness window. Called from verifyProviderViaMDM and
-// ApplyLateSecurityInfo AFTER hardware is granted.
-//
-// FIX A (durable hard-untrust — close the write-after-delete race): the persist is
-// SYNCHRONOUS, not fire-and-forget. A fire-and-forget write could land AFTER a
-// concurrent hard-untrust's synchronous delete (invalidateTrustReuse) and
-// resurrect a stale `hardware` row that a restart would reseed → fast-skip
-// untrusted hardware (Codex trust_reuse.go:366 / Threat-Model #6). We capture the
-// provider's hard-untrust epoch at grant time and, immediately before the upsert,
-// re-check that no hard untrust has raced in (provider not hard-untrusted AND the
-// epoch is unchanged); if it has, we drop the in-memory entry and skip the
-// persist. markUntrusted bumps the epoch BEFORE its synchronous delete hook, so
-// this linearizes write vs delete on the epoch: a write that began before the
-// untrust is dropped by the recheck, and a write that lands before the untrust's
-// delete is removed by that delete. The always-required live SE challenge on reuse
-// is the backstop for the residual instruction-level window between recheck and
-// upsert.
-//
-// The recorded binary hash is the SE-attested provider binary (normalized); the
-// read gate compares it to the binary hash in the fresh SIGNED challenge, so a
-// binary change between connections forces a full re-verify. If the SE attestation
-// carries no usable binary hash, no record is cached (the read gate requires a
-// binary match anyway). SECURITY: written only after a full, verified live MDM
-// pass — never from an unverified self-report. SEC-004: were a forged MDM webhook
-// (unauthenticated, but localhost-bound in-container) ever to drive a grant, that
-// grant would be durably persisted here and reseeded across restarts — amplifying
-// the forgery. This is bounded by the webhook being localhost-only; full
-// mitigation is authenticating the webhook (SEC-004, tracked separately).
-func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) {
-	// FIX 1: an empty seKey or binaryHash is a hard no-op — never record in-memory
-	// or persist. An empty-seKey row would be unkeyed (poisoning the cache / store);
-	// an empty binaryHash can never satisfy the read gate (b) so it would be a dead
-	// row. (ApplyLateSecurityInfo can derive empty values when AttestationResult is
-	// absent or carries no binary hash.)
-	if s == nil || s.trustReuseCache == nil || provider == nil || seKey == "" || serial == "" || binaryHash == "" {
-		return
+// providerApplicationBinaryHash resolves the binary measured for this
+// connection. A registration hash is authoritative when present. Hashless
+// registrations may use fresh application evidence only while it remains
+// installed and bound to both the verified SE identity and this provider
+// process's current public key.
+func providerApplicationBinaryHash(provider *registry.Provider, seKey, registrationHash string) string {
+	if registrationHash != "" {
+		return registrationHash
+	}
+	if provider == nil || seKey == "" {
+		return ""
+	}
+
+	provider.Mu().Lock()
+	defer provider.Mu().Unlock()
+	evidence := provider.ApplicationEvidence
+	if evidence.EvidenceGeneration == 0 || evidence.SEPublicKey != seKey ||
+		provider.PublicKey == "" || evidence.ProcessPublicKey != provider.PublicKey {
+		return ""
+	}
+	return evidence.BinaryHash
+}
+
+// recordTrustReuse persists a reviewed, synchronous full MDM/MDA verification.
+// It is the only path allowed to clear a durable revocation tombstone, and then
+// only at the exact generation observed before the write. A concurrent hard
+// untrust increments that generation and wins both the store CAS and the
+// provider epoch checks.
+func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) bool {
+	return s.recordTrustReuseAtGeneration(provider, seKey, serial, binaryHash, sipEnabled, secureBootFull, udid, true)
+}
+
+// recordLateTrustReuse records a late MDM/APNs callback without revocation
+// recovery authority. A tombstoned row or cache entry remains tombstoned.
+func (s *Server) recordLateTrustReuse(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string) bool {
+	return s.recordTrustReuseAtGeneration(provider, seKey, serial, binaryHash, sipEnabled, secureBootFull, udid, false)
+}
+
+func (s *Server) recordTrustReuseAtGeneration(provider *registry.Provider, seKey, serial, binaryHash string, sipEnabled, secureBootFull bool, udid string, allowRecovery bool) bool {
+	if s == nil || s.trustReuseCache == nil || provider == nil ||
+		seKey == "" || serial == "" {
+		return false
+	}
+	if blocked, _ := s.trustSafetyStatus(); blocked || s.trustReuseIdentityPending(seKey) {
+		return false
+	}
+	if binaryHash == "" {
+		// The self-reported binary hash is OPTIONAL (v0.6.0: drift telemetry).
+		// A provider omitting it has still fully proven its DEVICE (SE identity
+		// + live MDM posture), so hardware trust is granted for this connection.
+		// Only the durable reuse record and its cache entry require the hash —
+		// a hashless row could never satisfy the read gate, so nothing is
+		// persisted or cached (fail-closed: no unbindable reuse rows).
+		return s.grantDeviceTrustWithoutReuseRecord(provider, seKey, serial, allowRecovery)
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
 	if err != nil {
-		// Non-empty but not a usable SHA-256 hex; the read gate (b) requires a
-		// binary-hash match, so this would be a dead row. Skip caching.
-		return
+		return false
+	}
+	expectedRevocationGeneration, revocationEventID := s.trustReuseCache.revocationState(seKey)
+	now := s.trustReuseCache.now()
+	var applicationVerifiedAt *time.Time
+	if evidence, ok := provider.ApplicationEvidenceSnapshot(); ok {
+		at := evidence.VerifiedAt
+		applicationVerifiedAt = &at
 	}
 	rec := store.ProviderTrustReuse{
-		SEPubKey:       seKey,
-		Serial:         serial,
-		TrustLevel:     string(registry.TrustHardware),
-		BinaryHash:     normHash,
-		SIPEnabled:     sipEnabled,
-		SecureBootFull: secureBootFull,
-		MDAUDID:        udid,
-		VerifiedAt:     s.trustReuseCache.now(),
+		SEPubKey:                   seKey,
+		Serial:                     serial,
+		TrustLevel:                 string(registry.TrustHardware),
+		LastVerifiedBinaryHash:     normHash,
+		SIPEnabled:                 sipEnabled,
+		SecureBootFull:             secureBootFull,
+		MDAUDID:                    udid,
+		HardwareProofVerifiedAt:    now,
+		ApplicationProofVerifiedAt: applicationVerifiedAt,
+		// A full live verification anchors the continuity chain: coverage
+		// starts at the verification instant and is advanced only while the
+		// coordinator observes this connection live and hardware-trusted.
+		ContinuousCoverageUntil: coverageToStore(now),
+		RevocationGeneration:    expectedRevocationGeneration,
+		RevocationEventID:       revocationEventID,
 	}
-
-	// Capture the hard-untrust epoch at grant time (FIX A).
 	epoch := provider.HardUntrustEpoch()
-
-	// Record in-memory so an immediate same-process reconnect can fast-skip.
-	s.trustReuseCache.recordTrust(rec)
+	if provider.ChallengeShouldStop() {
+		return false
+	}
 
 	st := s.trustReuseCache.store
-	if st == nil {
-		return // no durable store wired; the in-memory record is enough
-	}
-
-	// PRE-write recheck: if a hard untrust raced this grant (the provider is now
-	// hard-untrusted, or the epoch bumped), drop the in-memory entry and do NOT
-	// persist a stale `hardware` row.
-	if provider.ChallengeShouldStop() || provider.HardUntrustEpoch() != epoch {
-		s.trustReuseCache.invalidateReuse(seKey)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := st.UpsertProviderTrustReuse(ctx, rec); err != nil {
-		s.logger.Warn("trust-reuse: failed to persist reuse record", "error", err)
-		return
-	}
-
-	// POST-write recheck (FIX 2 — close the check-then-write TOCTOU). The pre-write
-	// check alone leaves a window: a hard untrust landing between it and the upsert
-	// COMMITTING runs its synchronous delete first, then this upsert resurrects the
-	// row → reseeded on restart. So re-check AFTER the write: if a hard untrust raced
-	// in, delete the row we just wrote (idempotent, bounded retry) and drop the
-	// in-memory entry. Combined with markUntrusted's own synchronous delete this
-	// fully linearizes write vs delete on the epoch — an untrust before the
-	// pre-check is dropped, one during the write is compensated here, and one after
-	// is removed by its own delete (our committed row is already visible to it).
-	if provider.ChallengeShouldStop() || provider.HardUntrustEpoch() != epoch {
-		s.trustReuseCache.invalidateReuse(seKey)
-		if err := s.deletePersistedTrustReuseWithRetry(st, seKey); err != nil {
-			s.logger.Warn("trust-reuse: failed to delete reuse record after post-write untrust recheck",
-				"error", err, "attempts", trustReuseDeleteAttempts)
+	if st != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var writeResult store.ProviderTrustReuseWriteResult
+		var persistErr error
+		if allowRecovery {
+			writeResult, persistErr = st.RecoverProviderTrustReuse(
+				ctx, rec, expectedRevocationGeneration)
+		} else {
+			writeResult, persistErr = st.UpsertProviderTrustReuse(
+				ctx, rec, expectedRevocationGeneration)
 		}
+		cancel()
+		if persistErr != nil {
+			s.logger.Warn("trust-reuse: failed to persist device evidence", "error", persistErr)
+			return false
+		}
+		if !writeResult.Applied {
+			s.trustReuseCache.installRevocationGeneration(
+				seKey, writeResult.RevocationGeneration)
+			return false
+		}
+		rec.EvidenceGeneration = writeResult.EvidenceGeneration
+		rec.RevocationGeneration = writeResult.RevocationGeneration
+	} else {
+		rec.EvidenceGeneration = 1
 	}
+
+	if allowRecovery {
+		s.trustReuseCache.recoverTrust(rec, rec.RevocationGeneration)
+	} else {
+		s.trustReuseCache.recordTrust(rec)
+	}
+	granted := provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(
+		registry.DeviceEvidence{
+			SEPublicKey:          seKey,
+			Serial:               serial,
+			VerifiedAt:           rec.HardwareProofVerifiedAt,
+			EvidenceGeneration:   rec.EvidenceGeneration,
+			RevocationGeneration: rec.RevocationGeneration,
+		},
+		epoch,
+	)
+	if granted {
+		s.markTrustCoverage(seKey, provider.ID)
+		return true
+	}
+	if provider.HardUntrustEpoch() == epoch {
+		return false
+	}
+	revocationEventID = uuid.NewString()
+	s.trustReuseCache.invalidateReuse(seKey, revocationEventID)
+	if err := s.persistHardUntrustRevocation(seKey, revocationEventID); err != nil {
+		s.logger.Warn("trust-reuse: failed to preserve revocation after raced device-evidence write",
+			"error", err, "attempts", trustReuseDeleteAttempts)
+	}
+	return false
 }
 
-// invalidateTrustReuse drops a device's reuse record in-memory AND deletes the
-// persisted row. Wired as the registry's hard-untrust hook, so EVERY hard/security
-// deroute (SIP off, Secure Boot off, binary/model-hash change, MDM posture
-// mismatch, serial impersonation, bad encrypted chunk, ...) makes "hard untrust
-// always takes effect" durable across restarts: the device cannot fast-skip on a
-// stale, pre-untrust record after a coordinator restart.
+// grantDeviceTrustWithoutReuseRecord grants hardware trust from a completed
+// live device verification for a provider that did not self-report a binary
+// hash. No reuse row is persisted or cached — every reconnect re-runs the full
+// live verification. Revocation stays authoritative: the late path
+// (allowRecovery=false) refuses a tombstoned identity outright (a tombstone
+// remains a tombstone), while the synchronous full-verification path retains
+// its recovery authority for the live grant but — having no store CAS to run —
+// leaves any durable tombstone in place, so reuse and late callbacks for the
+// identity remain blocked.
+func (s *Server) grantDeviceTrustWithoutReuseRecord(provider *registry.Provider, seKey, serial string, allowRecovery bool) bool {
+	if !allowRecovery && s.trustReuseCache.isRevoked(seKey) {
+		return false
+	}
+	epoch := provider.HardUntrustEpoch()
+	if provider.ChallengeShouldStop() {
+		return false
+	}
+	revocationGeneration, _ := s.trustReuseCache.revocationState(seKey)
+	granted := provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(
+		registry.DeviceEvidence{
+			SEPublicKey:          seKey,
+			Serial:               serial,
+			VerifiedAt:           s.trustReuseCache.now(),
+			EvidenceGeneration:   1,
+			RevocationGeneration: revocationGeneration,
+		},
+		epoch,
+	)
+	if granted {
+		s.logger.Info("trust-reuse: hardware trust granted without reuse record (no self-reported binary hash)",
+			"serial", serial)
+	}
+	return granted
+}
+
+// invalidateTrustReuse drops a device's reuse record in-memory and installs a
+// durable tombstone. Wired as the registry's hard-untrust hook, so every
+// hard/security deroute (SIP off, Secure Boot off, binary/model-hash change, MDM
+// posture mismatch, serial impersonation, bad encrypted chunk, ...) makes "hard
+// untrust always takes effect" durable across restarts.
 //
-// DAR-326 FIX 1: the in-memory invalidation is synchronous and unconditional; the
-// persisted delete runs INLINE with a bounded retry (not fire-and-forget) so a
-// transient DB blip cannot silently leave a stale row that reseeds + fast-skips
-// after a restart. This is safe because the hook fires off ALL registry locks
-// (registry.markUntrusted) and a hard untrust is rare. No-op on the persisted leg
-// when no store is wired (in-memory invalidation still applies). Mirrors
-// Server.invalidatePersistedCodeAttestation.
+// The in-memory invalidation is synchronous and unconditional. Durable
+// revocation runs inline with a bounded retry; every attempt carries the one
+// event ID generated for this hard-untrust operation. A transient DB blip cannot
+// silently leave stale reusable evidence, an ambiguous commit cannot advance the
+// generation twice, and a distinct stale-coordinator event cannot collapse into
+// an earlier generation.
 func (s *Server) invalidateTrustReuse(seKey string) {
 	if s == nil || s.trustReuseCache == nil || seKey == "" {
 		return
 	}
-	// Synchronous, unconditional in-memory invalidation: an immediate reconnect
-	// (no restart) must not fast-skip on the dropped record.
-	s.trustReuseCache.invalidateReuse(seKey)
-	st := s.trustReuseCache.store
-	if st == nil {
-		return
-	}
-	// Bounded inline retry of the persisted delete (FIX 1): keep "hard untrust
-	// takes effect" durable across a restart even through a transient DB error.
-	if err := s.deletePersistedTrustReuseWithRetry(st, seKey); err != nil {
-		// Log only after the final attempt fails (avoids alarming logs on a
-		// recovered transient blip).
-		s.logger.Warn("trust-reuse: failed to delete persisted reuse record on hard untrust after retries",
+	// Hard untrust ends the continuity chain immediately and without a final
+	// coverage write: the durable tombstone wins and coverage never resurrects.
+	s.dropTrustCoverage(seKey)
+	revocationEventID := uuid.NewString()
+	s.trustReuseCache.invalidateReuse(seKey, revocationEventID)
+	if err := s.persistHardUntrustRevocation(seKey, revocationEventID); err != nil {
+		s.logger.Warn("trust-reuse: failed to revoke persisted reuse record on hard untrust",
 			"error", err, "attempts", trustReuseDeleteAttempts)
 	}
 }
 
-// deletePersistedTrustReuseWithRetry deletes the persisted reuse row with a bounded
-// inline retry, returning nil on success or the last error. Idempotent (deleting a
-// missing row is fine), so it is reused both by the hard-untrust hook
-// (invalidateTrustReuse) and by recordTrustReuse's post-write recheck (FIX 2).
-func (s *Server) deletePersistedTrustReuseWithRetry(st trustReuseStore, seKey string) error {
-	var err error
-	for attempt := 0; attempt < trustReuseDeleteAttempts; attempt++ {
+func (s *Server) persistHardUntrustRevocation(seKey, revocationEventID string) error {
+	s.trustRevocationMu.Lock()
+	defer s.trustRevocationMu.Unlock()
+	entry := newHardUntrustJournalEntry(seKey, revocationEventID)
+	journaled := false
+	var journalErr error
+	if s.trustReuseJournal != nil {
+		entries, err := s.trustReuseJournal.Append(entry)
+		if err != nil {
+			journalErr = fmt.Errorf("append hard-untrust revocation journal: %w", err)
+			s.latchTrustSafety(journalErr)
+		} else {
+			journaled = true
+			s.setPendingHardUntrustEntries(entries)
+		}
+	}
+
+	st := s.trustReuseCache.store
+	if st == nil {
+		if journaled {
+			s.setTrustReplayBlocked(true)
+		}
+		return journalErr
+	}
+	authoritative, err := s.revokePersistedTrustReuseWithRetry(
+		st, seKey, revocationEventID)
+	if err != nil {
+		s.setTrustReplayBlocked(true)
+		if journaled {
+			s.scheduleHardUntrustReplay(seKey, entry)
+		}
+		return fmt.Errorf("revoke persisted trust reuse: %w", err)
+	}
+	s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+
+	if journaled {
+		remaining, err := s.trustReuseJournal.Remove(entry)
+		if err != nil {
+			cleanupErr := fmt.Errorf("remove durable hard-untrust journal entry: %w", err)
+			s.latchTrustSafety(cleanupErr)
+			return cleanupErr
+		}
+		s.setPendingHardUntrustEntries(remaining)
+		if len(remaining) == 0 {
+			s.setTrustReplayBlocked(false)
+		}
+	}
+	return journalErr
+}
+
+func (s *Server) scheduleHardUntrustReplay(
+	seKey string,
+	entry hardUntrustJournalEntry,
+) {
+	if s == nil || s.trustReplayCtx == nil ||
+		s.trustReuseJournal == nil || s.trustReuseCache == nil {
+		return
+	}
+	key := entry.SEKeySHA256 + "\x00" + entry.RevocationID
+	s.trustReplayMu.Lock()
+	if _, exists := s.trustReplayInFlight[key]; exists {
+		s.trustReplayMu.Unlock()
+		return
+	}
+	s.trustReplayInFlight[key] = struct{}{}
+	s.trustReplayMu.Unlock()
+
+	saferun.Go(s.logger, "trustReuseRevocationReplay", func() {
+		defer func() {
+			s.trustReplayMu.Lock()
+			delete(s.trustReplayInFlight, key)
+			s.trustReplayMu.Unlock()
+		}()
+		delay := trustReuseReplayInitialBackoff
+		for {
+			select {
+			case <-s.trustReplayCtx.Done():
+				return
+			case <-time.After(delay):
+			}
+
+			s.trustRevocationMu.Lock()
+			st := s.trustReuseCache.store
+			if st == nil {
+				s.trustRevocationMu.Unlock()
+				delay = min(delay*2, 30*time.Second)
+				continue
+			}
+			authoritative, err := s.revokePersistedTrustReuseWithRetry(
+				st, seKey, entry.RevocationID,
+			)
+			if err == nil {
+				s.trustReuseCache.installAuthoritativeTrustReuse(authoritative)
+				remaining, removeErr := s.trustReuseJournal.Remove(entry)
+				if removeErr != nil {
+					s.latchTrustSafety(removeErr)
+					s.trustRevocationMu.Unlock()
+					return
+				}
+				s.setPendingHardUntrustEntries(remaining)
+				if len(remaining) == 0 {
+					s.setTrustReplayBlocked(false)
+				}
+				s.trustRevocationMu.Unlock()
+				return
+			}
+			s.trustRevocationMu.Unlock()
+			delay = min(delay*2, 30*time.Second)
+		}
+	})
+}
+
+// revokePersistedTrustReuseWithRetry reuses one stable event identity across all
+// bounded attempts and returns the store's authoritative row.
+func (s *Server) revokePersistedTrustReuseWithRetry(st trustReuseStore, seKey, revocationEventID string) (store.ProviderTrustReuse, error) {
+	var (
+		authoritative store.ProviderTrustReuse
+		err           error
+	)
+	for attempt := range trustReuseDeleteAttempts {
 		if attempt > 0 {
 			time.Sleep(trustReuseDeleteRetryBackoff)
 		}
-		if err = deleteProviderTrustReuseOnce(st, seKey); err == nil {
-			return nil
+		authoritative, err = revokeProviderTrustReuseOnce(
+			st, seKey, revocationEventID)
+		if err == nil {
+			return authoritative, nil
 		}
 	}
-	return err
+	return authoritative, err
 }
 
-// deleteProviderTrustReuseOnce runs one persisted-delete attempt with its own
-// bounded timeout (kept out of the retry loop to avoid a defer-in-loop).
-func deleteProviderTrustReuseOnce(st trustReuseStore, seKey string) error {
+func revokeProviderTrustReuseOnce(st trustReuseStore, seKey, revocationEventID string) (store.ProviderTrustReuse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return st.DeleteProviderTrustReuse(ctx, seKey)
+	return st.RevokeProviderTrustReuse(ctx, seKey, revocationEventID)
 }
 
-// tryTrustReuseFastSkip is the read-path gate + grant. It runs AFTER the live SE
-// challenge has passed (from verifyChallengeResponse). If a fresh trust-reuse
-// record re-proves this exact, recently-fully-verified device — and the fresh
-// SIGNED challenge re-proves good posture and an unchanged binary — it grants
-// hardware immediately and returns true, letting the mdmVerificationLoop skip its
-// live MDM SecurityInfo round-trip. Any gate miss returns false (fall through to
-// the unchanged full live MDM verify).
-//
-// Gates (ALL required), mapping to the DAR-326 spec:
-//
-//	(a) SE pubkey AND serial match the registration-bound attestation;
-//	(b) the binary hash in the fresh SIGNED challenge == the cached one;
-//	(c) fresh posture is good AND cryptographically bound: SIPEnabled &&
-//	    SecureBootEnabled && statusFieldsTrusted;
-//	(d) within the freshness window (enforced in reuseTrust);
-//	(e) the provider is not currently HARD-untrusted;
-//	(f) an MDM client is configured (FIX C) — the fast-skip only ever SUBSTITUTES
-//	    for a live MDM round-trip, so on a no-MDM / misconfigured deploy there is no
-//	    live fallback and we must not grant hardware from a (possibly stale) cache.
-func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Provider, resp *protocol.AttestationResponseMessage, statusFieldsTrusted bool) bool {
+func (s *Server) trustReuseMetric(decision trustReuseDecision, reason trustReuseReason) {
+	decisionLabel := string(decision)
+	if decisionLabel == "" {
+		decisionLabel = "rejected"
+	}
+	s.ddIncr("trust_reuse.decisions", []string{
+		"decision:" + decisionLabel,
+		"reason:" + string(reason),
+	})
+	if s.metrics != nil {
+		s.metrics.IncCounter("trust_reuse_decisions_total",
+			MetricLabel{"decision", decisionLabel},
+			MetricLabel{"reason", string(reason)})
+	}
+}
+
+// tryTrustReuseFastSkip consumes durable device evidence only after the caller
+// has verified a fresh registration-bound signed challenge. A changed binary is
+// admitted solely through the optional immutable server-derived release fact.
+func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Provider, resp *protocol.AttestationResponseMessage, statusFieldsTrusted bool, facts ...approvedReleaseTransitionFact) bool {
+	reject := func(reason trustReuseReason) bool {
+		s.trustReuseMetric("", reason)
+		return false
+	}
 	if s == nil || s.trustReuseCache == nil || provider == nil || resp == nil {
 		return false
 	}
-	// (f) require MDM to be configured. The trust-reuse fast-skip is purely an
-	// optimization that REPLACES a live MDM SecurityInfo round-trip; if no MDM
-	// client is wired (no-MDM or misconfigured deploy), the normal path would never
-	// grant hardware via MDM at all, so granting it here from the reuse cache would
-	// be a strictly weaker trust decision with no live fallback. Decline.
+	if blocked, _ := s.trustSafetyStatus(); blocked {
+		return reject(trustReuseReasonRevocationSafety)
+	}
 	if s.mdmClient == nil {
-		return false
+		return reject(trustReuseReasonNoDeviceEvidence)
 	}
-	// (c) fresh good posture, cryptographically bound to the SE key. Without a
-	// status signature (statusFieldsTrusted == false) the SIP/SecureBoot/binary
-	// fields are advisory and must never drive a trust decision.
-	if !statusFieldsTrusted {
-		return false
+	if !statusFieldsTrusted ||
+		resp.SIPEnabled == nil || !*resp.SIPEnabled ||
+		resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled {
+		return reject(trustReuseReasonRecordedPostureBad)
 	}
-	if resp.SIPEnabled == nil || !*resp.SIPEnabled {
-		return false
-	}
-	if resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled {
-		return false
-	}
-	// (e) never fast-skip a hard-untrusted provider. (GrantHardwareIfNotUntrusted
-	// below is the authoritative atomic backstop; this is an early-out.)
 	if provider.ChallengeShouldStop() {
-		return false
+		return reject(trustReuseReasonRevoked)
 	}
-	// (a) identity: SE pubkey + serial from the registration-bound attestation —
-	// never values supplied in the response.
 	provider.Mu().Lock()
 	var seKey, serial string
 	if provider.AttestationResult != nil {
@@ -535,79 +1119,289 @@ func (s *Server) tryTrustReuseFastSkip(providerID string, provider *registry.Pro
 	}
 	provider.Mu().Unlock()
 	if seKey == "" || serial == "" {
-		return false
+		return reject(trustReuseReasonMissingIdentity)
 	}
-	// (b) code identity: the binary hash in the fresh SIGNED challenge must match
-	// the one proven at the last full MDM verification (both normalized).
+	if s.trustReuseIdentityPending(seKey) {
+		return reject(trustReuseReasonRevocationSafety)
+	}
 	freshBinaryHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
 	if err != nil {
-		return false
+		return reject(trustReuseReasonMissingIdentity)
 	}
-	// reuseTrust enforces (a) serial, (b) binary, (d) freshness + hardware/recorded
-	// posture. Any miss → fall through to the full live MDM verify.
-	rec, ok := s.trustReuseCache.reuseTrust(seKey, serial, freshBinaryHash)
-	if !ok {
-		return false
+	var fact approvedReleaseTransitionFact
+	if len(facts) > 0 {
+		fact = facts[0]
 	}
-	// Atomically grant hardware unless a concurrent hard untrust raced in (closes
-	// the TOCTOU; mirrors verifyProviderViaMDM's grant).
-	if !provider.GrantHardwareIfNotUntrusted() {
-		return false
+	result := s.trustReuseCache.decideTrustReuse(trustReuseInput{
+		SEPubKey:          seKey,
+		Serial:            serial,
+		FreshBinaryHash:   freshBinaryHash,
+		ReleaseTransition: fact,
+	})
+	if result.Decision == "" {
+		return reject(result.Reason)
 	}
+	record := result.Record
+	if result.Decision == trustReuseDecisionApprovedReleaseTransition ||
+		result.Decision == trustReuseDecisionContinuityReleaseTransition {
+		evidence, ok := provider.ApplicationEvidenceSnapshot()
+		if !ok || evidence.BinaryHash != freshBinaryHash ||
+			evidence.Version != fact.Version ||
+			evidence.Platform != fact.Platform ||
+			evidence.Backend != fact.Backend {
+			return reject(trustReuseReasonTransitionUnapproved)
+		}
+		// The approved A→B transition has just proven binary B (fresh signed
+		// challenge + verified application evidence). Advance the cached and
+		// durable application identity to B so a later deactivation of
+		// release A (ApprovedFromBinaryHashes only lists ACTIVE predecessors)
+		// cannot orphan the record and force this device back to live MDM.
+		// The hardware-proof timestamp is deliberately NOT refreshed — it
+		// still dates the last live device verification, so the reuse window
+		// keeps expiring on the hardware proof, not on binary churn.
+		record.lastVerifiedBinaryHash = freshBinaryHash
+		at := evidence.VerifiedAt
+		record.applicationProofVerifiedAt = &at
+	}
+	// Every valid reuse grant (window-fresh OR continuity) re-anchors the
+	// continuity chain at the grant instant: a continuity fast-skip is itself
+	// proof of a normal-OS boot (the live SE challenge just ran), so chained
+	// sub-allowance gaps each extend coverage. The hardware-proof timestamp is
+	// NEVER advanced by reuse — only a full live MDM verification moves it.
+	record.continuousCoverageUntil = s.trustReuseCache.now()
+	epoch := provider.HardUntrustEpoch()
+	rec := store.ProviderTrustReuse{
+		SEPubKey:                   seKey,
+		Serial:                     record.serial,
+		TrustLevel:                 record.trustLevel,
+		LastVerifiedBinaryHash:     record.lastVerifiedBinaryHash,
+		SIPEnabled:                 record.sipEnabled,
+		SecureBootFull:             record.secureBootFull,
+		MDAUDID:                    record.mdaUDID,
+		HardwareProofVerifiedAt:    record.hardwareProofVerifiedAt,
+		ApplicationProofVerifiedAt: record.applicationProofVerifiedAt,
+		ContinuousCoverageUntil:    coverageToStore(record.continuousCoverageUntil),
+		EvidenceGeneration:         record.evidenceGeneration,
+		RevocationGeneration:       record.revocationGeneration,
+		RevocationEventID:          record.revocationEventID,
+	}
+	if st := s.trustReuseCache.store; st != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		writeResult, persistErr := st.UpsertProviderTrustReuse(
+			ctx, rec, record.revocationGeneration)
+		cancel()
+		if persistErr != nil || !writeResult.Applied {
+			if persistErr != nil {
+				s.logger.Warn("trust-reuse: durable grant CAS failed", "error", persistErr)
+			}
+			if !writeResult.Applied {
+				s.trustReuseCache.installRevocationGeneration(
+					seKey, writeResult.RevocationGeneration)
+			}
+			return reject(trustReuseReasonRevoked)
+		}
+		record.evidenceGeneration = writeResult.EvidenceGeneration
+		record.revocationGeneration = writeResult.RevocationGeneration
+		rec.EvidenceGeneration = writeResult.EvidenceGeneration
+		rec.RevocationGeneration = writeResult.RevocationGeneration
+	}
+	s.trustReuseCache.recordTrust(rec)
+	if !provider.GrantHardwareEvidenceAtEpochIfNotUntrusted(registry.DeviceEvidence{
+		SEPublicKey:          seKey,
+		Serial:               serial,
+		VerifiedAt:           record.hardwareProofVerifiedAt,
+		EvidenceGeneration:   record.evidenceGeneration,
+		RevocationGeneration: record.revocationGeneration,
+	}, epoch) {
+		return reject(trustReuseReasonRevoked)
+	}
+	s.markTrustCoverage(seKey, providerID)
 	provider.SetMDMFailureReason("")
-	// MDA-freshness trade-off (Threat-Model TB-005 / T-036): this fast-skip skips the
-	// live MDA cert-chain re-verification (and the live MDM SecurityInfo round-trip)
-	// that the full path performs. It relies on the SIP/Secure-Boot posture captured
-	// at the LAST full verification (within the reuse window) plus the always-run
-	// live SE challenge that just re-proved identity + posture + unchanged binary. It
-	// does NOT re-prove MDA cert-chain freshness within the window — an accepted
-	// trade-off for the restart-herd problem, bounded by the (short) reuse window and
-	s.sendTrustStatus(provider, registry.TrustHardware, "online", "trust-reuse fast-skip (recent MDM verification re-proven by live SE challenge)")
+	s.sendTrustStatus(provider, registry.TrustHardware, "online", string(result.Decision))
 	s.registry.PersistProvider(provider)
-	s.ddIncr("mdm.verification", []string{"outcome:granted-trust-reuse"})
-	s.logger.Info("trust-reuse fast-skip — granted hardware without live MDM round-trip",
+	s.trustReuseMetric(result.Decision, trustReuseReasonAllowed)
+	s.logger.Info("trust-reuse granted hardware without live MDM or APNs",
 		"provider_id", providerID,
-		"serial_number", serial,
-		"mda_udid", rec.mdaUDID,
+		"decision", result.Decision,
+		"mda_udid", result.Record.mdaUDID,
 	)
 	return true
 }
 
-// awaitTrustReuseGrant lets the mdmVerificationLoop briefly defer to the live SE
-// challenge's trust-reuse fast-skip before running the (herd-causing) live MDM
-// round-trip. It returns true if hardware is granted within trustReuseGrantWait
-// (by the fast-skip), false otherwise (challenge settled without
-// a grant / hard untrust / ctx done / timeout) — in which case the caller proceeds
-// to the full live MDM verify, unchanged. Only invoked for fast-skip candidates
-// (hasFreshRecord), so a first-ever / expired device is never delayed.
+// --- Connection-continuity coverage tracking ---
 //
-// DAR-326 FIX 3: the challenge-settled signal lets a candidate whose gates DON'T
-// pass proceed to the full live verify immediately instead of stalling the whole
-// trustReuseGrantWait — the timer is only the backstop for a slow/never-arriving
-// challenge.
-func (s *Server) awaitTrustReuseGrant(ctx context.Context, provider *registry.Provider) bool {
-	settled := provider.ChallengeSettledChan()
-	timer := time.NewTimer(trustReuseGrantWait)
-	defer timer.Stop()
-	ticker := time.NewTicker(trustReuseGrantPoll)
+// The coordinator advances a durable ContinuousCoverageUntil watermark for
+// every provider it currently observes connected AND hardware-trusted on a
+// live SE-challenged connection anchored at a full live verification or a
+// valid reuse grant. Writes are batched (one upsert pass every
+// trustCoverageWriteInterval — no per-provider goroutines) plus exact-time
+// sweeps on provider disconnect and graceful coordinator shutdown. A
+// coordinator crash simply leaves the last periodic write standing, so the
+// measured gap is only ever OVER-estimated (fail-safe: continuity refuses,
+// full live verification runs).
+
+// trustCoverageWriteInterval is the batched periodic coverage-write cadence.
+// Also the crash slack: after a coordinator crash the watermark lags the true
+// disconnect by at most one interval, which the 90s reconnect allowance and
+// the 120s security ceiling both comfortably absorb without ever admitting a
+// RecoveryOS round-trip (>= ~3 minutes).
+const trustCoverageWriteInterval = 30 * time.Second
+
+// markTrustCoverage registers seKey as covered by providerID's live
+// connection. Called only from grant paths that just proved the connection
+// (full live verification or a reuse grant behind a fresh SE challenge).
+func (s *Server) markTrustCoverage(seKey, providerID string) {
+	if s == nil || seKey == "" || providerID == "" {
+		return
+	}
+	s.trustCoverageMu.Lock()
+	if s.trustCoverage == nil {
+		s.trustCoverage = make(map[string]string)
+	}
+	s.trustCoverage[seKey] = providerID
+	s.trustCoverageMu.Unlock()
+}
+
+// dropTrustCoverage ends coverage for an identity WITHOUT a final write
+// (hard untrust: the tombstone wins, coverage never resurrects).
+func (s *Server) dropTrustCoverage(seKey string) {
+	if s == nil || seKey == "" {
+		return
+	}
+	s.trustCoverageMu.Lock()
+	delete(s.trustCoverage, seKey)
+	s.trustCoverageMu.Unlock()
+}
+
+// trustCoverageValid reports whether the covered connection is still worth a
+// coverage write: provider present, not (recoverably or hard) untrusted, still
+// hardware-trusted, and still bound to the same SE identity. allowOffline is
+// set by the disconnect/shutdown sweeps, where the socket being gone is the
+// event being stamped rather than a reason to skip the stamp.
+func (s *Server) trustCoverageValid(seKey, providerID string, allowOffline bool) bool {
+	if s.registry == nil {
+		return false
+	}
+	p := s.registry.GetProvider(providerID)
+	if p == nil {
+		return false
+	}
+	switch p.GetStatus() {
+	case registry.StatusUntrusted:
+		return false
+	case registry.StatusOffline:
+		if !allowOffline {
+			return false
+		}
+	}
+	if p.GetTrustLevel() != registry.TrustHardware {
+		return false
+	}
+	ar := p.GetAttestationResult()
+	return ar != nil && ar.PublicKey == seKey
+}
+
+// persistTrustCoverage advances the watermark for the given identities in the
+// cache and, when a store is wired, durably in one batched pass. A store blip
+// only under-advances the durable watermark (fail-safe).
+func (s *Server) persistTrustCoverage(seKeys []string, until time.Time) {
+	if len(seKeys) == 0 || s.trustReuseCache == nil {
+		return
+	}
+	s.trustReuseCache.advanceCoverage(seKeys, until)
+	st := s.trustReuseCache.store
+	if st == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := st.AdvanceProviderTrustReuseCoverage(ctx, seKeys, until)
+	cancel()
+	if err != nil && s.logger != nil {
+		s.logger.Warn("trust-reuse: failed to persist continuity coverage",
+			"error", err, "providers", len(seKeys))
+	}
+}
+
+// sweepTrustCoverage performs one batched periodic coverage pass: every entry
+// still observed live and hardware-trusted is advanced to now; entries that
+// lost trust or vanished without hitting the disconnect hook are dropped
+// without a write (their watermark stays at the previous pass — gap
+// over-estimated, fail-safe). Returns the number of identities advanced.
+func (s *Server) sweepTrustCoverage() int {
+	if s == nil || s.trustReuseCache == nil {
+		return 0
+	}
+	now := s.trustReuseCache.now()
+	var covered []string
+	s.trustCoverageMu.Lock()
+	for seKey, providerID := range s.trustCoverage {
+		if s.trustCoverageValid(seKey, providerID, false) {
+			covered = append(covered, seKey)
+		} else {
+			delete(s.trustCoverage, seKey)
+		}
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(covered, now)
+	return len(covered)
+}
+
+// stopTrustCoverageForProvider ends coverage for a disconnecting connection,
+// stamping the EXACT coordinator-observed disconnect time so the measured
+// reconnect gap starts at zero rather than at the last periodic pass.
+func (s *Server) stopTrustCoverageForProvider(providerID string) {
+	if s == nil || providerID == "" || s.trustReuseCache == nil {
+		return
+	}
+	now := s.trustReuseCache.now()
+	var ended []string
+	s.trustCoverageMu.Lock()
+	for seKey, id := range s.trustCoverage {
+		if id != providerID {
+			continue
+		}
+		if s.trustCoverageValid(seKey, providerID, true) {
+			ended = append(ended, seKey)
+		}
+		delete(s.trustCoverage, seKey)
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(ended, now)
+}
+
+// finalTrustCoverageSweep is the graceful coordinator-shutdown sweep: it
+// persists the exact shutdown instant for every still-covered provider so a
+// short deploy (gap under the reconnect allowance) reconnects into a
+// continuity fast-skip on the next coordinator instead of a fleet-wide live
+// MDM herd. Clears the tracker; only Server.Close calls this.
+func (s *Server) finalTrustCoverageSweep() {
+	if s == nil || s.trustReuseCache == nil {
+		return
+	}
+	now := s.trustReuseCache.now()
+	var ended []string
+	s.trustCoverageMu.Lock()
+	for seKey, providerID := range s.trustCoverage {
+		if s.trustCoverageValid(seKey, providerID, true) {
+			ended = append(ended, seKey)
+		}
+		delete(s.trustCoverage, seKey)
+	}
+	s.trustCoverageMu.Unlock()
+	s.persistTrustCoverage(ended, now)
+}
+
+// trustCoverageLoop drives the batched periodic coverage writes until the
+// server closes. One goroutine for the whole fleet.
+func (s *Server) trustCoverageLoop() {
+	ticker := time.NewTicker(trustCoverageWriteInterval)
 	defer ticker.Stop()
 	for {
-		if provider.GetTrustLevel() == registry.TrustHardware {
-			return true
-		}
-		if provider.ChallengeShouldStop() {
-			return false
-		}
 		select {
-		case <-ctx.Done():
-			return false
-		case <-settled:
-			// The live challenge settled WITHOUT a fast-skip grant — stop waiting and
-			// fall through to the full live MDM verify now (no up-to-10s stall). Re-read
-			return provider.GetTrustLevel() == registry.TrustHardware
-		case <-timer.C:
-			return provider.GetTrustLevel() == registry.TrustHardware
+		case <-s.trustCoverageCtx.Done():
+			return
 		case <-ticker.C:
+			s.sweepTrustCoverage()
 		}
 	}
 }

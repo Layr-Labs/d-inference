@@ -134,55 +134,6 @@ func sanitizeStreamCacheDetailsJSON(raw string) (string, bool) {
 	return string(b), true
 }
 
-func sseDataValue(line string) (string, bool) {
-	colon := strings.IndexByte(line, ':')
-	field, value := line, ""
-	if colon >= 0 {
-		field, value = line[:colon], line[colon+1:]
-		if strings.HasPrefix(value, " ") {
-			value = value[1:]
-		}
-	}
-	return value, field == "data"
-}
-
-func sanitizeStreamCacheEventGroup(group string) (string, bool) {
-	lines := strings.Split(group, "\n")
-	data := make([]string, 0, len(lines))
-	firstData := -1
-	for i, line := range lines {
-		if value, ok := sseDataValue(line); ok {
-			if firstData < 0 {
-				firstData = i
-			}
-			data = append(data, value)
-		}
-	}
-	if firstData < 0 {
-		if len(lines) == 1 {
-			if sanitized, ok := sanitizeStreamCacheDetailsJSON(strings.TrimSpace(group)); ok {
-				return sanitized, true
-			}
-		}
-		return group, false
-	}
-	sanitized, changed := sanitizeStreamCacheDetailsJSON(strings.Join(data, "\n"))
-	if !changed {
-		return group, false
-	}
-	out := make([]string, 0, len(lines)-len(data)+1)
-	for i, line := range lines {
-		if _, ok := sseDataValue(line); ok {
-			if i == firstData {
-				out = append(out, "data: "+sanitized)
-			}
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n"), true
-}
-
 // sanitizeStreamCacheDetails removes provider-supplied cached_tokens from any
 // streamed frame before it can reach the consumer. SSE data fields are joined
 // per the specification across each blank-line-delimited event, then a changed
@@ -201,7 +152,7 @@ func sanitizeStreamCacheDetails(chunk string) string {
 	groups := strings.Split(normalized, "\n\n")
 	changed := false
 	for i, group := range groups {
-		if sanitized, ok := sanitizeStreamCacheEventGroup(group); ok {
+		if sanitized, ok := sanitizeStreamJSONEventGroup(group, sanitizeStreamCacheDetailsJSON); ok {
 			groups[i] = sanitized
 			changed = true
 		}

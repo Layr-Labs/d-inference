@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -235,7 +237,85 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	}
 }
 
-func TestDispatchOneProviderExpiredClockDoesNotSend(t *testing.T) {
+func TestModelSpecificFirstContentDeadlineReachesProviderWire(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantBase  time.Duration
+		otherBase time.Duration
+	}{
+		{
+			name:      "ordinary production-like model",
+			model:     "ordinary-wire-deadline-model",
+			wantBase:  9 * time.Second,
+			otherBase: 4 * time.Second,
+		},
+		{
+			name:      "Qwen3-VL exact model",
+			model:     modelpolicy.Qwen3VL30BA3BInstructModelID,
+			wantBase:  4 * time.Second,
+			otherBase: 9 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg, _, srv, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
+				FirstContentDeadlineBase: 9 * time.Second,
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			wireBudget := make(chan int64, 1)
+			startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+				Name: "provider-model-deadline", Version: "0.8.15", DecodeTPS: 200,
+				Models: []failoverModelSpec{{ID: tt.model}},
+				Script: func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, _ []byte) {
+					wireBudget <- req.FirstContentBudgetMS
+					fp.serveFull(ctx, req, tt.model, markerFor(fp.name))
+				},
+			})
+
+			requestBody := buildChatBody(t, tt.model, false, nil)
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(requestBody), &parsed); err != nil {
+				t.Fatalf("parse request body: %v", err)
+			}
+			expected := srv.FirstContentDeadline(
+				tt.model, estimatePromptTokens(parsed),
+			).Milliseconds()
+			if expected < tt.wantBase.Milliseconds() ||
+				expected >= tt.wantBase.Milliseconds()+time.Second.Milliseconds() {
+				t.Fatalf("selected deadline = %dms, want %s base plus prompt slope", expected, tt.wantBase)
+			}
+			if expected >= tt.otherBase.Milliseconds() && tt.wantBase < tt.otherBase {
+				t.Fatalf("selected deadline = %dms, looks like ordinary %s policy", expected, tt.otherBase)
+			}
+
+			status, body, err := postChat(ctx, ts.URL, "test-key", requestBody)
+			if err != nil {
+				t.Fatalf("chat request: %v", err)
+			}
+			if status != http.StatusOK {
+				t.Fatalf("status=%d body=%s, want 200", status, body)
+			}
+
+			select {
+			case got := <-wireBudget:
+				// Writer dequeue refreshes the remaining budget, so it may only
+				// decrease from the request-local duration selected above. Do not
+				// impose a lower bound: a loaded CI host may delay writer handoff.
+				if got <= 0 || got > expected {
+					t.Fatalf("wire budget = %dms, want (0,%d]", got, expected)
+				}
+			case <-ctx.Done():
+				t.Fatal("provider did not receive inference request")
+			}
+		})
+	}
+}
+
+func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.T) {
 	reg, _, srv, ts := setupTTFTFailoverServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -252,7 +332,7 @@ func TestDispatchOneProviderExpiredClockDoesNotSend(t *testing.T) {
 		"/v1/chat/completions",
 		strings.NewReader(buildChatBody(t, model, false, nil)),
 	)
-	selected, pending, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
+	selected, pending, _, _, dispatchErr, dispatchErrCode := srv.dispatchOneProvider(
 		req,
 		model,
 		model,
@@ -261,6 +341,7 @@ func TestDispatchOneProviderExpiredClockDoesNotSend(t *testing.T) {
 		nil,
 		0,
 		8,
+		10*time.Millisecond,
 		64,
 		registry.TokenAdmission{},
 		false,
@@ -268,11 +349,14 @@ func TestDispatchOneProviderExpiredClockDoesNotSend(t *testing.T) {
 		nil,
 		false,
 		selfRoutePolicy{},
-		&registry.RequestTiming{ReceivedAt: time.Now().Add(-time.Minute)},
+		// The pinned 10ms request clock is expired, while recomputing this
+		// ordinary model from the server's 5s default would still allow a send.
+		&registry.RequestTiming{ReceivedAt: time.Now().Add(-50 * time.Millisecond)},
 		false,
 		registry.CachePlan{},
 		map[string]struct{}{},
 		0,
+		nil,
 		nil,
 	)
 	if selected != nil || pending != nil {

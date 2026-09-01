@@ -96,6 +96,21 @@ private func funnelModel(id: String = "gemma-4-target", metadata: [String: JSONV
         metadata: metadata)
 }
 
+private func qwen38SpecDecMetadata() -> [String: JSONValue] {
+    [
+        "spec_dec": .object([
+            ("r2_prefix", .string("v2-specdec/eigenlabs-qwen38-mtp/329261c5e0b3f9c233485e682cb3b67b88c20a55")),
+            ("manifest_sha256", .string(String(repeating: "a", count: 64))),
+            ("config_sha256", .string(String(repeating: "b", count: 64))),
+            ("total_size_bytes", .int(1)),
+            ("file_count", .int(2)),
+            ("max_file_count", .int(2)),
+            ("allowed_file_types", .array([.string("config"), .string("weight")])),
+            ("revision", .string("329261c5e0b3f9c233485e682cb3b67b88c20a55")),
+        ])
+    ]
+}
+
 private let localAssistantConfig = Data(#"{"model_type":"gemma4_assistant"}"#.utf8)
 
 private func makeLocalAssistant() throws -> URL {
@@ -130,6 +145,15 @@ private func makeInlineQwenArtifact(includeMTP: Bool = true) throws -> URL {
         "weight_map": [key: shard]
     ])
     try index.write(to: root.appendingPathComponent("model.safetensors.index.json"))
+    return root
+}
+
+private func makeDenseQwenTargetWithoutInlineMTP() throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-dense-qwen-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(#"{"model_type":"qwen3_5","text_config":{"model_type":"qwen3_5_text"}}"#.utf8)
+        .write(to: root.appendingPathComponent("config.json"))
     return root
 }
 
@@ -214,6 +238,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: true,
                 environment: [:]))
 
@@ -239,12 +264,87 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
                 allowDownload: true,
                 environment: [:]))
 
         #expect(prepared.artifact == nil)
         #expect(prepared.status.reason == .inlineArtifactInvalid)
         #expect(await catalog.calls == 0)
+    }
+
+    @Test("dense Qwen target without spec_dec falls back target-only with metadata_missing")
+    func qwenStandaloneAssistantMissingMetadataFallsBack() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
+        let catalog = FunnelCatalog(funnelModel(id: modelID))
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: modelID,
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
+                allowDownload: false,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.configured)
+        #expect(prepared.status.reason == .metadataMissing)
+    }
+
+    @Test("dense Qwen invalid spec_dec falls back target-only with metadata_malformed")
+    func qwenStandaloneAssistantInvalidMetadataFallsBack() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
+        let catalog = FunnelCatalog(funnelModel(
+            id: modelID,
+            metadata: ["spec_dec": .object([("r2_prefix", .string("../escape"))])]))
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: modelID,
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
+                allowDownload: false,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .metadataMalformed)
+    }
+
+    @Test("dense Qwen verified metadata without downloaded bytes stays target-only")
+    func qwenStandaloneAssistantNotDownloadedFallsBack() async throws {
+        let directory = try makeDenseQwenTargetWithoutInlineMTP()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qwen38-specdec-miss-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let modelID = "EigenLabs/Qwen3.8-27B-4bit"
+        let catalog = FunnelCatalog(funnelModel(
+            id: modelID, metadata: qwen38SpecDecMetadata()))
+        let prepared = await funnel(catalog: catalog, root: store).prepare(
+            .init(
+                modelId: modelID,
+                modelType: "qwen3_5",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
+                allowDownload: false,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .artifactNotCached)
     }
 
     @Test("HF-cache symlinked snapshot passes inspection and admits inline MTP")
@@ -277,6 +377,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: snapshot,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: snapshot),
                 allowDownload: true,
                 environment: [:]))
         let artifact = try #require(prepared.artifact)
@@ -327,6 +428,7 @@ struct SpecDecArtifactFunnelTests {
                 enabled: true,
                 localPath: nil,
                 modelDirectory: snapshot,
+                inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: snapshot),
                 allowDownload: true,
                 environment: [:]))
         #expect(prepared.artifact == nil)
@@ -416,7 +518,7 @@ struct SpecDecArtifactFunnelTests {
         #expect(SpecDecStore.inspectLocalArtifact(path: root.path) == nil)
     }
 
-    @Test("default off and kill switch are target-only before catalog lookup")
+    @Test("kill switch wins over config; both remain target-only before catalog lookup")
     func disabledStates() async {
         let catalog = FunnelCatalog(funnelModel())
         let artifactFunnel = funnel(
@@ -431,8 +533,17 @@ struct SpecDecArtifactFunnelTests {
                 modelId: "gemma", modelType: "gemma4", enabled: true,
                 localPath: nil, allowDownload: true,
                 environment: ["DARKBLOOM_CBV2_MTP": "off"]))
+        let bothOff = await artifactFunnel.prepare(
+            .init(
+                modelId: "EigenLabs/Qwen3.8-27B-4bit",
+                modelType: "qwen3_5",
+                enabled: false,
+                localPath: nil,
+                allowDownload: true,
+                environment: ["DARKBLOOM_CBV2_MTP": "off"]))
         #expect(off.status == .disabled(.configDisabled, configured: false))
         #expect(killed.status == .disabled(.killSwitchDisabled, configured: true))
+        #expect(bothOff.status == .disabled(.killSwitchDisabled, configured: false))
         #expect(await catalog.calls == 0)
     }
 
@@ -576,5 +687,150 @@ struct SpecDecArtifactFunnelTests {
         #expect(!warmed)
         #expect(await sleepProbe.durations == [.milliseconds(20)])
         await funnel.shutdown()
+    }
+}
+
+// MARK: - Inline declaration probe (tri-state)
+
+private func makeQwenTarget(configJSON: String) throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-probe-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(configJSON.utf8).write(to: root.appendingPathComponent("config.json"))
+    return root
+}
+
+/// A config that parses fine but exceeds `SpecDecLimits.maximumConfigBytes`
+/// (1 MiB inspection cap) while staying under the probe's loose bound.
+private func oversizedConfigJSON(declaring: Bool) -> String {
+    let padding = String(repeating: "x", count: 2 * 1024 * 1024)
+    let inline = declaring
+        ? #""mtplx_mtp":{"included":true,"prefix":"mtp."},"mtplx_mtp_quantization":{},"#
+        : ""
+    return #"{"model_type":"qwen3_5","#
+        + inline
+        + #""text_config":{"model_type":"qwen3_5_text"},"_pad":""# + padding + #""}"#
+}
+
+@Suite("Inline declaration probe")
+struct InlineDeclarationProbeTests {
+    @Test("declared, absent, and undeterminable are distinguished")
+    func triState() throws {
+        let declared = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":true}}"#)
+        defer { try? FileManager.default.removeItem(at: declared) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: declared) == .declared)
+
+        let explicitFalse = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":false}}"#)
+        defer { try? FileManager.default.removeItem(at: explicitFalse) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: explicitFalse) == .absent)
+
+        let noDeclaration = try makeQwenTarget(configJSON: #"{"model_type":"qwen3_5"}"#)
+        defer { try? FileManager.default.removeItem(at: noDeclaration) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: noDeclaration) == .absent)
+        #expect(
+            !SpecDecStore.InlineDeclarationProbe.absent.mayDeclareEmbeddedArtifact)
+
+        let unparseable = try makeQwenTarget(configJSON: "not json {")
+        defer { try? FileManager.default.removeItem(at: unparseable) }
+        #expect(
+            SpecDecStore.inlineDeclarationProbe(directory: unparseable) == .undeterminable)
+        #expect(
+            SpecDecStore.InlineDeclarationProbe.undeterminable.mayDeclareEmbeddedArtifact)
+
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-probe-missing-\(UUID().uuidString)")
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: missing) == .undeterminable)
+    }
+
+    @Test("an oversized declared config is not misread as absent and inspection rejects it loudly")
+    func oversizedDeclaredSurfacesInvalid() async throws {
+        let directory = try makeQwenTarget(configJSON: oversizedConfigJSON(declaring: true))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: directory) == .declared)
+        // Inspection keeps its strict DoS cap and names the reason.
+        let inspection = SpecDecStore.inspectInlineArtifact(directory: directory)
+        guard case .failure = inspection else {
+            Issue.record("oversized config must fail inline inspection")
+            return
+        }
+
+        // End to end: an enabled prepare must report inline_artifact_invalid,
+        // never config_disabled, for a declared-but-uninspectable head.
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-probe-store-\(UUID().uuidString)", isDirectory: true)
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(storeRoot: store), catalog: nil)
+        let prepared = await funnel.prepare(.init(
+            modelId: "local/oversized-declared",
+            modelType: "qwen3_5",
+            enabled: true,
+            localPath: nil,
+            modelDirectory: directory,
+            inlineDeclaration: SpecDecStore.inlineDeclarationProbe(directory: directory),
+            allowDownload: false,
+            environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+        await funnel.shutdown()
+        try? FileManager.default.removeItem(at: store)
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .inlineArtifactInvalid)
+    }
+
+    @Test("an oversized config without a declaration still reads as absent")
+    func oversizedUndeclaredStaysAbsent() throws {
+        let directory = try makeQwenTarget(configJSON: oversizedConfigJSON(declaring: false))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(SpecDecStore.inlineDeclarationProbe(directory: directory) == .absent)
+    }
+}
+
+@Suite("Single-probe inline decision")
+struct SingleProbeInlineDecisionTests {
+    /// The funnel must trust the caller's probe and never re-read config.json:
+    /// under `auto`, a re-probe racing a config change could turn an
+    /// embedded-only decision into a catalog resolution the mode forbids.
+    @Test("a request carrying .absent skips inline inspection even when the directory declares a head")
+    func funnelTrustsCallerProbe() async throws {
+        let directory = try makeQwenTarget(
+            configJSON: #"{"model_type":"qwen3_5","mtplx_mtp":{"included":true,"prefix":"mtp."},"mtplx_mtp_quantization":{},"text_config":{"model_type":"qwen3_5_text"}}"#)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-single-probe-\(UUID().uuidString)", isDirectory: true)
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(storeRoot: store), catalog: nil)
+        let prepared = await funnel.prepare(.init(
+            modelId: "local/declared-but-probe-absent",
+            modelType: "qwen3_5",
+            enabled: true,
+            localPath: nil,
+            modelDirectory: directory,
+            inlineDeclaration: .absent,
+            allowDownload: false,
+            environment: ["DARKBLOOM_CBV2_MTP": "1"]))
+        await funnel.shutdown()
+        try? FileManager.default.removeItem(at: store)
+        #expect(prepared.artifact == nil)
+        // Never inline_artifact_invalid: the funnel did not inspect. With no
+        // catalog configured the request lands on the catalog-disabled reason.
+        #expect(prepared.status.reason == .catalogDisabled)
+    }
+
+    @Test("inline assistants charge zero additional weight bytes")
+    func inlineArtifactChargesNothingExtra() {
+        let directory = URL(fileURLWithPath: "/tmp/x")
+        let inline = SpecDecArtifact(
+            directory: directory, source: .inline, revision: "inline-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(inline.additionalWeightBytes == 0)
+        let staged = SpecDecArtifact(
+            directory: directory, source: .local, revision: "local-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(staged.additionalWeightBytes == 200)
+        let catalog = SpecDecArtifact(
+            directory: directory, source: .catalog, revision: "cat-x",
+            artifactBytes: 137, residentBytes: 200, manifestSHA256: nil)
+        #expect(catalog.additionalWeightBytes == 200)
     }
 }

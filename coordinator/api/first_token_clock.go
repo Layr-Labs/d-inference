@@ -12,8 +12,10 @@ package api
 // budget.
 //
 // Everything here derives from one clock:
-// ReceivedAt + Server.FirstContentDeadline(tokens)
-// (prod: 9s + 1ms/token — deliberately inside the aggregator's 10s slope).
+// ReceivedAt + Server.FirstContentDeadline(model, tokens). Ordinary production
+// requests use 9s + 1ms/token inside the aggregator's standard 10s slope;
+// exact model policies may tighten both clocks while preserving response
+// headroom (Qwen3-VL Instruct: 4s live inside a 5s upstream SLA).
 // Invariants:
 //
 //  1. No wait for first CONTENT may extend past the leftover clock — not

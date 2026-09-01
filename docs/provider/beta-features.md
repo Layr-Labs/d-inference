@@ -112,24 +112,39 @@ Missing `[gemma_optimizations]` sections and missing keys decode as `true`, so
 old configs receive the selected v0.8.2 stack. An explicit `false` plus restart
 is the durable rollback.
 
-### `mtp` — Gemma 4 multi-token prediction code path
+### `mtp` — multi-token prediction (speculative decoding)
 
-Providers v0.7.12 and later contain the default-off MTP implementation, but
-shipping that code does not activate speculative decoding:
+The default `mtp_mode = "auto"` activates MTP **automatically** for Qwen
+3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares
+an embedded head (`mtplx_mtp.included = true`) — no beta toggle required. The
+policy travels with the weights: a checkpoint without an embedded declaration
+serves target-only under `auto` and is never asked about (decision:
+`MTPMode.enablesMTP` in
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:98-113`;
+declaration probe: `SpecDecStore.inlineDeclarationProbe` in
+`provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift:438-449`).
+The explicit rollback is:
+
+```bash
+darkbloom beta disable mtp
+darkbloom restart
+```
+
+Enabling the beta writes the explicit **on** override, which is required for
+everything that is *not* an embedded head: separately published catalog
+assistants resolved through the target's `metadata.spec_dec` pointer (the
+public catalog publishes one for `gemma-4-26b-qat-4bit`,
+[live catalog](https://api.darkbloom.dev/v1/models/catalog?type=text)) and
+local `[backend] mtp_drafter_path` overrides:
 
 ```bash
 darkbloom beta enable mtp
 darkbloom restart
 ```
 
-Without a valid local `[backend] mtp_drafter_path` override, activation also
-requires a verified `spec_dec` assistant artifact in the model catalog. The
-current public production catalog publishes `metadata.spec_dec` for
-`gemma-4-26b-qat-4bit` ([live catalog](https://api.darkbloom.dev/v1/models/catalog?type=text));
-other catalog models and providers without the explicit beta setting continue
-with target-only decoding. Artifact resolution and target-only fallback are in
+Artifact resolution and target-only fallback are in
 `ProviderLoop.specDecPreparation` at
-`provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift:35-54`.
+`provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift:42-71`.
 
 The implementation has target-authoritative verification and focused parity
 coverage. That is not a universal certification of token-identical behavior on

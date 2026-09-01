@@ -1,5 +1,6 @@
 import Foundation
 import SandboxGuestProtocol
+import SandboxRuntime
 import XCTest
 
 @testable import SandboxRuntimeLume

@@ -30,15 +30,19 @@ if ! /usr/bin/grep -qE \
     exit 1
 fi
 
-REQUIRED_BROKER_LIFECYCLE_TESTS=(
+REQUIRED_PATCHED_LUME_TESTS=(
     immediateBrokerEndpointClosureIsSticky
     brokerFailStopDoesNotDependOnMainActorProgress
     brokerStopBeforeRegistrationCancelsWatchdog
     brokerWatchdogFiresWhileVirtualizationStartupHangs
     brokerWatchdogFiresWhileVirtualizationStopHangs
     brokerEOFCancelsWatchdogAfterTerminalCleanup
+    guestChannelSendsUsableDescriptor
+    guestChannelRejectsSendAfterClose
+    guestChannelRejectsReservedDescriptor
+    guestChannelAbsentWithoutEnvironment
 )
-for test_name in "${REQUIRED_BROKER_LIFECYCLE_TESTS[@]}"; do
+for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (
         cd "$SOURCE_ROOT"
         swift test --filter "$test_name"
@@ -53,4 +57,4 @@ for test_name in "${REQUIRED_BROKER_LIFECYCLE_TESTS[@]}"; do
 done
 
 echo "patched_lume_tests=nonzero"
-echo "patched_lume_required_tests=${#REQUIRED_BROKER_LIFECYCLE_TESTS[@]}"
+echo "patched_lume_required_tests=${#REQUIRED_PATCHED_LUME_TESTS[@]}"

@@ -61,6 +61,13 @@ public final class SandboxManagedProcess: @unchecked Sendable {
         execution.isRunning
     }
 
+    /// Returns a guest descriptor handed over by this process, or `nil` when
+    /// none has arrived yet. Never blocks. Ownership transfers to the caller,
+    /// which must close it.
+    public func receiveGuestChannelDescriptor() throws -> Int32? {
+        try execution.receiveGuestChannelDescriptor()
+    }
+
     public func wait() async -> SandboxProcessResult {
         await execution.waitUntilExit()
         return execution.result()
@@ -91,7 +98,8 @@ public struct SandboxProcessRunner: Sendable {
         environment: [String: String] = [:],
         currentDirectory: URL? = nil,
         maximumOutputBytes: Int = defaultMaximumOutputBytes,
-        cooperativeControl: SandboxCooperativeProcessControl? = nil
+        cooperativeControl: SandboxCooperativeProcessControl? = nil,
+        guestChannel: SandboxGuestChannelControl? = nil
     ) throws -> SandboxManagedProcess {
         try validate(
             executable: executable,
@@ -102,7 +110,8 @@ public struct SandboxProcessRunner: Sendable {
             arguments: arguments,
             environment: environment,
             currentDirectory: currentDirectory,
-            cooperativeControl: cooperativeControl
+            cooperativeControl: cooperativeControl,
+            guestChannel: guestChannel
         )
         let execution = try ProcessExecution(
             executable: executable,
@@ -110,7 +119,8 @@ public struct SandboxProcessRunner: Sendable {
             environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
             maximumOutputBytes: maximumOutputBytes,
-            cooperativeControl: cooperativeControl
+            cooperativeControl: cooperativeControl,
+            guestChannel: guestChannel
         )
         do {
             try execution.start()
@@ -198,7 +208,8 @@ public struct SandboxProcessRunner: Sendable {
         arguments: [String],
         environment: [String: String],
         currentDirectory: URL?,
-        cooperativeControl: SandboxCooperativeProcessControl?
+        cooperativeControl: SandboxCooperativeProcessControl?,
+        guestChannel: SandboxGuestChannelControl? = nil
     ) throws {
         guard arguments.allSatisfy({ !$0.contains("\0") }),
               environment.allSatisfy({
@@ -213,6 +224,23 @@ public struct SandboxProcessRunner: Sendable {
               cooperativeControl.map({
                   Self.isValidEnvironmentVariable($0.environmentVariable)
                       && environment[$0.environmentVariable] == nil
+              }) ?? true,
+              guestChannel.map({
+                  Self.isValidEnvironmentVariable(
+                      $0.descriptorEnvironmentVariable
+                  )
+                      && Self.isValidEnvironmentVariable(
+                          $0.portEnvironmentVariable
+                      )
+                      && $0.descriptorEnvironmentVariable
+                          != $0.portEnvironmentVariable
+                      && $0.descriptorEnvironmentVariable
+                          != cooperativeControl?.environmentVariable
+                      && $0.portEnvironmentVariable
+                          != cooperativeControl?.environmentVariable
+                      && environment[$0.descriptorEnvironmentVariable] == nil
+                      && environment[$0.portEnvironmentVariable] == nil
+                      && $0.port > 0
               }) ?? true
         else {
             throw SandboxRuntimeError.unsupported(

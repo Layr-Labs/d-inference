@@ -39,6 +39,10 @@ final class LumeRuntimeContractTests: XCTestCase {
                     path: LumeRuntimeConfiguration.pinnedBrokerLifecyclePatchPath,
                     sha256: LumeRuntimeConfiguration.pinnedBrokerLifecyclePatchSHA256
                 ),
+                LumePatch(
+                    path: LumeRuntimeConfiguration.pinnedGuestChannelPatchPath,
+                    sha256: LumeRuntimeConfiguration.pinnedGuestChannelPatchSHA256
+                ),
             ]
         )
         XCTAssertEqual(lock.license, "MIT")

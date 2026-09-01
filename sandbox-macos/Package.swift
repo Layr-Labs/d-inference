@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "SandboxRuntimeVZ", targets: ["SandboxRuntimeVZ"]),
         .library(name: "SandboxHostControl", targets: ["SandboxHostControl"]),
         .executable(name: "darkbloom-sandboxd", targets: ["DarkbloomSandboxDaemon"]),
+        .executable(name: "darkbloom-guest-agent", targets: ["DarkbloomGuestAgent"]),
     ],
     targets: [
         .target(
@@ -69,6 +70,10 @@ let package = Package(
                 "SandboxHostControl",
             ],
             path: "Sources/DarkbloomSandboxDaemon"
+        ),
+        .executableTarget(
+            name: "DarkbloomGuestAgent",
+            path: "Sources/DarkbloomGuestAgent"
         ),
         .testTarget(
             name: "SandboxCoreTests",

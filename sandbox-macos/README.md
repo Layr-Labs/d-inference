@@ -238,6 +238,27 @@ holding the original run locks; if emergency framework stop fails, the
 single-VM owner process exits instead of unwinding those locks around a live
 guest. The proof never uses `lsof` opener lists or replaces `config.json`.
 
+A second, independent socketpair carries the guest channel. Only the process
+holding the `VZVirtioSocketDevice` can establish a guest vsock connection, so
+`lume run` attaches the device, connects to the agent's port, and passes the
+resulting descriptor back to the broker over `SCM_RIGHTS`. It then leaves the
+data path entirely: no guest payload is ever read, written, or buffered by the
+run process. The device is attached only when a broker supplies a port, so an
+ordinary run keeps exactly the device set it had before. Connection is retried
+in the background and is never a boot gate — a VM whose agent is not yet
+listening is a healthy VM, and the broker decides what an absent channel means.
+This is transport only: it establishes a byte channel and grants no execution
+authority, and guest commands remain disabled until the signed guest-control
+agent replaces Lume's shared bootstrap identity.
+
+The `darkbloom-guest-agent` product is the guest half of that channel. It binds
+`AF_VSOCK`, announces a versioned identity line, and echoes. It executes
+nothing: this slice proves the channel, and the executing agent is a separate
+piece of work that also needs randomized bootstrap credentials and an
+unprivileged guest user before it can carry tenant work. `AF_VSOCK` sockets
+exist only inside a virtual machine, so the agent exits with `ENODEV` on a host,
+which doubles as a cheap smoke check.
+
 ## Pinned Lume substrate
 
 `ThirdParty/lume.lock.json` pins the exact Cua source commit, expected version,

@@ -11,6 +11,7 @@ final class ProcessExecution: @unchecked Sendable {
     private let standardOutput: BoundedProcessOutput
     private let standardError: BoundedProcessOutput
     private let cooperativeControl: ProcessControlChannel?
+    private let guestChannel: GuestChannelReceiver?
     private let testHooks: ProcessExecutionTestHooks
     private let lock = NSLock()
     private var started = false
@@ -27,6 +28,8 @@ final class ProcessExecution: @unchecked Sendable {
         maximumOutputBytes: Int,
         cooperativeControl configuration:
             SandboxCooperativeProcessControl? = nil,
+        guestChannel guestChannelConfiguration:
+            SandboxGuestChannelControl? = nil,
         testHooks: ProcessExecutionTestHooks = .none
     ) throws {
         let standardOutput = try BoundedProcessOutput(
@@ -51,14 +54,35 @@ final class ProcessExecution: @unchecked Sendable {
             _ = standardError.finish()
             throw error
         }
+        let guestChannel: GuestChannelReceiver?
+        do {
+            guestChannel = try guestChannelConfiguration.map { _ in
+                try GuestChannelReceiver()
+            }
+        } catch {
+            _ = standardOutput.finish()
+            _ = standardError.finish()
+            cooperativeControl?.closeParentEndpoint()
+            cooperativeControl?.closeChildSourceEndpoint()
+            throw error
+        }
         var childEnvironment = environment
         if let configuration {
             childEnvironment[configuration.environmentVariable] =
                 String(ProcessControlChannel.childDescriptor)
         }
+        if let guestChannelConfiguration {
+            childEnvironment[
+                guestChannelConfiguration.descriptorEnvironmentVariable
+            ] = String(GuestChannelReceiver.childDescriptor)
+            childEnvironment[
+                guestChannelConfiguration.portEnvironmentVariable
+            ] = String(guestChannelConfiguration.port)
+        }
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.cooperativeControl = cooperativeControl
+        self.guestChannel = guestChannel
         self.executable = executable
         self.arguments = arguments
         self.environment = childEnvironment
@@ -149,6 +173,7 @@ final class ProcessExecution: @unchecked Sendable {
             }
         }
         cooperativeControl?.closeChildSourceEndpoint()
+        guestChannel?.closeChildSourceEndpoint()
         standardOutput.closeParentWriter()
         standardError.closeParentWriter()
         guard spawnStatus == 0 else {
@@ -183,6 +208,15 @@ final class ProcessExecution: @unchecked Sendable {
         }
         cooperativeControl.closeParentEndpoint()
         return true
+    }
+
+    /// Returns a guest descriptor handed over by the child, or `nil` when none
+    /// has arrived. Never blocks; ownership transfers to the caller.
+    func receiveGuestChannelDescriptor() throws -> Int32? {
+        guard let guestChannel else {
+            return nil
+        }
+        return try guestChannel.receiveDescriptor()
     }
 
     func forceStop() {
@@ -252,6 +286,7 @@ final class ProcessExecution: @unchecked Sendable {
     func cleanup() {
         cooperativeControl?.closeParentEndpoint()
         cooperativeControl?.closeChildSourceEndpoint()
+        guestChannel?.closeChildSourceEndpoint()
         _ = finishOutputCapture()
     }
 
@@ -343,6 +378,26 @@ final class ProcessExecution: @unchecked Sendable {
                 )
             }
         }
+        if let guestChannel {
+            let sourceDescriptor = guestChannel.inheritedSourceDescriptor
+            guard sourceDescriptor >= 0,
+                  posix_spawn_file_actions_adddup2(
+                      &actions,
+                      sourceDescriptor,
+                      GuestChannelReceiver.childDescriptor
+                  ) == 0,
+                  sourceDescriptor
+                      == GuestChannelReceiver.childDescriptor
+                      || posix_spawn_file_actions_addclose(
+                          &actions,
+                          sourceDescriptor
+                      ) == 0
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "failed to inherit guest channel"
+                )
+            }
+        }
     }
 
     private func send(signal: Int32) {
@@ -404,6 +459,7 @@ final class ProcessExecution: @unchecked Sendable {
 
         cooperativeControl?.closeParentEndpoint()
         cooperativeControl?.closeChildSourceEndpoint()
+        guestChannel?.closeChildSourceEndpoint()
         exitSignal.signal()
     }
 

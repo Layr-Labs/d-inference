@@ -1,0 +1,695 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index b5376f5c0896ce2a3e4413f6cc4d49dd651ccb43..7a21596884d12ec0434d2cc50d16d2e7472b7b34 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -190,8 +190,9 @@ struct Run: AsyncParsableCommand {
+     @MainActor
+     func run() async throws {
+         let brokerLifecycle = try BrokerLifecycleCapability.inherited()
++        let guestChannel = try GuestChannelCapability.inherited()
+         if detach {
+-            guard brokerLifecycle == nil else {
++            guard brokerLifecycle == nil, guestChannel == nil else {
+                 throw ValidationError(
+                     "Broker-managed lifecycle control cannot be combined with --detach"
+                 )
+@@ -210,14 +211,16 @@ struct Run: AsyncParsableCommand {
+ 
+         try await runVM(
+             displayMode: displayMode,
+-            brokerLifecycle: brokerLifecycle
++            brokerLifecycle: brokerLifecycle,
++            guestChannel: guestChannel
+         )
+     }
+ 
+     @MainActor
+     private func runVM(
+         displayMode: DisplayMode,
+-        brokerLifecycle: BrokerLifecycleCapability?
++        brokerLifecycle: BrokerLifecycleCapability?,
++        guestChannel: GuestChannelCapability?
+     ) async throws {
+         try await LumeController().runVM(
+             name: name,
+@@ -238,7 +241,8 @@ struct Run: AsyncParsableCommand {
+             networkMode: parsedNetworkMode,
+             clipboard: clipboard,
+             vncPolicy: vnc,
+-            brokerLifecycle: brokerLifecycle
++            brokerLifecycle: brokerLifecycle,
++            guestChannel: guestChannel
+         )
+     }
+ }
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 9a7c60235ead9a50420ca768c71d0b5e30b89514..e548c2540fa05edc5907a9b8e2057abe65a20c91 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -1125,7 +1125,8 @@ final class LumeController {
+         clipboard: Bool = false,
+         vncPolicy: VNCPolicy = .enabled,
+         telemetryTransport: TelemetryTransport = .cli,
+-        brokerLifecycle: BrokerLifecycleCapability? = nil
++        brokerLifecycle: BrokerLifecycleCapability? = nil,
++        guestChannel: GuestChannelCapability? = nil
+     ) async throws {
+         let normalizedName = normalizeVMName(name: name)
+         let effectiveDisplayMode = displayMode ?? (noDisplay ? .none : .vnc)
+@@ -1263,7 +1264,8 @@ final class LumeController {
+                 networkMode: networkMode,
+                 clipboard: clipboard,
+                 vncPolicy: vncPolicy,
+-                brokerLifecycle: brokerLifecycle)
++                brokerLifecycle: brokerLifecycle,
++                guestChannel: guestChannel)
+             Logger.info("VM started successfully", metadata: ["name": normalizedName])
+         } catch {
+             Logger.error("Failed to run VM", metadata: ["error": error.localizedDescription])
+diff --git a/libs/lume/src/VM/GuestChannelCapability.swift b/libs/lume/src/VM/GuestChannelCapability.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..70a1c793cab62de337485fbba796402d8c9655f6
+--- /dev/null
++++ b/libs/lume/src/VM/GuestChannelCapability.swift
+@@ -0,0 +1,201 @@
++import Darwin
++import Foundation
++
++/// A pre-spawn descriptor whose peer is owned by the sandbox broker, used to
++/// hand the broker a connected guest vsock descriptor.
++///
++/// Only the process holding the `VZVirtioSocketDevice` can establish a guest
++/// connection, so the broker cannot open one itself. This capability lets the
++/// run process establish it and pass the resulting descriptor out over
++/// `SCM_RIGHTS`. The run process never reads or writes guest payload: once the
++/// descriptor is handed over, the broker owns the conversation.
++final class GuestChannelCapability: @unchecked Sendable {
++    static let environmentVariable = "DARKBLOOM_LUME_GUEST_CHANNEL_FD"
++    static let portEnvironmentVariable = "DARKBLOOM_LUME_GUEST_CHANNEL_PORT"
++
++    /// Single byte accompanying the descriptor. `sendmsg` on a stream socket
++    /// requires a non-empty payload for the control message to be delivered.
++    static let descriptorMessageByte: UInt8 = 0x01
++
++    private let endpoint: Endpoint
++
++    /// Guest vsock port the run process should connect to.
++    let port: UInt32
++
++    static func inherited() throws -> GuestChannelCapability? {
++        let environment = ProcessInfo.processInfo.environment
++        guard let value = environment[environmentVariable] else {
++            return nil
++        }
++        let portValue = environment[portEnvironmentVariable]
++        unsetenv(environmentVariable)
++        unsetenv(portEnvironmentVariable)
++        guard let descriptor = Int32(value),
++              descriptor > STDERR_FILENO,
++              let rawPort = portValue,
++              let port = UInt32(rawPort),
++              port > 0
++        else {
++            throw VMError.internalError(
++                "Invalid guest channel capability"
++            )
++        }
++        return try GuestChannelCapability(
++            fileDescriptor: descriptor,
++            port: port
++        )
++    }
++
++    init(fileDescriptor: Int32, port: UInt32) throws {
++        guard fileDescriptor > STDERR_FILENO,
++              fcntl(fileDescriptor, F_GETFD) >= 0
++        else {
++            throw VMError.internalError(
++                "Invalid guest channel capability"
++            )
++        }
++        let descriptorFlags = fcntl(fileDescriptor, F_GETFD)
++        guard descriptorFlags >= 0,
++              fcntl(
++                  fileDescriptor,
++                  F_SETFD,
++                  descriptorFlags | FD_CLOEXEC
++              ) == 0
++        else {
++            throw VMError.internalError(
++                "Could not secure guest channel capability"
++            )
++        }
++        self.port = port
++        endpoint = Endpoint(fileDescriptor: fileDescriptor)
++    }
++
++    deinit {
++        endpoint.close()
++    }
++
++    /// Hands `descriptor` to the broker. The caller keeps ownership of its own
++    /// copy and is responsible for closing it.
++    func send(descriptor: Int32) throws {
++        try endpoint.send(descriptor: descriptor)
++    }
++
++    func close() {
++        endpoint.close()
++    }
++
++    // MARK: - Control-message geometry
++
++    /// `__DARWIN_ALIGN32`, which the `CMSG_*` macros are defined in terms of.
++    /// The macros themselves are not visible to Swift.
++    private static func aligned(_ size: Int) -> Int {
++        (size + 3) & ~3
++    }
++
++    fileprivate static var headerSpace: Int {
++        aligned(MemoryLayout<cmsghdr>.size)
++    }
++
++    fileprivate static var controlSpace: Int {
++        headerSpace + aligned(MemoryLayout<Int32>.size)
++    }
++
++    fileprivate static var controlLength: Int {
++        headerSpace + MemoryLayout<Int32>.size
++    }
++
++    private final class Endpoint: @unchecked Sendable {
++        private let lock = NSLock()
++        private var fileDescriptor: Int32
++
++        init(fileDescriptor: Int32) {
++            self.fileDescriptor = fileDescriptor
++        }
++
++        func send(descriptor: Int32) throws {
++            var control = [UInt8](
++                repeating: 0,
++                count: GuestChannelCapability.controlSpace
++            )
++            var payload = GuestChannelCapability.descriptorMessageByte
++
++            let failure: Int32 = lock.withLock {
++                guard fileDescriptor >= 0 else {
++                    return EBADF
++                }
++                let socket = fileDescriptor
++                return control.withUnsafeMutableBytes { controlBuffer -> Int32 in
++                    guard let controlBase = controlBuffer.baseAddress else {
++                        return EINVAL
++                    }
++                    let header = controlBase
++                        .assumingMemoryBound(to: cmsghdr.self)
++                    header.pointee.cmsg_len = socklen_t(
++                        GuestChannelCapability.controlLength
++                    )
++                    header.pointee.cmsg_level = SOL_SOCKET
++                    header.pointee.cmsg_type = SCM_RIGHTS
++                    controlBase
++                        .advanced(by: GuestChannelCapability.headerSpace)
++                        .assumingMemoryBound(to: Int32.self)
++                        .pointee = descriptor
++
++                    return withUnsafeMutablePointer(
++                        to: &payload
++                    ) { payloadPointer -> Int32 in
++                        var vector = iovec(
++                            iov_base: UnsafeMutableRawPointer(payloadPointer),
++                            iov_len: 1
++                        )
++                        return withUnsafeMutablePointer(
++                            to: &vector
++                        ) { vectorPointer -> Int32 in
++                            var message = msghdr()
++                            message.msg_iov = vectorPointer
++                            message.msg_iovlen = 1
++                            message.msg_control = controlBase
++                            message.msg_controllen = socklen_t(
++                                controlBuffer.count
++                            )
++                            while true {
++                                let sent = sendmsg(socket, &message, 0)
++                                if sent < 0 {
++                                    if errno == EINTR {
++                                        continue
++                                    }
++                                    return errno
++                                }
++                                return sent == 1 ? 0 : EIO
++                            }
++                        }
++                    }
++                }
++            }
++
++            guard failure == 0 else {
++                throw VMError.internalError(
++                    "Could not hand the guest channel descriptor to the sandbox broker (errno \(failure))"
++                )
++            }
++        }
++
++        func close() {
++            let descriptor = lock.withLock {
++                let descriptor = fileDescriptor
++                fileDescriptor = -1
++                return descriptor
++            }
++            if descriptor >= 0 {
++                Darwin.close(descriptor)
++            }
++        }
++    }
++}
++
++private extension NSLock {
++    func withLock<T>(_ operation: () -> T) -> T {
++        lock()
++        defer { unlock() }
++        return operation()
++    }
++}
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index 61d2b68cc19658cd29f645c27c4f178a52d7b929..0f38560fca9748fd075c2e81987ccfe411128d63 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -203,7 +203,8 @@ class VM {
+         usbMassStoragePaths: [Path]? = nil, additionalDiskPaths: [Path]? = nil,
+         networkMode: NetworkMode? = nil, clipboard: Bool = false,
+         vncPolicy: VNCPolicy = .enabled,
+-        brokerLifecycle: BrokerLifecycleCapability? = nil
++        brokerLifecycle: BrokerLifecycleCapability? = nil,
++        guestChannel: GuestChannelCapability? = nil
+     ) async throws {
+         guard !runLifecycleIsActive, activeBrokerLifecycle == nil else {
+             throw VMError.alreadyRunning(vmDirContext.name)
+@@ -442,7 +443,8 @@ class VM {
+                 recoveryMode: recoveryMode,
+                 usbMassStoragePaths: usbMassStoragePaths,
+                 additionalDiskPaths: additionalDiskPaths,
+-                networkMode: networkMode
++                networkMode: networkMode,
++                guestChannelPort: guestChannel?.port
+             )
+             Logger.info(
+                 "Successfully created virtualization service context",
+@@ -536,6 +538,19 @@ class VM {
+                 to: .running,
+                 expectedIdentity: runIdentity)
+             Logger.info("VM started successfully", metadata: ["name": vmDirContext.name])
++            if let guestChannel {
++                // Deliberately not awaited and deliberately not fatal. The
++                // guest agent binds its port some time after boot, so gating
++                // the run on it would either hang startup or fail a healthy
++                // VM. The broker treats an absent channel as "not ready yet".
++                let channelService = service
++                Task { [weak self] in
++                    await self?.handOverGuestChannel(
++                        service: channelService,
++                        capability: guestChannel
++                    )
++                }
++            }
+             if let telemetryTransport {
+                 TelemetryClient.shared.recordVMStarted(
+                     transport: telemetryTransport,
+@@ -1534,6 +1549,55 @@ class VM {
+         fatalError("Must be implemented by subclass")
+     }
+ 
++    /// How long to keep trying to reach the guest agent's vsock port before
++    /// giving up. Generous because a cold macOS guest can take minutes to
++    /// reach the point where the agent is listening.
++    private static let guestChannelConnectTimeout: TimeInterval = 600
++    private static let guestChannelRetryDelay: UInt64 = 500_000_000
++
++    /// Establishes the guest channel and hands the descriptor to the broker.
++    ///
++    /// Failure is logged, never thrown: a VM that boots fine but has no agent
++    /// listening is a valid state, and the broker decides what to do about it.
++    private func handOverGuestChannel(
++        service: VMVirtualizationService,
++        capability: GuestChannelCapability
++    ) async {
++        let deadline = Date().addingTimeInterval(Self.guestChannelConnectTimeout)
++        var lastError: String = "not attempted"
++        while Date() < deadline {
++            if Task.isCancelled {
++                return
++            }
++            do {
++                let descriptor = try await service.connectGuestPort(
++                    capability.port
++                )
++                defer { close(descriptor) }
++                try capability.send(descriptor: descriptor)
++                Logger.info(
++                    "Handed guest channel to sandbox broker",
++                    metadata: [
++                        "name": vmDirContext.name,
++                        "port": "\(capability.port)",
++                    ])
++                return
++            } catch {
++                lastError = "\(error)"
++                try? await Task.sleep(
++                    nanoseconds: Self.guestChannelRetryDelay
++                )
++            }
++        }
++        Logger.error(
++            "Guest channel never became available",
++            metadata: [
++                "name": vmDirContext.name,
++                "port": "\(capability.port)",
++                "error": lastError,
++            ])
++    }
++
+     func createVMVirtualizationServiceContext(
+         cpuCount: Int,
+         memorySize: UInt64,
+@@ -1543,7 +1607,8 @@ class VM {
+         recoveryMode: Bool = false,
+         usbMassStoragePaths: [Path]? = nil,
+         additionalDiskPaths: [Path]? = nil,
+-        networkMode: NetworkMode? = nil
++        networkMode: NetworkMode? = nil,
++        guestChannelPort: UInt32? = nil
+     ) throws -> VMVirtualizationServiceContext {
+         // This is a diagnostic log to track actual file paths on disk for debugging
+         try validateDiskState()
+@@ -1565,7 +1630,8 @@ class VM {
+             recoveryMode: recoveryMode,
+             usbMassStoragePaths: usbMassStoragePaths,
+             additionalDiskPaths: additionalDiskPaths,
+-            networkMode: effectiveNetworkMode
++            networkMode: effectiveNetworkMode,
++            guestChannelPort: guestChannelPort
+         )
+     }
+ 
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index 17ee07c336a1f8102af35d296edcf5ac5cc503db..80909b376e7214c03bb26e7d5b337ff6b5f45890 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -17,6 +17,10 @@ struct VMVirtualizationServiceContext {
+     let usbMassStoragePaths: [Path]?
+     let additionalDiskPaths: [Path]?
+     let networkMode: NetworkMode
++    /// Guest vsock port the sandbox broker expects an agent to listen on.
++    /// `nil` leaves the guest without a virtio socket device, which is the
++    /// behaviour for every non-brokered run.
++    let guestChannelPort: UInt32?
+ }
+ 
+ /// Protocol defining the interface for virtualization operations
+@@ -31,6 +35,9 @@ protocol VMVirtualizationService {
+     func resume() async throws
+     func updateSharedDirectories(_ sharedDirectories: [SharedDirectory]) async throws
+     func waitForStop() async throws
++    /// Connects to a listening guest vsock port, returning a host descriptor
++    /// the caller owns. Test services may reject this.
++    func connectGuestPort(_ port: UInt32) async throws -> Int32
+ }
+ 
+ /// Base implementation of VMVirtualizationService using VZVirtualMachine
+@@ -109,6 +116,53 @@ class BaseVirtualizationService: VMVirtualizationService {
+         }
+     }
+ 
++    /// Connects to a listening guest vsock port and returns the host-side
++    /// descriptor.
++    ///
++    /// The connection can only be established from the process holding the
++    /// `VZVirtioSocketDevice`, and every framework call has to happen on the
++    /// machine's own queue, so both are done here rather than by the caller.
++    /// Ownership of the returned descriptor transfers to the caller: the
++    /// `VZVirtioSocketConnection` is closed before returning so the descriptor
++    /// is the only remaining reference.
++    func connectGuestPort(_ port: UInt32) async throws -> Int32 {
++        let handle = virtualMachineHandle
++        return try await withCheckedThrowingContinuation {
++            (continuation: CheckedContinuation<Int32, Error>) in
++            handle.queue.async {
++                guard let device = handle.machine.socketDevices
++                    .compactMap({ $0 as? VZVirtioSocketDevice })
++                    .first
++                else {
++                    continuation.resume(
++                        throwing: VMError.internalError(
++                            "VM has no virtio socket device"
++                        )
++                    )
++                    return
++                }
++                device.connect(toPort: port) { result in
++                    switch result {
++                    case .success(let connection):
++                        let descriptor = dup(connection.fileDescriptor)
++                        connection.close()
++                        if descriptor < 0 {
++                            continuation.resume(
++                                throwing: VMError.internalError(
++                                    "Could not duplicate guest channel descriptor"
++                                )
++                            )
++                        } else {
++                            continuation.resume(returning: descriptor)
++                        }
++                    case .failure(let error):
++                        continuation.resume(throwing: error)
++                    }
++                }
++            }
++        }
++    }
++
+     func stop() async throws {
+         let handle = virtualMachineHandle
+         let monitor = lifecycleMonitor
+@@ -486,6 +540,13 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+             vzConfig.usbControllers = [usbControllerConfiguration]
+         }
+ 
++        // Virtio socket device for the sandbox broker's guest channel. Only
++        // attached when a broker asked for one, so an ordinary run keeps the
++        // exact device set it had before.
++        if config.guestChannelPort != nil {
++            vzConfig.socketDevices = [VZVirtioSocketDeviceConfiguration()]
++        }
++
+         try vzConfig.validate()
+         return vzConfig
+     }
+diff --git a/libs/lume/tests/GuestChannelCapabilityTests.swift b/libs/lume/tests/GuestChannelCapabilityTests.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..6557493fc65a67014ea0f9d7ac2a76519604fee8
+--- /dev/null
++++ b/libs/lume/tests/GuestChannelCapabilityTests.swift
+@@ -0,0 +1,148 @@
++import Darwin
++import Foundation
++import Testing
++
++@testable import lume
++
++private enum GuestChannelTestError: Error {
++  case socketPair
++  case pipe
++  case receiveFailed(Int32)
++  case noDescriptorReceived
++}
++
++private func makeGuestSocketPair() throws -> (owner: Int32, child: Int32) {
++  var descriptors = [Int32](repeating: -1, count: 2)
++  guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
++    throw GuestChannelTestError.socketPair
++  }
++  return (descriptors[0], descriptors[1])
++}
++
++private func aligned(_ size: Int) -> Int {
++  (size + 3) & ~3
++}
++
++/// Mirror of the sender's control-message geometry, written independently so
++/// the test would catch a sender that silently changed layout.
++private func receiveDescriptor(from socket: Int32) throws -> Int32 {
++  let headerSpace = aligned(MemoryLayout<cmsghdr>.size)
++  var control = [UInt8](repeating: 0, count: headerSpace + aligned(MemoryLayout<Int32>.size))
++  var payload: UInt8 = 0
++
++  let received: Int = control.withUnsafeMutableBytes { controlBuffer -> Int in
++    guard let controlBase = controlBuffer.baseAddress else { return -1 }
++    return withUnsafeMutablePointer(to: &payload) { payloadPointer -> Int in
++      var vector = iovec(
++        iov_base: UnsafeMutableRawPointer(payloadPointer),
++        iov_len: 1
++      )
++      return withUnsafeMutablePointer(to: &vector) { vectorPointer -> Int in
++        var message = msghdr()
++        message.msg_iov = vectorPointer
++        message.msg_iovlen = 1
++        message.msg_control = controlBase
++        message.msg_controllen = socklen_t(controlBuffer.count)
++        return recvmsg(socket, &message, 0)
++      }
++    }
++  }
++
++  guard received == 1 else {
++    throw GuestChannelTestError.receiveFailed(errno)
++  }
++
++  return try control.withUnsafeBytes { controlBuffer -> Int32 in
++    guard let controlBase = controlBuffer.baseAddress else {
++      throw GuestChannelTestError.noDescriptorReceived
++    }
++    let header = controlBase.assumingMemoryBound(to: cmsghdr.self)
++    guard header.pointee.cmsg_level == SOL_SOCKET,
++      header.pointee.cmsg_type == SCM_RIGHTS
++    else {
++      throw GuestChannelTestError.noDescriptorReceived
++    }
++    return
++      controlBase
++      .advanced(by: headerSpace)
++      .assumingMemoryBound(to: Int32.self)
++      .pointee
++  }
++}
++
++@Test("guest channel hands a working descriptor to the broker")
++func guestChannelSendsUsableDescriptor() throws {
++  let pair = try makeGuestSocketPair()
++  defer { close(pair.owner) }
++
++  let capability = try GuestChannelCapability(
++    fileDescriptor: pair.child,
++    port: 8888
++  )
++  #expect(capability.port == 8888)
++
++  var pipeDescriptors = [Int32](repeating: -1, count: 2)
++  guard pipe(&pipeDescriptors) == 0 else {
++    throw GuestChannelTestError.pipe
++  }
++  let readEnd = pipeDescriptors[0]
++  let writeEnd = pipeDescriptors[1]
++  defer {
++    close(readEnd)
++    close(writeEnd)
++  }
++
++  try capability.send(descriptor: readEnd)
++
++  let receivedDescriptor = try receiveDescriptor(from: pair.owner)
++  defer { close(receivedDescriptor) }
++  #expect(receivedDescriptor >= 0)
++  #expect(receivedDescriptor != readEnd)
++
++  // The received descriptor must refer to the same pipe, not a copy of the
++  // number: a byte written to the original write end has to read back out.
++  var outgoing: UInt8 = 0x42
++  #expect(write(writeEnd, &outgoing, 1) == 1)
++  var incoming: UInt8 = 0
++  #expect(read(receivedDescriptor, &incoming, 1) == 1)
++  #expect(incoming == 0x42)
++}
++
++@Test("guest channel sending fails after the capability is closed")
++func guestChannelRejectsSendAfterClose() throws {
++  let pair = try makeGuestSocketPair()
++  defer { close(pair.owner) }
++
++  let capability = try GuestChannelCapability(
++    fileDescriptor: pair.child,
++    port: 8888
++  )
++  capability.close()
++
++  var pipeDescriptors = [Int32](repeating: -1, count: 2)
++  guard pipe(&pipeDescriptors) == 0 else {
++    throw GuestChannelTestError.pipe
++  }
++  defer {
++    close(pipeDescriptors[0])
++    close(pipeDescriptors[1])
++  }
++
++  #expect(throws: (any Error).self) {
++    try capability.send(descriptor: pipeDescriptors[0])
++  }
++}
++
++@Test("guest channel rejects a reserved descriptor number")
++func guestChannelRejectsReservedDescriptor() {
++  #expect(throws: (any Error).self) {
++    _ = try GuestChannelCapability(fileDescriptor: STDERR_FILENO, port: 8888)
++  }
++}
++
++@Test("guest channel is absent without broker environment")
++func guestChannelAbsentWithoutEnvironment() throws {
++  unsetenv(GuestChannelCapability.environmentVariable)
++  unsetenv(GuestChannelCapability.portEnvironmentVariable)
++  #expect(try GuestChannelCapability.inherited() == nil)
++}
+diff --git a/libs/lume/tests/Mocks/MockVM.swift b/libs/lume/tests/Mocks/MockVM.swift
+index 94fe6f2582f04d7910e7e973c3309489f1e8017e..93183795bba020d4395144dcd26f1d2a3d8c5924 100644
+--- a/libs/lume/tests/Mocks/MockVM.swift
++++ b/libs/lume/tests/Mocks/MockVM.swift
+@@ -27,7 +27,8 @@ class MockVM: VM {
+         usbMassStoragePaths: [Path]? = nil, additionalDiskPaths: [Path]? = nil,
+         networkMode: NetworkMode? = nil, clipboard: Bool = false,
+         vncPolicy: VNCPolicy = .enabled,
+-        brokerLifecycle: BrokerLifecycleCapability? = nil
++        brokerLifecycle: BrokerLifecycleCapability? = nil,
++        guestChannel: GuestChannelCapability? = nil
+     ) async throws {
+         mockIsRunning = true
+         try await super.run(
+@@ -37,7 +38,8 @@ class MockVM: VM {
+             additionalDiskPaths: additionalDiskPaths,
+             networkMode: networkMode, clipboard: clipboard,
+             vncPolicy: vncPolicy,
+-            brokerLifecycle: brokerLifecycle
++            brokerLifecycle: brokerLifecycle,
++            guestChannel: guestChannel
+         )
+     }
+ 
+diff --git a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+index 7d5545e975ffa9f6139e121dd010a4bcfb1168b0..c64e073a2a10271312f284baa33a106c81357c35 100644
+--- a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
++++ b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+@@ -38,6 +38,10 @@ final class MockVMVirtualizationService: VMVirtualizationService {
+     var state: VZVirtualMachine.State { currentState }
+     var displayVirtualMachine: VZVirtualMachine? { nil }
+ 
++    func connectGuestPort(_ port: UInt32) async throws -> Int32 {
++        throw VMError.internalError("Mock has no virtio socket device")
++    }
++
+     nonisolated func configure(
+         shouldFail: Bool,
+         error: Error = VMError.internalError("Mock operation failed")
+diff --git a/libs/lume/tests/RunLockLivenessTests.swift b/libs/lume/tests/RunLockLivenessTests.swift
+index c15904d321492509f04d5dfd9799cb0b5aa3ec7e..f20364656130425f6b3738bc9cbd3b9eca556a5b 100644
+--- a/libs/lume/tests/RunLockLivenessTests.swift
++++ b/libs/lume/tests/RunLockLivenessTests.swift
+@@ -87,7 +87,8 @@ private final class GatedRunVM: MockVM {
+         networkMode: NetworkMode? = nil,
+         clipboard: Bool = false,
+         vncPolicy: VNCPolicy = .enabled,
+-        brokerLifecycle: BrokerLifecycleCapability? = nil
++        brokerLifecycle: BrokerLifecycleCapability? = nil,
++        guestChannel: GuestChannelCapability? = nil
+     ) async throws {
+         cacheWasPresentAtEntry =
+             SharedVM.shared.getVM(for: vmDirContext.dir)

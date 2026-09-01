@@ -19,6 +19,10 @@
     {
       "path": "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch",
       "sha256": "622b7ccee3a2d842e8aad83fe26ce4e1ab4027bd585a10ffddc40d416e288026"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0005-guest-vsock-channel.patch",
+      "sha256": "7716c2a1274844be620a563a9d4fafef4a346a371b5d89817e06d2ae97b2bbc2"
     }
   ],
   "license": "MIT",

@@ -32,11 +32,16 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0004-broker-lifecycle-capability.patch"
     public static let pinnedBrokerLifecyclePatchSHA256 =
         "622b7ccee3a2d842e8aad83fe26ce4e1ab4027bd585a10ffddc40d416e288026"
+    public static let pinnedGuestChannelPatchPath =
+        "ThirdParty/lume-patches/0005-guest-vsock-channel.patch"
+    public static let pinnedGuestChannelPatchSHA256 =
+        "7716c2a1274844be620a563a9d4fafef4a346a371b5d89817e06d2ae97b2bbc2"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
         pinnedRunLockIdentityPatchPath: pinnedRunLockIdentityPatchSHA256,
         pinnedBrokerLifecyclePatchPath: pinnedBrokerLifecyclePatchSHA256,
+        pinnedGuestChannelPatchPath: pinnedGuestChannelPatchSHA256,
     ]
 
     public let executable: URL
@@ -45,6 +50,16 @@ public struct LumeRuntimeConfiguration: Sendable {
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
     package let guestCommandPolicy: LumeGuestCommandPolicy
+    /// Guest vsock port the signed agent listens on, or `nil` to run without a
+    /// guest channel. Attaching the device is opt-in so an ordinary run keeps
+    /// exactly the device set it had before.
+    package let guestChannelPort: UInt32?
+
+    /// Environment variables patch 0005 reads inside `lume run`.
+    public static let guestChannelDescriptorEnvironmentVariable =
+        "DARKBLOOM_LUME_GUEST_CHANNEL_FD"
+    public static let guestChannelPortEnvironmentVariable =
+        "DARKBLOOM_LUME_GUEST_CHANNEL_PORT"
 
     public init(
         executable: URL,
@@ -59,7 +74,8 @@ public struct LumeRuntimeConfiguration: Sendable {
             commandTimeoutSeconds: commandTimeoutSeconds,
             createTimeoutSeconds: createTimeoutSeconds,
             trustPolicy: trustPolicy,
-            guestCommandPolicy: .disabled
+            guestCommandPolicy: .disabled,
+            guestChannelPort: nil
         )
     }
 
@@ -69,7 +85,8 @@ public struct LumeRuntimeConfiguration: Sendable {
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200,
         trustPolicy: LumeRuntimeTrustPolicy = .production,
-        guestCommandPolicy: LumeGuestCommandPolicy
+        guestCommandPolicy: LumeGuestCommandPolicy,
+        guestChannelPort: UInt32? = nil
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -77,7 +94,8 @@ public struct LumeRuntimeConfiguration: Sendable {
               storageDirectory.baseURL == nil,
               storageDirectory.path.hasPrefix("/"),
               commandTimeoutSeconds > 0,
-              createTimeoutSeconds >= commandTimeoutSeconds
+              createTimeoutSeconds >= commandTimeoutSeconds,
+              guestChannelPort.map({ $0 > 0 }) ?? true
         else {
             throw SandboxRuntimeError.unsupported(
                 "Lume configuration requires absolute paths and positive timeouts"
@@ -91,5 +109,6 @@ public struct LumeRuntimeConfiguration: Sendable {
         self.createTimeoutSeconds = createTimeoutSeconds
         self.trustPolicy = trustPolicy
         self.guestCommandPolicy = guestCommandPolicy
+        self.guestChannelPort = guestChannelPort
     }
 }

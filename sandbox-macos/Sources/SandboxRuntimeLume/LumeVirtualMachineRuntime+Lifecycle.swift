@@ -403,7 +403,18 @@ extension LumeVirtualMachineRuntime {
                     "--vnc", "disabled",
                 ]),
                 environment: workspace.environment,
-                cooperativeControl: LumeLifecycleControl.processControl
+                cooperativeControl: LumeLifecycleControl.processControl,
+                guestChannel: configuration.guestChannelPort.map {
+                    SandboxGuestChannelControl(
+                        descriptorEnvironmentVariable:
+                            LumeRuntimeConfiguration
+                            .guestChannelDescriptorEnvironmentVariable,
+                        portEnvironmentVariable:
+                            LumeRuntimeConfiguration
+                            .guestChannelPortEnvironmentVariable,
+                        port: $0
+                    )
+                }
             )
         } catch {
             do {

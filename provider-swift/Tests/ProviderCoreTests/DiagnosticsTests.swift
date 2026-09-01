@@ -666,6 +666,20 @@ struct DesiredModelsForPostureTests {
     #expect(alt.fix?.contains("18.0") == true)
 }
 
+@Test func modelFitVerdictTreatsAnEmptyLiveServingSetAsOpenWorld() {
+    // A fresh daemon that retired every model advertises [] — authoritative,
+    // not "unknown". The target cannot be joining an empty advertised set, so
+    // the verdict resolves at the DEFAULT floor (13.53 + 5.5 + 1.0 = 20.03 >
+    // 18.5 → FAIL), never the target's solo floor (18.03 → false PASS).
+    let empty = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5, servingSetIDs: [])
+    #expect(empty.level == .fail)
+    // nil (no declared set — offline/single-model box) keeps the solo floor.
+    let undeclared = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5, servingSetIDs: nil)
+    #expect(undeclared.level == .pass)
+}
+
 @Test func modelFitVerdictUsesTheServingSetFloorNotTheTargetsOwn() {
     // A multi-model box: enabled_models = [gpt-oss-20b, gemma-4-26b]. The
     // daemon's load gate carves the max floor over the WHOLE set (6.5 GiB

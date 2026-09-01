@@ -129,13 +129,16 @@ enum DoctorRunner {
             // directions. The config-derived basis remains the offline
             // fallback.
             let servingSetIDs: [String]
+            let servingSetIsLive: Bool
             if stateFresh, let live = state?.advertisedModels {
+                servingSetIsLive = true
                 // Authoritative INCLUDING empty: a daemon that retired every
                 // model after failed self-tests legitimately advertises [],
                 // and reconstructing from config would credit floors for
                 // models the daemon is not serving.
                 servingSetIDs = live
             } else {
+                servingSetIsLive = false
                 let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
                     .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
                 let enabled = snapshot.config.backend.enabledModels
@@ -148,7 +151,14 @@ enum DoctorRunner {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
                     usableGb: usableGb, alternatives: alternatives,
-                    servingSetIDs: servingSetIDs.isEmpty ? nil : servingSetIDs))
+                    // A LIVE empty set is authoritative (the daemon retired
+                    // everything) and must reach the verdict as [] — the
+                    // open-world default floor — not collapse to nil, which
+                    // credits the retired target its own solo floor. Only the
+                    // offline reconstruction treats empty as "unknown".
+                    servingSetIDs: servingSetIsLive
+                        ? servingSetIDs
+                        : (servingSetIDs.isEmpty ? nil : servingSetIDs)))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

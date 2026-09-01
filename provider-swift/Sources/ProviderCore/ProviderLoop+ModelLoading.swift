@@ -353,11 +353,8 @@ extension ProviderLoop {
             let targetWeightsGb = Self.loadGateWeightsGb(
                 estimatedWeightsGb: modelInfo.estimatedMemoryGb,
                 extraWeightBytes: 0)
-            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: targetWeightsGb,
-                headroomGb: loadHeadroomGb)
             do {
-                try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
+                try await evictUntilAvailable(weightsGb: targetWeightsGb, allowEviction: allowEviction)
             } catch let InferenceError.modelLoadFailed(message) {
                 // Record for diagnostics so `doctor` shows the operator the exact
                 // "Insufficient memory …" reason, then rethrow unchanged.
@@ -368,7 +365,11 @@ extension ProviderLoop {
             // loadable target fail. It is charged before allocation when it
             // fits; otherwise this load continues target-only.
             mtpPreparation = await admitSpecDecIfMemoryAllows(
-                mtpPreparation, targetRequiredGb: requiredGb)
+                mtpPreparation,
+                // Resolved live, post-eviction: the floor may have moved
+                // during the eviction waits above.
+                targetRequiredGb: ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb))
             let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -982,8 +983,17 @@ extension ProviderLoop {
     /// it degrades to a pure availability check (with the clearCache
     /// self-heal) that throws instead of reclaiming — a later preload must
     /// not churn out an earlier one.
-    private func evictUntilAvailable(requiredGb: Double, allowEviction: Bool = true) async throws {
+    /// `weightsGb` rather than a precomputed requirement: the eviction loop
+    /// suspends (memory samples, unloads), and a concurrent verified prefetch
+    /// can RAISE the serving-set floor meanwhile — comparing against a
+    /// requirement captured before the wait would admit a load the post-load
+    /// guard then rejects (accepted-then-503). Resolve the headroom live.
+    private func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
+        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: weightsGb, headroomGb: loadHeadroomGb)
         while await availableMemoryGb() < requiredGb {
+            requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: weightsGb, headroomGb: loadHeadroomGb)
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = allowEviction
                 ? modelSlots
@@ -997,6 +1007,8 @@ extension ProviderLoop {
                 // that fits. Same self-heal as fastAdmissionReject.
                 MLX.Memory.clearCache()
                 let retried = await availableMemoryGb()
+                requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: weightsGb, headroomGb: loadHeadroomGb)
                 if retried >= requiredGb { return }
                 let available = String(format: "%.1f", retried)
                 let required = String(format: "%.1f", requiredGb)
@@ -1102,6 +1114,12 @@ extension ProviderLoop {
         if available < requiredGb && !hasEvictable {
             MLX.Memory.clearCache()
             let retried = await availableMemoryGb()
+            // The retry sample is another suspension: re-resolve the
+            // requirement (a concurrent prefetch can have raised the floor)
+            // before comparing.
+            requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: modelInfo.estimatedMemoryGb,
+                headroomGb: loadHeadroomGb)
             if retiringModels.contains(modelId) {  // retirement began mid-retry
                 return true
             }

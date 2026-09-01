@@ -106,7 +106,13 @@ public enum ModelFitDiagnostic {
         let needed = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: weightGb,
             headroomGb: Double(
-                UnifiedMemoryCap.loadHeadroomBytes(modelIDs: (servingSetIDs ?? []) + [modelID]))
+                // nil = no declared set → the target alone (a single-model
+                // box). An EMPTY declared set is the daemon's open world —
+                // it advertises nothing, so the target cannot be joining it;
+                // resolve at the default floor rather than the target's solo
+                // floor.
+                UnifiedMemoryCap.loadHeadroomBytes(
+                    modelIDs: servingSetIDs.map { $0.isEmpty ? [] : $0 + [modelID] } ?? [modelID]))
                 / (1024.0 * 1024.0 * 1024.0))
         if needed <= usableGb {
             return Diagnostic(

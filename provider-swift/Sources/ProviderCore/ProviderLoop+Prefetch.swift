@@ -339,6 +339,13 @@ extension ProviderLoop {
         // authoritative either way (the pre-insert push handles raise-early,
         // this one handles lost-update).
         await refreshActivationReserve()
+        // The raise shrinks the fleet KV budget: re-slice the resident
+        // engines' grants against it and refresh the aggregate capacity
+        // BEFORE announcing the enlarged set, or the coordinator routes
+        // against a token budget the tightened shared KV gate rejects until
+        // the next periodic capacity tick.
+        await resliceGrowSurvivors()
+        await updateAggregateCapacity()
         // Final re-check before announcing to the coordinator: retirement
         // interleaving in the refresh suspension above removes the local
         // advertisement — announcing then would diverge the client store

@@ -24,13 +24,12 @@ KVHeadroomProbe/GlobalKVCacheBudget on the flat reserve — the admit-then-unloa
 Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
 
 1. ✅ Cherry-pick #683 onto master (clean; 24 files, +599/−127).
-2. Bump `servabilityPerModelFloorMinVersion` "0.8.11" (stale placeholder; train is at
-   0.8.15) → **"0.8.16"**, with a comment making the release coupling explicit.
-   **RELEASE COUPLING**: the release that ships this must be numbered exactly that
-   (plain numeric — `CompareVersions` parses non-numeric segments as 0, so no
-   `-swift.N` suffix), or the constant must be updated in the release commit.
-   Master's `ProviderCore.version` currently reads "0.8.13" while the fleet runs
-   0.8.15 (releases cut on branches) — verify the actual next train number at cut.
+2. ✅ `servabilityPerModelFloorMinVersion` "0.8.11" (stale placeholder) →
+   **"0.8.16"**, and the coupling is COMPLETED in this tree:
+   `ProviderCore.version` and `LatestProviderVersion` are both 0.8.16 (the
+   `TestLatestProviderVersionMatchesProviderCore` pairing test enforces it). The
+   release that ships this must be tagged exactly v0.8.16 (plain numeric —
+   `CompareVersions` parses non-numeric segments as 0, so no `-swift.N` suffix).
 3. Keep the gpt-oss floor at 3.5 GiB — validated on the current engine (2.63
    measured B=8, same convention; July's 3.20 compiled path no longer exists).
 4. Full test suites: provider Swift (`swift test`) + coordinator Go (`go test ./...`).
@@ -99,10 +98,16 @@ padded weights** until the provider-path (VLM) residency measurement lands.
   still REQUIRED: it does not fit at the 5.5 default (30.3 > 28.8 cap) —
   re-tier to 36. qwen3.5@36 and qat-4bit@36 do fit at 5.5.
 - 3c ✅ superseded by master: `qwen3-vl-30b-a3b-instruct` is SERVED in
-  production since the v0.8.14 train — #752 added the `qwen3_vl_moe` family
-  (served directly through the Qwen3-VL wrapper's CBv2 language-model adapter
-  + vision prefill; `EngineV2SupportedModels.swift`), with vision kept off M5
-  by #781. What remains is the MEASUREMENT gap: the bench loads through the
+  production since the v0.8.14 train — #752 added the `qwen3_vl_moe` family:
+  the supported-family predicate admits it
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift:48`,
+  `if raw == "qwen3_vl_moe" { return true }`), VLM text extraction returns
+  the Qwen3-VL wrapper itself as the serving model
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift:101`),
+  and the production construction switch has a direct arm for it
+  (`EngineV2Factory+Production.swift:697`, `case let qwen as MLXVLM.Qwen3VL`
+  in `prepareProductionBackend`; the capability/layer-kind switches at :329
+  and :350 likewise). Vision is kept off M5 by #781. What remains is the MEASUREMENT gap: the bench loads through the
   LLM factory and cannot construct `qwen3_vl_moe`, so its activation floor
   stays at the 5.5 default (it fits its 32 GB tier there: 20.5 + 5.5 + 1.0 =
   27.0 ≤ 28.8) until the bench gains a VLM-factory load path — the same

@@ -44,8 +44,11 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
    cache wiring only (dense per-storage `pagedCaches[index]` fed the hybrid trunk's
    sparse MODEL layer index from `newCacheV2`), masked as a whole-family failure by
    the buffered perf table. Stock contiguous runs fine — and a code trace confirmed
-   the bench's stock profile IS production's live route (optimized lanes are
-   bench-only or env-gated OFF; MTP decode disabled under stock — PR #777 unmerged).
+   the bench's stock profile IS production's decode/prefill route (optimized
+   lanes are bench-only or env-gated OFF). Since #777 (v0.8.14 train) embedded
+   MTP heads auto-activate in production, so live qwen3.6 decode additionally
+   runs MTP k=2 — the B=1-measured +0.4 GiB allowance now applies to the live
+   route (floors stay deferred for the vision reason below regardless).
    Fix committed on `fix/qwen35-stock-bench-trap` (mlx-swift-lm worktree; separate
    PR in that repo). **The production factory carries the identical subscript**
    (`EngineV2Factory+Production.swift:965`) — reachability check pending; fix it in
@@ -95,19 +98,15 @@ padded weights** until the provider-path (VLM) residency measurement lands.
   text-decode baseline; the 32 GB qwen3.6 tier verdict is unchanged and
   still REQUIRED: it does not fit at the 5.5 default (30.3 > 28.8 cap) —
   re-tier to 36. qwen3.5@36 and qat-4bit@36 do fit at 5.5.
-- 3c ✅ resolved by discovery, then partially superseded: at review time
-  `qwen3_vl_moe` had no CBv2 adapter, so every v0.7.5+ provider drops
-  `qwen3-vl-30b-a3b-instruct` at advertise time (dark fleet-wide). The
-  ENGINE-side adapter has since landed in mlx-swift-lm (#125, Qwen3-VL CBv2
-  DeepStack — included in this branch's submodule pin), but the PROVIDER
-  still gates it off: the supported-family predicate
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift:41`,
-  `isSupported` over gpt_oss/gemma4/gemma4_text/qwen3_5_moe) and the
-  production family switch
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift:656`
-  region, `case let qwen as Qwen35MoEModel` — no `qwen3_vl_moe` arm) need
-  wiring + measurement before the catalog entry can serve. Follow-up, not
-  this PR.
+- 3c ✅ superseded by master: `qwen3-vl-30b-a3b-instruct` is SERVED in
+  production since the v0.8.14 train — #752 added the `qwen3_vl_moe` family
+  (served directly through the Qwen3-VL wrapper's CBv2 language-model adapter
+  + vision prefill; `EngineV2SupportedModels.swift`), with vision kept off M5
+  by #781. What remains is the MEASUREMENT gap: the bench loads through the
+  LLM factory and cannot construct `qwen3_vl_moe`, so its activation floor
+  stays at the 5.5 default (it fits its 32 GB tier there: 20.5 + 5.5 + 1.0 =
+  27.0 ≤ 28.8) until the bench gains a VLM-factory load path — the same
+  vision-inclusive measurement gate as the other deferred entries.
 
 ### Original phase text (for context)
 

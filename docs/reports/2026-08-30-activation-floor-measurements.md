@@ -206,9 +206,10 @@ the production decode posture for this model). Decode 148.6 tok/s.
 
 Raw: `benchmarks/reports/qwen36-35b-actfloor-stock-v2only-2026-08-30.md`,
 `qwen36-35b-L{4000,8000}-2026-08-30.md`. Production-representativeness confirmed by
-code trace: the bench's stock profile IS the production route (the row-owned/
-direct-expert-reduction lanes are bench-only or env-gated default-OFF; MTP decode is
-disabled under stock and PR #777 — embedded MTP by default — is unmerged).
+code trace: the bench's stock profile IS the production decode/prefill route (the
+row-owned/direct-expert-reduction lanes are bench-only or env-gated default-OFF).
+Since #777 (v0.8.14 train) embedded MTP heads auto-activate in production, so live
+qwen3.6 decode additionally runs MTP k=2 — see the B=1-measured MTP delta below.
 
 | cell | active | peak | peak−active | est. cell KV (~25 KB/tok/seq) | non-KV |
 |---|---|---|---|---|---|
@@ -222,8 +223,8 @@ disabled under stock and PR #777 — embedded MTP by default — is unmerged).
 The hybrid linear-attention trunk saturates immediately (no composed-attention
 prefill blow-up); the growing term is the 10 full-attention layers' KV. MTP delta
 measured at B=1 only: stock 0.78 vs campaign MTP-k2 1.18 → ≈ +0.4 GiB (a measured
-MTP-active B=8 needs the campaign B=N harness extension; #777-relevant, not
-current-production posture).
+MTP-active B=8 needs the campaign B=N harness extension; with #777 merged this IS
+the current-production posture, so the allowance applies to the live route).
 
 **32 GB tier verdict (Outcome B leaning)**: with a best-case honest floor ≈ 4.0
 (non-KV 3.3 + MTP 0.5 + slack), needs = 23.8 + 4.0 + 1.0 = 28.8 = exactly the
@@ -267,7 +268,7 @@ Current-engine saturated non-KV activation envelopes (B=8):
 | gpt-oss-20b | 2.63 | **~2.7** |
 | qwen3.6-35b (served artifact) | 3.28 | **~3.3 (measured; see the section above)** |
 | qwen3.5-35b (rev 8964653) | 3.28 | ~3.3 (byte-identical family profile, measured 2026-08-31 with the fixed harness) |
-| qwen3-vl-30b | n/a | n/a — `qwen3_vl_moe` has NO CBv2 adapter; no v0.7.5+ provider can serve it at all |
+| qwen3-vl-30b | n/a | n/a — served in production since v0.8.14 (#752), but the bench's LLM-factory load cannot construct `qwen3_vl_moe`; stays at the 5.5 default (fits its 32 GB tier: 27.0 ≤ 28.8) |
 
 **Vision caveat that gates the qwen floors**: all figures above are TEXT-path.
 The qwens (and the gemma VLM builds) are vision-capable, and the tower
@@ -309,8 +310,9 @@ measured. Only text-only artifacts (gpt-oss) carry measured floors/residency.
 2. **Vision-inclusive measurement** (the new gate): B=8 activation peaks and
    residency through the provider's VLM load/serve path — prerequisite for
    the qwen/gemma floor+residency entries AND the default retune.
-3. **qwen3-vl-30b**: not a measurement problem — `qwen3_vl_moe` has no CBv2
-   adapter, so the catalog entry is dark fleet-wide (ops: adapter or removal).
+3. **qwen3-vl-30b**: served in production since the v0.8.14 train (#752; vision off
+   M5 per #781). The remaining gap is bench-side — a VLM-factory load path so its
+   floor can be measured; same vision-inclusive gate as the other deferred entries.
 3. **Re-measure the default's basis per release**: the 5.5 constant silently went
    stale when the engine improved. If floors move to the catalog (measured field per
    model, populated by the onboarding bench), staleness becomes visible and cheap to

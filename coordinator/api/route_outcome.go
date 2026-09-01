@@ -150,6 +150,7 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
+	s.emitTimingDecompositionMetric(model, outcome.FinalStatus, outcome)
 	s.submitTelemetry("updateInferenceRoute", func() {
 		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes outcome update failed",

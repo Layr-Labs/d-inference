@@ -68,9 +68,13 @@ func (d *dispatchState) exhaustionAttemptCount() int {
 // dispatchProviderWith runs the single prepare/encrypt/write funnel with a
 // caller-chosen reserver, forwarding the request-shape inputs retained on
 // dispatchState. timing is caller-supplied because the speculative backup
-// deliberately shares only ReceivedAt with the primary's clock.
+// deliberately shares only ReceivedAt with the primary's clock. fullScan
+// declares whether the reserver performs an O(fleet) walk (full scan / plan
+// refresh) and must therefore take a routing-scan semaphore slot; a
+// retained-plan step passes false and bypasses the gate.
 func (d *dispatchState) dispatchProviderWith(
 	reserve dispatchReserver,
+	fullScan bool,
 	timing *registry.RequestTiming,
 	exclude map[string]struct{},
 	recordRoute routeDecisionRecorder,
@@ -80,7 +84,7 @@ func (d *dispatchState) dispatchProviderWith(
 		d.reservedMicroUSD, d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens,
 		d.tokenAdmission, d.requiresVision, d.traits(), d.allowedProviderSerials,
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
-		exclude, d.attempt, recordRoute, d.noteProviderDispatched, reserve,
+		exclude, d.attempt, recordRoute, d.noteProviderDispatched, fullScan, reserve,
 	)
 }
 
@@ -113,6 +117,7 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			reserved = p != nil
 			return p, dec, nil
 		},
+		false, // retained-plan step: bounded revalidation, no fleet scan
 		timing, exclude, recordRoute,
 	)
 	if reserved {
@@ -135,6 +140,7 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 			reserved = p != nil
 			return p, dec, freshPlan
 		},
+		true, // the single plan refresh is itself a full fleet re-scan
 		timing, exclude, recordRoute,
 	)
 	if fresh != nil {

@@ -30,6 +30,12 @@ const (
 	// response margin used by the ordinary production posture (10s upstream,
 	// 9s coordinator) inside Qwen3-VL's 5s upstream SLA.
 	Qwen3VL30BA3BInstructCoordinatorFirstContentBase = Qwen3VL30BA3BInstructUpstreamFirstContentBase - FirstContentResponseHeadroom
+
+	// maxFirstContentBase is the sanity ceiling for an env-supplied exact-model
+	// upstream base (SetFirstContentBasesFromEnv): no first-content SLA is
+	// minutes long, and rejecting anything above it also rules out
+	// time.Duration overflow (the overflow point is ~2.9e11 minutes of ms).
+	maxFirstContentBase = 10 * time.Minute
 )
 
 type firstContentDeadlineBases struct {
@@ -76,8 +82,11 @@ func exactFirstContentDeadlineBases(model string) (firstContentDeadlineBases, bo
 // Each valid pair replaces that model's upstream base; the coordinator base
 // keeps the standard response margin (upstream − FirstContentResponseHeadroom).
 // A value of 0 or "off" REMOVES the exact entry so the model falls back to the
-// global base. Invalid pairs (malformed, non-numeric, or an upstream base not
-// strictly above the headroom) are skipped; a blank string is a no-op. The
+// global base. Invalid pairs (malformed, non-numeric, an upstream base not
+// strictly above the headroom, or above the 10-minute sanity ceiling —
+// maxFirstContentBase, which also rules out time.Duration overflow long
+// before math.MaxInt64/int64(time.Millisecond)) are skipped; a blank string
+// is a no-op. The
 // exact-model policy remains a tightening ceiling relative to the global base
 // (UpstreamFirstContentDeadline/CoordinatorFirstContentDeadline), so an
 // override above the global base is inert rather than loosening it. Returns
@@ -106,8 +115,11 @@ func SetFirstContentBasesFromEnv(raw string) (replaced, removed int) {
 			}
 			continue
 		}
-		ms, err := strconv.Atoi(value)
-		if err != nil || ms <= 0 {
+		ms, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || ms <= 0 || ms > int64(maxFirstContentBase/time.Millisecond) {
+			// Non-numeric, non-positive, or absurd (> 10 minutes — no
+			// first-content SLA is minutes long, and the cap sits far below
+			// the ms count that would overflow time.Duration).
 			continue
 		}
 		upstream := time.Duration(ms) * time.Millisecond

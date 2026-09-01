@@ -183,4 +183,21 @@ func TestSetFirstContentBasesFromEnv(t *testing.T) {
 	if r, rm := SetFirstContentBasesFromEnv("never-had-an-entry=off"); r != 0 || rm != 0 {
 		t.Fatalf("remove-absent = (%d,%d), want (0,0)", r, rm)
 	}
+
+	// Overflow / absurd values are rejected: above the 10-minute sanity
+	// ceiling (also far below any time.Duration overflow), a value that
+	// cannot even parse as int64, and math.MaxInt64 ms (which WOULD overflow
+	// time.Duration if multiplied through). None may change the table.
+	for _, raw := range []string{
+		Qwen3VL30BA3BInstructModelID + "=700000",               // 11.7 min > 10 min ceiling
+		Qwen3VL30BA3BInstructModelID + "=99999999999999999999", // > int64
+		Qwen3VL30BA3BInstructModelID + "=9223372036854775807",  // MaxInt64 ms
+	} {
+		if r, rm := SetFirstContentBasesFromEnv(raw); r != 0 || rm != 0 {
+			t.Fatalf("overflow %q = (%d,%d), want (0,0)", raw, r, rm)
+		}
+	}
+	if got := UpstreamFirstContentDeadline(Qwen3VL30BA3BInstructModelID, 0, StandardUpstreamFirstContentBase); got != 6*time.Second {
+		t.Fatalf("upstream after overflow attempts = %v, want the prior 6s override untouched", got)
+	}
 }

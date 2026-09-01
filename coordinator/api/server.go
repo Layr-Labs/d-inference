@@ -1344,33 +1344,61 @@ func (s *Server) SetRoutingConcurrency(n int) {
 	s.routingScanSem = make(chan struct{}, n)
 }
 
+// scanSlotResult is the outcome of acquireRoutingScanSlot. Client
+// disconnection is distinguished from acquisition timeout so callers route a
+// vanished caller onto the existing client-gone terminal (cancelled outcome,
+// refund, no response body) and NEVER onto the routing_saturated 429 /
+// rejection-ledger path.
+type scanSlotResult int
+
+const (
+	scanSlotAcquired scanSlotResult = iota
+	scanSlotTimeout
+	scanSlotClientGone
+)
+
 // acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
-// the wait budget elapses, or done fires (client gone). It returns false only
-// when no slot was acquired; the caller then sheds the attempt as
-// capacity-shaped (errRoutingScanSaturated) instead of piling another scan
-// onto saturated CPUs. A nil semaphore (a &Server{} built directly in tests)
-// admits immediately, preserving legacy behavior for bare fixtures.
-func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) bool {
+// the wait budget elapses, or done fires (client gone). On scanSlotTimeout the
+// caller sheds the attempt as capacity-shaped (errRoutingScanSaturated)
+// instead of piling another scan onto saturated CPUs; on scanSlotClientGone it
+// takes its ordinary client-gone path. A nil semaphore (a &Server{} built
+// directly in tests) admits immediately, preserving legacy behavior for bare
+// fixtures; a nil done channel never fires.
+func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) scanSlotResult {
 	if s.routingScanSem == nil {
-		return true
+		return scanSlotAcquired
 	}
 	select {
 	case s.routingScanSem <- struct{}{}:
-		return true
+		return scanSlotAcquired
 	default:
 	}
+	clientGone := func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
 	if wait <= 0 {
-		return false
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case s.routingScanSem <- struct{}{}:
-		return true
+		return scanSlotAcquired
 	case <-timer.C:
-		return false
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
 	case <-done:
-		return false
+		return scanSlotClientGone
 	}
 }
 

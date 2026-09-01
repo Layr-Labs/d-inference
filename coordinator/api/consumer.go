@@ -611,6 +611,29 @@ const errFirstContentDeadlineExpired = "first-content deadline expired before pr
 // scans.
 const errRoutingScanSaturated = "routing scan capacity saturated — coordinator busy"
 
+// errClientGoneBeforeScan is returned when the caller's context fired while
+// the dispatch goroutine was parked for a provider-selection scan slot. No
+// provider was scanned or contacted; the dispatch loop takes its ordinary
+// client-gone terminal (cancelled route outcome, refund, no response body) —
+// never the routing_saturated 429 or a rejection-ledger row.
+const errClientGoneBeforeScan = "client disconnected before provider selection"
+
+// attempt0RouteAnchor returns the instant the attempt-0 route-latency EWMA
+// sample is measured from — the SAME anchor applyTimingDecomposition uses for
+// route_ms (MediaFetchedAt when a remote-media fetch happened, else
+// ReservedAt) — so download or parse time can never fake routing distress.
+// Zero when the request never stamped a reservation (bare test fixtures):
+// the caller then records no sample.
+func attempt0RouteAnchor(t *registry.RequestTiming) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	if !t.MediaFetchedAt.IsZero() {
+		return t.MediaFetchedAt
+	}
+	return t.ReservedAt
+}
+
 // consumerModel returns the model name to echo back to the consumer: the public
 // alias they requested when set, otherwise the concrete build id (raw-id
 // requests and any internal caller that didn't populate PublicModel).
@@ -895,6 +918,7 @@ func (s *Server) dispatchOneProvider(
 		allowedProviderSerials, isResponsesAPI, policy, timing,
 		serviceReservation, cachePlan, excludeProviders, attempt,
 		recordRoute, onDispatched,
+		true, // ReserveProviderWithPlan is the O(fleet) full scan
 		func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
 			return s.registry.ReserveProviderWithPlan(model, pr, excludeIDs...)
 		},
@@ -933,6 +957,7 @@ func (s *Server) dispatchWithReserver(
 	attempt int,
 	recordRoute routeDecisionRecorder,
 	onDispatched func(),
+	fullScan bool,
 	reserve dispatchReserver,
 ) (
 	provider *registry.Provider,
@@ -1019,21 +1044,59 @@ func (s *Server) dispatchWithReserver(
 		return ids
 	}
 
+	// noteSelectionSample feeds the attempt-0 route-latency distress EWMA
+	// behind estimateRetryAfter (2026-09-01: route p50 40ms → 4.6s while the
+	// empty-queue heuristic kept answering "retry in 2s"). Anchored exactly
+	// where applyTimingDecomposition anchors route_ms (MediaFetchedAt when
+	// set, else ReservedAt) so a multi-second media download or slow body
+	// parse can never masquerade as routing distress. Called on BOTH the
+	// successful reservation (at the RoutedAt stamp) and every failed
+	// attempt-0 selection (semaphore acquisition timeout, scan that yields no
+	// provider): under TOTAL overload no selection ever succeeds, and an
+	// EWMA fed only by successes would sit at 0 — keeping Retry-After at the
+	// legacy 2s exactly when distress scaling matters most.
+	noteSelectionSample := func() {
+		if attempt != 0 {
+			return
+		}
+		if anchor := attempt0RouteAnchor(timing); !anchor.IsZero() {
+			s.noteAttempt0RouteLatency(time.Since(anchor))
+		}
+	}
+
 	// Bound concurrent provider-selection scans (2026-09-01 congestion
 	// collapse: retry-amplified inbound × a fresh full fleet scan per attempt
-	// saturated every coordinator CPU). The wait is bounded by the request's
+	// saturated every coordinator CPU). Only O(fleet) reservers take a slot —
+	// the full scan, the plan REFRESH (itself a full re-scan), and the
+	// speculative-backup scan. A retained-plan step (ReserveNextFromPlan)
+	// revalidates at most the plan's bounded entries, so it bypasses the
+	// semaphore: a held slot must never starve the cheap retry path that
+	// exists precisely to avoid rescans. The wait is bounded by the request's
 	// remaining first-content budget: a goroutine parks cheaply on the channel
 	// and either scans as soon as a slot frees or sheds capacity-shaped
 	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
-	if !s.acquireRoutingScanSlot(
-		firstTokenRemainingSince(receivedAt, requestDeadline),
-		r.Context().Done(),
-	) {
-		return nil, nil, decision, nil, errRoutingScanSaturated, http.StatusTooManyRequests
+	if fullScan {
+		switch s.acquireRoutingScanSlot(
+			firstTokenRemainingSince(receivedAt, requestDeadline),
+			r.Context().Done(),
+		) {
+		case scanSlotClientGone:
+			// The caller vanished while parked for a slot: this is the
+			// ordinary client-gone terminal, never the routing_saturated
+			// 429/rejection row (and no distress sample — a vanished caller
+			// proves nothing about selection latency).
+			return nil, nil, decision, nil, errClientGoneBeforeScan, 0
+		case scanSlotTimeout:
+			noteSelectionSample()
+			return nil, nil, decision, nil, errRoutingScanSaturated, http.StatusTooManyRequests
+		}
 	}
 	provider, decision, plan = reserve(pr, excludeList())
-	s.releaseRoutingScanSlot()
+	if fullScan {
+		s.releaseRoutingScanSlot()
+	}
 	if provider == nil {
+		noteSelectionSample()
 		// Providers serve this model but none can physically fit it: don't make
 		// the caller queue/retry for something that will never load.
 		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
@@ -1057,13 +1120,8 @@ func (s *Server) dispatchWithReserver(
 	defer cleanupPending()
 	if pr.Timing != nil {
 		pr.Timing.RoutedAt = time.Now()
-		if attempt == 0 && !receivedAt.IsZero() {
-			// Attempt-0 route latency feeds the distress EWMA behind
-			// estimateRetryAfter (2026-09-01: route p50 40ms → 4.6s while the
-			// empty-queue heuristic kept answering "retry in 2s").
-			s.noteAttempt0RouteLatency(pr.Timing.RoutedAt.Sub(receivedAt))
-		}
 	}
+	noteSelectionSample()
 	if recordRoute != nil {
 		recordRoute(provider, pr, decision)
 	}

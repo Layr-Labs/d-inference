@@ -270,6 +270,27 @@ frame kinds arriving from the peer close the connection rather than being
 guessed at. `AF_VSOCK` sockets exist only inside a virtual machine, so the agent
 exits with `ENODEV` on a host, which doubles as a cheap smoke check.
 
+## Running the tests without Xcode
+
+The guest-agent and guest-channel suites are written with **swift-testing**
+rather than XCTest, so they run under Command Line Tools:
+
+```bash
+CLT=/Library/Developer/CommandLineTools
+swift test --package-path sandbox-macos \
+  -Xswiftc -F -Xswiftc "$CLT/Library/Developer/Frameworks" \
+  -Xlinker -F -Xlinker "$CLT/Library/Developer/Frameworks" \
+  -Xlinker -rpath -Xlinker "$CLT/Library/Developer/Frameworks" \
+  -Xlinker -rpath -Xlinker "$CLT/Library/Developer/usr/lib"
+```
+
+`swift test` builds every test target, and the older XCTest targets cannot link
+without Xcode — there is no `XCTest.framework` under Command Line Tools, only
+the private `XCTestSupport`. To run only the swift-testing targets on a machine
+without Xcode, temporarily drop the XCTest targets from `Package.swift` and
+restore it afterwards. New tests should prefer swift-testing so they stay
+runnable everywhere.
+
 ## Pinned Lume substrate
 
 `ThirdParty/lume.lock.json` pins the exact Cua source commit, expected version,

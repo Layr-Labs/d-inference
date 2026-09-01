@@ -8,6 +8,7 @@ let package = Package(
     products: [
         .library(name: "SandboxCore", targets: ["SandboxCore"]),
         .library(name: "SandboxGuestProtocol", targets: ["SandboxGuestProtocol"]),
+        .library(name: "SandboxGuestAgentCore", targets: ["SandboxGuestAgentCore"]),
         .library(name: "SandboxSecurity", targets: ["SandboxSecurity"]),
         .library(name: "SandboxStorage", targets: ["SandboxStorage"]),
         .library(name: "SandboxRuntime", targets: ["SandboxRuntime"]),
@@ -27,6 +28,11 @@ let package = Package(
             path: "Sources/SandboxGuestProtocol"
         ),
         .target(
+            name: "SandboxGuestAgentCore",
+            dependencies: ["SandboxGuestProtocol"],
+            path: "Sources/SandboxGuestAgentCore"
+        ),
+        .target(
             name: "SandboxSecurity",
             dependencies: ["SandboxCore"],
             path: "Sources/SandboxSecurity",
@@ -39,7 +45,7 @@ let package = Package(
         ),
         .target(
             name: "SandboxRuntime",
-            dependencies: ["SandboxCore"],
+            dependencies: ["SandboxCore", "SandboxGuestProtocol"],
             path: "Sources/SandboxRuntime"
         ),
         .target(
@@ -78,7 +84,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "DarkbloomGuestAgent",
-            dependencies: ["SandboxGuestProtocol"],
+            dependencies: ["SandboxGuestAgentCore"],
             path: "Sources/DarkbloomGuestAgent"
         ),
         .testTarget(
@@ -103,7 +109,12 @@ let package = Package(
         ),
         .testTarget(
             name: "SandboxRuntimeTests",
-            dependencies: ["SandboxCore", "SandboxRuntime"],
+            dependencies: [
+                "SandboxCore",
+                "SandboxRuntime",
+                "SandboxGuestProtocol",
+                "SandboxGuestAgentCore",
+            ],
             path: "Tests/SandboxRuntimeTests"
         ),
         .testTarget(

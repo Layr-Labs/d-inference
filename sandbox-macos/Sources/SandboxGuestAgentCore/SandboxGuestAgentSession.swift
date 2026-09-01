@@ -1,0 +1,204 @@
+import Darwin
+import Foundation
+import SandboxGuestProtocol
+
+/// Serves one broker connection, independent of how the connection was made.
+///
+/// The transport is `AF_VSOCK` in production, but nothing here depends on that,
+/// which is what lets both halves of the protocol be exercised against each
+/// other over a socketpair on a host where vsock cannot exist.
+public struct SandboxGuestAgentSession: Sendable {
+    public struct Configuration: Sendable {
+        public let agentVersion: String
+        public let imageID: String
+        /// Whether a well-formed command may actually be executed. Off until
+        /// randomized bootstrap credentials and an unprivileged sandbox user
+        /// are in place; a request is answered with a typed failure instead.
+        public let executionEnabled: Bool
+
+        public init(
+            agentVersion: String,
+            imageID: String,
+            executionEnabled: Bool = false
+        ) {
+            self.agentVersion = agentVersion
+            self.imageID = imageID
+            self.executionEnabled = executionEnabled
+        }
+    }
+
+    private static let readChunkBytes = 64 * 1024
+    private static let maximumInboundBuffer =
+        SandboxGuestFrameCodec.maximumPayloadBytes
+        + SandboxGuestFrameCodec.headerBytes
+
+    public let configuration: Configuration
+    private let log: @Sendable (String) -> Void
+
+    public init(
+        configuration: Configuration,
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        self.configuration = configuration
+        self.log = log
+    }
+
+    /// Runs until the peer closes or the conversation must be abandoned.
+    /// Does not close `descriptor`; the caller owns it.
+    public func serve(descriptor: Int32) {
+        let handshake = SandboxGuestHandshake(
+            agentVersion: configuration.agentVersion,
+            imageID: configuration.imageID
+        )
+        guard let payload = try? JSONEncoder().encode(handshake),
+              send(
+                  SandboxGuestFrame(kind: .handshake, payload: payload),
+                  to: descriptor
+              )
+        else {
+            log("handshake write failed (errno \(errno))")
+            return
+        }
+
+        var inbound = Data()
+        var chunk = [UInt8](repeating: 0, count: Self.readChunkBytes)
+
+        while true {
+            let received = chunk.withUnsafeMutableBytes { raw -> Int in
+                guard let base = raw.baseAddress else { return -1 }
+                while true {
+                    let result = read(descriptor, base, raw.count)
+                    if result < 0 && errno == EINTR { continue }
+                    return result
+                }
+            }
+            if received < 0 {
+                log("read failed (errno \(errno))")
+                return
+            }
+            if received == 0 {
+                log("peer closed the channel")
+                return
+            }
+            inbound.append(contentsOf: chunk.prefix(received))
+
+            // The codec caps a declared frame; a peer that never completes one
+            // must not be able to grow this without bound.
+            guard inbound.count <= Self.maximumInboundBuffer else {
+                log("inbound buffer exceeded the frame limit")
+                return
+            }
+
+            while true {
+                let frame: SandboxGuestFrame?
+                do {
+                    frame = try SandboxGuestFrameCodec.decode(from: &inbound)
+                } catch {
+                    log("refusing malformed frame: \(error)")
+                    sendFailure(
+                        code: "malformed_frame",
+                        message: "\(error)",
+                        to: descriptor
+                    )
+                    return
+                }
+                guard let frame else { break }
+                if !handle(frame: frame, on: descriptor) {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Returns false when the connection should be closed.
+    private func handle(frame: SandboxGuestFrame, on descriptor: Int32) -> Bool {
+        switch frame.kind {
+        case .commandRequest:
+            guard let wire = try? JSONDecoder().decode(
+                SandboxGuestCommandWire.self,
+                from: frame.payload
+            ) else {
+                sendFailure(
+                    code: "malformed_request",
+                    message: "command request could not be decoded",
+                    to: descriptor
+                )
+                return true
+            }
+            guard wire.isWellFormed else {
+                sendFailure(
+                    code: "invalid_request",
+                    message: "command request failed guest-side validation",
+                    to: descriptor
+                )
+                return true
+            }
+            guard configuration.executionEnabled else {
+                log("refusing command \(wire.idempotencyKey): execution is not enabled")
+                sendFailure(
+                    code: "execution_disabled",
+                    message: "guest execution is not enabled until randomized "
+                        + "bootstrap credentials and an unprivileged sandbox "
+                        + "user are in place",
+                    to: descriptor
+                )
+                return true
+            }
+            sendFailure(
+                code: "not_implemented",
+                message: "command execution is not implemented yet",
+                to: descriptor
+            )
+            return true
+
+        case .handshake, .commandResult, .failure:
+            // Agent-to-host kinds. Receiving one means the peer is not a
+            // Darkbloom broker, so fail closed rather than guessing.
+            log("refusing host-inbound frame of kind \(frame.kind)")
+            sendFailure(
+                code: "unexpected_frame",
+                message: "frame kind \(frame.kind) is not valid from the host",
+                to: descriptor
+            )
+            return false
+        }
+    }
+
+    // MARK: - Writing
+
+    private func sendFailure(code: String, message: String, to descriptor: Int32) {
+        guard let payload = try? JSONEncoder().encode(
+            SandboxGuestFailure(code: code, message: message)
+        ) else {
+            return
+        }
+        _ = send(
+            SandboxGuestFrame(kind: .failure, payload: payload),
+            to: descriptor
+        )
+    }
+
+    private func send(_ frame: SandboxGuestFrame, to descriptor: Int32) -> Bool {
+        guard let encoded = try? SandboxGuestFrameCodec.encode(frame) else {
+            return false
+        }
+        var offset = 0
+        return encoded.withUnsafeBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return false }
+            while offset < buffer.count {
+                let written = write(
+                    descriptor,
+                    base.advanced(by: offset),
+                    buffer.count - offset
+                )
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    return false
+                }
+                if written == 0 { return false }
+                offset += written
+            }
+            return true
+        }
+    }
+}

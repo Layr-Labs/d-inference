@@ -36,12 +36,17 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0005-guest-vsock-channel.patch"
     public static let pinnedGuestChannelPatchSHA256 =
         "7716c2a1274844be620a563a9d4fafef4a346a371b5d89817e06d2ae97b2bbc2"
+    public static let pinnedGuestIdentityPatchPath =
+        "ThirdParty/lume-patches/0006-per-sandbox-guest-identity.patch"
+    public static let pinnedGuestIdentityPatchSHA256 =
+        "d22135cae06c1d73437f632a0c88c9bbcef7047d84116a593c2f89244241e661"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
         pinnedRunLockIdentityPatchPath: pinnedRunLockIdentityPatchSHA256,
         pinnedBrokerLifecyclePatchPath: pinnedBrokerLifecyclePatchSHA256,
         pinnedGuestChannelPatchPath: pinnedGuestChannelPatchSHA256,
+        pinnedGuestIdentityPatchPath: pinnedGuestIdentityPatchSHA256,
     ]
 
     public let executable: URL

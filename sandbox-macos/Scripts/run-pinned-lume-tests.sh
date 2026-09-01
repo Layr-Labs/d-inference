@@ -41,6 +41,11 @@ REQUIRED_PATCHED_LUME_TESTS=(
     guestChannelRejectsSendAfterClose
     guestChannelRejectsReservedDescriptor
     guestChannelAbsentWithoutEnvironment
+    guestFinalizationUsesTheBootstrapAccount
+    identityRejectsCollisions
+    identityAcceptsDistinctTenant
+    identityRejectsMalformedAccounts
+    defaultIdentityIsUnchanged
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

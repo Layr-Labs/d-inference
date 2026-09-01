@@ -65,6 +65,7 @@ type WarmPoolSnapshot struct {
 	// decode floor; SpillArrivalRate is the EWMA arrivals/sec the pool shed.
 	RunningRequests    int
 	WaitingRequests    int
+	WarmSaturated      int // warm providers with NO concurrency headroom left
 	SpillArrivalRate   float64
 	ServiceTime        time.Duration
 	QualityConcurrency int
@@ -247,6 +248,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"model", snap.Model,
 				"target_warm", snap.TargetWarm,
 				"warm", snap.WarmProviders,
+				"warm_saturated", snap.WarmSaturated,
 				"eligible_cold", snap.EligibleCold,
 				"running", snap.RunningRequests,
 				"waiting", snap.WaitingRequests,
@@ -402,6 +404,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			Actions:            actions,
 			RunningRequests:    f.running,
 			WaitingRequests:    f.waiting,
+			WarmSaturated:      f.warmSaturated,
 			SpillArrivalRate:   p.arrivalRateEWMA,
 			ServiceTime:        svc,
 			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
@@ -422,6 +425,7 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 		DecodeFloorTPS:             c.config.DecodeFloorTPS,
 		LoadFactorK:                effectiveTPSLoadFactor,
 		BurstBuffer:                c.config.BurstBuffer,
+		HeadroomProviders:          c.config.HeadroomProviders,
 		FallbackQualityConcurrency: c.config.FallbackQualityConcurrency,
 		AssumedPromptTokens:        c.config.AssumedPromptTokens,
 		AssumedCompletionTokens:    c.config.AssumedCompletionTokens,
@@ -435,6 +439,7 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
 	return warmTargetInputs{
 		Warm:             fleet.warm,
+		WarmSaturated:    fleet.warmSaturated,
 		EligibleCold:     len(fleet.eligibleCold),
 		RunningRequests:  fleet.running,
 		WaitingRequests:  fleet.waiting,

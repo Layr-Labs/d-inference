@@ -155,6 +155,72 @@ final class SandboxGuestChannelClientTests: XCTestCase {
         )
     }
 
+    func testExecutedCommandReturnsARealEnvelopeOverTheChannel() throws {
+        // The whole point of the change: a result travels back as a
+        // .commandResult frame. Nothing else in the suite runs with execution
+        // enabled, so without this the emit path is untested.
+        let pair = try connectedPair()
+        startAgent(on: pair.guest, executionEnabled: true)
+        let client = try SandboxGuestChannelClient(descriptor: pair.host)
+        defer { client.close() }
+        _ = try client.handshake(timeout: 5)
+
+        let bytes = try client.execute(
+            SandboxGuestCommandWire(
+                idempotencyKey: UUID().uuidString,
+                executable: "/bin/echo",
+                arguments: ["channel"],
+                environment: [:],
+                workingDirectory: "/tmp",
+                timeoutSeconds: 30
+            ),
+            timeout: 30
+        )
+
+        // The client deliberately returns raw bytes, so decode the way the
+        // host does rather than trusting a second parser.
+        let envelope = try JSONDecoder().decode(
+            SandboxGuestResultEnvelope.self,
+            from: bytes
+        )
+        XCTAssertTrue(envelope.isSelfConsistent)
+        XCTAssertEqual(envelope.exitCode, 0)
+        XCTAssertEqual(
+            String(decoding: envelope.standardOutput, as: UTF8.self),
+            "channel\n"
+        )
+        XCTAssertFalse(envelope.timedOut)
+    }
+
+    func testAgentRefusesReservedEnvironmentKeysOverTheChannel() throws {
+        let pair = try connectedPair()
+        startAgent(on: pair.guest, executionEnabled: true)
+        let client = try SandboxGuestChannelClient(descriptor: pair.host)
+        defer { client.close() }
+        _ = try client.handshake(timeout: 5)
+
+        XCTAssertThrowsError(
+            try client.execute(
+                SandboxGuestCommandWire(
+                    idempotencyKey: UUID().uuidString,
+                    executable: "/bin/echo",
+                    arguments: ["x"],
+                    environment: ["DYLD_INSERT_LIBRARIES": "/evil.dylib"],
+                    workingDirectory: "/tmp",
+                    timeoutSeconds: 30
+                ),
+                timeout: 10
+            )
+        ) { error in
+            guard case SandboxGuestChannelClient.ClientError.agentFailure(let code, _) =
+                error as? SandboxGuestChannelClient.ClientError
+            else {
+                return XCTFail("expected an agent failure, got \(error)")
+            }
+            XCTAssertEqual(code, "invalid_request")
+        }
+    }
+
     func testClosedChannelRefusesFurtherWork() throws {
         let pair = try connectedPair()
         startAgent(on: pair.guest)

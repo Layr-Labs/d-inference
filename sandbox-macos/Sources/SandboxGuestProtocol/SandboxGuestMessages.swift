@@ -16,6 +16,42 @@ public enum SandboxGuestLimits {
     public static let maximumEnvironmentVariableCount = 128
     public static let maximumPathBytes = 4_096
     public static let maximumValueBytes = 16_384
+    public static let maximumEnvironmentKeyBytes = 128
+    public static let maximumAggregateInputBytes = 65_536
+
+    /// Environment keys a command may never set for itself.
+    ///
+    /// These mirror `SandboxGuestCommandRequest` on the host exactly. The host
+    /// rejects them at construction, so a request carrying one is either a
+    /// buggy host or a hostile peer — either way the agent refuses rather than
+    /// silently overriding, because the agent cannot trust the channel.
+    public static func isReservedEnvironmentKey(_ key: String) -> Bool {
+        switch key {
+        case "BASH_ENV", "ENV", "HOME", "LANG", "LC_ALL", "PATH",
+             "TMPDIR", "ZDOTDIR":
+            return true
+        default:
+            return key.hasPrefix("DARKBLOOM_") || key.hasPrefix("DYLD_")
+        }
+    }
+
+    /// `[A-Za-z_][A-Za-z0-9_]*`, matching the host's validator.
+    public static func isValidEnvironmentKey(_ key: String) -> Bool {
+        let scalars = key.unicodeScalars
+        guard let first = scalars.first,
+              first.value == 0x5F
+                  || (0x41...0x5A).contains(first.value)
+                  || (0x61...0x7A).contains(first.value)
+        else {
+            return false
+        }
+        return scalars.dropFirst().allSatisfy {
+            $0.value == 0x5F
+                || (0x41...0x5A).contains($0.value)
+                || (0x61...0x7A).contains($0.value)
+                || (0x30...0x39).contains($0.value)
+        }
+    }
 }
 
 // MARK: - Handshake
@@ -90,9 +126,13 @@ public struct SandboxGuestCommandWire: Codable, Equatable, Sendable {
         self.timeoutSeconds = timeoutSeconds
     }
 
-    /// Guest-side validation, applied before anything is spawned. The host
-    /// validates the same shape in `SandboxGuestCommandRequest`; the agent
-    /// re-checks because it must not trust the channel either.
+    /// Guest-side validation, applied before anything is spawned.
+    ///
+    /// This must be at least as strict as the host's
+    /// `SandboxGuestCommandRequest`, never weaker: the agent re-checks
+    /// precisely because it cannot trust the channel, and a validator that
+    /// admits more than the host would let a hostile peer reach the spawn with
+    /// a request the host itself would have refused.
     public var isWellFormed: Bool {
         executable.hasPrefix("/")
             && !executable.contains("\0")
@@ -109,13 +149,28 @@ public struct SandboxGuestCommandWire: Codable, Equatable, Sendable {
             && environment.count
                 <= SandboxGuestLimits.maximumEnvironmentVariableCount
             && environment.allSatisfy { key, value in
-                !key.isEmpty
-                    && !key.contains("=")
-                    && !key.contains("\0")
+                SandboxGuestLimits.isValidEnvironmentKey(key)
+                    && !SandboxGuestLimits.isReservedEnvironmentKey(key)
+                    && key.utf8.count
+                        <= SandboxGuestLimits.maximumEnvironmentKeyBytes
                     && !value.contains("\0")
                     && value.utf8.count <= SandboxGuestLimits.maximumValueBytes
             }
+            && aggregateInputBytes
+                <= SandboxGuestLimits.maximumAggregateInputBytes
             && !idempotencyKey.isEmpty
+            && !idempotencyKey.contains("\0")
+            && idempotencyKey.utf8.count
+                <= SandboxGuestLimits.maximumValueBytes
+    }
+
+    /// Same accounting the host applies, so an oversized request cannot reach
+    /// `posix_spawn` and fail as an opaque `E2BIG`.
+    public var aggregateInputBytes: Int {
+        executable.utf8.count
+            + workingDirectory.utf8.count
+            + arguments.reduce(0) { $0 + $1.utf8.count }
+            + environment.reduce(0) { $0 + $1.key.utf8.count + $1.value.utf8.count }
     }
 
     private enum CodingKeys: String, CodingKey {

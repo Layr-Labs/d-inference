@@ -88,6 +88,11 @@ let package = Package(
             path: "Sources/DarkbloomGuestAgent"
         ),
         .testTarget(
+            name: "SandboxGuestAgentCoreTests",
+            dependencies: ["SandboxGuestAgentCore", "SandboxGuestProtocol"],
+            path: "Tests/SandboxGuestAgentCoreTests"
+        ),
+        .testTarget(
             name: "SandboxGuestProtocolTests",
             dependencies: ["SandboxGuestProtocol"],
             path: "Tests/SandboxGuestProtocolTests"

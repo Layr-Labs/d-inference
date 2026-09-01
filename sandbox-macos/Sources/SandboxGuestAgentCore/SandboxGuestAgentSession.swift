@@ -15,15 +15,21 @@ public struct SandboxGuestAgentSession: Sendable {
         /// randomized bootstrap credentials and an unprivileged sandbox user
         /// are in place; a request is answered with a typed failure instead.
         public let executionEnabled: Bool
+        /// Home directory forced onto every command, overriding anything the
+        /// caller supplies. Becomes the unprivileged sandbox user's home once
+        /// that account exists.
+        public let guestHome: String
 
         public init(
             agentVersion: String,
             imageID: String,
-            executionEnabled: Bool = false
+            executionEnabled: Bool = false,
+            guestHome: String = "/Users/lume"
         ) {
             self.agentVersion = agentVersion
             self.imageID = imageID
             self.executionEnabled = executionEnabled
+            self.guestHome = guestHome
         }
     }
 
@@ -144,11 +150,33 @@ public struct SandboxGuestAgentSession: Sendable {
                 )
                 return true
             }
-            sendFailure(
-                code: "not_implemented",
-                message: "command execution is not implemented yet",
-                to: descriptor
+            let executor = SandboxGuestCommandExecutor(
+                home: configuration.guestHome
             )
+            let envelope = executor.execute(wire)
+            guard envelope.isSelfConsistent,
+                  let payload = try? JSONEncoder().encode(envelope)
+            else {
+                // Refusing to emit an envelope the host would reject is better
+                // than emitting one it cannot decode.
+                log("produced an inconsistent envelope for \(wire.idempotencyKey)")
+                sendFailure(
+                    code: "invalid_result",
+                    message: "the agent produced an envelope that fails its own invariants",
+                    to: descriptor
+                )
+                return true
+            }
+            // A partial write leaves a truncated frame on the wire, so the
+            // connection must close rather than continue on a stream the host
+            // can no longer parse.
+            guard send(
+                SandboxGuestFrame(kind: .commandResult, payload: payload),
+                to: descriptor
+            ) else {
+                log("result write failed for \(wire.idempotencyKey)")
+                return false
+            }
             return true
 
         case .handshake, .commandResult, .failure:

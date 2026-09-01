@@ -34,6 +34,14 @@ type warmTargetParams struct {
 	// BurstBuffer is the spare warm providers added on top of the demand-derived
 	// target to absorb arrival bursts within a control interval.
 	BurstBuffer int
+	// HeadroomProviders is the PROACTIVE floor: how many providers' worth of
+	// serving capacity must stay FREE at current load, warmed before demand
+	// needs them. Unlike BurstBuffer (which rides on the smoothed Little's Law
+	// demand term and is therefore masked whenever the pool already exceeds it),
+	// this is evaluated against measured AVAILABLE capacity — warm minus
+	// saturated — so it tracks utilization rather than pool size. <= 0 disables
+	// proactive warming and restores the purely reactive behaviour.
+	HeadroomProviders int
 	// FallbackQualityConcurrency is the per-provider quality concurrency used
 	// when the floor is disabled or rates/caps are unknown. Must be >= 1.
 	FallbackQualityConcurrency int
@@ -51,7 +59,12 @@ type warmTargetParams struct {
 // They are assembled by the controller from the fleet snapshot (warm/cold
 // counts, in-flight load, representative rates) and the pressure/queue state.
 type warmTargetInputs struct {
-	Warm            int // warm providers serving the model right now
+	Warm int // warm providers serving the model right now
+	// WarmSaturated is the subset of Warm with NO concurrency headroom left
+	// (measured in warmPoolFleetSnapshot). Warm counts weights-resident
+	// providers including those actively serving, so this is what separates
+	// "resident" from "able to accept work": available = Warm - WarmSaturated.
+	WarmSaturated   int
 	EligibleCold    int // cold providers that could be warmed this tick
 	RunningRequests int // Σ NumRunning across warm providers (served, decoding)
 	WaitingRequests int // Σ NumWaiting across warm providers (provider-queued)
@@ -151,24 +164,42 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 //
 //	target = ceil( demandConcurrency / qualityConcurrency ) + burstBuffer
 //
+// and then applies a PROACTIVE HEADROOM FLOOR (see headroomTarget) so the pool
+// keeps spare *serving capacity* ahead of demand instead of only reacting to
+// requests that already failed.
+//
 // A single unmet pressure event always justifies at least one more warm provider
 // (the reactive floor), so the controller still nudges forward while the smoothed
 // arrival rate is small. The result never shrinks below the current warm count
 // within a tick (dwell is enforced by the caller) and never exceeds what the
-// fleet can actually warm (warm + eligibleCold). With no demand pressure the pool
-// is left as-is.
+// fleet can actually warm (warm + eligibleCold).
+//
+// Growth is NOT gated on demand pressure. It used to be: with no pressure signal
+// the function returned in.Warm unchanged, so the ONLY way the pool could grow
+// was a capacity_reject / ttft_miss / cold_dispatch — i.e. a request that had
+// already been shed or delayed. Combined with the reactive floor (warm+1) that
+// made growth +1 provider per control interval (30s in prod) no matter how large
+// the shortfall, so the pool was smallest exactly when load was rising. The
+// headroom floor below replaces that with anticipatory growth; the pressure
+// signals still accelerate it through demandConcurrency's spill term.
 func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int {
-	if !in.DemandPressure {
-		return in.Warm
-	}
 	qc := qualityConcurrency(in.SoloDecodeTPS, p.DecodeFloorTPS, p.LoadFactorK, in.MaxProviderConc, p.FallbackQualityConcurrency)
 	if qc < 1 {
 		qc = 1
 	}
 	L := demandConcurrency(in, svc)
 	target := int(math.Ceil(L/float64(qc))) + p.BurstBuffer
-	if reactive := in.Warm + 1; reactive > target {
-		target = reactive
+	// Proactive headroom: hold spare serving capacity above current load even
+	// when nothing has failed yet.
+	if hd := headroomTarget(in, p, qc); hd > target {
+		target = hd
+	}
+	// Reactive nudge: an unmet pressure event always justifies one more provider,
+	// even if the smoothed terms above have not caught up yet.
+	if in.DemandPressure {
+		if reactive := in.Warm + 1; reactive > target {
+			target = reactive
+		}
 	}
 	if target < in.Warm {
 		target = in.Warm
@@ -180,6 +211,49 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 		target = 0
 	}
 	return target
+}
+
+// headroomTarget is the proactive floor: the warm count needed so that, at
+// current load, at least HeadroomProviders providers' worth of serving capacity
+// is still FREE.
+//
+// It is expressed against AVAILABLE capacity, not the raw warm count, because a
+// provider that is currently serving a request still counts as warm
+// (providerHasWarmModelLocked treats slot state "running" and "idle" alike:
+// warm means weights resident, not available). Sizing a floor against raw warm
+// therefore guarantees resident weights, not spare capacity — the two decouple
+// badly in production. Saturated is the measured count of warm providers with no
+// concurrency headroom left, so (warm - saturated) is the pool that can actually
+// accept work.
+//
+// Occupied slots are the in-flight load; capacity is available·qc. We need
+//
+//	available·qc >= occupied + headroom·qc
+//	available    >= ceil(occupied/qc) + headroom
+//
+// and the warm count must cover the saturated providers on top of that, since
+// they contribute weights but no capacity. HeadroomProviders <= 0 disables the
+// floor entirely, preserving the old purely-reactive behaviour.
+func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
+	if p.HeadroomProviders <= 0 {
+		return 0
+	}
+	if qc < 1 {
+		qc = 1
+	}
+	occupied := in.RunningRequests + in.WaitingRequests + in.QueueDepth
+	if occupied < 0 {
+		occupied = 0
+	}
+	saturated := in.WarmSaturated
+	if saturated < 0 {
+		saturated = 0
+	}
+	if saturated > in.Warm {
+		saturated = in.Warm
+	}
+	needAvailable := int(math.Ceil(float64(occupied)/float64(qc))) + p.HeadroomProviders
+	return needAvailable + saturated
 }
 
 // rampLoadsThisTick returns the demand-scaled, bounded number of model loads to

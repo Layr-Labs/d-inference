@@ -79,8 +79,17 @@ type WarmPoolConfig struct {
 	// size the representative request for the E[S] service-time estimate, and
 	// FallbackQualityConcurrency is the per-provider concurrency used when the
 	// floor/rates/caps are unknown.
-	DecodeFloorTPS             float64
-	BurstBuffer                int
+	DecodeFloorTPS float64
+	BurstBuffer    int
+	// HeadroomProviders is the proactive warm-capacity buffer: how many
+	// providers' worth of serving capacity must stay FREE at current load. The
+	// controller warms toward it BEFORE demand needs it, so growth no longer
+	// requires a failed request. Evaluated against measured available capacity
+	// (warm minus saturated), not the raw warm count — a provider serving a
+	// request is still "warm". 0 disables proactive warming (purely reactive,
+	// the pre-2026-09 behaviour).
+	// EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS.
+	HeadroomProviders          int
 	FallbackQualityConcurrency int
 	AssumedPromptTokens        int
 	AssumedCompletionTokens    int
@@ -133,6 +142,7 @@ func ReadConfig() Config {
 
 			DecodeFloorTPS:             env.EnvFloat(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", 15),
 			BurstBuffer:                env.EnvInt(env.EnvPrefix+"_WARM_POOL_BURST_BUFFER", 1),
+			HeadroomProviders:          env.EnvInt(env.EnvPrefix+"_WARM_POOL_HEADROOM_PROVIDERS", 0),
 			FallbackQualityConcurrency: env.EnvInt(env.EnvPrefix+"_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY", 4),
 			AssumedPromptTokens:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_PROMPT_TOKENS", 512),
 			AssumedCompletionTokens:    env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_COMPLETION_TOKENS", 256),
@@ -296,7 +306,7 @@ func (c WarmPoolConfig) Check() error {
 	if c.MaxLoadsPerTick < 0 || c.MaxGlobalPendingLoads < 0 || c.MaxLoadsPerTickCeiling < 0 {
 		return fmt.Errorf("registry: warm pool load limits must be >= 0")
 	}
-	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 {
+	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 || c.HeadroomProviders < 0 {
 		return fmt.Errorf("registry: warm pool target tunables must be >= 0")
 	}
 	if c.AssumedPromptTokens < 0 || c.AssumedCompletionTokens < 0 {

@@ -96,6 +96,7 @@ export const SCENARIO_NAMES = [
   "EMPTY",
   "TYPICAL",
   "TRUNCATED",
+  "DENSE",
   "CREDITS_ONLY",
   "BELOW_MIN_WITHDRAW",
   "WHALE",
@@ -145,6 +146,29 @@ export function makeScenario(
         earnings: rows,
         count: 4210,
         recent_count: 100,
+      });
+    }
+    case "DENSE": {
+      // Busy provider: a full 1000-row server page packed into ~30 hours, so
+      // the chart falls into hour-bucket mode.
+      const rows: Earning[] = [];
+      for (let i = 0; i < 1000; i++) {
+        const ageMs = Math.floor((i * 30 * 3_600_000) / 1000) + (i % 5) * 60_000;
+        rows.push(
+          makeEarning({
+            id: 5000 - i,
+            job_id: `job-dense-${i}`,
+            model: MODELS[i % MODELS.length],
+            provider_id: PROVIDERS[i % PROVIDERS.length],
+            amount_micro_usd: 20_000 + ((i * 7_919) % 40_000),
+            created_at: new Date(now - ageMs).toISOString(),
+          }),
+        );
+      }
+      return makeEarningsResponse({
+        earnings: rows,
+        count: 48_120,
+        recent_count: 1000,
       });
     }
     case "CREDITS_ONLY":

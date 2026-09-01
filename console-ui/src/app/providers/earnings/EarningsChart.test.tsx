@@ -4,11 +4,14 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { EarningsChart } from "./EarningsChart";
 import type { DayBucket } from "./aggregate";
 
+const DAY1 = "2025-05-01";
+const DAY2 = "2025-05-02";
+
 // Geometry constants mirrored from EarningsChart: W=640, PAD_X=40, PAD_Y=16,
 // H=220, LABEL_H=22 -> chart height 182, baseline y = 198.
 const DAYS: DayBucket[] = [
-  { day: "2025-05-01", micro: 100_000, jobs: 4 }, // peak -> y = 16
-  { day: "2025-05-02", micro: 0, jobs: 0 }, //         -> y = 198 (baseline)
+  { day: DAY1, micro: 100_000, jobs: 4 }, // peak -> y = 16
+  { day: DAY2, micro: 0, jobs: 0 }, //         -> y = 198 (baseline)
   { day: "2025-05-03", micro: 50_000, jobs: 2 }, //    -> y = 107
 ];
 
@@ -41,18 +44,43 @@ describe("EarningsChart", () => {
     expect(screen.getByText("Demand (jobs)")).toBeInTheDocument();
   });
 
+  it("shows the coverage note when history is truncated", () => {
+    const note = "Trend covers your latest 100 of 4,210 payouts.";
+    render(<EarningsChart days={DAYS} note={note} />);
+    expect(screen.getByTestId("chart-coverage-note")).toHaveTextContent(note);
+  });
+
+  it("renders no coverage note by default", () => {
+    render(<EarningsChart days={DAYS} />);
+    expect(screen.queryByTestId("chart-coverage-note")).toBeNull();
+  });
+
   it("labels the first and last day on the x axis", () => {
     render(<EarningsChart days={DAYS} />);
     expect(screen.getByText("May 1")).toBeInTheDocument();
     expect(screen.getByText("May 3")).toBeInTheDocument();
   });
 
+  it("labels hour buckets with the hour in hour mode", () => {
+    render(
+      <EarningsChart
+        granularity="hour"
+        days={[
+          { day: "2025-05-01T09", micro: 100_000, jobs: 4 },
+          { day: "2025-05-01T10", micro: 50_000, jobs: 2 },
+        ]}
+      />,
+    );
+    expect(screen.getByText("May 1, 9 AM")).toBeInTheDocument();
+    expect(screen.getByText("May 1, 10 AM")).toBeInTheDocument();
+  });
+
   it("scales huge demand independently with compact right-axis ticks", () => {
     const { container } = render(
       <EarningsChart
         days={[
-          { day: "2025-05-01", micro: 100_000, jobs: 48_860 },
-          { day: "2025-05-02", micro: 50_000, jobs: 24_430 },
+          { day: DAY1, micro: 100_000, jobs: 48_860 },
+          { day: DAY2, micro: 50_000, jobs: 24_430 },
         ]}
       />,
     );
@@ -65,6 +93,21 @@ describe("EarningsChart", () => {
     expect(container.querySelector("polyline")?.getAttribute("points")).toBe(
       "40,16 600,107",
     );
+  });
+
+  it("keeps sub-cent peaks readable on the earnings axis", () => {
+    render(
+      <EarningsChart
+        days={[
+          { day: DAY1, micro: 4_000, jobs: 2 }, // $0.004 peak
+          { day: DAY2, micro: 2_000, jobs: 1 },
+        ]}
+      />,
+    );
+    // Three decimals keep the top and midpoint ticks nonzero.
+    expect(screen.getByText("$0.004")).toBeInTheDocument();
+    expect(screen.getByText("$0.002")).toBeInTheDocument();
+    expect(screen.queryAllByText("$0.00")).toHaveLength(0);
   });
 
   it("shows day, earnings, and jobs in a tooltip on hover", () => {

@@ -17,6 +17,16 @@ describe("heroCta", () => {
     expect(heroCta(makeStripeStatus({ configured: false }), 100, 1)).toBeNull();
   });
 
+  it("offers a retry when the status fetch failed", () => {
+    const cta = heroCta(null, 100, 1, true)!;
+    expect(cta).toMatchObject({
+      label: "Reload payout status",
+      action: "retry",
+      disabled: false,
+    });
+    expect(cta.hint).toMatch(/couldn't check your payout status/i);
+  });
+
   it("points an unlinked user at setup instead of a dead button", () => {
     const cta = heroCta(makeStripeStatus({ has_account: false, status: "" }), 100, 1)!;
     expect(cta).toMatchObject({
@@ -144,6 +154,27 @@ describe("BalanceHero", () => {
     expect(screen.getByText("Bank ••4821")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change/i }));
     expect(onOpenDashboard).toHaveBeenCalledOnce();
+  });
+
+  it("fires onRetryStatus from the reload CTA after a failed status fetch", () => {
+    const onRetryStatus = vi.fn();
+    const s = makeScenario("TYPICAL");
+    render(
+      <BalanceHero
+        totalBalanceMicro={s.available_balance_micro_usd}
+        withdrawableMicro={s.withdrawable_balance_micro_usd}
+        status={null}
+        statusFailed
+        minWithdrawUsd={1}
+        onWithdraw={vi.fn()}
+        onSetup={vi.fn()}
+        onRetryStatus={onRetryStatus}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /reload payout status/i }),
+    );
+    expect(onRetryStatus).toHaveBeenCalledOnce();
   });
 
   it("hides the whole CTA column when payouts are disabled", () => {

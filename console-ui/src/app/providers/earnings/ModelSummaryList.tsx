@@ -4,7 +4,7 @@
 // into that model's paginated log in EarningsHistory.
 
 import { Box, ChevronRight } from "lucide-react";
-import type { ModelSummary } from "./aggregate";
+import { BASE_REWARD_MODEL, type ModelSummary } from "./aggregate";
 import { formatMicroDollars, formatTokens, modelLabel } from "./format";
 import { relativeTime } from "@/lib/format/time";
 
@@ -33,8 +33,13 @@ export function ModelSummaryList({
                 {modelLabel(s.model, allModels)}
               </span>
               <span className="block text-xs text-text-tertiary">
-                {s.jobs.toLocaleString("en-US")} jobs ·{" "}
-                {formatTokens(s.tokens)} tokens · {relativeTime(s.lastActive)}
+                {/* Base rewards aren't jobs: showing "0 jobs · 0 tokens"
+                    would read as broken, so show only the recency. */}
+                {s.model === BASE_REWARD_MODEL
+                  ? relativeTime(s.lastActive)
+                  : `${s.jobs.toLocaleString("en-US")} jobs · ${formatTokens(
+                      s.tokens,
+                    )} tokens · ${relativeTime(s.lastActive)}`}
               </span>
             </span>
             <span className="text-sm font-mono text-accent-green whitespace-nowrap">

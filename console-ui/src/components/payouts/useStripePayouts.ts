@@ -22,6 +22,9 @@ type WithdrawMethod = "standard" | "instant";
 
 export interface UseStripePayouts {
   status: StripeStatus | null;
+  /** True when the last status fetch failed while `status` is still unknown
+   *  (or stale) — lets the UI offer a retry instead of a dead button. */
+  statusError: boolean;
   withdrawals: StripeWithdrawal[];
   onboardLoading: boolean;
   selectedCountry: string;
@@ -71,6 +74,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   const { addToast, enabled = true, onAfterWithdraw, onWithdrawStart, onWithdrawSuccess, onWithdrawError } = opts;
 
   const [status, setStatus] = useState<StripeStatus | null>(null);
+  const [statusError, setStatusError] = useState(false);
   const [withdrawals, setWithdrawals] = useState<StripeWithdrawal[]>([]);
   const [onboardLoading, setOnboardLoading] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
@@ -94,8 +98,11 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       ]);
       setStatus(s);
       setWithdrawals(wds);
+      setStatusError(false);
     } catch (e) {
-      // Silent — Stripe Payouts is optional infrastructure.
+      // No toast — Stripe Payouts is optional infrastructure — but flag the
+      // failure so the UI can offer a retry instead of a dead button.
+      setStatusError(true);
       console.warn("stripe status fetch failed:", (e as Error).message);
     }
   }, []);
@@ -229,6 +236,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
 
   return {
     status,
+    statusError,
     withdrawals,
     onboardLoading,
     selectedCountry,

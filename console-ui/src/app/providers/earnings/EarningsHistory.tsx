@@ -2,9 +2,9 @@
 
 // Recent-activity shell. Default view is one summary row per model; clicking
 // a model drills into its log, paginated at PAGE_SIZE rows. All client-side
-// over rows already filtered upstream (ActivityFilterBar owns model/time).
+// over rows already filtered upstream (ActivityFilterBar owns the model filter).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Earning } from "./types";
 import { perModelSummary } from "./aggregate";
@@ -20,7 +20,7 @@ export function EarningsHistory({
   recentCount,
   filteredOut = false,
 }: {
-  /** Rows already narrowed by the global model/time filters. */
+  /** Rows already narrowed by the global model filter. */
   earnings: Earning[];
   totalJobs: number;
   recentCount: number;
@@ -32,6 +32,15 @@ export function EarningsHistory({
 
   const summaries = useMemo(() => perModelSummary(earnings), [earnings]);
   const allModelIds = summaries.map((s) => s.model);
+
+  // A global-filter change can remove the drilled-into model from the rows.
+  // Fall back to the summary list instead of a stale, misleading empty log.
+  useEffect(() => {
+    if (selectedModel && !summaries.some((s) => s.model === selectedModel)) {
+      setSelectedModel(null);
+      setPage(1);
+    }
+  }, [selectedModel, summaries]);
 
   const modelRows = useMemo(
     () =>
@@ -171,7 +180,7 @@ function EmptyCopy({ filtered }: { filtered: boolean }) {
       </p>
       <p className="text-xs mt-1">
         {filtered
-          ? "Try widening the time range."
+          ? "Try selecting a different model."
           : "Earnings appear here when your provider serves inference requests"}
       </p>
     </div>

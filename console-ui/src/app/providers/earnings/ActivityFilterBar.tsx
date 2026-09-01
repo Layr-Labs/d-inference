@@ -1,9 +1,10 @@
 "use client";
 
-// "Recent activity" heading plus the two global filters (model, time range)
-// that drive both the chart and the activity list below it.
+// "Recent activity" heading plus the global model filter that drives both
+// the chart and the activity list below it. There is no time-range filter:
+// the chart self-scales to the span of the fetched history window.
 
-import { BASE_REWARD_MODEL, TIME_RANGES } from "./aggregate";
+import { BASE_REWARD_MODEL } from "./aggregate";
 
 const SELECT_CLASS =
   "rounded-lg border border-border-default bg-bg-secondary text-xs text-text-secondary px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-accent-brand";
@@ -12,17 +13,12 @@ export function ActivityFilterBar({
   models,
   selectedModel,
   onSelectModel,
-  rangeDays,
-  onSelectRange,
 }: {
   /** Model ids for the filter dropdown, most-earned first. */
   models: string[];
   /** Currently selected model, or "" for all models. */
   selectedModel: string;
   onSelectModel: (model: string) => void;
-  /** Look-back window in days; 0 means all time. */
-  rangeDays: number;
-  onSelectRange: (days: number) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -44,18 +40,6 @@ export function ActivityFilterBar({
           ))}
         </select>
       )}
-      <select
-        aria-label="Filter by time range"
-        value={rangeDays}
-        onChange={(e) => onSelectRange(Number(e.target.value))}
-        className={`shrink-0 ${SELECT_CLASS}`}
-      >
-        {TIME_RANGES.map((r) => (
-          <option key={r.days} value={r.days}>
-            {r.label}
-          </option>
-        ))}
-      </select>
     </div>
   );
 }

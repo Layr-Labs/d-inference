@@ -1,15 +1,16 @@
 "use client";
 
-// "Earnings over time" — a small dependency-free SVG chart over the per-day
-// buckets derived client-side from the history rows. Two series share the x
-// axis: earnings (area + line, left axis) and demand in jobs/day (dashed
-// line, right axis). Each series is normalized to its own peak, so the two
-// stay visually comparable no matter how far apart their magnitudes are.
-// Model/time filtering happens upstream (ActivityFilterBar).
+// "Earnings over time" — a small dependency-free SVG chart over the buckets
+// derived client-side from the fetched history window (perBucketTotals picks
+// hour or day granularity to fit the window's span). Two series share the x
+// axis: earnings (area + line, left axis) and demand in jobs (dashed line,
+// right axis). Each series is normalized to its own peak, so the two stay
+// visually comparable no matter how far apart their magnitudes are. Model
+// filtering happens upstream (ActivityFilterBar).
 
 import { useState } from "react";
-import type { DayBucket } from "./aggregate";
-import { formatDayLabel } from "./format";
+import type { DayBucket, Granularity } from "./aggregate";
+import { formatBucketLabel } from "./format";
 import { microToUsd } from "@/lib/format/currency";
 
 const W = 640;
@@ -18,19 +19,40 @@ const PAD_X = 40;
 const PAD_Y = 16;
 const LABEL_H = 22;
 
-export function EarningsChart({ days }: { days: DayBucket[] }) {
+export function EarningsChart({
+  days,
+  granularity = "day",
+  note,
+}: {
+  days: DayBucket[];
+  /** Bucket size of `days` — drives axis and tooltip labels. */
+  granularity?: Granularity;
+  /** Coverage disclosure when the history window is truncated server-side. */
+  note?: string | null;
+}) {
   return (
     <div className="rounded-xl bg-bg-secondary shadow-sm p-5">
-      <h3 className="text-sm font-semibold text-text-primary mb-3">
-        Earnings over time
-      </h3>
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-text-primary">
+          Earnings over time
+        </h3>
+        {note && (
+          <p
+            className="text-xs text-text-tertiary mt-0.5"
+            data-testid="chart-coverage-note"
+          >
+            {note}
+          </p>
+        )}
+      </div>
       {days.length < 2 ? (
         <div className="flex items-center justify-center h-48 text-xs text-text-tertiary">
-          Not enough history yet — the trend appears after a couple of days.
+          Not enough history yet — the trend appears once earnings span more
+          than an hour.
         </div>
       ) : (
         <>
-          <ChartSvg days={days} />
+          <ChartSvg days={days} granularity={granularity} />
           <Legend />
         </>
       )}
@@ -66,10 +88,18 @@ function Legend() {
   );
 }
 
+/**
+ * Tick decimals: enough that the midpoint tick keeps a nonzero digit, so
+ * sub-cent peaks don't flatten the whole axis to "$0.00". Capped at 6, the
+ * micro-USD floor.
+ */
 function tickDecimalsFor(peakUsd: number): number {
-  if (peakUsd < 1) return 2;
-  if (peakUsd < 10) return 1;
-  return 0;
+  if (peakUsd >= 10) return 0;
+  if (peakUsd >= 1) return 1;
+  const zeroAt = (d: number) => (peakUsd / 2).toFixed(d) === (0).toFixed(d);
+  let decimals = 2;
+  while (decimals < 6 && zeroAt(decimals)) decimals++;
+  return decimals;
 }
 
 /** Compact jobs-axis tick: 843 -> "843", 48_860 -> "48.9k", 2_000_000 -> "2m". */
@@ -96,7 +126,13 @@ function labelAnchor(i: number, len: number): "start" | "middle" | "end" {
   return "middle";
 }
 
-function ChartSvg({ days }: { days: DayBucket[] }) {
+function ChartSvg({
+  days,
+  granularity,
+}: {
+  days: DayBucket[];
+  granularity: Granularity;
+}) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const chartW = W - PAD_X * 2;
   const chartH = H - PAD_Y - LABEL_H;
@@ -147,7 +183,7 @@ function ChartSvg({ days }: { days: DayBucket[] }) {
           }}
         >
           <p className="font-medium text-text-primary">
-            {formatDayLabel(hover.bucket.day)}
+            {formatBucketLabel(hover.bucket.day, granularity)}
           </p>
           <p style={{ color: "var(--accent-brand)" }}>
             {formatHoverUsd(hover.bucket.micro)} earned
@@ -162,7 +198,7 @@ function ChartSvg({ days }: { days: DayBucket[] }) {
         viewBox={`0 0 ${W} ${H}`}
         className="w-full h-auto"
         role="img"
-        aria-label="Daily earnings and demand trend"
+        aria-label="Earnings and demand trend"
         onMouseMove={onMove}
         onMouseLeave={() => setHoverIdx(null)}
       >
@@ -232,7 +268,7 @@ function ChartSvg({ days }: { days: DayBucket[] }) {
               fontSize="10"
               fill="var(--text-tertiary)"
             >
-              {formatDayLabel(p.bucket.day)}
+              {formatBucketLabel(p.bucket.day, granularity)}
             </text>
           ),
       )}

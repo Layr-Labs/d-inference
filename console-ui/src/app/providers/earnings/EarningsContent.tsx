@@ -17,7 +17,8 @@ import {
 } from "@/components/payouts";
 import { PayoutSetupModal } from "./PayoutSetupModal";
 import { EARNINGS_FIXTURE_ACTIVE, useEarningsData } from "./useEarningsData";
-import { filterByDays, perDayTotals, perModelSummary } from "./aggregate";
+import { oldestRowIso, perBucketTotals, perModelSummary } from "./aggregate";
+import { chartCoverageNote } from "./format";
 import { BalanceHero } from "./BalanceHero";
 import { SummaryStats } from "./SummaryStats";
 import { ActivityFilterBar } from "./ActivityFilterBar";
@@ -29,16 +30,10 @@ export default function EarningsContent() {
   const { ready, authenticated, login } = useAuth();
   const addToast = useToastStore((s) => s.addToast);
   const [setupOpen, setSetupOpen] = useState(false);
-  // Global activity filters: "" means all models; range 0 = all time. They
-  // narrow both the chart and the recent-activity list. Clock snapshot is
-  // refreshed when the range changes (react-hooks/purity).
+  // Global model filter: "" means all models. It narrows both the chart and
+  // the recent-activity list. There is no time filter — the chart self-scales
+  // to the span of the fetched window.
   const [filterModel, setFilterModel] = useState("");
-  const [filterRange, setFilterRange] = useState(0);
-  const [filterNow, setFilterNow] = useState(() => Date.now());
-  const selectRange = (days: number) => {
-    setFilterNow(Date.now());
-    setFilterRange(days);
-  };
   const { data, loading, error, unauthorized, refetch } =
     useEarningsData(authenticated);
 
@@ -77,11 +72,10 @@ export default function EarningsContent() {
   const allModels = perModelSummary(earnings).map((s) => s.model);
   // Fall back to "all" if a refetch drops the selected model from the data.
   const activeModel = allModels.includes(filterModel) ? filterModel : "";
-  const inRange = filterByDays(earnings, filterRange, filterNow);
   const filteredEarnings = activeModel
-    ? inRange.filter((e) => e.model === activeModel)
-    : inRange;
-  const days = perDayTotals(filteredEarnings);
+    ? earnings.filter((e) => e.model === activeModel)
+    : earnings;
+  const series = perBucketTotals(filteredEarnings);
   // Older coordinators may omit the withdrawable split; treat it all as withdrawable.
   const withdrawableMicro =
     data.withdrawable_balance_micro_usd ?? data.available_balance_micro_usd;
@@ -89,6 +83,13 @@ export default function EarningsContent() {
   const totalMicro = data.total_micro_usd;
   const totalJobs = data.count;
   const recentCount = data.recent_count ?? earnings.length;
+  // Honest chart: when the server truncated the history window, say so on
+  // the card instead of implying full lifetime coverage.
+  const coverageNote = chartCoverageNote(
+    totalJobs,
+    recentCount,
+    oldestRowIso(earnings),
+  );
 
   const minWithdrawUsd = microToUsd(payouts.status?.min_withdraw_micro_usd ?? 1_000_000);
   const availableUsd = microToUsd(withdrawableMicro);
@@ -112,9 +113,13 @@ export default function EarningsContent() {
         totalBalanceMicro={totalBalanceMicro}
         withdrawableMicro={withdrawableMicro}
         status={payouts.status}
+        statusFailed={payouts.statusError}
         minWithdrawUsd={minWithdrawUsd}
         onWithdraw={openWithdraw}
         onSetup={() => setSetupOpen(true)}
+        onRetryStatus={() => {
+          payouts.reload(false);
+        }}
         onOpenDashboard={payouts.openDashboard}
         dashboardLoading={payouts.dashboardLoading}
       />
@@ -126,17 +131,19 @@ export default function EarningsContent() {
         </div>
       )}
 
-      {/* Global filters: drive both the chart and the activity list */}
+      {/* Global model filter: drives both the chart and the activity list */}
       <ActivityFilterBar
         models={allModels}
         selectedModel={activeModel}
         onSelectModel={setFilterModel}
-        rangeDays={filterRange}
-        onSelectRange={selectRange}
       />
 
-      {/* Earnings + demand trend */}
-      <EarningsChart days={days} />
+      {/* Earnings + demand trend, bucketed to fit the fetched window's span */}
+      <EarningsChart
+        days={series.buckets}
+        granularity={series.granularity}
+        note={coverageNote}
+      />
 
       <EarningsHistory
         earnings={filteredEarnings}

@@ -65,7 +65,9 @@ export function useEarningsData(authenticated: boolean): EarningsData {
       // Same-origin proxy (perf F9): no cross-origin preflight, coordinator
       // URL resolved server-side.
       const headers = await getAuthHeaders();
-      const res = await fetch(`/api/me/earnings?limit=100`, { headers });
+      // 1000 is the server-side cap; the chart self-scales to whatever time
+      // span these rows cover, and the list still pages at 10.
+      const res = await fetch(`/api/me/earnings?limit=1000`, { headers });
       if (!res.ok) {
         setUnauthorized(res.status === 401 || res.status === 403);
         throw new Error(`HTTP ${res.status}`);

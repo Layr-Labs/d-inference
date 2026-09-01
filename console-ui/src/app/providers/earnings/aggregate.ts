@@ -10,10 +10,10 @@ import type { Earning } from "./types";
 export const BASE_REWARD_MODEL = "base_reward";
 
 export interface DayBucket {
-  /** YYYY-MM-DD in local time. */
+  /** Bucket key in local time: "YYYY-MM-DD" (day) or "YYYY-MM-DDTHH" (hour). */
   day: string;
   micro: number;
-  /** Number of earning rows (jobs served) that day — the demand series. */
+  /** Number of earning rows (jobs served) in the bucket — the demand series. */
   jobs: number;
 }
 
@@ -84,7 +84,9 @@ export function perModelSummary(earnings: Earning[]): ModelSummary[] {
       lastActive: e.created_at,
     };
     s.micro += e.amount_micro_usd;
-    s.jobs += 1;
+    // base_reward rows add money but are not inference jobs (mirrors the
+    // coordinator's lifetime summary and perDayTotals' demand series).
+    if (e.model !== BASE_REWARD_MODEL) s.jobs += 1;
     s.tokens += e.prompt_tokens + e.completion_tokens;
     if (e.created_at > s.lastActive) s.lastActive = e.created_at;
     byModel.set(e.model, s);
@@ -92,23 +94,86 @@ export function perModelSummary(earnings: Earning[]): ModelSummary[] {
   return [...byModel.values()].sort((a, b) => b.micro - a.micro);
 }
 
-/** Shared look-back options for the chart and the activity log. */
-export const TIME_RANGES = [
-  { label: "Last 7 days", days: 7 },
-  { label: "Last 30 days", days: 30 },
-  { label: "All time", days: 0 },
-];
+export type Granularity = "hour" | "day";
+
+export interface EarningsSeries {
+  granularity: Granularity;
+  buckets: DayBucket[];
+}
+
+// A fetched window at or below this span charts per hour: a busy provider's
+// latest 1000 rows can fit in a day, where day buckets would leave no trend.
+const HOUR_MODE_MAX_MS = 48 * 3_600_000;
+
+function localHourKey(d: Date): string {
+  return `${localDay(d)}T${String(d.getHours()).padStart(2, "0")}`;
+}
+
+/** Sum earnings per local hour, ascending, zero-filling gaps. */
+function perHourTotals(earnings: Earning[]): DayBucket[] {
+  const sums = new Map<string, { micro: number; jobs: number }>();
+  let minMs = Infinity;
+  let maxMs = -Infinity;
+  for (const e of earnings) {
+    const d = new Date(e.created_at);
+    const t = d.getTime();
+    if (Number.isNaN(t)) continue;
+    minMs = Math.min(minMs, t);
+    maxMs = Math.max(maxMs, t);
+    const key = localHourKey(d);
+    const s = sums.get(key) ?? { micro: 0, jobs: 0 };
+    s.micro += e.amount_micro_usd;
+    if (e.model !== BASE_REWARD_MODEL) s.jobs += 1;
+    sums.set(key, s);
+  }
+  if (sums.size === 0) return [];
+  const cursor = new Date(minMs);
+  cursor.setMinutes(0, 0, 0);
+  const lastKey = localHourKey(new Date(maxMs));
+  const out: DayBucket[] = [];
+  // Step in real ms so a DST jump can't loop, but bound on the local key so a
+  // half-hour DST shift can't drop the final bucket; a fall-back hour repeats
+  // its key, so skip the duplicate (its rows already merged in `sums`).
+  for (let ms = cursor.getTime(); ; ms += 3_600_000) {
+    const key = localHourKey(new Date(ms));
+    if (key > lastKey) break;
+    if (out.length > 0 && out[out.length - 1].day === key) continue;
+    const s = sums.get(key);
+    out.push({ day: key, micro: s?.micro ?? 0, jobs: s?.jobs ?? 0 });
+  }
+  return out;
+}
 
 /**
- * Rows within a look-back window of `days` ending at `now`. `days` 0 keeps
- * everything, even rows with unparseable dates.
+ * Bucket the fetched window at a granularity that fits its span: hour buckets
+ * up to two days, day buckets beyond. The window is whatever the server
+ * returned (latest N rows), so the chart self-scales to busy and quiet
+ * providers alike.
  */
-export function filterByDays(
-  earnings: Earning[],
-  days: number,
-  now: number,
-): Earning[] {
-  if (days <= 0) return earnings;
-  const cutoff = now - days * 86_400_000;
-  return earnings.filter((e) => new Date(e.created_at).getTime() >= cutoff);
+export function perBucketTotals(earnings: Earning[]): EarningsSeries {
+  let minMs = Infinity;
+  let maxMs = -Infinity;
+  for (const e of earnings) {
+    const t = new Date(e.created_at).getTime();
+    if (Number.isNaN(t)) continue;
+    minMs = Math.min(minMs, t);
+    maxMs = Math.max(maxMs, t);
+  }
+  if (minMs !== Infinity && maxMs - minMs <= HOUR_MODE_MAX_MS) {
+    return { granularity: "hour", buckets: perHourTotals(earnings) };
+  }
+  return { granularity: "day", buckets: perDayTotals(earnings) };
+}
+
+/** ISO timestamp of the oldest parseable row, or null when there is none. */
+export function oldestRowIso(earnings: Earning[]): string | null {
+  let oldest: string | null = null;
+  let oldestMs = Infinity;
+  for (const e of earnings) {
+    const t = new Date(e.created_at).getTime();
+    if (Number.isNaN(t) || t >= oldestMs) continue;
+    oldestMs = t;
+    oldest = e.created_at;
+  }
+  return oldest;
 }

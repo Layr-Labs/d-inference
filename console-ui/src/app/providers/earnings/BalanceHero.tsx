@@ -11,8 +11,9 @@ import { formatMicroDollars } from "./format";
 
 export interface HeroCta {
   label: string;
-  /** "withdraw" opens the modal; "setup" jumps to the payout card. */
-  action: "withdraw" | "setup";
+  /** "withdraw" opens the modal; "setup" jumps to the payout card; "retry"
+   *  refetches the payout status after a failed load. */
+  action: "withdraw" | "setup" | "retry";
   disabled: boolean;
   hint: string | null;
 }
@@ -25,9 +26,19 @@ export function heroCta(
   status: StripeStatus | null,
   availableUsd: number,
   minWithdrawUsd: number,
+  statusFailed = false,
 ): HeroCta | null {
   const withdraw = "Withdraw earnings";
   if (!status) {
+    if (statusFailed) {
+      // The status fetch failed; a page reload shouldn't be the only way out.
+      return {
+        label: "Reload payout status",
+        action: "retry",
+        disabled: false,
+        hint: "We couldn't check your payout status — withdrawals need it.",
+      };
+    }
     // Payout status still loading.
     return { label: withdraw, action: "withdraw", disabled: true, hint: null };
   }
@@ -71,24 +82,40 @@ export function BalanceHero({
   totalBalanceMicro,
   withdrawableMicro,
   status,
+  statusFailed = false,
   minWithdrawUsd,
   onWithdraw,
   onSetup,
+  onRetryStatus,
   onOpenDashboard,
   dashboardLoading,
 }: {
   totalBalanceMicro: number;
   withdrawableMicro: number;
   status: StripeStatus | null;
+  /** True when the payout status fetch failed (status is null but not loading). */
+  statusFailed?: boolean;
   minWithdrawUsd: number;
   onWithdraw: () => void;
   onSetup: () => void;
+  /** Refetch the payout status after a failed load. */
+  onRetryStatus?: () => void;
   /** Open the Stripe Express Dashboard to change the payout destination. */
   onOpenDashboard?: () => void;
   dashboardLoading?: boolean;
 }) {
   const creditsMicro = totalBalanceMicro - withdrawableMicro;
-  const cta = heroCta(status, microToUsd(withdrawableMicro), minWithdrawUsd);
+  const cta = heroCta(
+    status,
+    microToUsd(withdrawableMicro),
+    minWithdrawUsd,
+    statusFailed,
+  );
+  const ctaHandlers = {
+    withdraw: onWithdraw,
+    setup: onSetup,
+    retry: onRetryStatus,
+  } as const;
   return (
     <div className="relative overflow-hidden rounded-xl bg-coral text-white shadow-sm p-6 flex flex-col justify-between min-h-[220px]">
       {/* Dot texture, echoes the marketing hero. */}
@@ -111,8 +138,8 @@ export function BalanceHero({
         <div className="flex flex-col items-end gap-2">
           {cta && (
             <button
-              onClick={cta.action === "withdraw" ? onWithdraw : onSetup}
-              disabled={cta.disabled}
+              onClick={ctaHandlers[cta.action]}
+              disabled={cta.disabled || !ctaHandlers[cta.action]}
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white text-accent-green text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {cta.label}

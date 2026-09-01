@@ -1,15 +1,17 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { EarningsHistory, PAGE_SIZE } from "./EarningsHistory";
 import { FIXTURE_NOW, makeEarning, makeScenario } from "./testFixtures";
 import type { EarningsResponse } from "./types";
 
-// Time-window filtering compares row timestamps against Date.now().
+// relativeTime in the summary rows compares timestamps against Date.now().
 beforeEach(() => vi.useFakeTimers({ now: FIXTURE_NOW, toFake: ["Date"] }));
 afterEach(() => vi.useRealTimers());
 
 const QWEN_SHORT = "Qwen3-30B-A3B";
+const QWEN_FULL = "Qwen/Qwen3-30B-A3B";
+const GEMMA_SHORT = "gemma-3-27b-it";
 
 function renderResponse(r: EarningsResponse) {
   render(
@@ -65,10 +67,10 @@ describe("EarningsHistory summary view", () => {
     const rows = s.earnings.slice(0, 2).map((e, i) => ({
       ...e,
       id: 9000 + i,
-      model: i === 0 ? "Qwen/Qwen3-30B-A3B" : "other-org/Qwen3-30B-A3B",
+      model: i === 0 ? QWEN_FULL : "other-org/Qwen3-30B-A3B",
     }));
     renderResponse({ ...s, earnings: rows, count: 2, recent_count: 2 });
-    expect(screen.getByText("Qwen/Qwen3-30B-A3B")).toBeInTheDocument();
+    expect(screen.getByText(QWEN_FULL)).toBeInTheDocument();
     expect(screen.getByText("other-org/Qwen3-30B-A3B")).toBeInTheDocument();
   });
 });
@@ -76,11 +78,11 @@ describe("EarningsHistory summary view", () => {
 describe("EarningsHistory drill-down log", () => {
   it("opens a model's log on click and returns via All models", () => {
     renderResponse(makeScenario("TYPICAL"));
-    fireEvent.click(screen.getByText("gemma-3-27b-it"));
+    fireEvent.click(screen.getByText(GEMMA_SHORT));
     // Log view: a table whose rows are all the clicked model.
     const table = screen.getByRole("table");
     expect(table).toBeInTheDocument();
-    expect(screen.getAllByText("gemma-3-27b-it").length).toBeGreaterThan(1);
+    expect(screen.getAllByText(GEMMA_SHORT).length).toBeGreaterThan(1);
     expect(screen.queryByText("Qwen3-VL-8B")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /all models/i }));
@@ -138,6 +140,34 @@ describe("EarningsHistory drill-down log", () => {
     );
     expect(screen.getAllByRole("row")).toHaveLength(PAGE_SIZE + 1);
     expect(screen.queryByText(/Page \d/)).toBeNull();
+  });
+
+  it("falls back to the summary list when a filter removes the drilled model", () => {
+    const s = makeScenario("TYPICAL");
+    const { rerender } = render(
+      <EarningsHistory
+        earnings={s.earnings}
+        totalJobs={s.count}
+        recentCount={s.recent_count}
+      />,
+    );
+    fireEvent.click(screen.getByText(GEMMA_SHORT));
+    expect(screen.getByRole("table")).toBeInTheDocument();
+
+    // The global model filter narrows the rows to a different model.
+    const qwenOnly = s.earnings.filter((e) => e.model === QWEN_FULL);
+    rerender(
+      <EarningsHistory
+        earnings={qwenOnly}
+        totalJobs={s.count}
+        recentCount={s.recent_count}
+        filteredOut
+      />,
+    );
+    // No stale gemma log — the remaining model's summary row shows instead.
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText(QWEN_SHORT)).toBeInTheDocument();
+    expect(screen.queryByText(GEMMA_SHORT)).toBeNull();
   });
 
   it("shows the filtered empty copy when filters removed every row", () => {

@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -492,6 +493,31 @@ type Server struct {
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
 	mediaResolver *mediafetch.Resolver
+	// routingScanSem bounds how many provider-selection scans (the
+	// ReserveProviderEx/ReserveProviderWithPlan family — a read-lock walk of
+	// ~1,260 providers per attempt) may run concurrently. During the
+	// 2026-09-01 congestion collapse, retry-amplified inbound (~100 req/s of
+	// retryable 429 traffic) times a fresh full scan per dispatch attempt
+	// saturated every coordinator CPU (attempt-0 route p50 40ms → 4.6s,
+	// success ~40%, 429s delivered after 11s) — a stable death loop. With the
+	// semaphore, excess requests park cheaply on the channel instead of
+	// piling onto the scheduler; one that cannot acquire within its remaining
+	// first-content budget sheds as a capacity-shaped 429
+	// (errRoutingScanSaturated). Capacity defaults to runtime.NumCPU()
+	// (min 2); override via EIGENINFERENCE_ROUTING_CONCURRENCY
+	// (SetRoutingConcurrency, called before serving starts).
+	routingScanSem chan struct{}
+
+	// routeLatencyEWMAMs is an EWMA of attempt-0 route latency (ReceivedAt →
+	// RoutedAt, milliseconds), updated where RoutedAt is stamped in
+	// dispatchWithReserver. estimateRetryAfter consults it: when routing
+	// itself is degraded (EWMA > 1s) the returned Retry-After scales up so
+	// upstream backoff actually relieves pressure — during the 2026-09-01
+	// collapse the queue-depth heuristic returned 2s on an empty queue and
+	// invited 2s retry storms. Guarded by routeLatencyMu (one tiny critical
+	// section per request; no allocation).
+	routeLatencyMu     sync.Mutex
+	routeLatencyEWMAMs float64
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -793,6 +819,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
@@ -1292,6 +1319,67 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 		tps = 0
 	}
 	s.minDecodeTPS = tps
+}
+
+// DefaultRoutingConcurrency is the built-in routing-scan semaphore capacity:
+// one scan per CPU (a scan is pure CPU under the registry read lock), floored
+// at 2 so a tiny container never serializes routing entirely. Exported so
+// main.go can log the effective default alongside the env override.
+func DefaultRoutingConcurrency() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// SetRoutingConcurrency replaces the routing-scan semaphore with one of the
+// given capacity (EIGENINFERENCE_ROUTING_CONCURRENCY). Values < 2 clamp to 2.
+// Call before serving starts — replacing the channel while scans are in
+// flight would strand slots.
+func (s *Server) SetRoutingConcurrency(n int) {
+	if n < 2 {
+		n = 2
+	}
+	s.routingScanSem = make(chan struct{}, n)
+}
+
+// acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
+// the wait budget elapses, or done fires (client gone). It returns false only
+// when no slot was acquired; the caller then sheds the attempt as
+// capacity-shaped (errRoutingScanSaturated) instead of piling another scan
+// onto saturated CPUs. A nil semaphore (a &Server{} built directly in tests)
+// admits immediately, preserving legacy behavior for bare fixtures.
+func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) bool {
+	if s.routingScanSem == nil {
+		return true
+	}
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return true
+	default:
+	}
+	if wait <= 0 {
+		return false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	case <-done:
+		return false
+	}
+}
+
+// releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
+func (s *Server) releaseRoutingScanSlot() {
+	if s.routingScanSem == nil {
+		return
+	}
+	<-s.routingScanSem
 }
 
 // SetServabilityGate toggles the smart early-429 admission gate. See the

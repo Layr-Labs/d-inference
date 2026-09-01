@@ -93,6 +93,22 @@ const (
 	// provider) stops on the FIRST attempt regardless — see classifyRejection.
 	maxCapacityClassRetries = 3
 
+	// maxFirstChunkTimeoutRetries bounds failover for coordinator-synthesized
+	// first-chunk TIMEOUTS (the untyped 504 the exhausted ladder reclassifies
+	// to a retryable 429 with reason "first_chunk_timeout"). Unlike capacity
+	// rejections these carried NO cap: every retry re-ran a full fleet
+	// reservation scan (~1,260 providers, registry.ReserveProviderEx), and in
+	// the 2026-09-01 congestion collapse retry-amplified inbound (~100 req/s
+	// of retryable 429 traffic from OpenRouter) times per-request fleet scans
+	// saturated every coordinator CPU — attempt-0 route p50 went 40ms → 4.6s,
+	// success ~40%, 429s were delivered after 11s, inbound ~6k/min vs served
+	// ~550/min. The request-absolute first-content budget already bounds WALL
+	// time per request; this bounds CPU: after this many timed-out attempts
+	// (each on a distinct provider — a timed-out provider is excluded from
+	// re-selection) the ladder exhausts immediately into the existing
+	// synthetic-timeout → 429 reclassification (classifyExhaustedStatus).
+	maxFirstChunkTimeoutRetries = 3
+
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is
@@ -587,6 +603,14 @@ const errTTFTTooSlow = "all available providers exceed the TTFT target"
 // charging provider health.
 const errFirstContentDeadlineExpired = "first-content deadline expired before provider dispatch"
 
+// errRoutingScanSaturated is returned when no provider-selection scan slot
+// (Server.routingScanSem) freed up within the request's remaining
+// first-content budget: the coordinator itself is the bottleneck (the
+// 2026-09-01 congestion collapse). No provider was scanned or contacted, so
+// callers shed ONE capacity-shaped retryable 429 — never a 5xx, never more
+// scans.
+const errRoutingScanSaturated = "routing scan capacity saturated — coordinator busy"
+
 // consumerModel returns the model name to echo back to the consumer: the public
 // alias they requested when set, otherwise the concrete build id (raw-id
 // requests and any internal caller that didn't populate PublicModel).
@@ -995,7 +1019,20 @@ func (s *Server) dispatchWithReserver(
 		return ids
 	}
 
+	// Bound concurrent provider-selection scans (2026-09-01 congestion
+	// collapse: retry-amplified inbound × a fresh full fleet scan per attempt
+	// saturated every coordinator CPU). The wait is bounded by the request's
+	// remaining first-content budget: a goroutine parks cheaply on the channel
+	// and either scans as soon as a slot frees or sheds capacity-shaped
+	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
+	if !s.acquireRoutingScanSlot(
+		firstTokenRemainingSince(receivedAt, requestDeadline),
+		r.Context().Done(),
+	) {
+		return nil, nil, decision, nil, errRoutingScanSaturated, http.StatusTooManyRequests
+	}
 	provider, decision, plan = reserve(pr, excludeList())
+	s.releaseRoutingScanSlot()
 	if provider == nil {
 		// Providers serve this model but none can physically fit it: don't make
 		// the caller queue/retry for something that will never load.
@@ -1020,6 +1057,12 @@ func (s *Server) dispatchWithReserver(
 	defer cleanupPending()
 	if pr.Timing != nil {
 		pr.Timing.RoutedAt = time.Now()
+		if attempt == 0 && !receivedAt.IsZero() {
+			// Attempt-0 route latency feeds the distress EWMA behind
+			// estimateRetryAfter (2026-09-01: route p50 40ms → 4.6s while the
+			// empty-queue heuristic kept answering "retry in 2s").
+			s.noteAttempt0RouteLatency(pr.Timing.RoutedAt.Sub(receivedAt))
+		}
 	}
 	if recordRoute != nil {
 		recordRoute(provider, pr, decision)
@@ -1426,21 +1469,77 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	return true
 }
 
+// routeLatencyEWMAAlpha weights the newest attempt-0 route-latency sample in
+// the distress EWMA: ~10 healthy requests pull a degraded average back under
+// the threshold once the collapse clears.
+const routeLatencyEWMAAlpha = 0.2
+
+// degradedRouteEWMAThresholdMs is the attempt-0 route-latency EWMA above which
+// estimateRetryAfter switches from the queue-depth heuristic to distress
+// scaling. Healthy routing runs ~40ms; anything over a second means the
+// coordinator itself is the bottleneck.
+const degradedRouteEWMAThresholdMs = 1000.0
+
+// maxDistressRetryAfter caps the distress-scaled Retry-After (seconds).
+const maxDistressRetryAfter = 60
+
+// noteAttempt0RouteLatency folds one attempt-0 route latency (ReceivedAt →
+// RoutedAt) into the distress EWMA. Called from dispatchWithReserver where
+// RoutedAt is stamped; negative samples (clock skew) are dropped.
+func (s *Server) noteAttempt0RouteLatency(d time.Duration) {
+	ms := float64(d) / float64(time.Millisecond)
+	if ms < 0 {
+		return
+	}
+	s.routeLatencyMu.Lock()
+	if s.routeLatencyEWMAMs == 0 {
+		s.routeLatencyEWMAMs = ms
+	} else {
+		s.routeLatencyEWMAMs = routeLatencyEWMAAlpha*ms +
+			(1-routeLatencyEWMAAlpha)*s.routeLatencyEWMAMs
+	}
+	s.routeLatencyMu.Unlock()
+}
+
+// attempt0RouteEWMAMs reads the current attempt-0 route-latency EWMA (ms).
+func (s *Server) attempt0RouteEWMAMs() float64 {
+	s.routeLatencyMu.Lock()
+	defer s.routeLatencyMu.Unlock()
+	return s.routeLatencyEWMAMs
+}
+
 // estimateRetryAfter returns a suggested wait time in seconds before retrying
 // a request for the given model. Based on queue depth as a rough proxy for
 // fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
+//
+// Distress scaling (2026-09-01 congestion collapse): queue depth alone was a
+// LIAR under CPU saturation — the queue was empty (nothing could even reach
+// it), so every 429 carried "Retry-After: 2" and upstream obligingly hammered
+// the coordinator every 2s, sustaining the death loop. When the attempt-0
+// route-latency EWMA shows routing itself is degraded (> 1s), the answer
+// scales with the observed degradation — max(base, ceil(EWMA seconds)×5),
+// capped at 60s — so upstream backoff actually relieves pressure. Queue-depth
+// behavior is unchanged while routing is healthy.
 func (s *Server) estimateRetryAfter(model string) int {
-	queueDepth := s.registry.Queue().QueueSize(model)
-	if queueDepth == 0 {
-		return 2 // Light load, retry soon
+	estimate := 2 // Light load, retry soon
+	if queueDepth := s.registry.Queue().QueueSize(model); queueDepth > 0 {
+		// Rough estimate: each queued request takes ~3 seconds to drain.
+		estimate = queueDepth * 3
+		if estimate < 2 {
+			estimate = 2
+		}
+		if estimate > 30 {
+			estimate = 30
+		}
 	}
-	// Rough estimate: each queued request takes ~3 seconds to drain.
-	estimate := queueDepth * 3
-	if estimate < 2 {
-		estimate = 2
-	}
-	if estimate > 30 {
-		estimate = 30
+	if ewmaMs := s.attempt0RouteEWMAMs(); ewmaMs > degradedRouteEWMAThresholdMs {
+		scaled := int(math.Ceil(ewmaMs/1000)) * 5
+		if scaled > maxDistressRetryAfter {
+			scaled = maxDistressRetryAfter
+		}
+		if scaled > estimate {
+			estimate = scaled
+		}
 	}
 	return estimate
 }

@@ -184,6 +184,14 @@ type dispatchState struct {
 	// DETERMINISTIC-context rejection (prompt > model context) stops on the first
 	// attempt regardless (see classifyRejection / failoverOutcome).
 	capacityRetries int
+	// firstChunkTimeoutRetries counts attempts that ended in a
+	// coordinator-synthesized first-chunk TIMEOUT (untyped 504 → the
+	// "first_chunk_timeout" 429 on exhaustion). Bounded by
+	// maxFirstChunkTimeoutRetries so a slow-provider storm cannot burn a
+	// fresh fleet scan per attempt across the ladder (the 2026-09-01
+	// congestion collapse; see the constant). Each counted attempt was on a
+	// distinct provider — the timed-out provider joins excludeProviders.
+	firstChunkTimeoutRetries int
 	// lastFailureDeadline is scoped to the most recent terminal attempt. A
 	// deadline refusal remains eligible for deadline_unreachable only while no
 	// later genuine provider fault has replaced it.
@@ -1213,6 +1221,20 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			return outcomeFailFast
 		}
+		if dispatchErr == errRoutingScanSaturated {
+			// No provider-selection scan slot freed up within the request's
+			// whole remaining first-content budget — the coordinator itself is
+			// saturated (2026-09-01 collapse). Zero providers were scanned or
+			// contacted, so latch the capacity-shaped verdict: the exhausted
+			// ladder emits ONE uptime-neutral retryable 429 (whose Retry-After
+			// scales with the route-latency distress EWMA) and never scans
+			// again for this request.
+			s.ddIncr("routing.scan_admission_timeout", []string{"model:" + d.model})
+			d.setLastError(dispatchErr, http.StatusTooManyRequests)
+			d.unservable = true
+			d.unservableReason = rejectionReasonRoutingSaturated
+			return outcomeFailFast
+		}
 		if d.lastFailureDeadline && dispatchErr == errTTFTTooSlow {
 			// At least one provider already refused this exact remaining
 			// deadline, and the rest cannot pass hard TTFT admission. Candidate
@@ -1652,6 +1674,13 @@ func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *regis
 // "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
 const rejectionReasonOversized = "oversized_request"
 
+// rejectionReasonRoutingSaturated is the rejection-ledger reason_code for a
+// request shed because no provider-selection scan slot freed up within its
+// remaining first-content budget (Server.routingScanSem — the coordinator
+// itself was the bottleneck, 2026-09-01 collapse). Capacity-shaped: one
+// retryable 429, uptime-neutral, zero providers contacted.
+const rejectionReasonRoutingSaturated = "routing_saturated"
+
 // rejectionReasonDeadlineUnreachable is the rejection-ledger reason for a
 // request whose remaining absolute first-content budget was refused by one or
 // more providers and whose untried candidates were then exhausted.
@@ -1719,6 +1748,28 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// model_capability rejection. Kill switch: EIGENINFERENCE_JINJA_TERMINAL_REJECT.
 	if d.latchJinjaTerminalReject(d.lastErrReason, "") {
 		return true
+	}
+	// Timeout-class ladder cap: a coordinator-synthesized first-chunk timeout
+	// is an untyped 504 (setLastError clears the typed cause for synthetic
+	// terminals; a typed safety_deadline/backpressure_timeout 504 is a real
+	// provider terminal and keeps its fault failover). The provider went
+	// silent — a fresh provider MAY answer, so fail over, but each retry
+	// costs a full fleet reservation scan; unbounded, that is the exact
+	// CPU-amplification loop of the 2026-09-01 congestion collapse. Bounded
+	// like maxCapacityClassRetries: at the cap the ladder exhausts and the
+	// synthetic 504 reclassifies to the retryable 429 with reason
+	// "first_chunk_timeout" (classifyExhaustedStatus). Same discriminator as
+	// waitFirstChunk's route-outcome writer, so a timeout never double-counts
+	// as anything else. Behavior below the cap is unchanged: classifyRejection
+	// already returns rejectionNotCapacity for the synthetic timeout string
+	// (see rejection_classify_test.go), i.e. "keep failing over".
+	if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+		d.firstChunkTimeoutRetries++
+		if d.firstChunkTimeoutRetries >= maxFirstChunkTimeoutRetries {
+			d.s.ddIncr("routing.first_chunk_timeout_ladder_capped", []string{"model:" + d.model})
+			return true
+		}
+		return false
 	}
 	// Typed-cause override (highest-fidelity signal): a provider that attaches
 	// terminal_cause=admission_timeout is TELLING us its engine was too busy to

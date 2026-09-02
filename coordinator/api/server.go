@@ -2822,6 +2822,7 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
 			s.emitExactCacheDDGauges()
+			s.emitStoreCacheGauges()
 			// Network utilization — demand/capacity across the warm-serving and
 			// token-budget axes, plus a per-model breakdown.
 			util := s.registry.NetworkUtilizationSnapshot()

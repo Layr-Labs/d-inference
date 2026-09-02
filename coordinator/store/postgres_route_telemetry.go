@@ -243,16 +243,16 @@ func (s *PostgresStore) RecordInferenceRoutes(records []*InferenceRouteRecord) e
 
 // execInferenceRouteInsert issues one multi-row upsert for rows. The caller
 // guarantees rows is non-empty and free of duplicate (request_id, attempt)
-// keys. now is captured once so every defaulted timestamp in the statement
-// agrees, exactly as the single-row path always did.
+// keys. A zero CreatedAt/UpdatedAt is defaulted per record from its own
+// time.Now(), exactly as sequential single-row calls would stamp it (the
+// memory store does the same), so batch and single paths agree.
 func (s *PostgresStore) execInferenceRouteInsert(rows []*InferenceRouteRecord, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	now := time.Now().UTC()
 	args := make([]any, 0, len(rows)*inferenceRouteInsertParamCount)
 	for _, r := range rows {
-		args = inferenceRouteInsertArgs(args, r, now)
+		args = inferenceRouteInsertArgs(args, r, time.Now().UTC())
 	}
 	_, err := s.pool.Exec(ctx, inferenceRouteInsertSQL(len(rows)), args...)
 	return err

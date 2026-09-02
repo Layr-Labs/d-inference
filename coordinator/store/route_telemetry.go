@@ -132,7 +132,12 @@ func applyInferenceRouteOutcomeToRecord(rec *InferenceRouteRecord, outcome Infer
 	rec.FinalStatus = outcome.FinalStatus
 	rec.ErrorCode = outcome.ErrorCode
 	rec.ErrorClass = outcome.ErrorClass
-	rec.ErrorReason = outcome.ErrorReason
+	// Outcome updates only ever set error_reason when they carry one (the
+	// postgres UPDATE is COALESCE(NULLIF($6, ''), error_reason)); a reason the
+	// route record itself was written with must survive reason-less updates.
+	if outcome.ErrorReason != "" {
+		rec.ErrorReason = outcome.ErrorReason
+	}
 	rec.PromptTokens = outcome.PromptTokens
 	rec.CompletionTokens = outcome.CompletionTokens
 	rec.ReasoningTokens = outcome.ReasoningTokens

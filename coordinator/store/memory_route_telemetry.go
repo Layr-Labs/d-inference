@@ -2,12 +2,15 @@ package store
 
 // Routing-telemetry paths for MemoryStore. The batch methods are the
 // single-row methods applied in order under ONE lock acquisition, so both
-// backends expose identical per-row semantics.
+// backends expose identical per-row semantics — including per-record
+// "now" for zero timestamps, exactly as sequential single-row calls would.
 
 import "time"
 
 // RecordInferenceRoute writes or refreshes the routing decision snapshot for a
-// request attempt. A refresh keeps the original CreatedAt.
+// request attempt. A refresh keeps the original CreatedAt and, like the
+// postgres upsert's COALESCE, keeps an existing error_reason when the fresh
+// record carries none.
 func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
 	if record == nil {
 		return nil
@@ -28,14 +31,13 @@ func (s *MemoryStore) RecordInferenceRoutes(records []*InferenceRouteRecord) err
 	if len(records) == 0 {
 		return nil
 	}
-	now := time.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, record := range records {
 		if record != nil {
-			s.recordInferenceRouteLocked(record, now)
+			s.recordInferenceRouteLocked(record, time.Now())
 		}
 	}
 	return nil
@@ -52,9 +54,10 @@ func (s *MemoryStore) recordInferenceRouteLocked(record *InferenceRouteRecord, n
 
 	key := inferenceRouteKey(record.RequestID, record.Attempt)
 	if idx, ok := s.inferenceRouteIndex[key]; ok {
-		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
-		if rec.UpdatedAt.IsZero() {
-			rec.UpdatedAt = now
+		existing := s.inferenceRoutes[idx]
+		rec.CreatedAt = existing.CreatedAt
+		if rec.ErrorReason == "" {
+			rec.ErrorReason = existing.ErrorReason
 		}
 		s.inferenceRoutes[idx] = rec
 		return

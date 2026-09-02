@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"sort"
-
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -46,12 +44,16 @@ func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64) {
 	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	samples := r.soloSamples[key]
-	if len(samples) >= r.maxSamples {
-		// Drop oldest sample (FIFO ring), same shape as Record.
-		samples = samples[1:]
+	// FIFO ring, same shape as Record.
+	samples := appendRingSample(r.soloSamples[key], tps, r.maxSamples)
+	r.soloSamples[key] = samples
+	byClass := r.soloByModel[model]
+	if byClass == nil {
+		byClass = make(map[string]tpsSampleStat)
+		r.soloByModel[model] = byClass
 	}
-	r.soloSamples[key] = append(samples, tps)
+	byClass[chipClass] = tpsSampleStat{median: r.medianOfRingLocked(samples), n: len(samples)}
+	r.refreshSoloAllChipsLocked(model)
 }
 
 // SoloMedian returns the median solo decode TPS for the given model and chip
@@ -59,13 +61,10 @@ func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64) {
 // solo samples exist. The count lets callers apply a min-sample trust floor
 // before using the median for admission decisions.
 func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
-	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.RLock()
-	samples := r.soloSamples[key]
-	sorted := make([]float64, len(samples))
-	copy(sorted, samples)
+	stat := r.soloByModel[model][chipClass]
 	r.mu.RUnlock()
-	return medianOfCopied(sorted), len(sorted)
+	return stat.median, stat.n
 }
 
 // SoloMedianAllChips is the CONSERVATIVE cross-class transfer used when a
@@ -94,46 +93,16 @@ func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
 // The total sample count keeps the resolver's >= qualityCapSoloMinSamples trust
 // floor unchanged. The tpsKey.ChipFamily field carries the chip-class string
 // for solo entries, so grouping by key.Model + key.ChipFamily groups by class.
+//
+// O(1) and allocation-free on read: the aggregate is maintained by RecordSolo
+// (tps_median_cache.go), which is what lets the routing scan resolve the
+// quality cap for every provider without copying and sorting the fleet's
+// samples per provider.
 func (r *TPSRegistry) SoloMedianAllChips(model string) (tps float64, samples, classes int) {
 	r.mu.RLock()
-	perClass := make(map[string][]float64)
-	for key, s := range r.soloSamples {
-		if key.Model != model || len(s) == 0 {
-			continue
-		}
-		// append copies the values, so perClass is safe to sort after RUnlock.
-		perClass[key.ChipFamily] = append(perClass[key.ChipFamily], s...)
-	}
+	agg := r.soloAllChips[model]
 	r.mu.RUnlock()
-
-	minMedian, total, classCount := 0.0, 0, 0
-	for _, s := range perClass {
-		// s is a private copy; medianOfCopied sorts it in place.
-		m := medianOfCopied(s)
-		total += len(s)
-		if m <= 0 {
-			continue
-		}
-		if classCount == 0 || m < minMedian {
-			minMedian = m
-		}
-		classCount++
-	}
-	return minMedian, total, classCount
-}
-
-// medianOfCopied returns the median of samples, sorting in place (callers pass
-// a private copy). 0 for an empty slice.
-func medianOfCopied(sorted []float64) float64 {
-	if len(sorted) == 0 {
-		return 0
-	}
-	sort.Float64s(sorted)
-	mid := len(sorted) / 2
-	if len(sorted)%2 == 0 {
-		return (sorted[mid-1] + sorted[mid]) / 2
-	}
-	return sorted[mid]
+	return agg.minMedian, agg.total, agg.classes
 }
 
 // soloSampleEligible reports whether a heartbeat's capacity snapshot qualifies

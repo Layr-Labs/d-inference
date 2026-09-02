@@ -310,6 +310,13 @@ body 99 µs → 22 µs; 60 KB history 2.74 ms → 0.54 ms; 3 MB inline image
   duplicated here. The generic completions/messages handlers still call
   `resolveRequestedModel` (inside #799's hunks) and can be folded onto the
   parse-once path after #799 merges.
+- **Review coverage**: every worker slice had both a Codex and an independent
+  Claude review; the merged branch had both as well. The Codex leg for the
+  final registry batch (planner coalescing, memo bounds, walk clock) was
+  launched but its result never came back through the wrapper; that batch
+  carries the independent Claude review (PASS) only.
+- **Not exercised here**: the system-level `e2e/` integration suite (needs a
+  Swift provider binary and a downloaded model) and a real Datadog agent.
 - **Swap-planner coalescing window**: a request enqueued right after a plan
   waits up to 250 ms for the next heartbeat-triggered plan (the api
   cold-dispatch kick still plans immediately); on a fleet with no heartbeats at

@@ -1765,7 +1765,7 @@ func (s *MemoryStore) GetModelRegistryRecord(modelID string) (*ModelRegistryReco
 
 	rec := s.modelRegistryRecordLocked(modelID)
 	if rec == nil {
-		return nil, fmt.Errorf("model %q not found", modelID)
+		return nil, fmt.Errorf("model %q %w", modelID, ErrNotFound)
 	}
 	return rec, nil
 }
@@ -2027,7 +2027,7 @@ func (s *MemoryStore) GetUserByPrivyID(privyUserID string) (*User, error) {
 
 	u, ok := s.usersByPrivyID[privyUserID]
 	if !ok {
-		return nil, fmt.Errorf("user with Privy ID %q not found", privyUserID)
+		return nil, fmt.Errorf("user with Privy ID %q %w", privyUserID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil
@@ -2040,7 +2040,7 @@ func (s *MemoryStore) GetUserByAccountID(accountID string) (*User, error) {
 
 	u, ok := s.usersByAccountID[accountID]
 	if !ok {
-		return nil, fmt.Errorf("user with account ID %q not found", accountID)
+		return nil, fmt.Errorf("user with account ID %q %w", accountID, ErrNotFound)
 	}
 	copy := *u
 	return &copy, nil

@@ -1580,7 +1580,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rawBody := prelude.rawBody
+	// body is the provider-bound request: every rewrite below mutates
+	// body.parsed (== parsed) and marks it dirty; the bytes are serialized ONCE,
+	// at the single serialization point ahead of the first consumer of the
+	// provider body. originalRawBody stays the caller's untouched input.
+	body := &prelude.body
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
@@ -1626,12 +1630,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var allowedProviderSerials []string
-	stripped := stripProviderRoutingFields(parsed)
-	if applyMetadataDetailsRequest(r, parsed) {
-		stripped = true
+	if stripProviderRoutingFields(parsed) {
+		body.markDirty()
 	}
-	if stripped {
-		rawBody, _ = marshalForwardBody(parsed)
+	if applyMetadataDetailsRequest(r, parsed) {
+		body.markDirty()
 	}
 
 	// "Use my own machine, for free" opt-in. The signal is the
@@ -1643,11 +1646,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Derive request-shape traits before alias resolution. During a
 	// mixed-version rollout Desired may have ordinary providers while Previous
-	// has the only provider capable of enforcing this exact tool policy.
-	requiresVision := detectMediaRequirement(parsed)
-	hasTools := requestHasTools(parsed)
+	// has the only provider capable of enforcing this exact tool policy. One
+	// walk of the message tree yields the media count, the tools flag, and the
+	// routing/billing token estimates (consumed below, after the rewrites).
+	shape := introspectRequest(parsed)
+	requiresVision := shape.requiresVision()
+	hasTools := shape.hasTools
 	isResponsesAPI := input != nil && len(messages) == 0
-	constraintBody := originalRawBody
+	// Tool-constraint validation must judge the PRE-normalization tools (a
+	// normalization marker in the caller's body is forged). On the chat surface
+	// that is the parsed map with the caller's original tools restored; the
+	// Responses surface needs the input→chat lowering, which works on bytes, so
+	// the untouched input is lowered and parsed once.
+	var validatedPolicy validatedToolConstraintPolicy
+	var validationErr error
 	if isResponsesAPI {
 		loweredConstraintBody, err := promptcontract.LowerProviderBody(
 			promptcontract.EndpointResponses, originalRawBody)
@@ -1656,9 +1668,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"invalid_request_error", err.Error()))
 			return
 		}
-		constraintBody = loweredConstraintBody
+		validatedPolicy, validationErr = validateToolConstraintPolicy(loweredConstraintBody)
+	} else {
+		validatedPolicy, validationErr = validateParsedToolConstraintPolicy(
+			constraintView(parsed, prelude.originalTools))
 	}
-	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
 	if validationErr != nil {
 		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
 		writeToolConstraintValidationError(w, validationErr)
@@ -1689,8 +1703,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// the pick only considers builds the constrained provider set can actually
 	// serve. From here on `model` is the build (routing/billing/serving) while
 	// `publicModel` is echoed back so the consumer never sees the quant.
-	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
-		parsed, rawBody, model, allowedProviderSerials, policy, aliasTraits)
+	buildModel, publicModel, modelRewritten, ok := s.resolveRequestedBuild(
+		parsed, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
 			r:               r,
@@ -1706,18 +1720,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
 	}
-	model, rawBody = buildModel, resolvedBody
+	model = buildModel
+	if modelRewritten {
+		body.markDirty()
+	}
 	user := auth.UserFromContext(r.Context())
 	serviceChatConsumer := r.URL.Path == "/v1/chat/completions" &&
 		user != nil && user.Role == store.RoleService
-	preparedBody, _, err := applyResolvedModelReasoningPolicy(
-		parsed, rawBody, model, serviceChatConsumer, reasoningProvided)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse(
-			"server_error", "failed to prepare inference request"))
-		return
+	if applyResolvedModelReasoningPolicy(parsed, model, serviceChatConsumer, reasoningProvided) {
+		body.markDirty()
 	}
-	rawBody = preparedBody
 
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
@@ -1749,7 +1761,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		resolvedRuntimeParameters = rec.RuntimeParameters
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
-			rawBody, _ = marshalForwardBody(parsed)
+			body.markDirty()
 		}
 		// Use the registry's max_output_length as the default max_tokens
 		// bound instead of the hardcoded 8192. This lets models like
@@ -1776,12 +1788,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
 	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
-		rawBody, _ = marshalForwardBody(parsed)
+		body.markDirty()
 	}
 
 	stream, _ := parsed["stream"].(bool)
-	estimatedPromptTokens := estimatePromptTokens(parsed)
-	billingPromptTokens := estimateBillingPromptTokens(parsed)
+	estimatedPromptTokens := shape.routingPromptTokens(parsed)
+	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
@@ -1789,6 +1801,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Single serialization point: every rewrite above (stop, stripped fields,
+	// alias, reasoning policy, runtime defaults, max_tokens) landed in parsed;
+	// serialize once here — or hand the caller's exact bytes through when
+	// nothing changed.
+	rawBody, err := body.current()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse(
+			"server_error", "failed to prepare inference request"))
+		return
+	}
 	providerBody := rawBody
 	if isResponsesAPI {
 		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
@@ -1814,57 +1836,29 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		providerBody = loweredProviderBody
 	}
-	providerBodyForModel := func(candidateModel string) ([]byte, error) {
-		candidateParsed := make(map[string]any, len(parsed))
-		for key, value := range parsed {
-			candidateParsed[key] = value
-		}
-		candidateParsed["model"] = candidateModel
-		candidateDefaults := runtimeDefaults
-		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
-			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
-		} else {
-			candidateDefaults.apply(candidateParsed, nil)
-		}
-		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
-		if marshalErr == nil {
-			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
-				candidateParsed, candidateBody, candidateModel, serviceChatConsumer, reasoningProvided)
-		}
-		if marshalErr == nil && isResponsesAPI {
-			candidateBody, marshalErr = promptcontract.LowerProviderBody(
-				promptcontract.EndpointResponses, candidateBody)
-		}
-		return candidateBody, marshalErr
-	}
+	// Candidate provider bodies (the resolved build, the alias fallback build
+	// the preflight probes) and the routing verdicts derived from them are
+	// memoized per request: traits, the protocol-0 size verdict, and dispatch
+	// all reuse one serialization per candidate. The resolved build is seeded
+	// with the body serialized above — parsed is fully reconciled for it, so
+	// a rebuild would produce the same bytes.
+	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
+		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
+			serviceChatConsumer, reasoningProvided, isResponsesAPI)
+	}, hasTools, requiresVision)
+	bodies.seed(model, providerBody)
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return registry.RequestTraits{
-				HasTools:               hasTools,
-				RequiresToolConstraint: requiresToolConstraint,
-				ToolChoiceMode:         string(validatedMode),
-				ToolChoiceName:         toolChoiceName,
-				ParallelToolCalls:      parallelToolCalls,
-			}
+		traits, ok := bodies.traits(candidateModel)
+		if !ok {
+			traits = registry.RequestTraits{HasTools: hasTools}
 		}
-		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
 		return traits
 	}
-	providerBodyErrorForModel := func(candidateModel string) error {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return nil
-		}
-		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
-		return sizeErr
-	}
+	providerBodyErrorForModel := bodies.sizeError
 	routingTraits := routingTraitsForModel(model)
 
 	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
@@ -1960,14 +1954,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// refreshForwardBody re-derives every view of the provider-bound request from
 	// a freshly marshaled `parsed`: the threaded rawBody, the body actually
 	// forwarded to the provider (re-lowered input→chat on the Responses surface,
-	// which can itself fail with a 400), and the routing traits computed from it.
-	// Any in-place mutation of `parsed` MUST go through it — an alias fallback
-	// rewriting the model, or remote media being inlined as data: URIs. Returns
-	// false after writing a terminal response.
-	refreshForwardBody := func(body []byte, forModel string) bool {
-		rawBody = body
+	// which can itself fail with a 400), the memoized candidate bodies (every
+	// earlier candidate described a parsed that no longer exists), and the
+	// routing traits computed from it. Any in-place mutation of `parsed` MUST go
+	// through it — an alias fallback rewriting the model, or remote media being
+	// inlined as data: URIs. Returns false after writing a terminal response.
+	refreshForwardBody := func(forwardBytes []byte, forModel string) bool {
+		rawBody = forwardBytes
+		body.replace(forwardBytes)
+		bodies.reset()
 		if !isResponsesAPI {
 			providerBody = rawBody
+			bodies.seed(forModel, providerBody)
 			routingTraits = routingTraitsForModel(forModel)
 			return true
 		}
@@ -1994,6 +1992,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return false
 		}
+		bodies.seed(forModel, providerBody)
 		routingTraits = routingTraitsForModel(forModel)
 		return true
 	}
@@ -2053,10 +2052,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			refundReservation()
 			return false
 		}
-		body, _ := marshalForwardBody(parsed)
-		body, _, _ = applyResolvedModelReasoningPolicy(
-			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
-		return refreshForwardBody(body, newModel)
+		applyResolvedModelReasoningPolicy(parsed, newModel, serviceChatConsumer, reasoningProvided)
+		// maybeFallbackAlias rewrote parsed["model"]; the defaults and reasoning
+		// policy above may have moved more. One serialization covers all of it.
+		body.markDirty()
+		forwardBytes, err := body.current()
+		if err != nil {
+			refundReservation()
+			writeJSON(w, http.StatusInternalServerError, errorResponse(
+				"server_error", "failed to prepare inference request"))
+			return false
+		}
+		return refreshForwardBody(forwardBytes, newModel)
 	}
 	var preflightHandled bool
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
@@ -2126,7 +2133,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
-		visionImageCount:       countMediaParts(parsed),
+		visionImageCount:       shape.mediaParts,
 		hasTools:               hasTools,
 		requiresToolConstraint: requiresToolConstraint,
 		toolChoiceMode:         string(validatedMode),
@@ -4092,7 +4099,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	rawBody := prelude.rawBody
+	// This handler rebuilds its provider body from `parsed` (inferenceBody
+	// below); the prelude's forward bytes are only threaded into
+	// resolveRequestedModel, which never uses them here.
+	rawBody := prelude.originalRawBody
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model

@@ -203,23 +203,23 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 	if !ok {
 		b.Fatalf("prelude failed: %s", w.Body.String())
 	}
-	rawBody := prelude.rawBody
-	originalRawBody := prelude.originalRawBody
+	fb := &prelude.body
 	parsed := prelude.parsed
 	model := prelude.model
 	runtimeDefaults := newModelRuntimeDefaults(parsed)
 	_, reasoningProvided := parsed["reasoning"]
 
-	stripped := stripProviderRoutingFields(parsed)
+	if stripProviderRoutingFields(parsed) {
+		fb.markDirty()
+	}
 	if applyMetadataDetailsRequest(r, parsed) {
-		stripped = true
+		fb.markDirty()
 	}
-	if stripped {
-		rawBody, _ = marshalForwardBody(parsed)
-	}
-	requiresVision := detectMediaRequirement(parsed)
-	hasTools := requestHasTools(parsed)
-	validatedPolicy, err := validateToolConstraintPolicy(originalRawBody)
+	shape := introspectRequest(parsed)
+	requiresVision := shape.requiresVision()
+	hasTools := shape.hasTools
+	validatedPolicy, err := validateParsedToolConstraintPolicy(
+		constraintView(parsed, prelude.originalTools))
 	if err != nil {
 		b.Fatalf("constraint validation: %v", err)
 	}
@@ -229,81 +229,56 @@ func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 		ToolChoiceName:    validatedPolicy.name,
 		ParallelToolCalls: validatedPolicy.parallel,
 	}
-	buildModel, _, resolvedBody, ok := srv.resolveRequestedModel(
-		parsed, rawBody, model, nil, selfRoutePolicy{}, traits)
+	buildModel, _, rewrote, ok := srv.resolveRequestedBuild(
+		parsed, model, nil, selfRoutePolicy{}, traits)
 	if !ok {
 		b.Fatal("alias did not resolve")
 	}
-	model, rawBody = buildModel, resolvedBody
-	rawBody, _, err = applyResolvedModelReasoningPolicy(parsed, rawBody, model, false, reasoningProvided)
-	if err != nil {
-		b.Fatal(err)
+	model = buildModel
+	if rewrote {
+		fb.markDirty()
+	}
+	if applyResolvedModelReasoningPolicy(parsed, model, false, reasoningProvided) {
+		fb.markDirty()
 	}
 	maxOutputBound := defaultMaxOutputTokens
 	if rec, err := srv.store.GetModelRegistryRecord(model); err == nil {
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
-			rawBody, _ = marshalForwardBody(parsed)
+			fb.markDirty()
 		}
 		if rec.MaxOutputLength > 0 {
 			maxOutputBound = rec.MaxOutputLength
 		}
 	}
 	if ensureMaxTokensBound(parsed, false, maxOutputBound) {
-		rawBody, _ = marshalForwardBody(parsed)
+		fb.markDirty()
 	}
-	estimatedPromptTokens := estimatePromptTokens(parsed)
-	billingPromptTokens := estimateBillingPromptTokens(parsed)
+	estimatedPromptTokens := shape.routingPromptTokens(parsed)
+	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	if estimatedPromptTokens <= 0 || billingPromptTokens <= 0 || requestedMaxTokens <= 0 {
 		b.Fatal("estimates must be positive")
 	}
 
-	providerBody := rawBody
-	providerBodyForModel := func(candidateModel string) ([]byte, error) {
-		candidateParsed := make(map[string]any, len(parsed))
-		for key, value := range parsed {
-			candidateParsed[key] = value
-		}
-		candidateParsed["model"] = candidateModel
-		candidateDefaults := runtimeDefaults
-		if rec, err := srv.store.GetModelRegistryRecord(candidateModel); err == nil {
-			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
-		} else {
-			candidateDefaults.apply(candidateParsed, nil)
-		}
-		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
-		if marshalErr == nil {
-			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
-				candidateParsed, candidateBody, candidateModel, false, reasoningProvided)
-		}
-		return candidateBody, marshalErr
-	}
-	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return traits
-		}
-		t, _ := routingTraitsForProviderBody(hasTools, candidateBody, requiresVision)
-		return t
-	}
-	providerBodyErrorForModel := func(candidateModel string) error {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return nil
-		}
-		_, sizeErr := routingTraitsForProviderBody(hasTools, candidateBody, requiresVision)
-		return sizeErr
-	}
-	// handleChatCompletions: routingTraits := routingTraitsForModel(model).
-	_ = routingTraitsForModel(model)
-	// runInferenceAdmission: modelTraits(model) for the capacity probe,
-	// fallbackTraits → traitsForModel(previous), providerBodyErrorForModel(model).
-	_ = routingTraitsForModel(model)
-	_ = routingTraitsForModel(benchPreviousBuild)
-	if err := providerBodyErrorForModel(model); err != nil {
+	providerBody, err := fb.current()
+	if err != nil {
 		b.Fatal(err)
 	}
-	if countMediaParts(parsed) < 0 || len(providerBody) == 0 {
+	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
+		return srv.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
+			false, reasoningProvided, false)
+	}, hasTools, requiresVision)
+	bodies.seed(model, providerBody)
+	// handleChatCompletions: routingTraits := routingTraitsForModel(model).
+	bodies.traits(model)
+	// runInferenceAdmission: modelTraits(model) for the capacity probe,
+	// fallbackTraits → traitsForModel(previous), providerBodyErrorForModel(model).
+	bodies.traits(model)
+	bodies.traits(benchPreviousBuild)
+	if err := bodies.sizeError(model); err != nil {
+		b.Fatal(err)
+	}
+	if shape.mediaParts < 0 || len(providerBody) == 0 {
 		b.Fatal("unexpected preprocessing state")
 	}
 }

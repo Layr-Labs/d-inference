@@ -204,13 +204,40 @@ func TestIndexTopLevelObjectRejectsMalformedBodies(t *testing.T) {
 		``, `[1,2]`, `{"a":1`, `{"a" 1}`, `{"a":1}x`, `{"a":tru}`, `{"a":01}`, `{"a":1,}`,
 		`{,"a":1}`, `{"a":"unterminated}`, `{"a":[1,2}`, `{"a":{"b":1]}`, `{a:1}`, `{"a":1 "b":2}`,
 		`{"a":1}}`, `{"a":"x\"}`,
+		// Nested grammar: the scanner must reject what encoding/json rejects, or
+		// the splice would succeed where the decode path errors.
+		`{"a":[1,,2]}`, `{"a":[1,]}`, `{"a":{"b":}}`, `{"a":{"b":1,}}`, `{"a":[1 2]}`, `{"a":{"b" 1}}`,
+		`{"a":[tru]}`, `{"a":{1:2}}`, `{"a":[01]}`, `{"a":[1.]}`, `{"a":[.5]}`, `{"a":[-]}`, `{"a":[1e]}`,
+		`{"a":"\x"}`, `{"a":"\u12G4"}`, `{"a":"\u123"}`, "{\"a\":\"tab\there\"}", "{\"a\":[\"nl\nhere\"]}",
+		`{"a":["unterminated]}`, `{"a":{"b":"c"}`, `{"a":[[1]}`, `{"a":{"b":[1}}`, `{"a":[]]}`,
 	} {
 		if _, ok := indexTopLevelObject([]byte(body)); ok {
 			t.Errorf("accepted malformed body %q", body)
+		}
+		if err := json.Unmarshal([]byte(body), new(map[string]json.RawMessage)); err == nil {
+			t.Errorf("fixture %q is valid JSON; the scanner would be right to accept it", body)
 		}
 	}
 	idx, ok := indexTopLevelObject([]byte(`{"b":{"x":[1,{"y":"}"}]},"a":"\"","c":null}`))
 	if !ok || len(idx.members) != 3 || idx.sorted || !idx.compact || !idx.plainKeys {
 		t.Fatalf("index = %+v ok=%v", idx, ok)
+	}
+}
+
+// Nesting deeper than the scanner's bound is handed to the decode path (which
+// stays the authority), never accepted by the fast path.
+func TestIndexTopLevelObjectBoundsNesting(t *testing.T) {
+	deep := []byte(`{"a":` + strings.Repeat("[", maxSpliceNestingDepth+8) + strings.Repeat("]", maxSpliceNestingDepth+8) + `}`)
+	if _, ok := indexTopLevelObject(deep); ok {
+		t.Fatal("scanner accepted nesting beyond its bound")
+	}
+	shallow := []byte(`{"a":` + strings.Repeat("[", 64) + strings.Repeat("]", 64) + `}`)
+	if idx, ok := indexTopLevelObject(shallow); !ok || !idx.canonical() {
+		t.Fatalf("scanner rejected shallow nesting: ok=%v idx=%+v", ok, idx)
+	}
+	// Valid escapes, literals and number forms nested anywhere are accepted.
+	valid := []byte(`{"a":["\"\\\/\b\f\n\r\té",true,false,null,0,-0,1.5,1e5,1E+5,2.5e-3,{"b":[[]],"c":{}}]}`)
+	if idx, ok := indexTopLevelObject(valid); !ok || !idx.canonical() {
+		t.Fatalf("scanner rejected valid nested body: ok=%v idx=%+v", ok, idx)
 	}
 }

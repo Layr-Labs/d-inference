@@ -2155,6 +2155,10 @@ type Registry struct {
 	// whole fleet so a walk can be proven identical with and without the index.
 	modelIndexDisabled bool
 
+	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
+	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
+	swapPlanGate modelSwapPlanGate
+
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
@@ -4041,8 +4045,11 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	r.drainQueuedRequestsForModels(providerModelIDs(p))
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
-	// check if a cold provider should swap models to serve queued demand.
-	r.TriggerModelSwaps()
+	// check if a cold provider should swap models to serve queued demand —
+	// coalesced fleet-wide to one plan per modelSwapPlanInterval, since N
+	// heartbeats inside that window would each re-derive the same plan
+	// (model_swap_coalesce.go).
+	r.triggerModelSwapsFromHeartbeat(now)
 }
 
 // SendLoadModel instructs a provider to eagerly load a model so it becomes
@@ -4394,7 +4401,11 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 // hasWarmProviderLocked reports whether a connected provider already has the
 // model warm. Caller must hold r.mu (read or write).
 func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
-	for _, p := range r.providers {
+	// Only advertisers can hold the model warm (warm/slot reports are
+	// canonicalized against p.Models; providerHasWarmModelLocked also requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
 		p.mu.Lock()
 		warm := r.providerHasWarmModelLocked(p, model, now)
 		p.mu.Unlock()
@@ -4451,7 +4462,11 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 // pending requests. Caller must hold r.mu (read or write).
 func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
 	bestProviderID := ""
-	for id, p := range r.providers {
+	// Only advertisers qualify (modelLoadCandidatePendingLocked requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
+		id := p.ID
 		if _, selected := selectedProviders[id]; selected {
 			continue
 		}

@@ -208,6 +208,36 @@ registry follow-up); three read-only getters take the write lock
 changed here); throttled provider persistence is ~126 DB writes/s fleet-wide
 (a product freshness choice, not changed).
 
+### 4.6 Request body pipeline (`api/inference_preprocess.go`, `api/provider_body_*.go`, `api/toolschema_parsed.go`, `api/json_encoded_len.go`)
+
+The chat handler now parses the body once, mutates the map (alias, stop
+normalization, runtime defaults, max_tokens bound, reasoning policy, metadata
+strip) behind a dirty flag, and serializes once at the first byte consumer.
+Tool-schema normalization and tool-constraint validation run on the parsed
+map (the legacy `"tools"` byte gate is preserved so escaped keys still pass
+verbatim); the five message-tree walks are fused into one; billing bytes are
+counted with a JSON-encoded-length routine instead of a full marshal; the
+per-model provider body is memoized per request; and the legacy cache-bust
+size/seal is computed by arithmetic splice on already-canonical bodies.
+
+Full-body operations per request (chat, alias + runtime defaults, no
+`max_tokens`): parses 5 → 1, marshals 10 → 1. With tools on the Responses
+surface: parses 11 → 4, marshals up to 16 → 3.
+
+| Body | Helper-level ns/op | HTTP end-to-end ns/op | allocs (HTTP) |
+|---|---:|---:|---:|
+| 2 KB chat | 99,418 → 22,360 | 492,662 → 445,907 | 1,290 → 801 |
+| 60 KB history | 2,744,618 → 542,521 | 4,306,086 → 1,724,408 | 3,482 → 1,412 |
+| 60 KB history + tools | 3,454,648 → 652,058 | 4,825,177 → 1,857,896 | 7,047 → 2,189 |
+| 3 MB inline image | 147,274,823 → 19,902,326 | 193,711,639 → 53,986,076 | 1,854 → 972 |
+
+Provider-visible bytes are pinned by identity tests against independent
+oracles for every rewrite (verbatim passthrough, alias, stop, max_tokens,
+runtime defaults, reasoning on/off, stripped fields, tool normalization,
+Responses lowering, protocol-0 seal, alias-capacity fallback on both
+surfaces, media inlining), plus property tests for the encoded-length and
+splice routines against the decode → re-encode reference.
+
 ## 5. After
 
 _(pending)_

@@ -1,0 +1,30 @@
+{
+  "displayName": "Darkbloom Cloud SQL backup failed",
+  "combiner": "OR",
+  "conditions": [
+    {
+      "displayName": "Cloud SQL automated backup window did not succeed",
+      "conditionMatchedLog": {
+        "filter": "logName=\"projects/darkbloom-mainnet/logs/cloudaudit.googleapis.com%2Fsystem_event\" AND protoPayload.methodName=\"cloudsql.instances.automatedBackup\" AND resource.labels.database_id=\"darkbloom-mainnet:d-inference-prod-pg17\" AND protoPayload.metadata.windowStatus!=\"STATUS_SUCCEEDED\""
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    },
+    "autoClose": "604800s"
+  },
+  "documentation": {
+    "mimeType": "text/markdown",
+    "content": "The daily automated backup window for production Cloud SQL instance `d-inference-prod-pg17` closed with a status other than `STATUS_SUCCEEDED`.\n\n**Impact.** The most recent daily full backup is missing. Point-in-time recovery still covers the window via archived transaction logs (35-day retention), so this is not immediate data loss, but the recovery path is degraded and consecutive failures erode RPO.\n\n**Triage.**\n1. `gcloud sql backups list --instance=d-inference-prod-pg17 --project=darkbloom-mainnet --limit=5` — confirm the failed run and read the ERROR column.\n2. `gcloud sql instances describe d-inference-prod-pg17 --project=darkbloom-mainnet --format='yaml(settings.backupConfiguration,state)'` — confirm backups are still enabled and the instance is RUNNABLE.\n3. Check for a concurrent maintenance operation or storage-full condition: `gcloud sql operations list --instance=d-inference-prod-pg17 --project=darkbloom-mainnet --limit=10`.\n4. Take an on-demand backup to close the gap: `gcloud sql backups create --instance=d-inference-prod-pg17 --project=darkbloom-mainnet`.\n\n**Escalate** to the Security Officer if two consecutive windows fail — that is a reportable backup-control failure under the SOC 2 availability criteria."
+  },
+  "enabled": true,
+  "notificationChannels": [
+    "projects/darkbloom-mainnet/notificationChannels/9823153599696034473"
+  ],
+  "userLabels": {
+    "project": "darkbloom",
+    "purpose": "backup_integrity"
+  }
+}

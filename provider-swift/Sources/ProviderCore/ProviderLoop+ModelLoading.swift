@@ -432,8 +432,16 @@ extension ProviderLoop {
                 // that the gate double-counts the target and refuses every
                 // load whose padded weights exceed the headroom.
                 let availableNetOfLedgerGb = await availableMemoryGb()
+                // Same basis as the reservation being added back: the padded
+                // target PLUS the retained assistant's bytes (a separately
+                // staged MTP drafter is allocated after the target, so the
+                // requirement must cover both, or the check passes on a
+                // target that fits while target + assistant no longer does).
                 let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb)
+                    weightsGb: Self.loadGateWeightsGb(
+                        estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                        extraWeightBytes: extraWeightBytes),
+                    headroomGb: loadHeadroomGb)
                 if !ModelLoadAdmission.fitsAtAllocation(
                     availableNetOfLedgerGb: availableNetOfLedgerGb,
                     ownReservationBytes: pendingLoadBytes,

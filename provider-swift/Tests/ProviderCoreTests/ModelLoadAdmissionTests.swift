@@ -249,3 +249,21 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!ModelLoadAdmission.fitsAtAllocation(
         availableNetOfLedgerGb: .nan, ownReservationBytes: ownReservation, requiredGb: required))
 }
+
+/// With a separately staged MTP assistant retained, the pending reservation
+/// covers target + assistant, so the requirement at allocation must too:
+/// adding the whole reservation back against a target-only requirement
+/// would pass a box where the target fits but target + assistant no longer does.
+@Test func fitsAtAllocationRequirementCoversTheRetainedAssistant() {
+    let gib: UInt64 = 1024 * 1024 * 1024
+    let assistantGb = 0.5
+    let ownReservation = UInt64((13.5 + assistantGb) * Double(gib))
+    let targetOnly = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 4.5)  // 18.0
+    let withAssistant = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5 + assistantGb, headroomGb: 4.5)  // 18.5
+    // 18.2 free before the reservation: the target alone fits, target + assistant does not.
+    let netted = 18.2 - (13.5 + assistantGb)
+    #expect(ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: netted, ownReservationBytes: ownReservation, requiredGb: targetOnly))
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: netted, ownReservationBytes: ownReservation, requiredGb: withAssistant))
+}

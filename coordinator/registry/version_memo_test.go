@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -92,6 +93,86 @@ func TestVersionMemoIsBoundedAndSelfHealing(t *testing.T) {
 	}
 	if got := versionSegments("0.8.15"); !reflect.DeepEqual(got, []int{0, 8, 15}) {
 		t.Fatalf("post-flood parse = %v", got)
+	}
+}
+
+// TestVersionMemoNeverRetainsOversizedVersions pins the byte bound: a 1 MiB
+// version string (a valid "1.0.0+<metadata>" that fits the frame limit) is
+// parsed correctly and selects the right layout, but leaves the segments memo
+// unchanged and adds at most the shared numeric-core entry to the layout memo
+// — so distinct oversized strings cannot grow either memo. A short string
+// with too many segments is likewise parsed but not retained.
+func TestVersionMemoNeverRetainsOversizedVersions(t *testing.T) {
+	versionSegmentsMemo.reset()
+	slotBudgetLayoutMemo.reset()
+	_ = versionSegments("0.8.15") // warm one real entry
+	_ = slotBudgetLayoutForVersion("0.8.15")
+	segsBefore, layoutBefore := versionSegmentsMemo.size(), slotBudgetLayoutMemo.size()
+
+	meta := strings.Repeat("a", 1<<20)
+	for i := 0; i < 8; i++ {
+		huge := fmt.Sprintf("1.%d.0+%s%d", i, meta, i) // distinct 1 MiB strings, distinct cores
+		if got := versionSegments(huge); !reflect.DeepEqual(got, []int{1, i, 0}) {
+			t.Fatalf("oversized version parsed as %v", got)
+		}
+		if got := slotBudgetLayoutForVersion(huge); got != privateSlotGrants {
+			t.Fatalf("oversized version layout = %v, want privateSlotGrants", got)
+		}
+		if CompareVersions(huge, "0.7.5") <= 0 {
+			t.Fatal("oversized version must still compare correctly")
+		}
+	}
+	// Only the short numeric cores ("1.N.0", via the layout path's
+	// CompareVersions) may have been retained — never a 1 MiB key.
+	if grown := versionSegmentsMemo.size() - segsBefore; grown > 8 {
+		t.Fatalf("segments memo grew by %d entries on oversized keys", grown)
+	}
+	for i := 0; i < 8; i++ {
+		huge := fmt.Sprintf("1.%d.0+%s%d", i, meta, i)
+		if versionSegmentsMemo.has(huge) || slotBudgetLayoutMemo.has(huge) {
+			t.Fatal("a 1 MiB version string was retained in a memo")
+		}
+	}
+	if l := versionSegmentsMemo.maxKeyLen(); l > maxMemoizedVersionLen {
+		t.Fatalf("segments memo holds a %d-byte key", l)
+	}
+	if l := slotBudgetLayoutMemo.maxKeyLen(); l > maxMemoizedVersionLen {
+		t.Fatalf("layout memo holds a %d-byte key", l)
+	}
+	// The layout memo keys on the numeric core ("1.N.0"): 8 distinct cores at
+	// most, never the 1 MiB strings themselves.
+	if grown := slotBudgetLayoutMemo.size() - layoutBefore; grown > 8 {
+		t.Fatalf("layout memo grew by %d entries", grown)
+	}
+	// The same core with different oversized suffixes shares ONE layout entry.
+	layoutMid := slotBudgetLayoutMemo.size()
+	for i := 0; i < 8; i++ {
+		_ = slotBudgetLayoutForVersion(fmt.Sprintf("2.0.0+%s%d", meta, i))
+	}
+	if slotBudgetLayoutMemo.size() != layoutMid+1 {
+		t.Fatalf("suffix variants of one core created %d layout entries, want 1", slotBudgetLayoutMemo.size()-layoutMid)
+	}
+	// An oversized numeric core is computed without caching.
+	longCore := strings.Repeat("1.", 60) + "1" // 121 bytes, all segments
+	if got := slotBudgetLayoutForVersion(longCore); got != privateSlotGrants {
+		t.Fatalf("long-core layout = %v", got)
+	}
+	if slotBudgetLayoutMemo.size() != layoutMid+1 {
+		t.Fatal("oversized numeric core was retained in the layout memo")
+	}
+	// Too many segments in a short string: parsed, not retained.
+	many := "1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.16.17"
+	if got := versionSegments(many); len(got) != 17 || got[16] != 17 {
+		t.Fatalf("many-segment version parsed as %v", got)
+	}
+	if versionSegmentsMemo.has(many) {
+		t.Fatal("over-segmented version was retained in the segments memo")
+	}
+	// A key exactly at the length bound is still memoized.
+	atBound := "1.0.0-" + strings.Repeat("x", maxMemoizedVersionLen-6)
+	_ = versionSegments(atBound)
+	if !versionSegmentsMemo.has(atBound) {
+		t.Fatal("a key at the length bound must be memoized")
 	}
 }
 

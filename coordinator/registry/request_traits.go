@@ -128,7 +128,12 @@ func CompareVersions(a, b string) int {
 // floors and the pooled-budget layout floor on every request — so the
 // returned slice is SHARED and must be treated as read-only.
 func versionSegments(v string) []int {
-	return versionSegmentsMemo.get(v, parseVersionSegments)
+	return versionSegmentsMemo.getBounded(v, parseVersionSegments, versionSegmentsMemoizable)
+}
+
+// versionSegmentsMemoizable bounds the parsed slice a memo entry may retain.
+func versionSegmentsMemoizable(segs []int) bool {
+	return len(segs) <= maxMemoizedVersionSegments
 }
 
 // parseVersionSegments is the uncached parser behind versionSegments.

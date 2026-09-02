@@ -17,15 +17,32 @@ import (
 // map: reads are one atomic load plus a map lookup with no lock and no
 // allocation; inserts (rare — a new version string) rebuild the small map.
 //
-// Bound: a memo holds at most versionMemoCap entries. Provider versions are
-// attacker-supplied at registration, so an unbounded map would let a client
-// grow coordinator memory by registering with random strings. When the cap is
-// reached the memo is RESET rather than frozen, so a flood of garbage costs a
-// rebuild (cheap) instead of permanently disabling caching for the real
-// versions, which are re-memoized on their next use.
+// Bounds. Provider versions are attacker-supplied at registration, so the
+// memos are bounded in BOTH dimensions:
+//
+//   - count: at most versionMemoCap entries; when the cap is reached the memo
+//     is RESET rather than frozen, so a flood of garbage costs a rebuild
+//     (cheap) instead of permanently disabling caching for the real versions,
+//     which are re-memoized on their next use;
+//   - bytes: a key longer than maxMemoizedVersionLen, or a parse with more
+//     than maxMemoizedVersionSegments segments, is computed but NEVER inserted
+//     (a valid "1.0.0+<multi-MiB metadata>" inside the frame limit could
+//     otherwise pin megabytes per entry). The worst case is therefore
+//     versionMemoCap × (64-byte key + 16-segment slice) ≈ tens of KiB.
+//
+// The layout memo additionally keys on the NORMALIZED numeric core
+// ("1.0.0" for "v1.0.0-rc1+meta"), so suffix variants of one version share an
+// entry (pooled_admission.go).
 
-// versionMemoCap bounds each memo's entry count.
-const versionMemoCap = 256
+const (
+	// versionMemoCap bounds each memo's entry count.
+	versionMemoCap = 256
+	// maxMemoizedVersionLen bounds the key bytes retained per entry. Real
+	// versions are ~6-12 bytes; 64 leaves room for a short prerelease tag.
+	maxMemoizedVersionLen = 64
+	// maxMemoizedVersionSegments bounds the parsed slice retained per entry.
+	maxMemoizedVersionSegments = 16
+)
 
 // cowMemo is a bounded, copy-on-write, string-keyed memo. The zero value is
 // ready to use.
@@ -37,12 +54,23 @@ type cowMemo[V any] struct {
 // get returns the memoized value for key, computing and inserting it on a
 // miss. Values are shared between callers and must be treated as read-only.
 func (m *cowMemo[V]) get(key string, compute func(string) V) V {
+	return m.getBounded(key, compute, nil)
+}
+
+// getBounded is get with an admission predicate: on a miss the value is
+// always computed and returned, but only inserted when keep (if non-nil)
+// accepts it and the key is no longer than maxMemoizedVersionLen. Oversized
+// inputs therefore cost a parse per call and retain nothing.
+func (m *cowMemo[V]) getBounded(key string, compute func(string) V, keep func(V) bool) V {
 	if cur := m.entries.Load(); cur != nil {
 		if v, ok := (*cur)[key]; ok {
 			return v
 		}
 	}
 	v := compute(key)
+	if len(key) > maxMemoizedVersionLen || (keep != nil && !keep(v)) {
+		return v
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur := m.entries.Load()
@@ -70,6 +98,28 @@ func (m *cowMemo[V]) size() int {
 		return len(*cur)
 	}
 	return 0
+}
+
+// has reports whether key is currently memoized (tests).
+func (m *cowMemo[V]) has(key string) bool {
+	if cur := m.entries.Load(); cur != nil {
+		_, ok := (*cur)[key]
+		return ok
+	}
+	return false
+}
+
+// maxKeyLen returns the longest memoized key in bytes (tests).
+func (m *cowMemo[V]) maxKeyLen() int {
+	longest := 0
+	if cur := m.entries.Load(); cur != nil {
+		for k := range *cur {
+			if len(k) > longest {
+				longest = len(k)
+			}
+		}
+	}
+	return longest
 }
 
 // reset drops every entry (tests).

@@ -55,21 +55,36 @@ const (
 )
 
 // slotBudgetLayoutForVersion selects the pooled-budget layout for a provider
-// binary version. Memoized per distinct version string (version_memo.go): it
-// runs once per provider per routing scan via fillSnapshotPendingAndPool.
+// binary version. It runs once per provider per routing scan via
+// fillSnapshotPendingAndPool, so the result is memoized (version_memo.go) —
+// keyed on the NORMALIZED numeric core ("1.0.0" for "v1.0.0-rc1+meta"), so
+// suffix variants of one version share an entry and an oversized suffix can
+// never be retained; a core longer than maxMemoizedVersionLen is computed
+// without caching.
 func slotBudgetLayoutForVersion(version string) slotBudgetLayout {
-	return slotBudgetLayoutMemo.get(version, parseSlotBudgetLayout)
+	return slotBudgetLayoutMemo.get(versionNumericCore(version), parseSlotBudgetLayoutCore)
+}
+
+// versionNumericCore strips surrounding whitespace and any pre-release/build
+// suffix ("-…" / "+…") from a version, leaving the dotted numeric core.
+func versionNumericCore(version string) string {
+	version = strings.TrimSpace(version)
+	if suffix := strings.IndexAny(version, "-+"); suffix >= 0 {
+		version = version[:suffix]
+	}
+	return version
 }
 
 // parseSlotBudgetLayout is the uncached selection behind
 // slotBudgetLayoutForVersion: a pre-release/build suffix is ignored and the
 // numeric core compared against privateSlotGrantsMinVersion.
 func parseSlotBudgetLayout(version string) slotBudgetLayout {
-	version = strings.TrimSpace(version)
-	if suffix := strings.IndexAny(version, "-+"); suffix >= 0 {
-		version = version[:suffix]
-	}
-	if CompareVersions(version, privateSlotGrantsMinVersion) >= 0 {
+	return parseSlotBudgetLayoutCore(versionNumericCore(version))
+}
+
+// parseSlotBudgetLayoutCore compares an already-normalized numeric core.
+func parseSlotBudgetLayoutCore(core string) slotBudgetLayout {
+	if CompareVersions(core, privateSlotGrantsMinVersion) >= 0 {
 		return privateSlotGrants
 	}
 	return sharedSlotHeadroom

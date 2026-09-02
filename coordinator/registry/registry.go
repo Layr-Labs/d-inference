@@ -5402,46 +5402,44 @@ func (r *Registry) ListModels() []AggregateModel {
 	// Aggregate by model ID only — consumers request by ID, so providers
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
-	agg := make(map[string]*modelAgg)
+	//
+	// The whole per-provider step runs under p.mu: it reads only strings and
+	// booleans, retains nothing from the provider, and costs a few map lookups.
+	// There is deliberately NO per-provider snapshot slice — at fleet scale
+	// (~1,260 providers) that was one heap allocation per provider per call,
+	// and /v1/models (uncached, two ListModels calls per request) paid for it
+	// mostly as GC pressure rather than as the walk itself.
+	agg := make(map[string]*modelAgg, len(r.modelCatalog))
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		attested := p.Attested
-		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
-		privateOnly := p.PrivateOnly
-		// Snapshot only provider-model pairs that satisfy the live catalog and
-		// connection-scoped capability requirements.
-		models := make([]protocol.ModelInfo, 0, len(p.Models))
-		for _, model := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, model) {
-				models = append(models, model)
-			}
-		}
-		p.mu.Unlock()
-
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
+		// Provider-level gates first, so an ineligible provider costs one lock
+		// and a handful of field reads — never a walk of its inventory.
 		// Private-only providers serve only their owner's self-route traffic, so
 		// they must not appear in or inflate the public /v1/models aggregation.
-		if privateOnly {
+		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
+			p.PrivateOnly ||
+			!r.trustMeetsMinimum(p.TrustLevel) ||
+			!r.providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
-			continue
-		}
-		for _, m := range models {
-			k := m.ID
-			a, ok := agg[k]
+		trust := p.TrustLevel
+		attestResult := p.AttestationResult
+		attested := p.Attested && attestResult != nil
+		for _, m := range p.Models {
+			// Count only provider-model pairs that satisfy the live catalog and
+			// connection-scoped capability requirements.
+			if !r.providerModelAllowedByCatalogLocked(p, m) {
+				continue
+			}
+			a, ok := agg[m.ID]
 			if !ok {
 				a = &modelAgg{
 					modelType:    m.ModelType,
 					quantization: m.Quantization,
 					highestTrust: TrustNone,
 				}
-				agg[k] = a
+				agg[m.ID] = a
 			}
 			a.count++
 
@@ -5450,13 +5448,14 @@ func (r *Registry) ListModels() []AggregateModel {
 				a.highestTrust = trust
 			}
 
-			if attested && attestResult != nil {
+			if attested {
 				a.attestedCount++
 				a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
 				a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
 				a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
 			}
 		}
+		p.mu.Unlock()
 	}
 
 	models := make([]AggregateModel, 0, len(agg))

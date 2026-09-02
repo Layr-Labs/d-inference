@@ -96,22 +96,46 @@ func (r *Registry) PublicProviderModels() map[string]PublicProviderModelSnapshot
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make(map[string]PublicProviderModelSnapshot, len(r.providers))
+
+	// Every provider's eligible model IDs share ONE backing array instead of
+	// one slice allocation per provider: at fleet scale (~1,260 providers) the
+	// per-provider allocations were the entire cost of this walk, paid as GC
+	// pressure by /v1/stats and /v1/providers/attestation. Each provider's view
+	// is a 3-index sub-slice (cap == len), so a consumer append can never write
+	// into a neighbour's entries. The size pass is only a hint — p.Models is
+	// replaced copy-on-write and may grow between the two passes; append then
+	// reallocates, and views already handed out keep their (unchanged) old
+	// array. A provider with no eligible model still gets a non-nil empty slice:
+	// stats serializes it straight to JSON and must emit [] rather than null.
+	total := 0
+	for _, p := range r.providers {
+		p.mu.Lock()
+		total += len(p.Models)
+		p.mu.Unlock()
+	}
+	buf := make([]string, 0, total)
+
 	for id, p := range r.providers {
 		p.mu.Lock()
-		snapshot := PublicProviderModelSnapshot{
-			Models: make([]string, 0, len(p.Models)),
-		}
+		start := len(buf)
+		current := ""
 		for _, model := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, model) {
-				snapshot.Models = append(snapshot.Models, model.ID)
+			if !r.providerModelAllowedByCatalogLocked(p, model) {
+				continue
+			}
+			buf = append(buf, model.ID)
+			// The current model is exposed only when the provider advertises it
+			// as a catalog-eligible entry — the same predicate as the filter.
+			if p.CurrentModel != "" && model.ID == p.CurrentModel {
+				current = p.CurrentModel
 			}
 		}
-		if p.CurrentModel != "" &&
-			r.providerServesCatalogModelLocked(p, p.CurrentModel) {
-			snapshot.CurrentModel = p.CurrentModel
-		}
+		end := len(buf)
 		p.mu.Unlock()
-		out[id] = snapshot
+		out[id] = PublicProviderModelSnapshot{
+			Models:       buf[start:end:end],
+			CurrentModel: current,
+		}
 	}
 	return out
 }

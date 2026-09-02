@@ -41,7 +41,13 @@ func (r *TPSRegistry) medianOfRingLocked(samples []float64) float64 {
 		return 0
 	}
 	if cap(r.scratch) < len(samples) {
-		r.scratch = make([]float64, len(samples), r.maxSamples)
+		// A zero-value registry (maxSamples 0) has an unbounded ring, so the
+		// scratch capacity must follow the ring, never the nominal bound.
+		capacity := r.maxSamples
+		if len(samples) > capacity {
+			capacity = len(samples)
+		}
+		r.scratch = make([]float64, len(samples), capacity)
 	}
 	sorted := r.scratch[:len(samples)]
 	copy(sorted, samples)
@@ -78,6 +84,9 @@ func (r *TPSRegistry) refreshSoloAllChipsLocked(model string) {
 			agg.minMedian = stat.median
 		}
 		agg.classes++
+	}
+	if r.soloAllChips == nil {
+		r.soloAllChips = make(map[string]soloAllChipsStat)
 	}
 	r.soloAllChips[model] = agg
 }

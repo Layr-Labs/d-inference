@@ -44,6 +44,12 @@ func (r *TPSRegistry) RecordSolo(model, chipClass string, tps float64) {
 	key := tpsKey{Model: model, ChipFamily: chipClass}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.soloSamples == nil { // zero-value registry
+		r.soloSamples = make(map[tpsKey][]float64)
+	}
+	if r.soloByModel == nil {
+		r.soloByModel = make(map[string]map[string]tpsSampleStat)
+	}
 	// FIFO ring, same shape as Record.
 	samples := appendRingSample(r.soloSamples[key], tps, r.maxSamples)
 	r.soloSamples[key] = samples

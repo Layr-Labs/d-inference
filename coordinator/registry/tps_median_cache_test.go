@@ -151,6 +151,45 @@ func TestTPSRegistryCachedAggregatesMatchReference(t *testing.T) {
 	}
 }
 
+// TestTPSRegistryZeroValueDoesNotPanic pins that a bare TPSRegistry{} (no
+// NewTPSRegistry: maps nil, maxSamples 0 ⇒ unbounded ring) records and reads
+// correctly, including a ring longer than the nominal 50-sample bound, which
+// used to make the scratch allocation panic (len > cap).
+func TestTPSRegistryZeroValueDoesNotPanic(t *testing.T) {
+	var reg TPSRegistry
+	ref := newReferenceTPSStore(1 << 30) // effectively unbounded, like maxSamples 0
+	for i := 0; i < 130; i++ {
+		v := float64(1 + i%23)
+		reg.Record("m", "M3", v)
+		ref.record(ref.samples, "m", "M3", v)
+		reg.RecordSolo("m", "M3|Max", v)
+		ref.record(ref.soloSamples, "m", "M3|Max", v)
+	}
+	if n := len(reg.samples[tpsKey{Model: "m", ChipFamily: "M3"}]); n != 130 {
+		t.Fatalf("unbounded ring length = %d, want 130", n)
+	}
+	if got, want := reg.Median("m", "M3"), ref.median("m", "M3"); got != want {
+		t.Fatalf("zero-value Median = %v, want %v", got, want)
+	}
+	gotM, gotN := reg.SoloMedian("m", "M3|Max")
+	wantM, wantN := ref.soloMedian("m", "M3|Max")
+	if gotM != wantM || gotN != wantN {
+		t.Fatalf("zero-value SoloMedian = (%v,%d), want (%v,%d)", gotM, gotN, wantM, wantN)
+	}
+	gotT, gotS, gotC := reg.SoloMedianAllChips("m")
+	wantT, wantS, wantC := ref.soloMedianAllChips("m")
+	if gotT != wantT || gotS != wantS || gotC != wantC {
+		t.Fatalf("zero-value SoloMedianAllChips = (%v,%d,%d), want (%v,%d,%d)", gotT, gotS, gotC, wantT, wantS, wantC)
+	}
+	var empty TPSRegistry
+	if empty.Median("x", "y") != 0 {
+		t.Fatal("empty zero-value registry must read 0")
+	}
+	if m, s, c := empty.SoloMedianAllChips("x"); m != 0 || s != 0 || c != 0 {
+		t.Fatal("empty zero-value registry must read zero aggregates")
+	}
+}
+
 // TestTPSRegistryReadsAllocateNothing pins the hot-path contract: every read
 // aggregate is a map lookup with zero allocations.
 func TestTPSRegistryReadsAllocateNothing(t *testing.T) {

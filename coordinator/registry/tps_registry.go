@@ -67,6 +67,12 @@ func (r *TPSRegistry) Record(model, chipFamily string, tps float64) {
 	key := tpsKey{Model: model, ChipFamily: chipFamily}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.samples == nil { // zero-value registry
+		r.samples = make(map[tpsKey][]float64)
+	}
+	if r.medians == nil {
+		r.medians = make(map[tpsKey]float64)
+	}
 	samples := appendRingSample(r.samples[key], tps, r.maxSamples)
 	r.samples[key] = samples
 	r.medians[key] = r.medianOfRingLocked(samples)

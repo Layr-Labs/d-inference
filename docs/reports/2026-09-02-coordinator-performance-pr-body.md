@@ -65,7 +65,23 @@ flowchart LR
 
 ## Measurements
 
-_(see §2 and §5 of the report)_
+| Path (1,260-provider fixture) | Before | After |
+|---|---|---|
+| Reservation scan | 323 µs, 824 allocs | 68–73 µs, 21 allocs |
+| Capacity preflight | 151 µs, 672 allocs | 47 µs, 1 alloc |
+| Servability prediction | 188 µs, 672 allocs | 43 µs, 1 alloc |
+| `/v1/models` aggregate | 191 µs, 1,281 allocs | 138 µs, 19 allocs |
+| Heartbeat with a queued unservable model | 88 µs | 4 µs |
+
+| End to end (same machine state) | Before | After |
+|---|---|---|
+| 1,000 providers, 16 KB bodies | 448 req/s, TTFB p50 44 ms | 954 req/s, TTFB p50 20 ms |
+| 100 providers, 60 KB bodies | 395 req/s, TTFB p95 127 ms | 1,377 req/s, TTFB p95 11 ms |
+
+Per request in production, additionally: 4–5 database round trips become
+cache hits (user + model record), the completion settlement loses three
+round trips (`Credit` as one statement), and route telemetry batches to one
+multi-row insert per 100 ms. Full detail: `docs/reports/2026-09-02-coordinator-performance-program.md`.
 
 ## Notes for reviewers
 

@@ -1,6 +1,6 @@
 # Coordinator performance program — 2026-09-02
 
-Status: in progress (branch `worktree-bridge-cse_01TuyfD42fkRyG4ZqSTmeN4U`, based on master `a1f51ea4c`).
+Status: complete, awaiting review/push (branch `worktree-bridge-cse_01TuyfD42fkRyG4ZqSTmeN4U`, based on master `a1f51ea4c`).
 
 This report is the first-principles pass over every coordinator operation with a
 measurable cost: the inference hot path (auth → parse → admit → route → dispatch →
@@ -252,7 +252,39 @@ splice routines against the decode → re-encode reference.
 
 ## 5. After
 
-_(pending)_
+Registry benchmarks (1,260 providers; baseline and after measured back to back
+in the same machine state, load average ~13):
+
+| Benchmark | Before ns/op | After ns/op | allocs/op before → after |
+|---|---:|---:|---|
+| FleetReserveProviderEx | 322,881 | 67,933–73,309 | 824 → 21 |
+| FleetReserveProviderExParallel | 355,349 (quiet baseline) | 84,749–87,103 | 1,027 → 20 |
+| FleetQuickCapacityCheck | 151,054 | 47,347–47,922 | 672 → 1 |
+| FleetPredictServable (new) | 187,760 (worker A/B) | 43,302–43,530 | 672 → 1 |
+| FleetListModels | 191,167 | 138,012–139,786 | 1,281 → 19 |
+| FleetHeartbeat | 529 | 641–662 | 6 → 6 (TPS caches now maintained on write) |
+| FleetTickTriggerModelSwapsUnservableQueued | 82,390 | 216 | 3 → 3 |
+| FleetTickHeartbeatQueuedColdAdvertised | 87,884 | 4,047 | 12 → 9 |
+
+End-to-end (real HTTP, in-process WebSocket fake providers, memory store;
+baseline and after measured back to back, same machine state):
+
+| Scenario | Before | After |
+|---|---|---|
+| 100 providers, 16 KB, 16 concurrent | 1,435 req/s, TTFB p50 7.3 ms / p95 10.1 ms | 1,871 req/s, TTFB p50 4.3 ms / p95 7.5 ms |
+| 1,000 providers, 16 KB, 32 concurrent | 448 req/s, TTFB p50 44.3 ms / p95 64.5 ms | 954 req/s, TTFB p50 20.4 ms / p95 29.1 ms |
+| 100 providers, 60 KB, 16 concurrent | 395 req/s, TTFB p50 16.1 ms / p95 126.6 ms | 1,377 req/s, TTFB p50 7.6 ms / p95 10.8 ms |
+| 1,000 providers, 60 KB, 32 concurrent | 410 req/s, TTFB p50 56.9 ms / p95 86.5 ms | 717 req/s, TTFB p50 28.5 ms / p95 46.5 ms |
+
+The memory store hides the database wins: in production each request also
+loses one `users` round trip and three to four two-query `model_registry`
+round trips (now cache hits), each completion loses three round trips in the
+`Credit` collapse, and route telemetry goes from one statement per attempt to
+one multi-row insert per 100 ms.
+
+Request preprocessing alone (helper-level benchmark, `-benchtime 2s`): 2 KB
+body 99 µs → 22 µs; 60 KB history 2.74 ms → 0.54 ms; 3 MB inline image
+147 ms → 20 ms.
 
 ## 6. Not done / recommendations
 

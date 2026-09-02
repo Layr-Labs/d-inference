@@ -257,6 +257,13 @@ public actor ProviderLoop {
     /// in the hop between the drain's last observation and the close, only
     /// to be cancelled by the `.disconnected` handler.
     internal var isReconnectingAfterRetirement = false
+
+    /// Builds a verified prefetch is about to advertise: pinned into the
+    /// live reserve basis (`resolvedActivationReserveBytes`) from just
+    /// before the reserve push until the id joins `advertisedModels`, so a
+    /// load admitted during the push's suspension already resolves its gate
+    /// and fleet budget against the raised floor.
+    internal var pendingAdvertise: Set<String> = []
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

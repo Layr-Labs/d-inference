@@ -117,6 +117,21 @@ public enum ModelLoadAdmission {
         max(0, weightsGb) + max(0, headroomGb)
     }
 
+    /// Allocation-time re-check of the load gate, run AFTER this load's own
+    /// pending reservation sits in the shared ledger. `availableNetOfLedgerGb`
+    /// is the free-for-load figure (which nets out EVERY ledger entry), so
+    /// the load's own reservation is added back before comparing — the same
+    /// view the admission gate had — rather than double-counting the target
+    /// against itself. `requiredGb` is resolved by the caller after its last
+    /// suspension (`requiredToLoadGb` with the live headroom).
+    public static func fitsAtAllocation(
+        availableNetOfLedgerGb: Double, ownReservationBytes: UInt64, requiredGb: Double
+    ) -> Bool {
+        guard availableNetOfLedgerGb.isFinite, requiredGb.isFinite else { return false }
+        let restored = availableNetOfLedgerGb + Double(ownReservationBytes) / 1_073_741_824.0
+        return restored.isFinite && restored >= requiredGb
+    }
+
     /// Whether a model with the given weight footprint can be loaded now.
     public static func canLoad(
         weightsGb: Double,

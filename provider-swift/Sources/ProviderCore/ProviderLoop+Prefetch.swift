@@ -362,6 +362,26 @@ extension ProviderLoop {
             }
             return
         }
+        // Re-check in-flight loads AFTER the preflight (it awaited each
+        // bridge's grant): a load admitted during those hops passed its gate
+        // against the pre-raise floor and is not in `modelSlots` yet, so the
+        // preflight neither counted its weights nor covered its transient.
+        guard modelsLoading.isEmpty else {
+            releaseResliceGate()
+            logger.info(
+                "Prefetch verified \(modelId) but a load entered during the preflight; "
+                    + "deferring the advertisement")
+            if let send = outboundSend {
+                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+            }
+            return
+        }
+        // Pin the id into the live reserve basis BEFORE the push's own
+        // suspension: a load admitted during the push then resolves its gate
+        // and fleet budget against the raised floor already (the basis is
+        // advertised ∪ resident ∪ loading ∪ pending-advertise). Removed the
+        // moment the id joins `advertisedModels`, or on the refusal below.
+        pendingAdvertise.insert(modelId)
         await pushActivationReserve(raisedReserve)
         // Re-check the tombstone AND the durable record AFTER the push's
         // suspension: a retirement can run — or fully complete — during
@@ -374,6 +394,7 @@ extension ProviderLoop {
             // The pre-insert push above already raised the budget for an id
             // that will now never join the set — recompute without it, or
             // the phantom raise stands until the next unrelated mutation.
+            pendingAdvertise.remove(modelId)
             await refreshActivationReserve()
             releaseResliceGate()
             logger.warning(
@@ -385,6 +406,7 @@ extension ProviderLoop {
         // clear deliberately does NOT happen at the check, see there).
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
+        pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
         syncWarmModelState()

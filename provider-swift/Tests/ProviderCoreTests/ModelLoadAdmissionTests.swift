@@ -225,3 +225,27 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(abs(decoded.totalMemoryGb - 64) < 0.001)
     #expect(decoded.mlxCacheReclaimer == nil, "legacy payload has no reclaimer telemetry")
 }
+
+/// The allocation-time re-check runs after the load's own pending
+/// reservation is in the shared ledger; `availableMemoryGb()` nets that
+/// out, so the check must add it back or it double-counts the target. The
+/// 24 GB gpt-oss-20b tier is the regression: padded 13.5 + floor 3.5 +
+/// headroom 1.0 = 18.0 required; after reserving 13.5 the netted figure is
+/// ~4.6 — a raw comparison refuses every load on the tier this fix exists for.
+@Test func fitsAtAllocationAddsBackTheLoadsOwnReservation() {
+    let gib: UInt64 = 1024 * 1024 * 1024
+    let ownReservation = UInt64(13.5 * Double(gib))
+    let required = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 3.5 + 1.0)
+    // 18.1 free before the reservation → 4.6 netted: fits.
+    #expect(ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: 18.1 - 13.5, ownReservationBytes: ownReservation, requiredGb: required))
+    // The floor moved to 5.5 during admission (required 20.0): refused.
+    let raised = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 5.5 + 1.0)
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: 18.1 - 13.5, ownReservationBytes: ownReservation, requiredGb: raised))
+    // Raw comparison (no add-back) would have refused the fitting case — the bug.
+    #expect(18.1 - 13.5 < required)
+    // Non-finite inputs never admit.
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: .nan, ownReservationBytes: ownReservation, requiredGb: required))
+}

@@ -426,11 +426,22 @@ extension ProviderLoop {
             // `applyVerifiedPrefetch`, so this is the backstop, not the
             // primary defense.)
             do {
-                let availableAtAllocation = await availableMemoryGb()
+                // `availableMemoryGb()` nets out the shared ledger — INCLUDING
+                // this load's own pending reservation placed above — so the
+                // comparison adds it back (pure helper, unit-tested). Without
+                // that the gate double-counts the target and refuses every
+                // load whose padded weights exceed the headroom.
+                let availableNetOfLedgerGb = await availableMemoryGb()
                 let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb)
-                if availableAtAllocation < requiredAtAllocation {
-                    let available = String(format: "%.1f", availableAtAllocation)
+                if !ModelLoadAdmission.fitsAtAllocation(
+                    availableNetOfLedgerGb: availableNetOfLedgerGb,
+                    ownReservationBytes: pendingLoadBytes,
+                    requiredGb: requiredAtAllocation)
+                {
+                    let available = String(
+                        format: "%.1f",
+                        availableNetOfLedgerGb + Double(pendingLoadBytes) / 1_073_741_824.0)
                     let required = String(format: "%.1f", requiredAtAllocation)
                     throw InferenceError.modelLoadFailed(
                         "Insufficient memory (\(available) GB free, need \(required) GB) at allocation: "
@@ -951,8 +962,12 @@ extension ProviderLoop {
             // nor modelSlots during that window), and a relax computed then
             // would size admission and grants below the reserve the model
             // decodes under once it installs.
+            // Pending advertisements (a verified prefetch between its
+            // reserve push and its insert into advertisedModels) are in
+            // the basis too, so a load admitted during that push already
+            // sees the raised floor — see `pendingAdvertise`.
             modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
-                + Array(modelsLoading))
+                + Array(modelsLoading) + Array(pendingAdvertise))
     }
 
     /// Headroom (GB) reserved above the weights at load time. Must be at least

@@ -47,7 +47,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedGuestAgentPatchPath =
         "ThirdParty/lume-patches/0008-bake-guest-agent.patch"
     public static let pinnedGuestAgentPatchSHA256 =
-        "d30125be686f9dccc11899ceb70bc75dd28c899e9f60771c42680a8e15e6248e"
+        "87e62a02ec66ec7e08573495d6e5cefb9d9df4d5fee88235a3a0cab102a9938b"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,

@@ -137,10 +137,10 @@ index 7b0c0b3..46aeaf5 100644
                  debug: debug,
 diff --git a/libs/lume/src/Unattended/GuestAgentInstall.swift b/libs/lume/src/Unattended/GuestAgentInstall.swift
 new file mode 100644
-index 0000000..3622143
+index 0000000..186d2b8
 --- /dev/null
 +++ b/libs/lume/src/Unattended/GuestAgentInstall.swift
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,194 @@
 +import Foundation
 +
 +/// A guest-side agent baked into the installed macOS data volume, plus the
@@ -223,6 +223,29 @@ index 0000000..3622143
 +    var installedAbsolutePath: String { "/" + installPath }
 +    var daemonPlistPath: String { "Library/LaunchDaemons/\(label).plist" }
 +    var logPath: String { "\(logDirectory)/\(label).log" }
++
++    /// Where `logDirectory` actually lives on the mounted data volume.
++    ///
++    /// `/var`, `/etc` and `/tmp` are symlinks into `private/` on a running
++    /// macOS system, but the mounted volume has no such links -- the real
++    /// directories are `private/var` and friends, which is why every other
++    /// path in the patcher is written that way. Creating the directory at the
++    /// guest's spelling puts it somewhere the guest cannot see, and the only
++    /// symptom is a first-boot `chown` failing on a path that looks correct.
++    var logDirectoryVolumePath: String {
++        Self.volumeRelativePath(logDirectory)
++    }
++
++    /// Rewrites a guest absolute path to its location on the mounted volume.
++    static func volumeRelativePath(_ guestPath: String) -> String {
++        let trimmed = String(guestPath.drop(while: { $0 == "/" }))
++        for linked in ["var", "etc", "tmp"] {
++            if trimmed == linked || trimmed.hasPrefix(linked + "/") {
++                return "private/" + trimmed
++            }
++        }
++        return trimmed
++    }
 +
 +    init(
 +        executableURL: URL,
@@ -313,7 +336,7 @@ index 0000000..3622143
 +    }
 +}
 diff --git a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
-index d42cf93..3e3641a 100644
+index d42cf93..f93dcc4 100644
 --- a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
 +++ b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
 @@ -20,7 +20,11 @@ final class MacOSOfflineSetupPatcher {
@@ -352,7 +375,7 @@ index d42cf93..3e3641a 100644
      ) throws {
          try ensureDirectoryExecutable(mountPoint.appendingPath("private/var/db/dslocal/nodes/Default"))
          try ensureDirectoryExecutable(mountPoint.appendingPath("private/var/db/dslocal/nodes/Default/users"))
-@@ -149,6 +158,59 @@ final class MacOSOfflineSetupPatcher {
+@@ -149,6 +158,57 @@ final class MacOSOfflineSetupPatcher {
  
          try enableSSH(mountPoint: mountPoint)
          try configurePowerAndLockSettings(for: bootstrap, mountPoint: mountPoint)
@@ -394,9 +417,7 @@ index d42cf93..3e3641a 100644
 +        // has to exist and end up owned by the tenant. Finalization does the
 +        // chown; without it the job dies EX_CONFIG and writes no log to say so.
 +        try createDirectory(
-+            mountPoint.appendingPath(
-+                String(agent.logDirectory.dropFirst())
-+            ),
++            mountPoint.appendingPath(agent.logDirectoryVolumePath),
 +            mode: 0o755
 +        )
 +
@@ -532,10 +553,10 @@ index d4ec329..0002fce 100644
          let result = try await sshClient.execute(command: command, timeout: 60)
 diff --git a/libs/lume/tests/GuestAgentInstallTests.swift b/libs/lume/tests/GuestAgentInstallTests.swift
 new file mode 100644
-index 0000000..31eb3b3
+index 0000000..16c6303
 --- /dev/null
 +++ b/libs/lume/tests/GuestAgentInstallTests.swift
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,188 @@
 +import Foundation
 +import Testing
 +
@@ -696,4 +717,31 @@ index 0000000..31eb3b3
 +    #expect(!GuestAgentInstall.isWellFormedLabel("trailing."))
 +    #expect(!GuestAgentInstall.isWellFormedLabel("has space.x"))
 +    #expect(!GuestAgentInstall.isWellFormedLabel("has/slash.x"))
++}
++
++@Test("guest paths under /var land where the guest can see them")
++func logDirectoryMapsOntoTheDataVolume() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let install = try makeInstall(executable: binary)
++
++    // /var is a symlink to private/var on a running system, but the mounted
++    // data volume has no such link. Writing to the guest's spelling creates a
++    // directory the guest cannot see, and the only symptom is a first-boot
++    // chown failing on a path that looks perfectly correct. This was a real
++    // failure: `chown: /var/db/darkbloom: No such file or directory`.
++    #expect(install.logDirectory == "/var/db/darkbloom")
++    #expect(install.logDirectoryVolumePath == "private/var/db/darkbloom")
++
++    #expect(GuestAgentInstall.volumeRelativePath("/etc/foo") == "private/etc/foo")
++    #expect(GuestAgentInstall.volumeRelativePath("/tmp") == "private/tmp")
++    // Paths that are not symlinked keep their spelling, and none of them gain
++    // a leading slash that would escape the mount point when joined.
++    #expect(GuestAgentInstall.volumeRelativePath("/Library/LaunchDaemons")
++        == "Library/LaunchDaemons")
++    #expect(GuestAgentInstall.volumeRelativePath("/usr/local/libexec")
++        == "usr/local/libexec")
++    // A directory merely starting with the same letters is not rewritten.
++    #expect(GuestAgentInstall.volumeRelativePath("/variable") == "variable")
 +}

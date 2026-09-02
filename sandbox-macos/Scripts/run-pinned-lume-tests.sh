@@ -61,6 +61,7 @@ REQUIRED_PATCHED_LUME_TESTS=(
     finalizationWithoutAgentIsUnchanged
     installRejectsBadInputs
     labelValidation
+    logDirectoryMapsOntoTheDataVolume
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

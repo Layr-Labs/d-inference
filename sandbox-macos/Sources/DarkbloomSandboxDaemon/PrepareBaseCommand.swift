@@ -30,6 +30,12 @@ enum PrepareBaseCommand {
                 ? .developmentAdHoc
                 : .production,
             guestCommandPolicy: .baseImagePreparationAndDevelopment,
+            // Attach the channel device whenever an agent is being baked, so
+            // the bake proves the agent it just installed actually comes up
+            // and handshakes rather than only that the files landed.
+            guestChannelPort: parsed.guestAgent == nil
+                ? nil
+                : LumeRuntimeConfiguration.defaultGuestChannelPort,
             guestAgentExecutable: parsed.guestAgent
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(

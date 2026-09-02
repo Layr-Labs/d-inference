@@ -108,6 +108,26 @@ assertion sites use it; tests pin that both capabilities survive the wrap.
 Cache counters are emitted as `store.cache.*` gauges per domain.
 
 
+### 4.2 Routing scan (`registry/`)
+
+Ten commits, all inside `registry/`, each measured on the fleet benchmark:
+
+| Step | Mechanism | Reserve ns/op (min) |
+|---|---|---:|
+| baseline | | 372k |
+| clock hoist | one `time.Now()` per walk (scan, preflight, `PredictServable`, commit) | 262k |
+| TPS caches | `Median`/`SoloMedian`/`SoloMedianAllChips` maintained on `Record` (≤50 samples), O(1) zero-alloc reads | 221k |
+| kill switch + hint skip | health-ejection env read once at init (test hook); cache-capability walk skipped when hints are impossible (tracker nil / mode off / no plan) | 202k |
+| version memo + struct keys | semver segments memoized (bounded 256, reset-on-full); `{providerID, model}` keys for dispatch-load cooldowns and pending loads | 176k |
+| in-place snapshots | snapshot filled in place, `buildCandidateInto`, chunked `candidateArena`, pointer-passing (no `duffcopy`) | 135k |
+| per-model index | `providersForModelLocked`: advertised model → providers, maintained at every `p.Models` mutation and removal site; used by the reservation scan, preflight, `PredictServable`, cache-capability lookup, and the alias probes (2–8 walks per aliased request) | 103k |
+| calibrator bound | TTFT calibrator no longer re-sweeps its pending map on every reservation at capacity | 68k |
+
+Eligibility gates are unchanged; the index only prunes providers that cannot
+advertise the model. Tests pin index == brute-force walk after every mutation
+type and identical routing results with/without the index on the 1,260-provider
+fixture for plain/tools/vision/TTFT-ceiling shapes.
+
 ## 5. After
 
 _(pending)_

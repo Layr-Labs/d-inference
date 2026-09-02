@@ -43,27 +43,31 @@ func TestHeadroomWarmsWithoutAnyPressureSignal(t *testing.T) {
 	}
 }
 
-// Headroom is measured against AVAILABLE capacity, not the raw warm count: a
-// provider actively serving a request still counts as warm, so saturated
-// providers must not be credited as spare capacity.
-func TestHeadroomExcludesSaturatedProviders(t *testing.T) {
+// Headroom is expressed in CAPACITY, so a saturated provider is accounted for by
+// the requests occupying it (in RunningRequests), NOT by adding WarmSaturated to
+// the floor — doing that double-counts, since its capacity is already inside
+// warm*qc. Same occupancy => same target regardless of the saturated count.
+func TestHeadroomDoesNotDoubleCountSaturated(t *testing.T) {
 	p := headroomParams(10, 0)
 	base := warmTargetInputs{
-		Warm: 20, EligibleCold: 50, RunningRequests: 0,
+		Warm: 20, EligibleCold: 50, RunningRequests: 40,
 		SoloDecodeTPS: 60, MaxProviderConc: 8, DemandPressure: false,
 	}
-	// Nothing saturated: 10 free providers already exist, floor is satisfied.
-	noneSat := base
-	noneSat.WarmSaturated = 0
-	if got := warmTarget(noneSat, p, time.Second); got != 20 {
-		t.Fatalf("warmTarget(0 saturated) = %d, want 20 (already satisfied)", got)
+	// qc=7 -> ceil(40/7)=6, +10 headroom = 16, below warm=20 so target stays 20.
+	for _, sat := range []int{0, 5, 15, 20} {
+		in := base
+		in.WarmSaturated = sat
+		if got := warmTarget(in, p, time.Second); got != 20 {
+			t.Errorf("saturated=%d: warmTarget = %d, want 20 (occupancy is what counts)", sat, got)
+		}
 	}
-	// 15 of the 20 are saturated: only 5 can accept work, so the pool must grow
-	// to 25 to restore 10 free.
-	mostSat := base
-	mostSat.WarmSaturated = 15
-	if got := warmTarget(mostSat, p, time.Second); got != 25 {
-		t.Fatalf("warmTarget(15 saturated) = %d, want 25 (10 free + 15 saturated)", got)
+	// Fully-busy pool: occupied == warm*qc. Required warm is ceil(140/7)+10 = 30,
+	// NOT 30+20 (the double-counted value the first implementation produced).
+	busy := base
+	busy.RunningRequests = 140
+	busy.WarmSaturated = 20
+	if got := warmTarget(busy, p, time.Second); got != 30 {
+		t.Fatalf("warmTarget(fully busy) = %d, want 30 (no saturated double-count)", got)
 	}
 }
 
@@ -89,24 +93,39 @@ func TestHeadroomTracksOccupancy(t *testing.T) {
 	}
 }
 
-// Growth is no longer capped at +1/tick. A large shortfall yields a large target
-// in ONE tick (the per-tick load ramp still throttles issuance separately).
-func TestHeadroomClosesLargeShortfallInOneTick(t *testing.T) {
+// A pool already far larger than its load does NOT grow on the headroom floor —
+// the floor is about spare capacity, not pool size. With warm=300 carrying only
+// 600 requests at qc=7, capacity is 2100 and the floor (111) is already met, so
+// only the reactive nudge applies.
+func TestHeadroomIdleOversizedPoolOnlyNudges(t *testing.T) {
 	p := headroomParams(25, 1)
 	in := warmTargetInputs{
 		Warm: 300, WarmSaturated: 300, EligibleCold: 200,
 		RunningRequests: 600, SoloDecodeTPS: 60, MaxProviderConc: 8,
 		DemandPressure: true,
 	}
-	got := warmTarget(in, p, time.Second)
-	if got <= in.Warm+1 {
-		t.Fatalf("warmTarget = %d, want >> warm+1 (%d): reactive floor still binding",
-			got, in.Warm+1)
+	// qc=7 -> ceil(600/7)=86 +25 headroom = 111, well below warm=300.
+	if got := warmTarget(in, p, time.Second); got != in.Warm+1 {
+		t.Fatalf("warmTarget = %d, want %d (reactive nudge only)", got, in.Warm+1)
 	}
-	// qc=7, so ceil(600/7)=86 free-capacity need +25 headroom +300 saturated
-	// = 411, under the reachable ceiling of warm+eligibleCold = 500.
-	if got != 411 {
-		t.Fatalf("warmTarget = %d, want 411", got)
+}
+
+// A shortfall large enough to exceed the current pool closes in ONE tick rather
+// than crawling at +1 per interval.
+func TestHeadroomClosesShortfallExceedingPoolInOneTick(t *testing.T) {
+	p := headroomParams(25, 1)
+	in := warmTargetInputs{
+		Warm: 100, WarmSaturated: 100, EligibleCold: 400,
+		RunningRequests: 2100, SoloDecodeTPS: 60, MaxProviderConc: 8,
+		DemandPressure: true,
+	}
+	// qc=7 -> ceil(2100/7)=300, +25 = 325, far above warm+1=101.
+	got := warmTarget(in, p, time.Second)
+	if got != 325 {
+		t.Fatalf("warmTarget = %d, want 325", got)
+	}
+	if got <= in.Warm+1 {
+		t.Fatalf("target %d did not beat the +1/tick reactive floor", got)
 	}
 }
 

@@ -384,19 +384,49 @@ extension ProviderLoop {
     /// 404s at the advertised guard and the coordinator's dispatch retry
     /// absorbs it: the wait extends that bounded window, it does not add
     /// a failure mode.
+    /// True while `modelId` must be refused because of a failed self-test:
+    /// mid-retirement (tombstone), or retired and un-advertised with the
+    /// durable failed-hash record standing while the coordinator's
+    /// registered inventory has not yet converged (reconnect pending). Both
+    /// are `slot_state` rejections — the coordinator reroutes to a provider
+    /// whose build passed.
+    internal func isRefusedByRetirement(_ modelId: String) -> Bool {
+        retiringModels.contains(modelId)
+            || (advertisedModels[modelId] == nil && failedSelfTestHashes[modelId] != nil)
+    }
+
     private func scheduleRetirementReconnect() {
         guard pendingRetirementReconnect == nil else { return }
         pendingRetirementReconnect = Task { [weak self] in
             guard let self else { return }
             _ = await self.waitForInflightDrain(
                 timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+            // Shutdown cancels this task (`beginShutdown`); a cancelled
+            // reconnect must not re-register a session shutdown is closing.
+            guard !Task.isCancelled else { return }
             await self.fireRetirementReconnect()
         }
     }
 
     private func fireRetirementReconnect() async {
         pendingRetirementReconnect = nil
-        guard !isShuttingDown else { return }
+        guard !isShuttingDown, coordinatorClient != nil else { return }
+        // Admission barrier across the reconnect: between the drain's last
+        // observation and the socket closing there is an actor hop, and a
+        // routed request admitted in it would only be cancelled by the
+        // `.disconnected` handler. Raised here, actor-isolated, before any
+        // suspension; lifted by the `.connected` event of the new session.
+        isReconnectingAfterRetirement = true
+        if hasInflightWork {
+            // Work landed in the hop after the drain observed empty: let it
+            // ride out under the barrier (nothing new is admitted), then close.
+            _ = await waitForInflightDrain(
+                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+            if isShuttingDown || Task.isCancelled {
+                isReconnectingAfterRetirement = false
+                return
+            }
+        }
         await coordinatorClient?.forceReconnect()
     }
 

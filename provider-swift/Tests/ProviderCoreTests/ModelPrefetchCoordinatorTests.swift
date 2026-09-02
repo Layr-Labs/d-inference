@@ -600,9 +600,14 @@ struct ProviderLoopPrefetchTests {
         let afterCount = await loop.advertisedModelCount()
         #expect(afterCount == 2)
         #expect(await loop.isModelAdvertised("org/startup"))
-        // The coordinator client also learned the new build for the next register.
-        let clientModels = await client.currentAdvertisedModels().map(\.id)
-        #expect(clientModels.contains(newModelID))
+        // The coordinator client also learned the new build for the next
+        // register. The local insert precedes the client add by the
+        // reserve-refresh, re-slice and capacity-publish hops, so wait on
+        // the client store rather than on the local flag observed above.
+        let clientLearned = await waitUntil(timeout: .seconds(10)) {
+            await client.currentAdvertisedModels().contains { $0.id == newModelID }
+        }
+        #expect(clientLearned)
         // The weight hash was recorded so attestation/challenge covers the
         // hotswapped model (finding 2 fix).
         let recordedHash = await loop.modelHashForTesting(newModelID)

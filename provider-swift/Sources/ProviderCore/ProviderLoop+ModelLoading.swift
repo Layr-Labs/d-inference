@@ -1055,7 +1055,10 @@ extension ProviderLoop {
         // slot LOOKS serviceable but serving it would hand out a build that
         // failed its serving-path self-test — reject fast so the
         // coordinator reroutes now instead of accepting-then-failing.
-        if retiringModels.contains(modelId) {
+        // Likewise a RETIRED id whose removal the coordinator has not learned
+        // yet (the post-drain reconnect is pending): reject fast rather than
+        // accept-then-404 at the advertised guard.
+        if isRefusedByRetirement(modelId) {
             return true
         }
         // Already resident — definitely serviceable.

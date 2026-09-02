@@ -229,6 +229,11 @@ extension ProviderLoop {
                 switch event {
                 case .connected:
                     logger.info(.coordinatorConnected)
+                    // The post-retirement reconnect's admission barrier
+                    // (see `fireRetirementReconnect`) lifts with the new
+                    // session: the register it carried excluded every
+                    // retired id, so routed work is safe to admit again.
+                    isReconnectingAfterRetirement = false
 
                 case .disconnected:
                     logger.warning(.coordinatorDisconnected)
@@ -311,6 +316,9 @@ extension ProviderLoop {
         // `slot_state` rejections for the brief window the socket stays up.
         state.refusingNewWork = true
         idleMonitorTask?.cancel()
+        // A pending post-retirement reconnect must not re-register a
+        // session shutdown is closing (its shutdown check has a hop).
+        pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
         trailingHeartbeatTask?.cancel()

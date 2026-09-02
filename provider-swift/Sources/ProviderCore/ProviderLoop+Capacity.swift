@@ -68,6 +68,12 @@ extension ProviderLoop {
     }
 
     internal func updateAggregateCapacity() async {
+        // Reserve epoch at entry: the hops below (engine summary, KV
+        // outstanding) are actor suspensions, and a reserve push landing
+        // across them (a verified prefetch raising the floor, a retirement
+        // relaxing it) publishes its own snapshot — this invocation must
+        // not resume afterwards and overwrite it with pre-push figures.
+        let reserveEpochAtEntry = activationReserveEpoch
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -156,6 +162,16 @@ extension ProviderLoop {
             reclaimedBytes: reclaimer.reclaimedBytes,
             lastReclaimedBytes: reclaimer.lastReclaimedBytes,
             lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
+
+        // Stale-snapshot guard (see the epoch capture at entry): a newer
+        // push published its own snapshot while this one was suspended —
+        // slot budgets and free_for_load_gb here predate the floor the KV
+        // gate already enforces. Discard; every push site publishes, and
+        // the next heartbeat tick republishes regardless.
+        guard activationReserveEpoch == reserveEpochAtEntry else {
+            logger.info("Capacity snapshot discarded: activation reserve moved during refresh")
+            return
+        }
 
         state.backendCapacity = BackendCapacity(
             slots: allSlots,

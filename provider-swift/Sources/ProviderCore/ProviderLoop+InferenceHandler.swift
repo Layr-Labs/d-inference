@@ -33,13 +33,16 @@ extension ProviderLoop {
     internal var isDrainingForUpdate: Bool { updatePhase == .draining }
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
-    /// request must be dropped because we're draining.
+    /// request must be dropped because we're draining — for the update
+    /// hot-swap, or across the post-retirement reconnect (the socket is
+    /// about to close; admitting now would only hand the request to the
+    /// `.disconnected` cancel).
     private func rejectIfDrainingForUpdate(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
     ) -> Bool {
-        guard isDrainingForUpdate else { return false }
+        guard isDrainingForUpdate || isReconnectingAfterRetirement else { return false }
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
@@ -387,7 +390,7 @@ extension ProviderLoop {
                         InferenceFailure(code: .capacity, statusCode: 503),
                         modelId: modelId,
                         published: state.publishedCapacity,
-                        fallbackReason: retiringModels.contains(modelId) ? .slotState : .memoryCap)),
+                        fallbackReason: isRefusedByRetirement(modelId) ? .slotState : .memoryCap)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -451,7 +454,7 @@ extension ProviderLoop {
             // Captured BEFORE the awaits below: a retirement completing
             // during them clears its tombstone, and the reject would then
             // be misfiled as memory_cap instead of slot_state.
-            let rejectedByRetirement = retiringModels.contains(modelId)
+            let rejectedByRetirement = isRefusedByRetirement(modelId)
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
                 syncWarmModelState()

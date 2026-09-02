@@ -25,6 +25,12 @@ struct ReserveRaisePreflightTests {
         // Box arithmetic, self-checked against the real floors and cap so the
         // test tracks the tables rather than restating them: the resident
         // floor must leave a serviceable grant, the raised floor must not.
+        // Production resolves max(env override, floor); the arithmetic below
+        // assumes the floors alone, so an operator override in the test
+        // environment would fail the resident load loudly but unexplained.
+        try #require(
+            ProcessInfo.processInfo.environment["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil,
+            "DARKBLOOM_ACTIVATION_RESERVE_GB must be unset for this test's box arithmetic")
         let physical: UInt64 = 32 * gib
         let weights: UInt64 = 23 * gib
         let configReserve: UInt64 = 1 * gib  // memoryReserveGB: 1 in makeLoop

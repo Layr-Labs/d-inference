@@ -250,6 +250,13 @@ public actor ProviderLoop {
     /// retirements coalesces into one re-registration, fired once
     /// box-wide in-flight work has drained.
     internal var pendingRetirementReconnect: Task<Void, Never>?
+
+    /// Admission barrier across the post-retirement reconnect: raised on
+    /// the actor immediately before the socket is closed, cleared when the
+    /// new session connects. Without it a routed request could be admitted
+    /// in the hop between the drain's last observation and the close, only
+    /// to be cancelled by the `.disconnected` handler.
+    internal var isReconnectingAfterRetirement = false
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

@@ -24,12 +24,16 @@ public enum ModelFitDiagnostic {
     /// footprint plus one-request headroom — exactly `ensureModelLoaded`'s
     /// requirement. `estimatedMemoryGb` is the scanner's overhead-included size
     /// (the same value the runtime passes), not the raw on-disk bytes.
-    public static func requiredGb(estimatedMemoryGb: Double) -> Double {
+    ///
+    /// When `modelID` is provided, the headroom uses the model's measured
+    /// activation peak instead of the worst-case default — e.g. 3.75 GiB for
+    /// gpt-oss-20b (2.56 peak + 1 GiB min KV) vs 6.5 GiB for gemma-4.
+    public static func requiredGb(estimatedMemoryGb: Double, modelID: String? = nil) -> Double {
         // Cap-aware headroom (activation reserve + min serveable KV) so the
         // doctor's "needs ~X GB" matches what the runtime load gate requires.
         ModelLoadAdmission.requiredToLoadGb(
             weightsGb: estimatedMemoryGb,
-            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+            headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(modelID: modelID)) / (1024.0 * 1024.0 * 1024.0))
     }
 
     /// The memory (GB) the provider would actually have free to load a model,
@@ -88,7 +92,7 @@ public enum ModelFitDiagnostic {
                 message: "couldn't determine the model size or available memory; skipping the fit check.",
                 fix: nil)
         }
-        let needed = requiredGb(estimatedMemoryGb: weightGb)
+        let needed = requiredGb(estimatedMemoryGb: weightGb, modelID: modelID)
         if needed <= usableGb {
             return Diagnostic(
                 section: .traffic, name: "model fits in RAM", level: .pass,
@@ -96,13 +100,13 @@ public enum ModelFitDiagnostic {
                 fix: nil)
         }
         let fits = alternatives
-            .filter { requiredGb(estimatedMemoryGb: $0.weightGb) <= usableGb }
+            .filter { requiredGb(estimatedMemoryGb: $0.weightGb, modelID: $0.id) <= usableGb }
             .sorted { $0.weightGb > $1.weightGb }
         let suggestion: String
         if fits.isEmpty {
             suggestion = "this box's RAM is too small for the models on this network; consider a machine with more unified memory."
         } else {
-            let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb))) GB)" }.joined(separator: ", ")
+            let list = fits.prefix(3).map { "\($0.id) (~\(fmt(requiredGb(estimatedMemoryGb: $0.weightGb, modelID: $0.id))) GB)" }.joined(separator: ", ")
             suggestion = "set `enabled_models` in provider.toml to a model that fits: \(list)."
         }
         return Diagnostic(

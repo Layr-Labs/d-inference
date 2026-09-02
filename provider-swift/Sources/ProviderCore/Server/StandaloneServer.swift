@@ -217,6 +217,11 @@ public actor StandaloneServer {
     let config: StandaloneServerConfig
     private var slots: [String: CachedSlot] = [:]
     private var modelsLoading: Set<String> = []
+    /// `setModels` raised (or lowered) the serving-set reserve while a load
+    /// was in flight: the survivors' re-slice is owed and runs when that
+    /// load finishes — on its failure path too, where the restore-on-throw
+    /// puts the PREVIOUS grants back (sized under the old floor).
+    private var resliceDeferredBehindLoad = false
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
@@ -358,10 +363,26 @@ public actor StandaloneServer {
         await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
         // A load in flight re-slices every survivor under the (already
         // updated) reserve at its own install; re-slicing here as well
-        // would interleave with its restore-on-throw bookkeeping.
+        // would interleave with its restore-on-throw bookkeeping. But a
+        // load that FAILS restores the previous grants and installs
+        // nothing, so the re-slice is owed either way: defer it to the
+        // load's completion (both paths call `runDeferredResliceIfNeeded`).
         if modelsLoading.isEmpty {
             await resliceGrowSurvivors()
+        } else {
+            resliceDeferredBehindLoad = true
         }
+    }
+
+    /// Run the survivors' re-slice that `setModels` deferred behind an
+    /// in-flight load, once no load is in flight. Idempotent: after a
+    /// successful install the grants already match the current budget and
+    /// the regrow recomputes the same targets; after a failure it is the
+    /// only thing that re-sizes the restored grants under the new floor.
+    private func runDeferredResliceIfNeeded() async {
+        guard resliceDeferredBehindLoad, modelsLoading.isEmpty else { return }
+        resliceDeferredBehindLoad = false
+        await resliceGrowSurvivors()
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -543,6 +564,21 @@ public actor StandaloneServer {
     func setV2TestHooksForTesting(_ hooks: V2TestHooks?) {
         v2TestHooks = hooks
     }
+
+    /// Test seams for the `setModels`-during-load deferral: mark a load as
+    /// in flight (the marker `ensureModelLoaded` sets before its gate), and
+    /// finish it the way BOTH of its completion paths do — clear the marker,
+    /// then run the deferred re-slice if one is owed.
+    func markLoadInFlightForTesting(_ modelId: String) {
+        modelsLoading.insert(modelId)
+    }
+
+    func finishLoadForTesting(_ modelId: String) async {
+        modelsLoading.remove(modelId)
+        await runDeferredResliceIfNeeded()
+    }
+
+    func isResliceDeferredBehindLoadForTesting() -> Bool { resliceDeferredBehindLoad }
 
     /// Install a fully-formed slot, bypassing the load path (unit tests).
     func installSlotForTesting(
@@ -1591,6 +1627,7 @@ public actor StandaloneServer {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
+            await runDeferredResliceIfNeeded()
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
@@ -1603,6 +1640,9 @@ public actor StandaloneServer {
                 waiter.resume(throwing: error)
             }
             releaseLoadGateWaiters()
+            // The failed load restored the previous grants: if `setModels`
+            // moved the floor meanwhile, re-size them under it now.
+            await runDeferredResliceIfNeeded()
             throw error
         }
     }

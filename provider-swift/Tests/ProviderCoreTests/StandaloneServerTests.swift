@@ -1310,3 +1310,53 @@ private func expectPrometheusShapedLines(
     #expect(underRaised < underMeasured)
     #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underRaised))
 }
+
+/// `setModels` during an in-flight load defers the survivors' re-slice to
+/// the load's completion — and a FAILED load (restore-on-throw puts the old
+/// grants back, installs nothing) must still get it: the resident grant
+/// ends up sized under the raised floor, not the one it was built under.
+@Test func standaloneSetModelsDuringLoadReslicesWhenTheLoadFinishes() async throws {
+    try #require(
+        ProcessInfo.processInfo.environment["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil,
+        "DARKBLOOM_ACTIVATION_RESERVE_GB must be unset for this test's arithmetic")
+    let measured = "gpt-oss-20b"
+    let unmeasured = "gemma-4-26b-qat-4bit"
+    let measuredInfo = ModelInfo(
+        id: measured, modelType: "gpt_oss", quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 1)
+    let unmeasuredInfo = ModelInfo(
+        id: unmeasured, modelType: "gemma4", quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 1)
+    let server = standaloneTestServer(models: [measuredInfo])
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+    _ = try await server.buildSlotForTesting(
+        modelId: measured,
+        modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15))
+    let weights = UInt64(standaloneSizing(weightsGiB: 15).weightsBytes)
+    let underMeasured = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [measured]),
+        configReserveBytes: 0)
+    let underRaised = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: [measured, unmeasured]),
+        configReserveBytes: 0)
+    try #require(underRaised < underMeasured)
+
+    // A load is in flight (the marker ensureModelLoaded sets before its gate).
+    await server.markLoadInFlightForTesting("org/in-flight")
+    await server.setModels([measuredInfo, unmeasuredInfo])
+    // Deferred, not applied: the grant is untouched and the re-slice is owed.
+    #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
+    #expect(await server.isResliceDeferredBehindLoadForTesting())
+
+    // The load finishes (success or failure take the same completion step).
+    await server.finishLoadForTesting("org/in-flight")
+    #expect(!(await server.isResliceDeferredBehindLoadForTesting()))
+    #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underRaised))
+}

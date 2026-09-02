@@ -2859,21 +2859,22 @@ func stripThinkBlocks(text string) (string, string) {
 func normalizeSSEChunk(chunk string) string {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Only trigger the expensive JSON parse for fields we actually fix.
-	// "finish_reason":null appears on every chunk but we don't touch it,
-	// so checking for generic ":null" causes unnecessary JSON round-trips.
-	needsNullFix := strings.Contains(line, `"content":null`) ||
-		strings.Contains(line, `"tool_calls":null`) ||
-		strings.Contains(line, `"usage":null`) ||
-		strings.Contains(line, `"reasoning":null`) ||
-		strings.Contains(line, `"reasoning_content":null`) ||
-		strings.Contains(line, `"refusal":null`) ||
-		strings.Contains(line, `"system_fingerprint":null`)
-	needsReasoningNormalization := strings.Contains(line, `"reasoning"`) ||
-		strings.Contains(line, `"reasoning_content"`)
-	if !needsNullFix && !needsReasoningNormalization {
+	// "finish_reason":null appears on every chunk but we don't touch it, so
+	// the gates scan for the fixable `"<key>":null` shapes and the reasoning
+	// aliases in a pass each (sse_normalize_gate.go) instead of one
+	// strings.Contains per field.
+	if !sseChunkNeedsNullFix(line) && !sseChunkHasReasoningField(line) {
 		return chunk
 	}
+	return rewriteSSEChunkFields(chunk, line)
+}
 
+// rewriteSSEChunkFields is normalizeSSEChunk's slow path: the JSON round-trip
+// that rewrites null delta fields, drops null top-level fields, mirrors the
+// reasoning aliases and synthesises reasoning_details. line is chunk without
+// its "data: " prefix. Returns chunk unchanged when nothing needed fixing or
+// the payload is not a JSON object.
+func rewriteSSEChunkFields(chunk, line string) string {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return chunk

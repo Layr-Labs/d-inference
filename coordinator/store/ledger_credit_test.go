@@ -170,12 +170,17 @@ func TestPostgresTransactionalCreditCallersUseOneStatement(t *testing.T) {
 	s := tracedPostgresStore(t, counter)
 
 	wallet := uniqueID("wallet")
+	fixedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	counter.reset()
-	if err := s.CreditProviderWallet(&ProviderPayout{ProviderAddress: wallet, AmountMicroUSD: 700, Model: "m", JobID: uniqueID("job"), Timestamp: time.Now()}); err != nil {
+	if err := s.CreditProviderWallet(&ProviderPayout{ProviderAddress: wallet, AmountMicroUSD: 700, Model: "m", JobID: uniqueID("job"), Timestamp: fixedAt}); err != nil {
 		t.Fatalf("CreditProviderWallet: %v", err)
 	}
 	if q, _, _ := counter.snapshot(); q != 4 {
 		t.Fatalf("CreditProviderWallet: %d statements, want 4 (BEGIN, credit, payout, COMMIT)", q)
+	}
+	// The caller's timestamp must reach the ledger row ($5 binding), not NOW().
+	if entries := s.LedgerHistory(wallet); len(entries) != 1 || !entries[0].CreatedAt.Equal(fixedAt) {
+		t.Fatalf("wallet ledger created_at = %v, want %v", entries, fixedAt)
 	}
 	if b, w := s.GetBalanceWithWithdrawable(wallet); b != 700 || w != 700 {
 		t.Fatalf("wallet balance/withdrawable = (%d,%d), want (700,700)", b, w)
@@ -252,10 +257,23 @@ func TestCreditSemanticsAcrossBackends(t *testing.T) {
 			rows = append(rows, ledgerShape{LedgerPayout, 40, 190, "w"})
 			check("withdrawable", 190, 40, rows)
 
+			// A plain Credit on an account whose withdrawable balance is NONZERO
+			// must leave it exactly as is (the upsert omits the column).
+			if err := s.Credit(acct, 10, LedgerRefund, "k"); err != nil {
+				t.Fatalf("credit with nonzero withdrawable: %v", err)
+			}
+			rows = append(rows, ledgerShape{LedgerRefund, 10, 200, "k"})
+			check("credit keeps nonzero withdrawable", 200, 40, rows)
+			for _, e := range s.LedgerHistory(acct) {
+				if e.CreatedAt.IsZero() || time.Since(e.CreatedAt) > time.Minute {
+					t.Fatalf("ledger row %q created_at=%v, want a fresh database timestamp", e.Reference, e.CreatedAt)
+				}
+			}
+
 			if err := s.Debit(acct, 1000, LedgerCharge, "d"); !errors.Is(err, ErrInsufficientBalance) {
 				t.Fatalf("overdraw: err=%v, want ErrInsufficientBalance", err)
 			}
-			check("overdraw refused", 190, 40, rows)
+			check("overdraw refused", 200, 40, rows)
 		})
 	}
 }
@@ -276,7 +294,7 @@ func TestConcurrentCreditDebitLedgerConsistency(t *testing.T) {
 
 			const workers, opsPerWorker = 32, 8
 			var wg sync.WaitGroup
-			var credited, debited, credits, debits, failures atomic.Int64
+			var credited, debited, credits, debits, failures, insufficient atomic.Int64
 			for w := 0; w < workers; w++ {
 				wg.Add(1)
 				go func(w int) {
@@ -298,6 +316,7 @@ func TestConcurrentCreditDebitLedgerConsistency(t *testing.T) {
 							debited.Add(n)
 							debits.Add(1)
 						case errors.Is(err, ErrInsufficientBalance):
+							insufficient.Add(1)
 						default:
 							failures.Add(1)
 						}
@@ -307,6 +326,13 @@ func TestConcurrentCreditDebitLedgerConsistency(t *testing.T) {
 			wg.Wait()
 			if failures.Load() != 0 {
 				t.Fatalf("%d credit/debit calls failed", failures.Load())
+			}
+			// The seed exceeds every possible debit (max 700 × 128), so a Debit
+			// that reports insufficient balance is a broken debit, not a
+			// legitimate refusal — the totals below must not be allowed to pass
+			// on credits alone.
+			if insufficient.Load() != 0 || debits.Load() != workers*opsPerWorker/2 {
+				t.Fatalf("debits succeeded=%d insufficient=%d, want %d and 0", debits.Load(), insufficient.Load(), workers*opsPerWorker/2)
 			}
 
 			want := seed + credited.Load() - debited.Load()

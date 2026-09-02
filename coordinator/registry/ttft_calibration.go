@@ -3,7 +3,6 @@ package registry
 import (
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -157,14 +156,22 @@ func clampTTFTCalibrationRatio(ratio float64) float64 {
 type ttftCalibrator struct {
 	mu        sync.RWMutex
 	windows   map[ttftCalibrationKey]*ttftRatioWindow
-	pending   map[string]ttftPendingPrediction
+	pending   map[ttftPendingID]ttftPendingPrediction
 	lastSweep time.Time
+}
+
+// ttftPendingID identifies a reserved attempt's pending prediction. A struct
+// key (vs requestID+"#"+attempt) is built without allocating on every
+// reservation and cannot alias across ids containing the delimiter.
+type ttftPendingID struct {
+	requestID string
+	attempt   int
 }
 
 func newTTFTCalibrator() *ttftCalibrator {
 	return &ttftCalibrator{
 		windows: make(map[ttftCalibrationKey]*ttftRatioWindow),
-		pending: make(map[string]ttftPendingPrediction),
+		pending: make(map[ttftPendingID]ttftPendingPrediction),
 	}
 }
 
@@ -172,8 +179,8 @@ func newTTFTCalibrator() *ttftCalibrator {
 // scheduler (reads + prediction recording) and the API layer (observations).
 var ttftCalibration = newTTFTCalibrator()
 
-func ttftPendingKey(requestID string, attempt int) string {
-	return requestID + "#" + strconv.Itoa(attempt)
+func ttftPendingKey(requestID string, attempt int) ttftPendingID {
+	return ttftPendingID{requestID: requestID, attempt: attempt}
 }
 
 // notePrediction records the RAW (pre-calibration) warm-slot TTFT estimate for
@@ -185,9 +192,21 @@ func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, ch
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.pending) >= ttftCalibrationMaxPending ||
-		(len(c.pending) > ttftCalibrationSweepThreshold && now.Sub(c.lastSweep) > ttftCalibrationSweepInterval) {
+	// The TTL sweep walks the whole map, so it is rate-limited to one per
+	// ttftCalibrationSweepInterval even at capacity. Between sweeps a full map
+	// (a reserve storm whose attempts never reach first content — the exact
+	// retry-cascade shape) evicts ONE arbitrary entry in O(1) instead of
+	// walking all ttftCalibrationMaxPending entries under this global lock on
+	// every reservation (that walk was ~20% of a fleet-scale reservation).
+	// The map stays bounded either way.
+	if len(c.pending) > ttftCalibrationSweepThreshold && now.Sub(c.lastSweep) > ttftCalibrationSweepInterval {
 		c.sweepPendingLocked(now)
+	}
+	if len(c.pending) >= ttftCalibrationMaxPending {
+		for k := range c.pending {
+			delete(c.pending, k)
+			break
+		}
 	}
 	c.pending[ttftPendingKey(requestID, attempt)] = ttftPendingPrediction{
 		model: model,
@@ -297,7 +316,7 @@ func (c *ttftCalibrator) appliedRatio(model, chip string) float64 {
 func (c *ttftCalibrator) reset() {
 	c.mu.Lock()
 	c.windows = make(map[ttftCalibrationKey]*ttftRatioWindow)
-	c.pending = make(map[string]ttftPendingPrediction)
+	c.pending = make(map[ttftPendingID]ttftPendingPrediction)
 	c.mu.Unlock()
 }
 

@@ -256,7 +256,29 @@ _(pending)_
 
 ## 6. Not done / recommendations
 
-- The container runs with no `GOMEMLIMIT`/`GOGC` (deploy/gcp/vm-startup.sh); a
-  soft memory limit tuned to the VM would let the GC run less often under the
-  allocation rates measured here. Deploy-side change, human-only.
-- pprof listener: PR #799 adds `EIGENINFERENCE_PPROF_ADDR`; not duplicated here.
+- **Settlement consolidation** (one transaction for refund + provider earning +
+  platform fee) was evaluated and not shipped — see §4.3. The `Credit`
+  round-trip collapse captures most of the DB win without changing failure
+  semantics.
+- **`/v1/pricing`** is still uncached (handler lives in `billing_handlers.go`);
+  wrap it in the read cache with a 2 s TTL like the other public endpoints.
+- **Datadog cardinality**: `recordMLXCacheTelemetry` emits nine gauges tagged
+  by `provider_id` on every heartbeat (~11k series per flush at fleet scale).
+  Aggregating by chip family, or sampling, is an observability decision worth
+  making before the fleet grows further.
+- **Provider persistence**: throttled `UpsertProvider`/`TouchProviderSession`/
+  `UpsertReputation` writes are ~126 statements/s fleet-wide at 30 s freshness.
+  Batching them (multi-row upserts on a 5 s cadence) would cut DB write load
+  without changing the freshness contract.
+- **Container GC settings**: the container runs with no `GOMEMLIMIT`/`GOGC`
+  (deploy/gcp/vm-startup.sh); a soft memory limit tuned to the VM would let
+  the GC run less often under the allocation rates measured here. Deploy-side
+  change, human-only.
+- **pprof listener**: PR #799 adds `EIGENINFERENCE_PPROF_ADDR`; not
+  duplicated here. The generic completions/messages handlers still call
+  `resolveRequestedModel` (inside #799's hunks) and can be folded onto the
+  parse-once path after #799 merges.
+- **Swap-planner coalescing window**: a request enqueued right after a plan
+  waits up to 250 ms for the next heartbeat-triggered plan (the api
+  cold-dispatch kick still plans immediately); on a fleet with no heartbeats at
+  all no plan runs, which only matters for single-provider dev setups.

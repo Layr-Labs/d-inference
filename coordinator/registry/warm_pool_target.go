@@ -217,23 +217,26 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 // current load, at least HeadroomProviders providers' worth of serving capacity
 // is still FREE.
 //
-// It is expressed against AVAILABLE capacity, not the raw warm count, because a
-// provider that is currently serving a request still counts as warm
-// (providerHasWarmModelLocked treats slot state "running" and "idle" alike:
-// warm means weights resident, not available). Sizing a floor against raw warm
-// therefore guarantees resident weights, not spare capacity — the two decouple
-// badly in production. Saturated is the measured count of warm providers with no
-// concurrency headroom left, so (warm - saturated) is the pool that can actually
-// accept work.
+// Total serving capacity is warm·qc and the in-flight load occupies `occupied`
+// slots, so requiring headroom·qc free slots gives
 //
-// Occupied slots are the in-flight load; capacity is available·qc. We need
+//	warm·qc - occupied >= headroom·qc
+//	warm             >= ceil(occupied/qc) + headroom
 //
-//	available·qc >= occupied + headroom·qc
-//	available    >= ceil(occupied/qc) + headroom
+// Note what is deliberately NOT in that expression: WarmSaturated. A saturated
+// provider's capacity is already counted inside warm·qc and the requests
+// occupying it are already counted inside `occupied`, so adding it again
+// double-counts — on a fully-busy pool (occupied = warm·qc, saturated = warm)
+// that inflated the floor by exactly one provider per saturated provider,
+// roughly doubling the target. WarmSaturated remains plumbed through for the
+// pressure gate and the tick log, where it is a genuine signal.
 //
-// and the warm count must cover the saturated providers on top of that, since
-// they contribute weights but no capacity. HeadroomProviders <= 0 disables the
-// floor entirely, preserving the old purely-reactive behaviour.
+// This is why the floor is expressed in CAPACITY (occupied/qc) rather than in
+// provider counts: a provider serving a request still counts as warm
+// (providerHasWarmModelLocked treats slot state "running" and "idle" alike, so
+// warm means weights resident, not available), and occupancy is what actually
+// distinguishes the two. HeadroomProviders <= 0 disables the floor entirely,
+// preserving the old purely-reactive behaviour.
 func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 	if p.HeadroomProviders <= 0 {
 		return 0
@@ -245,15 +248,7 @@ func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 	if occupied < 0 {
 		occupied = 0
 	}
-	saturated := in.WarmSaturated
-	if saturated < 0 {
-		saturated = 0
-	}
-	if saturated > in.Warm {
-		saturated = in.Warm
-	}
-	needAvailable := int(math.Ceil(float64(occupied)/float64(qc))) + p.HeadroomProviders
-	return needAvailable + saturated
+	return int(math.Ceil(float64(occupied)/float64(qc))) + p.HeadroomProviders
 }
 
 // rampLoadsThisTick returns the demand-scaled, bounded number of model loads to

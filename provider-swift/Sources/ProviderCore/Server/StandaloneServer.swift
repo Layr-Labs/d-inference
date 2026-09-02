@@ -346,10 +346,22 @@ public actor StandaloneServer {
     }
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
-    /// same CBv2 supported-set filter as init.
-    public func setModels(_ newModels: [ModelInfo]) {
+    /// same CBv2 supported-set filter as init. The serving set is part of
+    /// the activation-reserve basis, so the KV budget actor is re-pushed
+    /// and the resident grants re-sliced under the new floor BEFORE a
+    /// higher-floor model can be exposed — otherwise in-flight KV
+    /// reservations and the existing grants would keep the old (lower)
+    /// reserve while the load/probe paths already resolve the new one.
+    public func setModels(_ newModels: [ModelInfo]) async {
         self.models = Self.filterSupported(
             newModels, runtimeCapabilities: config.runtimeCapabilities)
+        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
+        // A load in flight re-slices every survivor under the (already
+        // updated) reserve at its own install; re-slicing here as well
+        // would interleave with its restore-on-throw bookkeeping.
+        if modelsLoading.isEmpty {
+            await resliceGrowSurvivors()
+        }
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -1534,7 +1546,8 @@ public actor StandaloneServer {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
-                    pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                    activationReserveBytes: resolvedActivationReserveBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(

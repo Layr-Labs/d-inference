@@ -84,6 +84,15 @@ const (
 	// capacity-triggered sweeps.
 	ttftCalibrationSweepThreshold = 1024
 	ttftCalibrationSweepInterval  = time.Minute
+	// ttftCalibrationCapacitySweepInterval lets the whole-map TTL sweep run
+	// more often while the map sits AT capacity, so a sustained reserve storm
+	// reclaims expired entries within seconds rather than a minute — while
+	// still never sweeping on every reservation.
+	ttftCalibrationCapacitySweepInterval = 5 * time.Second
+	// ttftCalibrationEvictProbe bounds the per-reservation eviction scan at
+	// capacity between sweeps: probe this many entries, drop the first
+	// expired one, else the last probed.
+	ttftCalibrationEvictProbe = 8
 )
 
 // ttftCalibrationEnabled is the live-read kill switch:
@@ -192,21 +201,23 @@ func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, ch
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// The TTL sweep walks the whole map, so it is rate-limited to one per
-	// ttftCalibrationSweepInterval even at capacity. Between sweeps a full map
-	// (a reserve storm whose attempts never reach first content — the exact
-	// retry-cascade shape) evicts ONE arbitrary entry in O(1) instead of
+	// The TTL sweep walks the whole map, so it is rate-limited: once per
+	// ttftCalibrationSweepInterval above the threshold, and once per (shorter)
+	// ttftCalibrationCapacitySweepInterval while AT capacity. Between sweeps a
+	// full map (a reserve storm whose attempts never reach first content — the
+	// exact retry-cascade shape) frees one slot with a bounded probe instead of
 	// walking all ttftCalibrationMaxPending entries under this global lock on
-	// every reservation (that walk was ~20% of a fleet-scale reservation).
-	// The map stays bounded either way.
-	if len(c.pending) > ttftCalibrationSweepThreshold && now.Sub(c.lastSweep) > ttftCalibrationSweepInterval {
+	// every reservation (that walk was ~20% of a fleet-scale reservation). The
+	// map stays bounded either way.
+	atCapacity := len(c.pending) >= ttftCalibrationMaxPending
+	sinceSweep := now.Sub(c.lastSweep)
+	if len(c.pending) > ttftCalibrationSweepThreshold &&
+		(sinceSweep > ttftCalibrationSweepInterval ||
+			(atCapacity && sinceSweep > ttftCalibrationCapacitySweepInterval)) {
 		c.sweepPendingLocked(now)
 	}
 	if len(c.pending) >= ttftCalibrationMaxPending {
-		for k := range c.pending {
-			delete(c.pending, k)
-			break
-		}
+		c.evictOneLocked(now)
 	}
 	c.pending[ttftPendingKey(requestID, attempt)] = ttftPendingPrediction{
 		model: model,
@@ -226,6 +237,30 @@ func (c *ttftCalibrator) discardPrediction(requestID string, attempt int) {
 	c.mu.Lock()
 	delete(c.pending, ttftPendingKey(requestID, attempt))
 	c.mu.Unlock()
+}
+
+// evictOneLocked frees one slot in a full map with bounded work: it probes up
+// to ttftCalibrationEvictProbe entries (map order — effectively random),
+// deletes the first EXPIRED one it sees, and only when none of the probed
+// entries has expired deletes the last probed (possibly live) entry. Caller
+// holds c.mu.
+func (c *ttftCalibrator) evictOneLocked(now time.Time) {
+	var last ttftPendingID
+	probed := 0
+	for k, p := range c.pending {
+		if now.Sub(p.at) > ttftCalibrationPendingTTL {
+			delete(c.pending, k)
+			return
+		}
+		last = k
+		probed++
+		if probed >= ttftCalibrationEvictProbe {
+			break
+		}
+	}
+	if probed > 0 {
+		delete(c.pending, last)
+	}
 }
 
 // sweepPendingLocked drops expired predictions; if the map is still at

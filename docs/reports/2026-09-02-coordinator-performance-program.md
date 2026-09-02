@@ -151,6 +151,36 @@ while `Credit` is not, and a single transaction over three balance rows adds a
 deadlock cycle between concurrent settlements. Follow-up instead: collapse
 `Credit` from five round trips to one CTE, as `Debit` already is.
 
+### 4.4 Streaming relay and public read endpoints (`api/stream_coalesce.go`, `api/chat_stream_relay.go`, `api/sse_normalize_gate.go`, `api/models_cache.go`)
+
+All three relays (chat, Responses, generic completions/messages) now drain the
+chunks already queued in `ChunkCh` after each receive (bounded by the channel
+capacity, never waiting), apply the identical per-chunk transforms and holds
+in order, and flush once. Goldens pinned against the pre-change byte stream:
+
+| Relay | flushes/op (200-chunk burst) | bytes/op |
+|---|---:|---:|
+| chat | 203 → 9 | identical |
+| responses | 208 → 9 | identical |
+| completions | 202 → 8 | identical |
+| messages | 205 → 9 | identical |
+
+The relay also fixed two latent ordering bugs the reviewers surfaced: queued
+chunks now always precede a concurrently-ready in-band error, and the
+Responses/generic close paths report a buffered provider error instead of
+"provider ended without completion".
+
+`normalizeSSEChunk` decides with one pass instead of nine `strings.Contains`
+scans: content delta 915 → 191 ns, usage chunk 1.1 µs → 155 ns, byte-identical
+output over a 36-case differential corpus.
+
+Public read endpoints newly served from the TTL read cache: `/v1/models` and
+`/v1/models/{id}` (2 s, shared entry memo keyed by include_builds; self-route
+views stay live), `/v1/models/openrouter` (5 s), `/v1/providers/attestation`
+(2 s). Admin alias/registry mutations invalidate the catalog-derived entries
+through `SyncModelCatalog`/`SyncModelAliases`, so the TTLs only bound
+out-of-band edits.
+
 ## 5. After
 
 _(pending)_

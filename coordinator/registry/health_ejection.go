@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"strings"
 	"time"
 )
 
@@ -207,11 +206,11 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		return
 	}
 
-	// Dispatch-load cooldowns: composite "key:modelID" string keys.
-	prefix := oldKey + ":"
+	// Dispatch-load cooldowns: struct keys per (fault key, model).
 	for k, expiry := range r.dispatchLoadCooldowns {
-		if strings.HasPrefix(k, prefix) {
-			nk := newKey + ":" + k[len(prefix):]
+		if k.FaultKey == oldKey {
+			nk := k
+			nk.FaultKey = newKey
 			if cur, ok := r.dispatchLoadCooldowns[nk]; !ok || expiry.After(cur) {
 				r.dispatchLoadCooldowns[nk] = expiry
 			}

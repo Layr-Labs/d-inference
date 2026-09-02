@@ -2157,15 +2157,15 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
-	pendingModelLoadStarted map[string]time.Time
+	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
+	pendingModelLoadStarted map[modelLoadKey]time.Time
 
 	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
 	// load failure ("insufficient memory"). Routing skips the pair until expiry —
 	// it would instant-503 again, and without this the scheduler re-picks it
 	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
 	// on re-registration and on a served request for the pair.
-	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
+	dispatchLoadCooldowns map[dispatchLoadKey]time.Time // value: expiry (see pair_keys.go)
 
 	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
 	// circuit breaker for provider-side inference failures: a (provider, model,
@@ -2362,9 +2362,9 @@ func New(logger *slog.Logger) *Registry {
 		MinTrustLevel:                  TrustHardware,
 		tpsRegistry:                    NewTPSRegistry(),
 		modelProviders:                 make(map[string]*atomic.Int64),
-		pendingModelLoads:              make(map[string]time.Time),
-		pendingModelLoadStarted:        make(map[string]time.Time),
-		dispatchLoadCooldowns:          make(map[string]time.Time),
+		pendingModelLoads:              make(map[modelLoadKey]time.Time),
+		pendingModelLoadStarted:        make(map[modelLoadKey]time.Time),
+		dispatchLoadCooldowns:          make(map[dispatchLoadKey]time.Time),
 		inferenceErrorStrikes:          make(map[inferenceErrorKey][]time.Time),
 		inferenceErrorCooldowns:        make(map[inferenceErrorKey]time.Time),
 		providerOutcomes:               make(map[string]*providerHealthWindow),
@@ -2464,9 +2464,9 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 			}
 		}
 	}
-	key := r.faultKeyLocked(providerID) + ":" + modelID
-	_, active := r.dispatchLoadCooldowns[key]
-	active = active && now.Before(r.dispatchLoadCooldowns[key])
+	key := dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}
+	expiry, active := r.dispatchLoadCooldowns[key]
+	active = active && now.Before(expiry)
 	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
 	return !active
 }
@@ -2476,14 +2476,14 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
+	delete(r.dispatchLoadCooldowns, dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID})
 }
 
 // dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
 // READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
 // r.mu in either mode.
 func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	expiry, ok := r.dispatchLoadCooldowns[r.faultKeyLocked(providerID)+":"+modelID]
+	expiry, ok := r.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}]
 	return ok && now.Before(expiry)
 }
 
@@ -4501,7 +4501,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 
 	reserved := actions[:0]
@@ -4520,7 +4520,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		key := modelLoadKey(action.providerID, action.modelID)
+		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
 		reserved = append(reserved, action)
@@ -4541,16 +4541,11 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 	}
 }
 
-func modelLoadKey(providerID, modelID string) string {
-	return providerID + ":" + modelID
-}
-
 // providerHasPendingLoad reports whether the provider has any pending
 // load_model command. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasPendingLoad(providerID string) bool {
-	prefix := providerID + ":"
 	for key := range r.pendingModelLoads {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+		if key.ProviderID == providerID && key.ModelID != "" {
 			return true
 		}
 	}
@@ -4571,14 +4566,12 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	prefix := providerID + ":"
 	cleared := 0
 	for key := range r.pendingModelLoads {
-		if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
+		if key.ProviderID != providerID || key.ModelID == "" {
 			continue
 		}
-		modelID := key[len(prefix):]
-		if r.providerCanAcquireCatalogModelLocked(p, modelID) {
+		if r.providerCanAcquireCatalogModelLocked(p, key.ModelID) {
 			continue
 		}
 		delete(r.pendingModelLoads, key)
@@ -4648,7 +4641,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 // load_model_status response.
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	started := r.pendingModelLoadStarted[key]
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
@@ -4661,7 +4654,7 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 
 func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
 	r.mu.RLock()
-	started := r.pendingModelLoadStarted[modelLoadKey(providerID, modelID)]
+	started := r.pendingModelLoadStarted[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	if started.IsZero() {
 		return 0
@@ -4675,7 +4668,7 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 // allowing them to mutate warm-model state.
 func (r *Registry) HasPendingModelLoad(providerID, modelID string) bool {
 	r.mu.RLock()
-	expiresAt, ok := r.pendingModelLoads[modelLoadKey(providerID, modelID)]
+	expiresAt, ok := r.pendingModelLoads[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	return ok && time.Now().Before(expiresAt)
 }
@@ -4691,12 +4684,12 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[string]time.Time)
+		r.pendingModelLoadStarted = make(map[modelLoadKey]time.Time)
 	}
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	now := time.Now()
 	r.pendingModelLoads[key] = now.Add(backoff)
 	if r.pendingModelLoadStarted[key].IsZero() {
@@ -4840,7 +4833,7 @@ func (r *Registry) Disconnect(id string) {
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {
-			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
+			if key.ProviderID == id {
 				delete(r.pendingModelLoads, key)
 				delete(r.pendingModelLoadStarted, key)
 			}
@@ -4875,9 +4868,8 @@ func (r *Registry) Disconnect(id string) {
 					delete(r.inferenceErrorCooldowns, key)
 				}
 			}
-			prefix := id + ":"
 			for key := range r.dispatchLoadCooldowns {
-				if strings.HasPrefix(key, prefix) {
+				if key.FaultKey == id {
 					delete(r.dispatchLoadCooldowns, key)
 				}
 			}

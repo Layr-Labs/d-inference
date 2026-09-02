@@ -875,7 +875,8 @@ struct FakeLumeFixture {
         ;;
       ssh)
         : > "$root/guest-command-started"
-        encoded_payload="$(printf '%s' "${8:-}" | /usr/bin/cut -d "'" -f 4)"
+        for payload_argument in "$@"; do :; done
+        encoded_payload="$(printf '%s' "${payload_argument:-}" | /usr/bin/cut -d "'" -f 4)"
         decoded_guest_script="$(printf '%s' "$encoded_payload" | /usr/bin/base64 -D)"
         case "$decoded_guest_script" in
           *darkbloom-cancel*)
@@ -960,18 +961,25 @@ struct FakeLumeFixture {
             expected_probe_prefix="/usr/bin/printf '%s' '"
             expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh -f"
             valid_probe_command=false
-            case "$8" in
+            for probe_payload in "$@"; do :; done
+            case "$probe_payload" in
               "$expected_probe_prefix"*"$expected_probe_suffix")
                 valid_probe_command=true
                 ;;
             esac
-            if [ "$#" -ne 8 ] \
+            # The probe must authenticate as this sandbox's administrator, and
+            # the password must arrive in the environment rather than argv,
+            # which `ps` would expose to every process on the host.
+            if [ "$#" -ne 10 ] \
               || [ "$2" != "sandbox-failure-test" ] \
               || [ "$3" != "--storage" ] \
               || [ "$4" != "$root/vms" ] \
               || [ "$5" != "--timeout" ] \
               || [ "$6" != "35" ] \
               || [ "$7" != "--nio-only" ] \
+              || [ "$8" != "--user" ] \
+              || [ -z "$9" ] \
+              || [ -z "${LUME_BOOTSTRAP_PASSWORD:-}" ] \
               || [ "$valid_probe_command" != "true" ] \
               || [ "${LUME_HOME:-}" != "$root/vms/.darkbloom-runtime" ] \
               || [ "${LUME_LOG_LEVEL:-}" != "error" ] \

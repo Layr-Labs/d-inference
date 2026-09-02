@@ -20,17 +20,22 @@ package struct LumeGuestSSHTransport: LumeGuestCommandTransport {
     let executable: URL
     let storagePath: String
     let environment: [String: String]
+    /// Credentials for this specific guest. `lume ssh` defaults to the shared
+    /// `lume`/`lume` pair, which no longer exists on a per-sandbox image.
+    let credential: LumeGuestCredential
 
     package init(
         runner: SandboxProcessRunner,
         executable: URL,
         storagePath: String,
-        environment: [String: String]
+        environment: [String: String],
+        credential: LumeGuestCredential = .legacy
     ) {
         self.runner = runner
         self.executable = executable
         self.storagePath = storagePath
         self.environment = environment
+        self.credential = credential
     }
 
     package var description: String { "lume ssh" }
@@ -39,7 +44,14 @@ package struct LumeGuestSSHTransport: LumeGuestCommandTransport {
         _ request: SandboxGuestCommandRequest
     ) throws -> LumeGuestPreparedCommand {
         LumeGuestPreparedCommand(
-            payload: .encodedScript(try LumeGuestCommandEncoder.encode(request))
+            // HOME follows the account this transport authenticates as, or
+            // the launchd job writes into a directory the guest does not have.
+            payload: .encodedScript(
+                try LumeGuestCommandEncoder.encode(
+                    request,
+                    home: credential.bootstrapHome
+                )
+            )
         )
     }
 
@@ -62,9 +74,17 @@ package struct LumeGuestSSHTransport: LumeGuestCommandTransport {
                 "--storage", storagePath,
                 "--timeout", String(guestTimeoutSeconds + Self.lumeGraceSeconds),
                 "--nio-only",
+                "--user", credential.bootstrapUsername,
                 encodedCommand,
             ],
-            environment: environment,
+            // The password travels here, never in argv: arguments are visible
+            // to every process on the host through `ps`.
+            environment: environment.merging(
+                [
+                    LumeGuestCredential.passwordEnvironmentVariable:
+                        credential.bootstrapPassword
+                ]
+            ) { _, credential in credential },
             timeoutSeconds: guestTimeoutSeconds + Self.hostGraceSeconds,
             maximumOutputBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
         )

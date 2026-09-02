@@ -67,6 +67,53 @@ index 5ec08cc59f0e40a7c8ae2e4d31a4deac67cf5dcf..7d22d8c916306c8b711736ef282ec6a5
          )
      }
  
+diff --git a/libs/lume/src/Commands/SSH.swift b/libs/lume/src/Commands/SSH.swift
+index 157ad9f0ae4d80f842d6e83ae7ebb8df3198478d..f7a8698771becf5106e069cee8dd302951d79cb1 100644
+--- a/libs/lume/src/Commands/SSH.swift
++++ b/libs/lume/src/Commands/SSH.swift
+@@ -29,8 +29,22 @@ struct SSH: AsyncParsableCommand {
+     @Option(name: [.short, .long], help: "SSH username (default: lume)")
+     var user: String = "lume"
+ 
+-    @Option(name: [.short, .long], help: "SSH password (default: lume)")
+-    var password: String = "lume"
++    @Option(
++        name: [.short, .long],
++        help: "SSH password. Falls back to LUME_BOOTSTRAP_PASSWORD, then to 'lume'.")
++    var password: String = ""
++
++    /// Resolved password, preferring the environment over the command line.
++    ///
++    /// Command-line arguments are visible to every process on the host through
++    /// `ps`, so a caller holding a real per-guest credential should pass it in
++    /// the environment instead. The historical default is preserved when
++    /// neither is supplied.
++    var resolvedPassword: String {
++        if !password.isEmpty { return password }
++        let environment = ProcessInfo.processInfo.environment
++        return environment["LUME_BOOTSTRAP_PASSWORD"] ?? "lume"
++    }
+ 
+     @Option(name: .customLong("storage"), help: "Storage location name or path")
+     var storage: String?
+@@ -95,7 +109,7 @@ struct SSH: AsyncParsableCommand {
+             host: host,
+             port: 22,
+             user: user,
+-            password: password
++            password: resolvedPassword
+         )
+ 
+         if command.isEmpty {
+@@ -123,7 +137,7 @@ struct SSH: AsyncParsableCommand {
+             host: host,
+             port: 22,
+             user: user,
+-            password: password
++            password: resolvedPassword
+         )
+ 
+         if command.isEmpty {
 diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
 index e548c2540fa05edc5907a9b8e2057abe65a20c91..7b0c0b334d816a9e73ceea52ed343eac956630f0 100644
 --- a/libs/lume/src/LumeController.swift

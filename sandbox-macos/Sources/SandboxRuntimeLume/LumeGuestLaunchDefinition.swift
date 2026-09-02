@@ -2,19 +2,24 @@ import Foundation
 import SandboxRuntime
 
 enum LumeGuestLaunchDefinition {
-    private static let deterministicEnvironment = [
-        "HOME": "/Users/lume",
+    /// Everything except HOME, which depends on which account the transport
+    /// authenticates as and is supplied per invocation.
+    private static func deterministicEnvironment(home: String) -> [String: String] {
+        [
+        "HOME": home,
         "LANG": "en_US.UTF-8",
         "LC_ALL": "en_US.UTF-8",
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "TMPDIR": "/tmp",
-    ]
+        ]
+    }
 
     static func propertyList(
         for request: SandboxGuestCommandRequest,
-        jobLabel: String
+        jobLabel: String,
+        home: String
     ) throws -> Data {
-        var controlEnvironment = Self.deterministicEnvironment
+        var controlEnvironment = Self.deterministicEnvironment(home: home)
         controlEnvironment["DARKBLOOM_IDEMPOTENCY_KEY"] =
             LumeGuestCommandIdentity.identifier(for: request.idempotencyKey)
         controlEnvironment["DARKBLOOM_JOB_LABEL"] =
@@ -22,7 +27,7 @@ enum LumeGuestLaunchDefinition {
         controlEnvironment["DARKBLOOM_RESULT_DIR"] = "/dev/null"
         controlEnvironment["DARKBLOOM_TIMEOUT_SECONDS"] =
             String(request.timeoutSeconds)
-        var targetEnvironment = Self.deterministicEnvironment
+        var targetEnvironment = Self.deterministicEnvironment(home: home)
         targetEnvironment.merge(request.environment) { fixed, _ in fixed }
         targetEnvironment["DARKBLOOM_IDEMPOTENCY_KEY"] =
             LumeGuestCommandIdentity.identifier(for: request.idempotencyKey)

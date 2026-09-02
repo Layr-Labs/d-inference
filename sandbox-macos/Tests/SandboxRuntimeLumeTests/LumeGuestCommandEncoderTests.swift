@@ -317,7 +317,8 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             for: request,
             jobLabel: LumeGuestCommandIdentity.jobLabel(
                 for: request.idempotencyKey
-            )
+            ),
+            home: LumeGuestCredential.legacy.bootstrapHome
         )
         let propertyList = try XCTUnwrap(
             PropertyListSerialization.propertyList(

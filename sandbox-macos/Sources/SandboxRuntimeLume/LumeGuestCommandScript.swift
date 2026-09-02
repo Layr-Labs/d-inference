@@ -3,6 +3,7 @@ import SandboxRuntime
 
 enum LumeGuestCommandScript {
     static func execution(
+        home: String,
         _ request: SandboxGuestCommandRequest
     ) throws -> String {
         let identifier = LumeGuestCommandIdentity.identifier(
@@ -13,7 +14,8 @@ enum LumeGuestCommandScript {
         )
         let propertyList = try LumeGuestLaunchDefinition.propertyList(
             for: request,
-            jobLabel: jobLabel
+            jobLabel: jobLabel,
+            home: home
         ).base64EncodedString()
         let captureBlockBytes = 1_024
         let captureBlockCount =
@@ -28,7 +30,7 @@ enum LumeGuestCommandScript {
             umask 077
             [[ -d \(shellQuote(request.workingDirectory)) \
             && -x \(shellQuote(request.executable)) ]] || exit 70
-            control_root="${HOME:-/Users/lume}/Library/Caches/dev.darkbloom.sandbox/commands"
+            control_root="${HOME:-\(home)}/Library/Caches/dev.darkbloom.sandbox/commands"
             if [[ -e "$control_root" \
             && ( ! -d "$control_root" || -L "$control_root" ) ]]; then
               exit 70
@@ -201,7 +203,10 @@ enum LumeGuestCommandScript {
             """
     }
 
-    static func cancellation(_ idempotencyKey: UUID) -> String {
+    static func cancellation(
+        _ idempotencyKey: UUID,
+        home: String = LumeGuestCredential.legacy.bootstrapHome
+    ) -> String {
         let identifier = LumeGuestCommandIdentity.identifier(
             for: idempotencyKey
         )
@@ -209,7 +214,7 @@ enum LumeGuestCommandScript {
             #!/bin/zsh
             set -u
             umask 077
-            control_root="${HOME:-/Users/lume}/Library/Caches/dev.darkbloom.sandbox/commands"
+            control_root="${HOME:-\(home)}/Library/Caches/dev.darkbloom.sandbox/commands"
             if [[ -e "$control_root" \
             && ( ! -d "$control_root" || -L "$control_root" ) ]]; then
               exit 70

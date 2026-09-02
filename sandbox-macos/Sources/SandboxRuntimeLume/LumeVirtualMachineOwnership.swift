@@ -34,6 +34,9 @@ enum LumeVirtualMachineOwnership {
         let cpuCount: UInt16
         let memoryBytes: UInt64
         let diskBytes: UInt64
+        /// Falls back to the shared account for guests installed before
+        /// per-sandbox credentials existed.
+        let guestCredential: LumeGuestCredential
     }
 
     enum Presence: Equatable, Sendable {
@@ -45,6 +48,7 @@ enum LumeVirtualMachineOwnership {
         specification: SandboxVirtualMachineSpecification,
         owner: Owner,
         sourceInstallationID: UUID? = nil,
+        guestCredential: LumeGuestCredential? = nil,
         to virtualMachineDirectory: URL
     ) throws {
         let encoder = JSONEncoder()
@@ -55,7 +59,8 @@ enum LumeVirtualMachineOwnership {
                 specification: specification,
                 owner: owner,
                 sourceInstallationID: sourceInstallationID,
-                installationID: UUID()
+                installationID: UUID(),
+                guestCredential: guestCredential
             )
             guard record.isValid else {
                 throw SandboxRuntimeError.unsupported(
@@ -174,7 +179,8 @@ enum LumeVirtualMachineOwnership {
             name: record.name,
             cpuCount: record.cpuCount,
             memoryBytes: record.memoryBytes,
-            diskBytes: record.diskBytes
+            diskBytes: record.diskBytes,
+            guestCredential: record.guestCredential ?? .legacy
         )
     }
 
@@ -361,13 +367,19 @@ enum LumeVirtualMachineOwnership {
         let ownerKind: String
         let sandboxID: SandboxID?
         let sandboxGeneration: SandboxGeneration?
+        /// Optional so records written before per-sandbox credentials still
+        /// decode. Their absence is not a placeholder: a VM installed from one
+        /// really does have the shared `lume`/`lume` account.
+        let guestCredential: LumeGuestCredential?
 
         init(
             specification: SandboxVirtualMachineSpecification,
             owner: Owner,
             sourceInstallationID: UUID?,
-            installationID: UUID
+            installationID: UUID,
+            guestCredential: LumeGuestCredential?
         ) {
+            self.guestCredential = guestCredential
             schemaVersion = LumeVirtualMachineOwnership.schemaVersion
             self.installationID = installationID
             name = specification.name
@@ -402,11 +414,15 @@ enum LumeVirtualMachineOwnership {
             _ specification: SandboxVirtualMachineSpecification,
             owner: Owner
         ) -> Bool {
+            // The credential is not derived from the specification, so it is
+            // carried through rather than compared: a matching VM is one whose
+            // shape and owner match, not one that reuses a password.
             let expected = Record(
                 specification: specification,
                 owner: owner,
                 sourceInstallationID: sourceInstallationID,
-                installationID: installationID
+                installationID: installationID,
+                guestCredential: guestCredential
             )
             return schemaVersion == expected.schemaVersion
                 && name == expected.name

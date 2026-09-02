@@ -49,12 +49,19 @@ enum LumeCredentialedGuestReadinessProbe {
         storagePath: String,
         environment: [String: String],
         name: String,
+        credential: LumeGuestCredential = .legacy,
         policy: LumeGuestReadinessPolicy,
         clock: ContinuousClock,
         deadline: ContinuousClock.Instant
     ) async throws -> Bool {
         let deterministicEnvironment = environment.merging(
-            ["LANG": "C", "LC_ALL": "C"]
+            [
+                "LANG": "C",
+                "LC_ALL": "C",
+                // In the environment, never argv: `ps` exposes arguments.
+                LumeGuestCredential.passwordEnvironmentVariable:
+                    credential.bootstrapPassword,
+            ]
         ) { _, deterministic in deterministic }
         let encodedCommand = try command(idempotencyKey: UUID())
         let result = try await LumeGuestReadinessDeadline.run(
@@ -69,6 +76,7 @@ enum LumeCredentialedGuestReadinessProbe {
                     "--storage", storagePath,
                     "--timeout", String(lumeTimeoutSeconds),
                     "--nio-only",
+                    "--user", credential.bootstrapUsername,
                     encodedCommand,
                 ],
                 environment: deterministicEnvironment,

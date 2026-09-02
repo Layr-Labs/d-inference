@@ -117,7 +117,9 @@ extension LumeVirtualMachineRuntime {
             }
             // Encode before the durable claim: a request that cannot be
             // prepared must not leave an unresolvable claim in the journal.
-            let transport = guestCommandTransport()
+            let transport = guestCommandTransport(
+                credential: ownership.guestCredential
+            )
             let prepared = try transport.prepare(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(
@@ -308,12 +310,31 @@ extension LumeVirtualMachineRuntime {
     /// SSH stays the default. The vsock transport is selected per sandbox once
     /// a guest channel has been handed over, and cannot be until the signed
     /// agent is baked into the image.
-    func guestCommandTransport() -> any LumeGuestCommandTransport {
+    /// Adds the guest administrator password to a child environment.
+    ///
+    /// It travels in the environment rather than argv because command-line
+    /// arguments are visible to every process on the host through `ps`, and
+    /// this is the guest's administrator credential.
+    static func environment(
+        _ base: [String: String],
+        credential: LumeGuestCredential?
+    ) -> [String: String] {
+        guard let credential else { return base }
+        var environment = base
+        environment[LumeGuestCredential.passwordEnvironmentVariable] =
+            credential.bootstrapPassword
+        return environment
+    }
+
+    func guestCommandTransport(
+        credential: LumeGuestCredential
+    ) -> any LumeGuestCommandTransport {
         LumeGuestSSHTransport(
             runner: processRunner,
             executable: configuration.executable,
             storagePath: configuration.storageDirectory.path,
-            environment: workspace.environment
+            environment: workspace.environment,
+            credential: credential
         )
     }
 }

@@ -175,12 +175,18 @@ extension LumeVirtualMachineRuntime {
 
         let arguments: [String]
         var sourceInstallationID: UUID?
+        // nil for a clone: it inherits whatever the template was installed
+        // with, and the ownership record carries that forward.
+        var guestCredential: LumeGuestCredential?
         switch specification.imageSource {
         case .restoreImage(let url, let unattendedPreset):
             guard FileManager.default.isReadableFile(atPath: url.path) else {
                 throw SandboxRuntimeError.invalidImageReference
             }
             sourceInstallationID = nil
+            // A fresh install gets its own administrator plus an unprivileged
+            // tenant account, so no two sandboxes share a guest credential.
+            guestCredential = LumeGuestCredential.generate()
             arguments = storageArguments([
                 "create",
                 specification.name,
@@ -193,6 +199,9 @@ extension LumeVirtualMachineRuntime {
                 "--no-display",
                 "--vnc-port", "0",
                 "--network", "nat",
+                "--bootstrap-user", guestCredential!.bootstrapUsername,
+                "--tenant-user", guestCredential!.tenantUsername,
+                "--tenant-uid", guestCredential!.tenantUID,
             ])
         case .localTemplate(let template):
             guard let templateRecord = try await inspect(name: template) else {
@@ -217,6 +226,16 @@ extension LumeVirtualMachineRuntime {
                 in: configuration.storageDirectory
             )
             sourceInstallationID = sourceIdentity.installationID
+            // A clone shares the template's disk and therefore its accounts,
+            // so it inherits the template's credential rather than minting one
+            // that would not exist inside the guest.
+            guestCredential = try LumeVirtualMachineOwnership
+                .requireResourceCommitment(
+                    name: template,
+                    owner: .baseTemplate,
+                    in: configuration.storageDirectory
+                )
+                .guestCredential
             arguments = [
                 "clone",
                 template,
@@ -237,7 +256,10 @@ extension LumeVirtualMachineRuntime {
                 arguments: arguments,
                 timeoutSeconds: configuration.createTimeoutSeconds,
                 operation: "create",
-                environment: creationWorkspace.environment
+                environment: Self.environment(
+                    creationWorkspace.environment,
+                    credential: guestCredential
+                )
             )
             guard let created = try await inspect(name: specification.name),
                   created.state == .stopped,
@@ -251,6 +273,7 @@ extension LumeVirtualMachineRuntime {
                 specification: specification,
                 owner: owner,
                 sourceInstallationID: sourceInstallationID,
+                guestCredential: guestCredential,
                 to: creationWorkspace.destination
             )
         } catch {
@@ -344,6 +367,7 @@ extension LumeVirtualMachineRuntime {
                 in: configuration.storageDirectory
             )
             try await waitForGuestReady(
+                credential: ownershipCommitment.guestCredential,
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
             )
@@ -369,6 +393,7 @@ extension LumeVirtualMachineRuntime {
                 in: configuration.storageDirectory
             )
             try await waitForGuestReady(
+                credential: ownershipCommitment.guestCredential,
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
             )
@@ -459,6 +484,7 @@ extension LumeVirtualMachineRuntime {
             )
             unresolvedIntent = nil
             try await waitForGuestReady(
+                credential: ownershipCommitment.guestCredential,
                 name: name,
                 timeoutSeconds: configuration.commandTimeoutSeconds
             )
@@ -828,6 +854,7 @@ extension LumeVirtualMachineRuntime {
     }
 
     private func waitForGuestReady(
+        credential: LumeGuestCredential = .legacy,
         name: String,
         timeoutSeconds: UInt32
     ) async throws {
@@ -853,6 +880,7 @@ extension LumeVirtualMachineRuntime {
                         storagePath: configuration.storageDirectory.path,
                         environment: workspace.environment,
                         name: name,
+                        credential: credential,
                         policy: guestReadinessPolicy,
                         clock: clock,
                         deadline: deadline

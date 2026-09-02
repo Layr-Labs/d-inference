@@ -2,8 +2,13 @@ import Foundation
 import SandboxRuntime
 
 enum LumeGuestCommandEncoder {
-    static func encode(_ request: SandboxGuestCommandRequest) throws -> String {
-        try encodedShellCommand(LumeGuestCommandScript.execution(request))
+    static func encode(
+        _ request: SandboxGuestCommandRequest,
+        home: String = LumeGuestCredential.legacy.bootstrapHome
+    ) throws -> String {
+        try encodedShellCommand(
+            LumeGuestCommandScript.execution(home: home, request)
+        )
     }
 
     static func encodeCancellation(
@@ -14,8 +19,11 @@ enum LumeGuestCommandEncoder {
         )
     }
 
-    static func script(_ request: SandboxGuestCommandRequest) throws -> String {
-        try LumeGuestCommandScript.execution(request)
+    static func script(
+        _ request: SandboxGuestCommandRequest,
+        home: String = LumeGuestCredential.legacy.bootstrapHome
+    ) throws -> String {
+        try LumeGuestCommandScript.execution(home: home, request)
     }
 
     private static func encodedShellCommand(_ script: String) -> String {

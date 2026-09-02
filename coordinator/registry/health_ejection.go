@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"os"
 	"strings"
 	"time"
 )
@@ -72,16 +71,16 @@ type capacityStreak struct {
 	last time.Time
 }
 
-// healthEjectionEnabled is the LIVE kill switch (read at evaluation time so it
-// toggles without a coordinator restart). Default ON; EIGENINFERENCE_HEALTH_EJECTION
-// set to off/0/false/no disables both gating and recording.
+// healthEjectionEnabled is the kill switch. Default ON;
+// EIGENINFERENCE_HEALTH_EJECTION set to off/0/false/no disables both gating and
+// recording. The value is read from the environment ONCE at process start
+// (health_ejection_switch.go): a process's environment cannot change underneath
+// it, so the former per-call os.Getenv + ToLower/TrimSpace — evaluated once per
+// provider per routing scan — never actually toggled anything live; it only
+// cost ~3% of the fleet-scale scan. Tests flip it through
+// setHealthEjectionEnabledForTest.
 func healthEjectionEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("EIGENINFERENCE_HEALTH_EJECTION"))) {
-	case "off", "0", "false", "no":
-		return false
-	default:
-		return true
-	}
+	return healthEjectionSwitch.Load()
 }
 
 // stableProviderIdentityLocked derives a provider's stable identity (precedence:

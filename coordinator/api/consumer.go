@@ -2184,59 +2184,21 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	writeSSEResponseHeader(w, pr.RequestID)
 	flusher.Flush()
 
-	// Detect Responses API format to skip appending chat-completions-style
-	// termination events (SE signature chunk + [DONE]).
-	sawResponsesAPI := false
-
-	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
-	// parsed object and re-emit it at stream end with the provider's authoritative
-	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
-	// paths. Held as a parsed map so it is decoded exactly once. Declared before the
-	// first-chunk write because a zero-delta completion (empty/filtered output) can
-	// make the include_usage frame the very first chunk.
-	var pendingUsage map[string]any
-
-	// The chunk carrying the terminal finish_reason is held the same way: the
-	// provider engine reports "stop" even when generation hit the max-tokens
-	// bound, so the coordinator re-derives "length" from the authoritative
-	// token counts (CompleteCh) before forwarding it.
-	var pendingFinish map[string]any
+	// Per-request relay state: the Responses-format latch, the held terminal
+	// usage/finish frames, and the batch buffer. Every chunk — the ones already
+	// consumed during dispatch and the ones relayed below — goes through the
+	// same relay.handleChunk pipeline (see chat_stream_relay.go).
+	relay := newChatStreamRelay(pr)
 
 	// Write the chunks that were already consumed during dispatch (held
-	// preamble first, then the committing content chunk), each through the
-	// same per-chunk special-casing the relay loop below applies.
+	// preamble first, then the committing content chunk).
 	for _, firstChunk := range firstChunks {
 		if firstChunk == "" {
 			continue
 		}
-		if isResponsesAPIEventChunk(firstChunk) {
-			sawResponsesAPI = true
-		}
-		if !sawResponsesAPI {
-			firstChunk, _ = stripSSEDoneEvents(firstChunk)
-			if strings.TrimSpace(firstChunk) == "" {
-				continue
-			}
-		}
-		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
-		// A usage-only first chunk (no content/reasoning deltas streamed before it)
-		// is still terminal usage — hold it so the reasoning breakdown is spliced in
-		// at stream end instead of being emitted raw without reasoning_tokens.
-		if obj, isUsage := parseUsageOnlyStreamChunk(firstChunk); !sawResponsesAPI && isUsage {
-			pendingUsage = obj
-		} else {
-			if !sawResponsesAPI {
-				firstChunk = normalizeSSEChunk(firstChunk)
-			}
-			if obj, isFinish := parseFinishStreamChunk(firstChunk); !sawResponsesAPI && isFinish {
-				pendingFinish = obj
-			} else {
-				firstChunk = rewriteChunkModel(firstChunk, pr)
-				fmt.Fprintf(w, "%s\n\n", firstChunk)
-				flusher.Flush()
-			}
-		}
+		relay.handleChunk(firstChunk)
 	}
+	relay.flush(w, flusher)
 	if initialError != nil {
 		s.writeChatStreamProviderError(w, flusher, pr, *initialError)
 		return
@@ -2247,147 +2209,119 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed): surface a trailing provider error, refund an incomplete stream,
+	// or emit the held finish/usage frames and the single [DONE].
+	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				s.writeChatStreamProviderError(w, flusher, pr, errMsg)
+				return
+			}
+		default:
+		}
+		if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			s.writeChatStreamTerminalError(
+				w, flusher, pr, "provider_error", "provider ended without completion")
+			return
+		}
+		// Channel closed — inference complete.
+		s.noteInferenceSuccess(pr)
+		// For Responses API streams, the provider already sent
+		// "response.completed" as the terminal event. Adding
+		// extra chunks would break SDK parsers.
+		if relay.sawResponsesAPI {
+			return
+		}
+		// Emit the held finish/usage chunks with the authoritative token
+		// counts (CompleteCh) spliced in: the finish chunk gets its
+		// finish_reason corrected to "length" when generation hit the
+		// max-tokens bound, and the usage chunk gets the reasoning
+		// breakdown. This select runs once, at stream end: the provider's
+		// inferenceComplete (which populates CompleteCh) is what ends the
+		// stream, so it is effectively already buffered — the timeout is a
+		// fallback, not a hot-path wait.
+		var usage protocol.UsageInfo
+		if relay.pendingUsage != nil || relay.pendingFinish != nil {
+			select {
+			case u, uok := <-pr.CompleteCh:
+				if uok {
+					usage = u
+				}
+			case <-time.After(2 * time.Second):
+			case <-r.Context().Done():
+			}
+		}
+		if relay.pendingFinish != nil {
+			if out := finalizeFinishChunk(relay.pendingFinish, usage, pr); out != "" {
+				relay.writeFrame(out)
+			}
+		}
+		if relay.pendingUsage != nil {
+			// Ride the SE signature on the held usage chunk (a complete,
+			// well-formed chat.completion.chunk) instead of emitting a
+			// separate bare event that strict SDK parsers reject.
+			if pr.SESignature != "" {
+				relay.pendingUsage["se_signature"] = pr.SESignature
+				relay.pendingUsage["response_hash"] = pr.ResponseHash
+			}
+			attachChatCompletionMetadata(relay.pendingUsage, pr)
+			if out := finalizeUsageChunk(relay.pendingUsage, usage, pr); out != "" {
+				relay.writeFrame(out)
+			}
+		} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
+			// No held usage chunk to ride on: emit the signature and/or
+			// opt-in metadata as a fully-shaped chat.completion.chunk
+			// (id/object/created/model/choices) so strict decoders parse
+			// it; the extra fields are additive. It precedes the single
+			// [DONE] below.
+			event := newChatCompletionExtrasEvent(pr)
+			if pr.SESignature != "" {
+				event["se_signature"] = pr.SESignature
+				event["response_hash"] = pr.ResponseHash
+			}
+			attachChatCompletionMetadata(event, pr)
+			sigEvent, _ := json.Marshal(event)
+			relay.writeFrame("data: " + string(sigEvent))
+		}
+		// Exactly one terminator, after every coordinator-appended event. The
+		// terminal frames reach the wire together in one flush.
+		relay.writeFrame("data: [DONE]")
+		relay.flush(w, flusher)
+	}
+
+	// relayChunk forwards one provider chunk. Every chunk is a liveness
+	// signal — re-arm the idle timeout up front, before deciding whether to
+	// forward or hold it, so holding the terminal usage chunk still resets
+	// the window that bounds the wait for the provider's inference_complete
+	// (which closes ChunkCh after billing).
+	relayChunk := func(chunk registry.ProviderChunk) {
+		resetIdleTimer(timer, inferenceTimeout)
+		relay.handleChunk(chunk.Data)
+	}
+
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				select {
-				case errMsg, ok := <-pr.ErrorCh:
-					if ok && errMsg.Error != "" {
-						s.writeChatStreamProviderError(w, flusher, pr, errMsg)
-						return
-					}
-				default:
-				}
-				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					s.writeChatStreamTerminalError(
-						w, flusher, pr, "provider_error", "provider ended without completion")
-					return
-				}
-				// Channel closed — inference complete.
-				s.noteInferenceSuccess(pr)
-				// For Responses API streams, the provider already sent
-				// "response.completed" as the terminal event. Adding
-				// extra chunks would break SDK parsers.
-				if !sawResponsesAPI {
-					// Emit the held finish/usage chunks with the authoritative token
-					// counts (CompleteCh) spliced in: the finish chunk gets its
-					// finish_reason corrected to "length" when generation hit the
-					// max-tokens bound, and the usage chunk gets the reasoning
-					// breakdown. This select runs once, at stream end: the provider's
-					// inferenceComplete (which populates CompleteCh) is what ends the
-					// stream, so it is effectively already buffered — the timeout is a
-					// fallback, not a hot-path wait.
-					var usage protocol.UsageInfo
-					if pendingUsage != nil || pendingFinish != nil {
-						select {
-						case u, uok := <-pr.CompleteCh:
-							if uok {
-								usage = u
-							}
-						case <-time.After(2 * time.Second):
-						case <-r.Context().Done():
-						}
-					}
-					if pendingFinish != nil {
-						if out := finalizeFinishChunk(pendingFinish, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
-							flusher.Flush()
-						}
-					}
-					if pendingUsage != nil {
-						// Ride the SE signature on the held usage chunk (a complete,
-						// well-formed chat.completion.chunk) instead of emitting a
-						// separate bare event that strict SDK parsers reject.
-						if pr.SESignature != "" {
-							pendingUsage["se_signature"] = pr.SESignature
-							pendingUsage["response_hash"] = pr.ResponseHash
-						}
-						attachChatCompletionMetadata(pendingUsage, pr)
-						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
-							flusher.Flush()
-						}
-					} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
-						// No held usage chunk to ride on: emit the signature and/or
-						// opt-in metadata as a fully-shaped chat.completion.chunk
-						// (id/object/created/model/choices) so strict decoders parse
-						// it; the extra fields are additive. It precedes the single
-						// [DONE] below.
-						event := newChatCompletionExtrasEvent(pr)
-						if pr.SESignature != "" {
-							event["se_signature"] = pr.SESignature
-							event["response_hash"] = pr.ResponseHash
-						}
-						attachChatCompletionMetadata(event, pr)
-						sigEvent, _ := json.Marshal(event)
-						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
-						flusher.Flush()
-					}
-					// Exactly one terminator, after every coordinator-appended event.
-					fmt.Fprint(w, "data: [DONE]\n\n")
-					flusher.Flush()
-				}
+				finishStream()
 				return
 			}
-			chunk := providerChunk.Data
-			// Every chunk is a liveness signal — re-arm the idle timeout up front,
-			// before deciding whether to forward or hold it, so holding the terminal
-			// usage chunk still resets the window that bounds the wait for the
-			// provider's inference_complete (which closes ChunkCh after billing).
-			// One reset covers both the forward and hold paths.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			relay.flush(w, flusher)
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
-
-			if !sawResponsesAPI {
-				if isResponsesAPIEventChunk(chunk) {
-					sawResponsesAPI = true
-				}
-			}
-			// Swallow provider-owned [DONE] events, including SSE groups decorated
-			// with event/id/comment fields, while retaining any sibling event. The
-			// coordinator appends terminal events of its own (held usage with
-			// the reasoning breakdown, SE signature) and then emits exactly ONE
-			// [DONE] — forwarding the provider's produced a stream shaped
-			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
-			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
-			// signature event).
-			if !sawResponsesAPI {
-				chunk, _ = stripSSEDoneEvents(chunk)
-				if strings.TrimSpace(chunk) == "" {
-					continue
-				}
-			}
-			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
-			// Hold the terminal usage chunk (chat completions only) so we can splice
-			// in the reasoning breakdown at stream end; forwarding it inline would
-			// emit it without reasoning_tokens.
-			if !sawResponsesAPI {
-				if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
-					pendingUsage = obj
-					continue
-				}
-			}
-			if !sawResponsesAPI {
-				chunk = normalizeSSEChunk(chunk)
-				// Hold the chunk carrying the terminal finish_reason so it can be
-				// corrected to "length" against the authoritative token counts at
-				// stream end (the provider engine always reports "stop").
-				if obj, isFinish := parseFinishStreamChunk(chunk); isFinish {
-					pendingFinish = obj
-					continue
-				}
-			}
-			chunk = rewriteChunkModel(chunk, pr)
-			fmt.Fprintf(w, "%s\n\n", chunk)
-			flusher.Flush()
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
@@ -2438,9 +2372,15 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 
 	writeSSEResponseHeader(w, pr.RequestID)
 
+	// The emitter flushes after every event; defer those flushes so a burst of
+	// already-queued provider chunks reaches the wire in one Flush. Every
+	// return path performs the owed flush.
+	deferred := newDeferredFlusher(flusher)
+	defer deferred.flushNow()
+
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
-	emitter := newResponsesStreamEmitter(w, flusher, pr, responseID, createdAt)
+	emitter := newResponsesStreamEmitter(w, deferred, pr, responseID, createdAt)
 	emitter.start()
 
 	for _, firstChunk := range firstChunks {
@@ -2456,43 +2396,60 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
 		return
 	}
+	// The preamble (lifecycle events + dispatch-time chunks) goes on the wire
+	// before blocking on the provider.
+	deferred.flushNow()
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
+
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed).
+	finishStream := func() {
+		var usage protocol.UsageInfo
+		completed := false
+		select {
+		case u, ok := <-pr.CompleteCh:
+			if ok {
+				usage = u
+				completed = true
+			}
+		case <-time.After(2 * time.Second):
+		}
+		if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			emitter.emitError("provider_error", "provider ended without completion")
+			return
+		}
+		s.noteInferenceSuccess(pr)
+		emitter.finish(usage)
+	}
+
+	relayChunk := func(chunk registry.ProviderChunk) {
+		emitter.handleChunk(sanitizeStreamCacheDetails(chunk.Data))
+		resetIdleTimer(timer, inferenceTimeout)
+	}
 
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				var usage protocol.UsageInfo
-				completed := false
-				select {
-				case u, ok := <-pr.CompleteCh:
-					if ok {
-						usage = u
-						completed = true
-					}
-				case <-time.After(2 * time.Second):
-				}
-				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					emitter.emitError("provider_error", "provider ended without completion")
-					return
-				}
-				s.noteInferenceSuccess(pr)
-				emitter.finish(usage)
+				finishStream()
 				return
 			}
-			chunk := providerChunk.Data
-			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			deferred.flushNow()
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {

@@ -32,7 +32,14 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 		return
 	}
 	writeSSEResponseHeader(w, pr.RequestID)
-	emitter := newGenericEndpointStreamEmitter(w, flusher, pr)
+
+	// The emitter flushes after every event; defer those flushes so a burst of
+	// already-queued provider chunks reaches the wire in one Flush. Every
+	// return path performs the owed flush.
+	deferred := newDeferredFlusher(flusher)
+	defer deferred.flushNow()
+
+	emitter := newGenericEndpointStreamEmitter(w, deferred, pr)
 	emitter.start()
 	for _, chunk := range firstChunks {
 		if chunk != "" {
@@ -47,43 +54,62 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
 		return
 	}
+	// The preamble (start event + dispatch-time chunks) goes on the wire
+	// before blocking on the provider.
+	deferred.flushNow()
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
+
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed).
+	finishStream := func() {
+		var usage protocol.UsageInfo
+		select {
+		case complete, completeOK := <-pr.CompleteCh:
+			if !completeOK {
+				s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+				s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+				emitter.emitError("provider_error", "provider ended without completion")
+				return
+			}
+			usage = complete
+		case <-time.After(2 * time.Second):
+			s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			emitter.emitError("provider_error", "provider ended without completion")
+			return
+		case <-r.Context().Done():
+			return
+		}
+		s.noteInferenceSuccess(pr)
+		emitter.finish(usage)
+	}
+
+	relayChunk := func(chunk registry.ProviderChunk) {
+		emitter.handleChunk(sanitizeStreamCacheDetails(chunk.Data))
+		resetIdleTimer(timer, inferenceTimeout)
+	}
+
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				var usage protocol.UsageInfo
-				select {
-				case complete, completeOK := <-pr.CompleteCh:
-					if !completeOK {
-						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-						emitter.emitError("provider_error", "provider ended without completion")
-						return
-					}
-					usage = complete
-				case <-time.After(2 * time.Second):
-					s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					emitter.emitError("provider_error", "provider ended without completion")
-					return
-				case <-r.Context().Done():
-					return
-				}
-				s.noteInferenceSuccess(pr)
-				emitter.finish(usage)
+				finishStream()
 				return
 			}
-			emitter.handleChunk(sanitizeStreamCacheDetails(providerChunk.Data))
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			deferred.flushNow()
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {

@@ -34,14 +34,28 @@ type warmTargetParams struct {
 	// BurstBuffer is the spare warm providers added on top of the demand-derived
 	// target to absorb arrival bursts within a control interval.
 	BurstBuffer int
-	// HeadroomProviders is the PROACTIVE floor: how many providers' worth of
-	// serving capacity must stay FREE at current load, warmed before demand
-	// needs them. Unlike BurstBuffer (which rides on the smoothed Little's Law
-	// demand term and is therefore masked whenever the pool already exceeds it),
-	// this is evaluated against measured AVAILABLE capacity — warm minus
-	// saturated — so it tracks utilization rather than pool size. <= 0 disables
-	// proactive warming and restores the purely reactive behaviour.
-	HeadroomProviders int
+	// HeadroomProviders is a per-model OVERRIDE of the derived proactive floor
+	// (EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS, "model=N,..."). Normally the
+	// floor is DERIVED per model from measured demand growth — see
+	// warmTargetInputs.OccupancyRamp and headroomTarget — because the right value
+	// is a property of a model's own traffic shape and cold-load time, not
+	// something an operator can guess: measured across the live fleet it ranges
+	// from 2 to 33 providers across the six served builds, and the same constant
+	// is simultaneously a rounding error on a 374-warm pool and an 8x expansion
+	// on a 1-warm one. An entry here pins a model, for a build whose measured
+	// ramp is not yet trustworthy (e.g. freshly launched, no samples).
+	HeadroomProviders map[string]int
+	// HeadroomEnabledParams turns the proactive floor on. False restores the
+	// purely reactive pre-2026-09 behaviour, where the pool could only grow after
+	// a request had already been shed or delayed.
+	HeadroomEnabledParams bool
+	// HeadroomMaxProviders caps any single model's derived floor so a pathological
+	// ramp measurement cannot demand the entire fleet. <= 0 means uncapped.
+	HeadroomMaxProviders int
+	// HeadroomLoadWindows scales the derived floor: headroom covers the demand
+	// growth expected over this many control intervals, approximating how long a
+	// cold provider takes to become servable. 0 falls back to 1.
+	HeadroomLoadWindows float64
 	// FallbackQualityConcurrency is the per-provider quality concurrency used
 	// when the floor is disabled or rates/caps are unknown. Must be >= 1.
 	FallbackQualityConcurrency int
@@ -59,7 +73,10 @@ type warmTargetParams struct {
 // They are assembled by the controller from the fleet snapshot (warm/cold
 // counts, in-flight load, representative rates) and the pressure/queue state.
 type warmTargetInputs struct {
-	Warm int // warm providers serving the model right now
+	// Model is the concrete build id, used to resolve a per-model headroom
+	// override. Empty means no override can match, so the derived floor applies.
+	Model string
+	Warm  int // warm providers serving the model right now
 	// WarmSaturated is the subset of Warm with NO concurrency headroom left
 	// (measured in warmPoolFleetSnapshot). Warm counts weights-resident
 	// providers including those actively serving, so this is what separates
@@ -74,9 +91,14 @@ type warmTargetInputs struct {
 	// and cold_dispatch signals, including the W3 preflight-fed near-misses. This
 	// is the term that lets the controller "see" demand it is currently shedding.
 	SpillArrivalRate float64
-	SoloDecodeTPS    float64 // representative solo (batch=0) decode tok/s
-	PrefillTPS       float64 // representative prefill tok/s
-	MaxProviderConc  int     // representative per-provider concurrency cap (0 = unknown)
+	// OccupancyRamp is the measured per-interval RISE in occupied slots for this
+	// model (EWMA, increases only). It is the demand-GROWTH rate the derived
+	// proactive headroom floor is sized from — distinct from SpillArrivalRate,
+	// which counts only demand the pool already failed to serve.
+	OccupancyRamp   float64
+	SoloDecodeTPS   float64 // representative solo (batch=0) decode tok/s
+	PrefillTPS      float64 // representative prefill tok/s
+	MaxProviderConc int     // representative per-provider concurrency cap (0 = unknown)
 	// DemandPressure is true when any pressure signal crossed its threshold this
 	// window. With no demand pressure the pool is left as-is (no growth).
 	DemandPressure bool
@@ -214,11 +236,11 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 }
 
 // headroomTarget is the proactive floor: the warm count needed so that, at
-// current load, at least HeadroomProviders providers' worth of serving capacity
-// is still FREE.
+// current load, enough spare serving capacity is still FREE to absorb the demand
+// growth expected while a cold provider is loading.
 //
 // Total serving capacity is warm·qc and the in-flight load occupies `occupied`
-// slots, so requiring headroom·qc free slots gives
+// slots, so requiring `headroom` providers' worth of free capacity gives
 //
 //	warm·qc - occupied >= headroom·qc
 //	warm             >= ceil(occupied/qc) + headroom
@@ -226,19 +248,17 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 // Note what is deliberately NOT in that expression: WarmSaturated. A saturated
 // provider's capacity is already counted inside warm·qc and the requests
 // occupying it are already counted inside `occupied`, so adding it again
-// double-counts — on a fully-busy pool (occupied = warm·qc, saturated = warm)
-// that inflated the floor by exactly one provider per saturated provider,
-// roughly doubling the target. WarmSaturated remains plumbed through for the
-// pressure gate and the tick log, where it is a genuine signal.
+// double-counts — on a fully-busy pool that inflated the floor by one provider
+// per saturated provider. WarmSaturated remains plumbed through for the pressure
+// gate and the tick log, where it is a genuine signal.
 //
-// This is why the floor is expressed in CAPACITY (occupied/qc) rather than in
-// provider counts: a provider serving a request still counts as warm
-// (providerHasWarmModelLocked treats slot state "running" and "idle" alike, so
-// warm means weights resident, not available), and occupancy is what actually
-// distinguishes the two. HeadroomProviders <= 0 disables the floor entirely,
-// preserving the old purely-reactive behaviour.
+// `headroom` itself is DERIVED per model, not configured: it is the measured
+// occupancy ramp (slots of growth per control interval, EWMA) scaled by how many
+// intervals a cold load takes, converted to providers by qc. See
+// headroomProviders.
 func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
-	if p.HeadroomProviders <= 0 {
+	headroom := headroomProviders(in, p, qc)
+	if headroom <= 0 {
 		return 0
 	}
 	if qc < 1 {
@@ -248,7 +268,55 @@ func headroomTarget(in warmTargetInputs, p warmTargetParams, qc int) int {
 	if occupied < 0 {
 		occupied = 0
 	}
-	return int(math.Ceil(float64(occupied)/float64(qc))) + p.HeadroomProviders
+	return int(math.Ceil(float64(occupied)/float64(qc))) + headroom
+}
+
+// headroomProviders resolves how many providers' worth of FREE capacity this model
+// should keep warm.
+//
+// Precedence:
+//  1. disabled outright -> 0 (purely reactive, pre-2026-09 behaviour)
+//  2. an explicit per-model operator override -> that value
+//  3. DERIVED from measurement: ceil(OccupancyRamp · loadWindows / qc)
+//
+// The derived form is the default because the correct value is a property of the
+// model's own traffic shape, not a fleet-wide constant. OccupancyRamp is the
+// smoothed per-interval RISE in occupied slots, so it answers the question the
+// floor actually needs answered — "how much new demand shows up while a cold box
+// is still loading?" — rather than "how much traffic is there?", which would size
+// headroom to total volume and demand far more hardware than the fleet has.
+//
+// A model with no measured ramp yet gets 0 and stays purely reactive until it has
+// samples, which is the conservative direction: no proactive warming on a guess.
+func headroomProviders(in warmTargetInputs, p warmTargetParams, qc int) int {
+	if !p.HeadroomEnabledParams {
+		return 0
+	}
+	if n, ok := p.HeadroomProviders[in.Model]; ok {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	if in.OccupancyRamp <= 0 {
+		return 0
+	}
+	if qc < 1 {
+		qc = 1
+	}
+	windows := p.HeadroomLoadWindows
+	if windows <= 0 {
+		windows = 1
+	}
+	slots := in.OccupancyRamp * windows
+	providers := int(math.Ceil(slots / float64(qc)))
+	if providers < 1 {
+		providers = 1
+	}
+	if p.HeadroomMaxProviders > 0 && providers > p.HeadroomMaxProviders {
+		providers = p.HeadroomMaxProviders
+	}
+	return providers
 }
 
 // rampLoadsThisTick returns the demand-scaled, bounded number of model loads to

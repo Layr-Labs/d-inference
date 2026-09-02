@@ -63,10 +63,15 @@ type WarmPoolSnapshot struct {
 	// Little's Law diagnostics (Layer 3, routing-v2.md). DemandConcurrency is
 	// L = λ·E[S]; QualityConcurrency is the per-provider batch ceiling at the
 	// decode floor; SpillArrivalRate is the EWMA arrivals/sec the pool shed.
-	RunningRequests    int
-	WaitingRequests    int
-	WarmSaturated      int // warm providers with NO concurrency headroom left
-	SpillArrivalRate   float64
+	RunningRequests  int
+	WaitingRequests  int
+	WarmSaturated    int // warm providers with NO concurrency headroom left
+	SpillArrivalRate float64
+	// OccupancyRamp is the measured demand-growth EWMA (slots/interval) and
+	// HeadroomProviders the floor derived from it — the two numbers needed to
+	// audit why a model's proactive target is what it is.
+	OccupancyRamp      float64
+	HeadroomProviders  int
 	ServiceTime        time.Duration
 	QualityConcurrency int
 	DemandConcurrency  float64
@@ -249,6 +254,8 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"target_warm", snap.TargetWarm,
 				"warm", snap.WarmProviders,
 				"warm_saturated", snap.WarmSaturated,
+				"occupancy_ramp", snap.OccupancyRamp,
+				"headroom_providers", snap.HeadroomProviders,
 				"eligible_cold", snap.EligibleCold,
 				"running", snap.RunningRequests,
 				"waiting", snap.WaitingRequests,
@@ -294,6 +301,18 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 	pressure := c.state.snapshot(now, stateWindow)
 	queue := c.queueSnapshot(now, stateWindow)
 	fleet := c.registry.warmPoolFleetSnapshot(now)
+
+	// Fold this tick's occupancy into each model's demand-growth EWMA, which the
+	// derived proactive headroom floor is sized from. Done AFTER the fleet
+	// snapshot (it is the source of running/waiting) but BEFORE targets are
+	// computed, so the floor sees the current ramp. Re-snapshot the pressure
+	// buckets afterwards to pick up the folded value.
+	occupancy := make(map[string]int, len(fleet))
+	for model, f := range fleet {
+		occupancy[model] = f.running + f.waiting + queue[model].Depth
+	}
+	c.state.foldOccupancyRamp(occupancy, warmPoolArrivalEWMAAlpha)
+	pressure = c.state.snapshot(now, stateWindow)
 
 	models := make(map[string]struct{})
 	for model := range pressure {
@@ -405,6 +424,8 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			RunningRequests:    f.running,
 			WaitingRequests:    f.waiting,
 			WarmSaturated:      f.warmSaturated,
+			OccupancyRamp:      p.occupancyRampEWMA,
+			HeadroomProviders:  headroomProviders(c.targetInputs(f, p, q), params, qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency)),
 			SpillArrivalRate:   p.arrivalRateEWMA,
 			ServiceTime:        svc,
 			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
@@ -426,6 +447,9 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 		LoadFactorK:                effectiveTPSLoadFactor,
 		BurstBuffer:                c.config.BurstBuffer,
 		HeadroomProviders:          c.config.HeadroomProviders,
+		HeadroomEnabledParams:      c.config.HeadroomEnabled,
+		HeadroomMaxProviders:       c.config.HeadroomMaxProviders,
+		HeadroomLoadWindows:        c.config.HeadroomLoadWindows,
 		FallbackQualityConcurrency: c.config.FallbackQualityConcurrency,
 		AssumedPromptTokens:        c.config.AssumedPromptTokens,
 		AssumedCompletionTokens:    c.config.AssumedCompletionTokens,
@@ -438,6 +462,7 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 // target from the fleet, pressure, and queue snapshots.
 func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
 	return warmTargetInputs{
+		Model:            fleet.model,
 		Warm:             fleet.warm,
 		WarmSaturated:    fleet.warmSaturated,
 		EligibleCold:     len(fleet.eligibleCold),
@@ -445,6 +470,7 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 		WaitingRequests:  fleet.waiting,
 		QueueDepth:       queue.Depth,
 		SpillArrivalRate: pressure.arrivalRateEWMA,
+		OccupancyRamp:    pressure.occupancyRampEWMA,
 		SoloDecodeTPS:    fleet.soloDecodeTPS,
 		PrefillTPS:       fleet.prefillTPS,
 		MaxProviderConc:  fleet.maxProviderConc,

@@ -40,6 +40,21 @@ type warmPoolPressureBucket struct {
 	arrivalAccum    int
 	arrivalRateEWMA float64
 	lastRateAt      time.Time
+
+	// occupancyRampEWMA is the smoothed RISE in occupied slots (running +
+	// waiting + coordinator-queued) observed between planning ticks, in slots
+	// per tick, floored at zero. It is the measured demand-growth rate the
+	// proactive headroom floor is sized from: headroom must cover the arrivals
+	// that land while a cold provider is still loading, and that is a growth
+	// rate, NOT the absolute arrival rate (which would size headroom to total
+	// traffic and demand far more hardware than exists).
+	//
+	// Only INCREASES are folded. A falling occupancy is not negative demand
+	// growth, and letting it pull the EWMA down would shrink headroom fastest
+	// right after a spike drains — exactly when the next one is most likely.
+	occupancyRampEWMA float64
+	lastOccupancy     int
+	haveOccupancy     bool
 }
 
 type warmPoolState struct {
@@ -106,6 +121,8 @@ func (s *warmPoolState) snapshot(now time.Time, recentWindow time.Duration) map[
 			b.loadDurationEWMA = 0
 			b.arrivalAccum = 0
 			b.arrivalRateEWMA = 0
+			b.occupancyRampEWMA = 0
+			b.haveOccupancy = false
 		}
 		out[model] = *b
 	}
@@ -147,6 +164,42 @@ func (s *warmPoolState) foldArrivalRates(now time.Time, minInterval time.Duratio
 		}
 		b.arrivalAccum = 0
 		b.lastRateAt = now
+	}
+}
+
+// foldOccupancyRamp updates each model's occupancy-growth EWMA from the occupancy
+// observed this tick. Called once per planning pass, before targets are computed.
+// occupancy is running + waiting + coordinator-queued for that model.
+//
+// Only positive deltas are folded (see occupancyRampEWMA). Models absent from the
+// map this tick are left untouched rather than decayed, so a model that stops
+// being reported does not silently lose its measured ramp.
+func (s *warmPoolState) foldOccupancyRamp(occupancy map[string]int, alpha float64) {
+	if alpha <= 0 || alpha > 1 {
+		alpha = warmPoolArrivalEWMAAlpha
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for model, occ := range occupancy {
+		if occ < 0 {
+			occ = 0
+		}
+		b := s.bucketLocked(model)
+		if !b.haveOccupancy {
+			b.lastOccupancy = occ
+			b.haveOccupancy = true
+			continue
+		}
+		rise := float64(occ - b.lastOccupancy)
+		b.lastOccupancy = occ
+		if rise < 0 {
+			rise = 0
+		}
+		if b.occupancyRampEWMA <= 0 {
+			b.occupancyRampEWMA = rise
+		} else {
+			b.occupancyRampEWMA = alpha*rise + (1-alpha)*b.occupancyRampEWMA
+		}
 	}
 }
 

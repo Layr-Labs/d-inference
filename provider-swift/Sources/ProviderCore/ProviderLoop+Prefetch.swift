@@ -316,6 +316,22 @@ extension ProviderLoop {
         // loadable) — a decode step of the new model must never run against a
         // reserve resolved without it. Epoch-stamped, so a concurrent
         // refresh's stale value cannot land after this one.
+        // Serialize behind in-flight loads: a load between its admission
+        // gate and slot install (`modelsLoading`, set before the gate) was
+        // admitted against the CURRENT floor, and raising it underneath
+        // would overcommit the load transient before the post-load guard
+        // can act — the pending-load reservation fences competing KV
+        // grants, not this. Defer through the desired-build backoff; the
+        // load's install clears the marker well within the retry budget.
+        guard modelsLoading.isEmpty else {
+            logger.info(
+                "Prefetch verified \(modelId) while a load is in flight (\(modelsLoading.sorted())); "
+                    + "deferring the advertisement")
+            if let send = outboundSend {
+                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+            }
+            return
+        }
         // Held from the preflight through the re-slice + capacity publish,
         // exactly as a load holds it across its own preflight-through-
         // install: a load admitted in between would size its slot against

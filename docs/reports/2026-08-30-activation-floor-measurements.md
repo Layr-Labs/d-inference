@@ -198,9 +198,12 @@ the production decode posture for this model). Decode 148.6 tok/s.
   contiguous cells were discarded when the paged engine construction trapped.
   `--engines v2` alone completes. Fix committed on
   `fix/qwen35-stock-bench-trap` in the mlx-swift-lm worktree (model→storage index
-  mapping; graceful `backendIneligible` on a miss). **The production factory has the
-  identical subscript shape** (`EngineV2Factory+Production.swift:965`) —
-  reachability for hybrids under investigation.
+  mapping; graceful `backendIneligible` on a miss; merged as mlx-swift-lm#129). **The
+  production factory had the identical subscript shape and is fixed on the
+  activation-reserve branch**: the paged-cache wiring maps each cache's model-layer
+  index to its storage slot and guards an impossible miss
+  (`EngineV2Factory+Production.swift:1018-1044`). Unreachable in production today
+  only because `supportsPagedKV` vetoes paged for hybrid trunks upstream.
 
 ### qwen3.6-35b — stock B-matrix + L-probes (served artifact, v2 contiguous)
 
@@ -251,8 +254,11 @@ optimization that is dark in production. Perf, not memory; flagged for follow-up
   **process-local allocator counters**: contention taints latency numbers, not these
   memory figures — the contended gate run reproduced July's memory within 70 MB.
 - All measurements are **text-only**; the VL vision towers were never exercised.
-  Vision memory is gated separately in the provider (VisionMemoryGate), so this
-  caveat is contained, but a vision-inclusive peak is unmeasured for the VL models.
+  This caveat is NOT contained by the provider's `VisionMemoryGate`: that gate
+  reserves decoded-media buffers and KV, while the vision-tower transient rides the
+  activation reserve these floors size. A vision-inclusive activation measurement is
+  therefore still required before any VL model's floor (or the flat default, whose
+  serving sets include VL models) is lowered on this evidence.
 - Peak−active on contiguous v2 cells includes the cell's KV growth. The L-probes show
   the consequence: **short-prompt cells UNDER-measure the saturated activation
   envelope** (gemma 2.28 @ 500 vs ~3.6 saturated). Any floor-table measurement

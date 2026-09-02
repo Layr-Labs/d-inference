@@ -414,6 +414,29 @@ extension ProviderLoop {
                 try Task.checkCancellation()
                 if isShuttingDown { throw CancellationError() }
             }
+            // Final authoritative gate, after the LAST suspension before
+            // allocation (pending-load reservation, weight hashing, the
+            // pre-load hook): the serving-set floor can move across any of
+            // them, and the pending reservation only fences competing KV
+            // grants — it never re-checks that THIS load still fits.
+            // Requirement resolved after the sample; refuse before shard
+            // staging begins rather than let the post-load guard unload a
+            // transient that already overcommitted the box. (Advertise-only
+            // raises are additionally serialized behind in-flight loads in
+            // `applyVerifiedPrefetch`, so this is the backstop, not the
+            // primary defense.)
+            do {
+                let availableAtAllocation = await availableMemoryGb()
+                let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb)
+                if availableAtAllocation < requiredAtAllocation {
+                    let available = String(format: "%.1f", availableAtAllocation)
+                    let required = String(format: "%.1f", requiredAtAllocation)
+                    throw InferenceError.modelLoadFailed(
+                        "Insufficient memory (\(available) GB free, need \(required) GB) at allocation: "
+                            + "the serving-set activation floor moved during admission")
+                }
+            }
             // Ownership box (Codex-review unwind ordering): every later
             // access to the loading container goes through this box so
             // failure paths can drop the LAST strong reference to the
@@ -1042,9 +1065,12 @@ extension ProviderLoop {
     /// coordinator reroutes to a provider whose build passed. Callers
     /// re-invoke this after EVERY actor suspension that precedes a
     /// resident-slot return: the tombstone can land while a request is
-    /// parked on a waiter or a memory sample.
+    /// parked on a waiter or a memory sample. Checks the durable record
+    /// too (`isRefusedByRetirement`): a suspension can span an ENTIRE
+    /// retirement, after which the tombstone is gone but the request still
+    /// holds the pre-retirement `modelInfo` for the build that failed.
     internal func throwIfRetiring(_ modelId: String) throws {
-        guard !retiringModels.contains(modelId) else {
+        guard !isRefusedByRetirement(modelId) else {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' slot is retiring after a failed self-test")
         }
@@ -1100,7 +1126,7 @@ extension ProviderLoop {
         // begun (reject fast — do not send inference_accepted for a build
         // that failed its self-test), or the model may have been loaded by
         // a concurrent request while we were awaiting memory.
-        if retiringModels.contains(modelId) {
+        if isRefusedByRetirement(modelId) {
             return true
         }
         if modelSlots[modelId] != nil {
@@ -1125,7 +1151,7 @@ extension ProviderLoop {
             requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: modelInfo.estimatedMemoryGb,
                 headroomGb: loadHeadroomGb)
-            if retiringModels.contains(modelId) {  // retirement began mid-retry
+            if isRefusedByRetirement(modelId) {  // retirement began mid-retry
                 return true
             }
             if modelSlots[modelId] != nil {  // a concurrent load won the race

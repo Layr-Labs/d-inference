@@ -329,8 +329,9 @@ func TestModelsList_SelfRouteViewBypassesCacheAndFiltersByKey(t *testing.T) {
 }
 
 // GET /v1/models/openrouter: repeat within the TTL is byte-identical and
-// skips the store; a catalog change inside the TTL is not visible until the
-// entry expires.
+// skips the store; an admin catalog change (which runs SyncModelCatalog) is
+// visible on the next request because the sync invalidates the feed entry,
+// and the refreshed entry is again served from cache until it expires.
 func TestOpenRouterFeedCache_RepeatHitThenExpiry(t *testing.T) {
 	h := newCachedEndpointHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -351,20 +352,28 @@ func TestOpenRouterFeedCache_RepeatHitThenExpiry(t *testing.T) {
 		t.Fatalf("feed repeat recomputed (reads %d -> %d)", reads, h.st.reads())
 	}
 
-	h.seedCatalogModel(t, modelB) // SyncModelCatalog runs; this key is TTL-only
+	h.seedCatalogModel(t, modelB) // SyncModelCatalog runs and invalidates the feed
 	reads = h.st.reads()
-	status, stale := h.get(t, ctx, "/v1/models/openrouter", "test-key")
-	mustOK(t, status, stale)
-	if !bytes.Equal(first, stale) || h.st.reads() != reads {
-		t.Fatal("feed changed inside the TTL; expected the cached body")
-	}
-
-	h.srv.readCache.expireAllForTest()
 	status, fresh := h.get(t, ctx, "/v1/models/openrouter", "test-key")
 	mustOK(t, status, fresh)
 	if !strings.Contains(string(fresh), modelB) {
-		t.Fatalf("post-expiry feed missing %s: %s", modelB, fresh)
+		t.Fatalf("post-sync feed missing %s without waiting for the TTL: %s", modelB, fresh)
 	}
+	if h.st.reads() <= reads {
+		t.Fatal("catalog sync did not recompute the feed")
+	}
+
+	// The refreshed entry is cached again until it expires.
+	reads = h.st.reads()
+	status, again := h.get(t, ctx, "/v1/models/openrouter", "test-key")
+	mustOK(t, status, again)
+	if !bytes.Equal(fresh, again) || h.st.reads() != reads {
+		t.Fatalf("refreshed feed repeat recomputed (reads %d -> %d)", reads, h.st.reads())
+	}
+	h.srv.readCache.expireAllForTest()
+	reads = h.st.reads()
+	status, expired := h.get(t, ctx, "/v1/models/openrouter", "test-key")
+	mustOK(t, status, expired)
 	if h.st.reads() <= reads {
 		t.Fatal("expiry did not recompute the feed")
 	}

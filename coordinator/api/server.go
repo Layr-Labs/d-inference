@@ -1242,6 +1242,15 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
+	// /v1/models entry memo + list bodies (both include_builds values) and the
+	// OpenRouter feed are derived from the same catalog; drop them too so an
+	// admin alias/registry change is visible on the next request instead of
+	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
+	for _, includeBuilds := range []bool{false, true} {
+		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
+		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
+	}
+	s.readCache.Invalidate(openRouterFeedCacheKey)
 	s.readCache.Invalidate("stats:v1")
 }
 

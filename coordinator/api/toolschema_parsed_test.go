@@ -24,9 +24,12 @@ var toolNormalizationParityBodies = map[string]string{
 		"tools":[{"name":"f","input_schema":{"type":"object","properties":{"q":{"enum":["a","b"]}}}}]}`,
 	"already normalized": `{"model":"m","messages":[{"role":"user","content":"x"}],
 		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`,
-	"no tools":        `{"model":"m","messages":[{"role":"user","content":"the word \"tools\" in text"}]}`,
-	"tools not array": `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":{"type":"function"}}`,
-	"scalar tool":     `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":["nope",1,null]}`,
+	"no tools": `{"model":"m","messages":[{"role":"user","content":"the word \"tools\" in text"}]}`,
+	// The bytes path gates on the literal `"tools"` bytes: an escaped spelling of
+	// the key is forwarded verbatim (schemas unrepaired), and so must this path.
+	"escaped tools key": `{"model":"m","messages":[{"role":"user","content":"x"}],"to\u006fls":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"description":"text"}}}}}]}`,
+	"tools not array":   `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":{"type":"function"}}`,
+	"scalar tool":       `{"model":"m","messages":[{"role":"user","content":"x"}],"tools":["nope",1,null]}`,
 	"numbers preserved": `{"model":"m","messages":[{"role":"user","content":"x"}],"metadata":{"exact":9007199254740993,"decimal":0.10000000000000001},
 		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"description":"text","default":1e400}}}}}]}`,
 	"invalid utf8 in messages and keys": "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"bad \xff\xfe bytes\",\"na\xffme\":\"v\xe2\x82\"}]," +
@@ -59,7 +62,7 @@ func TestNormalizeParsedToolSchemasMatchesBytesPath(t *testing.T) {
 
 			parsed := decodeForParity(t, body)
 			wantOriginalTools := decodeForParity(t, body)["tools"]
-			originalTools, changed := normalizeParsedToolSchemas(parsed, len(raw))
+			originalTools, changed := normalizeParsedToolSchemas(parsed, raw)
 			if changed != bytesChanged {
 				t.Fatalf("changed = %v, bytes path changed = %v", changed, bytesChanged)
 			}
@@ -90,14 +93,14 @@ func TestNormalizeParsedToolSchemasRespectsSizeGate(t *testing.T) {
 	body := toolNormalizationParityBodies["chat missing type"]
 	parsed := decodeForParity(t, body)
 	before := cloneJSONValue(parsed)
-	if _, changed := normalizeParsedToolSchemas(parsed, maxToolNormalizationBytes+1); changed {
+	padded := append([]byte(body), bytes.Repeat([]byte(" "), maxToolNormalizationBytes)...)
+	if _, changed := normalizeParsedToolSchemas(parsed, padded); changed {
 		t.Fatal("oversize body was normalized")
 	}
 	if !reflect.DeepEqual(parsed, before) {
 		t.Fatal("oversize body was mutated")
 	}
 	// The bytes path skips the same bodies.
-	padded := append([]byte(body), bytes.Repeat([]byte(" "), maxToolNormalizationBytes)...)
 	if got := NormalizeToolSchemas(padded); !bytes.Equal(got, padded) {
 		t.Fatal("bytes path normalized an oversize body")
 	}
@@ -110,7 +113,7 @@ func TestParsedConstraintValidationSeesPreNormalizationTools(t *testing.T) {
 	body := `{"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"auto",
 		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"any":true}}}}]}`
 	parsed := decodeForParity(t, body)
-	originalTools, changed := normalizeParsedToolSchemas(parsed, len(body))
+	originalTools, changed := normalizeParsedToolSchemas(parsed, []byte(body))
 	if !changed || originalTools == nil {
 		t.Fatal("boolean positional schema was not repaired")
 	}
@@ -131,7 +134,7 @@ func TestParsedConstraintValidationSeesPreNormalizationTools(t *testing.T) {
 	// And a genuinely forged marker in the caller's body still fails closed.
 	forged := strings.Replace(body, `"any":true`, `"any":{"type":"string","`+originalBooleanSchemaKey+`":true}`, 1)
 	forgedParsed := decodeForParity(t, forged)
-	forgedTools, forgedChanged := normalizeParsedToolSchemas(forgedParsed, len(forged))
+	forgedTools, forgedChanged := normalizeParsedToolSchemas(forgedParsed, []byte(forged))
 	if _, err := validateParsedToolConstraintPolicy(constraintView(forgedParsed, forgedTools)); err == nil {
 		t.Fatalf("forged marker accepted (changed=%v)", forgedChanged)
 	}

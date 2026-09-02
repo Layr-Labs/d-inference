@@ -18,19 +18,22 @@ package api
 // repair was made, keeping the sealed bytes identical to the old path.
 
 import (
+	"bytes"
 	"strings"
 	"unicode/utf8"
 )
 
 // normalizeParsedToolSchemas repairs the tool JSON-Schemas of an already
-// decoded request in place, with the same gates as NormalizeToolSchemas
-// (bodies over maxToolNormalizationBytes and bodies whose "tools" is not an
-// array are left untouched). bodyLen is the raw request length the size gate
-// is measured against. When a repair was made it returns the caller's
+// decoded request in place, with the same gates as NormalizeToolSchemas,
+// measured against rawBody (the caller's input bytes): bodies over
+// maxToolNormalizationBytes, bodies without the literal `"tools"` key bytes
+// (an escaped spelling of the key is forwarded verbatim, exactly as the bytes
+// path always did), and bodies whose "tools" is not an array are left
+// untouched. When a repair was made it returns the caller's
 // original tools value (never mutated) and changed=true; otherwise (nil,
 // false) and parsed is exactly as it was.
-func normalizeParsedToolSchemas(parsed map[string]any, bodyLen int) (originalTools []any, changed bool) {
-	if bodyLen > maxToolNormalizationBytes {
+func normalizeParsedToolSchemas(parsed map[string]any, rawBody []byte) (originalTools []any, changed bool) {
+	if len(rawBody) > maxToolNormalizationBytes || !bytes.Contains(rawBody, toolsKeyNeedle) {
 		return nil, false
 	}
 	tools, ok := parsed["tools"].([]any)

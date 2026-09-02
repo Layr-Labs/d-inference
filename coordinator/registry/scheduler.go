@@ -475,11 +475,21 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 	// The tracker has its own mutex and must never be nested under r.mu.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
-	cacheRouteKey := append([]byte(nil), r.cacheRouteKeys.route...)
+	// cacheRoutingTracker.hints returns nil unless ALL of these hold, so the
+	// capability walk (a second full-fleet pass that takes p.mu on every
+	// provider) and the route-key copy are skipped exactly when they could not
+	// influence selection: cache routing off, no plan on the request, or no
+	// route key configured. Same predicate as hints(); keep them in sync.
+	wantHints := cacheTracker != nil && cacheMode == CacheRoutingOn &&
+		pr.CachePlan.present() && len(r.cacheRouteKeys.route) > 0
+	var cacheRouteKey []byte
+	if wantHints {
+		cacheRouteKey = append([]byte(nil), r.cacheRouteKeys.route...)
+	}
 	r.mu.RUnlock()
-	cacheCapabilities := r.prefixCacheV2CapabilitiesForModel(model)
 	pr.cacheRoutingHints = nil
-	if cacheTracker != nil {
+	if wantHints {
+		cacheCapabilities := r.prefixCacheV2CapabilitiesForModel(model)
 		pr.cacheRoutingHints = cacheTracker.hints(
 			pr.CachePlan, cacheCapabilities, cacheRouteKey, cacheMode, time.Now())
 	}

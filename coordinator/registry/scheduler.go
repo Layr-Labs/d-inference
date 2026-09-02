@@ -1431,7 +1431,7 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 	return true
 }
 
-// snapshotProviderLocked builds a routing snapshot for p, returning ok=false
+// snapshotProviderLockedEx builds a routing snapshot for p, returning ok=false
 // when p fails any structural/privacy/capacity/trait gate. selfRouteOwner is
 // true when this is a self-route request and p is owned by the requesting
 // account. It (1) drops the hardware-trust floor to TrustNone — a personal Mac
@@ -1442,15 +1442,12 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 // never exposed and only the genuinely-signed provider binary serves. traits
 // carry the request shape into the shape-keyed inference-error cooldown and the
 // render-broken / version-floor eligibility gates.
-func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) (routingSnapshot, bool) {
-	return r.snapshotProviderLockedEx(p, model, traits, selfRouteOwner, false, time.Now())
-}
-
-// snapshotProviderLockedEx is snapshotProviderLocked with an explicit
-// ignoreProviderBreaker switch threaded into the routing gate. Only the
+//
+// ignoreProviderBreaker is threaded into the routing gate: only the
 // selectBestCandidateLockedFull fail-open fallback pass sets it true (to bypass
-// the node-health breaker); every other caller uses the default
-// (breaker-honored) wrapper above. now is the scan clock: hot-path callers
+// the node-health breaker); every other caller passes false. (The former
+// breaker-honored wrapper snapshotProviderLocked is gone — the fleet walks use
+// snapshotProviderIntoLockedEx directly.) now is the scan clock: hot-path callers
 // walk the whole fleet and must read the wall clock ONCE per scan, not once
 // per provider (runtime.walltime was ~35% of the reservation scan at fleet
 // scale); every time-keyed gate below (challenge freshness, cooldowns,

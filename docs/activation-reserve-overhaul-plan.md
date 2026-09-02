@@ -154,7 +154,10 @@ padded weights** until the provider-path (VLM) residency measurement lands.
 - Phase 1 is independent and ships first (this branch → PR).
 - Phase 2's harness fix runs in parallel (submodule worktree); its floor entry lands
   as a follow-up commit/PR once the number exists.
-- Phase 3 lands per-lever as measurements complete; 3a can start now for the
-  non-VL artifacts already measured (gpt-oss 11.25, gemma-qat4 13.48 GiB) if their
-  vision-inclusiveness criterion is confirmed n/a (both text-only models).
+- Phase 3 lands per-lever as measurements complete. 3a is ready ONLY for gpt-oss
+  (11.25 GiB measured, text-only artifact — shipped as 11.5 in Phase 1). gemma-qat4
+  stays DEFERRED: its checkpoint declares `vision_config`, so the provider loads it
+  through the VLM factory (`ModelContainerLoading.swift`), and the text-only 13.48 GiB
+  figure undercounts the tower — the same vision gate as above; measure the
+  provider's VLM load path before it joins the table.
 - Every phase: no pushes without explicit go-ahead; live-isolated tests included.

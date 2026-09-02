@@ -1,5 +1,5 @@
 diff --git a/libs/lume/src/Commands/Create.swift b/libs/lume/src/Commands/Create.swift
-index 5ec08cc59f0e40a7c8ae2e4d31a4deac67cf5dcf..7d22d8c916306c8b711736ef282ec6a5876a56fe 100644
+index 5ec08cc..7d22d8c 100644
 --- a/libs/lume/src/Commands/Create.swift
 +++ b/libs/lume/src/Commands/Create.swift
 @@ -51,6 +51,21 @@ struct Create: AsyncParsableCommand {
@@ -68,7 +68,7 @@ index 5ec08cc59f0e40a7c8ae2e4d31a4deac67cf5dcf..7d22d8c916306c8b711736ef282ec6a5
      }
  
 diff --git a/libs/lume/src/Commands/SSH.swift b/libs/lume/src/Commands/SSH.swift
-index 157ad9f0ae4d80f842d6e83ae7ebb8df3198478d..f7a8698771becf5106e069cee8dd302951d79cb1 100644
+index 157ad9f..f7a8698 100644
 --- a/libs/lume/src/Commands/SSH.swift
 +++ b/libs/lume/src/Commands/SSH.swift
 @@ -29,8 +29,22 @@ struct SSH: AsyncParsableCommand {
@@ -115,7 +115,7 @@ index 157ad9f0ae4d80f842d6e83ae7ebb8df3198478d..f7a8698771becf5106e069cee8dd3029
  
          if command.isEmpty {
 diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
-index e548c2540fa05edc5907a9b8e2057abe65a20c91..7b0c0b334d816a9e73ceea52ed343eac956630f0 100644
+index e548c25..7b0c0b3 100644
 --- a/libs/lume/src/LumeController.swift
 +++ b/libs/lume/src/LumeController.swift
 @@ -548,7 +548,8 @@ final class LumeController {
@@ -203,7 +203,7 @@ index e548c2540fa05edc5907a9b8e2057abe65a20c91..7b0c0b334d816a9e73ceea52ed343eac
          } catch {
 diff --git a/libs/lume/src/Unattended/GuestIdentity.swift b/libs/lume/src/Unattended/GuestIdentity.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..509a283c783e6969923527e9ae0fdcbef3c59d70
+index 0000000..509a283
 --- /dev/null
 +++ b/libs/lume/src/Unattended/GuestIdentity.swift
 @@ -0,0 +1,121 @@
@@ -329,7 +329,7 @@ index 0000000000000000000000000000000000000000..509a283c783e6969923527e9ae0fdcbe
 +    }
 +}
 diff --git a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
-index 29fee89f21d55f280d575b359bb56c025bbe48c7..d42cf93b2f9a59f243e13763348fefb68c01a018 100644
+index 29fee89..d42cf93 100644
 --- a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
 +++ b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
 @@ -20,7 +20,7 @@ final class MacOSOfflineSetupPatcher {
@@ -460,7 +460,7 @@ index 29fee89f21d55f280d575b359bb56c025bbe48c7..d42cf93b2f9a59f243e13763348fefb6
              let perHostPower: [String: Any] = [
                  "AC Power": [
 diff --git a/libs/lume/src/Unattended/UnattendedInstaller.swift b/libs/lume/src/Unattended/UnattendedInstaller.swift
-index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f62def829 100644
+index b83ac3d..d4ec329 100644
 --- a/libs/lume/src/Unattended/UnattendedInstaller.swift
 +++ b/libs/lume/src/Unattended/UnattendedInstaller.swift
 @@ -6,16 +6,22 @@ final class UnattendedInstaller {
@@ -497,13 +497,11 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
          vncPort: Int = 0,
          noDisplay: Bool = false,
          debug: Bool = false,
-@@ -49,9 +56,14 @@ final class UnattendedInstaller {
+@@ -49,9 +56,42 @@ final class UnattendedInstaller {
          try await materializeFirstBootState(vm: vm, vncPort: vncPort)
  
          let patcher = MacOSOfflineSetupPatcher()
 -        try patcher.patch(vm: vm)
--
--        try await verifySetup(vm: vm, config: config, vncPort: vncPort)
 +        try patcher.patch(vm: vm, identity: identity)
 +
 +        try await verifySetup(
@@ -512,10 +510,109 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
 +            identity: identity,
 +            vncPort: vncPort
 +        )
++    }
+ 
+-        try await verifySetup(vm: vm, config: config, vncPort: vncPort)
++    /// The health check to run against a freshly patched guest.
++    ///
++    /// Authenticates as the identity actually created, not the historical
++    /// literal. Falling back only when `config.healthCheck` is nil was not
++    /// enough: the built-in presets ship a health check that hardcodes
++    /// lume/lume, so the fallback never fired and a per-sandbox credential
++    /// failed its own health check against an account that does not exist.
++    ///
++    /// When the caller asked for a different bootstrap account, that account is
++    /// the only one on the guest, so it wins over whatever the preset says. A
++    /// default identity keeps the configured check untouched.
++    nonisolated static func resolveHealthCheck(
++        configured: HealthCheck?,
++        identity: GuestIdentity
++    ) -> HealthCheck {
++        if let configured, identity.bootstrap == GuestIdentity.defaultBootstrap {
++            return configured
++        }
++        return HealthCheck(
++            type: configured?.type ?? "ssh",
++            user: identity.bootstrap.username,
++            password: identity.bootstrap.password,
++            timeout: configured?.timeout ?? 5,
++            retries: configured?.retries ?? 60,
++            retryDelay: configured?.retryDelay ?? 5
++        )
      }
  
      private func materializeFirstBootState(vm: VM, vncPort: Int) async throws {
-@@ -105,7 +117,12 @@ final class UnattendedInstaller {
+@@ -61,18 +101,45 @@ final class UnattendedInstaller {
+ 
+         var vmStartError: Error?
+         let vmTask = Task {
+-            do {
+-                try await vm.run(
+-                    displayMode: .none,
+-                    sharedDirectories: [],
+-                    mount: nil,
+-                    vncPort: vncPort,
+-                    recoveryMode: false,
+-                    usbMassStoragePaths: []
+-                )
+-            } catch {
+-                vmStartError = error
+-                throw error
++            // The installer's own VZVirtualMachine releases the auxiliary
++            // storage lock asynchronously, so the first boot can lose a race
++            // with it and fail to start. `verifySetup` has retried this since
++            // before the sandbox work; the first boot never did, which made
++            // base-image preparation fail outright under load. Same handling,
++            // same budget.
++            var attempts = 0
++            let maxAttempts = 3
++            while attempts < maxAttempts {
++                do {
++                    try await vm.run(
++                        displayMode: .none,
++                        sharedDirectories: [],
++                        mount: nil,
++                        vncPort: vncPort,
++                        recoveryMode: false,
++                        usbMassStoragePaths: []
++                    )
++                    return
++                } catch {
++                    let errorDescription = error.localizedDescription
++                    if errorDescription.contains("auxiliary storage")
++                        || errorDescription.contains("Failed to lock")
++                    {
++                        attempts += 1
++                        if attempts < maxAttempts {
++                            Logger.info(
++                                "First boot failed on the auxiliary storage lock, retrying",
++                                metadata: [
++                                    "attempt": "\(attempts)/\(maxAttempts)",
++                                    "waitTime": "5s",
++                                ])
++                            try await Task.sleep(nanoseconds: 5_000_000_000)
++                            continue
++                        }
++                    }
++                    vmStartError = error
++                    throw error
++                }
+             }
+         }
+ 
+@@ -94,7 +161,10 @@ final class UnattendedInstaller {
+         } catch {
+             vmTask.cancel()
+             try? await vm.stop()
+-            throw error
++            // A start that failed every retry is the real cause; the IP wait
++            // only timed out because nothing ever booted. Reporting its
++            // timeout instead would bury the reason.
++            throw vmStartError ?? error
+         }
+ 
+         try await Task.sleep(nanoseconds: 10_000_000_000)
+@@ -105,7 +175,12 @@ final class UnattendedInstaller {
          try await Task.sleep(nanoseconds: 3_000_000_000)
      }
  
@@ -529,23 +626,36 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
          Logger.info("Starting VM to verify offline unattended setup", metadata: [
              "vm": vm.name
          ])
-@@ -153,10 +170,13 @@ final class UnattendedInstaller {
+@@ -153,14 +228,20 @@ final class UnattendedInstaller {
  
          do {
              let vmIP = try await waitForIPAddress(vm: vm, timeoutSeconds: 300)
-+            // Default to the identity actually created, not the historical
-+            // literal: a per-sandbox credential would otherwise fail its own
-+            // health check.
-             let healthCheck = config.healthCheck ?? HealthCheck(
-                 type: "ssh",
+-            let healthCheck = config.healthCheck ?? HealthCheck(
+-                type: "ssh",
 -                user: "lume",
 -                password: "lume",
-+                user: identity.bootstrap.username,
-+                password: identity.bootstrap.password,
-                 timeout: 5,
-                 retries: 60,
-                 retryDelay: 5
-@@ -176,8 +196,9 @@ final class UnattendedInstaller {
+-                timeout: 5,
+-                retries: 60,
+-                retryDelay: 5
+-            )
++            // Authenticate as the identity actually created, not the
++            // historical literal.
++            //
++            // Falling back only when `config.healthCheck` is nil was not
++            // enough: the built-in presets ship a health check that hardcodes
++            // lume/lume, so the fallback never fired and a per-sandbox
++            // credential failed its own health check against an account that
++            // does not exist. When the caller asked for a different bootstrap
++            // account, that account is the only one on the guest, so it wins
++            // over whatever the preset says. A default identity keeps the
++            // configured check untouched.
++            let healthCheck = UnattendedInstaller.resolveHealthCheck(
++                configured: config.healthCheck,
++                identity: identity)
+ 
+             Logger.info("Running offline setup health check", metadata: [
+                 "type": healthCheck.type,
+@@ -176,8 +257,9 @@ final class UnattendedInstaller {
  
              try await finalizeGuestSystemSetup(
                  vmIP: vmIP,
@@ -557,7 +667,7 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
              )
  
              if let postCommands = config.postSshCommands, !postCommands.isEmpty {
-@@ -206,7 +227,12 @@ final class UnattendedInstaller {
+@@ -206,7 +288,12 @@ final class UnattendedInstaller {
          }
      }
  
@@ -571,7 +681,7 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
          Logger.info("Finalizing guest system setup via SSH", metadata: [
              "host": vmIP,
              "user": user
-@@ -214,7 +240,7 @@ final class UnattendedInstaller {
+@@ -214,7 +301,7 @@ final class UnattendedInstaller {
  
          let sshClient = SSHClient(host: vmIP, port: 22, user: user, password: password)
          let escapedPassword = password.replacingOccurrences(of: "'", with: "'\\''")
@@ -581,10 +691,10 @@ index b83ac3d3a9e5091c600388a33b898eb42e39bbf6..e272a85fe51cae4041ba6af41d722e5f
          let command = "printf '%s\\n' '\(escapedPassword)' | /usr/bin/sudo -S /bin/sh -c '/bin/echo \(encodedScript) | /usr/bin/base64 -D | /bin/sh'"
          let result = try await sshClient.execute(command: command, timeout: 60)
 diff --git a/libs/lume/tests/UnattendedInstallerTests.swift b/libs/lume/tests/UnattendedInstallerTests.swift
-index 1fc377682b1aff4c7a2794cf7436e508513b77b3..946f3ea8868122f78986dd055f07bbec9b5ebec3 100644
+index 1fc3776..6a84f48 100644
 --- a/libs/lume/tests/UnattendedInstallerTests.swift
 +++ b/libs/lume/tests/UnattendedInstallerTests.swift
-@@ -5,9 +5,130 @@ import Testing
+@@ -5,9 +5,197 @@ import Testing
  @MainActor
  @Test("guest finalization refreshes Recovery user metadata")
  func guestFinalizationRefreshesPreboot() {
@@ -715,4 +825,71 @@ index 1fc377682b1aff4c7a2794cf7436e508513b77b3..946f3ea8868122f78986dd055f07bbec
 +    #expect(identity.tenant == nil)
 +    #expect(GuestIdentity.legacy.tenant == nil)
 +    #expect(GuestIdentity.legacy.bootstrap == GuestIdentity.defaultBootstrap)
++}
++
++@Test("the health check authenticates as the identity that was created")
++func healthCheckFollowsTheBootstrapIdentity() throws {
++    // Every built-in preset ships this: a health check naming lume/lume.
++    // Because it is non-nil, a `?? HealthCheck(...)` fallback never fires, and
++    // a per-sandbox guest was verified against an account it does not have.
++    let preset = HealthCheck(
++        type: "ssh",
++        user: "lume",
++        password: "lume",
++        timeout: 5,
++        retries: 60,
++        retryDelay: 5
++    )
++
++    let identity = try GuestIdentity(
++        bootstrap: GuestUser(
++            username: "db-abc123",
++            realName: "db-abc123",
++            password: "s3cret",
++            uid: "501",
++            gid: "20"
++        )
++    )
++    let resolved = UnattendedInstaller.resolveHealthCheck(
++        configured: preset,
++        identity: identity
++    )
++    #expect(resolved.user == "db-abc123")
++    #expect(resolved.password == "s3cret")
++    // The preset's own timings survive; only the credentials are overridden.
++    #expect(resolved.type == "ssh")
++    #expect(resolved.retries == 60)
++    #expect(resolved.retryDelay == 5)
++}
++
++@Test("a default identity leaves the configured health check untouched")
++func healthCheckIsUnchangedForTheDefaultIdentity() throws {
++    let preset = HealthCheck(
++        type: "ssh", user: "someone", password: "else",
++        timeout: 9, retries: 3, retryDelay: 1
++    )
++    let resolved = UnattendedInstaller.resolveHealthCheck(
++        configured: preset,
++        identity: try GuestIdentity()
++    )
++    // An ordinary `lume create` must behave exactly as before, including
++    // honouring a hand-written health_check block.
++    #expect(resolved.user == "someone")
++    #expect(resolved.password == "else")
++    #expect(resolved.timeout == 9)
++}
++
++@Test("a missing health check still names the bootstrap account")
++func healthCheckDefaultsToTheBootstrapAccount() throws {
++    let identity = try GuestIdentity(
++        bootstrap: GuestUser(
++            username: "db-xyz789", realName: "x", password: "pw",
++            uid: "501", gid: "20"
++        )
++    )
++    let resolved = UnattendedInstaller.resolveHealthCheck(
++        configured: nil, identity: identity)
++    #expect(resolved.type == "ssh")
++    #expect(resolved.user == "db-xyz789")
++    #expect(resolved.password == "pw")
 +}

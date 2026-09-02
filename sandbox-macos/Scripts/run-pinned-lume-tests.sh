@@ -46,6 +46,9 @@ REQUIRED_PATCHED_LUME_TESTS=(
     identityAcceptsDistinctTenant
     identityRejectsMalformedAccounts
     defaultIdentityIsUnchanged
+    healthCheckFollowsTheBootstrapIdentity
+    healthCheckIsUnchangedForTheDefaultIdentity
+    healthCheckDefaultsToTheBootstrapAccount
     concurrentCancelAndStopDoesNotFailStop
     fatalGuestStopDoesNotFailStop
     stoppingGuestIsAwaitedRatherThanStoppedTwice

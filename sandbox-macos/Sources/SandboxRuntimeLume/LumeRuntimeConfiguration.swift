@@ -39,7 +39,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedGuestIdentityPatchPath =
         "ThirdParty/lume-patches/0006-per-sandbox-guest-identity.patch"
     public static let pinnedGuestIdentityPatchSHA256 =
-        "f9e1e066fe64d1edac50953cc2fe207ea1ad2be917619a90defa69c6b4d0c9ca"
+        "734e53135fe591c77da613807239f40dbe22d97326bc52894b7eba222d24b6ac"
     public static let pinnedEmergencyStopPatchPath =
         "ThirdParty/lume-patches/0007-fix-emergency-stop-state-guard.patch"
     public static let pinnedEmergencyStopPatchSHA256 =

@@ -366,17 +366,37 @@ extension ProviderLoop {
         await refreshActivationReserve()
         await resliceGrowSurvivors()
         await updateAggregateCapacity()
-        // The reconnect is the wire mechanism for a removal (`models_update`
-        // is additive) — but closing the socket cancels EVERY in-flight
-        // request on the box (`.disconnected` → cancelAllInflight), not just
-        // the retired model's (already drained by unloadModel). Let
-        // unrelated work ride out first, bounded by the shutdown drain
-        // budget. Until the reconnect lands, a routed request for the
-        // retired id 404s at the advertised guard and the coordinator's
-        // dispatch retry absorbs it — this wait extends that window; it
-        // does not add a failure mode.
-        _ = await waitForInflightDrain(
-            timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+        scheduleRetirementReconnect()
+    }
+
+    /// The reconnect that communicates a removal (`models_update` is
+    /// additive; a fresh register is the wire mechanism) — DETACHED and
+    /// COALESCED. Detached: the startup preloader awaits retirement inline,
+    /// so waiting here would stall every remaining preload candidate
+    /// behind a busy box. Coalesced: a burst of retirements needs one
+    /// re-registration, and the client store already excludes every
+    /// retired id (un-advertised synchronously above) by the time it
+    /// fires. The wait lets unrelated in-flight work ride out first —
+    /// closing the socket cancels EVERY in-flight request on the box
+    /// (`.disconnected` → cancelAllInflight), not just the retired
+    /// model's (already drained by unloadModel) — bounded by the shutdown
+    /// drain budget. Until it lands, a routed request for a retired id
+    /// 404s at the advertised guard and the coordinator's dispatch retry
+    /// absorbs it: the wait extends that bounded window, it does not add
+    /// a failure mode.
+    private func scheduleRetirementReconnect() {
+        guard pendingRetirementReconnect == nil else { return }
+        pendingRetirementReconnect = Task { [weak self] in
+            guard let self else { return }
+            _ = await self.waitForInflightDrain(
+                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+            await self.fireRetirementReconnect()
+        }
+    }
+
+    private func fireRetirementReconnect() async {
+        pendingRetirementReconnect = nil
+        guard !isShuttingDown else { return }
         await coordinatorClient?.forceReconnect()
     }
 

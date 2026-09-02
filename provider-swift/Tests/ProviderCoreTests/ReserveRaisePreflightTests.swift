@@ -72,29 +72,33 @@ struct ReserveRaisePreflightTests {
         )
         let send = SendHandle { _ in }
         await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: send)
-        // Long enough that the room-appears step below lands before the
-        // retry fires; three entries so a slow box cannot exhaust the budget.
-        await loop.setDesiredPrefetchRetryDelaysForTesting([.seconds(2), .seconds(2), .seconds(2)])
+        // A budget a slow CI runner cannot exhaust while the box stays tight:
+        // every retry while tight is refused again and re-scheduled, so the
+        // assertions below hold at any point of that cycle (no exact counts —
+        // a retry may already have fired before the first observation).
+        await loop.setDesiredPrefetchRetryDelaysForTesting(
+            Array(repeating: .seconds(1), count: 10))
 
         let entry = CoordinatorMessage.DesiredModelEntry(
             modelName: "alias", desiredBuild: newModelID, previousBuild: nil)
         await loop.reconcileDesiredModelsForTesting([entry], send: send)
 
-        // Refused: the bytes verified, but the build is NOT advertised — and
-        // exactly one desired-build retry is pending.
+        // Refused: the bytes verified (at least once), the build is NOT
+        // advertised, the resident model still is, and a desired-build
+        // retry is pending.
         let retryScheduled = await waitUntil(timeout: .seconds(10)) {
             await loop.pendingDesiredPrefetchRetriesForTesting() == 1
         }
         #expect(retryScheduled)
-        #expect(prefetcher.count == 1)
+        #expect(prefetcher.count >= 1)
         #expect(!(await loop.isModelAdvertised(newModelID)))
         #expect(await loop.isModelAdvertised(residentModel))
 
         // Room appears (a bigger box stands in for an unload freeing memory):
-        // the scheduled retry re-verifies, the preflight now passes, and the
+        // the next retry re-verifies, the preflight now passes, and the
         // build is advertised alongside the resident one.
         await loop.setEngineV2SlotHooksForTesting(makeHooks(physical: 128 * gib))
-        let advertised = await waitUntil(timeout: .seconds(20)) {
+        let advertised = await waitUntil(timeout: .seconds(30)) {
             await loop.isModelAdvertised(newModelID)
         }
         #expect(advertised)

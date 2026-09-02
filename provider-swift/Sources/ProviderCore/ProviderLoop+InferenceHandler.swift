@@ -448,6 +448,10 @@ extension ProviderLoop {
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch {
+            // Captured BEFORE the awaits below: a retirement completing
+            // during them clears its tombstone, and the reject would then
+            // be misfiled as memory_cap instead of slot_state.
+            let rejectedByRetirement = retiringModels.contains(modelId)
             if requestToModel.removeValue(forKey: requestId) != nil {
                 powerAssertion.release()
                 syncWarmModelState()
@@ -459,7 +463,7 @@ extension ProviderLoop {
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
                 published: state.publishedCapacity,
-                fallbackReason: retiringModels.contains(modelId) ? .slotState : .memoryCap)
+                fallbackReason: rejectedByRetirement ? .slotState : .memoryCap)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,

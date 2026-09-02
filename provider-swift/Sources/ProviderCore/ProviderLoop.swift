@@ -244,6 +244,12 @@ public actor ProviderLoop {
     /// jobs from different tasks are not FIFO, so pushed values alone are
     /// not linearizable).
     internal var activationReserveEpoch: UInt64 = 0
+
+    /// The single pending post-retirement reconnect (see
+    /// `scheduleRetirementReconnect`): a burst of failed-self-test
+    /// retirements coalesces into one re-registration, fired once
+    /// box-wide in-flight work has drained.
+    internal var pendingRetirementReconnect: Task<Void, Never>?
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

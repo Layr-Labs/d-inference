@@ -2,6 +2,17 @@ package registry
 
 import "testing"
 
+// setHealthEjectionEnabledForTest flips the cached kill switch for the
+// duration of a test and restores the previous state on cleanup. It replaces
+// t.Setenv(healthEjectionEnvKey, ...) — which has no effect after init — as
+// the way tests exercise the disabled path. Lives in a _test.go file so the
+// production package never links the testing tree.
+func setHealthEjectionEnabledForTest(t testing.TB, enabled bool) {
+	t.Helper()
+	prev := healthEjectionSwitch.Swap(enabled)
+	t.Cleanup(func() { healthEjectionSwitch.Store(prev) })
+}
+
 func TestParseHealthEjectionEnv(t *testing.T) {
 	cases := map[string]bool{
 		"":        true,

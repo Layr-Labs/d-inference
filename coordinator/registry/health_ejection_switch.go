@@ -4,7 +4,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"testing"
 )
 
 // health_ejection_switch.go — the process-wide health-ejection kill switch.
@@ -14,7 +13,8 @@ import (
 // once per provider per scan) reads a single atomic load instead of
 // os.Getenv + ToLower + TrimSpace. A running process cannot observe a change
 // to its own environment, so this is behavior-identical to the former per-call
-// read; the only writer after init is the test hook below.
+// read; the only writer after init is the test hook
+// setHealthEjectionEnabledForTest (health_ejection_switch_test.go).
 
 // healthEjectionEnvKey is the kill-switch variable; off/0/false/no disable.
 const healthEjectionEnvKey = "EIGENINFERENCE_HEALTH_EJECTION"
@@ -35,14 +35,4 @@ func parseHealthEjectionEnv(raw string) bool {
 	default:
 		return true
 	}
-}
-
-// setHealthEjectionEnabledForTest flips the cached kill switch for the
-// duration of a test and restores the previous state on cleanup. It replaces
-// t.Setenv(healthEjectionEnvKey, ...) — which no longer has any effect after
-// init — as the way tests exercise the disabled path.
-func setHealthEjectionEnabledForTest(t testing.TB, enabled bool) {
-	t.Helper()
-	prev := healthEjectionSwitch.Swap(enabled)
-	t.Cleanup(func() { healthEjectionSwitch.Store(prev) })
 }

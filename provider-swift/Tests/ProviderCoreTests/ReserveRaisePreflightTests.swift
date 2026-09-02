@@ -10,10 +10,12 @@ import Testing
 /// box where that raise would re-slice a resident slot below the
 /// serviceability floor, the advertisement must be REFUSED (nothing pushed,
 /// nothing advertised — the same floor the load path refuses a newcomer on)
-/// and RETRIED through the desired-build backoff policy: `.verified` still
-/// goes out for the attempt and the coordinator deduplicates unchanged
-/// desired_models pushes, so without a local retry nothing would ever
-/// re-offer the build, even once the box has room.
+/// and re-offered later: through the desired-build backoff, AND by the
+/// capacity-change event that actually frees the room (a slot unload),
+/// because the backoff budget is shorter than the idle-unload horizon.
+/// `.verified` still goes out for the refused attempt and the coordinator
+/// deduplicates unchanged desired_models pushes, so without a local
+/// re-offer nothing would ever advertise the build.
 @Suite("Reserve-raise preflight on verified prefetch", .serialized)
 struct ReserveRaisePreflightTests {
     private let gib: UInt64 = 1024 * 1024 * 1024
@@ -22,9 +24,66 @@ struct ReserveRaisePreflightTests {
 
     @Test("refused raise is not advertised, schedules a retry, and advertises once the box has room")
     func refusedRaiseRetriesUntilRoom() async throws {
-        // Box arithmetic, self-checked against the real floors and cap so the
-        // test tracks the tables rather than restating them: the resident
-        // floor must leave a serviceable grant, the raised floor must not.
+        // A budget a slow CI runner cannot exhaust while the box stays tight:
+        // every retry while tight is refused again and re-scheduled, so the
+        // assertions below hold at any point of that cycle.
+        let fixture = try await makeRefusedPrefetch(
+            retryDelays: Array(repeating: .seconds(1), count: 10))
+        defer { try? FileManager.default.removeItem(at: fixture.modelDir) }
+        let loop = fixture.loop
+
+        // Room appears (a bigger box stands in for an unload freeing memory):
+        // the next backoff retry re-verifies, the preflight now passes, and
+        // the build is advertised alongside the resident one.
+        await loop.setEngineV2SlotHooksForTesting(makeHooks(physical: 128 * gib))
+        let advertised = await waitUntil(timeout: .seconds(30)) {
+            await loop.isModelAdvertised(fixture.newModelID)
+        }
+        #expect(advertised)
+        #expect(fixture.prefetcher.count >= 2)
+        #expect(await loop.isModelAdvertised(residentModel))
+        let settled = await waitUntil(timeout: .seconds(5)) {
+            await loop.pendingDesiredPrefetchRetriesForTesting() == 0
+        }
+        #expect(settled)
+    }
+
+    @Test("refused raise is re-offered by the unload that frees the room, even after the backoff budget")
+    func refusedRaiseIsReofferedWhenTheResidentSlotUnloads() async throws {
+        // A backoff far longer than the test: only the capacity-change
+        // re-offer can advertise the build inside the timeout below.
+        let fixture = try await makeRefusedPrefetch(retryDelays: [.seconds(600)])
+        defer { try? FileManager.default.removeItem(at: fixture.modelDir) }
+        let loop = fixture.loop
+
+        // The resident slot unloads (the idle monitor's job in production):
+        // no survivors, the preflight passes, and the deferred build is
+        // re-offered immediately with a fresh budget — no 600 s wait.
+        await loop.unloadModel(residentModel)
+        let advertised = await waitUntil(timeout: .seconds(20)) {
+            await loop.isModelAdvertised(fixture.newModelID)
+        }
+        #expect(advertised)
+        #expect(fixture.prefetcher.count >= 2)
+        #expect(await loop.reserveDeferredPrefetchesForTesting().isEmpty)
+    }
+
+    // MARK: - Fixture
+
+    private struct RefusedPrefetchFixture {
+        let loop: ProviderLoop
+        let prefetcher: CountingSuccessPrefetcher
+        let newModelID: String
+        let modelDir: URL
+    }
+
+    /// Box arithmetic, self-checked against the real floors and cap so the
+    /// test tracks the tables rather than restating them: the resident floor
+    /// must leave a serviceable grant, the raised floor must not. Installs
+    /// the resident measured slot through the production-shaped load
+    /// stretch, reconciles a desired UNMEASURED build, and returns once the
+    /// refusal has been observed (build not advertised, one retry pending).
+    private func makeRefusedPrefetch(retryDelays: [Duration]) async throws -> RefusedPrefetchFixture {
         // Production resolves max(env override, floor); the arithmetic below
         // assumes the floors alone, so an operator override in the test
         // environment would fail the resident load loudly but unexplained.
@@ -49,15 +108,12 @@ struct ReserveRaisePreflightTests {
         try #require(budgetUnderRaised < EngineV2KVSizing.minimumServiceableGrantBytes)
 
         let modelDir = try seedSnapshot(modelID: newModelID)
-        defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let startup = ModelInfo(
             id: residentModel, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
         let loop = try makeLoop(models: [startup])
         await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
         await loop.setEngineV2SlotHooksForTesting(makeHooks(physical: physical))
-        // The resident measured slot, installed through the production-shaped
-        // load stretch (re-slice gate held across shrink → build → install).
         _ = try await loop.loadV2SlotForTesting(
             modelId: residentModel,
             modelType: "gpt_oss",
@@ -78,20 +134,15 @@ struct ReserveRaisePreflightTests {
         )
         let send = SendHandle { _ in }
         await loop.installPrefetchCoordinatorForTesting(coord, client: client, send: send)
-        // A budget a slow CI runner cannot exhaust while the box stays tight:
-        // every retry while tight is refused again and re-scheduled, so the
-        // assertions below hold at any point of that cycle (no exact counts —
-        // a retry may already have fired before the first observation).
-        await loop.setDesiredPrefetchRetryDelaysForTesting(
-            Array(repeating: .seconds(1), count: 10))
+        await loop.setDesiredPrefetchRetryDelaysForTesting(retryDelays)
 
         let entry = CoordinatorMessage.DesiredModelEntry(
             modelName: "alias", desiredBuild: newModelID, previousBuild: nil)
         await loop.reconcileDesiredModelsForTesting([entry], send: send)
 
         // Refused: the bytes verified (at least once), the build is NOT
-        // advertised, the resident model still is, and a desired-build
-        // retry is pending.
+        // advertised, the resident model still is, a desired-build retry is
+        // pending, and the id is remembered for the capacity-change re-offer.
         let retryScheduled = await waitUntil(timeout: .seconds(10)) {
             await loop.pendingDesiredPrefetchRetriesForTesting() == 1
         }
@@ -99,24 +150,11 @@ struct ReserveRaisePreflightTests {
         #expect(prefetcher.count >= 1)
         #expect(!(await loop.isModelAdvertised(newModelID)))
         #expect(await loop.isModelAdvertised(residentModel))
+        #expect(await loop.reserveDeferredPrefetchesForTesting().contains(newModelID))
 
-        // Room appears (a bigger box stands in for an unload freeing memory):
-        // the next retry re-verifies, the preflight now passes, and the
-        // build is advertised alongside the resident one.
-        await loop.setEngineV2SlotHooksForTesting(makeHooks(physical: 128 * gib))
-        let advertised = await waitUntil(timeout: .seconds(30)) {
-            await loop.isModelAdvertised(newModelID)
-        }
-        #expect(advertised)
-        #expect(prefetcher.count >= 2)
-        #expect(await loop.isModelAdvertised(residentModel))
-        let settled = await waitUntil(timeout: .seconds(5)) {
-            await loop.pendingDesiredPrefetchRetriesForTesting() == 0
-        }
-        #expect(settled)
+        return RefusedPrefetchFixture(
+            loop: loop, prefetcher: prefetcher, newModelID: newModelID, modelDir: modelDir)
     }
-
-    // MARK: - Fixtures
 
     private func makeHooks(physical: UInt64) -> ProviderLoop.EngineV2SlotHooks {
         ProviderLoop.EngineV2SlotHooks(

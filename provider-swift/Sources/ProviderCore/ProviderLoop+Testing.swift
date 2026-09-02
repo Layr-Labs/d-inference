@@ -84,6 +84,10 @@ extension ProviderLoop {
     /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.
     func pendingDesiredPrefetchRetriesForTesting() -> Int { desiredPrefetchRetryTasks.count }
 
+    /// Desired builds deferred for a capacity reason (reserve-raise preflight
+    /// refusal or a load in flight), awaiting a capacity-change re-offer.
+    func reserveDeferredPrefetchesForTesting() -> Set<String> { reserveDeferredPrefetches }
+
     /// Test seam: install a fake prefetcher and (re)build the prefetch
     /// coordinator against a given coordinator client. Used by unit tests to
     /// exercise the handler without the real download path.

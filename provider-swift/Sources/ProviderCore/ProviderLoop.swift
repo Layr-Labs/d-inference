@@ -264,6 +264,16 @@ public actor ProviderLoop {
     /// load admitted during the push's suspension already resolves its gate
     /// and fleet budget against the raised floor.
     internal var pendingAdvertise: Set<String> = []
+
+    /// Desired builds whose verified prefetch was deferred for a CAPACITY
+    /// reason (the reserve raise would strand a resident slot, or a load
+    /// was in flight). The bounded backoff retries them for ~18 minutes;
+    /// the capacity change that actually frees the room (an idle unload at
+    /// the 60-minute default, a load finishing) can come later, so those
+    /// events re-offer every id here with a fresh budget
+    /// (`retryReserveDeferredPrefetches`). Cleared when the build
+    /// advertises or leaves the desired set.
+    internal var reserveDeferredPrefetches: Set<String> = []
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

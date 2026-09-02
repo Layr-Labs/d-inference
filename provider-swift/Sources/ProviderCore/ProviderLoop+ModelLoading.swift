@@ -765,6 +765,10 @@ extension ProviderLoop {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
+            // The load is installed: desired builds deferred behind it
+            // (advertise-raises are serialized behind in-flight loads) are
+            // re-offered now rather than on their backoff.
+            await retryReserveDeferredPrefetches()
         } catch {
             // ORDER MATTERS: `isLoadingAny` (and the same-id `modelsLoading`
             // marker) stay held through every await below. Dropping them
@@ -796,6 +800,9 @@ extension ProviderLoop {
                 waiter.resume(throwing: error)
             }
             releaseLoadGateWaiters()
+            // The load is over (failed): builds deferred behind it are
+            // re-offered now — the box's arithmetic is back to pre-load.
+            await retryReserveDeferredPrefetches()
             throw error
         }
     }
@@ -884,6 +891,9 @@ extension ProviderLoop {
         }
         await updateAggregateCapacity()
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
+        // Room appeared: re-offer desired builds deferred for capacity
+        // (their bounded backoff may have expired long before this unload).
+        await retryReserveDeferredPrefetches()
     }
 
     /// Weight-hash observations for only the models currently loaded in memory.

@@ -129,6 +129,43 @@ extension ProviderLoop {
         }
     }
 
+    /// A verified prefetch deferred for a capacity reason: remember it and
+    /// schedule the bounded backoff. The remembered id is re-offered by the
+    /// capacity-change events themselves (`retryReserveDeferredPrefetches`),
+    /// because the backoff budget (~18 min) is shorter than the idle-unload
+    /// horizon that typically frees the room.
+    private func deferPrefetchForCapacity(modelId: String) {
+        guard desiredPrefetchTargets.contains(modelId) else { return }
+        reserveDeferredPrefetches.insert(modelId)
+        if let send = outboundSend {
+            scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+        }
+    }
+
+    /// Re-offer every capacity-deferred desired build NOW, with a fresh
+    /// retry budget. Called after a slot unloads and after a load finishes
+    /// (installed or failed): both change the arithmetic the deferral was
+    /// made under. Ids no longer desired are dropped. The re-run is a hash
+    /// pass (the bytes are on disk) that re-enters `applyVerifiedPrefetch`
+    /// and its preflight — a still-tight box simply defers again.
+    internal func retryReserveDeferredPrefetches() async {
+        guard !reserveDeferredPrefetches.isEmpty, !isShuttingDown, let send = outboundSend
+        else { return }
+        let deferred = reserveDeferredPrefetches.sorted()
+        for modelId in deferred {
+            guard desiredPrefetchTargets.contains(modelId),
+                !staleDesiredPrefetches.contains(modelId)
+            else {
+                reserveDeferredPrefetches.remove(modelId)
+                continue
+            }
+            clearDesiredPrefetchRetryState(for: modelId)
+            logger.info("Re-offering capacity-deferred desired build \(modelId) after a capacity change")
+            await handlePrefetchModelRequest(
+                modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
+        }
+    }
+
     /// Fire a scheduled desired-build prefetch retry, re-checking that the
     /// build is still wanted (the desired set may have changed during the
     /// backoff sleep).
@@ -327,9 +364,7 @@ extension ProviderLoop {
             logger.info(
                 "Prefetch verified \(modelId) while a load is in flight (\(modelsLoading.sorted())); "
                     + "deferring the advertisement")
-            if let send = outboundSend {
-                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
-            }
+            deferPrefetchForCapacity(modelId: modelId)
             return
         }
         // Held from the preflight through the re-slice + capacity publish,
@@ -357,9 +392,7 @@ extension ProviderLoop {
             logger.warning(
                 "Prefetch verified \(modelId) but its activation floor would re-slice a resident "
                     + "model's KV grant below the serviceability floor; not advertising")
-            if let send = outboundSend {
-                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
-            }
+            deferPrefetchForCapacity(modelId: modelId)
             return
         }
         // Re-check in-flight loads AFTER the preflight (it awaited each
@@ -371,9 +404,7 @@ extension ProviderLoop {
             logger.info(
                 "Prefetch verified \(modelId) but a load entered during the preflight; "
                     + "deferring the advertisement")
-            if let send = outboundSend {
-                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
-            }
+            deferPrefetchForCapacity(modelId: modelId)
             return
         }
         // Pin the id into the live reserve basis BEFORE the push's own
@@ -407,6 +438,7 @@ extension ProviderLoop {
         failedSelfTestHashes.removeValue(forKey: modelId)
         advertisedModels[modelId] = info
         pendingAdvertise.remove(modelId)  // now carried by `advertisedModels`
+        reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
         syncWarmModelState()

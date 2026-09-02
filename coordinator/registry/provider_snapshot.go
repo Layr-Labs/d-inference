@@ -102,8 +102,9 @@ func (r *Registry) PublicProviderModels() map[string]PublicProviderModelSnapshot
 	// per-provider allocations were the entire cost of this walk, paid as GC
 	// pressure by /v1/stats and /v1/providers/attestation. Each provider's view
 	// is a 3-index sub-slice (cap == len), so a consumer append can never write
-	// into a neighbour's entries. The size pass is only a hint — p.Models is
-	// replaced copy-on-write and may grow between the two passes; append then
+	// into a neighbour's entries. The size pass is only a hint — both passes
+	// take p.mu, but p.Models may change or grow between them (models_update
+	// and provider-model merges mutate and append it in place); append then
 	// reallocates, and views already handed out keep their (unchanged) old
 	// array. A provider with no eligible model still gets a non-nil empty slice:
 	// stats serializes it straight to JSON and must emit [] rather than null.

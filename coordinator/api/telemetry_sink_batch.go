@@ -3,6 +3,9 @@ package api
 // Worker-side grouping for telemetrySink: gather a bounded run of queued ops,
 // then persist it with as few store calls as its contents allow.
 //
+// INVARIANT: exactly one worker consumes the queue (newBatchingTelemetrySink
+// clamps workers to 1). Everything below assumes a single FIFO consumer.
+//
 // Ordering guarantee. The only order the store depends on is PER ROUTE KEY
 // (request_id, attempt): a row's insert must be written before any outcome
 // update for it (an UPDATE on a missing row is a silent no-op on both
@@ -23,9 +26,20 @@ package api
 //     one across a same-key op. Distinct keys are independent rows, so their
 //     relative order is free.
 //
-// Groups execute sequentially on one worker, so cross-group order is FIFO.
+// Groups execute sequentially on the one worker, so cross-group order is FIFO.
+//
+// Failure policy. A batch call runs under its own recover; a panic or error
+// is a failed batch. When the failure is a ROW fault (constraint, type, ...)
+// and the sink is still open, every row is replayed on its own — each under
+// its own recover — so one poison row cannot discard its neighbours and every
+// failure keeps the per-row diagnostic the single-write path always logged.
+// When the store is UNAVAILABLE (deadline, connection, closed pool, server
+// shutdown) or the sink is closing (the pool is about to go away), the group
+// is dropped and counted instead: N sequential replays would only be N more
+// timeouts and N error lines.
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -165,7 +179,8 @@ func (t *telemetrySink) gather(first telemetryOp, next func() (telemetryOp, bool
 
 // drainOnClose writes everything buffered at close time, in groups, without
 // waiting for more. It runs on the worker goroutine after done is closed, so
-// close itself never blocks on it.
+// close itself never blocks on it; closeAndWait bounds how long a caller
+// waits for it. Because close rejects new submits, the buffer only shrinks.
 func (t *telemetrySink) drainOnClose(carry *telemetryOp) {
 	next := t.bufferedNext()
 	for {
@@ -223,22 +238,75 @@ func (t *telemetrySink) runUnit(fn func()) {
 	fn()
 }
 
-// persistRoutes writes a group's records with one multi-row call. If that
-// statement fails, each record is retried on its own so a single poison row
-// cannot discard its neighbours and every failure keeps the per-row
-// diagnostic log line the single-write path always produced. Both paths are
-// idempotent upserts, so the retry is safe after a partially applied batch.
+// tryBatch runs one batch store call and reports a panic as an error, so the
+// caller handles it as a failed batch (replay or drop) instead of losing the
+// rest of the group. The panic is re-raised inside saferun.Recover while the
+// panicking frames are still on this stack, so it is logged and observed
+// exactly like any other telemetry unit.
+func (t *telemetrySink) tryBatch(name string, fn func() error) (err error) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		func() {
+			defer saferun.Recover(t.logger, "telemetrySink."+name)
+			panic(r)
+		}()
+		err = fmt.Errorf("telemetry batch %s panicked: %v", name, r)
+	}()
+	return fn()
+}
+
+// rowFault reports whether a failed write should be handled per row: the
+// sink is still open and the error describes the rows rather than the
+// store's availability. Otherwise the caller drops and counts.
+func (t *telemetrySink) rowFault(err error) bool {
+	return !t.isClosed() && !store.IsTransientWriteError(err)
+}
+
+// dropGroup counts rows that will not be persisted and says why, once.
+func (t *telemetrySink) dropGroup(kind string, rows int, err error) {
+	t.countDrops(rows)
+	if t.logger != nil {
+		t.logger.Warn("routing telemetry group dropped",
+			"kind", kind,
+			"rows", rows,
+			"closing", t.isClosed(),
+			"error", err,
+		)
+	}
+}
+
+// persistRoutes writes a group's records with one multi-row call, then applies
+// the failure policy from the file header.
 func (t *telemetrySink) persistRoutes(records []*store.InferenceRouteRecord) {
 	st := t.store
 	if st == nil {
 		return
 	}
+	writeOne := func(r *store.InferenceRouteRecord) {
+		t.runUnit(func() {
+			err := st.RecordInferenceRoute(r)
+			switch {
+			case err == nil:
+			case t.rowFault(err):
+				logRouteRecordWriteError(t.logger, r, err)
+			default:
+				t.dropGroup("inference_routes", 1, err)
+			}
+		})
+	}
 	if len(records) == 1 {
-		logRouteRecordWriteError(t.logger, records[0], st.RecordInferenceRoute(records[0]))
+		writeOne(records[0])
 		return
 	}
-	err := st.RecordInferenceRoutes(records)
+	err := t.tryBatch("recordInferenceRoutes", func() error { return st.RecordInferenceRoutes(records) })
 	if err == nil {
+		return
+	}
+	if !t.rowFault(err) {
+		t.dropGroup("inference_routes", len(records), err)
 		return
 	}
 	if t.logger != nil {
@@ -248,34 +316,46 @@ func (t *telemetrySink) persistRoutes(records []*store.InferenceRouteRecord) {
 		)
 	}
 	for _, r := range records {
-		logRouteRecordWriteError(t.logger, r, st.RecordInferenceRoute(r))
+		writeOne(r)
 	}
 }
 
 // persistOutcomes applies a run of outcome updates with one pipelined call,
-// falling back to per-update statements on failure for the same reasons as
-// persistRoutes. Outcome merges are idempotent ("set when non-zero"), so the
-// retry is safe after a rolled-back pipeline.
+// then applies the failure policy from the file header. Outcome merges are
+// idempotent ("set when non-zero"), so a replay after a rolled-back pipeline
+// is safe.
 func (t *telemetrySink) persistOutcomes(ops []telemetryOp) {
 	st := t.store
 	if st == nil {
 		return
 	}
-	single := func(op telemetryOp) {
-		u := op.update
-		logRouteOutcomeWriteError(t.logger, u.RequestID, u.Attempt, op.model, u.Outcome,
-			st.UpdateInferenceRouteOutcome(u.RequestID, u.Attempt, u.Outcome))
+	writeOne := func(op telemetryOp) {
+		t.runUnit(func() {
+			u := op.update
+			err := st.UpdateInferenceRouteOutcome(u.RequestID, u.Attempt, u.Outcome)
+			switch {
+			case err == nil:
+			case t.rowFault(err):
+				logRouteOutcomeWriteError(t.logger, u.RequestID, u.Attempt, op.model, u.Outcome, err)
+			default:
+				t.dropGroup("inference_routes_outcome", 1, err)
+			}
+		})
 	}
 	if len(ops) == 1 {
-		single(ops[0])
+		writeOne(ops[0])
 		return
 	}
 	updates := make([]store.InferenceRouteOutcomeUpdate, 0, len(ops))
 	for _, op := range ops {
 		updates = append(updates, *op.update)
 	}
-	err := st.UpdateInferenceRouteOutcomes(updates)
+	err := t.tryBatch("updateInferenceRouteOutcomes", func() error { return st.UpdateInferenceRouteOutcomes(updates) })
 	if err == nil {
+		return
+	}
+	if !t.rowFault(err) {
+		t.dropGroup("inference_routes_outcome", len(ops), err)
 		return
 	}
 	if t.logger != nil {
@@ -285,6 +365,6 @@ func (t *telemetrySink) persistOutcomes(ops []telemetryOp) {
 		)
 	}
 	for _, op := range ops {
-		single(op)
+		writeOne(op)
 	}
 }

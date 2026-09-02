@@ -376,15 +376,19 @@ func TestTelemetrySinkBatchFailureFallsBackToSingleWrites(t *testing.T) {
 	st := newCountingTelemetryStore()
 	st.failBatchRecords.Store(true)
 	st.failBatchUpdates.Store(true)
-	sink := newTestSink(t, st, 1024, 256, 10*time.Second)
-
 	const n = 5
+	// Groups fill by size (n) so each executes while the sink is OPEN — the
+	// per-row replay is only taken while open; a closing drain drops instead.
+	sink := newTestSink(t, st, 1024, n, 10*time.Second)
+
 	for i := 0; i < n; i++ {
 		sink.submitRoute(routeRec(fmt.Sprintf("fb-%d", i), 1, "p"))
 	}
+	waitForCalls(t, st, "record", n)
 	for i := 0; i < n; i++ {
 		sink.submitOutcome(fmt.Sprintf("fb-%d", i), 1, "m", &store.InferenceRouteOutcome{FinalStatus: "success"})
 	}
+	waitForCalls(t, st, "update", n)
 	flushAndWait(t, sink)
 
 	if calls, _ := st.count("records"); calls != 1 {

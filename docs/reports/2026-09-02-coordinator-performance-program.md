@@ -124,7 +124,14 @@ Ten commits, all inside `registry/`, each measured on the fleet benchmark:
 | calibrator bound | TTFT calibrator no longer re-sweeps its pending map on every reservation at capacity | 68k |
 
 Eligibility gates are unchanged; the index only prunes providers that cannot
-advertise the model. Tests pin index == brute-force walk after every mutation
+advertise the model. Review follow-ups landed with it: the health-ejection
+test hook moved out of the production file; the calibrator prefers expired
+entries at capacity (bounded probe plus a 5 s capacity sweep); a fault-state
+fixture pins index equivalence with breaker-open, health-ejected and
+capacity-cooled providers; the TPS median cache is safe for a zero-value
+registry; the version memo skips oversized keys and the accepted provider
+version is capped at 64 bytes at registration (provider-controlled input must
+not be retained unbounded). Tests pin index == brute-force walk after every mutation
 type and identical routing results with/without the index on the 1,260-provider
 fixture for plain/tools/vision/TTFT-ceiling shapes.
 

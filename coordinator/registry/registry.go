@@ -2906,7 +2906,8 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 	now := time.Now()
 	minTrust := r.MinTrustLevel
-	for _, p := range r.providers {
+	// Per-model index: only advertisers can route the build (model_index.go).
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
 		p.mu.Unlock()

@@ -123,6 +123,7 @@ type walkOutcome struct {
 	servable    ServabilityVerdict
 	aliasRoute  bool
 	aliasStruct bool
+	aliasBuild  bool
 	cacheCaps   []string
 }
 
@@ -132,6 +133,7 @@ func runWalks(r *Registry, model string, pr *PendingRequest, traits RequestTrait
 	scan := r.scanCandidatesLocked(model, pr, false)
 	out.aliasRoute = r.anyProviderCanServeAliasWithTraitsLocked(model, nil, pr.OwnerAccountID, pr.SelfRouteOnly, pr.PreferOwner, pr.FirstContentDeadline, traits, false)
 	out.aliasStruct = r.anyProviderCanServeAliasWithTraitsLocked(model, nil, pr.OwnerAccountID, pr.SelfRouteOnly, pr.PreferOwner, pr.FirstContentDeadline, traits, true)
+	out.aliasBuild = r.anyProviderCanRouteBuildLocked(model)
 	r.mu.RUnlock()
 	for _, c := range scan.pool {
 		out.pool = append(out.pool, c.provider.ID)

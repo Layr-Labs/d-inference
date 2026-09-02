@@ -104,7 +104,7 @@ func (t *telemetrySink) worker() {
 	for {
 		var first telemetryOp
 		if carry != nil {
-			first, carry = *carry, nil
+			first = *carry
 		} else {
 			select {
 			case first = <-t.ch:
@@ -186,7 +186,7 @@ func (t *telemetrySink) drainOnClose(carry *telemetryOp) {
 	for {
 		var first telemetryOp
 		if carry != nil {
-			first, carry = *carry, nil
+			first = *carry
 		} else {
 			op, ok := next()
 			if !ok {

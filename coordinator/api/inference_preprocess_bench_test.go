@@ -193,9 +193,11 @@ func newBenchServer(tb testing.TB) (*Server, *registry.Registry, *store.MemorySt
 // ---------------------------------------------------------------------------
 
 // benchPreprocess mirrors handleChatCompletions from the prelude through the
-// routing-trait derivation for the resolved build and its alias fallback,
-// exactly as the admission preflight exercises them (traits for the current
-// build, the fallback build, and the current build's size verdict).
+// routing-trait derivation: traits for the resolved build (handler, then again
+// in the admission preflight), the resolved build's size verdict, and the
+// alias-fallback build's traits — the probe the preflight issues only when the
+// desired build is saturated, included here so the fallback candidate's cost
+// is always measured.
 func benchPreprocess(b *testing.B, srv *Server, body []byte) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 	w := httptest.NewRecorder()

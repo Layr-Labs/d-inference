@@ -364,12 +364,11 @@ extension ProviderLoop {
             // The assistant is optional and must never make an otherwise
             // loadable target fail. It is charged before allocation when it
             // fits; otherwise this load continues target-only.
+            // Weight basis, not a requirement: the helper resolves the
+            // headroom AFTER its own memory sample (the floor may move
+            // across that suspension, as across the eviction waits above).
             mtpPreparation = await admitSpecDecIfMemoryAllows(
-                mtpPreparation,
-                // Resolved live, post-eviction: the floor may have moved
-                // during the eviction waits above.
-                targetRequiredGb: ModelLoadAdmission.requiredToLoadGb(
-                    weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb))
+                mtpPreparation, targetWeightsGb: targetWeightsGb)
             let extraWeightBytes = mtpPreparation.artifact?.additionalWeightBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -989,11 +988,14 @@ extension ProviderLoop {
     /// requirement captured before the wait would admit a load the post-load
     /// guard then rejects (accepted-then-503). Resolve the headroom live.
     private func evictUntilAvailable(weightsGb: Double, allowEviction: Bool = true) async throws {
-        var requiredGb = ModelLoadAdmission.requiredToLoadGb(
-            weightsGb: weightsGb, headroomGb: loadHeadroomGb)
-        while await availableMemoryGb() < requiredGb {
-            requiredGb = ModelLoadAdmission.requiredToLoadGb(
+        while true {
+            // Sample FIRST, resolve the requirement AFTER that suspension:
+            // the exit decision must compare against the floor as it stands
+            // when the sample returns, not as it stood before the await.
+            let available = await availableMemoryGb()
+            let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: weightsGb, headroomGb: loadHeadroomGb)
+            if available >= requiredGb { return }
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = allowEviction
                 ? modelSlots
@@ -1007,11 +1009,11 @@ extension ProviderLoop {
                 // that fits. Same self-heal as fastAdmissionReject.
                 MLX.Memory.clearCache()
                 let retried = await availableMemoryGb()
-                requiredGb = ModelLoadAdmission.requiredToLoadGb(
+                let retriedRequiredGb = ModelLoadAdmission.requiredToLoadGb(
                     weightsGb: weightsGb, headroomGb: loadHeadroomGb)
-                if retried >= requiredGb { return }
+                if retried >= retriedRequiredGb { return }
                 let available = String(format: "%.1f", retried)
-                let required = String(format: "%.1f", requiredGb)
+                let required = String(format: "%.1f", retriedRequiredGb)
                 throw InferenceError.modelLoadFailed(
                     allowEviction
                         ? "Insufficient memory (\(available) GB free, need \(required) GB) and all loaded models are actively serving"

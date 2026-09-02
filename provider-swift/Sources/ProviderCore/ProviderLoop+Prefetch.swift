@@ -304,10 +304,31 @@ extension ProviderLoop {
         // loadable) — a decode step of the new model must never run against a
         // reserve resolved without it. Epoch-stamped, so a concurrent
         // refresh's stale value cannot land after this one.
-        await pushActivationReserve(
-            UnifiedMemoryCap.resolvedActivationReserveBytes(
-                modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
-                    + Array(modelsLoading) + [modelId]))
+        // Held from the preflight through the re-slice + capacity publish,
+        // exactly as a load holds it across its own preflight-through-
+        // install: a load admitted in between would size its slot against
+        // the pre-raise budget and be shrunk below the floor by the
+        // re-slice below with neither side having seen the other. Released
+        // explicitly at every exit (the load path's idiom).
+        await acquireResliceGate()
+        let raisedReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: Array(advertisedModels.keys) + Array(modelSlots.keys)
+                + Array(modelsLoading) + [modelId])
+        // The raise shrinks the fleet KV budget the RESIDENT slots share;
+        // on a tight multi-slot box it can push a survivor below the
+        // serviceable minimum with no new slot loaded. Refuse the
+        // advertisement before touching anything — the same floor the load
+        // path refuses a newcomer on. No durable record: the next desired-
+        // state reconcile may re-offer the build (a verify pass, no
+        // download) against a fleet that may have room by then.
+        guard await reserveRaiseKeepsSurvivorsServiceable(reserveBytes: raisedReserve) else {
+            releaseResliceGate()
+            logger.warning(
+                "Prefetch verified \(modelId) but its activation floor would re-slice a resident "
+                    + "model's KV grant below the serviceability floor; not advertising")
+            return
+        }
+        await pushActivationReserve(raisedReserve)
         // Re-check the tombstone AND the durable record AFTER the push's
         // suspension: a retirement can run — or fully complete — during
         // that await; the tombstone catches an in-progress one and the
@@ -320,6 +341,7 @@ extension ProviderLoop {
             // that will now never join the set — recompute without it, or
             // the phantom raise stands until the next unrelated mutation.
             await refreshActivationReserve()
+            releaseResliceGate()
             logger.warning(
                 "Prefetch verified \(modelId) but retirement began during the reserve push; not advertising")
             return
@@ -344,8 +366,9 @@ extension ProviderLoop {
         // BEFORE announcing the enlarged set, or the coordinator routes
         // against a token budget the tightened shared KV gate rejects until
         // the next periodic capacity tick.
-        await resliceGrowSurvivors()
+        await resliceGrowSurvivorsLocked()
         await updateAggregateCapacity()
+        releaseResliceGate()
         // Final re-check before announcing to the coordinator: retirement
         // interleaving in the refresh suspension above removes the local
         // advertisement — announcing then would diverge the client store
@@ -421,6 +444,7 @@ extension ProviderLoop {
         // so nothing else would ever hand the difference back.
         await refreshActivationReserve()
         await resliceGrowSurvivors()
+        await updateAggregateCapacity()
         logger.info("Hard swap: dropped superseded build \(buildID) from advertised set (\(advertisedModels.count) remaining)")
     }
 

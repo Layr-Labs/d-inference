@@ -154,7 +154,12 @@ extension ProviderLoop {
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+    /// `activationReserveBytes` overrides the live serving-set reserve for a
+    /// PROSPECTIVE set (an advertise-only raise preflight); nil reads live.
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        activationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in modelSlots {
             let (sum, overflow) = totalWeights
@@ -168,9 +173,31 @@ extension ProviderLoop {
             residentWeightBytes: totalWeights,
             // The serving set's resolved reserve, so engine grants carve the
             // same activation floor the load gate and runtime KV gate hold.
-            activationReserveBytes: resolvedActivationReserveBytes,
+            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: Self.memoryReserveBytes(
                 forGiB: loopConfig.config.provider.memoryReserveGB))
+    }
+
+    /// Preflight for an advertise-only reserve raise (no newcomer slot —
+    /// a verified prefetch of an unmeasured model joining a measured set):
+    /// true iff every resident slot's re-sliced grant under `reserveBytes`
+    /// still clears the serviceability floor. The load path refuses a
+    /// newcomer that would strand a co-resident below the floor; a raise
+    /// without a newcomer has the same effect on survivors and must be
+    /// refused the same way rather than published as a serving set that
+    /// disables its own resident models. CALLER HOLDS the re-slice gate
+    /// (as the load path does across its own preflight-through-install),
+    /// so the slot set cannot move between this check and the re-slice
+    /// that follows a passed preflight.
+    internal func reserveRaiseKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "")
+        guard !survivors.isEmpty else { return true }
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: survivors.map(\.slot),
+            newcomer: nil,
+            fleetKVBudgetBytes: fleetKVBudgetBytes(
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)

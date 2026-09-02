@@ -139,8 +139,12 @@ enum DoctorRunner {
                 servingSetIDs = live
             } else {
                 servingSetIsLive = false
+                let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: hw)
                 let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
                     .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
+                    .filter {
+                        ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+                    }
                 let enabled = snapshot.config.backend.enabledModels
                 servingSetIDs =
                     enabled.isEmpty

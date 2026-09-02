@@ -387,7 +387,7 @@ extension ProviderLoop {
                         InferenceFailure(code: .capacity, statusCode: 503),
                         modelId: modelId,
                         published: state.publishedCapacity,
-                        fallbackReason: .memoryCap)),
+                        fallbackReason: retiringModels.contains(modelId) ? .slotState : .memoryCap)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -459,7 +459,7 @@ extension ProviderLoop {
                 Self.loadInferenceFailure(for: error),
                 modelId: modelId,
                 published: state.publishedCapacity,
-                fallbackReason: .memoryCap)
+                fallbackReason: retiringModels.contains(modelId) ? .slotState : .memoryCap)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,

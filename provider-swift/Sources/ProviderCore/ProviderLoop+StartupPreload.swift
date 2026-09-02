@@ -365,6 +365,7 @@ extension ProviderLoop {
         // no-ops, so relax the reserve and regrow survivors here.
         await refreshActivationReserve()
         await resliceGrowSurvivors()
+        await updateAggregateCapacity()
         await coordinatorClient?.forceReconnect()
     }
 

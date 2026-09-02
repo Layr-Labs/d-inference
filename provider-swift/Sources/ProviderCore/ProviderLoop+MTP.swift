@@ -72,18 +72,25 @@ extension ProviderLoop {
 
     /// Assistant memory is optional: if it does not fit after target admission,
     /// preserve target loadability and record a stable target-only fallback.
+    /// Takes the target's WEIGHT basis, not a precomputed requirement: the
+    /// memory sample below is an actor suspension, and a concurrent verified
+    /// prefetch can raise the serving-set floor across it — the target
+    /// requirement is resolved after the sample so the assistant is admitted
+    /// against the load gate as it stands, not as it stood before the hop.
     func admitSpecDecIfMemoryAllows(
         _ preparation: SpecDecPreparation,
-        targetRequiredGb: Double
+        targetWeightsGb: Double
     ) async -> SpecDecPreparation {
         guard let artifact = preparation.artifact else { return preparation }
         // Inline assistants ride the target checkpoint's own shards, already
-        // counted by the scanner in targetRequiredGb — no additional charge
+        // counted by the scanner in targetWeightsGb — no additional charge
         // (SpecDecArtifact.additionalWeightBytes).
         guard artifact.additionalWeightBytes > 0 else { return preparation }
+        let availableGb = await availableMemoryGb()
         guard Self.assistantMemoryFits(
-            availableGb: await availableMemoryGb(),
-            targetRequiredGb: targetRequiredGb,
+            availableGb: availableGb,
+            targetRequiredGb: ModelLoadAdmission.requiredToLoadGb(
+                weightsGb: targetWeightsGb, headroomGb: loadHeadroomGb),
             assistantBytes: artifact.residentBytes)
         else {
             logger.warning(

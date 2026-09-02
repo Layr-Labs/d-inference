@@ -57,6 +57,23 @@ type ModelUtilization struct {
 	RunningProviders int     `json:"running_providers"`
 	ColdProviders    int     `json:"cold_providers"`
 	AggregateTPS     float64 `json:"aggregate_tps"`
+
+	// Cold-provider decomposition. ColdProviders above is a raw "slot not
+	// loaded" count that says nothing about whether those machines could be
+	// warmed: it lumps an idle, fitting box together with one the model can
+	// never fit. EligibleCold is the subset the warm-pool controller would
+	// actually send a load_model to, ColdIneligible the remainder, and
+	// ColdDisqualifiers the reason breakdown (warmColdReason wire strings ->
+	// count). Counts only, no provider identities.
+	//
+	// Note EligibleCold + ColdIneligible need not equal ColdProviders: the two
+	// come from different observations (the controller's last tick vs the live
+	// capacity snapshot) and the controller applies a per-model catalog filter
+	// the capacity feed does not. Treat the split as a breakdown of the
+	// controller's view, not an exact partition of ColdProviders.
+	EligibleCold      int            `json:"eligible_cold"`
+	ColdIneligible    int            `json:"cold_ineligible"`
+	ColdDisqualifiers map[string]int `json:"cold_disqualifiers,omitempty"`
 }
 
 // NetworkUtilization is the fleet-wide utilization summary.
@@ -274,6 +291,12 @@ func computeNetworkUtilization(caps []ModelCapacity, snaps []WarmPoolSnapshot, f
 			mu.QualityConcurrency = s.QualityConcurrency
 			mu.TargetWarm = s.TargetWarm
 			mu.SpillArrivalRate = nonNeg(s.SpillArrivalRate)
+			// Cold-provider decomposition: why the eligible-cold set is
+			// smaller than the raw cold count. Already computed by the
+			// controller every tick and previously discarded.
+			mu.EligibleCold = s.EligibleCold
+			mu.ColdIneligible = s.ColdIneligible
+			mu.ColdDisqualifiers = s.ColdDisqualifiers
 			// Prefer the warm-pool snapshot's warm count so numerator and
 			// denominator come from the same observation; fall back to the
 			// capacity snapshot when the controller reports none.

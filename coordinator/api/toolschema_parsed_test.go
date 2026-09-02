@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -167,33 +166,5 @@ func TestParsedAndBytesConstraintValidatorsAgree(t *testing.T) {
 	}
 	if _, err := validateToolConstraintPolicy([]byte(`not json`)); err == nil || err.Error() != "invalid request body" {
 		t.Fatalf("bytes validator lost its decode error: %v", err)
-	}
-}
-
-func TestSanitizeInvalidUTF8MatchesEncoderRoundTrip(t *testing.T) {
-	tree := map[string]any{
-		"ok":         "plain",
-		"bad\xff":    "v\xe2\x82",
-		"nested":     []any{"\xff\xff", map[string]any{"k\xfe": "\xc0\xaf"}, json.Number("1")},
-		"valid rune": "\uFFFD\u2028\u2029",
-	}
-	encoded, err := json.Marshal(tree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var want map[string]any
-	dec := json.NewDecoder(bytes.NewReader(encoded))
-	dec.UseNumber()
-	if err := dec.Decode(&want); err != nil {
-		t.Fatal(err)
-	}
-	got := sanitizeInvalidUTF8(cloneJSONValue(tree))
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("sanitized tree = %#v, want round-tripped %#v", got, want)
-	}
-	// Valid strings are returned as-is (no copy).
-	valid := "already fine"
-	if out := sanitizeInvalidUTF8(valid); out != valid {
-		t.Fatalf("valid string rewritten: %q", out)
 	}
 }

@@ -10,18 +10,14 @@ package api
 // copy is repaired, and the caller's untouched tools value is handed back for
 // constraint validation.
 //
-// Byte-identity with the bytes path: when a repair is made, the bytes path's
-// re-encode→re-decode round trip replaces every invalid UTF-8 byte in every
-// string and key of the WHOLE body with U+FFFD (encoding/json writes such
-// bytes as �). The provider body is marshaled from the parsed map, so the
-// map-level path applies that same replacement when — and only when — a
-// repair was made, keeping the sealed bytes identical to the old path.
+// Byte-identity with the bytes path holds because encoding/json's decoder
+// already produces a well-formed tree — it coerces invalid UTF-8 in strings
+// and keys to U+FFFD while unquoting — so the repaired map serializes to
+// exactly what decoding the bytes path's re-encoded output would have
+// produced. The gates are the same two the bytes path applies, measured on
+// the caller's input.
 
-import (
-	"bytes"
-	"strings"
-	"unicode/utf8"
-)
+import "bytes"
 
 // normalizeParsedToolSchemas repairs the tool JSON-Schemas of an already
 // decoded request in place, with the same gates as NormalizeToolSchemas,
@@ -29,9 +25,9 @@ import (
 // maxToolNormalizationBytes, bodies without the literal `"tools"` key bytes
 // (an escaped spelling of the key is forwarded verbatim, exactly as the bytes
 // path always did), and bodies whose "tools" is not an array are left
-// untouched. When a repair was made it returns the caller's
-// original tools value (never mutated) and changed=true; otherwise (nil,
-// false) and parsed is exactly as it was.
+// untouched. When a repair was made it returns the caller's original tools
+// value (never mutated) and changed=true; otherwise (nil, false) and parsed is
+// exactly as it was.
 func normalizeParsedToolSchemas(parsed map[string]any, rawBody []byte) (originalTools []any, changed bool) {
 	if len(rawBody) > maxToolNormalizationBytes || !bytes.Contains(rawBody, toolsKeyNeedle) {
 		return nil, false
@@ -48,7 +44,6 @@ func normalizeParsedToolSchemas(parsed map[string]any, rawBody []byte) (original
 		return nil, false
 	}
 	parsed["tools"] = repaired
-	sanitizeInvalidUTF8(parsed)
 	return tools, true
 }
 
@@ -89,58 +84,4 @@ func cloneJSONValue(v any) any {
 	default:
 		return v
 	}
-}
-
-// sanitizeInvalidUTF8 rewrites, in place, every string value and object key
-// under v the way an encoding/json encode→decode round trip would: each
-// invalid UTF-8 byte becomes U+FFFD. Valid trees are left untouched without
-// allocating.
-func sanitizeInvalidUTF8(v any) any {
-	switch x := v.(type) {
-	case string:
-		if utf8.ValidString(x) {
-			return x
-		}
-		return replaceInvalidUTF8Bytes(x)
-	case []any:
-		for i, value := range x {
-			x[i] = sanitizeInvalidUTF8(value)
-		}
-		return x
-	case map[string]any:
-		var invalidKeys []string
-		for key, value := range x {
-			x[key] = sanitizeInvalidUTF8(value)
-			if !utf8.ValidString(key) {
-				invalidKeys = append(invalidKeys, key)
-			}
-		}
-		for _, key := range invalidKeys {
-			value := x[key]
-			delete(x, key)
-			x[replaceInvalidUTF8Bytes(key)] = value
-		}
-		return x
-	default:
-		return v
-	}
-}
-
-// replaceInvalidUTF8Bytes substitutes U+FFFD for each invalid byte, matching
-// encoding/json's per-byte � emission (not strings.ToValidUTF8, which
-// collapses a run of invalid bytes into one replacement).
-func replaceInvalidUTF8Bytes(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 8)
-	for i := 0; i < len(s); {
-		c, size := utf8.DecodeRuneInString(s[i:])
-		if c == utf8.RuneError && size == 1 {
-			b.WriteRune(utf8.RuneError)
-			i++
-			continue
-		}
-		b.WriteString(s[i : i+size])
-		i += size
-	}
-	return b.String()
 }

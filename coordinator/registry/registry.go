@@ -1691,8 +1691,8 @@ func (r *Registry) releasePolicyEnforcedLocked() bool {
 // ReleasePolicyEnforced reports whether missing application evidence currently
 // blocks routing. Thread-safe.
 func (r *Registry) ReleasePolicyEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.releasePolicyEnforcedLocked()
 }
 
@@ -1770,16 +1770,16 @@ func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
 // connection handler should issue code-identity challenges). Thread-safe.
 func (r *Registry) CodeAttestationConfigured() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationConfigured
 }
 
 // CodeAttestationEnforced reports whether code-identity attestation is currently
 // mandatory for routing (configured AND past the deadline). Thread-safe.
 func (r *Registry) CodeAttestationEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationEnforcedLocked()
 }
 

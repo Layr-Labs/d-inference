@@ -99,8 +99,17 @@ func NewCached(inner Store, cfg CacheConfig) *CachedStore {
 	}
 }
 
-// Compile-time check that the decorator still satisfies the full Store.
-var _ Store = (*CachedStore)(nil)
+// Unwrap exposes the wrapped backend so As can discover optional capabilities
+// (durable push budgets, paged verification listing) that the static Store
+// method set does not carry.
+func (c *CachedStore) Unwrap() Store { return c.Store }
+
+// Compile-time checks: the decorator still satisfies the full Store, and it
+// is transparent to store.As.
+var (
+	_ Store     = (*CachedStore)(nil)
+	_ Unwrapper = (*CachedStore)(nil)
+)
 
 // CacheCounters is one domain's counters since process start.
 type CacheCounters struct {

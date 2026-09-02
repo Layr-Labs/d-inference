@@ -135,17 +135,17 @@ func (c *domainCache[V]) store(key string, gen uint64, value *V, err error) {
 func (c *domainCache[V]) evictLocked() {
 	now := c.now()
 	removed := 0
-	victim := ""
+	victim, haveVictim := "", false
 	for k, e := range c.entries {
-		if victim == "" {
-			victim = k
+		if !haveVictim {
+			victim, haveVictim = k, true
 		}
 		if !now.Before(e.expiresAt) {
 			delete(c.entries, k)
 			removed++
 		}
 	}
-	if removed == 0 && victim != "" {
+	if removed == 0 && haveVictim {
 		delete(c.entries, victim)
 		removed = 1
 	}

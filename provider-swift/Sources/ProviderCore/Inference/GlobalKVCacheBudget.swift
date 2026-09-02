@@ -15,11 +15,18 @@ public actor GlobalKVCacheBudget {
     }
 
     /// Cap fraction and activation reserve are nil → ``UnifiedMemoryCap``
-    /// defaults (0.90 / env / 3 GiB floor). Held as overrides so tests can pin
-    /// them; production uses the defaults so this budget and the load gate share
-    /// one policy.
+    /// defaults (0.90 / env / the 5.5 GiB default floor). Held as overrides so
+    /// tests can pin them. `ProviderLoop` resolves the reserve for its serving
+    /// set (`UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)`) and
+    /// passes it here so this budget and its load gate share one policy;
+    /// `StandaloneServer` (local direct mode) deliberately keeps the flat
+    /// default throughout. The reserve is a `var` behind
+    /// ``setActivationReserveBytes(_:)`` because the serving set can change at
+    /// runtime (coordinator-driven prefetch advertises new builds); the owner
+    /// re-resolves and pushes the new value BEFORE the added model becomes
+    /// loadable.
     private let capFraction: Double?
-    private let activationReserveBytes: UInt64?
+    private var activationReserveBytes: UInt64?
     /// Operator-configured reserve (`memory_reserve_gb`, in bytes). Held back by
     /// the live KV gate just as the load gate holds it back, so runtime KV can't
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
@@ -164,6 +171,18 @@ public actor GlobalKVCacheBudget {
             // Tests that don't pin a threshold should never trip the proactive
             // sweep on their tiny synthetic pools — keep the production default.
             proactiveThresholdBytes: KVPoolReclaimer.defaultProactiveThresholdBytes)
+    }
+
+    /// Replace the activation reserve this budget carves out of the cap.
+    /// Called by the owner when its advertised serving set changes (a
+    /// prefetch-verified build was advertised, or a superseded build dropped)
+    /// with the freshly resolved
+    /// `UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)` — the
+    /// raise must land BEFORE the added model becomes loadable so a decode
+    /// step of the new model can never run against the smaller reserve.
+    /// Passing nil restores the flat default resolution.
+    public func setActivationReserveBytes(_ bytes: UInt64?) {
+        activationReserveBytes = bytes
     }
 
     public func reserve(requestID: String, kvBytesPerToken: Int, tokenCount: Int) -> Bool {

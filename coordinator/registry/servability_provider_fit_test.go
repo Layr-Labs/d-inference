@@ -73,7 +73,7 @@ func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 
 	// Post-load budget per the provider's own headroom math:
 	// (0.90×48 − paddedWeights − 5.5 GiB activation floor) / 400000 B/token.
-	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion)
+	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion, snap.model)
 	if budget <= 0 || budget >= 30_000 {
 		t.Fatalf("cold post-load budget = %d, want a positive value below the 30k request", budget)
 	}
@@ -116,7 +116,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	model := "cold-budget-model"
 	// 28 GB weights on a 48 GB node running v0.8.0: min_ram 36 ≤ 48 passes the
 	// hardware gate, and the post-load budget is
-	// coldTokenBudgetEstimate(48, 28, 0, "0.8.0") = 17200
+	// coldTokenBudgetEstimate(48, 28, 0, "0.8.0", "") = 17200
 	// (see TestColdTokenBudgetEstimate case (b2)).
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
 	cold := makeWarmPoolColdProvider(t, reg, "cold-48gb", model, 80, 48, 0)
@@ -124,7 +124,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	cold.Version = "0.8.0"
 	cold.mu.Unlock()
 
-	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0")
+	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0", "")
 	if budget <= 0 {
 		t.Fatalf("cold budget = %d, want > 0", budget)
 	}

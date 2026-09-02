@@ -38,6 +38,9 @@ func benchHeartbeatServer(tb testing.TB) (*Server, *registry.Provider) {
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
 	srv := NewServer(reg, st, ServerConfig{}, logger)
+	// NewServer starts the telemetry worker and the trust-coverage loop; only
+	// Close stops them, so every benchmark server must be closed.
+	tb.Cleanup(srv.Close)
 
 	infos := make([]protocol.ModelInfo, 0, len(benchHeartbeatModels))
 	for _, m := range benchHeartbeatModels {
@@ -110,8 +113,11 @@ func benchHeartbeatMessage() *protocol.HeartbeatMessage {
 }
 
 // benchLocalStatsd wires a real DogStatsD client at a throwaway local UDP
-// socket so the benchmark pays the genuine metric-formatting cost instead of
-// the nil-client no-op. Nothing reads the socket; UDP just drops the datagrams.
+// socket so the benchmark pays the real client-side cost instead of the
+// nil-client no-op. datadog-go v5 aggregates gauges client-side, so what the
+// timed loop pays per call is the aggregator insert (metric/tag context key +
+// map update); formatting and the UDP write happen on the client's flush
+// goroutine. Nothing reads the socket; UDP just drops the datagrams.
 func benchLocalStatsd(tb testing.TB) *datadog.Client {
 	tb.Helper()
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")

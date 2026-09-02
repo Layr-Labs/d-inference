@@ -1,0 +1,23 @@
+== cached 64 MiB parts, full single-stream download (status bytes ttfb_s Bps total_s cf-cache-status)
+shard-02-part-01 200 67108864 0.063143 59378548 1.130187 HIT
+shard-03-part-01 200 67108864 0.088241 56965670 1.178058 HIT
+shard-02-part-05 200 67108864 0.098455 50662078 1.324637 HIT
+shard-03-part-05 200 67108864 0.186654 18526594 3.622299 HIT
+shard-02-part-09 200 67108864 0.202828 22816458 2.941248 HIT
+shard-03-part-09 200 67108864 0.183187 22628025 2.965741 HIT
+shard-02-part-13 200 67108864 0.049586 64785775 1.035858 HIT
+shard-03-part-13 200 67108864 0.051038 67118126 0.999862 HIT
+== uncached 1 GiB object, 15 s single-stream sample
+curl: (28) Operation timed out after 15000 milliseconds with 881517506 out of 1073741824 bytes received
+200 881517506 0.204000 58770611 14.999291
+cf-cache-status: BYPASS
+== production 5.3 GB shard (models.darkbloom.ai), 15 s single-stream sample
+curl: (28) Operation timed out after 15003 milliseconds with 186493770 out of 5303719858 bytes received
+200 186493770 0.503676 12430209 15.003268
+cf-cache-status: DYNAMIC
+== Range request on a cached part (bytes=1048576-2097151)
+HTTP/2 206 
+content-length: 1048576
+content-range: bytes 1048576-2097151/67108864
+cf-cache-status: HIT
+206 1048576 0.091177 5621517 0.186529

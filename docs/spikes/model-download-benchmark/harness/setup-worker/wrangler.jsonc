@@ -1,0 +1,8 @@
+{
+  "name": "darkbloom-model-download-bench-setup",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-08-22",
+  "workers_dev": true,
+  "r2_buckets": [{ "binding": "BENCH_BUCKET", "bucket_name": "darkbloom-model-download-benchmark" }],
+  "vars": { "RUN_ID": "2026-09-01-r1", "SHARD_COUNT": "4", "CHUNKS_PER_SHARD": "16", "CHUNK_BYTES": "67108864" }
+}

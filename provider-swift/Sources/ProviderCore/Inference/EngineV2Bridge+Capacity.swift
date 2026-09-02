@@ -21,6 +21,7 @@
 //     directions).
 
 import Foundation
+import MLX
 import MLXLMCommon
 
 extension EngineV2Bridge {
@@ -158,6 +159,35 @@ extension EngineV2Bridge {
             budgetMax = 0
         }
 
+        // Profiler slot telemetry (slice 2). ALWAYS attached: the object's
+        // presence is the coordinator's "new provider" sentinel. Everything
+        // here is bridge/engine bookkeeping already on hand — no new eval,
+        // no new actor hop (`mtpStatusSnapshot` is a synchronous read).
+        let mtp = mtpStatusSnapshot()
+        var partialPrefillRows: Int64 = 0
+        for requestState in active.values where requestState.firstTokenAt == nil {
+            partialPrefillRows += 1
+        }
+        // Process-global in-flight blocking eval (MLX `EvalProbe`) — also
+        // populates the pre-existing `eval_in_flight_ms` slot field that the
+        // v2 bridge never filled.
+        let evalInFlightMs = EvalProbe.currentEvalElapsedMs
+        let slotTelemetry = SlotTelemetry(
+            queuedPrefillTokens: Int64(queuedPrefillTokens),
+            partialPrefillRows: partialPrefillRows,
+            prefillTokensTotal: prefillTokensTotal,
+            isolatedPrefillTps: isolatedPrefillEwmaInitialized ? isolatedPrefillTpsEwma : 0,
+            ewmaInitialized: isolatedPrefillEwmaInitialized,
+            pumpTasks: Int64(pumpTasks.count),
+            mtpRoundsTotal: Int64(mtp.rounds),
+            mtpProposedTotal: Int64(mtp.proposedTokens),
+            mtpAcceptedTotal: Int64(mtp.acceptedDraftTokens),
+            kvBytesInUse: Int64(snapshot.kvBytesInUse),
+            kvBytesCapacity: Int64(boundedKVBytesCapacity),
+            evalInFlightMs: evalInFlightMs,
+            stepWallNsTotal: Int64(clamping: snapshot.stepWallNanosTotal),
+            decodeRowsTotal: Int64(clamping: snapshot.decodeRowsTotal))
+
         let state: String
         if recoveryReloading {
             // Recovery self-restart in flight (`EngineV2Bridge+Liveness`):
@@ -217,7 +247,9 @@ extension EngineV2Bridge {
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
             secondsSinceLastStep: wedgeMonitor.secondsSinceLastStep(now: now),
             secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
-            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now)
+            wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now),
+            evalInFlightMs: evalInFlightMs,
+            telemetry: slotTelemetry
         )
     }
 

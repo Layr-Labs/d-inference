@@ -179,6 +179,21 @@ extension ProviderLoop {
             return await updateAggregateCapacity(attempt: attempt + 1)
         }
 
+        // Profiler process posture (slice 2). ALWAYS attached — the object's
+        // presence is the coordinator's "new provider" sentinel.
+        let pressureLevel: MemoryPressureLevelWire
+        switch lastMemoryPressureLevel.value {
+        case .normal: pressureLevel = .normal
+        case .warning: pressureLevel = .warning
+        case .critical: pressureLevel = .critical
+        }
+        let capacityTelemetry = CapacityTelemetry(
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            memoryPressureLevel: pressureLevel,
+            mlxNumResources: Int64(max(0, MLX.Memory.numResources)),
+            inAdmission: Int64(requestToModel.count),
+            inflightTasks: Int64(inflightTasks.count))
+
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
@@ -186,7 +201,8 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
-            mlxCacheReclaimer: reclaimerTelemetry
+            mlxCacheReclaimer: reclaimerTelemetry,
+            telemetry: capacityTelemetry
         )
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot

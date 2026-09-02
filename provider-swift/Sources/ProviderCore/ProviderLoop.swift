@@ -53,8 +53,19 @@ public final class SendHandle: @unchecked Sendable {
     /// terminal that overtook a chunk would make it drop the chunk's tail.
     public func send(_ message: OutboundMessage) {
         switch message {
-        case .inferenceComplete, .inferenceError:
-            chunkSender?.flush()
+        case .inferenceComplete(_, _, _, _, _, let profile),
+            .inferenceError(_, _, let profile):
+            if let profile {
+                let flushStart = SuspendingClock.now
+                chunkSender?.flush()
+                profile.markDuration(.flush, start: flushStart)
+                // Stamped BEFORE the router yield: the session task may
+                // encode (and materialize `wireObject()`) on another thread
+                // before `fn` returns, so a post-yield stamp could be lost.
+                profile.mark(.terminalSent)
+            } else {
+                chunkSender?.flush()
+            }
         default:
             break
         }
@@ -70,6 +81,19 @@ public final class SendHandle: @unchecked Sendable {
             return
         }
         fn(message)
+    }
+}
+
+/// Lock-boxed last kernel memory-pressure level: written on the
+/// `MemoryPressureMonitor` dispatch queue, read on the loop actor by the
+/// heartbeat capacity producer.
+internal final class MemoryPressureLevelBox: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var level: MemoryPressureLevel = .normal
+
+    var value: MemoryPressureLevel {
+        get { lock.withLock { level } }
+        set { lock.withLock { level = newValue } }
     }
 }
 
@@ -349,6 +373,18 @@ public actor ProviderLoop {
     /// A detached task can finish before the actor stores it in `inflightTasks`.
     /// Track that edge so the post-spawn registration does not leave a stale task.
     internal var completedBeforeTaskRegistration = Set<String>()
+
+    /// Profiler accumulators for requests between `handleInferenceRequest`
+    /// entry and their terminal, keyed by coordinator request id so
+    /// `handleCancellation` can stamp cancel receipt / derive the cancel
+    /// stage. Removed on every exit path (early reject, finish, cancel-all).
+    internal var inflightProfiles: [String: RequestProfileBuilder] = [:]
+
+    /// Last kernel memory-pressure level reported by `MemoryPressureMonitor`
+    /// (heartbeat `backend_capacity.telemetry.memory_pressure_level`).
+    /// Written from the monitor's dispatch queue, read on the actor — hence
+    /// the lock. Sticky: the DispatchSource never fires `.normal`.
+    internal nonisolated let lastMemoryPressureLevel = MemoryPressureLevelBox()
 
     /// Mutable advertised-model set, seeded from `loopConfig.models`. Background
     /// prefetch appends newly-verified builds at runtime so they become

@@ -115,6 +115,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// Absolute provider-local deadline derived once when the coordinator frame
     /// was received. Nil for local HTTP and legacy coordinator requests.
     private let firstContentDeadline: FirstContentDeadline?
+    /// Profiler accumulator for the coordinator request this engine view
+    /// serves (prompt-prep / tool-constraint / vision-prep stamps; handed on
+    /// to the bridge). Nil for local HTTP and tests.
+    private let profile: RequestProfileBuilder?
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -129,8 +133,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         engineV2Sampling: EngineV2SamplingOverrides? = nil,
         engineV2Vision: EngineV2VisionPlumbing? = nil,
         engineV2Usage: EngineV2RequestUsageSignal? = nil,
-        firstContentDeadline: FirstContentDeadline? = nil
+        firstContentDeadline: FirstContentDeadline? = nil,
+        profile: RequestProfileBuilder? = nil
     ) {
+        self.profile = profile
         self.registryProvider = registryProvider
         self.ensureLoaded = ensureLoaded
         self.reserveModel = reserveModel
@@ -198,6 +204,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
         self.firstContentDeadline = nil
+        self.profile = nil
     }
 
     // MARK: - MLXServerEngine
@@ -377,8 +384,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 let plumbing = engineV2Vision ?? .production
                 do {
                     try checkFirstContentDeadline()
+                    profile?.mark(.promptPrepStart)
+                    let visionPrepStart = SuspendingClock.now
                     let visionPrepared = try await plumbing.prepare(
                         container, visionRequest, templateControls)
+                    if let profile {
+                        // Media prompt prep = decode + vision tower; one lock.
+                        let visionPrepUs = RequestProfileBuilder.microseconds(
+                            SuspendingClock.now - visionPrepStart)
+                        let visionPromptTokens = Int64(visionPrepared.promptTokens.count)
+                        profile.update { f, now in
+                            f.mark(.promptPrepEnd, offsetUs: now)
+                            f.set(.promptTokens, visionPromptTokens)
+                            f.add(.visionPrep, us: visionPrepUs)
+                        }
+                    }
                     // MLX vision evaluation mutates container/Metal state and is
                     // not safely cancellable. Reject immediately after it returns.
                     try checkFirstContentDeadline()
@@ -423,7 +443,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         usageSignal: engineV2Usage,
                         multimodal: visionPrepared.multimodalInput(),
                         mediaKind: visionPrepared.mediaKind,
-                        firstContentDeadline: firstContentDeadline
+                        firstContentDeadline: firstContentDeadline,
+                        profile: profile
                     )
                     do {
                         try checkFirstContentDeadline()
@@ -547,6 +568,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         let promptTokens: [Int]
         do {
             try checkFirstContentDeadline()
+            // Profiler: template render + BPE encode is the dominant CPU
+            // stage before submit.
+            profile?.mark(.promptPrepStart)
             promptTokens = try ProviderPromptContractPipeline.tokenize(
                 prepared: prepared,
                 request: request,
@@ -561,6 +585,13 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 severity: .warn)
             await releaseBox.fire()
             throw error
+        }
+        if let profile {
+            let promptTokenCount = Int64(promptTokens.count)
+            profile.update { f, now in
+                f.mark(.promptPrepEnd, offsetUs: now)
+                f.set(.promptTokens, promptTokenCount)
+            }
         }
 
         // Qwen3.6/DeepSeek-style templates pre-open a <think> block at the
@@ -625,6 +656,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw MultiModelBatchSchedulerEngineError.generationFailed(
                     "internal error: model '\(modelId)' has no serving engine (no v2 bridge)")
             }
+            let toolConstraintStart = SuspendingClock.now
             tokenConstraint = try ToolConstraintFactory.make(
                 prepared: prepared,
                 request: request,
@@ -633,6 +665,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     modelId: request.model, modelType: modelType),
                 defaultMaxTokens: defaultMaxTokens,
                 stopTokenIDs: bridge.stopTokenIds)
+            // Grammar compile (Gemma) can take the tool-constraint lock on the
+            // first build per stop-set; only worth a lock when tools exist.
+            if prepared.tools?.isEmpty == false {
+                profile?.markDuration(.toolConstraint, start: toolConstraintStart)
+            }
             try checkFirstContentDeadline()
         } catch {
             await releaseBox.fire()
@@ -680,7 +717,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     logprobsChannel: engineV2Logprobs?.channel,
                     usageSignal: engineV2Usage,
                     tokenConstraint: tokenConstraint,
-                    firstContentDeadline: firstContentDeadline
+                    firstContentDeadline: firstContentDeadline,
+                    profile: profile
                 )
                 do {
                     try checkFirstContentDeadline()

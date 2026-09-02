@@ -27,10 +27,15 @@ extension CoordinatorClient {
         }
     }
 
-    internal func encodeInferenceError(requestId: String, failure: InferenceFailure) -> String {
+    internal func encodeInferenceError(
+        requestId: String,
+        failure: InferenceFailure,
+        profile: InferenceProfile? = nil
+    ) -> String {
         let message = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
             requestId: requestId,
-            failure: failure
+            failure: failure,
+            profile: profile
         ))
         do {
             let data = try ProviderProtocolCodec.encodeProviderMessage(message)

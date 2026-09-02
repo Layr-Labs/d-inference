@@ -362,7 +362,9 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 	providerCount := 0
 	now := time.Now()
 	var snap routingSnapshot // one caller-owned buffer, refilled per provider
-	for _, p := range r.providers {
+	// Per-model index: visit only providers advertising the model (gates
+	// unchanged; see model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
 			continue
 		}

@@ -887,7 +887,11 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// window, candidates near the OLD best (and still near the NEW
 	// best) were dropped from the pool, making the queue-depth tie-
 	// break flaky under map iteration randomness.
-	candidates := make([]*routingCandidate, 0, len(r.providers))
+	// Only providers advertising the model can pass the first gate; the
+	// per-model index (model_index.go) prunes the rest without touching any
+	// gate. Copied before any p.mu is taken (index lock discipline).
+	providers := r.providersForModelLocked(model)
+	candidates := make([]*routingCandidate, 0, len(providers))
 	// Candidates live in arena chunks: one allocation per candidateArenaChunk
 	// candidates instead of one per candidate, and each snapshot is written
 	// straight into its slot (candidate_arena.go).
@@ -904,7 +908,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
 	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
-	for _, p := range r.providers {
+	for _, p := range providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
 		// fall back to the public fleet.
@@ -2429,7 +2433,9 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 	unknownTTFTCandidate := false
 	now := time.Now()
-	for _, p := range r.providers {
+	// Per-model index: visit only providers advertising the model (gates
+	// unchanged; see model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
 		// Filter by allowed serials before acquiring the provider lock
 		// (providerMatchesAllowedSerial takes p.mu internally).
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {

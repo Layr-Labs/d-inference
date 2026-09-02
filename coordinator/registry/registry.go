@@ -875,6 +875,14 @@ type Provider struct {
 	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
 	prefixCacheRevision uint64
 
+	// modelIndexIDs is the advertised model-id list the registry's per-model
+	// provider index currently holds for this session (model_index.go) — the
+	// diff baseline for syncModelIndexLocked. modelIndexDetached is set by
+	// Disconnect so a models_update racing the disconnect can only ever remove
+	// entries, never re-insert the dead session. Both guarded by p.mu.
+	modelIndexIDs      []string
+	modelIndexDetached bool
+
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
@@ -2139,6 +2147,14 @@ type Registry struct {
 	// Production leaves it nil; tests set it before starting concurrent scans.
 	reservationAfterScan func(model string)
 
+	// modelIndex maps advertised model id → providers advertising it, so the
+	// per-request fleet walks visit only providers that can pass the first
+	// gate (model_index.go). Leaf lock — see that file for the contract.
+	modelIndex providerModelIndex
+	// modelIndexDisabled (tests only) makes providersForModelLocked return the
+	// whole fleet so a walk can be proven identical with and without the index.
+	modelIndexDisabled bool
+
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
@@ -2760,7 +2776,9 @@ func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	traits RequestTraits,
 	structural bool,
 ) bool {
-	for _, p := range r.providers {
+	// Only providers advertising the build can route it; the per-model index
+	// prunes the rest (gates unchanged). Copied before any p.mu is taken.
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := func() bool {
 			if len(allowedSerials) > 0 {
@@ -3085,6 +3103,7 @@ func (r *Registry) mergeProviderModels(
 			p.PrefixCacheStatuses,
 			p.PrefixCacheStatusReported,
 		)
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 	if len(cacheStateInvalidated) > 0 {
 		r.mu.RLock()
@@ -3190,6 +3209,7 @@ func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]
 	}
 	if changed {
 		p.Models = models
+		p.syncModelIndexLocked() // ids unchanged; keeps the invariant explicit
 	}
 }
 
@@ -3703,6 +3723,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		return existing
 	}
 	r.providers[id] = p
+	p.mu.Lock()
+	r.modelIndex.sync(p)
+	p.mu.Unlock()
 	r.onlineCount.Add(1)
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
@@ -3992,6 +4015,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			p.Status = StatusServing
 		}
 	}
+	// Backstop for the per-model provider index: allocation-free when p.Models
+	// is already in step, and self-healing within one heartbeat otherwise.
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 
 	// This heartbeat may be the release proof for a budget clamp
@@ -4839,6 +4865,7 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		p.mu.Lock()
+		p.detachModelIndexLocked(r)
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
 		// cooldowns, health ejection) keys by the STABLE identity when one is

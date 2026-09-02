@@ -530,8 +530,10 @@ func (r *Registry) commitProviderReservation(
 
 	// The shared scan and write-lock wait consume the same absolute request
 	// clock as queueing and provider handoff. Never debit capacity for work whose
-	// first-content budget is already gone.
-	if !pr.RefreshFirstContentBudget(time.Now()) {
+	// first-content budget is already gone. One clock read serves the whole
+	// commit section (deadline, re-snapshot, cost, admit, probe claim).
+	now := time.Now()
+	if !pr.RefreshFirstContentBudget(now) {
 		return nil, nil, reservationDeadlineExpired, RoutingDecision{}
 	}
 
@@ -578,7 +580,7 @@ func (r *Registry) commitProviderReservation(
 	}
 	relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 	snapshot, ok := r.snapshotProviderLockedEx(
-		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker)
+		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker, now)
 	if !ok {
 		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
@@ -591,7 +593,7 @@ func (r *Registry) commitProviderReservation(
 				routingDecisionForCommitRejection(model, rejectVisionUnsupported, false)
 		}
 	}
-	candidate, reason, ok := r.buildCandidateWithReason(snapshot, pr)
+	candidate, reason, ok := r.buildCandidateWithReason(snapshot, pr, now)
 	if !ok {
 		return nil, nil, reservationCandidateRejected,
 			routingDecisionForCommitRejection(model, reason, false)
@@ -616,14 +618,14 @@ func (r *Registry) commitProviderReservation(
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !r.providerCanAdmitLockedEx(
-		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker) ||
+		p, model, pr.Traits, relaxTrust, scan.candidates.ignoreProviderBreaker, now) ||
 		(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 		return nil, nil, reservationCandidateRejected, RoutingDecision{}
 	}
 
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
-	r.claimCapacityProbeLocked(p.ID, model, time.Now())
+	r.claimCapacityProbeLocked(p.ID, model, now)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
@@ -900,7 +902,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// inference-error cooldown and the trait gates (render-broken fences all
 		// shapes; the tools version floor fences tool requests). A failing
 		// provider is simply dropped here.
-		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, ignoreProviderBreaker)
+		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, ignoreProviderBreaker, now)
 		if !ok {
 			// Count providers a breaker-bypassed fail-open re-scan COULD rescue: those
 			// dropped by the node-health breaker OR the stable-identity health-ejection
@@ -954,7 +956,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				continue
 			}
 		}
-		candidate, reason, ok := r.buildCandidateWithReason(snap, pr)
+		candidate, reason, ok := r.buildCandidateWithReason(snap, pr, now)
 		if !ok {
 			switch reason {
 			case rejectCapacity:
@@ -1407,17 +1409,19 @@ func (r *Registry) providerPassesRoutingGatesLockedEx(p *Provider, model string,
 // carry the request shape into the shape-keyed inference-error cooldown and the
 // render-broken / version-floor eligibility gates.
 func (r *Registry) snapshotProviderLocked(p *Provider, model string, traits RequestTraits, selfRouteOwner bool) (routingSnapshot, bool) {
-	return r.snapshotProviderLockedEx(p, model, traits, selfRouteOwner, false)
+	return r.snapshotProviderLockedEx(p, model, traits, selfRouteOwner, false, time.Now())
 }
 
 // snapshotProviderLockedEx is snapshotProviderLocked with an explicit
 // ignoreProviderBreaker switch threaded into the routing gate. Only the
 // selectBestCandidateLockedFull fail-open fallback pass sets it true (to bypass
 // the node-health breaker); every other caller uses the default
-// (breaker-honored) wrapper above.
-func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) (routingSnapshot, bool) {
-	now := time.Now()
-
+// (breaker-honored) wrapper above. now is the scan clock: hot-path callers
+// walk the whole fleet and must read the wall clock ONCE per scan, not once
+// per provider (runtime.walltime was ~35% of the reservation scan at fleet
+// scale); every time-keyed gate below (challenge freshness, cooldowns,
+// breaker, clamp) evaluates against that single instant.
+func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time) (routingSnapshot, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1718,7 +1722,8 @@ func committedTokenBudget(snap routingSnapshot) int64 {
 
 // buildCandidateWithReason returns the candidate plus, on rejection,
 // the reason so callers can split metrics by failure mode.
-func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, bool) {
+// now is the caller's scan clock (see snapshotProviderLockedEx).
+func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest, now time.Time) (*routingCandidate, candidateRejection, bool) {
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
 		return nil, rejectNone, false
@@ -1824,7 +1829,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 	// proportionally to its windowed reject rate. A soft derater, never an
 	// ejection: the candidate stays in the pool, so a degraded-but-only fleet
 	// still serves, and the penalty decays as outcomes age out of the window.
-	capacityRateMs, capacityRejectRate := r.capacityRatePenaltyLocked(snap.provider.ID, snap.model, time.Now())
+	capacityRateMs, capacityRejectRate := r.capacityRatePenaltyLocked(snap.provider.ID, snap.model, now)
 	cost := statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + capacityRateMs
 
 	// Estimated time-to-first-token for this candidate. Used for the
@@ -2271,8 +2276,7 @@ func providerModelIDs(p *Provider) []string {
 // very candidate the fail-open valve just selected, derouting the fleet anyway.
 // The default wrapper (breaker honored) is unchanged for every other caller.
 // Caller holds r.mu and p.mu.
-func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool) bool {
-	now := time.Now()
+func (r *Registry) providerCanAdmitLockedEx(p *Provider, model string, traits RequestTraits, selfRouteOwner bool, ignoreProviderBreaker bool, now time.Time) bool {
 	if !r.providerPassesRoutingGatesLockedEx(p, model, traits, selfRouteOwner, now, ignoreProviderBreaker, false) {
 		return false
 	}

@@ -1,5 +1,7 @@
 package registry
 
+import "time"
+
 // Servability prediction.
 //
 // The coordinator's free-memory admission gate (freeMemoryAdmits) is, on the
@@ -358,11 +360,12 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 	var fleetMax int64
 	sawUnknown := false
 	providerCount := 0
+	now := time.Now()
 	for _, p := range r.providers {
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
 			continue
 		}
-		snap, ok := r.snapshotProviderLocked(p, model, traits, false)
+		snap, ok := r.snapshotProviderLockedEx(p, model, traits, false, false, now)
 		if !ok {
 			continue
 		}

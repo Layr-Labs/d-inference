@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -900,89 +899,6 @@ func (s *MemoryStore) RecordUsageFullWithPublicModel(providerID, consumerKey, ke
 	if keyID != "" && costMicroUSD > 0 {
 		s.addKeySpendLocked(keyID, costMicroUSD, now)
 	}
-}
-
-// RecordInferenceRoute writes the routing decision snapshot for a request
-// attempt. Best-effort; failures are discarded.
-func (s *MemoryStore) RecordInferenceRoute(record *InferenceRouteRecord) error {
-	if record == nil {
-		return nil
-	}
-
-	now := time.Now()
-	rec := *record
-	if rec.CreatedAt.IsZero() {
-		rec.CreatedAt = now
-	}
-	if rec.UpdatedAt.IsZero() {
-		rec.UpdatedAt = now
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := record.RequestID + "/" + strconv.Itoa(record.Attempt)
-	if idx, ok := s.inferenceRouteIndex[key]; ok {
-		rec.CreatedAt = s.inferenceRoutes[idx].CreatedAt
-		if rec.UpdatedAt.IsZero() {
-			rec.UpdatedAt = now
-		}
-		s.inferenceRoutes[idx] = rec
-		return nil
-	}
-	s.inferenceRoutes = append(s.inferenceRoutes, rec)
-	s.inferenceRouteIndex[key] = len(s.inferenceRoutes) - 1
-	return nil
-}
-
-// UpdateInferenceRouteOutcome updates the attempt with final outcome data.
-// Best-effort; failures are discarded.
-func (s *MemoryStore) UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error {
-	if outcome == nil {
-		return nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := requestID + "/" + strconv.Itoa(attempt)
-	idx, ok := s.inferenceRouteIndex[key]
-	if !ok {
-		return nil
-	}
-
-	merged := s.inferenceRouteOutcomes[key]
-	mergeInferenceRouteOutcome(&merged, outcome)
-	s.inferenceRouteOutcomes[key] = merged
-	s.inferenceRoutes[idx].UpdatedAt = time.Now()
-	return nil
-}
-
-// InferenceRouteRecordsSince returns routing records created at or after the
-// given time. Zero since returns all records.
-func (s *MemoryStore) InferenceRouteRecordsSince(since time.Time) []InferenceRouteRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]InferenceRouteRecord, 0, len(s.inferenceRoutes))
-	for i := len(s.inferenceRoutes) - 1; i >= 0; i-- {
-		r := s.inferenceRoutes[i]
-		if !since.IsZero() && r.CreatedAt.Before(since) {
-			continue
-		}
-		key := r.RequestID + "/" + strconv.Itoa(r.Attempt)
-		if outcome, ok := s.inferenceRouteOutcomes[key]; ok {
-			applyInferenceRouteOutcomeToRecord(&r, outcome)
-		}
-		out = append(out, r)
-		if len(out) >= maxTelemetryReadRows {
-			break
-		}
-	}
-	if out == nil {
-		return []InferenceRouteRecord{}
-	}
-	return out
 }
 
 // RecordRejection writes a rejected-request record with its counterfactual

@@ -1,5 +1,50 @@
 package store
 
+import "strconv"
+
+// inferenceRouteKey is the (request_id, attempt) identity of a route row, the
+// same key the memory index and the postgres UNIQUE(request_id, attempt)
+// constraint use.
+func inferenceRouteKey(requestID string, attempt int) string {
+	return requestID + "/" + strconv.Itoa(attempt)
+}
+
+// splitInferenceRouteBatches partitions records, preserving order, into
+// slices that are safe to write as ONE multi-row upsert each:
+//
+//   - a slice never contains the same (request_id, attempt) twice, because a
+//     single INSERT ... ON CONFLICT DO UPDATE cannot affect one row a second
+//     time — the duplicate starts the next slice, so the later record refreshes
+//     the earlier one exactly as sequential single-row calls would;
+//   - a slice holds at most maxRows records (bind-parameter budget).
+//
+// Nil records are dropped. maxRows <= 0 means unbounded.
+func splitInferenceRouteBatches(records []*InferenceRouteRecord, maxRows int) [][]*InferenceRouteRecord {
+	var out [][]*InferenceRouteRecord
+	var cur []*InferenceRouteRecord
+	seen := map[string]struct{}{}
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, cur)
+			cur = nil
+			seen = map[string]struct{}{}
+		}
+	}
+	for _, r := range records {
+		if r == nil {
+			continue
+		}
+		key := inferenceRouteKey(r.RequestID, r.Attempt)
+		if _, dup := seen[key]; dup || (maxRows > 0 && len(cur) >= maxRows) {
+			flush()
+		}
+		seen[key] = struct{}{}
+		cur = append(cur, r)
+	}
+	flush()
+	return out
+}
+
 // mergeInferenceRouteOutcome applies non-zero outcome fields onto dst. Outcome
 // updates are emitted from different goroutines (commit, response relay,
 // provider terminal), so treating zero values as "not present" prevents a

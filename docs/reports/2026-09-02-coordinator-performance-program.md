@@ -188,6 +188,26 @@ views stay live), `/v1/models/openrouter` (5 s), `/v1/providers/attestation`
 through `SyncModelCatalog`/`SyncModelAliases`, so the TTLs only bound
 out-of-band edits.
 
+### 4.5 Fleet-scale aggregate and periodic paths (`registry/registry.go` ListModels/evictStale, `registry/provider_snapshot.go`)
+
+| Path | Before | After |
+|---|---:|---:|
+| `ListModels` (`/v1/models` aggregate) | 182 µs, 1,281 allocs | 115 µs, 19 allocs |
+| `PublicProviderModels` (`/v1/stats`, `/v1/providers/attestation`) | 181 µs, 1,266 allocs | 144 µs, 7 allocs |
+| `evictStale` (every 30 s) | full fleet walk under the registry **write** lock (~85 µs, stalls routing readers) | walk under the read lock; write lock only to install a changed strike map |
+
+New benchmarks cover every aggregate and periodic walk (`fleet_scale_aggregate_bench_test.go`,
+`provider_heartbeat_bench_test.go`). Findings left for follow-up: the
+model-swap planner runs a fleet walk on every heartbeat while the queue is
+non-empty (~350 µs per heartbeat from a provider advertising a queued model,
+~9% of a core at 250 heartbeats/s per queued model — being coalesced in the
+registry follow-up); three read-only getters take the write lock
+(`CodeAttestationEnforced` in the 15 s gauge loop — same follow-up);
+`recordMLXCacheTelemetry` emits nine `provider_id`-tagged gauges per heartbeat
+(~11k Datadog series per flush — an observability cardinality decision, not
+changed here); throttled provider persistence is ~126 DB writes/s fleet-wide
+(a product freshness choice, not changed).
+
 ## 5. After
 
 _(pending)_

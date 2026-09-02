@@ -61,10 +61,29 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
+	// emitProviderError settles and reports an in-band provider error.
+	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+	}
+
 	// finishStream runs once ChunkCh is observed closed — on the blocking
 	// receive or while draining already-queued chunks (after those were
-	// flushed).
+	// flushed). A provider error is delivered on ErrorCh just before the
+	// channels close, so it is checked first: a close must never turn a real
+	// provider error into "incomplete".
 	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				emitProviderError(errMsg)
+				return
+			}
+		default:
+		}
 		var usage protocol.UsageInfo
 		select {
 		case complete, completeOK := <-pr.CompleteCh:
@@ -115,11 +134,11 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+			// Forward chunks queued ahead of the error before the terminal
+			// event (see the chat relay for the rationale).
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			deferred.flushNow()
+			emitProviderError(errMsg)
 			return
 
 		case <-timer.C:

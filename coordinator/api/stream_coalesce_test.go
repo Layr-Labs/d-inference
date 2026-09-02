@@ -1,9 +1,14 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -90,6 +95,71 @@ func TestDeferredFlusher(t *testing.T) {
 	d.flushNow()
 	if inner.n != 2 {
 		t.Fatalf("a new owed flush after flushNow should flush again, got %d", inner.n)
+	}
+}
+
+// A provider error delivered just before the channels close (the provider
+// side does `ErrorCh <- msg` and then closes ChunkCh) must be reported by
+// every relay as the in-band provider error — even when the close is observed
+// while draining queued chunks — never as an incomplete or completed stream,
+// and only after every queued delta has been forwarded.
+func TestStreamRelay_BufferedErrorBeforeCloseIsReported(t *testing.T) {
+	const n = 5
+	s := newRelayBenchServer()
+	for _, variant := range relayVariants {
+		t.Run(variant, func(t *testing.T) {
+			pr := &registry.PendingRequest{
+				RequestID:  "err-req",
+				Model:      burstTestModel,
+				ChunkCh:    make(chan registry.ProviderChunk, 16),
+				CompleteCh: make(chan protocol.UsageInfo, 1),
+				ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+			}
+			switch variant {
+			case "responses":
+				pr.IsResponsesAPI = true
+			case "completions":
+				pr.ConsumerEndpoint = completionsEndpoint
+			case "messages":
+				pr.ConsumerEndpoint = messagesEndpoint
+			}
+			for i := 0; i < n; i++ {
+				pr.ChunkCh <- registry.ProviderChunk{Data: chatContentChunk("x" + strconv.Itoa(i) + "z")}
+			}
+			pr.ErrorCh <- protocol.InferenceErrorMessage{
+				Type:        protocol.TypeInferenceError,
+				RequestID:   pr.RequestID,
+				Error:       "engine crashed mid-generation",
+				StatusCode:  http.StatusInternalServerError,
+				FailureCode: protocol.FailureCodeGenerationFailure,
+			}
+			close(pr.ChunkCh)
+			close(pr.CompleteCh)
+
+			rec := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			s.handleStreamingResponseWithFirstChunkAndError(rec, r, pr, nil, nil)
+
+			body := rec.Body.String()
+			for i := 0; i < n; i++ {
+				if !strings.Contains(body, "x"+strconv.Itoa(i)+"z") {
+					t.Fatalf("delta %d missing from stream: %q", i, body)
+				}
+			}
+			events := sseEvents(rec.Body.Bytes())
+			last := events[len(events)-1]
+			if !strings.Contains(last, `"error"`) {
+				t.Fatalf("last frame should be the provider error: %q", last)
+			}
+			for _, marker := range []string{
+				"[DONE]", "response.completed", "response.incomplete", "message_stop",
+				"provider ended without completion",
+			} {
+				if strings.Contains(body, marker) {
+					t.Fatalf("errored stream must not carry %q: %q", marker, body)
+				}
+			}
+		})
 	}
 }
 

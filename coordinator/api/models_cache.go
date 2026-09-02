@@ -17,9 +17,8 @@ import (
 // modelListCacheTTL bounds staleness of the public model list. It carries live
 // capacity fields (routable/warm providers, can_accept), so it matches the 2s
 // window GET /v1/models/capacity already uses. Alias/registry admin changes
-// become visible within the same bound: SyncModelCatalog's
-// invalidateCatalogCache (server.go) does not know these keys yet — see
-// invalidateModelListCache.
+// become visible within the same bound: these keys are TTL-only until
+// SyncModelCatalog's invalidateCatalogCache (server.go) learns to drop them.
 const modelListCacheTTL = 2 * time.Second
 
 func modelEntriesCacheKey(includeBuilds bool) string {
@@ -49,13 +48,16 @@ func (s *Server) cachedModelEntries(includeBuilds bool) ([]types.ModelEntry, err
 }
 
 // cachedModelListBody returns the pre-serialized GET /v1/models response for
-// the public catalog, byte-identical to what writeJSON would produce.
+// the public catalog, byte-identical to what writeJSON would produce. A body
+// miss recomputes the entries (refreshing the entries memo alongside) rather
+// than reusing an almost-expired memo, so the body is never older than
+// modelListCacheTTL.
 func (s *Server) cachedModelListBody(includeBuilds bool) ([]byte, error) {
 	key := modelListBodyCacheKey(includeBuilds)
 	if body, ok := s.readCacheGet(key); ok {
 		return body, nil
 	}
-	entries, err := s.cachedModelEntries(includeBuilds)
+	entries, err := s.listModelEntries(includeBuilds)
 	if err != nil {
 		return nil, err
 	}
@@ -63,16 +65,7 @@ func (s *Server) cachedModelListBody(includeBuilds bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.readCacheSetValue(modelEntriesCacheKey(includeBuilds), entries, modelListCacheTTL)
 	s.readCacheSet(key, body, modelListCacheTTL)
 	return body, nil
-}
-
-// invalidateModelListCache drops the memoized public model list so the next
-// request recomputes it. Intended to be called from SyncModelCatalog's
-// invalidateCatalogCache once that hook is wired; until then the TTL bounds
-// staleness after admin catalog changes.
-func (s *Server) invalidateModelListCache() {
-	for _, includeBuilds := range []bool{false, true} {
-		s.readCacheInvalidate(modelEntriesCacheKey(includeBuilds), modelListBodyCacheKey(includeBuilds))
-	}
 }

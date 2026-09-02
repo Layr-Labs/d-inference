@@ -47,7 +47,8 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 // openRouterFeedCacheTTL bounds staleness of the marketplace feed. The feed is
 // catalog-driven (DB), with live providers contributing only datacenters and
 // non-text exclusions; admin alias/registry changes have no invalidation hook
-// into this key (see invalidateModelListCache), so the window stays short.
+// into this key yet (SyncModelCatalog's invalidateCatalogCache in server.go
+// does not know it), so the window stays short.
 const openRouterFeedCacheTTL = 5 * time.Second
 
 const openRouterFeedCacheKey = "models:openrouter:v1"

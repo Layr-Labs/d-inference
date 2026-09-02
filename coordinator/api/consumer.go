@@ -2327,6 +2327,12 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			if !ok {
 				continue
 			}
+			// The provider error is delivered before ChunkCh is closed, so
+			// chunks that arrived ahead of it may still be queued: forward them
+			// (never waiting) before the terminal error so a late failure never
+			// truncates content the provider already produced.
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			relay.flush(w, flusher)
 			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
 			return
 
@@ -2403,10 +2409,29 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
+	// emitProviderError settles and reports an in-band provider error.
+	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+	}
+
 	// finishStream runs once ChunkCh is observed closed — on the blocking
 	// receive or while draining already-queued chunks (after those were
-	// flushed).
+	// flushed). A provider error is delivered on ErrorCh just before the
+	// channels close, so it is checked first: a close must never turn a real
+	// provider error into "incomplete" (or, with nothing reserved, success).
 	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				emitProviderError(errMsg)
+				return
+			}
+		default:
+		}
 		var usage protocol.UsageInfo
 		completed := false
 		select {
@@ -2455,11 +2480,11 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+			// Forward chunks queued ahead of the error before the terminal
+			// event (see the chat relay for the rationale).
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			deferred.flushNow()
+			emitProviderError(errMsg)
 			return
 
 		case <-timer.C:

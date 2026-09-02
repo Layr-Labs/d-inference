@@ -153,6 +153,121 @@ func TestStreamRelay_ChatBurstThenProviderError(t *testing.T) {
 	}
 }
 
+// TestStreamRelay_EmitterVariantsBurstThenProviderError: for the Responses,
+// completions and Messages relays, a provider error that lands right behind a
+// burst (the provider enqueues ErrorCh and then closes ChunkCh, so the relay
+// may observe the close mid-drain) is still reported as an in-band error —
+// never as a completed/incomplete stream — after every queued delta.
+func TestStreamRelay_EmitterVariantsBurstThenProviderError(t *testing.T) {
+	const n = 20
+	variants := []struct {
+		name, path, body string
+		// deltas extracts the content deltas in order.
+		deltas func(t *testing.T, raw []byte) []string
+		// completedMarkers must be absent from an errored stream.
+		completedMarkers []string
+		// errorMarker must be present in the last frame.
+		errorMarker string
+	}{
+		{
+			name: "responses", path: "/v1/responses",
+			body: `{"model":"` + burstTestModel + `","input":"hi","stream":true,"max_output_tokens":1000}`,
+			deltas: func(t *testing.T, raw []byte) []string {
+				var out []string
+				for _, ev := range parseTypedSSE(t, raw) {
+					if ev.Type == "response.output_text.delta" {
+						out = append(out, ev.Delta)
+					}
+				}
+				return out
+			},
+			completedMarkers: []string{"response.completed", "response.incomplete"},
+			errorMarker:      "event: error",
+		},
+		{
+			name: "completions", path: "/v1/completions",
+			body: `{"model":"` + burstTestModel + `","prompt":"hi","stream":true,"max_tokens":1000}`,
+			deltas: func(t *testing.T, raw []byte) []string {
+				var out []string
+				for _, ev := range sseEvents(raw) {
+					var frame struct {
+						Choices []struct {
+							Text string `json:"text"`
+						} `json:"choices"`
+					}
+					if json.Unmarshal([]byte(strings.TrimPrefix(ev, "data: ")), &frame) == nil && len(frame.Choices) == 1 {
+						out = append(out, frame.Choices[0].Text)
+					}
+				}
+				return out
+			},
+			completedMarkers: []string{"[DONE]", `"finish_reason":"stop"`},
+			errorMarker:      `"error":{`,
+		},
+		{
+			name: "messages", path: "/v1/messages",
+			body: `{"model":"` + burstTestModel + `","max_tokens":1000,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			deltas: func(t *testing.T, raw []byte) []string {
+				var out []string
+				for _, ev := range parseTypedSSE(t, raw) {
+					if ev.Type == "content_block_delta" {
+						out = append(out, ev.DeltaText)
+					}
+				}
+				return out
+			},
+			completedMarkers: []string{"message_stop", "message_delta"},
+			errorMarker:      "event: error",
+		},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			_, reg, _, ts := setupTestServer(t)
+			defer ts.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			p := startBurstProvider(t, ctx, ts, reg, func(ctx context.Context, p *burstProvider, req protocol.InferenceRequestMessage) {
+				for i := 0; i < n; i++ {
+					p.writeChunk(t, ctx, req, chatContentChunk("e"+strconv.Itoa(i)+" "))
+				}
+				p.writeError(t, ctx, req, protocol.InferenceErrorMessage{
+					Error:       "engine crashed mid-generation",
+					StatusCode:  http.StatusInternalServerError,
+					FailureCode: protocol.FailureCodeGenerationFailure,
+				})
+			})
+			defer p.conn.Close(websocket.StatusNormalClosure, "")
+
+			status, _, raw := streamRequest(t, ctx, ts, v.path, v.body)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d body = %s", status, raw)
+			}
+			deltas := v.deltas(t, raw)
+			if len(deltas) != n {
+				t.Fatalf("deltas = %d, want %d: %q", len(deltas), n, raw)
+			}
+			for i, d := range deltas {
+				if want := "e" + strconv.Itoa(i) + " "; d != want {
+					t.Fatalf("delta %d = %q, want %q", i, d, want)
+				}
+			}
+			events := sseEvents(raw)
+			if last := events[len(events)-1]; !strings.Contains(last, v.errorMarker) {
+				t.Fatalf("last frame should be the provider error: %q", last)
+			}
+			if strings.Contains(string(raw), "provider ended without completion") {
+				t.Fatalf("provider error misreported as incomplete: %q", raw)
+			}
+			for _, marker := range v.completedMarkers {
+				if strings.Contains(string(raw), marker) {
+					t.Fatalf("errored stream must not carry %q: %q", marker, raw)
+				}
+			}
+		})
+	}
+}
+
 // TestStreamRelay_ChatClientDisconnectDuringBurst: when the consumer drops the
 // connection while the provider is still bursting, the relay returns and the
 // provider receives a cancel.

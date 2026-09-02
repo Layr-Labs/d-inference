@@ -150,12 +150,3 @@ func (s *Server) readCacheSetValue(key string, v any, ttl time.Duration) {
 		s.readCache.SetValue(key, v, ttl)
 	}
 }
-
-func (s *Server) readCacheInvalidate(keys ...string) {
-	if s.readCache == nil {
-		return
-	}
-	for _, key := range keys {
-		s.readCache.Invalidate(key)
-	}
-}

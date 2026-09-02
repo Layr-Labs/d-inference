@@ -1353,10 +1353,61 @@ private func expectPrometheusShapedLines(
     await server.setModels([measuredInfo, unmeasuredInfo])
     // Deferred, not applied: the grant is untouched and the re-slice is owed.
     #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
-    #expect(await server.isResliceDeferredBehindLoadForTesting())
+    #expect(await server.hasDeferredModelsUpdateForTesting())
 
     // The load finishes (success or failure take the same completion step).
     await server.finishLoadForTesting("org/in-flight")
-    #expect(!(await server.isResliceDeferredBehindLoadForTesting()))
+    #expect(!(await server.hasDeferredModelsUpdateForTesting()))
     #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underRaised))
+}
+
+/// A `setModels` update whose raised floor would re-slice a resident grant
+/// below the serviceability minimum is REFUSED — the current list stays and
+/// the resident grant is untouched — exactly as the load path refuses a
+/// newcomer that would strand a co-resident slot.
+@Test func standaloneSetModelsRefusesARaiseThatStrandsAResidentSlot() async throws {
+    try #require(
+        ProcessInfo.processInfo.environment["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil,
+        "DARKBLOOM_ACTIVATION_RESERVE_GB must be unset for this test's arithmetic")
+    let measured = "gpt-oss-20b"
+    let unmeasured = "gemma-4-26b-qat-4bit"
+    let measuredInfo = ModelInfo(
+        id: measured, modelType: "gpt_oss", quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 1)
+    let unmeasuredInfo = ModelInfo(
+        id: unmeasured, modelType: "gemma4", quantization: "4bit", sizeBytes: 1, estimatedMemoryGb: 1)
+    // Box arithmetic, self-checked: the measured floor leaves a serviceable
+    // grant for the resident slot, the raised floor does not.
+    let weightsGiB: UInt64 = 52
+    let weights = UInt64(standaloneSizing(weightsGiB: weightsGiB).weightsBytes)
+    let underMeasured = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs: [measured]),
+        configReserveBytes: 0)
+    let underRaised = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: [measured, unmeasured]),
+        configReserveBytes: 0)
+    try #require(underMeasured >= EngineV2KVSizing.minimumServiceableGrantBytes)
+    try #require(underRaised < EngineV2KVSizing.minimumServiceableGrantBytes)
+
+    let server = standaloneTestServer(models: [measuredInfo])
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+    _ = try await server.buildSlotForTesting(
+        modelId: measured,
+        modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: weightsGiB))
+    #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
+
+    let applied = await server.setModels([measuredInfo, unmeasuredInfo])
+    #expect(!applied)
+    #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
+    // The same list without the unmeasured model is still accepted.
+    #expect(await server.setModels([measuredInfo]))
+    #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
 }

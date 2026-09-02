@@ -217,11 +217,11 @@ public actor StandaloneServer {
     let config: StandaloneServerConfig
     private var slots: [String: CachedSlot] = [:]
     private var modelsLoading: Set<String> = []
-    /// `setModels` raised (or lowered) the serving-set reserve while a load
-    /// was in flight: the survivors' re-slice is owed and runs when that
-    /// load finishes — on its failure path too, where the restore-on-throw
-    /// puts the PREVIOUS grants back (sized under the old floor).
-    private var resliceDeferredBehindLoad = false
+    /// A `setModels` update that arrived while a load was in flight: the
+    /// serving set is part of the activation-reserve basis, and that load
+    /// passed its gate against the CURRENT floor, so the whole update waits
+    /// for the load to finish (either completion path applies it).
+    private var pendingModelsUpdate: [ModelInfo]?
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
@@ -352,37 +352,54 @@ public actor StandaloneServer {
 
     /// Update the advertised model list (e.g. after a rescan). Applies the
     /// same CBv2 supported-set filter as init. The serving set is part of
-    /// the activation-reserve basis, so the KV budget actor is re-pushed
-    /// and the resident grants re-sliced under the new floor BEFORE a
-    /// higher-floor model can be exposed — otherwise in-flight KV
-    /// reservations and the existing grants would keep the old (lower)
-    /// reserve while the load/probe paths already resolve the new one.
-    public func setModels(_ newModels: [ModelInfo]) async {
-        self.models = Self.filterSupported(
+    /// the activation-reserve basis, so the update is:
+    /// - SERIALIZED behind any in-flight load — that load passed its gate
+    ///   against the current floor; raising it underneath would overcommit
+    ///   the load transient (the update applies when the load finishes,
+    ///   on either completion path);
+    /// - PREFLIGHTED against the resident slots' serviceability floor — a
+    ///   raise that would re-slice a resident grant below the minimum is
+    ///   refused, exactly as the load path refuses such a newcomer;
+    /// - and only then applied: list swapped, reserve pushed to the KV
+    ///   budget actor, resident grants re-sliced — before a higher-floor
+    ///   model can be exposed.
+    /// Returns false only when refused (the current list stays); a deferred
+    /// update returns true and may still be refused at apply time (logged).
+    @discardableResult
+    public func setModels(_ newModels: [ModelInfo]) async -> Bool {
+        let filtered = Self.filterSupported(
             newModels, runtimeCapabilities: config.runtimeCapabilities)
-        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
-        // A load in flight re-slices every survivor under the (already
-        // updated) reserve at its own install; re-slicing here as well
-        // would interleave with its restore-on-throw bookkeeping. But a
-        // load that FAILS restores the previous grants and installs
-        // nothing, so the re-slice is owed either way: defer it to the
-        // load's completion (both paths call `runDeferredResliceIfNeeded`).
-        if modelsLoading.isEmpty {
-            await resliceGrowSurvivors()
-        } else {
-            resliceDeferredBehindLoad = true
+        guard modelsLoading.isEmpty else {
+            pendingModelsUpdate = filtered
+            standaloneLogger.info(
+                "setModels deferred behind an in-flight load (\(self.modelsLoading.sorted()))")
+            return true
         }
+        return await applyModels(filtered)
     }
 
-    /// Run the survivors' re-slice that `setModels` deferred behind an
-    /// in-flight load, once no load is in flight. Idempotent: after a
-    /// successful install the grants already match the current budget and
-    /// the regrow recomputes the same targets; after a failure it is the
-    /// only thing that re-sizes the restored grants under the new floor.
-    private func runDeferredResliceIfNeeded() async {
-        guard resliceDeferredBehindLoad, modelsLoading.isEmpty else { return }
-        resliceDeferredBehindLoad = false
+    private func applyModels(_ filtered: [ModelInfo]) async -> Bool {
+        let candidateReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: filtered.map(\.id) + Array(slots.keys) + Array(modelsLoading))
+        guard await reserveKeepsSurvivorsServiceable(reserveBytes: candidateReserve) else {
+            standaloneLogger.warning(
+                "setModels refused: the new serving set's activation floor would re-slice a resident model's KV grant below the serviceability floor; keeping the current list")
+            return false
+        }
+        self.models = filtered
+        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
         await resliceGrowSurvivors()
+        return true
+    }
+
+    /// Apply a `setModels` update deferred behind an in-flight load, once
+    /// no load is in flight. Both completion paths of the load call this —
+    /// the failure path too, where the restore-on-throw has just put the
+    /// previous grants back and nothing else would re-size them.
+    private func applyDeferredModelsIfNeeded() async {
+        guard let pending = pendingModelsUpdate, modelsLoading.isEmpty else { return }
+        pendingModelsUpdate = nil
+        _ = await applyModels(pending)
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -568,17 +585,17 @@ public actor StandaloneServer {
     /// Test seams for the `setModels`-during-load deferral: mark a load as
     /// in flight (the marker `ensureModelLoaded` sets before its gate), and
     /// finish it the way BOTH of its completion paths do — clear the marker,
-    /// then run the deferred re-slice if one is owed.
+    /// then apply the deferred update if one is pending.
     func markLoadInFlightForTesting(_ modelId: String) {
         modelsLoading.insert(modelId)
     }
 
     func finishLoadForTesting(_ modelId: String) async {
         modelsLoading.remove(modelId)
-        await runDeferredResliceIfNeeded()
+        await applyDeferredModelsIfNeeded()
     }
 
-    func isResliceDeferredBehindLoadForTesting() -> Bool { resliceDeferredBehindLoad }
+    func hasDeferredModelsUpdateForTesting() -> Bool { pendingModelsUpdate != nil }
 
     /// Install a fully-formed slot, bypassing the load path (unit tests).
     func installSlotForTesting(
@@ -721,7 +738,11 @@ public actor StandaloneServer {
     /// cap minus Σ resident weights (all slots + the newcomer's), with no
     /// operator reserve (standalone mode has none — the cap-implied reserve
     /// is what holds memory back, exactly as in `availableMemoryGb`).
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+    /// `activationReserveBytes` overrides the live serving-set reserve for a
+    /// PROSPECTIVE set (a `setModels` preflight); nil reads live.
+    private func fleetKVBudgetBytes(
+        extraWeightBytes: Int, activationReserveBytes: UInt64? = nil
+    ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in slots {
             let (sum, overflow) = totalWeights
@@ -733,8 +754,23 @@ public actor StandaloneServer {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
-            activationReserveBytes: resolvedActivationReserveBytes,
+            activationReserveBytes: activationReserveBytes ?? resolvedActivationReserveBytes,
             configReserveBytes: 0)
+    }
+
+    /// True iff every resident slot's re-sliced grant under `reserveBytes`
+    /// clears the serviceability floor — the check the load path applies to
+    /// a newcomer, applied to a serving-set change that raises the floor
+    /// with no newcomer at all (mirrors the provider's advertise preflight).
+    private func reserveKeepsSurvivorsServiceable(reserveBytes: UInt64) async -> Bool {
+        let survivors = await existingSlotGrants(excludingModelId: "")
+        guard !survivors.isEmpty else { return true }
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: survivors.map(\.slot),
+            newcomer: nil,
+            fleetKVBudgetBytes: fleetKVBudgetBytes(
+                extraWeightBytes: 0, activationReserveBytes: reserveBytes))
+        return EngineV2KVSizing.resliceMeetsServiceabilityFloor(targets, fixedCarveBytes: [:])
     }
 
     /// The activation reserve for the standalone serving set — configured
@@ -1417,6 +1453,37 @@ public actor StandaloneServer {
             // line (mirrors ProviderLoop.ensureModelLoaded).
             _ = try GPUEnforcement.requireMetal()
             let slotIsVLM = ProviderLoop.modelIsVLM(at: modelPath)
+            // Final authoritative gate after the LAST suspension before
+            // allocation (pending-load reservation, pre-load hook, weight
+            // hashing), mirroring ProviderLoop: the serving-set floor is
+            // serialized behind this load (`setModels` defers), so this is
+            // the backstop, not the primary defense. `availableMemoryGb()`
+            // nets out the shared ledger INCLUDING this load's own pending
+            // reservation, which `fitsAtAllocation` adds back.
+            do {
+                let availableNetOfLedgerGb = await availableMemoryGb()
+                let requiredAtAllocation = ModelLoadAdmission.requiredToLoadGb(
+                    weightsGb: ProviderLoop.loadGateWeightsGb(
+                        estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                        extraWeightBytes: extraWeightBytes),
+                    headroomGb: Double(
+                        UnifiedMemoryCap.loadHeadroomBytes(
+                            activationReserveBytes: resolvedActivationReserveBytes))
+                        / (1024.0 * 1024.0 * 1024.0))
+                if !ModelLoadAdmission.fitsAtAllocation(
+                    availableNetOfLedgerGb: availableNetOfLedgerGb,
+                    ownReservationBytes: pendingLoadBytes,
+                    requiredGb: requiredAtAllocation)
+                {
+                    let available = String(
+                        format: "%.1f",
+                        availableNetOfLedgerGb + Double(pendingLoadBytes) / 1_073_741_824.0)
+                    let required = String(format: "%.1f", requiredAtAllocation)
+                    throw StandaloneServerError.capacityUnavailable(
+                        "Insufficient memory (\(available) GB free, need \(required) GB) at allocation "
+                            + "for '\(modelId)': the serving-set activation floor moved during admission")
+                }
+            }
             // Ownership box (Codex-review unwind ordering): every later
             // access to the loading container goes through this box so
             // failure paths can drop the LAST strong reference to the weights
@@ -1627,7 +1694,7 @@ public actor StandaloneServer {
                 waiter.resume()
             }
             releaseLoadGateWaiters()
-            await runDeferredResliceIfNeeded()
+            await applyDeferredModelsIfNeeded()
         } catch {
             modelsLoading.remove(modelId)
             isLoadingAny = false
@@ -1642,7 +1709,7 @@ public actor StandaloneServer {
             releaseLoadGateWaiters()
             // The failed load restored the previous grants: if `setModels`
             // moved the floor meanwhile, re-size them under it now.
-            await runDeferredResliceIfNeeded()
+            await applyDeferredModelsIfNeeded()
             throw error
         }
     }

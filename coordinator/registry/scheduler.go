@@ -1273,7 +1273,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 			r.providerEligibleForTraitsLocked(p, model, traits) &&
 			(!requiresVision || r.providerServesVisionModelLocked(p, model, true)) &&
 			p.RuntimeVerified &&
-			r.providerSupportsPrivateTextLocked(p) &&
+			r.providerSupportsPrivateTextAtLocked(p, now) &&
 			!p.LastChallengeVerified.IsZero() &&
 			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
 		p.mu.Unlock()

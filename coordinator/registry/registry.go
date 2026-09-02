@@ -1016,7 +1016,16 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
-	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+	return r.providerSupportsPrivateTextAtLocked(p, time.Now())
+}
+
+// providerSupportsPrivateTextAtLocked is providerSupportsPrivateTextLocked
+// evaluated at an explicit instant. The fleet walks capture one clock per
+// walk and pass it here (via providerLivenessGateLocked) so the two rollout
+// deadlines (release-policy enforce-after, APNs code-attestation) are not
+// re-read from the wall clock once per eligible provider. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextAtLocked(p *Provider, now time.Time) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, r.releasePolicyEnforcedAtLocked(now), now)
 }
 
 // providerSupportsPrivateTextModeLocked is the chokepoint body with the
@@ -1025,6 +1034,12 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 // the per-model flip criterion); enforceEvidence=true additionally requires
 // generation-current application evidence. Caller holds r.mu.
 func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, enforceEvidence, time.Now())
+}
+
+// providerSupportsPrivateTextModeAtLocked is the chokepoint body at an explicit
+// instant (see providerSupportsPrivateTextAtLocked). Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceEvidence bool, now time.Time) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -1048,7 +1063,7 @@ func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvi
 		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
+	if r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -1684,8 +1699,14 @@ func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
 // releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
 // now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
 func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforcedAtLocked(time.Now())
+}
+
+// releasePolicyEnforcedAtLocked is releasePolicyEnforcedLocked at an explicit
+// instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedAtLocked(now time.Time) bool {
 	return r.releasePolicyEnforced &&
-		!time.Now().Before(r.releasePolicyEnforceAfter)
+		!now.Before(r.releasePolicyEnforceAfter)
 }
 
 // ReleasePolicyEnforced reports whether missing application evidence currently
@@ -1789,10 +1810,16 @@ func (r *Registry) CodeAttestationEnforced() bool {
 // then the fleet routes un-attested providers (grace window) while still being
 // challenged.
 func (r *Registry) codeAttestationEnforcedLocked() bool {
+	return r.codeAttestationEnforcedAtLocked(time.Now())
+}
+
+// codeAttestationEnforcedAtLocked is codeAttestationEnforcedLocked at an
+// explicit instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) codeAttestationEnforcedAtLocked(now time.Time) bool {
 	if !r.codeAttestationConfigured || r.codeAttestationDeadline.IsZero() {
 		return false
 	}
-	return !time.Now().Before(r.codeAttestationDeadline)
+	return !now.Before(r.codeAttestationDeadline)
 }
 
 // Mu returns the provider's mutex for external callers that need to read

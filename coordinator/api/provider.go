@@ -143,6 +143,12 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// maxProviderVersionLength bounds the provider-reported binary version accepted
+// at registration. Real versions look like "0.8.15" (or "0.8.15-rc.1+build");
+// the cap keeps provider-controlled bytes out of the registry's parse memos,
+// metric tags and logs.
+const maxProviderVersionLength = 64
+
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
 // vocabulary so the column stays aggregatable:
@@ -328,6 +334,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// The version string is provider-controlled and flows into semver
+			// parsing memos, metric tags and logs; a legitimate build id is a
+			// few dozen bytes. Reject anything larger before it reaches the
+			// registry so a hostile client cannot retain multi-MiB keys.
+			if len(regMsg.Version) > maxProviderVersionLength {
+				s.logger.Warn("rejecting provider registration with oversized version",
+					"provider_id", providerID, "version_len", len(regMsg.Version))
+				s.ddIncr("providers.registration_rejected", []string{"reason:oversized_version"})
+				_ = conn.Close(websocket.StatusPolicyViolation, "version string too long")
+				return
+			}
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
 				s.logger.Warn("rejecting malformed provider cache capabilities",

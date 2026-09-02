@@ -87,6 +87,12 @@ type forwardBody struct {
 	parsed map[string]any
 	bytes  []byte
 	dirty  bool
+	// serialized reports that bytes is a coordinator serialization of parsed
+	// (marshalForwardBody output) rather than the caller's verbatim input. Only
+	// such bytes may stand in for a candidateProviderBody: a verbatim body can
+	// differ from its re-serialization in whitespace, key order and string
+	// escapes, and the size verdicts must keep measuring the serialized form.
+	serialized bool
 }
 
 // markDirty records that parsed has diverged from bytes.
@@ -102,14 +108,14 @@ func (b *forwardBody) current() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	b.bytes, b.dirty = out, false
+	b.bytes, b.dirty, b.serialized = out, false, true
 	return out, nil
 }
 
 // replace adopts bytes a helper already serialized from parsed (remote media
 // inlining re-marshals after mutating parsed in place).
 func (b *forwardBody) replace(serialized []byte) {
-	b.bytes, b.dirty = serialized, false
+	b.bytes, b.dirty, b.serialized = serialized, false, true
 }
 
 // inferencePrelude carries the parsed request shape produced by the shared

@@ -1883,14 +1883,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Candidate provider bodies (the resolved build, the alias fallback build
 	// the preflight probes) and the routing verdicts derived from them are
 	// memoized per request: traits, the protocol-0 size verdict, and dispatch
-	// all reuse one serialization per candidate. The resolved build is seeded
-	// with the body serialized above — parsed is fully reconciled for it, so
-	// a rebuild would produce the same bytes.
+	// all reuse one serialization per candidate. When the body above is the
+	// coordinator's own serialization, the resolved build is seeded with it —
+	// parsed is fully reconciled for that build, so a rebuild would produce the
+	// same bytes. A verbatim caller body is NOT a substitute (its whitespace,
+	// key order and escapes differ from the serialized form the size verdicts
+	// have always measured), so that rare case builds its candidate as before.
 	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
 		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
 			serviceChatConsumer, reasoningProvided, isResponsesAPI)
 	}, hasTools, requiresVision)
-	bodies.seed(model, providerBody)
+	if body.serialized {
+		bodies.seed(model, providerBody)
+	}
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		traits, ok := bodies.traits(candidateModel)
 		if !ok {

@@ -6251,16 +6251,20 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 func (r *Registry) evictStale(timeout time.Duration) {
 	now := time.Now()
 
-	// Scan under the write lock: we both READ LastHeartbeat and REBUILD
-	// evictStrikes. Collect every provider's heartbeat age for the summary, and
-	// decide who to evict: a provider is reaped only after it is stale on TWO
-	// consecutive sweeps (strike >= 2), so a single transient stall that ages
-	// many timestamps at once gives the fleet a sweep to recover instead of a
-	// mass reap.
-	r.mu.Lock()
+	// Scan under the READ lock: the walk only reads LastHeartbeat (under p.mu)
+	// and the previous sweep's strikes. evictStrikes is written solely by this
+	// function on the single eviction goroutine, so a read-scan followed by a
+	// short write-locked install is race-free — and the routing scans that
+	// share r.mu are no longer blocked for a whole fleet walk every timeout/3.
+	// Collect every provider's heartbeat age for the summary, and decide who to
+	// evict: a provider is reaped only after it is stale on TWO consecutive
+	// sweeps (strike >= 2), so a single transient stall that ages many
+	// timestamps at once gives the fleet a sweep to recover instead of a mass
+	// reap.
+	r.mu.RLock()
 	fleet := len(r.providers)
 	ages := make([]time.Duration, 0, fleet)
-	nextStrikes := make(map[string]int, len(r.evictStrikes))
+	var nextStrikes map[string]int // allocated lazily: steady state carries nothing
 	var toEvict []string
 	var evictAges []time.Duration
 	for id, p := range r.providers {
@@ -6275,12 +6279,27 @@ func (r *Registry) evictStale(timeout time.Duration) {
 				toEvict = append(toEvict, id)
 				evictAges = append(evictAges, age)
 			} else {
+				if nextStrikes == nil {
+					nextStrikes = make(map[string]int)
+				}
 				nextStrikes[id] = strikes // carry the strike to next sweep
 			}
 		}
 	}
-	r.evictStrikes = nextStrikes
-	r.mu.Unlock()
+	hadStrikes := len(r.evictStrikes) > 0
+	r.mu.RUnlock()
+
+	// Install the rebuilt strike map under the write lock only when it changes
+	// anything (a strike carried or cleared). The steady state — nobody stale,
+	// nothing carried — never takes the write lock at all.
+	if hadStrikes || len(nextStrikes) > 0 {
+		if nextStrikes == nil {
+			nextStrikes = make(map[string]int)
+		}
+		r.mu.Lock()
+		r.evictStrikes = nextStrikes
+		r.mu.Unlock()
+	}
 
 	if len(ages) > 0 {
 		amin, amed, ap90, amax := durationStats(ages)

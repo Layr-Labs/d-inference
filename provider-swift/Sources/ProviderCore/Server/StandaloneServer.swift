@@ -267,9 +267,16 @@ public actor StandaloneServer {
         // that always fail. Mirrors `ProviderLoop.init`; the CLI
         // (`darkbloom start --local`) applies the same filter with an
         // operator-facing error and refuses to start when nothing remains.
-        self.models = Self.filterSupported(
+        let served = Self.filterSupported(
             models, runtimeCapabilities: config.runtimeCapabilities)
-        self.kvBudget = GlobalKVCacheBudget()
+        self.models = served
+        // The standalone serving set is static (only configured models
+        // load), so the per-model activation reserve resolves once here —
+        // the same measured floors the network provider carves, so a tight
+        // box the coordinator path admits is admitted locally too.
+        self.kvBudget = GlobalKVCacheBudget(
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: served.map(\.id)))
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: nil)
@@ -678,7 +685,19 @@ public actor StandaloneServer {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
+            activationReserveBytes: resolvedActivationReserveBytes,
             configReserveBytes: 0)
+    }
+
+    /// The activation reserve for the standalone serving set — configured
+    /// models ∪ resident slots ∪ in-flight loads (measured per-model floors,
+    /// env raise-only above them), the figure every gate below carves: the
+    /// load gate, the KV budget, engine grants, and the post-load probes.
+    /// Static in practice (only configured models load), so it matches the
+    /// value the KV budget actor was initialized with.
+    private var resolvedActivationReserveBytes: UInt64 {
+        UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: models.map(\.id) + Array(slots.keys) + Array(modelsLoading))
     }
 
     /// One existing slot's re-slice bookkeeping (mirrors the ProviderLoop's
@@ -877,6 +896,9 @@ public actor StandaloneServer {
                 kvBytesCapacity: targets[modelId] ?? 0,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 kvBudget: kvBudget,
+                // Paged capacity decision carves the same serving-set reserve
+                // as the grants above (was the flat default).
+                activationReserveBytes: resolvedActivationReserveBytes,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 prefillDeadlineMode: config.prefillDeadlineMode,
@@ -1302,7 +1324,10 @@ public actor StandaloneServer {
                     weightsGb: modelInfo.estimatedMemoryGb,
                     // Cap-aware: activation reserve + min serveable KV, so a model
                     // that loads can actually serve (matches the runtime KV gate).
-                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    headroomGb: Double(
+                        UnifiedMemoryCap.loadHeadroomBytes(
+                            activationReserveBytes: resolvedActivationReserveBytes))
+                        / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
             // Inline assistants ride the target checkpoint's own shards,
             // already counted in estimatedMemoryGb -> targetRequiredGb; only
@@ -1412,10 +1437,15 @@ public actor StandaloneServer {
             // a model with no serveable KV headroom under the cap rather than
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            if !KVHeadroomProbe.hasServeableKVHeadroom(
+                activationReserveBytes: resolvedActivationReserveBytes)
+            {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(
+                        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                            activationReserveBytes: resolvedActivationReserveBytes))
+                        / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -1469,7 +1499,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
-                pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                activationReserveBytes: resolvedActivationReserveBytes)
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
             if bundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -1508,7 +1539,10 @@ public actor StandaloneServer {
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(
+                        KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                            activationReserveBytes: resolvedActivationReserveBytes))
+                        / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident

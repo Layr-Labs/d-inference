@@ -135,32 +135,36 @@ extension ProviderLoop {
     /// because the backoff budget (~18 min) is shorter than the idle-unload
     /// horizon that typically frees the room.
     private func deferPrefetchForCapacity(modelId: String) {
-        guard desiredPrefetchTargets.contains(modelId) else { return }
+        // Remembered whether desired OR an explicit `prefetch_model`: the
+        // coordinator ignores the `.verified` status this attempt still
+        // emits, so a capacity-change re-offer is the only path that ever
+        // advertises the build. The bounded backoff is desired-only (that
+        // machinery is keyed on the desired set).
         reserveDeferredPrefetches.insert(modelId)
-        if let send = outboundSend {
-            scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
-        }
+        guard desiredPrefetchTargets.contains(modelId), let send = outboundSend else { return }
+        scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
     }
 
-    /// Re-offer every capacity-deferred desired build NOW, with a fresh
-    /// retry budget. Called after a slot unloads and after a load finishes
-    /// (installed or failed): both change the arithmetic the deferral was
-    /// made under. Ids no longer desired are dropped. The re-run is a hash
-    /// pass (the bytes are on disk) that re-enters `applyVerifiedPrefetch`
-    /// and its preflight — a still-tight box simply defers again.
+    /// Re-offer every capacity-deferred build NOW. Called after a slot
+    /// unloads and after a load finishes (installed or failed): both change
+    /// the arithmetic the deferral was made under. Each id is forgotten
+    /// BEFORE its re-run — a re-refusal re-remembers it through
+    /// `deferPrefetchForCapacity`, an unscannable or no-longer-wanted build
+    /// simply drops out. Desired builds also get a fresh backoff budget; a
+    /// stale desired id is skipped. The re-run is a hash pass (the bytes are
+    /// on disk) that re-enters `applyVerifiedPrefetch` and its preflight — a
+    /// still-tight box defers again.
     internal func retryReserveDeferredPrefetches() async {
         guard !reserveDeferredPrefetches.isEmpty, !isShuttingDown, let send = outboundSend
         else { return }
         let deferred = reserveDeferredPrefetches.sorted()
+        reserveDeferredPrefetches.removeAll()
         for modelId in deferred {
-            guard desiredPrefetchTargets.contains(modelId),
-                !staleDesiredPrefetches.contains(modelId)
-            else {
-                reserveDeferredPrefetches.remove(modelId)
-                continue
+            if staleDesiredPrefetches.contains(modelId) { continue }
+            if desiredPrefetchTargets.contains(modelId) {
+                clearDesiredPrefetchRetryState(for: modelId)
             }
-            clearDesiredPrefetchRetryState(for: modelId)
-            logger.info("Re-offering capacity-deferred desired build \(modelId) after a capacity change")
+            logger.info("Re-offering capacity-deferred build \(modelId) after a capacity change")
             await handlePrefetchModelRequest(
                 modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
         }

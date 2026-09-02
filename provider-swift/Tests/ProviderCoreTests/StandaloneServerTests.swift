@@ -829,9 +829,13 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
         tokenizer: TokenizerHandle(StubBridgeTokenizer()),
         sizing: sizingB)
 
+    // Standalone carves the per-model reserve of its serving set (resident
+    // slots here): gemma is unmeasured (default), gpt-oss measured (lower).
     let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
         physicalBytes: standalonePhysicalBytes,
         residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: ["gemma-4-26b-qat-4bit", "gpt-oss-20b"]),
         configReserveBytes: 0)
     let targets = EngineV2KVSizing.resliceGrants(
         existing: [
@@ -858,9 +862,13 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     #expect(evicted)
     #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == nil)
     #expect(recorder.entries[0].engine.shutdownCalls == 1)
+    // The lone survivor's regrow carves ITS floor (measured gpt-oss), not
+    // the evicted gemma's default — the relax is the whole point.
     let fullB = UnifiedMemoryCap.kvBudgetBytes(
         physicalBytes: standalonePhysicalBytes,
         residentWeightBytes: UInt64(sizingB.weightsBytes),
+        activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+            modelIDs: ["gpt-oss-20b"]),
         configReserveBytes: 0)
     #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == Int(fullB))
 }
@@ -1210,4 +1218,48 @@ private func expectPrometheusShapedLines(
         }
     }
     _ = server
+}
+
+/// Standalone serving carves the same per-model activation floor as the
+/// network provider: a gpt-oss-20b-only local server grants KV against the
+/// measured 3.5 GiB floor, not the flat 5.5 GiB default — so the tight tier
+/// the floor exists for is admitted by `darkbloom local` too.
+@Test func standaloneGrantCarvesTheMeasuredFloor() async throws {
+    try #require(
+        ProcessInfo.processInfo.environment["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil,
+        "DARKBLOOM_ACTIVATION_RESERVE_GB must be unset for this test's arithmetic")
+    let modelID = "gpt-oss-20b"
+    let floor = UnifiedMemoryCap.activationFloorBytes(forModelIDs: [modelID])
+    try #require(floor < UnifiedMemoryCap.defaultActivationReserveBytes)
+
+    let server = standaloneTestServer(models: [
+        ModelInfo(
+            id: modelID, modelType: "gpt_oss", quantization: "4bit",
+            sizeBytes: 1, estimatedMemoryGb: 1)
+    ])
+    let recorder = StandaloneGrantRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            makeEngine: { modelId, grant in
+                let engine = InertStubEngine(kvBytesCapacity: grant)
+                recorder.record(modelId: modelId, grant: grant, engine: engine)
+                return engine
+            }))
+    _ = try await server.buildSlotForTesting(
+        modelId: modelID,
+        modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15))
+
+    let weights = UInt64(standaloneSizing(weightsGiB: 15).weightsBytes)
+    let expected = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: floor, configReserveBytes: 0)
+    let flat = UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: standalonePhysicalBytes, residentWeightBytes: weights,
+        activationReserveBytes: UnifiedMemoryCap.defaultActivationReserveBytes, configReserveBytes: 0)
+    #expect(recorder.entries.map(\.grant) == [Int(expected)])
+    #expect(Int(expected) != Int(flat))
 }

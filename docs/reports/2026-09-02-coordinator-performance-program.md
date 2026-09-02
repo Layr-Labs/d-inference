@@ -100,6 +100,13 @@ in-memory hits after the first request per key/model. Single-process
 assumption documented in the file header; TTLs bound staleness from
 out-of-band SQL edits.
 
+Decorating the store hides backend-only capabilities that callers discover by
+type assertion (`codeAttestPushBudgetStore`, `verificationDuePageStore`), which
+would have silently downgraded APNs push-budget durability and verification-job
+pagination. `store.As[T]` walks `Unwrap()` through decorators and the four
+assertion sites use it; tests pin that both capabilities survive the wrap.
+Cache counters are emitted as `store.cache.*` gauges per domain.
+
 
 ## 5. After
 

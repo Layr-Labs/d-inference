@@ -1206,6 +1206,12 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
 		return rawBody // fixed provider — pass penalties through
 	}
+	// A body carrying none of the penalty fields at its top level is returned
+	// unchanged without decoding it — the same outcome the decode path reaches
+	// through changed=false, minus a full-body parse per sizing probe.
+	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
+		return rawBody
+	}
 	parsed, err := decodeInferenceJSONObject(rawBody)
 	if err != nil {
 		return rawBody
@@ -1257,17 +1263,9 @@ func legacyCacheBustBodyBytes(
 	if provider == nil {
 		return 0, nil
 	}
-	sizingPR := &registry.PendingRequest{
-		LegacyCacheBustKey: strings.Repeat("x", registry.LegacyCacheBustKeyLength),
-	}
-	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
-	if err == nil {
-		return 0, nil
-	}
-	if errors.Is(err, errProviderBodyTooLarge) {
-		return oversizedProviderBodyBytes(err), err
-	}
-	return 0, err
+	return cacheAttemptSizeError(
+		bodyForProvider(rawBody, requiresVision, provider),
+		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
 }
 
 func providerBodySizeError(
@@ -1278,22 +1276,15 @@ func providerBodySizeError(
 	if provider == nil {
 		return 0, nil
 	}
-	sizingPR := &registry.PendingRequest{}
 	provider.Mu().Lock()
 	usesLegacyCacheBust := provider.PrefixCacheProtocol < 1
 	provider.Mu().Unlock()
+	legacyKey := ""
 	if usesLegacyCacheBust {
-		sizingPR.LegacyCacheBustKey = strings.Repeat(
-			"x", registry.LegacyCacheBustKeyLength)
+		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
 	}
-	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
-	if err == nil {
-		return 0, nil
-	}
-	if errors.Is(err, errProviderBodyTooLarge) {
-		return oversizedProviderBodyBytes(err), err
-	}
-	return 0, err
+	return cacheAttemptSizeError(
+		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
 }
 
 func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
@@ -1330,6 +1321,10 @@ func exhaustedProviderPreparationError(
 	return providerBodyOverflowErr
 }
 
+// bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
+// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
+// added as prompt_cache_key when the attempt carries one, size-checked
+// against the sealed-frame cap.
 func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
 	body := bodyForProvider(rawBody, requiresVision, provider)
 	if pr == nil || pr.LegacyCacheBustKey == "" {
@@ -1338,23 +1333,72 @@ func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry
 		}
 		return body, nil
 	}
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, err
-	}
 	keyJSON, err := json.Marshal(pr.LegacyCacheBustKey)
 	if err != nil {
 		return nil, err
 	}
-	parsed["prompt_cache_key"] = keyJSON
-	sealed, err := marshalForwardBody(parsed)
-	if err != nil {
-		return nil, err
+	sealed, ok := spliceTopLevelMember(body, legacyCacheBustField, keyJSON)
+	if !ok {
+		if sealed, err = sealLegacyCacheBust(body, keyJSON); err != nil {
+			return nil, err
+		}
 	}
 	if len(sealed) > maxInferenceBodyBytes {
 		return nil, &providerBodyTooLargeError{size: len(sealed)}
 	}
 	return sealed, nil
+}
+
+// legacyCacheBustField is the request field a protocol-0 provider reads its
+// per-attempt cache isolation key from.
+const legacyCacheBustField = "prompt_cache_key"
+
+// sealLegacyCacheBust is the decode/re-encode path for bodies the splice fast
+// path cannot prove canonical (see provider_body_splice.go).
+func sealLegacyCacheBust(body, keyJSON []byte) ([]byte, error) {
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	parsed[legacyCacheBustField] = keyJSON
+	return marshalForwardBody(parsed)
+}
+
+// cacheAttemptSealedSize returns the length bodyForCacheAttempt's sealed body
+// would have for a provider-specific body and (possibly empty) legacy
+// cache-bust key, computed arithmetically for canonical bodies and by the
+// decode/re-encode path otherwise — never building the sealed bytes on the
+// arithmetic path.
+func cacheAttemptSealedSize(body []byte, legacyKey string) (int, error) {
+	if legacyKey == "" {
+		return len(body), nil
+	}
+	keyJSON, err := json.Marshal(legacyKey)
+	if err != nil {
+		return 0, err
+	}
+	if size, ok := splicedTopLevelMemberSize(body, legacyCacheBustField, keyJSON); ok {
+		return size, nil
+	}
+	sealed, err := sealLegacyCacheBust(body, keyJSON)
+	if err != nil {
+		return 0, err
+	}
+	return len(sealed), nil
+}
+
+// cacheAttemptSizeError mirrors bodyForCacheAttempt's verdict from a size:
+// (0, nil) when the sealed body fits, (size, errProviderBodyTooLarge) when it
+// does not, and (0, err) for a body that cannot be sealed at all.
+func cacheAttemptSizeError(body []byte, legacyKey string) (int, error) {
+	size, err := cacheAttemptSealedSize(body, legacyKey)
+	if err != nil {
+		return 0, err
+	}
+	if size > maxInferenceBodyBytes {
+		return size, &providerBodyTooLargeError{size: size}
+	}
+	return 0, nil
 }
 
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set

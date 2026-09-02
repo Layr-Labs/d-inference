@@ -40,7 +40,7 @@ func TestResolveEffectiveTPSFallback(t *testing.T) {
 		backendRunning:    2,
 		observedDecodeTPS: 0,
 	}
-	got := resolveEffectiveTPS(snap)
+	got := resolveEffectiveTPS(snapPtr(snap))
 	want := effectiveDecodeTPS(100, 2)
 	if got != want {
 		t.Fatalf("resolveEffectiveTPS()=%f, want %f (formula fallback)", got, want)
@@ -48,7 +48,7 @@ func TestResolveEffectiveTPSFallback(t *testing.T) {
 
 	// When observedDecodeTPS is set, should use it directly.
 	snap.observedDecodeTPS = 55.5
-	got = resolveEffectiveTPS(snap)
+	got = resolveEffectiveTPS(snapPtr(snap))
 	if got != 55.5 {
 		t.Fatalf("resolveEffectiveTPS()=%f, want 55.5 (observed)", got)
 	}
@@ -111,11 +111,11 @@ func TestFreeMemoryAdmitsTokenBudget(t *testing.T) {
 		totalMemoryGB:         64,
 	}
 	// Request for 500 + 4096 = 4596 tokens. 28000 + 4596 = 32596 <= 32768. Fits.
-	if !freeMemoryAdmits(snap, 500, 4096) {
+	if !freeMemoryAdmits(snapPtr(snap), 500, 4096) {
 		t.Fatal("should admit: 28000 + 4596 = 32596 <= 32768")
 	}
 	// Request for 500 + 4500 = 5000 tokens. 28000 + 5000 = 33000 > 32768. Rejected.
-	if freeMemoryAdmits(snap, 500, 4500) {
+	if freeMemoryAdmits(snapPtr(snap), 500, 4500) {
 		t.Fatal("should reject: 28000 + 5000 = 33000 > 32768")
 	}
 }
@@ -129,12 +129,12 @@ func TestFreeMemoryAdmitsIncludesQueuedBudget(t *testing.T) {
 		totalMemoryGB:         64,
 	}
 	// active(20K) + queued(10K) + request(500+4096=4596) = 34596 > 32768. Rejected.
-	if freeMemoryAdmits(snap, 500, 4096) {
+	if freeMemoryAdmits(snapPtr(snap), 500, 4096) {
 		t.Fatal("should reject: active + queued + request exceeds budget")
 	}
 	// Without queued budget: active(20K) + request(4596) = 24596 <= 32768. Fits.
 	snap.queuedTokenBudget = 0
-	if !freeMemoryAdmits(snap, 500, 4096) {
+	if !freeMemoryAdmits(snapPtr(snap), 500, 4096) {
 		t.Fatal("should admit when queued budget is zero")
 	}
 }
@@ -150,7 +150,7 @@ func TestFreeMemoryAdmitsFallsBackWithoutBudget(t *testing.T) {
 		modelLoaded:           true,
 	}
 	// Model already loaded, so only KV matters. Lots of free memory.
-	if !freeMemoryAdmits(snap, 100, 256) {
+	if !freeMemoryAdmits(snapPtr(snap), 100, 256) {
 		t.Fatal("should admit with plenty of free memory in legacy mode")
 	}
 }
@@ -170,13 +170,13 @@ func TestFreeMemoryAdmitsColdLoadUsesReportedFreeForLoad(t *testing.T) {
 
 	fits := base
 	fits.modelSizeGB = 8 // 8 <= 9 → admit
-	if !freeMemoryAdmits(fits, 100, 256) {
+	if !freeMemoryAdmits(snapPtr(fits), 100, 256) {
 		t.Fatal("8GB model must be admitted: fits in reported 9GB free-for-load")
 	}
 
 	tooBig := base
 	tooBig.modelSizeGB = 14 // 14 > 9 → reject, even though heuristic on 64GB would admit
-	if freeMemoryAdmits(tooBig, 100, 256) {
+	if freeMemoryAdmits(snapPtr(tooBig), 100, 256) {
 		t.Fatal("14GB model must be rejected: exceeds reported 9GB free-for-load")
 	}
 }
@@ -193,7 +193,7 @@ func TestFreeMemoryAdmitsColdLoadReportedZeroRejects(t *testing.T) {
 		totalPending:    0,
 		freeForLoadGB:   &zero,
 	}
-	if freeMemoryAdmits(snap, 100, 256) {
+	if freeMemoryAdmits(snapPtr(snap), 100, 256) {
 		t.Fatal("reported free-for-load 0 must reject a cold load")
 	}
 }
@@ -212,11 +212,11 @@ func TestFreeMemoryAdmitsColdLoadNormalizesCatalogSize(t *testing.T) {
 		totalPending:    0,
 		freeForLoadGB:   &free,
 	}
-	if freeMemoryAdmits(snap, 100, 256) {
+	if freeMemoryAdmits(snapPtr(snap), 100, 256) {
 		t.Fatal("near-threshold model must reject: padded estimate exceeds reported free-for-load")
 	}
 	snap.modelSizeGB = 8 // padded 8*1.1176≈8.94 <= 10 → admit
-	if !freeMemoryAdmits(snap, 100, 256) {
+	if !freeMemoryAdmits(snapPtr(snap), 100, 256) {
 		t.Fatal("8GB model must admit: padded estimate fits reported free-for-load")
 	}
 }
@@ -270,7 +270,7 @@ func TestFreeMemoryAdmitsColdLoadFallsBackWhenUnreported(t *testing.T) {
 		totalPending:    0,
 		freeForLoadGB:   nil,
 	}
-	if !freeMemoryAdmits(snap, 100, 256) {
+	if !freeMemoryAdmits(snapPtr(snap), 100, 256) {
 		t.Fatal("legacy provider must fall back to the total-memory heuristic (admit)")
 	}
 }

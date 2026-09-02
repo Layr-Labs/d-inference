@@ -176,20 +176,20 @@ func TestResolvePrefillTPSPrefersObserved(t *testing.T) {
 	// No measured rate: the resolver returns the existing prefillTPS chain
 	// (resolvedPrefillTPS: benchmark → decode×12) unchanged. This is the
 	// today-fleet path and MUST be a no-op.
-	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600}); got != 600 {
+	if got := resolvePrefillTPS(snapPtr(routingSnapshot{prefillTPS: 600})); got != 600 {
 		t.Fatalf("fallback prefill = %v, want 600 (×12 chain preserved)", got)
 	}
 	// A non-positive observed value is treated as unmeasured → fallback.
-	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 0}); got != 600 {
+	if got := resolvePrefillTPS(snapPtr(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 0})); got != 600 {
 		t.Fatalf("zero observed prefill = %v, want 600 (fallback)", got)
 	}
 	// A measured per-slot prefill EWMA wins over the static chain.
-	if got := resolvePrefillTPS(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 1800}); got != 1800 {
+	if got := resolvePrefillTPS(snapPtr(routingSnapshot{prefillTPS: 600, observedPrefillTPS: 1800})); got != 1800 {
 		t.Fatalf("observed prefill = %v, want 1800 (measured preferred)", got)
 	}
 	// The result is clamped to maxPrefillTPS so one outlier heartbeat cannot
 	// collapse the TTFT estimate.
-	if got := resolvePrefillTPS(routingSnapshot{observedPrefillTPS: maxPrefillTPS * 2}); got != maxPrefillTPS {
+	if got := resolvePrefillTPS(snapPtr(routingSnapshot{observedPrefillTPS: maxPrefillTPS * 2})); got != maxPrefillTPS {
 		t.Fatalf("clamped observed prefill = %v, want %v", got, maxPrefillTPS)
 	}
 }
@@ -205,7 +205,7 @@ func TestTTFTMsFromSnapshotUsesObservedPrefillTPS(t *testing.T) {
 		prefillTPS:         600, // e.g. decode 50 × 12
 		decodeTPS:          50,
 	}
-	fallbackTTFT := ttftMsFromSnapshot(fallback, prompt)
+	fallbackTTFT := ttftMsFromSnapshot(snapPtr(fallback), prompt)
 	wantFallback := float64(prompt)/600*1000 + 1000.0/50.0
 	if d := fallbackTTFT - wantFallback; d > 0.01 || d < -0.01 {
 		t.Fatalf("fallback TTFT = %.4f, want %.4f (×12 chain preserved)", fallbackTTFT, wantFallback)
@@ -214,7 +214,7 @@ func TestTTFTMsFromSnapshotUsesObservedPrefillTPS(t *testing.T) {
 	// Measured path: a 3× faster observed prefill lowers only the prefill term.
 	observed := fallback
 	observed.observedPrefillTPS = 1800
-	observedTTFT := ttftMsFromSnapshot(observed, prompt)
+	observedTTFT := ttftMsFromSnapshot(snapPtr(observed), prompt)
 	wantObserved := float64(prompt)/1800*1000 + 1000.0/50.0
 	if d := observedTTFT - wantObserved; d > 0.01 || d < -0.01 {
 		t.Fatalf("observed TTFT = %.4f, want %.4f (measured prefill used)", observedTTFT, wantObserved)
@@ -277,17 +277,17 @@ func TestProjectedPerRequestDecodeTPS(t *testing.T) {
 	approx := func(a, b float64) bool { return abs(a-b) < 0.01 }
 
 	// Static fallback (no observed rate), idle provider: rate at batch 1 = static/(1+k).
-	if got, want := projectedPerRequestDecodeTPS(routingSnapshot{decodeTPS: 25}), 25.0/(1+k); !approx(got, want) {
+	if got, want := projectedPerRequestDecodeTPS(snapPtr(routingSnapshot{decodeTPS: 25})), 25.0/(1+k); !approx(got, want) {
 		t.Fatalf("static idle projected = %.2f, want %.2f", got, want)
 	}
 	// Observed rate measured at batch 2 is unwound to a solo rate, then reapplied
 	// at batch 3 (the new request joins): solo = obs*(1+2k); proj = solo/(1+3k).
 	snap := routingSnapshot{decodeTPS: 25, observedDecodeTPS: 20, backendRunning: 2}
-	if got, want := projectedPerRequestDecodeTPS(snap), 20.0*(1+2*k)/(1+3*k); !approx(got, want) {
+	if got, want := projectedPerRequestDecodeTPS(snapPtr(snap)), 20.0*(1+2*k)/(1+3*k); !approx(got, want) {
 		t.Fatalf("observed projected = %.2f, want %.2f", got, want)
 	}
 	// No decode info -> 0 (treated as below any positive floor).
-	if got := projectedPerRequestDecodeTPS(routingSnapshot{}); got != 0 {
+	if got := projectedPerRequestDecodeTPS(snapPtr(routingSnapshot{})); got != 0 {
 		t.Fatalf("empty snapshot projected = %.2f, want 0", got)
 	}
 }

@@ -6008,7 +6008,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 				poolSnap.pendingMaxTokensAllModels,
 				poolSnap.pendingMaxBytesAllModels,
 				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.kvBytesPerToken[m.ID],
+				poolSnap.pooledTokenBudget.kvRateFor(m.ID),
 			)
 
 			snap := providerCapSnap{

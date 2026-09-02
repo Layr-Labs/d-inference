@@ -211,7 +211,7 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 // included (see coldTokenBudgetEstimate). "known=false" means we cannot tell
 // (legacy resident slot with no budget, or missing memory data) — the caller
 // treats unknown as fail-open and skips the budget tier entirely.
-func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
+func snapshotStructuralBudget(snap *routingSnapshot) (budget int64, known bool) {
 	if snap.activeTokenBudgetMax > 0 {
 		return snap.activeTokenBudgetMax, true
 	}
@@ -238,7 +238,7 @@ func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 // that queues. It must NOT feed the fleet-level servability shed, which is
 // structural-only (see PredictServable) — a live-remaining fleet 429 would shed
 // a merely-busy fleet ahead of the queue.
-func liveRemainingBudget(snap routingSnapshot) (budget int64, known bool) {
+func liveRemainingBudget(snap *routingSnapshot) (budget int64, known bool) {
 	if snap.activeTokenBudgetMax > 0 {
 		// Gray-box budget clamp (budget_clamp.go): a capacity-503 proved the
 		// live gate rejects, so the pair's LIVE headroom is zero regardless of
@@ -283,7 +283,7 @@ func liveRemainingBudget(snap routingSnapshot) (budget int64, known bool) {
 // no reported budget, or missing memory/size data) and the caller must fail
 // open. A reqMaxTokens ≤ 0 is normalized to defaultRequestedMaxTokens, the
 // same defaulting the pending-budget accounting applies.
-func providerBudgetFits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
+func providerBudgetFits(snap *routingSnapshot, reqPromptTokens, reqMaxTokens int) (fits, known bool) {
 	budget, known := liveRemainingBudget(snap)
 	if !known {
 		return true, false
@@ -361,12 +361,12 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 	sawUnknown := false
 	providerCount := 0
 	now := time.Now()
+	var snap routingSnapshot // one caller-owned buffer, refilled per provider
 	for _, p := range r.providers {
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {
 			continue
 		}
-		snap, ok := r.snapshotProviderLockedEx(p, model, traits, false, false, now)
-		if !ok {
+		if !r.snapshotProviderIntoLockedEx(&snap, p, model, traits, false, false, now) {
 			continue
 		}
 		// Modality (vision) is intentionally NOT filtered here: a vision-incapable
@@ -389,7 +389,7 @@ func (r *Registry) PredictServable(model string, estimatedPromptTokens, contextP
 		// path could hold the request for the seconds a slot takes to free.
 		// Transient fullness belongs to the capacity/queue ladder; this tier
 		// sheds only requests that exceed every ceiling and could NEVER fit.
-		budget, known := snapshotStructuralBudget(snap)
+		budget, known := snapshotStructuralBudget(&snap)
 		if !known {
 			sawUnknown = true
 			continue

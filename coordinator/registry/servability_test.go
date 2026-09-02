@@ -264,23 +264,23 @@ func providerPostLoadTokenBudget(totalMemoryGB, modelSizeGB float64, kvBytesPerT
 // three branches in snapshotStructuralBudget.
 func TestSnapshotStructuralBudget(t *testing.T) {
 	// Resident slot with a reported active budget: authoritative and known.
-	if budget, known := snapshotStructuralBudget(routingSnapshot{activeTokenBudgetMax: 8192}); !known || budget != 8192 {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{activeTokenBudgetMax: 8192})); !known || budget != 8192 {
 		t.Fatalf("resident-with-budget = (%d, %v), want (8192, true)", budget, known)
 	}
 
 	// The reported active budget wins even when memory/size data is also present
 	// (it must NOT fall through to the cold estimate for a loaded model).
-	if budget, known := snapshotStructuralBudget(routingSnapshot{
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{
 		activeTokenBudgetMax: 8192,
 		modelLoaded:          true,
 		totalMemoryGB:        64,
 		modelSizeGB:          12,
-	}); !known || budget != 8192 {
+	})); !known || budget != 8192 {
 		t.Fatalf("resident-with-budget+mem = (%d, %v), want (8192, true)", budget, known)
 	}
 
 	// Resident but no budget reported (legacy provider): unknown → fail-open.
-	if budget, known := snapshotStructuralBudget(routingSnapshot{modelLoaded: true}); known || budget != 0 {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{modelLoaded: true})); known || budget != 0 {
 		t.Fatalf("resident-no-budget = (%d, %v), want (0, false)", budget, known)
 	}
 
@@ -288,27 +288,27 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	// estimate. Unreported kvBytesPerToken falls back to the 400000 default;
 	// an unreported binaryVersion falls toward the legacy reserve.
 	wantCold := coldTokenBudgetEstimate(64, 12, 0, "")
-	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 64, modelSizeGB: 12}); !known || budget != wantCold {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{totalMemoryGB: 64, modelSizeGB: 12})); !known || budget != wantCold {
 		t.Fatalf("cold-fitting = (%d, %v), want (%d, true)", budget, known, wantCold)
 	}
 	// A cold slot threads its reported per-model KV cost into the estimate.
 	wantColdKVPT := coldTokenBudgetEstimate(64, 12, 200000, "")
-	if budget, known := snapshotStructuralBudget(routingSnapshot{
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{
 		totalMemoryGB:   64,
 		modelSizeGB:     12,
 		kvBytesPerToken: 200000,
-	}); !known || budget != wantColdKVPT {
+	})); !known || budget != wantColdKVPT {
 		t.Fatalf("cold-fitting+kvpt = (%d, %v), want (%d, true)", budget, known, wantColdKVPT)
 	}
 	// A cold slot threads its provider's binary version into the estimate:
 	// a ≥0.8.0 binary is charged the 5.5 GiB reserve it actually holds,
 	// which lands strictly below the legacy default above.
 	wantColdV080 := coldTokenBudgetEstimate(64, 12, 0, "0.8.0")
-	if budget, known := snapshotStructuralBudget(routingSnapshot{
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{
 		totalMemoryGB: 64,
 		modelSizeGB:   12,
 		binaryVersion: "0.8.0",
-	}); !known || budget != wantColdV080 {
+	})); !known || budget != wantColdV080 {
 		t.Fatalf("cold-fitting+version = (%d, %v), want (%d, true)", budget, known, wantColdV080)
 	}
 	if wantColdV080 >= wantCold {
@@ -317,17 +317,17 @@ func TestSnapshotStructuralBudget(t *testing.T) {
 	}
 
 	// Cold but missing memory or size data: cannot estimate → unknown.
-	if budget, known := snapshotStructuralBudget(routingSnapshot{modelSizeGB: 12}); known || budget != 0 {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{modelSizeGB: 12})); known || budget != 0 {
 		t.Fatalf("cold-missing-memory = (%d, %v), want (0, false)", budget, known)
 	}
-	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 64}); known || budget != 0 {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{totalMemoryGB: 64})); known || budget != 0 {
 		t.Fatalf("cold-missing-size = (%d, %v), want (0, false)", budget, known)
 	}
 
 	// Cold with memory + size data but NO post-load KV headroom (weights ~fill the
 	// node): the estimate is 0 yet it is a KNOWN budget, not "unknown" — so the
 	// gate can confidently reject rather than fail open.
-	if budget, known := snapshotStructuralBudget(routingSnapshot{totalMemoryGB: 16, modelSizeGB: 14}); !known || budget != 0 {
+	if budget, known := snapshotStructuralBudget(snapPtr(routingSnapshot{totalMemoryGB: 16, modelSizeGB: 14})); !known || budget != 0 {
 		t.Fatalf("cold-no-headroom = (%d, %v), want (0, true)", budget, known)
 	}
 }

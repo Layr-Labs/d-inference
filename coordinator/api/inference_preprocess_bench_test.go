@@ -301,6 +301,38 @@ func BenchmarkChatPreprocessHelpers(b *testing.B) {
 	}
 }
 
+// BenchmarkRequestIntrospection measures the single-value wrappers the generic
+// handler calls individually (they must stay type-level walks, never
+// byte scans) against the fused pass and the billing byte count.
+func BenchmarkRequestIntrospection(b *testing.B) {
+	body := benchRequestBodies()["image_3MB"]
+	parsed, err := decodeInferenceJSONObject(body)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for name, fn := range map[string]func(map[string]any) int{
+		"detectMediaRequirement": func(p map[string]any) int {
+			if detectMediaRequirement(p) {
+				return 1
+			}
+			return 0
+		},
+		"countMediaParts":             countMediaParts,
+		"estimatePromptTokens":        estimatePromptTokens,
+		"estimateBillingPromptTokens": estimateBillingPromptTokens,
+		"introspectRequest":           func(p map[string]any) int { return introspectRequest(p).mediaParts },
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if fn(parsed) < 0 {
+					b.Fatal("negative")
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // HTTP-level benchmark
 // ---------------------------------------------------------------------------

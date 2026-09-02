@@ -159,34 +159,54 @@ type requestShape struct {
 	hasTools      bool
 }
 
-// introspectRequest walks messages[], input[] and prompt once.
+// introspectRequest composes the two passes below: the routing/media walk
+// (type-level, never scans string contents) and the billing byte count (scans
+// every string once). Handlers that need everything call this once; the
+// single-value wrappers call only the pass they need.
 func introspectRequest(parsed map[string]any) requestShape {
-	var shape requestShape
+	routingTokens, mediaParts := routingShape(parsed)
+	return requestShape{
+		routingTokens: routingTokens,
+		billingTokens: billingBytes(parsed),
+		mediaParts:    mediaParts,
+		hasTools:      requestHasTools(parsed),
+	}
+}
+
+// routingShape walks messages[], input[] and prompt once for the media-aware
+// routing estimate and the image/video part count.
+func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 	if v, ok := parsed["messages"]; ok {
 		tokens, media := messagesShape(v)
-		shape.routingTokens += tokens
-		shape.mediaParts += media
-		// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any
-		// BPE tokenizer), so it keeps counting full message bytes — including a
-		// base64 image's bytes and every non-content field (role, tool_calls,
-		// name). Switching to the media-aware flat count here would DROP those
-		// fields and under-reserve for tool-calling requests. Over-reservation on a
-		// large image is safe (it is refunded after inference); the routing/ITPM
-		// estimate is the media-aware one.
-		shape.billingTokens += approximateTokenCountUpperBound(v)
+		routingTokens += tokens
+		mediaParts += media
 	}
 	if v, ok := parsed["input"]; ok {
 		tokens, media := inputShape(v)
-		shape.routingTokens += tokens
-		shape.mediaParts += media
-		shape.billingTokens += approximateTokenCountUpperBound(v)
+		routingTokens += tokens
+		mediaParts += media
 	}
 	if v, ok := parsed["prompt"]; ok {
-		shape.routingTokens += approximateTokenCount(v)
-		shape.billingTokens += approximateTokenCountUpperBound(v)
+		routingTokens += approximateTokenCount(v)
 	}
-	shape.hasTools = requestHasTools(parsed)
-	return shape
+	return routingTokens, mediaParts
+}
+
+// billingBytes is the byte-length reservation bound over the same fields.
+// Billing MUST stay a guaranteed upper bound (len(bytes) >= tokens for any BPE
+// tokenizer), so it counts full message bytes — including a base64 image's
+// bytes and every non-content field (role, tool_calls, name). Switching to the
+// media-aware flat count here would DROP those fields and under-reserve for
+// tool-calling requests. Over-reservation on a large image is safe (it is
+// refunded after inference); the routing/ITPM estimate is the media-aware one.
+func billingBytes(parsed map[string]any) int {
+	total := 0
+	for _, field := range []string{"messages", "input", "prompt"} {
+		if v, ok := parsed[field]; ok {
+			total += approximateTokenCountUpperBound(v)
+		}
+	}
+	return total
 }
 
 // routingPromptTokens is the routing/ITPM estimate, falling back to the whole
@@ -211,7 +231,8 @@ func (s requestShape) billingPromptTokens(parsed map[string]any) int {
 func (s requestShape) requiresVision() bool { return s.mediaParts > 0 }
 
 func estimatePromptTokens(parsed map[string]any) int {
-	return introspectRequest(parsed).routingPromptTokens(parsed)
+	routingTokens, _ := routingShape(parsed)
+	return requestShape{routingTokens: routingTokens}.routingPromptTokens(parsed)
 }
 
 // estimateBillingPromptTokens returns a guaranteed upper bound on prompt
@@ -219,7 +240,7 @@ func estimatePromptTokens(parsed map[string]any) int {
 // pre-flight reservation always covers actual cost. This value must NOT
 // be used for routing — see estimatePromptTokens for that.
 func estimateBillingPromptTokens(parsed map[string]any) int {
-	return introspectRequest(parsed).billingPromptTokens(parsed)
+	return requestShape{billingTokens: billingBytes(parsed)}.billingPromptTokens(parsed)
 }
 
 // isMediaPartType reports whether an OpenAI/OpenRouter content-part type denotes
@@ -344,7 +365,8 @@ func detectMediaRequirement(parsed map[string]any) bool {
 // Same traversal as the routing estimate so the two can never disagree on
 // what constitutes a media part.
 func countMediaParts(parsed map[string]any) int {
-	return introspectRequest(parsed).mediaParts
+	_, mediaParts := routingShape(parsed)
+	return mediaParts
 }
 
 // isInlineDataURI reports whether a media reference is an inline base64 data: URI

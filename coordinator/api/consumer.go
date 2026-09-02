@@ -1688,14 +1688,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// coordinator-stamped provider AccountID, so nothing here is forgeable.
 	policy := s.resolveSelfRoutePolicy(r)
 
-	// Derive request-shape traits before alias resolution. During a
-	// mixed-version rollout Desired may have ordinary providers while Previous
-	// has the only provider capable of enforcing this exact tool policy. One
-	// walk of the message tree yields the media count, the tools flag, and the
-	// routing/billing token estimates (consumed below, after the rewrites).
-	shape := introspectRequest(parsed)
-	requiresVision := shape.requiresVision()
-	hasTools := shape.hasTools
 	isResponsesAPI := input != nil && len(messages) == 0
 	// Tool-constraint validation must judge the PRE-normalization tools (a
 	// normalization marker in the caller's body is forged). On the chat surface
@@ -1722,6 +1714,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeToolConstraintValidationError(w, validationErr)
 		return
 	}
+	// Derive request-shape traits before alias resolution. During a
+	// mixed-version rollout Desired may have ordinary providers while Previous
+	// has the only provider capable of enforcing this exact tool policy. One
+	// walk of the message tree yields the media count, the tools flag, and the
+	// routing/billing token estimates (consumed below, after the rewrites). It
+	// runs after constraint validation so a rejected tool policy on a large
+	// body never pays the walk.
+	shape := introspectRequest(parsed)
+	requiresVision := shape.requiresVision()
+	hasTools := shape.hasTools
 	validatedMode := validatedPolicy.mode
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel

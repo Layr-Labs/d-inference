@@ -155,6 +155,9 @@ func TestPerfE2E_ChatCompletions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("dial provider %d: %v", i, err)
 		}
+		// The real provider raises the read limit; nhooyr's 32 KB default
+		// would kill the socket on any request body larger than that.
+		conn.SetReadLimit(16 << 20)
 		defer conn.Close(websocket.StatusNormalClosure, "done")
 		regMsg := protocol.RegisterMessage{
 			Type: protocol.TypeRegister,

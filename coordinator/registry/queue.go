@@ -541,6 +541,19 @@ func (q *RequestQueue) FailQueuedRequestsForModel(model string, preferOwnerEligi
 	return failed
 }
 
+// HasQueued reports whether any request is queued for any model. Cheaper than
+// QueuedModels (no allocation, no stale sweep) for the per-heartbeat probe.
+func (q *RequestQueue) HasQueued() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, queue := range q.queues {
+		if len(queue) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // QueuedModels returns the set of model IDs that currently have at least
 // one request waiting in the queue.
 func (q *RequestQueue) QueuedModels() []string {

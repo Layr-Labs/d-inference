@@ -3343,10 +3343,22 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	)
 }
 
+// providerAttestationCacheTTL bounds staleness of the public trust listing. It
+// reflects live connection state (trust level, status, models), so it uses the
+// same 2s window as GET /v1/models/capacity. The response is the same for every
+// caller (unauthenticated, no query parameters).
+const providerAttestationCacheTTL = 2 * time.Second
+
+const providerAttestationCacheKey = "providers:attestation:v1"
+
 // handleProviderAttestation returns privacy-redacted trust status for all providers.
 // Device identity and raw MDA certificates stay coordinator-private because
 // Apple's leaf certificate embeds the hardware serial number and UDID.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
+	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
+		writeCachedJSON(w, body)
+		return
+	}
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`
 		ChipName      string `json:"chip_name"`
@@ -3437,7 +3449,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	})
 
 	resp := map[string]any{"providers": providers}
-	writeJSON(w, http.StatusOK, resp)
+	body, err := encodeCachedJSON(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode attestation"))
+		return
+	}
+	s.readCacheSet(providerAttestationCacheKey, body, providerAttestationCacheTTL)
+	writeCachedJSON(w, body)
 }
 
 // sendTrustStatus sends the provider its current trust level and status over

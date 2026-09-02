@@ -81,15 +81,32 @@ type WarmPoolConfig struct {
 	// floor/rates/caps are unknown.
 	DecodeFloorTPS float64
 	BurstBuffer    int
-	// HeadroomProviders is the proactive warm-capacity buffer: how many
-	// providers' worth of serving capacity must stay FREE at current load. The
-	// controller warms toward it BEFORE demand needs it, so growth no longer
-	// requires a failed request. Evaluated against measured available capacity
-	// (warm minus saturated), not the raw warm count — a provider serving a
-	// request is still "warm". 0 disables proactive warming (purely reactive,
-	// the pre-2026-09 behaviour).
-	// EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS.
-	HeadroomProviders          int
+	// HeadroomEnabled turns the proactive warm-capacity floor on (default true).
+	// When false the controller is purely reactive: the pool can only grow after a
+	// capacity_reject / ttft_miss / cold_dispatch, then at +1 provider per tick.
+	// EIGENINFERENCE_WARM_POOL_HEADROOM.
+	HeadroomEnabled bool
+	// HeadroomProviders is a per-model OVERRIDE map, e.g.
+	// EIGENINFERENCE_WARM_POOL_HEADROOM_PROVIDERS="gpt-oss-20b=9,gemma-4-26b-qat-4bit=33".
+	// Unlisted models use the DERIVED floor (measured occupancy ramp / qc), which
+	// is the intended normal operation — the right value is a property of a
+	// model's traffic shape, and measured across the live fleet it spans 2..33
+	// providers. Use an entry only to pin a build whose measurement is not yet
+	// trustworthy.
+	//
+	// NOTE: values must be >= 1. envModelIntMap (shared with MIN_WARM) drops
+	// non-positive entries, so "model=0" is silently ignored rather than pinning a
+	// model to zero headroom — to exempt one model, set HEADROOM_MAX_PROVIDERS or
+	// disable the floor fleet-wide instead.
+	HeadroomProviders map[string]int
+	// HeadroomMaxProviders caps any single model's DERIVED floor so a pathological
+	// ramp cannot demand the whole fleet. Overrides are not capped — an operator
+	// naming a number means it. <= 0 is uncapped.
+	HeadroomMaxProviders int
+	// HeadroomLoadWindows is how many control intervals of demand growth the floor
+	// should cover, approximating cold-load time (prod: 30s interval, ~20-30s
+	// load, so ~1). <= 0 falls back to 1.
+	HeadroomLoadWindows        float64
 	FallbackQualityConcurrency int
 	AssumedPromptTokens        int
 	AssumedCompletionTokens    int
@@ -142,7 +159,10 @@ func ReadConfig() Config {
 
 			DecodeFloorTPS:             env.EnvFloat(env.EnvPrefix+"_WARM_POOL_DECODE_FLOOR_TPS", 15),
 			BurstBuffer:                env.EnvInt(env.EnvPrefix+"_WARM_POOL_BURST_BUFFER", 1),
-			HeadroomProviders:          env.EnvInt(env.EnvPrefix+"_WARM_POOL_HEADROOM_PROVIDERS", 0),
+			HeadroomEnabled:            env.EnvBool(env.EnvPrefix+"_WARM_POOL_HEADROOM", true),
+			HeadroomProviders:          envModelIntMap(env.EnvPrefix + "_WARM_POOL_HEADROOM_PROVIDERS"),
+			HeadroomMaxProviders:       env.EnvInt(env.EnvPrefix+"_WARM_POOL_HEADROOM_MAX_PROVIDERS", 64),
+			HeadroomLoadWindows:        env.EnvFloat(env.EnvPrefix+"_WARM_POOL_HEADROOM_LOAD_WINDOWS", 1.0),
 			FallbackQualityConcurrency: env.EnvInt(env.EnvPrefix+"_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY", 4),
 			AssumedPromptTokens:        env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_PROMPT_TOKENS", 512),
 			AssumedCompletionTokens:    env.EnvInt(env.EnvPrefix+"_WARM_POOL_ASSUMED_COMPLETION_TOKENS", 256),
@@ -306,7 +326,7 @@ func (c WarmPoolConfig) Check() error {
 	if c.MaxLoadsPerTick < 0 || c.MaxGlobalPendingLoads < 0 || c.MaxLoadsPerTickCeiling < 0 {
 		return fmt.Errorf("registry: warm pool load limits must be >= 0")
 	}
-	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 || c.HeadroomProviders < 0 {
+	if c.DecodeFloorTPS < 0 || c.BurstBuffer < 0 || c.RampGapFraction < 0 || c.HeadroomMaxProviders < 0 || c.HeadroomLoadWindows < 0 {
 		return fmt.Errorf("registry: warm pool target tunables must be >= 0")
 	}
 	if c.AssumedPromptTokens < 0 || c.AssumedCompletionTokens < 0 {

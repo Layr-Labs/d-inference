@@ -170,9 +170,11 @@ func TestEvictStaleReapsExactlyTheStaleSet(t *testing.T) {
 }
 
 // TestEvictStaleConcurrentWithHeartbeats runs sweeps against a fleet that is
-// heartbeating and being listed concurrently. Under -race this proves the
-// read-lock scan introduces no data race with the writers of LastHeartbeat
-// and the other read-lock walks.
+// heartbeating, being listed, AND churning (extra providers registered and
+// disconnected, which mutate r.providers under the write lock) concurrently.
+// Under -race this proves the read-lock scan introduces no data race with the
+// writers of LastHeartbeat, the other read-lock walks, or the map writers —
+// dropping the RLock around the scan fails this test.
 func TestEvictStaleConcurrentWithHeartbeats(t *testing.T) {
 	r := New(testLogger())
 	const model = aliasQAT
@@ -203,6 +205,23 @@ func TestEvictStaleConcurrentWithHeartbeats(t *testing.T) {
 			}
 		}(w)
 	}
+	// Churn: register and disconnect extra providers for the whole run so the
+	// provider map is written while the sweep iterates it. Every iteration
+	// ends with the disconnect, so the fleet is back to ids when it stops.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for n := 0; ; n++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			id := fmt.Sprintf("churn%03d", n%50)
+			registerProviderWithModel(r, id, model)
+			r.Disconnect(id)
+		}
+	}()
 	deadline := time.Now().Add(150 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		r.evictStale(90 * time.Second)

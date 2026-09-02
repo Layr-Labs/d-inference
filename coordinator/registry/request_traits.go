@@ -122,8 +122,17 @@ func CompareVersions(a, b string) int {
 }
 
 // versionSegments parses "v0.6.3" into [0 6 3]. Unparseable or negative
-// segments parse as 0.
+// segments parse as 0. Results are memoized per distinct input string
+// (version_memo.go) — the fleet runs a handful of binary versions, and the
+// routing scan compares every provider's version against the capability
+// floors and the pooled-budget layout floor on every request — so the
+// returned slice is SHARED and must be treated as read-only.
 func versionSegments(v string) []int {
+	return versionSegmentsMemo.get(v, parseVersionSegments)
+}
+
+// parseVersionSegments is the uncached parser behind versionSegments.
+func parseVersionSegments(v string) []int {
 	v = strings.TrimSpace(v)
 	if len(v) > 0 && (v[0] == 'v' || v[0] == 'V') {
 		v = v[1:]

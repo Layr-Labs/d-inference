@@ -54,7 +54,17 @@ const (
 	privateSlotGrantsMinVersion = "0.7.5"
 )
 
+// slotBudgetLayoutForVersion selects the pooled-budget layout for a provider
+// binary version. Memoized per distinct version string (version_memo.go): it
+// runs once per provider per routing scan via fillSnapshotPendingAndPool.
 func slotBudgetLayoutForVersion(version string) slotBudgetLayout {
+	return slotBudgetLayoutMemo.get(version, parseSlotBudgetLayout)
+}
+
+// parseSlotBudgetLayout is the uncached selection behind
+// slotBudgetLayoutForVersion: a pre-release/build suffix is ignored and the
+// numeric core compared against privateSlotGrantsMinVersion.
+func parseSlotBudgetLayout(version string) slotBudgetLayout {
 	version = strings.TrimSpace(version)
 	if suffix := strings.IndexAny(version, "-+"); suffix >= 0 {
 		version = version[:suffix]

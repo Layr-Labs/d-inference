@@ -128,6 +128,29 @@ advertise the model. Tests pin index == brute-force walk after every mutation
 type and identical routing results with/without the index on the 1,260-provider
 fixture for plain/tools/vision/TTFT-ceiling shapes.
 
+### 4.3 Route telemetry batching (`api/telemetry_sink*.go`, `store/*route_telemetry*.go`)
+
+The routing-telemetry sink now queues typed operations (route record, outcome
+update, closure) and one worker gathers up to 256 ops or 100 ms, writing the
+group's records with one multi-row `INSERT … ON CONFLICT`
+(`RecordInferenceRoutes`) and each run of outcome updates with one pgx batch
+pipeline (`UpdateInferenceRouteOutcomes`). A tracer-backed Postgres test shows
+50 records + 50 updates go from 100 statements to 1 statement + 1 pipeline.
+Per-key insert → update order is preserved by opening a new group whenever a
+record's key already appears in the current group; the non-blocking
+drop-and-count contract, single worker (now enforced), panic isolation per
+row, transient-error classification (`store.IsTransientWriteError`: no
+per-row replay on deadline/connection errors), post-close rejection, and a
+bounded 2 s flush in `Server.Close` before the pool closes are all covered by
+tests on both backends.
+
+Settlement consolidation (one transaction for the consumer refund, provider
+earning and platform fee) was evaluated and **not shipped**: the three writes
+fail independently today, `CreditProviderAccount` is idempotent on job id
+while `Credit` is not, and a single transaction over three balance rows adds a
+deadlock cycle between concurrent settlements. Follow-up instead: collapse
+`Credit` from five round trips to one CTE, as `Debit` already is.
+
 ## 5. After
 
 _(pending)_

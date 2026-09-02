@@ -366,6 +366,17 @@ extension ProviderLoop {
         await refreshActivationReserve()
         await resliceGrowSurvivors()
         await updateAggregateCapacity()
+        // The reconnect is the wire mechanism for a removal (`models_update`
+        // is additive) — but closing the socket cancels EVERY in-flight
+        // request on the box (`.disconnected` → cancelAllInflight), not just
+        // the retired model's (already drained by unloadModel). Let
+        // unrelated work ride out first, bounded by the shutdown drain
+        // budget. Until the reconnect lands, a routed request for the
+        // retired id 404s at the advertised guard and the coordinator's
+        // dispatch retry absorbs it — this wait extends that window; it
+        // does not add a failure mode.
+        _ = await waitForInflightDrain(
+            timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
         await coordinatorClient?.forceReconnect()
     }
 

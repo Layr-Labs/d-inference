@@ -97,6 +97,18 @@ extension ProviderLoop {
             clearDesiredPrefetchRetryState(for: modelId)
             return
         }
+        scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+    }
+
+    /// Schedule one bounded-backoff re-run of a desired build's prefetch.
+    /// No-op when the build is no longer desired, a retry is already
+    /// pending, or the delay budget is spent (until the next desired_models
+    /// push resets it). Shared by the transient-failure path above and the
+    /// reserve-floor refusal in `applyVerifiedPrefetch`: a build the box
+    /// cannot take NOW may fit after an unload, and the coordinator
+    /// deduplicates unchanged desired_models snapshots, so without a local
+    /// retry the provider would sit on the superseded build indefinitely.
+    private func scheduleDesiredPrefetchRetry(modelId: String, send: SendHandle) {
         guard !isShuttingDown,
               desiredPrefetchTargets.contains(modelId),
               !staleDesiredPrefetches.contains(modelId),
@@ -318,14 +330,20 @@ extension ProviderLoop {
         // on a tight multi-slot box it can push a survivor below the
         // serviceable minimum with no new slot loaded. Refuse the
         // advertisement before touching anything — the same floor the load
-        // path refuses a newcomer on. No durable record: the next desired-
-        // state reconcile may re-offer the build (a verify pass, no
-        // download) against a fleet that may have room by then.
+        // path refuses a newcomer on. Then retry through the desired-build
+        // backoff policy (the re-run is a hash pass — the bytes are on
+        // disk): `.verified` still goes out for this attempt and the
+        // coordinator deduplicates unchanged desired_models pushes, so
+        // without a local retry nothing would ever re-offer the build,
+        // even after an unload frees the room.
         guard await reserveRaiseKeepsSurvivorsServiceable(reserveBytes: raisedReserve) else {
             releaseResliceGate()
             logger.warning(
                 "Prefetch verified \(modelId) but its activation floor would re-slice a resident "
                     + "model's KV grant below the serviceability floor; not advertising")
+            if let send = outboundSend {
+                scheduleDesiredPrefetchRetry(modelId: modelId, send: send)
+            }
             return
         }
         await pushActivationReserve(raisedReserve)

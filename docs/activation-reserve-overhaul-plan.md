@@ -49,9 +49,12 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
    runs MTP k=2 — the B=1-measured +0.4 GiB allowance now applies to the live
    route (floors stay deferred for the vision reason below regardless).
    Fix committed on `fix/qwen35-stock-bench-trap` (mlx-swift-lm worktree; separate
-   PR in that repo). **The production factory carries the identical subscript**
-   (`EngineV2Factory+Production.swift:965`) — reachability check pending; fix it in
-   the same shape if reachable, defensively if not.
+   PR in that repo, merged as mlx-swift-lm#129). ✅ **The production factory carried
+   the identical subscript and is fixed on this branch**: the paged-cache wiring now
+   maps each cache's model-layer index to its storage slot
+   (`EngineV2Factory+Production.swift:1018-1044`, `preconditionFailure` on an
+   impossible miss). Unreachable today only because `supportsPagedKV` vetoes paged
+   for hybrid trunks upstream; the mapping makes it safe the day that flips.
 2. ✅ Measured on the served artifact (hub 73a03825), v2 contiguous, current engine:
    B=8 = 3.28 GiB @ 500 tok; raw 4.06 @ 4k, 4.87 @ 8k; decomposed non-KV envelope
    **~3.3 GiB, saturated** (hybrid trunk — no composed-attention blow-up). MTP delta
@@ -140,7 +143,11 @@ padded weights** until the provider-path (VLM) residency measurement lands.
   field** populated by the onboarding bench — the durable fix for constants going
   silently stale (the 5.5 default did exactly that when the engine improved). Do it
   after the above ships and the numbers have soaked.
-- Vision-inclusive activation peaks for VL models (contained by VisionMemoryGate).
+- Vision-inclusive activation peaks for VL models. The vision-tower transient rides
+  the activation reserve — `VisionMemoryGate` reserves decoded-media buffers and KV,
+  not the tower's activations — which is exactly why vision-capable models keep the
+  default floor until a vision-inclusive B=8 measurement exists. A text-only figure
+  must never lower their floor.
 
 ## Sequencing and gates
 

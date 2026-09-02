@@ -174,6 +174,26 @@ Raw: `benchmarks/reports/gptoss-20b-L{4000,16000}-2026-08-30.md`.
 | 4000 | 4.17 | ~1.49 | ~2.7 |
 | 16000 | 8.57 | ~5.88 | ~2.7 |
 
+#### Re-validation on the SHIPPED pins (2026-09-02)
+
+The cells above were run on mlx-swift-lm `fe01df9` / mlx-swift `1d452d8`; PR #791
+ships mlx-swift-lm `30da946` (which adds #126, an MoE dispatch change under the
+sorted-hint path) and mlx-swift `6b0505c` (MLX 0.32.2). The gpt-oss B=8 cells were
+re-run with `BenchCBv2` built at exactly those pins (`--print-revision` = `30da946`,
+`Package.resolved` mlx-swift = `6b0505cc`), same machine, same convention
+(`--mode perf --engines v2 --batches 8 --prompt-lengths L --max-seq-len 2L --steps 64`):
+
+| prompt length (×8 seqs) | peak−active (shipped pins) | est. cell KV | activation-proper (non-KV) | Aug (older pins) |
+|---|---|---|---|---|
+| 500 | 2.27 | ~0.21 | ~2.1 | 2.63 |
+| 4000 | 4.17 | ~1.49 | ~2.7 | 4.17 |
+
+The saturated non-KV envelope is unchanged at ~2.7 GiB; the 3.5 GiB floor carries
+~0.8 GiB of margin on the pins that ship. Raw reports (committed, unlike the
+August raw files, which were lost with their worktree):
+`docs/reports/raw/gptoss-20b-actfloor-shipped-pins-L4000-2026-09-02.md` and
+`docs/reports/raw/gptoss-20b-actfloor-shipped-pins-L500-2026-09-02.md`.
+
 The 48 KB/token/seq slope equals all 24 layers carrying unbounded KV in this
 conversion (2×8 kv-heads×64 head_dim×2 B = 2 KiB/layer/token) — the sliding-window
 config is evidently not limiting KV here. Non-KV activation is **flat ≈ 2.7 GiB** —
@@ -286,13 +306,19 @@ measured. Only text-only artifacts (gpt-oss) carry measured floors/residency.
    measurement (gemma qat-4bit B=8 = 5.05, July) measures 2.28 on today's engine —
    the Gemma optimization port shrank the transient by more than half. The honest
    current worst-case envelope (gemma, long-prompt saturated) is ~3.6 GiB.
-2. **Both levers are needed, not either.** The 32 GB qwen3.6 tier needs
-   `23.8 (padded) + floor + 1.0 ≤ 28.8 (0.9×32)` → floor ≤ 4.0 GiB. A per-model
-   qwen floor (if its B=8 measurement lands ≤ ~3.5) fits; even an aggressively
-   retuned flat default (~4.5 = 3.6 + slack) does not. Per-model floors (#683's
-   machinery) remain necessary for tight tiers; a default retune (5.5 → ~4.5) is a
-   complementary follow-up, gated on the qwen B=8 measurement and the long-prompt
-   convention, moved provider+coordinator in one commit as the contract requires.
+2. **Both levers are needed, not either — and on 32 GB neither is enough under the
+   production default.** The effective ceiling is `min(0.9 × physical, physical −
+   memory_reserve_gb)`; with the shipped `memory_reserve_gb = 4` that is
+   `min(28.8, 28.0) = 28.0 GiB` on 32 GB, so the qwen3.6 tier needs
+   `23.8 (padded) + floor + 1.0 ≤ 28.0` → floor ≤ 3.2 GiB. A measured qwen floor
+   near 3.3–3.5 does NOT fit under the default; it fits only if the operator lowers
+   `memory_reserve_gb` (the cap-implied floor is 3.2 on 32 GB) or the catalog
+   re-tiers qwen3.6 to 36 GB — the re-tier is required regardless of any floor
+   change. An aggressively retuned flat default (~4.5 = 3.6 + slack) does not fit
+   either way. Per-model floors (#683's machinery) remain necessary for tight
+   tiers; a default retune (5.5 → ~4.5) is a complementary follow-up, gated on the
+   qwen B=8 measurement and the long-prompt convention, moved provider+coordinator
+   in one commit as the contract requires.
 3. **PR #683's numbers are confirmed valid on the current engine**: gpt-oss measured
    2.63 by the same convention its 3.5 floor was derived under (July compiled 3.20
    no longer exists as a path; 3.5 now carries ~0.9 GiB extra margin). The catalog id

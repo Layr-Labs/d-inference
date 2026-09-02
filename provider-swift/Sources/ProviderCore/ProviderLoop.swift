@@ -274,6 +274,13 @@ public actor ProviderLoop {
     /// (`retryReserveDeferredPrefetches`). Cleared when the build
     /// advertises or leaves the desired set.
     internal var reserveDeferredPrefetches: Set<String> = []
+
+    /// One-shot wake-ups for deferrals kept because their prefetch attempt
+    /// was still finishing when a capacity change fired: each waits for the
+    /// coordinator's attempt to reach terminal cleanup, then re-offers.
+    /// Without it an explicit `prefetch_model` (no desired backoff) would
+    /// wait for an unrelated later capacity event that may never come.
+    internal var deferredPrefetchWakeups: [String: Task<Void, Never>] = [:]
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false

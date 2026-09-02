@@ -168,6 +168,7 @@ extension ProviderLoop {
             // (and the desired backoff) for the next capacity change.
             if await prefetchCoordinator?.isInFlight(modelId: modelId) == true {
                 reserveDeferredPrefetches.insert(modelId)
+                scheduleDeferredPrefetchWakeup(modelId: modelId)
                 continue
             }
             if desiredPrefetchTargets.contains(modelId) {
@@ -177,6 +178,31 @@ extension ProviderLoop {
             await handlePrefetchModelRequest(
                 modelId: modelId, priority: Self.desiredModelsPrefetchPriority, send: send)
         }
+    }
+
+    /// A deferral was kept because its attempt was still finishing inside
+    /// the coordinator when the capacity change fired. Explicit prefetches
+    /// have no backoff timer, and the capacity-change callers may never
+    /// fire again, so wait (off the actor) for the attempt's terminal
+    /// cleanup and re-offer then. One wake-up per id; bounded by the
+    /// attempt itself finishing.
+    private func scheduleDeferredPrefetchWakeup(modelId: String) {
+        guard deferredPrefetchWakeups[modelId] == nil else { return }
+        deferredPrefetchWakeups[modelId] = Task { [weak self] in
+            while let self, !Task.isCancelled,
+                await self.prefetchCoordinator?.isInFlight(modelId: modelId) == true
+            {
+                try? await taskSleep(.milliseconds(250))
+            }
+            guard let self, !Task.isCancelled else { return }
+            await self.finishDeferredPrefetchWakeup(modelId: modelId)
+        }
+    }
+
+    private func finishDeferredPrefetchWakeup(modelId: String) async {
+        deferredPrefetchWakeups.removeValue(forKey: modelId)
+        guard reserveDeferredPrefetches.contains(modelId) else { return }
+        await retryReserveDeferredPrefetches()
     }
 
     /// Fire a scheduled desired-build prefetch retry, re-checking that the

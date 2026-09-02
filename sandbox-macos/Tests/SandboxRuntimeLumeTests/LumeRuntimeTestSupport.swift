@@ -22,6 +22,7 @@ struct FakeLumeFixture {
     var state: URL { paths.state }
     var behavior: URL { paths.behavior }
     var createStarted: URL { paths.createStarted }
+    var createArguments: URL { paths.createArguments }
     var listStarted: URL { paths.listStarted }
     var listContinue: URL { paths.listContinue }
     var guestCommandStarted: URL { paths.guestCommandStarted }
@@ -147,7 +148,8 @@ struct FakeLumeFixture {
 
     func makeRuntime(
         commandTimeoutSeconds: UInt32 = 1,
-        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard,
+        guestAgentExecutable: URL? = nil
     ) throws -> LumeVirtualMachineRuntime {
         LumeVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
@@ -156,7 +158,8 @@ struct FakeLumeFixture {
                 commandTimeoutSeconds: commandTimeoutSeconds,
                 createTimeoutSeconds: commandTimeoutSeconds,
                 trustPolicy: .developmentAdHoc,
-                guestCommandPolicy: .baseImagePreparationAndDevelopment
+                guestCommandPolicy: .baseImagePreparationAndDevelopment,
+                guestAgentExecutable: guestAgentExecutable
             ),
             guestReadinessPolicy: guestReadinessPolicy
         )
@@ -1061,6 +1064,10 @@ struct FakeLumeFixture {
         fi
         ;;
       create)
+        # Record the invocation so a test can assert what was actually passed.
+        # Purely additive: nothing below reads it, and the branch stays
+        # position-independent.
+        printf '%s\\n' "$@" > "$root/create-arguments"
         name="$2"
         shift 2
         storage=""
@@ -1127,6 +1134,7 @@ private struct FakeLumeFixturePaths {
     let observedMemoryBytes: URL
     let observedDiskBytes: URL
     let createStarted: URL
+    let createArguments: URL
     let listStarted: URL
     let listContinue: URL
     let guestCommandStarted: URL
@@ -1171,6 +1179,7 @@ private struct FakeLumeFixturePaths {
             "observed-disk-bytes"
         )
         createStarted = directory.appendingPathComponent("create-started")
+        createArguments = directory.appendingPathComponent("create-arguments")
         listStarted = directory.appendingPathComponent("list-started")
         listContinue = directory.appendingPathComponent("list-continue")
         guestCommandStarted = directory.appendingPathComponent(

@@ -54,6 +54,13 @@ REQUIRED_PATCHED_LUME_TESTS=(
     stoppingGuestIsAwaitedRatherThanStoppedTwice
     liveGuestWithFailingStopStillFailStops
     stopThrowingMidTeardownDoesNotFailStop
+    daemonPlistNamesTheTenantAndImage
+    daemonKeepsTheAgentAlive
+    daemonLogIsNotUnderVarLog
+    finalizationChownsTheAgent
+    finalizationWithoutAgentIsUnchanged
+    installRejectsBadInputs
+    labelValidation
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

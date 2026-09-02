@@ -29,7 +29,8 @@ enum PrepareBaseCommand {
             trustPolicy: parsed.developmentAdHocLume
                 ? .developmentAdHoc
                 : .production,
-            guestCommandPolicy: .baseImagePreparationAndDevelopment
+            guestCommandPolicy: .baseImagePreparationAndDevelopment,
+            guestAgentExecutable: parsed.guestAgent
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
             specification: specification
@@ -43,6 +44,7 @@ enum PrepareBaseCommand {
             print("CPU: \(report.cpuCount)")
             print("Memory bytes: \(report.memoryBytes)")
             print("Disk bytes: \(report.diskBytes)")
+            print("Guest agent: \(parsed.guestAgent?.path ?? "not installed")")
         }
     }
 
@@ -76,6 +78,7 @@ enum PrepareBaseCommand {
         let diskGiB: UInt64
         let json: Bool
         let developmentAdHocLume: Bool
+        let guestAgent: URL?
 
         init(_ arguments: [String]) throws {
             var values: [String: String] = [:]
@@ -134,6 +137,31 @@ enum PrepareBaseCommand {
             self.diskGiB = disk
             self.json = json
             self.developmentAdHocLume = developmentAdHocLume
+            // Explicit path wins; otherwise take the agent sitting beside this
+            // daemon, which is where SwiftPM puts both products and how the
+            // daemon is run today. Absent is not an error: an operator may
+            // deliberately bake an image with no agent.
+            if let explicit = values["--guest-agent"] {
+                guard explicit.hasPrefix("/"),
+                      FileManager.default.isReadableFile(atPath: explicit)
+                else {
+                    throw DaemonCLIError.invalidArguments("prepare-base")
+                }
+                self.guestAgent = URL(fileURLWithPath: explicit)
+            } else {
+                self.guestAgent = Self.agentBesideDaemon()
+            }
+        }
+
+        /// The guest agent SwiftPM built alongside `darkbloom-sandboxd`.
+        static func agentBesideDaemon() -> URL? {
+            let candidate = URL(fileURLWithPath: CommandLine.arguments[0])
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+                .appendingPathComponent("darkbloom-guest-agent")
+            guard FileManager.default.isReadableFile(atPath: candidate.path)
+            else { return nil }
+            return candidate
         }
 
         private static let valueOptions: Set<String> = [
@@ -144,6 +172,7 @@ enum PrepareBaseCommand {
             "--cpu",
             "--memory-gib",
             "--disk-gib",
+            "--guest-agent",
         ]
     }
 }

@@ -44,6 +44,10 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0007-fix-emergency-stop-state-guard.patch"
     public static let pinnedEmergencyStopPatchSHA256 =
         "04261009b77bb05b402c24361398de80ee2611530789a4d21b432b4f3823b736"
+    public static let pinnedGuestAgentPatchPath =
+        "ThirdParty/lume-patches/0008-bake-guest-agent.patch"
+    public static let pinnedGuestAgentPatchSHA256 =
+        "d30125be686f9dccc11899ceb70bc75dd28c899e9f60771c42680a8e15e6248e"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -52,6 +56,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedGuestChannelPatchPath: pinnedGuestChannelPatchSHA256,
         pinnedGuestIdentityPatchPath: pinnedGuestIdentityPatchSHA256,
         pinnedEmergencyStopPatchPath: pinnedEmergencyStopPatchSHA256,
+        pinnedGuestAgentPatchPath: pinnedGuestAgentPatchSHA256,
     ]
 
     public let executable: URL
@@ -64,6 +69,18 @@ public struct LumeRuntimeConfiguration: Sendable {
     /// guest channel. Attaching the device is opt-in so an ordinary run keeps
     /// exactly the device set it had before.
     package let guestChannelPort: UInt32?
+
+    /// Guest agent executable to bake into a freshly installed base image, or
+    /// `nil` to install none.
+    ///
+    /// Only meaningful when creating from a restore image. A clone inherits
+    /// the template's disk, so it inherits the template's agent — baking is a
+    /// once-per-base-image cost, not a per-sandbox one.
+    package let guestAgentExecutable: URL?
+
+    /// Port the baked agent binds and the host connects to. One constant so
+    /// the two halves cannot drift apart.
+    package static let defaultGuestChannelPort: UInt32 = 8_888
 
     /// Environment variables patch 0005 reads inside `lume run`.
     public static let guestChannelDescriptorEnvironmentVariable =
@@ -85,7 +102,8 @@ public struct LumeRuntimeConfiguration: Sendable {
             createTimeoutSeconds: createTimeoutSeconds,
             trustPolicy: trustPolicy,
             guestCommandPolicy: .disabled,
-            guestChannelPort: nil
+            guestChannelPort: nil,
+            guestAgentExecutable: nil
         )
     }
 
@@ -96,7 +114,8 @@ public struct LumeRuntimeConfiguration: Sendable {
         createTimeoutSeconds: UInt32 = 7_200,
         trustPolicy: LumeRuntimeTrustPolicy = .production,
         guestCommandPolicy: LumeGuestCommandPolicy,
-        guestChannelPort: UInt32? = nil
+        guestChannelPort: UInt32? = nil,
+        guestAgentExecutable: URL? = nil
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -105,7 +124,11 @@ public struct LumeRuntimeConfiguration: Sendable {
               storageDirectory.path.hasPrefix("/"),
               commandTimeoutSeconds > 0,
               createTimeoutSeconds >= commandTimeoutSeconds,
-              guestChannelPort.map({ $0 > 0 }) ?? true
+              guestChannelPort.map({ $0 > 0 }) ?? true,
+              guestAgentExecutable.map({
+                  $0.isFileURL
+                      && FileManager.default.isReadableFile(atPath: $0.path)
+              }) ?? true
         else {
             throw SandboxRuntimeError.unsupported(
                 "Lume configuration requires absolute paths and positive timeouts"
@@ -120,5 +143,8 @@ public struct LumeRuntimeConfiguration: Sendable {
         self.trustPolicy = trustPolicy
         self.guestCommandPolicy = guestCommandPolicy
         self.guestChannelPort = guestChannelPort
+        self.guestAgentExecutable = guestAgentExecutable?
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
     }
 }

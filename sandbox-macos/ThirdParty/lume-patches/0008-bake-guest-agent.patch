@@ -1,0 +1,699 @@
+diff --git a/libs/lume/src/Commands/Create.swift b/libs/lume/src/Commands/Create.swift
+index 7d22d8c..94d84c2 100644
+--- a/libs/lume/src/Commands/Create.swift
++++ b/libs/lume/src/Commands/Create.swift
+@@ -66,6 +66,21 @@ struct Create: AsyncParsableCommand {
+         help: "uid for --tenant-user. Must differ from the bootstrap account's.")
+     var tenantUID: String = "502"
+ 
++    @Option(
++        name: .customLong("guest-agent"),
++        help: "Path to a guest agent executable to bake into the image. It is installed with a LaunchDaemon that starts it at boot as --tenant-user, which is therefore required alongside it.")
++    var guestAgent: String?
++
++    @Option(
++        name: .customLong("guest-agent-port"),
++        help: "vsock port the baked guest agent listens on. Must match the host's guest channel port.")
++    var guestAgentPort: UInt32 = 8888
++
++    @Option(
++        name: .customLong("guest-agent-image-id"),
++        help: "Value the baked agent reports as its image id, which the host checks during the handshake. Defaults to the VM name.")
++    var guestAgentImageID: String?
++
+     @Flag(
+         name: .customLong("debug"),
+         help: "Compatibility flag; ignored by offline setup.")
+@@ -158,7 +173,31 @@ struct Create: AsyncParsableCommand {
+             noDisplay: unattendedConfig != nil ? true : noDisplay,  // Default to no-display for unattended
+             vncPort: vncPort,
+             networkMode: parsedNetworkMode,
+-            guestIdentity: try resolvedGuestIdentity()
++            guestIdentity: try resolvedGuestIdentity(),
++            guestAgent: try resolvedGuestAgent()
++        )
++    }
++
++    /// Builds the guest agent install from flags, or nil when none was asked
++    /// for.
++    ///
++    /// The agent must run as the unprivileged tenant, so requiring
++    /// `--tenant-user` alongside it is a correctness guard rather than a
++    /// convenience: baking an agent into a single-account image would leave it
++    /// running as the administrator, which is the arrangement the split
++    /// identity exists to prevent.
++    private func resolvedGuestAgent() throws -> GuestAgentInstall? {
++        guard let guestAgent else { return nil }
++        guard let tenantUser else {
++            throw ValidationError(
++                "--guest-agent requires --tenant-user: the agent must not run as the bootstrap administrator"
++            )
++        }
++        return try GuestAgentInstall(
++            executableURL: URL(fileURLWithPath: guestAgent),
++            runAsUsername: tenantUser,
++            port: guestAgentPort,
++            imageID: guestAgentImageID ?? name
+         )
+     }
+ 
+diff --git a/libs/lume/src/LumeController.swift b/libs/lume/src/LumeController.swift
+index 7b0c0b3..46aeaf5 100644
+--- a/libs/lume/src/LumeController.swift
++++ b/libs/lume/src/LumeController.swift
+@@ -549,7 +549,8 @@ final class LumeController {
+         noDisplay: Bool = true,
+         vncPort: Int = 0,
+         networkMode: NetworkMode = .nat,
+-        guestIdentity: GuestIdentity = GuestIdentity.legacy
++        guestIdentity: GuestIdentity = GuestIdentity.legacy,
++        guestAgent: GuestAgentInstall? = nil
+     ) async throws {
+         Logger.info(
+             "Creating VM",
+@@ -626,7 +627,8 @@ final class LumeController {
+                 vncPort: vncPort,
+                 vmDir: vmDir,
+                 networkMode: networkMode,
+-                guestIdentity: guestIdentity
++                guestIdentity: guestIdentity,
++                guestAgent: guestAgent
+             )
+ 
+             // Clear provisioning marker on success
+@@ -685,6 +687,7 @@ final class LumeController {
+         unattendedConfig: UnattendedConfig? = nil,
+         networkMode: NetworkMode = .nat,
+         guestIdentity: GuestIdentity = GuestIdentity.legacy,
++        guestAgent: GuestAgentInstall? = nil,
+         telemetryTransport: TelemetryTransport = .http
+     ) throws {
+         Logger.info(
+@@ -759,7 +762,8 @@ final class LumeController {
+                     unattendedConfig: unattendedConfig,
+                     vmDir: vmDir,
+                     networkMode: networkMode,
+-                    guestIdentity: guestIdentity
++                    guestIdentity: guestIdentity,
++                guestAgent: guestAgent
+                 )
+ 
+                 // Clear marker on success
+@@ -821,7 +825,8 @@ final class LumeController {
+         vncPort: Int = 0,
+         vmDir: VMDirectory? = nil,
+         networkMode: NetworkMode = .nat,
+-        guestIdentity: GuestIdentity = GuestIdentity.legacy
++        guestIdentity: GuestIdentity = GuestIdentity.legacy,
++        guestAgent: GuestAgentInstall? = nil
+     ) async throws {
+         Logger.info(
+             "Creating VM (internal)",
+@@ -895,6 +900,7 @@ final class LumeController {
+                     vm: finalVM,
+                     config: config,
+                     identity: guestIdentity,
++                    agent: guestAgent,
+                     vncPort: vncPort,
+                     noDisplay: noDisplay,
+                     debug: debug,
+@@ -929,7 +935,8 @@ final class LumeController {
+         noDisplay: Bool = false,
+         debug: Bool = false,
+         debugDir: String? = nil,
+-        guestIdentity: GuestIdentity = GuestIdentity.legacy
++        guestIdentity: GuestIdentity = GuestIdentity.legacy,
++        guestAgent: GuestAgentInstall? = nil
+     ) async throws {
+         let normalizedName = normalizeVMName(name: name)
+         Logger.info(
+@@ -958,6 +965,7 @@ final class LumeController {
+                 vm: vm,
+                 config: config,
+                 identity: guestIdentity,
++                agent: guestAgent,
+                 vncPort: vncPort,
+                 noDisplay: noDisplay,
+                 debug: debug,
+diff --git a/libs/lume/src/Unattended/GuestAgentInstall.swift b/libs/lume/src/Unattended/GuestAgentInstall.swift
+new file mode 100644
+index 0000000..3622143
+--- /dev/null
++++ b/libs/lume/src/Unattended/GuestAgentInstall.swift
+@@ -0,0 +1,171 @@
++import Foundation
++
++/// A guest-side agent baked into the installed macOS data volume, plus the
++/// LaunchDaemon that starts it.
++///
++/// Baking happens at the template layer on purpose. `lume clone` is an APFS
++/// clonefile of the whole VM directory, so an agent installed once into a base
++/// image appears in every clone at no per-clone cost and with no per-clone
++/// step that could fail.
++///
++/// The install is deliberately split across two privilege domains, because
++/// neither half can do the other's job. The offline patcher can write bytes at
++/// any mode into the mounted data volume but cannot set an owner: there is no
++/// `chown` anywhere in this source tree except one line of guest-side shell.
++/// The first-boot finalization script runs as root and already does exactly
++/// that `chown root:wheel` and a `launchctl enable`, so it takes ownership and
++/// enablement. This type carries the facts both halves need.
++struct GuestAgentInstall: Equatable, Sendable {
++    enum ValidationError: Error, Equatable, CustomStringConvertible {
++        case executableMissing(String)
++        case executableEmpty(String)
++        case absoluteInstallPath(String)
++        case emptyField(String)
++        case invalidPort(UInt32)
++        case invalidLabel(String)
++
++        var description: String {
++            switch self {
++            case .executableMissing(let path):
++                return "guest agent executable not found at \(path)"
++            case .executableEmpty(let path):
++                return "guest agent executable is empty at \(path)"
++            case .absoluteInstallPath(let path):
++                return
++                    "guest install path must be relative to the data volume, got \(path)"
++            case .emptyField(let name):
++                return "guest agent \(name) must not be empty"
++            case .invalidPort(let port):
++                return "guest agent port must be non-zero, got \(port)"
++            case .invalidLabel(let label):
++                return "guest agent launchd label is not well formed: \(label)"
++            }
++        }
++    }
++
++    /// Host path of the executable to copy in.
++    let executableURL: URL
++
++    /// Where it lands inside the guest, relative to the data volume root, so
++    /// it can be joined to the mount point without escaping it.
++    let installPath: String
++
++    /// launchd job label, also the plist filename.
++    let label: String
++
++    /// Account the daemon runs as. The unprivileged tenant, never the
++    /// bootstrap administrator: an agent running as the administrator could
++    /// rewrite the control path supervising it, which is the whole reason the
++    /// two accounts were split.
++    let runAsUsername: String
++
++    /// Directory the daemon's stdout and stderr are redirected to.
++    ///
++    /// It must be writable by `runAsUsername`. launchd opens these paths **as
++    /// the job's user** before the program runs, so a path under `/var/log`
++    /// fails the job with `EX_CONFIG` (78), respawns it forever, and writes no
++    /// log at all — the diagnostic that would explain the failure is the exact
++    /// thing that cannot be created. Measured on a real guest: 45 respawns and
++    /// climbing, with an empty log directory.
++    let logDirectory: String
++
++    /// vsock port the agent binds. Must match the host's `guestChannelPort`.
++    let port: UInt32
++
++    /// Value for `DARKBLOOM_GUEST_IMAGE_ID`, which the host compares against
++    /// the handshake. Every clone of a template shares it, which is correct:
++    /// it identifies the image, not the sandbox.
++    let imageID: String
++
++    var installedAbsolutePath: String { "/" + installPath }
++    var daemonPlistPath: String { "Library/LaunchDaemons/\(label).plist" }
++    var logPath: String { "\(logDirectory)/\(label).log" }
++
++    init(
++        executableURL: URL,
++        installPath: String = GuestAgentInstall.defaultInstallPath,
++        label: String = GuestAgentInstall.defaultLabel,
++        runAsUsername: String,
++        logDirectory: String = GuestAgentInstall.defaultLogDirectory,
++        port: UInt32,
++        imageID: String
++    ) throws {
++        guard !installPath.isEmpty, !installPath.hasPrefix("/") else {
++            throw ValidationError.absoluteInstallPath(installPath)
++        }
++        guard !runAsUsername.isEmpty else {
++            throw ValidationError.emptyField("run-as username")
++        }
++        guard !imageID.isEmpty else {
++            throw ValidationError.emptyField("image id")
++        }
++        guard !logDirectory.isEmpty, logDirectory.hasPrefix("/") else {
++            throw ValidationError.emptyField("log directory")
++        }
++        guard port > 0 else {
++            throw ValidationError.invalidPort(port)
++        }
++        guard Self.isWellFormedLabel(label) else {
++            throw ValidationError.invalidLabel(label)
++        }
++
++        let attributes = try? FileManager.default.attributesOfItem(
++            atPath: executableURL.path
++        )
++        guard let attributes else {
++            throw ValidationError.executableMissing(executableURL.path)
++        }
++        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
++            throw ValidationError.executableEmpty(executableURL.path)
++        }
++
++        self.executableURL = executableURL
++        self.installPath = installPath
++        self.label = label
++        self.runAsUsername = runAsUsername
++        self.logDirectory = logDirectory
++        self.port = port
++        self.imageID = imageID
++    }
++
++    static let defaultInstallPath = "usr/local/libexec/darkbloom-guest-agent"
++    static let defaultLabel = "dev.darkbloom.guest-agent"
++    /// Under `/var/db` rather than `/var/log`: see `logDirectory`.
++    static let defaultLogDirectory = "/var/db/darkbloom"
++    static let imageIDEnvironmentVariable = "DARKBLOOM_GUEST_IMAGE_ID"
++
++    /// A reverse-DNS-ish label, which is what `launchctl` addresses jobs by.
++    static func isWellFormedLabel(_ label: String) -> Bool {
++        guard !label.isEmpty, label.count <= 128 else { return false }
++        guard !label.hasPrefix("."), !label.hasSuffix(".") else { return false }
++        // Swift.Set qualified deliberately: lume defines its own `Set` command
++        // type, which shadows the standard library's here.
++        let allowed = Swift.Set<Character>(
++            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"
++        )
++        return label.allSatisfy { allowed.contains($0) }
++            && label.contains(Character("."))
++    }
++
++    /// The LaunchDaemon job definition.
++    ///
++    /// `KeepAlive` is not optional. The agent binds vsock as the very first
++    /// thing it does and exits on failure with no retry, so a start that races
++    /// the virtio device leaves the job dead forever unless launchd restarts
++    /// it.
++    func daemonPlist() -> [String: Any] {
++        [
++            "Label": label,
++            "ProgramArguments": [installedAbsolutePath, String(port)],
++            "UserName": runAsUsername,
++            "RunAtLoad": true,
++            "KeepAlive": true,
++            "ThrottleInterval": 1,
++            "EnvironmentVariables": [
++                Self.imageIDEnvironmentVariable: imageID
++            ],
++            "StandardOutPath": logPath,
++            "StandardErrorPath": logPath,
++        ]
++    }
++}
+diff --git a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
+index d42cf93..3e3641a 100644
+--- a/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
++++ b/libs/lume/src/Unattended/MacOSOfflineSetupPatcher.swift
+@@ -20,7 +20,11 @@ final class MacOSOfflineSetupPatcher {
+         self.fileManager = fileManager
+     }
+ 
+-    func patch(vm: VM, identity: GuestIdentity) throws {
++    func patch(
++        vm: VM,
++        identity: GuestIdentity,
++        agent: GuestAgentInstall? = nil
++    ) throws {
+         let diskPath = vm.vmDirContext.diskPath.path
+         try ensureStopped(vm: vm)
+ 
+@@ -34,7 +38,11 @@ final class MacOSOfflineSetupPatcher {
+             cleanup(mount: mount)
+         }
+ 
+-        try patchMountedDataVolume(at: mount.mountPoint, identity: identity)
++        try patchMountedDataVolume(
++            at: mount.mountPoint,
++            identity: identity,
++            agent: agent
++        )
+ 
+         Logger.info("Offline macOS unattended setup completed", metadata: [
+             "name": vm.name,
+@@ -112,7 +120,8 @@ final class MacOSOfflineSetupPatcher {
+ 
+     private func patchMountedDataVolume(
+         at mountPoint: URL,
+-        identity: GuestIdentity
++        identity: GuestIdentity,
++        agent: GuestAgentInstall?
+     ) throws {
+         try ensureDirectoryExecutable(mountPoint.appendingPath("private/var/db/dslocal/nodes/Default"))
+         try ensureDirectoryExecutable(mountPoint.appendingPath("private/var/db/dslocal/nodes/Default/users"))
+@@ -149,6 +158,59 @@ final class MacOSOfflineSetupPatcher {
+ 
+         try enableSSH(mountPoint: mountPoint)
+         try configurePowerAndLockSettings(for: bootstrap, mountPoint: mountPoint)
++
++        // Last, so the daemon's UserName refers to an account that exists by
++        // the time launchd reads the plist.
++        if let agent {
++            try installGuestAgent(agent, mountPoint: mountPoint)
++        }
++    }
++
++    /// Places the guest agent and its LaunchDaemon on the data volume.
++    ///
++    /// Ownership is deliberately not set here and cannot be: nothing in this
++    /// file sets an owner, and launchd refuses a daemon plist that is not
++    /// root:wheel. `UnattendedInstaller.guestFinalizationScript` takes that
++    /// half on first boot, where it is already root.
++    private func installGuestAgent(
++        _ agent: GuestAgentInstall,
++        mountPoint: URL
++    ) throws {
++        let executable = try Data(contentsOf: agent.executableURL)
++        // The first file this patcher writes with the executable bit; every
++        // other write is 0600 or 0644.
++        try writeData(
++            executable,
++            to: mountPoint.appendingPath(agent.installPath),
++            mode: 0o755
++        )
++
++        try writePlist(
++            agent.daemonPlist(),
++            to: mountPoint.appendingPath(agent.daemonPlistPath),
++            mode: 0o644,
++            format: .xml
++        )
++
++        // launchd opens the job's stdout as the job's user, so this directory
++        // has to exist and end up owned by the tenant. Finalization does the
++        // chown; without it the job dies EX_CONFIG and writes no log to say so.
++        try createDirectory(
++            mountPoint.appendingPath(
++                String(agent.logDirectory.dropFirst())
++            ),
++            mode: 0o755
++        )
++
++        Logger.info(
++            "Installed guest agent into the data volume",
++            metadata: [
++                "path": agent.installedAbsolutePath,
++                "label": agent.label,
++                "runAs": agent.runAsUsername,
++                "port": String(agent.port),
++                "bytes": String(executable.count),
++            ])
+     }
+ 
+     /// Groups the bootstrap administrator joins. The tenant account joins none,
+diff --git a/libs/lume/src/Unattended/UnattendedInstaller.swift b/libs/lume/src/Unattended/UnattendedInstaller.swift
+index d4ec329..0002fce 100644
+--- a/libs/lume/src/Unattended/UnattendedInstaller.swift
++++ b/libs/lume/src/Unattended/UnattendedInstaller.swift
+@@ -12,7 +12,10 @@ final class UnattendedInstaller {
+     /// account name has to come from the identity rather than being baked in —
+     /// otherwise a renamed bootstrap account silently leaves the guest
+     /// autologging into a user that does not exist.
+-    static func guestFinalizationScript(for user: GuestUser) -> String {
++    static func guestFinalizationScript(
++        for user: GuestUser,
++        agent: GuestAgentInstall? = nil
++    ) -> String {
+         """
+         set -e
+         /usr/bin/touch /var/db/.AppleSetupDone
+@@ -29,15 +32,42 @@ final class UnattendedInstaller {
+         /usr/bin/defaults write /Library/Preferences/com.apple.SetupAssistant DidSeeTrueToneSetup -bool true
+         \(recoveryUserMetadataRefreshCommand)
+         /bin/launchctl enable system/com.openssh.sshd
++        \(agent.map(Self.guestAgentFinalizationCommands) ?? "")
+         /usr/bin/stat -f 'MARKER_OWNER=%u:%g' /var/db/.AppleSetupDone
+         """
+     }
+ 
++    /// Takes ownership of the offline-installed agent and enables its daemon.
++    ///
++    /// The offline patcher wrote the bytes and the modes but cannot set an
++    /// owner, and launchd refuses a daemon plist that is not root:wheel. This
++    /// runs as root on first boot, which is the only place in this installer
++    /// where that is true.
++    ///
++    /// The log directory is chowned to the account the daemon runs as, not to
++    /// root: launchd opens the job's stdout **as the job's user**, so a
++    /// directory the tenant cannot write kills the job with `EX_CONFIG` and
++    /// suppresses the very log that would explain it.
++    nonisolated static func guestAgentFinalizationCommands(
++        _ agent: GuestAgentInstall
++    ) -> String {
++        """
++        /usr/sbin/chown root:wheel \(agent.installedAbsolutePath)
++        /bin/chmod 755 \(agent.installedAbsolutePath)
++        /usr/sbin/chown root:wheel /\(agent.daemonPlistPath)
++        /bin/chmod 644 /\(agent.daemonPlistPath)
++        /usr/sbin/chown \(agent.runAsUsername) \(agent.logDirectory)
++        /bin/chmod 755 \(agent.logDirectory)
++        /bin/launchctl enable system/\(agent.label)
++        """
++    }
++
+     /// Run unattended setup on a VM by patching the installed macOS disk offline.
+     func install(
+         vm: VM,
+         config: UnattendedConfig,
+         identity: GuestIdentity = (try? GuestIdentity()) ?? GuestIdentity.legacy,
++        agent: GuestAgentInstall? = nil,
+         vncPort: Int = 0,
+         noDisplay: Bool = false,
+         debug: Bool = false,
+@@ -50,18 +80,20 @@ final class UnattendedInstaller {
+             "verifyVncPort": "\(vncPort)",
+             "compatNoDisplayFlag": "\(noDisplay)",
+             "compatDebugFlag": "\(debug)",
+-            "compatDebugDir": debugDir ?? "default"
++            "compatDebugDir": debugDir ?? "default",
++            "guestAgent": agent?.label ?? "none"
+         ])
+ 
+         try await materializeFirstBootState(vm: vm, vncPort: vncPort)
+ 
+         let patcher = MacOSOfflineSetupPatcher()
+-        try patcher.patch(vm: vm, identity: identity)
++        try patcher.patch(vm: vm, identity: identity, agent: agent)
+ 
+         try await verifySetup(
+             vm: vm,
+             config: config,
+             identity: identity,
++            agent: agent,
+             vncPort: vncPort
+         )
+     }
+@@ -179,6 +211,7 @@ final class UnattendedInstaller {
+         vm: VM,
+         config: UnattendedConfig,
+         identity: GuestIdentity,
++        agent: GuestAgentInstall?,
+         vncPort: Int
+     ) async throws {
+         Logger.info("Starting VM to verify offline unattended setup", metadata: [
+@@ -258,6 +291,7 @@ final class UnattendedInstaller {
+             try await finalizeGuestSystemSetup(
+                 vmIP: vmIP,
+                 identity: identity,
++                agent: agent,
+                 user: healthCheck.user ?? identity.bootstrap.username,
+                 password: healthCheck.password ?? identity.bootstrap.password
+             )
+@@ -291,6 +325,7 @@ final class UnattendedInstaller {
+     private func finalizeGuestSystemSetup(
+         vmIP: String,
+         identity: GuestIdentity,
++        agent: GuestAgentInstall?,
+         user: String,
+         password: String
+     ) async throws {
+@@ -301,7 +336,10 @@ final class UnattendedInstaller {
+ 
+         let sshClient = SSHClient(host: vmIP, port: 22, user: user, password: password)
+         let escapedPassword = password.replacingOccurrences(of: "'", with: "'\\''")
+-        let script = Self.guestFinalizationScript(for: identity.bootstrap)
++        let script = Self.guestFinalizationScript(
++            for: identity.bootstrap,
++            agent: agent
++        )
+         let encodedScript = Data(script.utf8).base64EncodedString()
+         let command = "printf '%s\\n' '\(escapedPassword)' | /usr/bin/sudo -S /bin/sh -c '/bin/echo \(encodedScript) | /usr/bin/base64 -D | /bin/sh'"
+         let result = try await sshClient.execute(command: command, timeout: 60)
+diff --git a/libs/lume/tests/GuestAgentInstallTests.swift b/libs/lume/tests/GuestAgentInstallTests.swift
+new file mode 100644
+index 0000000..31eb3b3
+--- /dev/null
++++ b/libs/lume/tests/GuestAgentInstallTests.swift
+@@ -0,0 +1,161 @@
++import Foundation
++import Testing
++
++@testable import lume
++
++private func makeExecutable(bytes: Int = 32) throws -> (URL, URL) {
++    let root = FileManager.default.temporaryDirectory
++        .appendingPathComponent(UUID().uuidString)
++    try FileManager.default.createDirectory(
++        at: root, withIntermediateDirectories: true)
++    let binary = root.appendingPathComponent("darkbloom-guest-agent")
++    try Data(repeating: 0x7f, count: bytes).write(to: binary)
++    return (root, binary)
++}
++
++private func makeInstall(
++    executable: URL,
++    runAs: String = "sandbox",
++    logDirectory: String = GuestAgentInstall.defaultLogDirectory,
++    port: UInt32 = 8888,
++    imageID: String = "base-image-1"
++) throws -> GuestAgentInstall {
++    try GuestAgentInstall(
++        executableURL: executable,
++        runAsUsername: runAs,
++        logDirectory: logDirectory,
++        port: port,
++        imageID: imageID
++    )
++}
++
++@Test("the daemon runs as the tenant and carries the image id")
++func daemonPlistNamesTheTenantAndImage() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let plist = try makeInstall(executable: binary).daemonPlist()
++
++    #expect(plist["UserName"] as? String == "sandbox")
++    #expect(plist["Label"] as? String == GuestAgentInstall.defaultLabel)
++    let environment = plist["EnvironmentVariables"] as? [String: String]
++    #expect(environment?[GuestAgentInstall.imageIDEnvironmentVariable] == "base-image-1")
++    let arguments = plist["ProgramArguments"] as? [String]
++    #expect(arguments?.first == "/usr/local/libexec/darkbloom-guest-agent")
++    #expect(arguments?.last == "8888")
++}
++
++@Test("the daemon is restarted, because the agent fail-fasts on bind")
++func daemonKeepsTheAgentAlive() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let plist = try makeInstall(executable: binary).daemonPlist()
++
++    // The agent binds vsock as its very first act and exits on failure with no
++    // retry, so a start that races the virtio device would otherwise leave the
++    // job dead for the life of the VM.
++    #expect(plist["KeepAlive"] as? Bool == true)
++    #expect(plist["RunAtLoad"] as? Bool == true)
++}
++
++@Test("the daemon log is somewhere the tenant can actually write")
++func daemonLogIsNotUnderVarLog() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let install = try makeInstall(executable: binary)
++    let plist = install.daemonPlist()
++
++    // launchd opens the job's stdout as the job's user before the program
++    // runs. With the log under /var/log a daemon running as an unprivileged
++    // tenant dies EX_CONFIG (78) and respawns forever while writing no log at
++    // all -- the diagnostic that would explain it is the thing that cannot be
++    // created. Measured on a real guest at 45 respawns and climbing.
++    let out = plist["StandardOutPath"] as? String
++    #expect(out == install.logPath)
++    #expect(out?.hasPrefix("/var/log") == false)
++    #expect(plist["StandardErrorPath"] as? String == out)
++}
++
++@Test("finalization takes ownership the offline patcher cannot set")
++func finalizationChownsTheAgent() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let install = try makeInstall(executable: binary)
++    let script = UnattendedInstaller.guestAgentFinalizationCommands(install)
++
++    // launchd refuses a daemon plist that is not root:wheel, and nothing in
++    // the patcher can set an owner.
++    #expect(script.contains("chown root:wheel /usr/local/libexec/darkbloom-guest-agent"))
++    #expect(script.contains("chown root:wheel /Library/LaunchDaemons/\(install.label).plist"))
++    #expect(script.contains("chmod 755 /usr/local/libexec/darkbloom-guest-agent"))
++    // The log directory goes to the tenant, not root: see the EX_CONFIG note.
++    #expect(script.contains("chown sandbox \(install.logDirectory)"))
++    #expect(script.contains("launchctl enable system/\(install.label)"))
++}
++
++@MainActor
++@Test("a finalization script without an agent is unchanged")
++func finalizationWithoutAgentIsUnchanged() throws {
++    let user = GuestIdentity.defaultBootstrap
++    let plain = UnattendedInstaller.guestFinalizationScript(for: user)
++
++    #expect(!plain.contains("darkbloom-guest-agent"))
++    #expect(!plain.contains("LaunchDaemons"))
++    // The pre-existing behaviour has to survive: an ordinary lume create bakes
++    // no agent and must produce exactly the script it always did.
++    #expect(plain.contains("/bin/launchctl enable system/com.openssh.sshd"))
++    #expect(plain.contains("MARKER_OWNER=%u:%g"))
++}
++
++@Test("an agent install rejects inputs that would silently misinstall")
++func installRejectsBadInputs() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    // An absolute install path would escape the mount point when joined.
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try GuestAgentInstall(
++            executableURL: binary,
++            installPath: "/usr/local/libexec/agent",
++            runAsUsername: "sandbox",
++            port: 8888,
++            imageID: "img"
++        )
++    }
++    // An empty image id would advertise "" and fail every host-side check.
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try makeInstall(executable: binary, imageID: "")
++    }
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try makeInstall(executable: binary, port: 0)
++    }
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try makeInstall(executable: binary, runAs: "")
++    }
++    // A missing binary must fail at construction, not at write time inside a
++    // mounted disk image.
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try makeInstall(
++            executable: root.appendingPathComponent("absent"))
++    }
++    // A zero-byte binary is a build that silently produced nothing.
++    let empty = root.appendingPathComponent("empty")
++    try Data().write(to: empty)
++    #expect(throws: GuestAgentInstall.ValidationError.self) {
++        _ = try makeInstall(executable: empty)
++    }
++}
++
++@Test("launchd labels are validated")
++func labelValidation() {
++    #expect(GuestAgentInstall.isWellFormedLabel("dev.darkbloom.guest-agent"))
++    #expect(!GuestAgentInstall.isWellFormedLabel(""))
++    #expect(!GuestAgentInstall.isWellFormedLabel("no-dots"))
++    #expect(!GuestAgentInstall.isWellFormedLabel(".leading"))
++    #expect(!GuestAgentInstall.isWellFormedLabel("trailing."))
++    #expect(!GuestAgentInstall.isWellFormedLabel("has space.x"))
++    #expect(!GuestAgentInstall.isWellFormedLabel("has/slash.x"))
++}

@@ -187,7 +187,7 @@ extension LumeVirtualMachineRuntime {
             // A fresh install gets its own administrator plus an unprivileged
             // tenant account, so no two sandboxes share a guest credential.
             guestCredential = LumeGuestCredential.generate()
-            arguments = storageArguments([
+            var createArguments = [
                 "create",
                 specification.name,
                 "--os", "macOS",
@@ -202,7 +202,22 @@ extension LumeVirtualMachineRuntime {
                 "--bootstrap-user", guestCredential!.bootstrapUsername,
                 "--tenant-user", guestCredential!.tenantUsername,
                 "--tenant-uid", guestCredential!.tenantUID,
-            ])
+            ]
+            // Bake the guest agent into the image being installed. It runs as
+            // the tenant account created just above, and the image id it will
+            // report is the template's own name, which is what the host has to
+            // compare a handshake against.
+            if let agent = configuration.guestAgentExecutable {
+                createArguments += [
+                    "--guest-agent", agent.path,
+                    "--guest-agent-port", String(
+                        configuration.guestChannelPort
+                            ?? LumeRuntimeConfiguration.defaultGuestChannelPort
+                    ),
+                    "--guest-agent-image-id", specification.name,
+                ]
+            }
+            arguments = storageArguments(createArguments)
         case .localTemplate(let template):
             guard let templateRecord = try await inspect(name: template) else {
                 throw SandboxRuntimeError.invalidImageReference

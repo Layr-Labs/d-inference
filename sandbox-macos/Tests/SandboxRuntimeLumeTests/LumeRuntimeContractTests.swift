@@ -51,10 +51,87 @@ final class LumeRuntimeContractTests: XCTestCase {
                     path: LumeRuntimeConfiguration.pinnedEmergencyStopPatchPath,
                     sha256: LumeRuntimeConfiguration.pinnedEmergencyStopPatchSHA256
                 ),
+                LumePatch(
+                    path: LumeRuntimeConfiguration.pinnedGuestAgentPatchPath,
+                    sha256: LumeRuntimeConfiguration.pinnedGuestAgentPatchSHA256
+                ),
             ]
         )
         XCTAssertEqual(lock.license, "MIT")
         XCTAssertEqual(lock.telemetry, "disabled")
+    }
+
+    /// The agent is baked at the template layer because a clone is an APFS
+    /// clonefile of the template's disk: install once, inherited by every
+    /// sandbox. So the flags have to reach `lume create` for a restore-image
+    /// install, and must not appear when no agent was configured.
+    func testCreatePassesTheGuestAgentToLumeWhenConfigured() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+
+        let agent = fixture.directory.appendingPathComponent("guest-agent")
+        try Data(repeating: 0x7f, count: 64).write(to: agent)
+
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 30,
+            guestAgentExecutable: agent
+        )
+        let specification = try SandboxVirtualMachineSpecification(
+            name: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            imageSource: .restoreImage(
+                url: fixture.restoreImage,
+                unattendedPreset: "tahoe"
+            ),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        _ = try? await runtime.create(specification)
+
+        let recorded = try String(
+            contentsOf: fixture.createArguments, encoding: .utf8
+        )
+        let arguments = recorded.split(separator: "\n").map(String.init)
+        let index = try XCTUnwrap(arguments.firstIndex(of: "--guest-agent"))
+        XCTAssertEqual(arguments[index + 1], agent.path)
+        let portIndex = try XCTUnwrap(
+            arguments.firstIndex(of: "--guest-agent-port")
+        )
+        // The port the agent binds and the port the host connects to are one
+        // constant; a mismatch would hand over a descriptor nothing answers.
+        XCTAssertEqual(
+            arguments[portIndex + 1],
+            String(LumeRuntimeConfiguration.defaultGuestChannelPort)
+        )
+        let imageIndex = try XCTUnwrap(
+            arguments.firstIndex(of: "--guest-agent-image-id")
+        )
+        XCTAssertEqual(arguments[imageIndex + 1], fixture.virtualMachineName)
+        // The agent must run as the tenant, which the same invocation creates.
+        XCTAssertTrue(arguments.contains("--tenant-user"))
+    }
+
+    func testCreateOmitsTheGuestAgentWhenNoneIsConfigured() async throws {
+        let fixture = try FakeLumeFixture(initialState: nil)
+        defer { try? fixture.remove() }
+
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let specification = try SandboxVirtualMachineSpecification(
+            name: fixture.virtualMachineName,
+            resources: try SandboxResourceSpecification.macOSSmall(),
+            imageSource: .restoreImage(
+                url: fixture.restoreImage,
+                unattendedPreset: "tahoe"
+            ),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        _ = try? await runtime.create(specification)
+
+        let recorded = try String(
+            contentsOf: fixture.createArguments, encoding: .utf8
+        )
+        // An ordinary install bakes nothing, so the image is byte-for-byte the
+        // one this path always produced.
+        XCTAssertFalse(recorded.contains("--guest-agent"))
     }
 
     func testBuildScriptPinsProductionSigningRequirement() throws {

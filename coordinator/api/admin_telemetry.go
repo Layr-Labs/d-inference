@@ -304,7 +304,7 @@ func writeRouteCSV(w http.ResponseWriter, records []store.InferenceRouteRecord) 
 		return err
 	}
 	for i := range records {
-		if err := cw.Write(routeCSVRow(records[i])); err != nil {
+		if err := cw.Write(guardCSVRow(routeCSVRow(records[i]))); err != nil {
 			return err
 		}
 	}
@@ -418,7 +418,7 @@ func writeRejectionCSV(w http.ResponseWriter, records []store.RejectionRecord) e
 		return err
 	}
 	for i := range records {
-		if err := cw.Write(rejectionCSVRow(records[i])); err != nil {
+		if err := cw.Write(guardCSVRow(rejectionCSVRow(records[i]))); err != nil {
 			return err
 		}
 	}

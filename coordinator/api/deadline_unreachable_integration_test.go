@@ -357,6 +357,8 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		map[string]struct{}{},
 		0,
 		nil,
+		"",
+		nil,
 		nil,
 	)
 	if selected != nil || pending != nil {

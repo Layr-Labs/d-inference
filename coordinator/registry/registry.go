@@ -264,7 +264,10 @@ type PendingRequest struct {
 	// MarkFirstContentArrived/FirstContentAtSafe, which guard them with timingMu
 	// so cross-goroutine access is race-free. All other Timing fields remain
 	// dispatch-goroutine-only.
-	Timing   *RequestTiming
+	Timing *RequestTiming
+	// Profile is this attempt's profiler record (system profiler). Nil when the
+	// profiler is off. Stamped lock-free from any goroutine; see request_profile.go.
+	Profile  *AttemptProfile
 	timingMu sync.Mutex
 	// contentCommitted marks THIS attempt as the one that delivered its first
 	// content chunk to the client (set by commitFirstContent / the generic
@@ -334,6 +337,28 @@ func (pr *PendingRequest) FinishProviderChunkIngress(
 	}
 	pr.firstContentIngressAt = receivedAt
 	return true
+}
+
+// FirstContentIngressAtSafe returns the ingress timestamp of the first
+// content-bearing chunk (zero when none), under the ingress lock.
+func (pr *PendingRequest) FirstContentIngressAtSafe() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.firstContentIngressAt
+}
+
+// CompletionIngressAtSafe returns the completion-ingress timestamp (zero when
+// no terminal has been marked), under the ingress lock.
+func (pr *PendingRequest) CompletionIngressAtSafe() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.completionIngressAt
 }
 
 func (pr *PendingRequest) HasFirstContentIngress() bool {
@@ -3583,8 +3608,65 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				s.QueuedTokenBudget = maxTokenBudgetCap
 			}
 		}
+		if t := s.Telemetry; t != nil {
+			// System-profiler slot telemetry (measurement only). Silent
+			// clamps, like the token-budget fields above: nothing routes on
+			// these, so a bad value is not worth a log line per heartbeat.
+			// t is the registry-owned clone made by canonicalHeartbeatModelState.
+			clampTelemetryCount(t.QueuedPrefillTokens)
+			clampTelemetryCount(t.PartialPrefillRows)
+			clampTelemetryCount(t.PrefillTokensTotal)
+			clampTelemetryCount(t.PumpTasks)
+			clampTelemetryCount(t.MTPRoundsTotal)
+			clampTelemetryCount(t.MTPProposedTotal)
+			clampTelemetryCount(t.MTPAcceptedTotal)
+			clampTelemetryCount(t.DecodeRowsTotal)
+			clampTelemetryInt64(t.KVBytesInUse, maxTelemetryBytes)
+			clampTelemetryInt64(t.KVBytesCapacity, maxTelemetryBytes)
+			clampTelemetryInt64(t.EvalInFlightMS, maxTelemetryMS)
+			// Cumulative ns of engine step wall time: a count cap would wrap
+			// after ~17 min of stepping, so it gets the wide ns bound.
+			clampTelemetryInt64(t.StepWallNSTotal, maxTelemetryNSTotal)
+			if p := t.IsolatedPrefillTPS; p != nil {
+				if math.IsNaN(*p) || math.IsInf(*p, 0) {
+					t.IsolatedPrefillTPS = nil // garbage reads as "not reported"
+				} else if v, changed := clampNonNeg(*p, maxTelemetryTPS); changed {
+					*p = v
+				}
+			}
+		}
+	}
+	if t := bc.Telemetry; t != nil {
+		clampTelemetryCount(t.MLXNumResources)
+		clampTelemetryCount(t.InAdmission)
+		clampTelemetryCount(t.InflightTasks)
+		t.MemoryPressureLevel = t.MemoryPressureLevel.Fold()
 	}
 }
+
+// System-profiler heartbeat telemetry bounds (CONTRACT-WIRE.md §2). Pointer
+// numerics are clamped in place into [0, max]; nil (absent) is left alone so
+// presence semantics survive.
+const (
+	maxTelemetryCount   int64   = 1_000_000_000_000 // 1e12
+	maxTelemetryBytes   int64   = 1 << 48
+	maxTelemetryMS      int64   = 3_600_000                 // 1 h
+	maxTelemetryNSTotal int64   = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
+	maxTelemetryTPS     float64 = 20_000
+)
+
+func clampTelemetryInt64(p *int64, limit int64) {
+	if p == nil {
+		return
+	}
+	if *p < 0 {
+		*p = 0
+	} else if *p > limit {
+		*p = limit
+	}
+}
+
+func clampTelemetryCount(p *int64) { clampTelemetryInt64(p, maxTelemetryCount) }
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // Provider-reported model inventory is preserved even when the current catalog
@@ -4011,7 +4093,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
 	// rather than the legacy direct queue assignment path.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
 	// check if a cold provider should swap models to serve queued demand.
@@ -4800,6 +4882,14 @@ func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current 
 	total.StreamClosedWithoutTerminal += cumulativeDelta(previous.StreamClosedWithoutTerminal, current.StreamClosedWithoutTerminal)
 	total.CancelDuringModelLoad += cumulativeDelta(previous.CancelDuringModelLoad, current.CancelDuringModelLoad)
 	total.UsageGaps += cumulativeDelta(previous.UsageGaps, current.UsageGaps)
+	// System profiler cancel accountability counters (cumulative per session).
+	total.CancelStagePreAcceptTotal += cumulativeDelta(previous.CancelStagePreAcceptTotal, current.CancelStagePreAcceptTotal)
+	total.CancelStagePreEngineTotal += cumulativeDelta(previous.CancelStagePreEngineTotal, current.CancelStagePreEngineTotal)
+	total.CancelStagePrefillTotal += cumulativeDelta(previous.CancelStagePrefillTotal, current.CancelStagePrefillTotal)
+	total.CancelStageDecodeTotal += cumulativeDelta(previous.CancelStageDecodeTotal, current.CancelStageDecodeTotal)
+	total.CancelStagePostTerminalTotal += cumulativeDelta(previous.CancelStagePostTerminalTotal, current.CancelStagePostTerminalTotal)
+	total.TokensAfterCancelTotal += cumulativeDelta(previous.TokensAfterCancelTotal, current.TokensAfterCancelTotal)
+	total.CancelAbortNSSum += cumulativeDelta(previous.CancelAbortNSSum, current.CancelAbortNSSum)
 }
 
 func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
@@ -4827,6 +4917,19 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 	}
 	if merged.UsageGaps == 0 {
 		merged.UsageGaps = previous.UsageGaps
+	}
+	for _, f := range []struct{ cur, prev *int64 }{
+		{&merged.CancelStagePreAcceptTotal, &previous.CancelStagePreAcceptTotal},
+		{&merged.CancelStagePreEngineTotal, &previous.CancelStagePreEngineTotal},
+		{&merged.CancelStagePrefillTotal, &previous.CancelStagePrefillTotal},
+		{&merged.CancelStageDecodeTotal, &previous.CancelStageDecodeTotal},
+		{&merged.CancelStagePostTerminalTotal, &previous.CancelStagePostTerminalTotal},
+		{&merged.TokensAfterCancelTotal, &previous.TokensAfterCancelTotal},
+		{&merged.CancelAbortNSSum, &previous.CancelAbortNSSum},
+	} {
+		if *f.cur == 0 {
+			*f.cur = *f.prev
+		}
 	}
 	return merged
 }
@@ -4904,7 +5007,7 @@ func (r *Registry) Disconnect(id string) {
 	// from temporarily capacity-blocked into permanently unservable. Re-run
 	// the canonical drain after removal so those waiters receive the immediate
 	// capability-unavailable result instead of sleeping until maxWait.
-	r.drainQueuedRequestsForModels(disconnectedModels)
+	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
 	r.cacheRouting.disconnect(id, cacheHolderRemovalDisconnect)
@@ -5226,7 +5329,7 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	// A newly verified (or newly recovered) provider may unlock queued requests
 	// for any model it serves.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerChallenge)
 
 	return recovered
 }
@@ -5342,7 +5445,7 @@ func (r *Registry) SetProviderIdle(id string) {
 	p.mu.Unlock()
 
 	// Use all newly available capacity, not just a single queued request.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerIdle)
 }
 
 // AttestationSummary provides aggregate attestation status for a model's providers.

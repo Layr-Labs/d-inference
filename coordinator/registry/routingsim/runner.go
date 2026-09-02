@@ -22,6 +22,11 @@ const (
 	// OutcomeTTFTTooSlow means a candidate exists but even the fastest misses
 	// the TTFT deadline. Consumer reason code: "ttft_too_slow" (HTTP 429).
 	OutcomeTTFTTooSlow Outcome = "ttft_too_slow"
+	// OutcomeNoProvider: no candidate and no capacity rejection — the fleet
+	// cannot serve the model at all (reconstructed fleets can reach this).
+	OutcomeNoProvider Outcome = "no_provider"
+	// OutcomeModelTooLarge: providers advertise the model but none can fit it.
+	OutcomeModelTooLarge Outcome = "model_too_large"
 )
 
 // TTFTDeadline mirrors the ordinary API test posture (5s base) plus the shared
@@ -44,11 +49,17 @@ func TTFTDeadline(model string, promptTokens int) time.Duration {
 // modelTooLarge / no-provider cases collapse into the served default here; a
 // well-formed fleet never produces them.
 func ClassifyWithGate(reg *registry.Registry, a Arrival, softTTFT bool) Outcome {
-	candidateCount, capacityRejections, _, bestTTFT, hasTTFT :=
-		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{}, false)
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT :=
+		reg.QuickCapacityCheckWithTTFTForRequest(a.Model, a.PromptTokens, a.MaxTokens, registry.RequestTraits{HasTools: a.HasTools}, a.RequiresVision)
 
 	if candidateCount == 0 && capacityRejections > 0 {
 		return OutcomeMachineBusy
+	}
+	if candidateCount == 0 && capacityRejections == 0 {
+		if modelTooLarge > 0 {
+			return OutcomeModelTooLarge
+		}
+		return OutcomeNoProvider
 	}
 	if !softTTFT && hasTTFT && bestTTFT > TTFTDeadline(a.Model, a.PromptTokens) {
 		return OutcomeTTFTTooSlow

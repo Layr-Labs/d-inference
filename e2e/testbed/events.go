@@ -24,6 +24,14 @@ const (
 	SegmentDecodeTPS             Segment = "decode_tps"
 	SegmentProviderToCoordinator Segment = "provider_to_coordinator"
 	SegmentProviderToClient      Segment = "provider_to_client"
+	// Additive coordinator segments from the system profiler's X-Timing keys.
+	SegmentPreHandler   Segment = "pre_handler"
+	SegmentPreflight    Segment = "preflight"
+	SegmentRouteReserve Segment = "route_reserve"
+	SegmentQueuePure    Segment = "queue_pure"
+	SegmentWriter       Segment = "writer"
+	SegmentSocket       Segment = "socket"
+	SegmentProviderAck  Segment = "provider_ack"
 )
 
 type EventKind string

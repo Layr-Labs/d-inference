@@ -370,6 +370,13 @@ type BackendSlotCapacity struct {
 	WedgeSuspected             bool    `json:"wedge_suspected,omitempty"`                // provider-computed: ≥N consecutive admits, 0 first-tokens, ≥T seconds
 	EvalInFlightMs             int64   `json:"eval_in_flight_ms,omitempty"`              // ms the current blocking eval has run (process-global, evalLock); seconds-range = wedge smoking gun
 	IdleClearInFlightMs        int64   `json:"idle_clear_in_flight_ms,omitempty"`        // ms the current idle GPU drain+clearCache has run for this slot; seconds-range = clearCache/IOKit race
+
+	// Telemetry is the system-profiler per-slot sub-object (nil on providers
+	// that predate it; presence is the "new provider" sentinel). Pointer so
+	// omission and an empty object stay distinct. Clamped by
+	// registry.clampBackendCapacity, cloned by canonicalHeartbeatModelState.
+	// MEASUREMENT ONLY — routing is NOT gated on it.
+	Telemetry *SlotTelemetry `json:"telemetry,omitempty"`
 }
 
 // MLXCacheReclaimerTelemetry reports cumulative provider allocator-reclaim
@@ -413,6 +420,9 @@ type BackendCapacity struct {
 	// is omitted from the wire and the coordinator keeps last-write-wins
 	// heartbeat semantics.
 	CapacitySeq uint64 `json:"capacity_seq,omitempty"`
+	// Telemetry is the system-profiler machine-level sub-object (nil on
+	// providers that predate it). Same rules as BackendSlotCapacity.Telemetry.
+	Telemetry *CapacityTelemetry `json:"telemetry,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -434,6 +444,16 @@ type HeartbeatStats struct {
 	StreamClosedWithoutTerminal  int64 `json:"stream_closed_without_terminal,omitempty"`
 	CancelDuringModelLoad        int64 `json:"cancel_during_model_load,omitempty"`
 	UsageGaps                    int64 `json:"usage_gaps,omitempty"`
+
+	// System-profiler cancel accounting (cumulative per session, delta-merged
+	// like the counters above; absent on providers that predate them).
+	CancelStagePreAcceptTotal    int64 `json:"cancel_stage_pre_accept_total,omitempty"`
+	CancelStagePreEngineTotal    int64 `json:"cancel_stage_pre_engine_total,omitempty"`
+	CancelStagePrefillTotal      int64 `json:"cancel_stage_prefill_total,omitempty"`
+	CancelStageDecodeTotal       int64 `json:"cancel_stage_decode_total,omitempty"`
+	CancelStagePostTerminalTotal int64 `json:"cancel_stage_post_terminal_total,omitempty"`
+	TokensAfterCancelTotal       int64 `json:"tokens_after_cancel_total,omitempty"`
+	CancelAbortNSSum             int64 `json:"cancel_abort_ns_sum,omitempty"`
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is
@@ -553,6 +573,15 @@ type InferenceCompleteMessage struct {
 	StopSequence string    `json:"stop_sequence,omitempty"` // Exact caller-authored stop string matched by the engine
 	SESignature  string    `json:"se_signature,omitempty"`  // SE-signed response hash
 	ResponseHash string    `json:"response_hash,omitempty"` // SHA-256 of response data
+	// Profile is the optional provider request profile (system profiler).
+	// Deliberately json.RawMessage, not a typed struct: the WS read loop only
+	// length-checks it (≤ MaxInferenceProfileBytes) and retains the bytes; the
+	// typed decode into InferenceProfile happens on the profile sink worker
+	// after the terminal has been fully processed. A malformed profile can
+	// therefore never fail the envelope decode of a terminal frame. Absent on
+	// legacy providers. OBSERVABILITY ONLY: never routing, health, billing or
+	// client output.
+	Profile json.RawMessage `json:"profile,omitempty"`
 }
 
 // InferenceErrorMessage signals an error during inference.
@@ -610,6 +639,12 @@ type InferenceErrorMessage struct {
 	AvailableTokenBudget *int64                  `json:"available_token_budget,omitempty"`
 	FeasibleAfterMS      int64                   `json:"feasible_after_ms,omitempty"`
 	CapacitySeq          uint64                  `json:"capacity_seq,omitempty"`
+	// Profile is the optional provider request profile of the failed attempt.
+	// Same contract as InferenceCompleteMessage.Profile: raw bytes on the
+	// wire, length-checked on the read loop, decoded on the profile sink
+	// worker. The sanitizer carries it through as an opaque byte copy so it
+	// survives the confidentiality boundary without ever being read there.
+	Profile json.RawMessage `json:"profile,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

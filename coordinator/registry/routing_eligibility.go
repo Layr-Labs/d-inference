@@ -41,25 +41,37 @@ import "time"
 // binary serves. This is exactly the set of gates publiclyRoutableLocked
 // enforces. Caller holds r.mu and p.mu.
 func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
+	ok, _ := r.providerLivenessGateReasonLocked(p, minTrust, allowPrivate, now)
+	return ok
+}
+
+// providerLivenessGateReasonLocked is providerLivenessGateLocked returning the
+// FIRST failing gate as a closed GateReason (meaningful only when ok is false).
+// The evaluation order is byte-for-byte the boolean gate's, so the two can
+// never disagree on the verdict. Allocation-free. Caller holds r.mu and p.mu.
+func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) (bool, GateReason) {
+	if p.Status == StatusOffline {
+		return false, GateOffline
+	}
+	if p.Status == StatusUntrusted {
+		return false, GateUntrusted
 	}
 	if p.PrivateOnly && !allowPrivate {
-		return false
+		return false, GatePrivateOnly
 	}
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
+		return false, GateTrustFloor
 	}
 	if !p.RuntimeVerified {
-		return false
+		return false, GateRuntimeUnverified
 	}
 	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
+		return false, GatePrivateText
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
+		return false, GateChallengeStale
 	}
-	return true
+	return true, GateReasonCount
 }
 
 // providerServesRoutableModelLocked reports whether the provider advertises a
@@ -73,6 +85,14 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 // alias routability, warm detection, and the load planner so the catalog +
 // dedicated decision cannot drift across them. Caller holds r.mu and p.mu.
 func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, allowDedicated bool) bool {
+	ok, _ := r.providerServesRoutableModelReasonLocked(p, model, allowDedicated)
+	return ok
+}
+
+// providerServesRoutableModelReasonLocked is providerServesRoutableModelLocked
+// returning the failing gate (GateNotServingModel or GateDedicated; meaningful
+// only when ok is false). Caller holds r.mu and p.mu.
+func (r *Registry) providerServesRoutableModelReasonLocked(p *Provider, model string, allowDedicated bool) (bool, GateReason) {
 	var serves bool
 	if allowDedicated {
 		serves = r.providerServesOwnedRoutableModelLocked(p, model)
@@ -80,10 +100,10 @@ func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, 
 		serves = r.providerServesCatalogModelLocked(p, model)
 	}
 	if !serves {
-		return false
+		return false, GateNotServingModel
 	}
 	if !allowDedicated && r.providerExcludedByDedicatedRuleLocked(p, model) {
-		return false
+		return false, GateDedicated
 	}
-	return true
+	return true, GateReasonCount
 }

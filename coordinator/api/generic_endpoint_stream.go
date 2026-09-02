@@ -70,6 +70,7 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 					emitter.emitError("provider_error", "provider ended without completion")
 					return
 				case <-r.Context().Done():
+					profileClientGone(pr, phaseAfterCommit)
 					return
 				}
 				s.noteInferenceSuccess(pr)
@@ -104,6 +105,7 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 			return
 
 		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
 			return
 		}
 	}
@@ -117,13 +119,14 @@ func newGenericEndpointStreamEmitter(
 	if pr.ConsumerEndpoint == messagesEndpoint {
 		return newMessagesStreamEmitter(w, flusher, pr)
 	}
-	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr}
+	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr, stamps: newRelayStamps(pr.Profile.Parent())}
 }
 
 type completionsStreamEmitter struct {
 	w            http.ResponseWriter
 	flusher      http.Flusher
 	pr           *registry.PendingRequest
+	stamps       *relayStamps
 	finishIndex  int
 	finishReason string
 }
@@ -171,6 +174,7 @@ func (e *completionsStreamEmitter) finish(usage protocol.UsageInfo) {
 	e.emit(event)
 	fmt.Fprint(e.w, "data: [DONE]\n\n")
 	e.flusher.Flush()
+	e.stamps.done()
 }
 
 func (e *completionsStreamEmitter) emitError(kind, message string) {
@@ -182,11 +186,15 @@ func (e *completionsStreamEmitter) emit(value any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(e.w, "data: %s\n\n", encoded)
+	if _, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded); werr != nil {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
+	e.stamps.flushed(len(encoded))
 }
 
 type messagesStreamEmitter struct {
+	stamps  *relayStamps
 	w       http.ResponseWriter
 	flusher http.Flusher
 	pr      *registry.PendingRequest
@@ -205,6 +213,7 @@ func newMessagesStreamEmitter(
 	pr *registry.PendingRequest,
 ) *messagesStreamEmitter {
 	return &messagesStreamEmitter{
+		stamps:    newRelayStamps(pr.Profile.Parent()),
 		w:         w,
 		flusher:   flusher,
 		pr:        pr,
@@ -306,6 +315,7 @@ func (e *messagesStreamEmitter) finish(usage protocol.UsageInfo) {
 	addResponseProof(delta, e.pr)
 	e.emit("message_delta", delta)
 	e.emit("message_stop", map[string]any{})
+	e.stamps.done()
 }
 
 func (e *messagesStreamEmitter) closeOpenBlock() {
@@ -334,6 +344,9 @@ func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
+	if _, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded); werr != nil {
+		e.stamps.writeErr()
+	}
 	e.flusher.Flush()
+	e.stamps.flushed(len(encoded))
 }

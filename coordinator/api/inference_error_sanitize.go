@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -30,6 +31,13 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	safe.Type = protocol.TypeInferenceError
 	safe.RequestID = msg.RequestID
 	safe.AttemptUsage = msg.AttemptUsage
+	// The provider profile is carried through as an opaque byte copy, exactly
+	// like AttemptUsage: it is NOT read here. It is length-checked on the read
+	// loop and decoded/validated on the profile sink worker
+	// (api/profiler_provider.go), after the terminal has been processed.
+	if msg.Profile != nil {
+		safe.Profile = append(json.RawMessage(nil), msg.Profile...)
+	}
 	safe.FailureCode = msg.FailureCode
 	legacyFrame := safe.FailureCode == ""
 	if !safe.FailureCode.Valid() {

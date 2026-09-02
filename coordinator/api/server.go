@@ -485,6 +485,13 @@ type Server struct {
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
 
+	// profiler owns the per-request profile records and their dedicated sink
+	// (system profiler). Nil on a Server built without NewServer.
+	profiler *profiler
+	// unknownRequestFrames counts provider frames for requests the coordinator
+	// no longer tracks (zombie streams); exported on the fleet coordinator row.
+	unknownRequestFrames atomic.Int64
+
 	// mediaResolver fetches remote http(s) image_url/video_url links into
 	// inline base64 data: URIs before the request body is E2E-encrypted to a
 	// provider, so consumers can pass links instead of pre-encoding media
@@ -844,6 +851,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	s.profiler = newProfilerFromEnv(s)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -939,6 +947,9 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	if s.profiler != nil {
+		s.profiler.close()
+	}
 }
 
 // SetAdminKey configures the admin API key for admin-only endpoints.
@@ -2865,6 +2876,10 @@ func (s *Server) routes() {
 	// enforce admin auth internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
+	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
+	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
 
@@ -3174,6 +3189,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3181,6 +3197,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			stampAuth(r, "admin", false)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3188,9 +3205,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		authKind := "apikey_cache"
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
+			authKind = "apikey_db"
 			// Cache miss — resolve the key (with its per-key limits) in one
 			// query. A disabled/expired/unknown key returns an error and falls
 			// through to the provider-token path below.
@@ -3251,7 +3270,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// references, or logs.
 		accountID := keyRec.OwnerAccountID
 		ctx := r.Context()
+		authDBRead := authKind == "apikey_db"
 		if accountID != "" {
+			authDBRead = true
 			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
@@ -3261,6 +3282,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		stampAuth(r, authKind, authDBRead)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -3349,6 +3371,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		}
 		rl := getLimiter()
 		if rl == nil {
+			stampRateLimit(r)
 			next(w, r)
 			return
 		}
@@ -3385,6 +3408,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			return
 		}
 		setRequestRateLimitHeaders(w, rl.Stat(accountID))
+		stampRateLimit(r)
 		next(w, r)
 	}
 }
@@ -3460,6 +3484,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
+		// X-Request-ID above is echoed and logged but never persisted).
+		if s.profilerEnabled() {
+			meta := &requestMeta{coordID: reqID, start: start}
+			if r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = newRequestID()
+			}
+			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
+		}
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(sw, r)

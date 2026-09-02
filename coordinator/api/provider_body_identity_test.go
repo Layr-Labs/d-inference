@@ -315,6 +315,37 @@ func TestProviderBodyByteIdentityAliasFallback(t *testing.T) {
 	}))
 }
 
+// On the Responses surface the alias-capacity fallback rewrites the model and
+// the fallback build's runtime defaults, then re-lowers input→chat; the
+// provider must receive exactly that lowering of the rewritten map.
+func TestProviderBodyByteIdentityResponsesAliasFallback(t *testing.T) {
+	harness := newRuntimeDefaultsAliasHarness(t, map[string]any{
+		"reasoning_parser": "desired-reasoning",
+		"tool_call_parser": "desired-tools",
+	}, map[string]any{
+		"reasoning_parser": "previous-reasoning",
+		"tool_call_parser": "previous-tools",
+	})
+	body := `{"model":"` + runtimeDefaultsAlias + `","input":"hello","max_output_tokens":32,"stream":true}`
+	postRuntimeDefaultsEndpoint(t, harness, "/v1/responses", body)
+	var got []byte
+	select {
+	case got = <-harness.providers[0].bodies:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fallback provider never received the request")
+	}
+	rewritten := forwardOracle(t, body, func(p map[string]any) {
+		p["model"] = runtimeDefaultsPreviousModel
+		p["reasoning_parser"] = "previous-reasoning"
+		p["tool_call_parser"] = "previous-tools"
+	})
+	want, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSealedProviderBytes(t, got, want)
+}
+
 // Remote media inlining mutates parsed after the first serialization; the
 // provider must receive a fresh serialization of the inlined map.
 func TestProviderBodyByteIdentityMediaInlined(t *testing.T) {

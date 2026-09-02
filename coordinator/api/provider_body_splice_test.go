@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -89,16 +91,22 @@ func spliceCases(t *testing.T) map[string]spliceCase {
 		"canonical existing key last": {[]byte(`{"model":"m","prompt_cache_key":"old"}`), true},
 		"canonical invalid utf8":      {forwardBytes(t, map[string]any{"model": "m", "text": "bad \xff\xfe bytes"}), true},
 		"canonical escapes in values": {[]byte(`{"a":"quote \" backslash \\ A \\\"","b":"{not an object}","c":"[nor array],"}`), true},
-		"canonical del in key":        {[]byte("{\"k\x7f\":1}"), false},
-		"pretty printed":              {[]byte("{\n  \"model\": \"m\",\n  \"messages\": []\n}"), false},
-		"whitespace inside nested":    {[]byte(`{"a":[1, 2],"b":"x"}`), false},
-		"unsorted keys":               {[]byte(`{"z":1,"a":2}`), false},
-		"duplicate keys":              {[]byte(`{"a":1,"a":2}`), false},
-		"escaped key":                 {[]byte(`{"pro\u006dpt":"x"}`), false},
-		"non-ascii key":               {[]byte(`{"ключ":"x"}`), false},
-		"key with quote escape":       {[]byte(`{"a\"b":"x"}`), false},
-		"leading whitespace":          {[]byte(` {"a":1}`), false},
-		"trailing newline":            {[]byte("{\"a\":1}\n"), false},
+		// Raw (not coordinator-serialized) canonical bodies: values are copied
+		// verbatim by both paths, whatever they contain.
+		"canonical raw line separators": {[]byte("{\"a\":\"x\u2028y\u2029z\",\"b\":\"\\u2028 escaped\"}"), true},
+		"canonical raw invalid utf8":    {[]byte("{\"a\":\"bad \xff\xfe\xc0 bytes\",\"b\":1}"), true},
+		"canonical number forms":        {[]byte(`{"a":1e5,"b":-0,"c":1.0,"d":1E+5,"e":` + strings.Repeat("9", 300) + `,"f":[0.5e-7,-12.25E3,0]}`), true},
+		"canonical html and slashes":    {[]byte(`{"a":"<b>&amp;</b> http:\/\/x <"}`), true},
+		"canonical del in key":          {[]byte("{\"k\x7f\":1}"), false},
+		"pretty printed":                {[]byte("{\n  \"model\": \"m\",\n  \"messages\": []\n}"), false},
+		"whitespace inside nested":      {[]byte(`{"a":[1, 2],"b":"x"}`), false},
+		"unsorted keys":                 {[]byte(`{"z":1,"a":2}`), false},
+		"duplicate keys":                {[]byte(`{"a":1,"a":2}`), false},
+		"escaped key":                   {[]byte(`{"pro\u006dpt":"x"}`), false},
+		"non-ascii key":                 {[]byte(`{"ключ":"x"}`), false},
+		"key with quote escape":         {[]byte(`{"a\"b":"x"}`), false},
+		"leading whitespace":            {[]byte(` {"a":1}`), false},
+		"trailing newline":              {[]byte("{\"a\":1}\n"), false},
 	}
 }
 
@@ -137,6 +145,84 @@ func TestCacheBustSpliceMatchesReencode(t *testing.T) {
 				t.Fatalf("resealed body diverged:\n got %s\nwant %s", resealed, wantResealed)
 			}
 		})
+	}
+}
+
+// TestCacheBustSplicePropertyMatchesReencode is the property test: random
+// decoder-shaped objects serialized by marshalForwardBody (canonical unless a
+// key is not plain ASCII) and their json.Indent perturbations (never
+// canonical, except the empty object) must seal and size exactly like the
+// decode/re-encode reference, and the fast path must fire exactly when the
+// body is canonical.
+func TestCacheBustSplicePropertyMatchesReencode(t *testing.T) {
+	rnd := rand.New(rand.NewPCG(5, 8))
+	keys := []string{"a", "model", "messages", "prompt_cache_key", "zeta", "x<y>", "k\"q", "ключ", "tab\there", "prompt_cache_key2", "", "Z"}
+	values := []string{"", "plain", "quote\" backslash\\", "\n\t\b", "<html>&", "line\u2028sep", "bad\xffutf8", "emoji 🎉", "}{][,:"}
+	var gen func(depth int) any
+	gen = func(depth int) any {
+		switch k := rnd.IntN(8); {
+		case k == 0:
+			return nil
+		case k == 1:
+			return rnd.IntN(2) == 0
+		case k == 2:
+			return json.Number([]string{"0", "-0", "1.0", "1e5", "1E+5", "-12.25E3", strings.Repeat("7", 40)}[rnd.IntN(7)])
+		case k <= 4 || depth > 3:
+			return values[rnd.IntN(len(values))]
+		case k == 5:
+			m := make(map[string]any)
+			for i := rnd.IntN(4); i > 0; i-- {
+				m[keys[rnd.IntN(len(keys))]] = gen(depth + 1)
+			}
+			return m
+		default:
+			arr := make([]any, rnd.IntN(4))
+			for i := range arr {
+				arr[i] = gen(depth + 1)
+			}
+			return arr
+		}
+	}
+	check := func(i int, body []byte, key string, expectFast bool) {
+		t.Helper()
+		want := legacySealCacheBust(t, body, key)
+		got, err := bodyForCacheAttempt(body, false, nil, &registry.PendingRequest{LegacyCacheBustKey: key})
+		if err != nil {
+			t.Fatalf("tree %d: seal: %v", i, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("tree %d: sealed body diverged:\n body %s\n got %s\nwant %s", i, body, got, want)
+		}
+		if size, err := cacheAttemptSealedSize(body, key); err != nil || size != len(want) {
+			t.Fatalf("tree %d: size = %d (%v), want %d", i, size, err, len(want))
+		}
+		keyJSON, _ := json.Marshal(key)
+		if _, fast := spliceTopLevelMember(body, legacyCacheBustField, keyJSON); fast != expectFast {
+			t.Fatalf("tree %d: fast path fired = %v, want %v for %s", i, fast, expectFast, body)
+		}
+	}
+	for i := 0; i < 500; i++ {
+		obj := make(map[string]any)
+		for n := rnd.IntN(7); n > 0; n-- {
+			obj[keys[rnd.IntN(len(keys))]] = gen(0)
+		}
+		plain := true
+		for k := range obj {
+			for _, b := range []byte(k) {
+				if !isPlainKeyByte(b) {
+					plain = false
+				}
+			}
+		}
+		key := fmt.Sprintf("darkbloom-uncached-%03d", i)
+		canonical := forwardBytes(t, obj)
+		check(i, canonical, key, plain)
+		var indented bytes.Buffer
+		if err := json.Indent(&indented, canonical, "", "  "); err != nil {
+			t.Fatal(err)
+		}
+		// Indentation adds whitespace outside strings unless the object is empty.
+		check(i, indented.Bytes(), key, plain && len(obj) == 0)
 	}
 }
 

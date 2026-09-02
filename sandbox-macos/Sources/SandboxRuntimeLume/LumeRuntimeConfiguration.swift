@@ -40,6 +40,10 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0006-per-sandbox-guest-identity.patch"
     public static let pinnedGuestIdentityPatchSHA256 =
         "f9e1e066fe64d1edac50953cc2fe207ea1ad2be917619a90defa69c6b4d0c9ca"
+    public static let pinnedEmergencyStopPatchPath =
+        "ThirdParty/lume-patches/0007-fix-emergency-stop-state-guard.patch"
+    public static let pinnedEmergencyStopPatchSHA256 =
+        "04261009b77bb05b402c24361398de80ee2611530789a4d21b432b4f3823b736"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -47,6 +51,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedBrokerLifecyclePatchPath: pinnedBrokerLifecyclePatchSHA256,
         pinnedGuestChannelPatchPath: pinnedGuestChannelPatchSHA256,
         pinnedGuestIdentityPatchPath: pinnedGuestIdentityPatchSHA256,
+        pinnedEmergencyStopPatchPath: pinnedEmergencyStopPatchSHA256,
     ]
 
     public let executable: URL

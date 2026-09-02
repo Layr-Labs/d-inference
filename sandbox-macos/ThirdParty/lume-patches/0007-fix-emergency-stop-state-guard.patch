@@ -1,0 +1,829 @@
+diff --git a/libs/lume/src/VM/BrokerLifecycleCapability.swift b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+index d8f882d..55e64a8 100644
+--- a/libs/lume/src/VM/BrokerLifecycleCapability.swift
++++ b/libs/lume/src/VM/BrokerLifecycleCapability.swift
+@@ -116,6 +116,32 @@ final class BrokerLifecycleCapability: @unchecked Sendable {
+         state.recordTerminalProof()
+     }
+ 
++    /// Whether terminal cleanup has recorded its proof.
++    ///
++    /// The "cancel" above does not cancel the scheduled watchdog -- it sets a
++    /// flag the watchdog reads when it fires. Tests need to observe that flag
++    /// directly, because waiting a wall-clock interval and finding nothing
++    /// fired proves only that the machine was fast enough that time.
++    var hasRecordedTerminalProof: Bool {
++        state.hasRecordedTerminalProof
++    }
++
++    #if DEBUG
++        /// Runs the watchdog block the deadline would have run, now.
++        ///
++        /// `fireWatchdogIfRequired` is idempotent and thread-safe, so
++        /// delivering the deadline early is equivalent to waiting for it, and
++        /// lets a test prove the terminal proof actually suppresses the
++        /// fail-stop rather than merely outrunning it.
++        ///
++        /// Debug-only: in production `failStopAction` terminates the process,
++        /// and this class is the fail-closed boundary. It must not ship a
++        /// callable that kills the owner on demand.
++        func simulateFailStopDeadlineExpiry() {
++            state.fireWatchdogIfRequired()
++        }
++    #endif
++
+     private func consumeControlEvent() {
+         guard !state.isStopRequested else {
+             return
+@@ -225,6 +251,10 @@ final class BrokerLifecycleCapability: @unchecked Sendable {
+             }
+         }
+ 
++        var hasRecordedTerminalProof: Bool {
++            lock.withLock { terminalProofRecorded }
++        }
++
+         func requestStop() {
+             let (handler, scheduleWatchdog) = lock.withLock {
+                 guard !stopRequested else {
+@@ -244,7 +274,7 @@ final class BrokerLifecycleCapability: @unchecked Sendable {
+             handler?()
+         }
+ 
+-        private func fireWatchdogIfRequired() {
++        func fireWatchdogIfRequired() {
+             let action = lock.withLock {
+                 guard watchdogScheduled,
+                       !terminalProofRecorded,
+@@ -261,6 +291,11 @@ final class BrokerLifecycleCapability: @unchecked Sendable {
+ }
+ 
+ private func terminateAfterBrokerLifecycleDeadline() {
++    // Both fail-stop sites exit 70. Without this line the two are
++    // indistinguishable from outside the process.
++    Logger.error(
++        "Broker lifecycle stop deadline expired; terminating the owner process")
++    fflush(nil)
+     Darwin._exit(70)
+ }
+ 
+diff --git a/libs/lume/src/VM/LinuxVM.swift b/libs/lume/src/VM/LinuxVM.swift
+index 5031e7a..df9b4ca 100644
+--- a/libs/lume/src/VM/LinuxVM.swift
++++ b/libs/lume/src/VM/LinuxVM.swift
+@@ -9,14 +9,16 @@ final class LinuxVM: VM {
+         vncServiceFactory: @escaping (VMDirectory) -> VNCService = { DefaultVNCService(vmDirectory: $0) },
+         displayPresenterFactory: @escaping @MainActor (DisplayMode, VNCService) -> VMDisplayPresenter = defaultDisplayPresenter,
+         ownerFailStopHandler: @escaping VMOwnerFailStopHandler =
+-            terminateOwnerProcessAfterFailedEmergencyStop
++            terminateOwnerProcessAfterFailedEmergencyStop,
++        emergencyStopTerminalTimeout: Duration = VM.emergencyStopTerminalTimeout
+     ) {
+         super.init(
+             vmDirContext: vmDirContext,
+             virtualizationServiceFactory: virtualizationServiceFactory,
+             vncServiceFactory: vncServiceFactory,
+             displayPresenterFactory: displayPresenterFactory,
+-            ownerFailStopHandler: ownerFailStopHandler
++            ownerFailStopHandler: ownerFailStopHandler,
++            emergencyStopTerminalTimeout: emergencyStopTerminalTimeout
+         )
+     }
+ 
+diff --git a/libs/lume/src/VM/VM.swift b/libs/lume/src/VM/VM.swift
+index 0f38560..9089377 100644
+--- a/libs/lume/src/VM/VM.swift
++++ b/libs/lume/src/VM/VM.swift
+@@ -75,6 +75,9 @@ class VM {
+     private let vncServiceFactory: (VMDirectory) -> VNCService
+     private let displayPresenterFactory: @MainActor (DisplayMode, VNCService) -> VMDisplayPresenter
+     private let ownerFailStopHandler: VMOwnerFailStopHandler
++    /// Overridable so a test can prove the fail-closed path without waiting out
++    /// the production budget.
++    private let emergencyStopTerminalTimeout: Duration
+ 
+     // MARK: - Initialization
+ 
+@@ -88,8 +91,10 @@ class VM {
+         displayPresenterFactory: @escaping @MainActor (DisplayMode, VNCService) -> VMDisplayPresenter =
+             defaultDisplayPresenter,
+         ownerFailStopHandler: @escaping VMOwnerFailStopHandler =
+-            terminateOwnerProcessAfterFailedEmergencyStop
++            terminateOwnerProcessAfterFailedEmergencyStop,
++        emergencyStopTerminalTimeout: Duration = VM.emergencyStopTerminalTimeout
+     ) {
++        self.emergencyStopTerminalTimeout = emergencyStopTerminalTimeout
+         self.vmDirContext = vmDirContext
+         self.virtualizationServiceFactory = virtualizationServiceFactory
+         self.vncServiceFactory = vncServiceFactory
+@@ -687,29 +692,55 @@ class VM {
+ 
+             // Presentation/startup failure and task cancellation must not
+             // leave a live in-process guest behind normal scope unwinding.
++            //
++            // Only issue a stop from a state VZ actually permits stopping
++            // from. `VZVirtualMachine.stop` is valid from Running or Paused
++            // alone; from `.stopping` (a stop already in flight, which is
++            // exactly what `VM.stop` starts before the cancelled run task
++            // reaches here) or `.error` (the guest is already dead) the
++            // framework rejects it, and treating that rejection as "the guest
++            // might still be alive" killed the owner process over a guest that
++            // was already gone. `VM.stop()` has always gated on Running/Paused;
++            // this path now does the same.
++            //
++            // The fail-closed property is unchanged: a guest that is still
++            // Running or Paused when the bounded wait expires still terminates
++            // the process.
+             let cleanupService = virtualizationService
+             if let service = cleanupService,
+-               service.state != .stopped
++               !VM.isTerminalVirtualizationState(service.state)
+             {
+-                do {
+-                    try await service.stop()
+-                } catch let stopError {
+-                    guard service.state == .stopped else {
+-                        throw retainAuthorityAndInvokeFailStop(
+-                            stopError: stopError,
+-                            service: service)
++                var emergencyStopError: Error?
++                if VM.isStoppableVirtualizationState(service.state) {
++                    do {
++                        try await service.stop()
++                    } catch let stopError {
++                        emergencyStopError = stopError
++                        Logger.error(
++                            "Emergency stop threw",
++                            metadata: [
++                                "name": vmDirContext.name,
++                                "error": stopError.localizedDescription,
++                                "serviceState": String(describing: service.state),
++                            ])
++                        // Deliberately no decision here. Reading the state once
++                        // to conclude the guest is stuck is the same race this
++                        // whole block exists to remove: `stop` can report an
++                        // error while VZ has already begun teardown, and the
++                        // read can land before `.stopping` is published. The
++                        // bounded wait below decides, and it fails closed.
+                     }
+-                    Logger.error(
+-                        "Emergency stop threw after reaching terminal state",
+-                        metadata: [
+-                            "name": vmDirContext.name,
+-                            "error": stopError.localizedDescription,
+-                        ])
+                 }
+-                guard service.state == .stopped else {
++
++                // A stop already in flight, or a guest that died on its own,
++                // reaches terminal on its own schedule. Wait for it rather than
++                // issuing a second stop the framework would reject. This wait
++                // is the single arbiter of whether the guest is stuck alive.
++                guard await awaitTerminalVirtualizationState(service) else {
+                     throw retainAuthorityAndInvokeFailStop(
+-                        stopError: VMError.internalError(
+-                            "Emergency stop returned without a terminal virtualization state"),
++                        stopError: emergencyStopError
++                            ?? VMError.internalError(
++                                "Emergency stop did not reach a terminal virtualization state"),
+                         service: service)
+                 }
+             }
+@@ -1012,10 +1043,86 @@ class VM {
+         }
+     }
+ 
++    /// States in which no guest is running any more.
++    ///
++    /// `.error` is terminal as surely as `.stopped`: `didStopWithError` has
++    /// already torn the guest down and VZ will not resurrect it without a fresh
++    /// `start()`. Treating only `.stopped` as terminal is what turned a dead
++    /// guest into a fail-stop.
++    static func isTerminalVirtualizationState(
++        _ state: VZVirtualMachine.State
++    ) -> Bool {
++        state == .stopped || state == .error
++    }
++
++    /// How long the emergency path waits for an in-flight stop to land before
++    /// concluding the guest really is stuck alive.
++    ///
++    /// Must stay below `BrokerLifecycleCapability.defaultFailStopDeadline` (15s):
++    /// under the sandbox broker, the only production configuration, a wait that
++    /// outlives that deadline is cut short by the broker's own `_exit(70)` and
++    /// the detailed fail-stop reason never reaches the log. Measured in-flight
++    /// stop latency is milliseconds, so 10s is ample headroom.
++    static let emergencyStopTerminalTimeout: Duration = .seconds(10)
++
++    /// States `VZVirtualMachine.stop` may be issued from.
++    ///
++    /// Mirrors `VZVirtualMachine.canStop`, which the service protocol does not
++    /// expose. Kept beside `isTerminalVirtualizationState` so the two halves of
++    /// this security-relevant predicate cannot drift apart.
++    static func isStoppableVirtualizationState(
++        _ state: VZVirtualMachine.State
++    ) -> Bool {
++        state == .running || state == .paused
++    }
++
++    /// Waits for the machine to reach a terminal state, returning false on
++    /// timeout.
++    ///
++    /// A stop that is already in flight reaches `.stopped` on its own schedule,
++    /// so reading the state once immediately after issuing a stop is a race
++    /// rather than a check.
++    private func awaitTerminalVirtualizationState(
++        _ service: VMVirtualizationService,
++        timeout: Duration? = nil
++    ) async -> Bool {
++        let timeout = timeout ?? emergencyStopTerminalTimeout
++        let clock = ContinuousClock()
++        let deadline = clock.now.advanced(by: timeout)
++        while !VM.isTerminalVirtualizationState(service.state) {
++            guard clock.now < deadline else { return false }
++            await sleepIgnoringCancellation(milliseconds: 25)
++        }
++        return true
++    }
++
++    /// A sleep that survives task cancellation.
++    ///
++    /// The emergency path runs inside an already-cancelled task, where
++    /// `Task.sleep` throws immediately -- which would turn the bounded wait
++    /// above into a busy spin for its whole timeout.
++    private func sleepIgnoringCancellation(milliseconds: Int) async {
++        // Deliberately not DispatchQueue.main: the deadline is only re-checked
++        // after the sleep returns, so scheduling the wake-up on the same queue
++        // the caller occupies would make a "bounded" wait unbounded whenever
++        // that queue stalls.
++        await withCheckedContinuation { continuation in
++            DispatchQueue.global().asyncAfter(
++                deadline: .now() + .milliseconds(milliseconds)
++            ) {
++                continuation.resume()
++            }
++        }
++    }
++
+     private func cleanupSessionAfterTerminalState() async throws {
+         guard !sessionCleanedUp else { return }
+         if let virtualizationService {
+-            guard virtualizationService.state == .stopped else {
++            // `.error` means the guest is already down, so releasing the
++            // session is safe. Demanding `.stopped` alone made a fatally
++            // stopped guest unrecoverable here too.
++            guard VM.isTerminalVirtualizationState(virtualizationService.state)
++            else {
+                 throw VMError.livenessInconclusive(vmDirContext.name)
+             }
+         }
+@@ -1039,7 +1146,23 @@ class VM {
+         vncService.stop()
+         // VM owns the marker lifecycle; clear it while the authoritative run
+         // locks are still held.
+-        try vmDirContext.dir.clearSession()
++        //
++        // Best-effort on purpose. The guest is already terminal by the guard
++        // above, so a failure here cannot leave a live VM behind -- but
++        // throwing meant `run` never reached its `throw runError`, so the
++        // caller was handed a filesystem error instead of the real cause, and
++        // the terminal proof below was skipped while the locks were released
++        // anyway. Log it and finish the teardown.
++        do {
++            try vmDirContext.dir.clearSession()
++        } catch {
++            Logger.error(
++                "Failed to clear the session marker after terminal cleanup",
++                metadata: [
++                    "name": vmDirContext.name,
++                    "error": error.localizedDescription,
++                ])
++        }
+         virtualizationService = nil
+         sessionCleanedUp = true
+         activeBrokerLifecycle?.cancelFailStopAfterTerminalCleanup()
+@@ -1089,14 +1212,17 @@ class VM {
+             }
+             do {
+                 if let service = virtualizationService,
+-                   (service.state == .running
+-                    || service.state == .paused)
++                   VM.isStoppableVirtualizationState(service.state)
+                 {
+                     Logger.info(
+                         "Stopping VM via virtualization service",
+                         metadata: ["name": vmDirContext.name])
+                     try await service.stop()
+-                    guard service.state == .stopped else {
++                    // The completion handler normally implies stopped, but a
++                    // guest that died concurrently leaves `.error`, which is
++                    // just as terminal and must not read as inconclusive.
++                    guard await awaitTerminalVirtualizationState(service)
++                    else {
+                         throw VMError.livenessInconclusive(
+                             vmDirContext.name)
+                     }
+@@ -1185,24 +1311,31 @@ class VM {
+                 ])
+         }
+ 
+-        if service.state != .stopped {
+-            do {
+-                try await service.stop()
+-            } catch let stopError {
+-                Logger.error(
+-                    "Retained VM emergency stop threw",
+-                    metadata: [
+-                        "name": vmDirContext.name,
+-                        "error": stopError.localizedDescription,
+-                    ])
+-                guard service.state == .stopped else {
+-                    throw VMError.livenessInconclusive(
+-                        vmDirContext.name)
++        // Same rule as the emergency path in `run`: only stop from a state VZ
++        // permits stopping from, and let a bounded wait decide whether the
++        // guest is really stuck. Issuing a stop from `.stopping` or `.error`
++        // is rejected by the framework, and demanding a bare `.stopped`
++        // afterwards meant a retained run whose guest ended in `.error` could
++        // never be released -- its run locks leaked for the process lifetime.
++        if !VM.isTerminalVirtualizationState(service.state) {
++            if VM.isStoppableVirtualizationState(service.state) {
++                do {
++                    try await service.stop()
++                } catch let stopError {
++                    Logger.error(
++                        "Retained VM emergency stop threw",
++                        metadata: [
++                            "name": vmDirContext.name,
++                            "error": stopError.localizedDescription,
++                            "serviceState": String(describing: service.state),
++                        ])
++                    // As above: the bounded wait is the arbiter, not a single
++                    // state read taken the instant the stop reported failure.
+                 }
+             }
+-        }
+-        guard service.state == .stopped else {
+-            throw VMError.livenessInconclusive(vmDirContext.name)
++            guard await awaitTerminalVirtualizationState(service) else {
++                throw VMError.livenessInconclusive(vmDirContext.name)
++            }
+         }
+         try await finishRetainedRunAfterTerminalState()
+     }
+diff --git a/libs/lume/src/VM/VMOwnerFailStopPolicy.swift b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+index cad1014..a8e0e28 100644
+--- a/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
++++ b/libs/lume/src/VM/VMOwnerFailStopPolicy.swift
+@@ -30,6 +30,10 @@ func terminateOwnerProcessAfterFailedEmergencyStop(
+             "stopError": reason.stopError,
+             "serviceState": reason.serviceState,
+         ])
++    // Logger is buffered print(); _exit skips the stdio flush, so without this
++    // the reason above is destroyed whenever output is redirected to a file or
++    // pipe and the process dies with no explanation at all.
++    fflush(nil)
+     Darwin._exit(70)
+     fatalError("Darwin._exit unexpectedly returned")
+ }
+diff --git a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+index c64e073..f4e4e35 100644
+--- a/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
++++ b/libs/lume/tests/Mocks/MockVMVirtualizationService.swift
+@@ -7,11 +7,24 @@ private enum MockVMTerminalEvent: Sendable {
+     case failed(String)
+ }
+ 
++/// What `VZVirtualMachine.stop` hands its completion handler when the machine
++/// is not in a state it permits stopping from. Apple documents `stop` as valid
++/// only from Running or Paused; anywhere else the real framework returns
++/// `VZErrorInvalidVirtualMachineState(Transition)`.
++struct MockInvalidVirtualMachineStateTransition: LocalizedError {
++    let state: VZVirtualMachine.State
++    var errorDescription: String? {
++        "The virtual machine cannot be stopped from state \(state)"
++    }
++}
++
+ @MainActor
+ final class MockVMVirtualizationService: VMVirtualizationService {
+     private(set) var currentState: VZVirtualMachine.State = .stopped
+     private(set) var startCallCount = 0
+     private(set) var stopCallCount = 0
++    /// Stops the machine refused because it was not Running or Paused.
++    private(set) var stopRejectedCallCount = 0
+     private(set) var pauseCallCount = 0
+     private(set) var resumeCallCount = 0
+     private(set) var updateSharedDirectoriesCallCount = 0
+@@ -22,6 +35,7 @@ final class MockVMVirtualizationService: VMVirtualizationService {
+     private var didTerminate = false
+     private var shouldFailNextOperation = false
+     private var operationError: Error = VMError.internalError("Mock operation failed")
++    private var failStopWhileTeardownProceeds = false
+     private var shouldHoldStart = false
+     private var shouldHoldStop = false
+     private var startContinuation: CheckedContinuation<Void, Never>?
+@@ -62,6 +76,19 @@ final class MockVMVirtualizationService: VMVirtualizationService {
+         shouldHoldStop = true
+     }
+ 
++    /// Reports a stop failure while teardown is in fact proceeding.
++    ///
++    /// This is the race the emergency path has to survive: `machine.stop` can
++    /// hand its completion handler an error while VZ has already begun tearing
++    /// the guest down, and the state read that lands immediately afterwards
++    /// still says `.running` because the transition has not been published yet.
++    /// The guest reaches terminal a moment later. A caller that decides from
++    /// that one read kills the owner process over a guest that was already
++    /// going away.
++    func failNextStopWhileTeardownProceeds() {
++        failStopWhileTeardownProceeds = true
++    }
++
+     func releaseStart() {
+         shouldHoldStart = false
+         startContinuation?.resume()
+@@ -88,13 +115,42 @@ final class MockVMVirtualizationService: VMVirtualizationService {
+ 
+     func stop() async throws {
+         stopEntered = true
++        // Real VZ refuses a stop from anything but Running or Paused, and it
++        // does not de-duplicate concurrent stops -- both are dispatched and the
++        // loser gets this error. Modelling that is the whole point: the old
++        // mock went .running -> .stopped atomically, so no test could ever
++        // observe a second stop landing on an already-stopping machine.
++        guard currentState == .running || currentState == .paused else {
++            stopRejectedCallCount += 1
++            throw MockInvalidVirtualMachineStateTransition(state: currentState)
++        }
++        stopCallCount += 1
++        if failStopWhileTeardownProceeds {
++            failStopWhileTeardownProceeds = false
++            // Teardown really is under way, but the state does not say so yet.
++            // asyncAfter rather than Task, so this does not inherit the
++            // cancellation of the run task that is calling us.
++            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(40)) {
++                MainActor.assumeIsolated {
++                    self.currentState = .stopped
++                    self.finish(with: .stopped)
++                }
++            }
++            throw operationError
++        }
++        // An armed failure rejects the request outright, so the guest is still
++        // live afterwards -- that is the case the fail-stop exists for.
++        if shouldFailNextOperation { throw operationError }
++        currentState = .stopping
+         if shouldHoldStop {
+             await withCheckedContinuation {
+                 stopContinuation = $0
+             }
++        } else {
++            // The real stop always suspends while the VZ queue works, which is
++            // what lets a cancelled run task resume and observe .stopping.
++            await Task.yield()
+         }
+-        stopCallCount += 1
+-        if shouldFailNextOperation { throw operationError }
+         currentState = .stopped
+         finish(with: .stopped)
+     }
+@@ -123,7 +179,9 @@ final class MockVMVirtualizationService: VMVirtualizationService {
+     }
+ 
+     func simulateFatalStop(error: Error = VMError.internalError("Mock VM stopped fatally")) {
+-        currentState = .stopped
++        // `virtualMachine(_:didStopWithError:)` leaves the real machine in
++        // .error, which never becomes .stopped without a fresh start().
++        currentState = .error
+         finish(with: .failed(error.localizedDescription))
+     }
+ 
+diff --git a/libs/lume/tests/VMDisplayLifecycleTests.swift b/libs/lume/tests/VMDisplayLifecycleTests.swift
+index 671d47c..e6ac329 100644
+--- a/libs/lume/tests/VMDisplayLifecycleTests.swift
++++ b/libs/lume/tests/VMDisplayLifecycleTests.swift
+@@ -231,8 +231,12 @@ func brokerStopBeforeRegistrationCancelsWatchdog() async throws {
+   let (root, _, context) = try makeDisplayTestDirectory()
+   defer { try? FileManager.default.removeItem(at: root) }
+   let failStop = BrokerFailStopProbe()
++  // An unreachable deadline: this test proves the terminal proof suppresses
++  // the fail-stop, not that cleanup outruns a wall clock. The suite runs
++  // @MainActor tests in parallel and several block the main thread outright,
++  // so a real deadline here measures machine load, not correctness.
+   let broker = try makeBrokerLifecycleCapability(
+-    failStopDeadline: .milliseconds(100),
++    failStopDeadline: .seconds(3600),
+     failStopAction: { failStop.fire() })
+   Darwin.close(broker.owner)
+   try await waitUntil { broker.capability.isStopRequested }
+@@ -255,7 +259,11 @@ func brokerStopBeforeRegistrationCancelsWatchdog() async throws {
+   #expect(service.startCallCount == 0)
+   #expect(!context.dir.sessionsPath.exists())
+   #expect(SharedVM.shared.getVM(for: context.dir) == nil)
+-  try await Task.sleep(for: .milliseconds(200))
++  // `run` returning is a happens-after edge for the no-start proof.
++  #expect(broker.capability.hasRecordedTerminalProof)
++  // Deliver the deadline rather than waiting for it, so the watchdog block
++  // actually runs and is proven to decline.
++  broker.capability.simulateFailStopDeadlineExpiry()
+   #expect(failStop.fireCount == 0)
+ }
+ 
+@@ -334,7 +342,11 @@ func brokerWatchdogFiresWhileVirtualizationStopHangs() async throws {
+   try await waitUntil { service.stopEntered }
+   #expect(await failStop.waitForFire())
+   #expect(!failStop.didFireOnMainThread)
+-  #expect(service.state == .running)
++  // The held stop is in flight, so the machine is `.stopping` -- the real
++  // framework leaves Running the moment a stop is issued. What this asserts is
++  // that the guest has not reached a terminal state while the watchdog fires.
++  #expect(service.state == .stopping)
++  #expect(!VM.isTerminalVirtualizationState(service.state))
+   #expect(context.dir.sessionsPath.exists())
+   #expect(try context.dir.loadSession().phase == .stopping)
+   #expect(SharedVM.shared.getVM(for: context.dir) === vm)
+@@ -354,7 +366,7 @@ func brokerEOFCancelsWatchdogAfterTerminalCleanup() async throws {
+   defer { try? FileManager.default.removeItem(at: root) }
+   let failStop = BrokerFailStopProbe()
+   let broker = try makeBrokerLifecycleCapability(
+-    failStopDeadline: .milliseconds(500),
++    failStopDeadline: .seconds(3600),
+     failStopAction: { failStop.fire() })
+   let service = MockVMVirtualizationService()
+   let presenter = MockDisplayPresenter()
+@@ -381,7 +393,10 @@ func brokerEOFCancelsWatchdogAfterTerminalCleanup() async throws {
+   #expect(service.state == .stopped)
+   #expect(!context.dir.sessionsPath.exists())
+   #expect(SharedVM.shared.getVM(for: context.dir) == nil)
+-  try await Task.sleep(for: .milliseconds(600))
++  // `runTask.value` returning is a happens-after edge for the terminal proof:
++  // recording it is the last statement of cleanupSessionAfterTerminalState.
++  #expect(broker.capability.hasRecordedTerminalProof)
++  broker.capability.simulateFailStopDeadlineExpiry()
+   #expect(failStop.fireCount == 0)
+ }
+ 
+diff --git a/libs/lume/tests/VMEmergencyStopStateTests.swift b/libs/lume/tests/VMEmergencyStopStateTests.swift
+new file mode 100644
+index 0000000..6753640
+--- /dev/null
++++ b/libs/lume/tests/VMEmergencyStopStateTests.swift
+@@ -0,0 +1,257 @@
++import Foundation
++import Testing
++import Virtualization
++
++@testable import lume
++
++/// Regression coverage for the emergency-stop block in `VM.run`.
++///
++/// `VZVirtualMachine.stop` is valid only from Running or Paused. The emergency
++/// path used to issue a stop from any state that was not `.stopped` and then
++/// demand the machine be exactly `.stopped`, so a machine that was merely
++/// `.stopping` -- or one already dead in `.error` -- killed the owner process
++/// with exit 70. `VM.stop()` has always gated correctly on Running/Paused; only
++/// the emergency path did not.
++///
++/// These tests need a virtualization mock that models the `.stopping` window
++/// and refuses an illegal stop the way the real framework does. Without that
++/// the whole bug class is invisible.
++
++private func makeEmergencyStopTestDirectory() throws -> (URL, VMDirContext) {
++    let root = FileManager.default.temporaryDirectory
++        .appendingPathComponent(UUID().uuidString)
++    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
++    let directory = VMDirectory(Path(root.path))
++    try Data(repeating: 0, count: 1024).write(to: directory.diskPath.url)
++    try Data(repeating: 0, count: 1024).write(to: directory.nvramPath.url)
++
++    var config = try VMConfig(
++        os: "mock-os",
++        cpuCount: 1,
++        memorySize: 1024,
++        diskSize: 1024,
++        display: "1024x768"
++    )
++    config.setMacAddress("00:11:22:33:44:55")
++    try directory.saveConfig(config)
++    try Data().write(to: directory.dir.file(".initialized").url)
++
++    return (
++        root,
++        VMDirContext(
++            dir: directory,
++            config: config,
++            home: Home(fileManager: .default),
++            storage: nil
++        )
++    )
++}
++
++@MainActor
++private func waitUntilReady(
++    timeout: Duration = .seconds(2),
++    _ condition: @escaping @MainActor () -> Bool
++) async throws {
++    let clock = ContinuousClock()
++    let deadline = clock.now.advanced(by: timeout)
++    while !condition() {
++        guard clock.now < deadline else {
++            Issue.record("Timed out waiting for asynchronous VM state")
++            return
++        }
++        try await Task.sleep(for: .milliseconds(10))
++    }
++}
++
++@MainActor
++private final class QuietDisplayPresenter: VMDisplayPresenter {
++    private(set) var showCount = 0
++    func show(context: VMDisplayContext) async throws { showCount += 1 }
++    func hide() {}
++}
++
++/// Builds a VM whose fail-stop is captured rather than fatal.
++@MainActor
++private func makeCapturingVM(
++    context: VMDirContext,
++    service: MockVMVirtualizationService,
++    terminalTimeout: Duration = .milliseconds(300),
++    reasons: @escaping @MainActor (VMOwnerFailStopReason) -> Void
++) -> MockVM {
++    MockVM(
++        vmDirContext: context,
++        virtualizationServiceFactory: { _ in service },
++        vncServiceFactory: { MockVNCService(vmDirectory: $0) },
++        displayPresenterFactory: { _, _ in QuietDisplayPresenter() },
++        ownerFailStopHandler: { reason in
++            reasons(reason)
++            return .retainAuthorityForTesting
++        },
++        // The production budget is 10s. Nothing here needs to wait it out: the
++        // point is which side of the wait the guest ends up on, not how long
++        // the wait is.
++        emergencyStopTerminalTimeout: terminalTimeout
++    )
++}
++
++@MainActor
++@Test("cancelling the run task and stopping together does not fail-stop")
++func concurrentCancelAndStopDoesNotFailStop() async throws {
++    let (root, context) = try makeEmergencyStopTestDirectory()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let service = MockVMVirtualizationService()
++    var failStopReasons: [VMOwnerFailStopReason] = []
++    let vm = makeCapturingVM(context: context, service: service) {
++        failStopReasons.append($0)
++    }
++
++    let runTask = Task {
++        try await vm.run(displayMode: .none, sharedDirectories: [], mount: nil)
++    }
++    try await waitUntilReady { service.state == .running }
++
++    // Exactly what UnattendedInstaller.materializeFirstBootState does at
++    // :115-116 to end the first boot. Both calls are MainActor, so `stop`
++    // reaches the virtualization service before the cancelled task can resume;
++    // the task then wakes into the emergency path and sees `.stopping`.
++    runTask.cancel()
++    try? await vm.stop()
++    _ = try? await runTask.value
++
++    #expect(
++        failStopReasons.isEmpty,
++        """
++        The owner process was killed over a guest that was already stopping. \
++        Reasons: \(failStopReasons.map(\.serviceState))
++        """)
++    #expect(service.state == .stopped)
++    // The redundant second stop must never be issued at all.
++    #expect(service.stopRejectedCallCount == 0)
++}
++
++@MainActor
++@Test("a guest that stopped with an error does not fail-stop")
++func fatalGuestStopDoesNotFailStop() async throws {
++    let (root, context) = try makeEmergencyStopTestDirectory()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let service = MockVMVirtualizationService()
++    var failStopReasons: [VMOwnerFailStopReason] = []
++    let vm = makeCapturingVM(context: context, service: service) {
++        failStopReasons.append($0)
++    }
++
++    let runTask = Task {
++        try await vm.run(displayMode: .none, sharedDirectories: [], mount: nil)
++    }
++    try await waitUntilReady { service.state == .running }
++
++    // `didStopWithError` leaves the real machine in `.error`, which never
++    // becomes `.stopped`. There is no live guest to fail closed over.
++    service.simulateFatalStop()
++    _ = try? await runTask.value
++
++    #expect(
++        failStopReasons.isEmpty,
++        "A guest already dead in .error is not a guest left running")
++    #expect(service.state == .error)
++    #expect(service.stopCallCount == 0)
++}
++
++@MainActor
++@Test("a stop that lands while the guest is still stopping is awaited, not repeated")
++func stoppingGuestIsAwaitedRatherThanStoppedTwice() async throws {
++    let (root, context) = try makeEmergencyStopTestDirectory()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let service = MockVMVirtualizationService()
++    var failStopReasons: [VMOwnerFailStopReason] = []
++    let vm = makeCapturingVM(context: context, service: service) {
++        failStopReasons.append($0)
++    }
++
++    let runTask = Task {
++        try await vm.run(displayMode: .none, sharedDirectories: [], mount: nil)
++    }
++    try await waitUntilReady { service.state == .running }
++
++    // Pin the machine in `.stopping` so the emergency path is guaranteed to
++    // observe it there rather than racing past it.
++    service.holdStopUntilReleased()
++    let stopTask = Task { try? await vm.stop() }
++    try await waitUntilReady { service.state == .stopping }
++
++    runTask.cancel()
++    try await Task.sleep(for: .milliseconds(50))
++    service.releaseStop()
++    _ = await stopTask.value
++    _ = try? await runTask.value
++
++    #expect(failStopReasons.isEmpty)
++    #expect(service.stopCallCount == 1, "the guest must be stopped once, not twice")
++    #expect(service.state == .stopped)
++}
++
++@MainActor
++@Test("a live guest whose stop fails still fail-stops")
++func liveGuestWithFailingStopStillFailStops() async throws {
++    let (root, context) = try makeEmergencyStopTestDirectory()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let service = MockVMVirtualizationService()
++    var failStopReasons: [VMOwnerFailStopReason] = []
++    let vm = makeCapturingVM(context: context, service: service) {
++        failStopReasons.append($0)
++    }
++
++    let runTask = Task {
++        try await vm.run(displayMode: .none, sharedDirectories: [], mount: nil)
++    }
++    try await waitUntilReady { service.state == .running }
++
++    // The guest is Running, the stop is refused, and nothing else will take it
++    // down. This is the case the fail-stop exists for and it must not be
++    // weakened by the fix: narrowing the guard must not mean tolerating a
++    // guest that really is still alive.
++    await service.configure(
++        shouldFail: true,
++        error: VMError.internalError("deterministic stop failure"))
++    runTask.cancel()
++    _ = try? await runTask.value
++
++    #expect(failStopReasons.count == 1, "a live guest with a failed stop must fail closed")
++    #expect(service.state == .running)
++}
++
++@MainActor
++@Test("a stop that throws while teardown is under way does not fail-stop")
++func stopThrowingMidTeardownDoesNotFailStop() async throws {
++    let (root, context) = try makeEmergencyStopTestDirectory()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    let service = MockVMVirtualizationService()
++    var failStopReasons: [VMOwnerFailStopReason] = []
++    let vm = makeCapturingVM(
++        context: context,
++        service: service,
++        terminalTimeout: .seconds(2)
++    ) { failStopReasons.append($0) }
++
++    let runTask = Task {
++        try await vm.run(displayMode: .none, sharedDirectories: [], mount: nil)
++    }
++    try await waitUntilReady { service.state == .running }
++
++    // The emergency stop reports failure with the guest already on its way
++    // down. Deciding from a single state read here is what killed the owner
++    // process over a dying guest; the bounded wait has to be the arbiter.
++    service.failNextStopWhileTeardownProceeds()
++    runTask.cancel()
++    _ = try? await runTask.value
++
++    #expect(
++        failStopReasons.isEmpty,
++        "a guest that reached terminal during the wait must not fail-stop")
++    #expect(service.state == .stopped)
++}

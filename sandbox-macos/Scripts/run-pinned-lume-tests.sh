@@ -46,6 +46,11 @@ REQUIRED_PATCHED_LUME_TESTS=(
     identityAcceptsDistinctTenant
     identityRejectsMalformedAccounts
     defaultIdentityIsUnchanged
+    concurrentCancelAndStopDoesNotFailStop
+    fatalGuestStopDoesNotFailStop
+    stoppingGuestIsAwaitedRatherThanStoppedTwice
+    liveGuestWithFailingStopStillFailStops
+    stopThrowingMidTeardownDoesNotFailStop
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

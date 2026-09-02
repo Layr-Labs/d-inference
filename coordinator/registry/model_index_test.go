@@ -5,6 +5,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -185,6 +186,148 @@ func TestRoutingWalksIdenticalWithAndWithoutModelIndex(t *testing.T) {
 				t.Fatalf("%s: fixture produced no candidates", model)
 			}
 		}
+	}
+	assertModelIndexConsistent(t, f.reg)
+}
+
+// benchProviderAdvertises reports whether bench provider i advertises model
+// (mirrors buildBenchFleet's advertisement rule).
+func benchProviderAdvertises(f *benchFleet, i int, model string) bool {
+	if f.models[i%benchFleetModels] == model {
+		return true
+	}
+	if i%2 == 0 && f.models[(i+1)%benchFleetModels] == model {
+		return true
+	}
+	return i%3 == 0 && f.models[(i+2)%benchFleetModels] == model
+}
+
+// TestRoutingWalksIdenticalWithFaultStateWithAndWithoutIndex adds fault
+// state the plain fixture lacks — a breaker-open NON-advertiser, a
+// health-ejected NON-advertiser and a capacity-cooled ADVERTISER — and pins
+// that the eligible pool, capacityRejections and every exposed
+// RoutingDecision tally are identical with and without the index, and that a
+// reservation succeeds from the same pool either way.
+//
+// The ONE intentional difference is scanCandidateScan.breakerRejected: the
+// brute-force walk counts the two breaker/ejected providers even though they
+// do not advertise the model, the indexed walk never visits them. That count
+// is behavior-neutral: shouldBypassBreakerFailOpen only fires when the pool is
+// empty AND no capacity/TTFT rejection exists, and the pass-2 rescan it
+// triggers can only rescue an ADVERTISER rejected solely by breaker/ejection —
+// which counts itself in both walks. The field is not part of RoutingDecision.
+func TestRoutingWalksIdenticalWithFaultStateWithAndWithoutIndex(t *testing.T) {
+	setHealthEjectionEnabledForTest(t, true)
+	f := buildBenchFleet(t, benchFleetProviders, benchFleetModels)
+	model := f.models[0]
+
+	// Two non-advertisers of model: one breaker-open, one health-ejected.
+	var breakerID, ejectedID, cooledID string
+	for i, id := range f.ids {
+		if !benchProviderAdvertises(f, i, model) {
+			if breakerID == "" {
+				breakerID = id
+			} else if ejectedID == "" {
+				ejectedID = id
+			}
+		} else if cooledID == "" {
+			cooledID = id
+		}
+		if breakerID != "" && ejectedID != "" && cooledID != "" {
+			break
+		}
+	}
+	for i := 0; i < providerBreakerConsecTrip; i++ {
+		f.reg.RecordProviderOutcome(breakerID, false, 500, "internal error")
+	}
+	if !f.reg.ProviderBreakerOpen(breakerID) {
+		t.Fatal("precondition: breaker open")
+	}
+	f.reg.mu.RLock()
+	ejectedP := f.reg.providers[ejectedID]
+	f.reg.mu.RUnlock()
+	ejectedP.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "SER-EJECT"})
+	const sid = "serial:SER-EJECT"
+	for i := 0; i < healthEjectionConsecTrip+1; i++ {
+		f.reg.RecordProviderServeOutcome(sid, false, 500, "boom")
+	}
+	if !f.reg.HealthEjectionOpen(sid) {
+		t.Fatal("precondition: identity ejected")
+	}
+	for i := 0; i < f.reg.capacityCooldownCfg.Threshold+1; i++ {
+		f.reg.RecordCapacityReject(cooledID, model)
+	}
+	f.reg.mu.RLock()
+	cooled := f.reg.capacityCooldownActiveLocked(cooledID, model, benchPendingRequest(model, 0).FirstContentDeadline)
+	f.reg.mu.RUnlock()
+	if !cooled {
+		t.Fatal("precondition: advertiser capacity-cooled")
+	}
+
+	pr := benchPendingRequest(model, 0)
+	scanWith := func(disabled bool) (candidateScan, walkOutcome) {
+		f.reg.modelIndexDisabled = disabled
+		defer func() { f.reg.modelIndexDisabled = false }()
+		f.reg.mu.RLock()
+		scan := f.reg.scanCandidatesLocked(model, pr, false)
+		f.reg.mu.RUnlock()
+		return scan, runWalks(f.reg, model, pr, RequestTraits{}, false)
+	}
+	scanIdx, walkIdx := scanWith(false)
+	scanBrute, walkBrute := scanWith(true)
+	if !reflect.DeepEqual(walkIdx, walkBrute) {
+		t.Fatalf("walks differ under fault state\n index: %+v\n brute: %+v", walkIdx, walkBrute)
+	}
+	if walkIdx.capacity == 0 {
+		t.Fatal("the capacity-cooled advertiser must be counted as a capacity rejection")
+	}
+	for _, c := range scanIdx.pool {
+		if c.provider.ID == cooledID || c.provider.ID == breakerID || c.provider.ID == ejectedID {
+			t.Fatalf("faulted provider %s in the eligible pool", c.provider.ID)
+		}
+	}
+	// The documented, behavior-neutral difference.
+	if scanIdx.breakerRejected != 0 {
+		t.Fatalf("indexed walk counted %d breaker rejections from non-advertisers", scanIdx.breakerRejected)
+	}
+	if scanBrute.breakerRejected != 2 {
+		t.Fatalf("brute-force walk breakerRejected = %d, want 2 (breaker-open + ejected non-advertisers)", scanBrute.breakerRejected)
+	}
+
+	// Reservation: the same exposed RoutingDecision tallies and a winner from
+	// the same pool either way (the winner itself is near-tie randomized).
+	poolIDs := map[string]struct{}{}
+	for _, id := range walkIdx.pool {
+		poolIDs[id] = struct{}{}
+	}
+	reserve := func(disabled bool) (*Provider, RoutingDecision) {
+		f.reg.modelIndexDisabled = disabled
+		defer func() { f.reg.modelIndexDisabled = false }()
+		req := benchPendingRequest(model, 1)
+		p, d := f.reg.ReserveProviderEx(model, req)
+		if p != nil {
+			p.RemovePending(req.RequestID)
+		}
+		return p, d
+	}
+	pIdx, dIdx := reserve(false)
+	pBrute, dBrute := reserve(true)
+	if pIdx == nil || pBrute == nil {
+		t.Fatal("reservation must succeed with and without the index")
+	}
+	if _, ok := poolIDs[pIdx.ID]; !ok {
+		t.Fatalf("indexed winner %s not in the eligible pool", pIdx.ID)
+	}
+	if _, ok := poolIDs[pBrute.ID]; !ok {
+		t.Fatalf("brute-force winner %s not in the eligible pool", pBrute.ID)
+	}
+	tallies := func(d RoutingDecision) [6]float64 {
+		return [6]float64{float64(d.CandidateCount), float64(d.CapacityRejections),
+			float64(d.ModelTooLargeRejections), float64(d.VisionRejections),
+			float64(d.TTFTRejections), d.BestTTFTMs}
+	}
+	if tallies(dIdx) != tallies(dBrute) {
+		t.Fatalf("RoutingDecision tallies differ\n index: %+v\n brute: %+v", dIdx, dBrute)
 	}
 	assertModelIndexConsistent(t, f.reg)
 }

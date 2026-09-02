@@ -48,11 +48,23 @@ package struct LumeGuestVsockTransport: LumeGuestCommandTransport {
             )
         }
 
+        // `channel.execute` polls the descriptor and blocks until the agent
+        // answers. This function is `async` but awaits nothing else, so called
+        // straight from the runtime actor it would hold that actor for the
+        // whole command budget -- up to 910 seconds at the 900-second cap --
+        // and stall every other operation on it, `stop` included. The SSH
+        // transport has no such hazard because its runner is genuinely async.
+        //
+        // Detached rather than wrapped at the call site, so the transport is
+        // correct however it is called. The client is `@unchecked Sendable`
+        // and guards its descriptor with a lock, so moving the call off the
+        // actor is safe.
+        let channel = channel
+        let timeout = TimeInterval(guestTimeoutSeconds) + Self.clientGraceSeconds
         do {
-            return try channel.execute(
-                wire,
-                timeout: TimeInterval(guestTimeoutSeconds) + Self.clientGraceSeconds
-            )
+            return try await Task.detached(priority: .userInitiated) {
+                try channel.execute(wire, timeout: timeout)
+            }.value
         } catch let error as SandboxGuestChannelClient.ClientError {
             throw Self.mapped(error)
         }

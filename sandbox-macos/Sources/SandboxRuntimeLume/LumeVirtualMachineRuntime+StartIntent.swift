@@ -35,6 +35,7 @@ extension LumeVirtualMachineRuntime {
         unresolvedIntent: LumeVirtualMachineStartIntent.Intent?,
         expectedLease: SandboxCapacityLease?
     ) async throws {
+        releaseGuestChannel(name: name)
         runningProcesses.removeValue(forKey: name)
         let cleanup = Task.detached {
             try await self.cleanupFailedStart(
@@ -125,6 +126,7 @@ extension LumeVirtualMachineRuntime {
             in: configuration.storageDirectory
         )
         if existing.state == .stopped {
+            releaseGuestChannel(name: name)
             if let process = runningProcesses.removeValue(forKey: name) {
                 _ = await stopManagedRunProcess(process)
             }
@@ -139,6 +141,7 @@ extension LumeVirtualMachineRuntime {
             return
         }
 
+        releaseGuestChannel(name: name)
         if let process = runningProcesses.removeValue(forKey: name) {
             // EOF asks the owning Lume process to stop its in-process VM. The
             // child exits only after Virtualization.framework is terminal.
@@ -170,6 +173,7 @@ extension LumeVirtualMachineRuntime {
             expected: .stopped,
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
+        releaseGuestChannel(name: name)
         if let process = runningProcesses.removeValue(forKey: name) {
             _ = await stopManagedRunProcess(process)
         }
@@ -188,6 +192,7 @@ extension LumeVirtualMachineRuntime {
         owner: LumeVirtualMachineOwnership.Owner,
         locallyTerminatedIntent: LumeVirtualMachineStartIntent.Intent?
     ) async throws {
+        releaseGuestChannel(name: name)
         if let process = runningProcesses.removeValue(forKey: name) {
             _ = await stopManagedRunProcess(process)
         }

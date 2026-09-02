@@ -58,6 +58,9 @@ extension LumeVirtualMachineRuntime {
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
         var guestCommandMayBeRunning = false
         var requiresVMStop = false
+        /// Whether the command went over the agent channel rather than SSH.
+        /// Cancellation is only meaningful on the SSH path; see the catch.
+        var deliveredOverChannel = false
         do {
             guard let observed = try await inspect(name: name) else {
                 throw SandboxRuntimeError.unsupported(
@@ -118,8 +121,10 @@ extension LumeVirtualMachineRuntime {
             // Encode before the durable claim: a request that cannot be
             // prepared must not leave an unresolvable claim in the journal.
             let transport = guestCommandTransport(
+                name: name,
                 credential: ownership.guestCredential
             )
+            deliveredOverChannel = transport is LumeGuestVsockTransport
             let prepared = try transport.prepare(request)
             requiresVMStop = true
             let commandClaim = try commandJournal.claim(
@@ -144,7 +149,21 @@ extension LumeVirtualMachineRuntime {
             let executionWasCancelled =
                 Task.isCancelled || error is CancellationError
             var cancellationFailure: Error?
-            if guestCommandMayBeRunning {
+            // Cancellation boots out a launchd job by label, which only the
+            // SSH path ever creates: the agent spawns the command itself with
+            // posix_spawn, under no label. Running it for a channel-delivered
+            // command would boot out a job that never existed, fail, and --
+            // because a cancellation failure forces `mustStopVM` and is
+            // rewrapped as `cleanupFailed` below -- turn a recoverable command
+            // failure into a VM teardown reported as a cleanup fault.
+            //
+            // Skipping it loses nothing that matters. The guest-side deadline
+            // still kills the process group and reports `timedOut` on its own,
+            // and `guestCommandMayBeRunning` already forces the VM stop just
+            // below, which ends the command with the machine it runs on. A
+            // cancel frame in the protocol is the real fix and belongs in its
+            // own change.
+            if guestCommandMayBeRunning && !deliveredOverChannel {
                 do {
                     try await cancelGuestCommandIgnoringCancellation(
                         name: name,
@@ -326,10 +345,23 @@ extension LumeVirtualMachineRuntime {
         return environment
     }
 
+    /// Picks the delivery path for one command.
+    ///
+    /// A VM has a channel only if this process spawned it and the image's
+    /// baked agent bound its port, so absence is the ordinary case and SSH
+    /// stays the fallback rather than an error path. Selection is optimistic:
+    /// a stored client says nothing about whether the descriptor is still
+    /// connected, and the only signal of a dead channel is a failed command,
+    /// which `execute`'s existing error handling already treats as fatal to
+    /// the VM.
     func guestCommandTransport(
+        name: String,
         credential: LumeGuestCredential
     ) -> any LumeGuestCommandTransport {
-        LumeGuestSSHTransport(
+        if let channel = guestChannel(for: name) {
+            return LumeGuestVsockTransport(channel: channel)
+        }
+        return LumeGuestSSHTransport(
             runner: processRunner,
             executable: configuration.executable,
             storagePath: configuration.storageDirectory.path,

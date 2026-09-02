@@ -498,6 +498,10 @@ extension LumeVirtualMachineRuntime {
                 in: configuration.storageDirectory
             )
             unresolvedIntent = nil
+            // Only a VM this process spawned can have a channel, so this is
+            // the one branch that can adopt one. A nil result is normal: the
+            // image may carry no agent, and readiness below falls back to SSH.
+            _ = await adoptGuestChannel(name: name, process: process)
             try await waitForGuestReady(
                 credential: ownershipCommitment.guestCredential,
                 name: name,
@@ -832,6 +836,7 @@ extension LumeVirtualMachineRuntime {
             }
             if let process, !process.isRunning {
                 let result = await process.wait()
+                releaseGuestChannel(name: name)
                 runningProcesses.removeValue(forKey: name)
                 let standardError = String(
                     decoding: result.standardError,

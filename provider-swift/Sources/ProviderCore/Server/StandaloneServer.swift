@@ -382,7 +382,12 @@ public actor StandaloneServer {
                 "setModels deferred behind an in-flight load or update (\(self.modelsLoading.sorted()))")
             return true
         }
-        return await applyModels(filtered)
+        let applied = await applyModels(filtered)
+        // A setModels that overlapped THIS apply parked its list behind the
+        // gate; drain it now (the load-completion paths drain too, but no
+        // load may ever come).
+        await applyDeferredModelsIfNeeded()
+        return applied
     }
 
     /// Runs under the load gate (`isLoadingAny`), held from the preflight
@@ -1150,6 +1155,12 @@ public actor StandaloneServer {
         // the next load's gate and the surviving model's KV budget don't see the
         // freed memory. Mirrors ProviderLoop.unloadModel.
         MLX.Memory.clearCache()
+        // The evicted slot may have been the last carrier of a higher floor
+        // (a model `setModels` already removed from the list): the live
+        // reserve relaxes with it, and the KV budget actor must follow
+        // BEFORE the survivors grow into the difference — or the global
+        // gate keeps rejecting requests the enlarged grants admit.
+        await pushActivationReserve()
         // Re-slice GROW the survivors: with this model's weights gone the
         // fleet KV budget rises, and the remaining engines take their new
         // fair shares (a lone survivor gets the FULL budget back).
@@ -1429,9 +1440,25 @@ public actor StandaloneServer {
             }
         }
         isLoadingAny = true
+        // Re-validate membership AFTER the suspensions above (spec-dec
+        // preparation, the load-gate wait): a concurrent `setModels` can
+        // have removed this model and relaxed the reserve to the remaining
+        // set's floor; the stale `modelInfo` must not re-enter the basis
+        // through the marker. No suspension between here and the insert.
+        guard models.contains(where: { $0.id == modelId }) else {
+            isLoadingAny = false
+            releaseLoadGateWaiters()
+            throw StandaloneServerError.modelNotFound(modelId)
+        }
 
         let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
+        // The marker joins the reserve basis: push the (possibly raised)
+        // floor to the KV budget actor BEFORE the gate and allocation, as
+        // the provider does at its modelsLoading transitions, so KV admitted
+        // during the load never consumes the activation headroom this
+        // model needs.
+        await pushActivationReserve()
         do {
             try Task.checkCancellation()
             try await evictIfNeededForLoad()
@@ -1723,6 +1750,9 @@ public actor StandaloneServer {
             standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
 
             modelsLoading.remove(modelId)
+            // The marker leaves the reserve basis (the slot now carries the
+            // model's floor); keep the KV budget actor on the live figure.
+            await pushActivationReserve()
             isLoadingAny = false
             for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
                 waiter.resume()
@@ -1731,6 +1761,9 @@ public actor StandaloneServer {
             await applyDeferredModelsIfNeeded()
         } catch {
             modelsLoading.remove(modelId)
+            // The failed load's marker leaves the basis: relax the KV
+            // budget actor with it (no-op when the floor didn't move).
+            await pushActivationReserve()
             isLoadingAny = false
             // Idempotent when the reservation was never placed or was already
             // handed off to MLX's live-memory view after a successful load.

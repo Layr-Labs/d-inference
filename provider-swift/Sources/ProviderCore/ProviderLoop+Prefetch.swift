@@ -161,6 +161,15 @@ extension ProviderLoop {
         reserveDeferredPrefetches.removeAll()
         for modelId in deferred {
             if staleDesiredPrefetches.contains(modelId) { continue }
+            // The refusing attempt may still be finishing inside the
+            // coordinator (its terminal `.verified` emit follows the
+            // onVerified await): a re-run now would COALESCE into it and
+            // never reach applyVerifiedPrefetch again. Keep the deferral
+            // (and the desired backoff) for the next capacity change.
+            if await prefetchCoordinator?.isInFlight(modelId: modelId) == true {
+                reserveDeferredPrefetches.insert(modelId)
+                continue
+            }
             if desiredPrefetchTargets.contains(modelId) {
                 clearDesiredPrefetchRetryState(for: modelId)
             }

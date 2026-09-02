@@ -207,9 +207,14 @@ New benchmarks cover every aggregate and periodic walk (`fleet_scale_aggregate_b
 `provider_heartbeat_bench_test.go`). Findings left for follow-up: the
 model-swap planner runs a fleet walk on every heartbeat while the queue is
 non-empty (~350 µs per heartbeat from a provider advertising a queued model,
-~9% of a core at 250 heartbeats/s per queued model — being coalesced in the
-registry follow-up); three read-only getters take the write lock
-(`CodeAttestationEnforced` in the 15 s gauge loop — same follow-up);
+~9% of a core at 250 heartbeats/s per queued model). Fixed in the registry
+follow-up (`registry/model_swap_coalesce.go`): heartbeats now admit at most
+one swap plan per 250 ms fleet-wide (the api cold-dispatch kick still plans
+immediately), the planner's two walks iterate the per-model index, and the
+per-heartbeat drain is unchanged — a direct plan with a queued unservable
+model went from 82 µs to 0.2 µs and the full heartbeat ingest in that state
+from 88 µs to 4 µs. Three read-only getters that took the write lock
+(`CodeAttestationEnforced` in the 15 s gauge loop) now take the read lock;
 `recordMLXCacheTelemetry` emits nine `provider_id`-tagged gauges per heartbeat
 (~11k Datadog series per flush — an observability cardinality decision, not
 changed here); throttled provider persistence is ~126 DB writes/s fleet-wide

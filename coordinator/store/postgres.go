@@ -2497,70 +2497,74 @@ func nullableCreatedAt(ts time.Time) any {
 	return ts
 }
 
-func creditTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, updated_at)
-		 VALUES ($1, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// pgQuerier is the subset of *pgxpool.Pool and pgx.Tx the single-statement
+// ledger helpers need, so one helper serves both a standalone call (pool: one
+// round trip in an implicit transaction) and a caller's open transaction.
+type pgQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// creditBalanceSQL credits an account and records its ledger row in ONE
+// data-modifying CTE — one round trip instead of BEGIN + upsert + SELECT +
+// INSERT + COMMIT. The upsert's RETURNING is the post-credit balance, so
+// balance_after is exactly the value the old in-transaction SELECT read; the
+// ledger INSERT runs exactly once, to completion, under the row lock the
+// upsert took, so concurrent credits/debits on the account still serialize
+// on that one lock and no update is lost. Unknown accounts are created and
+// zero or negative amounts are applied and recorded, exactly as before.
+const creditBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditWithdrawableBalanceSQL is creditBalanceSQL that also raises the
+// withdrawable subset by the same amount.
+const creditWithdrawableBalanceSQL = `
+		WITH credit AS (
+			INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
+			VALUES ($1, $2, $2, NOW())
+			ON CONFLICT (account_id) DO UPDATE SET
+			  balance_micro_usd = balances.balance_micro_usd + $2,
+			  withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
+			  updated_at = NOW()
+			RETURNING balance_micro_usd
+		), ledger AS (
+			INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
+			SELECT $1, $3, $2, balance_micro_usd, $4, COALESCE($5::timestamptz, NOW())
+			FROM credit
+		)
+		SELECT balance_micro_usd FROM credit`
+
+// creditBalance applies creditBalanceSQL through q (the pool for a standalone
+// credit, or the caller's transaction). A zero createdAt records NOW().
+func creditBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
-func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
-	_, err := tx.Exec(ctx,
-		`INSERT INTO balances (account_id, balance_micro_usd, withdrawable_micro_usd, updated_at)
-		 VALUES ($1, $2, $2, NOW())
-		 ON CONFLICT (account_id) DO UPDATE SET
-		   balance_micro_usd = balances.balance_micro_usd + $2,
-		   withdrawable_micro_usd = balances.withdrawable_micro_usd + $2,
-		   updated_at = NOW()`,
-		accountID, amountMicroUSD,
-	)
-	if err != nil {
+// creditWithdrawableBalance applies creditWithdrawableBalanceSQL through q.
+func creditWithdrawableBalance(ctx context.Context, q pgQuerier, accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string, createdAt time.Time) error {
+	var balanceAfter int64
+	if err := q.QueryRow(ctx, creditWithdrawableBalanceSQL,
+		accountID, amountMicroUSD, string(entryType), reference, nullableCreatedAt(createdAt),
+	).Scan(&balanceAfter); err != nil {
 		return fmt.Errorf("store: credit withdrawable balance: %w", err)
 	}
-
-	var balanceAfter int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance_micro_usd FROM balances WHERE account_id = $1`, accountID,
-	).Scan(&balanceAfter)
-	if err != nil {
-		return fmt.Errorf("store: read balance: %w", err)
-	}
-
-	_, err = tx.Exec(ctx,
-		`INSERT INTO ledger_entries (account_id, entry_type, amount_micro_usd, balance_after, reference, created_at)
-		 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))`,
-		accountID, string(entryType), amountMicroUSD, balanceAfter, reference, nullableCreatedAt(createdAt),
-	)
-	if err != nil {
-		return fmt.Errorf("store: insert ledger entry: %w", err)
-	}
-
 	return nil
 }
 
@@ -2569,17 +2573,9 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip: the balance upsert and its ledger row
+	// still commit together or not at all (creditBalanceSQL).
+	return creditBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
@@ -2618,17 +2614,8 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("store: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	// One statement, one round trip (creditWithdrawableBalanceSQL).
+	return creditWithdrawableBalance(ctx, s.pool, accountID, amountMicroUSD, entryType, reference, time.Time{})
 }
 
 // CreditWithdrawableOnce credits only if no ledger entry with the same
@@ -2662,7 +2649,7 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 	if exists {
 		return false, tx.Commit(ctx)
 	}
-	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -4355,7 +4342,7 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 	}
 	defer tx.Rollback(ctx)
 
-	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
+	if err := creditWithdrawableBalance(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
 	}
 

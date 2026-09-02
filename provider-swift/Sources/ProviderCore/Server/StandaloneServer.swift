@@ -222,6 +222,10 @@ public actor StandaloneServer {
     /// passed its gate against the CURRENT floor, so the whole update waits
     /// for the load to finish (either completion path applies it).
     private var pendingModelsUpdate: [ModelInfo]?
+    /// Monotonic stamp on every reserve push to the KV budget actor (as
+    /// `ProviderLoop.activationReserveEpoch`): cross-actor delivery is not
+    /// FIFO, and a stale lower-floor push must never land after a newer one.
+    private var activationReserveEpoch: UInt64 = 0
     private var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     private var isLoadingAny: Bool = false
     private var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
@@ -369,16 +373,30 @@ public actor StandaloneServer {
     public func setModels(_ newModels: [ModelInfo]) async -> Bool {
         let filtered = Self.filterSupported(
             newModels, runtimeCapabilities: config.runtimeCapabilities)
-        guard modelsLoading.isEmpty else {
+        // `isLoadingAny` is the load gate itself (set before the load's
+        // marker, held through install) AND the barrier `applyModels`
+        // holds — so a concurrent setModels parks here too (last list wins).
+        guard !isLoadingAny, modelsLoading.isEmpty else {
             pendingModelsUpdate = filtered
             standaloneLogger.info(
-                "setModels deferred behind an in-flight load (\(self.modelsLoading.sorted()))")
+                "setModels deferred behind an in-flight load or update (\(self.modelsLoading.sorted()))")
             return true
         }
         return await applyModels(filtered)
     }
 
+    /// Runs under the load gate (`isLoadingAny`), held from the preflight
+    /// through the reserve push and the re-slice: the preflight suspends
+    /// on each resident bridge, and a cold load entering meanwhile would
+    /// pass its own gate under the OLD floor and install a slot the
+    /// preflight never saw. Loads (and further updates) park on the gate
+    /// exactly as they park behind a load. The push is epoch-stamped.
     private func applyModels(_ filtered: [ModelInfo]) async -> Bool {
+        isLoadingAny = true
+        defer {
+            isLoadingAny = false
+            releaseLoadGateWaiters()
+        }
         let candidateReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
             modelIDs: filtered.map(\.id) + Array(slots.keys) + Array(modelsLoading))
         guard await reserveKeepsSurvivorsServiceable(reserveBytes: candidateReserve) else {
@@ -387,9 +405,16 @@ public actor StandaloneServer {
             return false
         }
         self.models = filtered
-        await kvBudget.setActivationReserveBytes(resolvedActivationReserveBytes)
+        await pushActivationReserve()
         await resliceGrowSurvivors()
         return true
+    }
+
+    /// Stamp and push the live serving-set reserve into the KV budget actor.
+    private func pushActivationReserve() async {
+        activationReserveEpoch += 1
+        await kvBudget.setActivationReserveBytes(
+            resolvedActivationReserveBytes, epoch: activationReserveEpoch)
     }
 
     /// Apply a `setModels` update deferred behind an in-flight load, once
@@ -397,9 +422,15 @@ public actor StandaloneServer {
     /// the failure path too, where the restore-on-throw has just put the
     /// previous grants back and nothing else would re-size them.
     private func applyDeferredModelsIfNeeded() async {
-        guard let pending = pendingModelsUpdate, modelsLoading.isEmpty else { return }
+        guard let pending = pendingModelsUpdate, !isLoadingAny, modelsLoading.isEmpty
+        else { return }
         pendingModelsUpdate = nil
         _ = await applyModels(pending)
+        // A setModels that arrived while THIS apply held the gate parked
+        // its list; apply it now rather than waiting for the next load.
+        if pendingModelsUpdate != nil {
+            await applyDeferredModelsIfNeeded()
+        }
     }
 
     /// Start listening for HTTP connections. The server runs in a child task.
@@ -587,11 +618,14 @@ public actor StandaloneServer {
     /// finish it the way BOTH of its completion paths do — clear the marker,
     /// then apply the deferred update if one is pending.
     func markLoadInFlightForTesting(_ modelId: String) {
+        isLoadingAny = true
         modelsLoading.insert(modelId)
     }
 
     func finishLoadForTesting(_ modelId: String) async {
         modelsLoading.remove(modelId)
+        isLoadingAny = false
+        releaseLoadGateWaiters()
         await applyDeferredModelsIfNeeded()
     }
 

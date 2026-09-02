@@ -109,11 +109,15 @@ public enum UnifiedMemoryCap {
     /// the WORST measured model (gemma-4's 5.05 GiB B=8 peak); a model whose
     /// measured peak sits far below it carries a floor of its own, so a
     /// provider serving ONLY such models does not hold back memory sized for
-    /// a model it can never run. On the catalog's 24 GB gpt-oss tier that
-    /// difference is the whole margin: weights 13.5 + 5.5 + 1 = 20.0 GB
-    /// required exceeds what macOS can ever leave reclaimable on a 24 GB box,
-    /// while 13.5 + 3.5 + 1 = 18.0 fits — the flat default made that tier
-    /// show online and fail every request.
+    /// a model it can never run. For gpt-oss-20b the requirement drops from
+    /// weights 13.5 + 5.5 + 1 = 20.0 GB to 13.5 + 3.5 + 1 = 18.0 GB. On the
+    /// 32 GB tier that closes the flap band #653 reported (the live gate
+    /// needs ~22 GB free-plus-inactive instead of ~24). On the catalog's
+    /// 24 GB tier it is NOT sufficient on its own: with the 4 GiB
+    /// `memory_reserve_gb` default the gate still needs ~22 GB free of 24,
+    /// and the #653 reporters measured 12.3 and 16.1 GB usable — the
+    /// remaining levers there are the admit-time disk×1.2 padding and the
+    /// small-box reserve default (see the plan's follow-ups).
     ///
     /// Keyed by catalog model id, EXACT match only: a variant or new build id
     /// without its own measurement falls back to the default — unmeasured

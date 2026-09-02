@@ -959,8 +959,8 @@ extension EngineV2Factory {
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 inputs: .init(
                     physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-                    // The caller's serving-set reserve (nil → flat default,
-                    // StandaloneServer's deliberate posture). The pool
+                    // The caller's serving-set reserve (nil → flat default;
+                    // both ProviderLoop and StandaloneServer pass theirs). The pool
                     // decision must measure headroom against the SAME
                     // reserve the load gate admitted with, or a load the
                     // relaxed gate admitted can land in the band where the

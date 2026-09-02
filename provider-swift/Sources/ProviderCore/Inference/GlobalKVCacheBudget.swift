@@ -19,8 +19,8 @@ public actor GlobalKVCacheBudget {
     /// tests can pin them. `ProviderLoop` resolves the reserve for its serving
     /// set (`UnifiedMemoryCap.resolvedActivationReserveBytes(modelIDs:)`) and
     /// passes it here so this budget and its load gate share one policy;
-    /// `StandaloneServer` (local direct mode) deliberately keeps the flat
-    /// default throughout. The reserve is a `var` behind
+    /// `StandaloneServer` (local direct mode) resolves the same per-model
+    /// reserve over its own serving set. The reserve is a `var` behind
     /// ``setActivationReserveBytes(_:)`` because the serving set can change at
     /// runtime (coordinator-driven prefetch advertises new builds); the owner
     /// re-resolves and pushes the new value BEFORE the added model becomes

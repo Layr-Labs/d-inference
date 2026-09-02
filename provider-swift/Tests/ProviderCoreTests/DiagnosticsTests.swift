@@ -697,3 +697,36 @@ struct DesiredModelsForPostureTests {
         servingSetIDs: ["gpt-oss-20b"])
     #expect(solo.level == .pass)
 }
+
+/// The tier arithmetic as the LIVE gate sees it, derived rather than assumed:
+/// usable = min(free-plus-inactive, total − MLX used) − max(memory_reserve_gb,
+/// total − 0.9·total). With the shipped 4 GiB reserve default, the 24 GB tier
+/// needs ~22 GB of free-plus-inactive memory to admit gpt-oss-20b at the 3.5
+/// GiB floor — the #653 reporters measured 12.3 and 16.1 GB usable, so the
+/// floor alone does not rescue 24 GB; it does turn the 32 GB flap band
+/// (15.9 vs 21.6 GB usable in the same minute) into a pass at 21.6.
+@Test func modelFitTierArithmeticIsDerivedFromTheLiveGate() {
+    let gib = 1024.0 * 1024.0 * 1024.0
+    func usable(totalGiB: Double, freePlusInactiveGiB: Double, configReserveGiB: UInt64) -> Double {
+        let total = UInt64(totalGiB * gib)
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: total,
+            systemAvailableBytes: UInt64(freePlusInactiveGiB * gib),
+            gpuActiveBytes: 0,
+            gpuCacheBytes: 0,
+            reserveBytes: UnifiedMemoryCap.loadReserveBytes(
+                physicalBytes: total, configReserveBytes: configReserveGiB * UInt64(gib)))
+    }
+    let weights = 13.53  // padded gpt-oss-20b catalog estimate
+    // 24 GB, default reserve: even the trimmed-headless projection (~18 GB
+    // free-plus-inactive after a clean boot) resolves to ~14 usable → fail.
+    let headless24 = usable(totalGiB: 24, freePlusInactiveGiB: 18.0, configReserveGiB: 4)
+    #expect(headless24 < 18.03)
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: headless24).level != .pass)
+    // 24 GB needs ~22 GB free-plus-inactive at the default reserve.
+    #expect(usable(totalGiB: 24, freePlusInactiveGiB: 22.1, configReserveGiB: 4) >= 18.03)
+    // 32 GB, the #653 flap sample: 21.6 usable passes the 18.03 requirement.
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: 21.6).level == .pass)
+    // ...and 15.9 usable still fails, under the new floor as under the old one.
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: 15.9).level != .pass)
+}

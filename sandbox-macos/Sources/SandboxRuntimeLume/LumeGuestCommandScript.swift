@@ -155,10 +155,25 @@ enum LumeGuestCommandScript {
               /bin/launchctl bootout "$launch_domain/$job_label" \
               >/dev/null 2>&1 || true
             fi
-            if /bin/launchctl print "$launch_domain/$job_label" \
-            >/dev/null 2>&1; then
-              exit 70
-            fi
+            # bootout only requests teardown; launchd unloads the job
+            # asynchronously. Checking once immediately after reports a
+            # failure for a job that is on its way out.
+            #
+            # Bounded on the clock rather than on an iteration count: each turn
+            # also forks sleep and launchctl, so 90 iterations is 5.5s of wall
+            # time, not the 4.5s the sleeps alone suggest. The hard constraint
+            # is the 5s grace the host adds over the guest budget, and on the
+            # timeout path this is reached with almost all of it already spent,
+            # so overrunning it would turn a clean 124 into a transport
+            # failure. 3s is far more than the sub-second unload actually
+            # observed, and leaves room for the envelope write.
+            typeset -F SECONDS
+            bootout_deadline=$((SECONDS + 3))
+            while /bin/launchctl print "$launch_domain/$job_label" \
+            >/dev/null 2>&1; do
+              (( SECONDS < bootout_deadline )) || exit 70
+              /bin/sleep 0.05
+            done
             job_loaded=false
             exec 7>&-
             exec 8>&-
@@ -239,10 +254,16 @@ enum LumeGuestCommandScript {
               /bin/mv -f "$temporary" "$cancellation" || exit 70
               /bin/launchctl bootout "$launch_domain/$job_label" \
               >/dev/null 2>&1 || true
-              if /bin/launchctl print "$launch_domain/$job_label" \
-              >/dev/null 2>&1; then
-                exit 70
-              fi
+              # Same asynchronous teardown as the execution script, same
+              # clock-based bound: wait for the job to actually go, or
+              # cancellation reports failure for work it did cancel.
+              typeset -F SECONDS
+              bootout_deadline=$((SECONDS + 3))
+              while /bin/launchctl print "$launch_domain/$job_label" \
+              >/dev/null 2>&1; do
+                (( SECONDS < bootout_deadline )) || exit 70
+                /bin/sleep 0.05
+              done
             ' darkbloom-cancel "$cancellation" '\(identifier)' \
             "$launch_domain" "$job_label" || exit 70
             """

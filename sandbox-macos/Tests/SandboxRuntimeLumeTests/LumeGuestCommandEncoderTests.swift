@@ -243,10 +243,21 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 range: bootstrap.upperBound..<script.endIndex
             )
         )
+        // bootout is asynchronous, so the job must be waited out rather than
+        // checked once -- a single immediate probe reported failure for a job
+        // that was on its way down.
         let unloadVerification = try XCTUnwrap(
             script.range(
-                of: #"if /bin/launchctl print "$launch_domain/$job_label""#,
+                of: #"while /bin/launchctl print "$launch_domain/$job_label""#,
                 range: teardownBootout.upperBound..<script.endIndex
+            )
+        )
+        // The wait must be bounded, or a job that never unloads hangs the
+        // command until the host-side timeout kills it.
+        XCTAssertNotNil(
+            script.range(
+                of: #"(( SECONDS < bootout_deadline )) || exit 70"#,
+                range: unloadVerification.upperBound..<script.endIndex
             )
         )
         let jobMarkedUnloaded = try XCTUnwrap(
@@ -352,6 +363,40 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 """
             )
         )
+    }
+
+    // The cancellation script tears the job down the same way the execution
+    // script does, so it needs the same bounded wait. Without one, a
+    // cancellation that succeeded reported exit 70 whenever launchd's
+    // asynchronous unload lagged the check.
+    func testCancellationWaitsBoundedForLaunchdToUnloadTheJob() throws {
+        let script = LumeGuestCommandScript.cancellation(UUID())
+
+        let bootout = try XCTUnwrap(
+            script.range(
+                of: #"/bin/launchctl bootout "$launch_domain/$job_label""#
+            )
+        )
+        // It must wait, not probe once.
+        let wait = try XCTUnwrap(
+            script.range(
+                of: #"while /bin/launchctl print "$launch_domain/$job_label""#,
+                range: bootout.upperBound..<script.endIndex
+            )
+        )
+        // And the wait must be bounded, or a job that never unloads hangs
+        // cancellation until the host-side timeout kills it.
+        XCTAssertNotNil(
+            script.range(
+                of: #"(( SECONDS < bootout_deadline )) || exit 70"#,
+                range: wait.upperBound..<script.endIndex
+            )
+        )
+        // No negative assertion here on purpose. The buggy form was `bootout`
+        // followed by one `if` probe, which has the same probe count and the
+        // same text minus `while`, so any "must not contain" check either
+        // duplicates the two assertions above or, as a first attempt here did,
+        // silently matches nothing at all.
     }
 
     func testCancellationStopsGuestJobBeforeDelayedSideEffect() async throws {

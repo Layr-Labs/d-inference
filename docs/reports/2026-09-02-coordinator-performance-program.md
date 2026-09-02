@@ -148,8 +148,15 @@ Settlement consolidation (one transaction for the consumer refund, provider
 earning and platform fee) was evaluated and **not shipped**: the three writes
 fail independently today, `CreditProviderAccount` is idempotent on job id
 while `Credit` is not, and a single transaction over three balance rows adds a
-deadlock cycle between concurrent settlements. Follow-up instead: collapse
-`Credit` from five round trips to one CTE, as `Debit` already is.
+deadlock cycle between concurrent settlements. Instead, `Credit` and
+`CreditWithdrawable` were collapsed from five round trips (BEGIN, upsert,
+SELECT, INSERT, COMMIT) to one data-modifying CTE statement, the shape `Debit`
+already used; the transactional callers (`CreditWithdrawableOnce`,
+`CreditProviderWallet`) reuse the same statement inside their transactions. A
+tracer-backed test replays the legacy five-statement sequence against the new
+path and asserts byte-identical ledger rows and balances for unknown, existing,
+zero and negative amounts; a 32-goroutine mixed Credit/Debit test asserts the
+ledger running sums.
 
 ### 4.4 Streaming relay and public read endpoints (`api/stream_coalesce.go`, `api/chat_stream_relay.go`, `api/sse_normalize_gate.go`, `api/models_cache.go`)
 

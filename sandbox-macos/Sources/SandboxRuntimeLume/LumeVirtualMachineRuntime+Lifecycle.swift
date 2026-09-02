@@ -501,7 +501,11 @@ extension LumeVirtualMachineRuntime {
             // Only a VM this process spawned can have a channel, so this is
             // the one branch that can adopt one. A nil result is normal: the
             // image may carry no agent, and readiness below falls back to SSH.
-            _ = await adoptGuestChannel(name: name, process: process)
+            _ = await adoptGuestChannel(
+                name: name,
+                process: process,
+                expectedImageID: ownershipCommitment.expectedGuestImageID
+            )
             try await waitForGuestReady(
                 credential: ownershipCommitment.guestCredential,
                 name: name,

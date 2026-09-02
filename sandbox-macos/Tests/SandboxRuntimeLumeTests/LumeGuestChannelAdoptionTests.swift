@@ -185,6 +185,82 @@ final class LumeGuestChannelAdoptionTests: XCTestCase {
         XCTAssertEqual(afterRelease.description, "lume ssh")
     }
 
+    /// Writes a handshake frame the way the real agent does.
+    private func sendHandshake(
+        on descriptor: Int32,
+        imageID: String,
+        agentVersion: String = "0.1.0",
+        protocolVersion: Int = 1
+    ) throws {
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "magic": "darkbloom_guest_agent",
+            "protocol_version": protocolVersion,
+            "agent_version": agentVersion,
+            "image_id": imageID,
+        ])
+        var frame = Data([1])                      // kind: handshake
+        let length = UInt32(payload.count)
+        frame.append(UInt8(truncatingIfNeeded: length >> 24))
+        frame.append(UInt8(truncatingIfNeeded: length >> 16))
+        frame.append(UInt8(truncatingIfNeeded: length >> 8))
+        frame.append(UInt8(truncatingIfNeeded: length))
+        frame.append(payload)
+        try frame.withUnsafeBytes { raw in
+            var sent = 0
+            while sent < raw.count {
+                let n = write(descriptor, raw.baseAddress! + sent, raw.count - sent)
+                guard n > 0 else { throw XCTSkip("socketpair write failed") }
+                sent += n
+            }
+        }
+    }
+
+    /// A channel is only worth having if the peer proves it is our agent.
+    func testAValidHandshakeKeepsTheChannel() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        let (host, guest) = try connectedPair()
+        defer { close(guest) }
+        try sendHandshake(on: guest, imageID: "base-image-7")
+
+        let adopted = await runtime.adopt(descriptor: host, name: "vm-h")
+        let client = try XCTUnwrap(adopted)
+        let validated = await runtime.validate(
+            client, name: "vm-h", expectedImageID: "base-image-7"
+        )
+
+        XCTAssertNotNil(validated)
+        let stored = await runtime.guestChannel(for: "vm-h")
+        XCTAssertNotNil(stored)
+        await runtime.releaseGuestChannel(name: "vm-h")
+    }
+
+    /// An unverified channel is worse than none: it would be trusted for every
+    /// command after this point. Dropping it falls back to SSH, which still has
+    /// to pass its own readiness check.
+    func testAMismatchedImageDropsTheChannel() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+
+        let (host, guest) = try connectedPair()
+        defer { close(guest) }
+        try sendHandshake(on: guest, imageID: "some-other-image")
+
+        let adopted = await runtime.adopt(descriptor: host, name: "vm-m")
+        let client = try XCTUnwrap(adopted)
+        let validated = await runtime.validate(
+            client, name: "vm-m", expectedImageID: "base-image-7"
+        )
+
+        XCTAssertNil(validated)
+        let stored = await runtime.guestChannel(for: "vm-m")
+        XCTAssertNil(stored, "a channel that failed its handshake must not be kept")
+        XCTAssertEqual(fcntl(host, F_GETFL), -1, "and its descriptor is closed")
+    }
+
     /// Channels are per-VM, and releasing one must not disturb another.
     func testChannelsAreIsolatedPerVirtualMachine() async throws {
         let fixture = try FakeLumeFixture(initialState: "stopped")

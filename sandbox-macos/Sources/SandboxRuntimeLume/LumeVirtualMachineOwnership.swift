@@ -37,6 +37,16 @@ enum LumeVirtualMachineOwnership {
         /// Falls back to the shared account for guests installed before
         /// per-sandbox credentials existed.
         let guestCredential: LumeGuestCredential
+
+        /// What the baked guest agent should report as its image id, or `nil`
+        /// when the record predates the field.
+        ///
+        /// The agent is baked once into a base image and every clone inherits
+        /// it through the APFS clonefile, so the identifier belongs to the
+        /// image and not to the sandbox. A clone therefore expects the
+        /// template's name, which is what the template was baked with; a
+        /// freshly installed template expects its own.
+        let expectedGuestImageID: String?
     }
 
     enum Presence: Equatable, Sendable {
@@ -180,7 +190,8 @@ enum LumeVirtualMachineOwnership {
             cpuCount: record.cpuCount,
             memoryBytes: record.memoryBytes,
             diskBytes: record.diskBytes,
-            guestCredential: record.guestCredential ?? .legacy
+            guestCredential: record.guestCredential ?? .legacy,
+            expectedGuestImageID: record.expectedGuestImageID
         )
     }
 
@@ -362,6 +373,20 @@ enum LumeVirtualMachineOwnership {
         let diskBytes: UInt64
         let sourceKind: String
         let sourceReference: String
+
+        /// The image id a baked agent in this VM reports.
+        ///
+        /// A clone carries the template's disk, so it carries the template's
+        /// baked identifier -- which is the template name recorded here as the
+        /// source. A VM installed from a restore image was baked with its own
+        /// name.
+        var expectedGuestImageID: String? {
+            switch sourceKind {
+            case "local_template": return sourceReference
+            case "restore_image": return name
+            default: return nil
+            }
+        }
         let sourceInstallationID: UUID?
         let unattendedPreset: String?
         let ownerKind: String

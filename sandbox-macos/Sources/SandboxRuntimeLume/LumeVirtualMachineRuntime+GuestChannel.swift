@@ -41,6 +41,7 @@ extension LumeVirtualMachineRuntime {
     func adoptGuestChannel(
         name: String,
         process: SandboxManagedProcess,
+        expectedImageID: String?,
         within budget: Duration = LumeVirtualMachineRuntime
             .guestChannelAdoptionBudget
     ) async -> SandboxGuestChannelClient? {
@@ -63,7 +64,13 @@ extension LumeVirtualMachineRuntime {
             }
 
             if let descriptor {
-                return adopt(descriptor: descriptor, name: name)
+                guard let client = adopt(descriptor: descriptor, name: name)
+                else { return nil }
+                return await validate(
+                    client,
+                    name: name,
+                    expectedImageID: expectedImageID
+                )
             }
 
             // `nil` is ambiguous by construction: not arrived yet, the child
@@ -91,6 +98,37 @@ extension LumeVirtualMachineRuntime {
             return client
         } catch {
             Darwin.close(descriptor)
+            return nil
+        }
+    }
+
+    /// Proves the peer is the agent this host provisioned, or discards it.
+    ///
+    /// The handshake is the only thing that distinguishes our agent from
+    /// anything else that happens to be listening on that port inside the
+    /// guest, so a channel that fails it is worse than no channel: it would be
+    /// trusted for every subsequent command. Falling back to SSH is the safe
+    /// outcome, and the SSH readiness check that follows still has to pass.
+    ///
+    /// Run detached because the probe blocks: it polls the descriptor for up
+    /// to its timeout, which on the actor would stall every other operation.
+    func validate(
+        _ client: SandboxGuestChannelClient,
+        name: String,
+        expectedImageID: String?
+    ) async -> SandboxGuestChannelClient? {
+        do {
+            _ = try await Task.detached(priority: .userInitiated) {
+                try LumeGuestChannelReadinessProbe.run(
+                    channel: client,
+                    expectedImageID: expectedImageID
+                )
+            }.value
+            return client
+        } catch {
+            // A mismatched image, a bad protocol version, or a peer that says
+            // nothing. Drop it rather than carry an unverified channel.
+            releaseGuestChannel(name: name)
             return nil
         }
     }

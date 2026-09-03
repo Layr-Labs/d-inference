@@ -69,16 +69,25 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
 }
 /// Operator policy for multi-token prediction.
 ///
-/// `auto` turns MTP on for checkpoints that DECLARE an embedded head
-/// (`mtplx_mtp.included = true` in config.json) and belong to the Qwen 3.5
-/// family — dense `qwen3_5` (Qwen3.5-9B / Qwen3.8-27B) and `qwen3_5_moe`
-/// (Qwen3.5/3.6 35B-A3B). The family gate is deliberately hardcoded to Qwen
-/// for now: it widens only when another family actually ships embedded
-/// artifacts. A Qwen checkpoint WITHOUT an embedded head is not asked about
-/// at all under `auto` — no catalog lookup, no prefetch, a plain
-/// config-disabled fallback — because embedded is the one automatic
-/// mechanism; separately published assistants (and `mtp_drafter_path`
-/// overrides) require an explicit `mtp_mode = "on"`.
+/// `auto` turns MTP on for a supported family whose assistant head is
+/// DECLARED where the provider can see it without a network call:
+///
+///   * an embedded head in the checkpoint (`mtplx_mtp.included = true` in
+///     config.json) — the Qwen 3.5 family's mechanism: dense `qwen3_5`
+///     (Qwen3.5-9B / Qwen3.8-27B) and `qwen3_5_moe` (Qwen3.5/3.6 35B-A3B); or
+///   * an operator-declared `mtp_drafter_path` — the mechanism Gemma 4
+///     (`gemma4`, `gemma4_text`) uses, because its assistant is separately
+///     published rather than carried in the target checkpoint.
+///
+/// Gemma was previously excluded from `auto` outright, so a Gemma box that
+/// had already been given an assistant path still decoded target-only unless
+/// an operator additionally typed `mtp_mode = "on"`. A declared drafter path
+/// IS the operator saying which head to use; `auto` now honours it.
+///
+/// What `auto` still refuses to do is go looking. A checkpoint with no
+/// embedded head and no declared path is not asked about at all — no catalog
+/// lookup, no prefetch, a plain config-disabled fallback. Pairing a
+/// separately published assistant from the catalog remains `mtp_mode = "on"`.
 ///
 /// The declaration alone never activates anything: full artifact inspection
 /// and the process-wide kill switch remain enforced by
@@ -95,19 +104,43 @@ public enum MTPMode: String, Sendable, Equatable, Codable {
     /// only decides which ones `auto` is willing to *ask about*.
     static let automaticQwen35ModelTypes: Set<String> = ["qwen3_5", "qwen3_5_moe"]
 
-    func enablesMTP(forModelType modelType: String?, embeddedArtifactDeclared: Bool) -> Bool {
+    /// `model_type` values that pair a SEPARATELY PUBLISHED assistant, and so
+    /// self-activate under `auto` only when the operator declared where that
+    /// assistant is. Kept in sync with `SpecDecArtifactFunnel.isGemma4Target`.
+    static let automaticPairedModelTypes: Set<String> = ["gemma4", "gemma4_text"]
+
+    /// Every family `auto` is willing to ask about, under one declaration or
+    /// the other.
+    static var automaticModelTypes: Set<String> {
+        automaticQwen35ModelTypes.union(automaticPairedModelTypes)
+    }
+
+    func enablesMTP(
+        forModelType modelType: String?,
+        embeddedArtifactDeclared: Bool,
+        drafterPathDeclared: Bool = false
+    ) -> Bool {
         switch self {
         case .on:
             return true
         case .off:
             return false
         case .auto:
-            guard embeddedArtifactDeclared,
-                let raw = modelType?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased(), !raw.isEmpty
+            guard let raw = modelType?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(), !raw.isEmpty
             else { return false }
-            return Self.automaticQwen35ModelTypes.contains(raw)
+            if embeddedArtifactDeclared, Self.automaticQwen35ModelTypes.contains(raw) {
+                return true
+            }
+            // A separately published head is only ever automatic when the
+            // operator named it. Embedded declarations count here too: a
+            // family that later ships an inline head self-activates without
+            // another edit to this switch.
+            if Self.automaticPairedModelTypes.contains(raw) {
+                return drafterPathDeclared || embeddedArtifactDeclared
+            }
+            return false
         }
     }
 }

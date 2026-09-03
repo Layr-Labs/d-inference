@@ -362,7 +362,8 @@ enum EngineV2SlotFactory {
             automaticRectangularTokens: automaticRectangularTokens)
         let fixedDraftTokens = MTPAutomaticVerificationPolicy.fixedDraftTokens(
             usesRequestStatefulDrafter:
-                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter)
+                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter,
+            environment: environment)
         let mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
             fixedDraftTokens: fixedDraftTokens,

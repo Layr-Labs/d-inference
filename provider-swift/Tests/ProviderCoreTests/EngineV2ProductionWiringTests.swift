@@ -316,11 +316,46 @@ struct EngineV2SlotBuildTests {
     func productionMTPDepthModeFollowsDrafterCapability() {
         #expect(
             MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: true) == nil)
+                usesRequestStatefulDrafter: true, environment: [:]) == nil)
+        // A stateless assistant gets the MEASURED fixed depth, not the old
+        // could-not-be-wrong pin of 1.
         #expect(
             MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: false)
-                == MTPAutomaticVerificationPolicy.initialDraftTokens)
+                usesRequestStatefulDrafter: false, environment: [:])
+                == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
+        #expect(MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens == 4)
+    }
+
+    @Test("the stateless fixed depth is an operator knob, clamped to the envelope")
+    func statelessDepthIsOverridable() {
+        func depth(_ raw: String) -> Int? {
+            MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: false,
+                environment: [
+                    MTPAutomaticVerificationPolicy.draftTokensEnvironmentKey: raw
+                ])
+        }
+        #expect(depth("1") == MTPAutomaticVerificationPolicy.initialDraftTokens)
+        #expect(depth("0") == 0)
+        #expect(depth("7") == 7)
+        // Past the engine's tested envelope the request is clamped, never
+        // passed through to be silently re-clamped somewhere else.
+        #expect(depth("99") == CBv2MTPConfig.testedMaxDraftTokens)
+        #expect(depth("-3") == 0)
+        // `adaptive` hands even a stateless drafter to the engine controller.
+        #expect(depth("adaptive") == nil)
+        #expect(depth("ADAPTIVE") == nil)
+        // Garbage and blanks fall back to the measured default rather than
+        // silently disabling speculation.
+        #expect(depth("banana") == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
+        #expect(depth("  ") == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
+        // An override never applies to a request-stateful drafter.
+        #expect(
+            MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: true,
+                environment: [
+                    MTPAutomaticVerificationPolicy.draftTokensEnvironmentKey: "5"
+                ]) == nil)
     }
 
     @Test("slot build is unconditional: builds, registers, and streams translated events")

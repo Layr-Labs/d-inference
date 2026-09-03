@@ -27,6 +27,68 @@ struct MTPConfigKeyTests {
             environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "6"],
             chipName: "Apple M5 Max") == 6)
         #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
+        // The rectangular width budget is a CERTIFICATION: the operator knob
+        // may only tighten it, and the depth knob cannot widen it either.
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "-1"],
+            chipName: "Apple M5 Max") == 0)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "nonsense"],
+            chipName: "Apple M5 Max") == 8)
+    }
+
+    @Test("auto asks about Gemma 4 only when a drafter path is declared")
+    func autoActivatesGemmaWithADeclaredHead() {
+        let mode = MTPMode.auto
+        // Gemma's assistant is separately published, so the checkpoint carries
+        // no embedded declaration. Before this, that meant auto NEVER fired
+        // for Gemma however the box was configured.
+        #expect(!mode.enablesMTP(
+            forModelType: "gemma4_text",
+            embeddedArtifactDeclared: false,
+            drafterPathDeclared: false))
+        #expect(mode.enablesMTP(
+            forModelType: "gemma4_text",
+            embeddedArtifactDeclared: false,
+            drafterPathDeclared: true))
+        #expect(mode.enablesMTP(
+            forModelType: "gemma4",
+            embeddedArtifactDeclared: false,
+            drafterPathDeclared: true))
+        // A Gemma checkpoint that ever ships an inline head self-activates
+        // without another edit to the family switch.
+        #expect(mode.enablesMTP(
+            forModelType: "gemma4",
+            embeddedArtifactDeclared: true,
+            drafterPathDeclared: false))
+        // Qwen keeps the embedded mechanism: a declared path alone is not a
+        // reason to ask about a checkpoint whose head is supposed to be inline.
+        #expect(!mode.enablesMTP(
+            forModelType: "qwen3_5",
+            embeddedArtifactDeclared: false,
+            drafterPathDeclared: true))
+        // Unsupported families stay out of auto entirely.
+        #expect(!mode.enablesMTP(
+            forModelType: "llama",
+            embeddedArtifactDeclared: true,
+            drafterPathDeclared: true))
+        // `off` still wins over every declaration; `on` still needs none.
+        #expect(!MTPMode.off.enablesMTP(
+            forModelType: "gemma4_text",
+            embeddedArtifactDeclared: true,
+            drafterPathDeclared: true))
+        #expect(MTPMode.on.enablesMTP(
+            forModelType: "gemma4_text",
+            embeddedArtifactDeclared: false,
+            drafterPathDeclared: false))
+    }
+
+    @Test("a drafter path is declared only when it is actually a path")
+    func drafterPathDeclarationIgnoresBlanks() {
+        #expect(!ProviderLoop.declaresDrafterPath(nil))
+        #expect(!ProviderLoop.declaresDrafterPath(""))
+        #expect(!ProviderLoop.declaresDrafterPath("   \n "))
+        #expect(ProviderLoop.declaresDrafterPath("/models/gemma-4-assistant"))
     }
 
 
@@ -116,16 +178,15 @@ struct MTPConfigKeyTests {
         #expect(modeWins.backend.mtpMode == .off)
     }
 
-    @Test("automatic mode requires an embedded head AND a Qwen3.5-family model type")
+    @Test("automatic mode requires a declared head AND a supported model type")
     func targetPolicy() {
         // Embedded (mtplx_mtp-declaring) checkpoints of the Qwen 3.5 family —
         // dense (9B, 27B) and MoE (3.5/3.6 35B) — self-activate under `auto`.
-        // The family gate is hardcoded to Qwen for now and widens only when
-        // another family actually ships embedded artifacts.
+        // Gemma 4 is covered separately (autoActivatesGemmaWithADeclaredHead):
+        // its assistant is separately published, so `auto` keys on a declared
+        // drafter path, not on an embedded declaration.
         let familyModelTypes = ["qwen3_5_moe", "qwen3_5"]
         let nonFamilyModelTypes: [String?] = [
-            "gemma4",
-            "gemma4_text",
             "gpt_oss",
             "qwen3_vl_moe",
             nil,

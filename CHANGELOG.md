@@ -2,6 +2,19 @@
 
 ## Unreleased (2026-09-02) — system profiler
 
+- **Runtime manifest accepts every active release** — `SyncRuntimeManifest`
+  now unions template hashes (including `mlx_metallib`) across ALL active
+  release rows instead of keeping one value per template name. Registering
+  v0.8.16 on 2026-09-03 replaced the v0.8.15 metallib hash in the manifest, so
+  ~1,180 providers still on v0.8.15 failed their next attestation challenge
+  (`provider runtime integrity mismatch in challenge response`, 1,184 times)
+  and the fleet was unroutable for the ~30–40 minute self-update window.
+  Registering a release can no longer deroute the previous release's fleet;
+  deactivating a release remains the way to retire its hashes, a hash no
+  active release ships still fails closed, and `GET /v1/runtime/manifest`
+  lists every accepted hash per template. The post-mutation convergence paths
+  and the `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` override use the same set
+  semantics.
 - **Per-request profiler** — the coordinator records one prompt-free row per
   dispatched attempt in `request_profiles` (joins `inference_routes` on
   `(request_id, attempt)`): microsecond offsets from middleware entry for every

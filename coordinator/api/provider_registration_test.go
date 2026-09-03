@@ -91,7 +91,7 @@ func TestProviderRegistrationBindsProtectedRuntimeClaims(t *testing.T) {
 	)
 	metallibHash := strings.Repeat("a", 64)
 	srv.SetRuntimeManifest(&RuntimeManifest{
-		TemplateHashes: map[string]string{"mlx_metallib": metallibHash},
+		TemplateHashes: map[string]map[string]bool{"mlx_metallib": {metallibHash: true}},
 	})
 	publicKey := testPublicKeyB64()
 	regMsg := &protocol.RegisterMessage{

@@ -889,6 +889,16 @@ Provider releases are built and shipped by `.github/workflows/release-swift.yml`
 7. Registers the release with `POST /v1/releases` using `RELEASE_KEY`.
 8. Creates a GitHub release.
 
+Step 7 is safe against a live fleet: the coordinator's runtime manifest is the
+union of every active release row's hashes (one accepted set per template name,
+`mlx_metallib` included), so registering a release never deroutes providers
+still running the previous release. Providers self-update on their 30-minute
+poll; retiring the old release's hashes is a separate, explicit
+`DELETE /v1/admin/releases` (in-use protection applies unless `force=true`).
+The single-valued manifest that registering v0.8.16 tripped on 2026-09-03
+(~1,180 v0.8.15 providers excluded from routing at their next challenge) is a
+regression class pinned by `coordinator/api/runtime_manifest_union_test.go`.
+
 Reference: [`release-swift.yml`](../../.github/workflows/release-swift.yml).
 
 ### Cutting a release

@@ -891,6 +891,41 @@ extension LumeVirtualMachineRuntime {
         // that it happened, and telling "no SSH" from "busy guest" from
         // "broken wrapper" costs a live VM and a hand-run command.
         var lastObservation = "the guest never reported ssh availability"
+
+        // A VM whose agent serves commands is ready without anyone discovering
+        // its IP. That matters beyond latency: `guestReady` is literally Lume's
+        // `sshAvailable`, scraped from DHCP leases and ARP, so a guest with no
+        // network device -- which is how a tenant sandbox is isolated -- could
+        // never become ready through the path below.
+        //
+        // The `servesCommands` guard also satisfies the probe's precondition
+        // that the handshake is already consumed: that flag is set only inside
+        // `validate`, after a successful handshake, so it cannot be true on a
+        // channel whose first frame is still waiting to be read.
+        if let channel = guestChannel(for: name), guestChannelServesCommands(name) {
+            repeat {
+                switch await LumeGuestChannelReadinessProbe.runCommandProbe(
+                    channel: channel
+                ) {
+                case .ready:
+                    return
+                case .notReady(let reason):
+                    lastObservation = reason
+                }
+                guard clock.now < deadline else { break }
+                try await clock.sleep(
+                    until: min(
+                        clock.now.advanced(by: guestReadinessPolicy.retryDelay),
+                        deadline
+                    ),
+                    tolerance: .zero
+                )
+            } while clock.now < deadline
+            throw SandboxRuntimeError.operationTimedOut(
+                "\(name) guest readiness: \(lastObservation)"
+            )
+        }
+
         repeat {
             let record: SandboxVirtualMachineRecord?
             do {

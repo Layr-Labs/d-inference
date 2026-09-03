@@ -314,6 +314,57 @@ func vsockTransportMapsRefusal() async throws {
 
 // MARK: - Readiness over the channel
 
+/// Readiness over the channel has to prove the *executor*, not just identity.
+///
+/// `guestReady` is literally Lume's `sshAvailable`, scraped from DHCP leases and
+/// ARP, so a guest with no network device could never become ready that way --
+/// which is exactly how a tenant sandbox is isolated. Moving readiness onto the
+/// channel removes that dependency, but only if it keeps proving what the SSH
+/// probe proved: that a real command runs and returns a real envelope.
+@Test("channel readiness runs a real command, not just a handshake")
+func channelReadinessProvesTheExecutor() async throws {
+    let channel = try #require(channelToAgent(executionEnabled: true))
+    defer { channel.close() }
+    // Mirrors production: adoption validates the handshake before the channel
+    // is routed to, so the first frame is consumed by then.
+    _ = try LumeGuestChannelReadinessProbe.run(
+        channel: channel, expectedImageID: nil
+    )
+
+    let outcome = await LumeGuestChannelReadinessProbe.runCommandProbe(
+        channel: channel
+    )
+
+    #expect(outcome == .ready)
+}
+
+/// An agent that handshakes but refuses commands is not ready, and says why.
+///
+/// This is the case that makes the executor check worth having: the handshake
+/// succeeds, so an identity-only readiness would report ready for a guest that
+/// cannot run anything.
+@Test("an agent that refuses commands is not ready")
+func channelReadinessRejectsARefusingAgent() async throws {
+    let channel = try #require(channelToAgent(executionEnabled: false))
+    defer { channel.close() }
+
+    // The handshake still passes, which is the whole point.
+    let identity = try LumeGuestChannelReadinessProbe.run(
+        channel: channel, expectedImageID: nil
+    )
+    #expect(!identity.executionEnabled)
+
+    let outcome = await LumeGuestChannelReadinessProbe.runCommandProbe(
+        channel: channel
+    )
+
+    guard case .notReady(let reason) = outcome else {
+        Issue.record("a refusing agent must not be ready")
+        return
+    }
+    #expect(reason.contains("execution_disabled"), "\(reason)")
+}
+
 @Test("channel readiness reports the agent's identity")
 func channelReadinessReportsIdentity() throws {
     let channel = try #require(channelToAgent(imageID: "img-42"))

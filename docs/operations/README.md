@@ -1,37 +1,33 @@
-# Operations Runbooks
+# Operations runbooks
 
-This directory contains procedural runbooks for deploying, migrating, and operating Darkbloom infrastructure. Every runbook uses the same section structure:
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-- **Prerequisites** — what must be true before starting
-- **Steps** — ordered operator actions
-- **Verification** — how to prove the outcome is correct
-- **Rollback** — how to undo or fail back safely
+Procedures for deploying, migrating, and operating Darkbloom production
+infrastructure. Every runbook has the same shape — when to use, prerequisites,
+steps, verification, rollback — and is written for an operator with production
+access. Architecture and security context live under
+[`../architecture/README.md`](../architecture/README.md); API and protocol
+shapes under [`../reference/README.md`](../reference/README.md).
 
-Runbooks are written for operators. For architecture and security context, see the [`architecture/README.md`](../architecture/README.md) docs; for API and protocol details, see [`reference/README.md`](../reference/README.md).
+| Runbook | Scope |
+|---|---|
+| [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
+| [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
+| [`routing-v2-rollout.md`](routing-v2-rollout.md) | Staged rollout of the routing-v2 admission and routing flags |
+| [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
+| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
+| [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) | Record of the EigenCloud → GCP move (frozen report, not a live runbook) |
 
-## Runbook index
+Two rules apply to every page here:
 
-| Runbook | Scope | Audience |
-|---|---|---|
-| [`coordinator-deploy.md`](coordinator-deploy.md) | Build and deploy the coordinator (Go) and provider CLI (Swift) | Infra / release engineer |
-| [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
-| [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
-| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer / human-approved agent |
-| [`eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer / human-approved agent |
-| [`m5-stress-runbook.md`](m5-stress-runbook.md) | Archived pre-v0.7.5 SSD soak; do not use for EngineV2 | Historical reference |
+1. Production mutations — GCP deploys, Secret Manager, VM/container/service
+   changes, database, DNS, traffic, release registration — require explicit
+   human approval for the specific operation. Without it, agents prepare
+   commands and perform read-only inspection only.
+2. Validate on dev first. Anything that publishes a model, flips an alias, or
+   changes routing runs against the dev coordinator
+   ([`dev-environment.md`](dev-environment.md)) before production.
 
-## Safety rules that apply to every runbook
-
-1. **Production GCP deploys, Secret Manager, VM/container/service/config,
-   database, DNS, traffic, and release registration require explicit human
-   approval for the specific operation.** A human operator or human-approved
-   agent may execute them. Without that approval, AI agents may only prepare
-   commands and perform read-only production inspection.
-2. **The code is the source of truth.** Claims cite canonical file paths and line ranges where possible.
-3. **Privacy model** (from [`docs/AGENTS.md`](../AGENTS.md)):
-   - Consumer → coordinator: TLS by default; optional NaCl Box.
-   - Coordinator → provider: mandatory per-request NaCl Box to the provider's attested X25519 public key.
-   - Provider → coordinator: response SSE chunks encrypted back to the coordinator's ephemeral X25519 key.
-   - The coordinator decrypts consumer bodies in Confidential VM memory for routing and billing, but does not log or retain prompt content.
-   - The provider is the decryption endpoint for prompts; it is bound to Apple Secure Enclave identity and code-identity attestation.
-4. **Validate on dev first.** Any command that publishes a model, flips an alias, or extracts state should be run against `api.dev.darkbloom.xyz` before prod.
+Provider CLI releases are a developer runbook:
+[`../developer/release.md`](../developer/release.md).

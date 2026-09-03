@@ -22,6 +22,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"github.com/eigeninference/d-inference/tools/systemmap/assemble"
 	"github.com/eigeninference/d-inference/tools/systemmap/config"
 	"github.com/eigeninference/d-inference/tools/systemmap/extract"
+	"github.com/eigeninference/d-inference/tools/systemmap/prose"
 	"github.com/eigeninference/d-inference/tools/systemmap/render"
 	"github.com/eigeninference/d-inference/tools/systemmap/report"
 )
@@ -41,28 +43,47 @@ import (
 const (
 	defaultModule  = "github.com/eigeninference/d-inference"
 	defaultOverlay = "docs/reference/api-map/overlay.json"
+	defaultProse   = "docs/reference/api-map/prose.json"
 	defaultOut     = "docs/reference/api-map"
 )
 
+// options are the generator's inputs. They are a struct rather than a parameter
+// list because the enrichment paths added two more, and a run() with nine
+// positional arguments is a call nobody can read.
+type options struct {
+	Root     string
+	Module   string
+	Overlay  string
+	Prose    string
+	Out      string
+	Revision string
+	Manifest string
+	Check    bool
+	Quiet    bool
+}
+
 func main() {
-	var (
-		root     = flag.String("root", "", "repository root (default: the git root of the working directory)")
-		module   = flag.String("module", defaultModule, "Go module path of the analyzed repository")
-		overlay  = flag.String("overlay", defaultOverlay, "curated overlay, relative to root")
-		out      = flag.String("out", defaultOut, "output directory, relative to root")
-		revision = flag.String("revision", "", "revision to stamp and link against (default: git HEAD)")
-		check    = flag.Bool("check", false, "report drift without writing the map")
-		quiet    = flag.Bool("quiet", false, "only print errors")
-	)
+	var opt options
+	flag.StringVar(&opt.Root, "root", "", "repository root (default: the git root of the working directory)")
+	flag.StringVar(&opt.Module, "module", defaultModule, "Go module path of the analyzed repository")
+	flag.StringVar(&opt.Overlay, "overlay", defaultOverlay, "curated overlay, relative to root")
+	flag.StringVar(&opt.Prose, "prose", defaultProse, "generated prose, relative to root")
+	flag.StringVar(&opt.Out, "out", defaultOut, "output directory, relative to root")
+	flag.StringVar(&opt.Revision, "revision", "", "revision to stamp and link against (default: git HEAD)")
+	flag.StringVar(&opt.Manifest, "enrich-manifest", "", "write the prose CI must generate as JSON to this path, relative to root")
+	flag.BoolVar(&opt.Check, "check", false, "report drift without writing the map")
+	flag.BoolVar(&opt.Quiet, "quiet", false, "only print errors")
 	flag.Parse()
 
-	if err := run(*root, *module, *overlay, *out, *revision, *check, *quiet); err != nil {
+	if err := run(opt); err != nil {
 		fmt.Fprintln(os.Stderr, "systemmap:", err)
 		os.Exit(1)
 	}
 }
 
-func run(root, module, overlayPath, outDir, revision string, check, quiet bool) error {
+func run(opt options) error {
+	root, module, overlayPath, outDir := opt.Root, opt.Module, opt.Overlay, opt.Out
+	revision, check, quiet := opt.Revision, opt.Check, opt.Quiet
 	if root == "" {
 		found, err := gitRoot()
 		if err != nil {
@@ -82,12 +103,47 @@ func run(root, module, overlayPath, outDir, revision string, check, quiet bool) 
 	if err != nil {
 		return err
 	}
+
+	// Generated prose is merged into the overlay's gaps before anything is
+	// assembled, so the rest of the pipeline cannot tell the two apart — a
+	// sentence is a sentence. What is captured first is who wrote what, because
+	// that is exactly what the merge destroys and what enrichment must respect.
+	generated, err := prose.Load(filepath.Join(root, opt.Prose))
+	if err != nil {
+		return err
+	}
+	human := cfg.HumanProse()
+	cfg.MergeProse(generated)
+
 	rep := report.New()
 	svc, prog, err := extract.Go(root, cfg, rep)
 	if err != nil {
 		return err
 	}
 	graph := assemble.Build(svc, prog, cfg, rep, assemble.Options{Revision: revision, OverlayPath: overlayPath})
+
+	// The plan is worked out from the assembled graph, so it sees the same facts
+	// the page shows. Prose whose facts have moved is drift: unlike a missing
+	// sentence, nothing else in the report would mention it, and a description of
+	// a route that has since changed auth class is worse than no description.
+	plan := prose.Build(graph, human, cfg.SymbolsByNode(), generated)
+	for _, req := range plan.Requests {
+		if req.Prior == nil {
+			continue // missing prose; the sections above already report it
+		}
+		rep.AddOutdatedProse(fmt.Sprintf("`%s` — generated prose describes facts that have changed (hash %s); run `make -C tools/systemmap enrich`",
+			req.Key, req.Hash))
+	}
+	graph.Generator.OverlayComplete = rep.Clean()
+	if opt.Manifest != "" {
+		if err := writeManifest(filepath.Join(root, opt.Manifest), revision, plan); err != nil {
+			return err
+		}
+		if !quiet {
+			fmt.Printf("systemmap: %d prose entries to write, %d current, %d to prune → %s\n",
+				len(plan.Requests), plan.Fresh, len(plan.Prune), opt.Manifest)
+		}
+	}
 
 	inventory, err := graph.Marshal()
 	if err != nil {
@@ -137,6 +193,34 @@ func run(root, module, overlayPath, outDir, revision string, check, quiet bool) 
 		return fmt.Errorf("drift detected: %s", rep.Counts())
 	}
 	return nil
+}
+
+// writeManifest records what enrichment has to do. It is written even when the
+// run fails on drift, because drift is the normal state of a pull request that
+// added a route: the gate says "this needs prose", the manifest says which prose
+// and from which facts, and the enrichment job turns the second into the first
+// being satisfied.
+func writeManifest(path, revision string, plan prose.Plan) error {
+	payload := struct {
+		Revision string          `json:"revision"`
+		Requests []prose.Request `json:"requests"`
+		Prune    []string        `json:"prune"`
+		Fresh    int             `json:"fresh"`
+	}{revision, plan.Requests, plan.Prune, plan.Fresh}
+	if payload.Requests == nil {
+		payload.Requests = []prose.Request{}
+	}
+	if payload.Prune == nil {
+		payload.Prune = []string{}
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0o644)
 }
 
 func gitRoot() (string, error) {

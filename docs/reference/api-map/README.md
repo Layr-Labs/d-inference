@@ -63,7 +63,9 @@ never hand-edited:
   call it)
 - the clusters — which process, store or third party each kind of node lives in
 - namespaces and auth-class names
-- who calls an endpoint, and the prose describing it
+- who calls an endpoint, and the prose describing it — the prose half is generated
+  in CI into `prose.json` and hashed against the facts it describes, so it is the
+  one curated layer that goes stale loudly (see *The amber tier is generated*)
 
 ### The three provenance views
 
@@ -131,6 +133,53 @@ So "where is there LLM synthesis, and where is there none" is answerable
 positionally: filter to **source** and every name on screen came out of the
 compiler; the `literal` and `symbol` tiers are where a person chose the word, even
 though the binding underneath is checked in both directions.
+
+### The amber tier is generated, and falsifiable
+
+Prose is the half nobody keeps up to date, and the table above says why it cannot
+be made to: its gate asks *is there a sentence here*, never *is the sentence still
+true*. A description written when an endpoint was unauthenticated survives the
+commit that puts it behind an API key, because nothing in a presence check can
+notice.
+
+So the amber tier is written in CI, from the facts the extractor derived, and
+stored in `prose.json` beside the overlay:
+
+```
+make -C tools/systemmap plan      # what prose is missing, and from which facts — no key needed
+make -C tools/systemmap enrich    # write it, then re-run the gate
+```
+
+`plan` writes a manifest: one request per route with no description and per node
+with no name or no `depDocs`, each carrying **only** what the map derived for it —
+the method, path, handler, namespace, auth class, middleware, gates and the state
+it touches with the mode; for a node, what names it, which namespaces reach it, and
+its columns if source declares a table. `cmd/enrich` turns each request into an
+entry and stores a hash of those facts with it. Three properties follow, and
+together they are the whole reason to generate rather than write:
+
+- **Prose that no longer matches its source is drift.** When a route gains a gate,
+  changes auth class or starts touching another table, the hash moves and `-check`
+  reports `Generated prose whose source has changed`. That is the finding the
+  hand-written workflow could not produce.
+- **A sentence cannot invent state.** The validator rejects a completion naming a
+  node the request's own facts do not list, before it reaches the file, and tells
+  the model which claim was unsupported. What survives is grounded in the same
+  derivation the graph is drawn from.
+- **Generated text cannot move an edge.** It lands in `description`, `details`,
+  `label` and the `depDocs` fields — the amber row, "nothing the graph draws". A
+  new route whose *cluster*, namespace or auth class is missing still fails the
+  gate and still waits for a person, because those are the blue row.
+
+Hand-written prose in `overlay.json` always wins: an entry a person wrote is never
+regenerated, and its generated counterpart is pruned rather than kept as a second
+answer. `callers` is never generated at all — who calls an endpoint is a claim
+about the world outside this repository, and nothing here can check it.
+
+The output is a commit on the pull request's branch (`.github/workflows/
+systemmap-enrich.yml`), so every generated sentence is read by whoever reviews the
+code that caused it. Fork pull requests get no secrets, so there the job publishes
+the manifest and fails with instructions rather than pretending the prose exists.
 
 ### Clicking things
 

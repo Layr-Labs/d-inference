@@ -28,6 +28,15 @@ const fixtureRevision = "0123456789abcdef0123456789abcdef01234567"
 // checks are proved to fire.
 func buildFixture(t *testing.T, mutate ...func(*config.Config)) (*ir.Graph, *report.Report) {
 	t.Helper()
+	g, rep, _ := buildFixtureCfg(t, mutate...)
+	return g, rep
+}
+
+// buildFixtureCfg is buildFixture for the tests that need the loaded overlay
+// itself — enrichment asks it who wrote which prose, which is a question about
+// the overlay rather than about the graph.
+func buildFixtureCfg(t *testing.T, mutate ...func(*config.Config)) (*ir.Graph, *report.Report, *config.Config) {
+	t.Helper()
 	root, err := filepath.Abs("testdata/fixture")
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +57,7 @@ func buildFixture(t *testing.T, mutate ...func(*config.Config)) (*ir.Graph, *rep
 		Revision:    fixtureRevision,
 		OverlayPath: "overlay.json",
 	})
-	return graph, rep
+	return graph, rep, cfg
 }
 
 func endpoints(g *ir.Graph) map[string]*ir.Endpoint {
@@ -1366,7 +1375,9 @@ func TestCheckWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run(root, "svcfix.test", "overlay.json", out, fixtureRevision, true, true); err != nil {
+	opt := options{Root: root, Module: "svcfix.test", Overlay: "overlay.json", Prose: "prose.json",
+		Out: out, Revision: fixtureRevision, Check: true, Quiet: true}
+	if err := run(opt); err != nil {
 		t.Fatalf("check failed on the complete fixture: %v", err)
 	}
 	left, err := os.ReadDir(dir)
@@ -1382,7 +1393,8 @@ func TestCheckWritesNothing(t *testing.T) {
 	}
 
 	// The same run without -check is what CI and Pages publish.
-	if err := run(root, "svcfix.test", "overlay.json", out, fixtureRevision, false, true); err != nil {
+	opt.Check = false
+	if err := run(opt); err != nil {
 		t.Fatalf("generate failed on the complete fixture: %v", err)
 	}
 	for _, name := range []string{"inventory.json", "system-map.html", "report.md"} {

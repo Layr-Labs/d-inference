@@ -1,0 +1,159 @@
+name: System Map Prose
+
+# Writes the generated half of the system map's overlay — the prose that explains
+# a route or a piece of state — and commits it to the pull request's branch.
+#
+# The curated overlay has two halves with very different risk. Clusters,
+# namespaces, auth classes and declared tables decide what the map *draws*: a wrong
+# value there publishes a wrong architecture, so they stay hand-written and the
+# `System Map` gate in ci.yml keeps failing until a person supplies them. Prose
+# decides only what the page *says* about something the extractor already found,
+# and its gate can only ever check that a sentence exists — never that it is still
+# true. That is the half that rots, and the half this job owns.
+#
+# What makes it safe to automate:
+#
+#   * Prose only. Generated text lands in a route's description and details, a
+#     node's label, and the depDocs fields. Nothing here can create a node, an
+#     edge, a cluster or an auth class — a new route with no cluster still fails
+#     the gate for a human.
+#   * Grounded. Each entry is written from the derived facts the extractor found
+#     for that route or node, and `cmd/enrich` rejects a sentence naming state
+#     those facts do not contain before it reaches the file.
+#   * Falsifiable. Each entry stores a hash of the facts it was written from, so
+#     prose describing code that has since changed becomes drift rather than a
+#     confident lie.
+#   * Reviewed. The output is a commit on the PR branch, so every generated
+#     sentence is read by whoever reviews the code that caused it.
+#
+# Fork pull requests have no secrets, by design. There the job publishes the
+# manifest as an artifact and fails with instructions, rather than pretending the
+# prose is written.
+#
+# A commit pushed with GITHUB_TOKEN does not retrigger workflows, so the `System
+# Map` check on this PR keeps whatever status it had before the push; this job's
+# own conclusion is the current answer, because `make enrich` re-runs the gate
+# after writing. The next push to the branch re-runs everything.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'coordinator/**'
+      - 'tools/systemmap/**'
+      - 'docs/reference/api-map/**'
+      - '.github/workflows/systemmap-enrich.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One enrichment per branch. Cancelling a superseded run is safe: the manifest is
+# derived from source, so the next run recomputes exactly what is still missing.
+concurrency:
+  group: systemmap-prose-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prose:
+    name: Generate map prose
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The branch itself, not the merge commit: this job commits to it. On a
+          # fork PR this checks out the fork's branch, which is untrusted code —
+          # safe here only because a fork PR receives no secrets and this job
+          # pushes nothing.
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          persist-credentials: true
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Plan the prose
+        # No key and no network: the plan is derived from source. It fails on
+        # drift, which is the normal state of a PR that added a route, so the
+        # manifest is what this step is read for.
+        id: plan
+        run: |
+          set -uo pipefail
+          make -C tools/systemmap plan MANIFEST=tmp/systemmap-enrich.json
+          if [ ! -f tmp/systemmap-enrich.json ]; then
+            echo "::error::the generator produced no manifest; it failed before it could plan"
+            exit 1
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          plan = json.load(open('tmp/systemmap-enrich.json'))
+          n = len(plan['requests']) + len(plan['prune'])
+          print(f"work={n}")
+          print(f"requests={len(plan['requests'])}")
+          for req in plan['requests']:
+              print(f"::notice::needs prose: {req['kind']}:{req['key']}")
+          PY
+
+      - name: Nothing to write
+        if: steps.plan.outputs.work == '0'
+        run: echo "Every route and node the map draws already has prose."
+
+      - name: Explain the fork fallback
+        # A fork PR cannot be enriched and must not silently look enriched.
+        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::This pull request adds ${{ steps.plan.outputs.requests }} route(s) or node(s) that need map prose."
+          echo "Fork pull requests receive no secrets, so prose cannot be generated here."
+          echo "A maintainer runs: make -C tools/systemmap enrich"
+          echo "The manifest naming exactly what is missing is attached as an artifact."
+          exit 1
+
+      - name: Write the prose
+        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          go -C tools/systemmap run ./cmd/enrich -manifest tmp/systemmap-enrich.json
+
+      - name: Verify the map is complete
+        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
+        # The gate again, now with the generated prose in place. If it still
+        # fails, what is missing is the half a person owns — a cluster, a
+        # namespace, an auth class, a declared table — and the report says which.
+        run: make -C tools/systemmap check
+
+      - name: Commit to the pull request branch
+        if: always() && steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
+        # `always()` so prose that was written survives a later failure: the
+        # entries are correct, they cost a model call, and committing them means
+        # the next run only writes what is still missing.
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/reference/api-map/prose.json; then
+            echo "No prose changed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/reference/api-map/prose.json
+          git commit -F - <<'MSG'
+          docs(systemmap): generate map prose
+
+          Prose for the routes and state this branch added or changed, written from
+          the facts the extractor derived and hashed against them. Prose only — no
+          cluster, namespace, auth class or table declaration is touched.
+
+          Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+          MSG
+          git push origin HEAD:"${{ github.event.pull_request.head.ref || github.ref_name }}"
+
+      - name: Upload the manifest
+        if: always() && steps.plan.outputs.work != '0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: systemmap-prose-manifest
+          path: |
+            tmp/systemmap-enrich.json
+            docs/reference/api-map/prose.json
+          if-no-files-found: warn

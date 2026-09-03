@@ -23,6 +23,7 @@ type Report struct {
 	UndocumentedN  []string
 	UndefinedTable []string
 	StaleProse     []string
+	OutdatedProse  []string
 	Unclassified   []string
 	BadClusters    []string
 	Unreached      []string
@@ -124,7 +125,13 @@ func (r *Report) AddUndocumented(s string) { r.UndocumentedN = append(r.Undocume
 func (r *Report) AddUndefinedTable(s string) {
 	r.UndefinedTable = append(r.UndefinedTable, s)
 }
-func (r *Report) AddStaleProse(s string)    { r.StaleProse = append(r.StaleProse, s) }
+func (r *Report) AddStaleProse(s string) { r.StaleProse = append(r.StaleProse, s) }
+
+// AddOutdatedProse records generated prose written from facts that have since
+// changed. It is a separate finding from missing prose because it is the one the
+// hand-written workflow could not produce: a sentence is present, reads fine, and
+// describes a route that no longer behaves that way.
+func (r *Report) AddOutdatedProse(s string) { r.OutdatedProse = append(r.OutdatedProse, s) }
 func (r *Report) AddUnclassified(s string)  { r.Unclassified = append(r.Unclassified, s) }
 func (r *Report) AddBadCluster(s string)    { r.BadClusters = append(r.BadClusters, s) }
 func (r *Report) AddUnreachedNode(s string) { r.Unreached = append(r.Unreached, s) }
@@ -135,15 +142,15 @@ func (r *Report) Clean() bool {
 		len(r.UnknownTables) == 0 &&
 		len(r.UnknownHosts) == 0 && len(r.MissingLabels) == 0 && len(r.MissingProse) == 0 &&
 		len(r.UndocumentedN) == 0 && len(r.UndefinedTable) == 0 && len(r.StaleProse) == 0 &&
-		len(r.Unclassified) == 0 && len(r.BadClusters) == 0
+		len(r.Unclassified) == 0 && len(r.BadClusters) == 0 && len(r.OutdatedProse) == 0
 }
 
 // Counts summarizes the report for a one-line status.
 func (r *Report) Counts() string {
-	return fmt.Sprintf("%d unmapped state, %d absorbed concurrent types, %d unreadable statements, %d unknown tables, %d unknown hosts, %d unlabeled nodes, %d undocumented nodes, %d undefined tables, %d routes missing prose, %d stale prose, %d unclassified, %d cluster problems",
+	return fmt.Sprintf("%d unmapped state, %d absorbed concurrent types, %d unreadable statements, %d unknown tables, %d unknown hosts, %d unlabeled nodes, %d undocumented nodes, %d undefined tables, %d routes missing prose, %d stale prose, %d outdated generated prose, %d unclassified, %d cluster problems",
 		len(r.UnmappedFields), len(r.AbsorbedTypes), len(r.OpaqueQueries), len(r.UnknownTables), len(r.UnknownHosts),
 		len(r.MissingLabels), len(r.UndocumentedN), len(r.UndefinedTable), len(r.MissingProse), len(r.StaleProse),
-		len(r.Unclassified), len(r.BadClusters))
+		len(r.OutdatedProse), len(r.Unclassified), len(r.BadClusters))
 }
 
 // Markdown renders the drift report.
@@ -222,6 +229,8 @@ func (r *Report) Markdown() string {
 
 	section("Routes missing curated prose", "None — every route has a description.", sortCopy(r.MissingProse))
 	section("Overlay prose for routes that no longer exist", "None — no stale entries.", sortCopy(r.StaleProse))
+	section("Generated prose whose source has changed",
+		"None — every generated sentence still describes the facts it was written from.", sortCopy(r.OutdatedProse))
 	section("Routes with no namespace or auth rule", "None — every route is classified.", sortCopy(r.Unclassified))
 	section("Nodes the graph cannot place in a boundary", "None — every service and category names a declared cluster.", sortCopy(r.BadClusters))
 	b.WriteString("The final section is informational: the map is scoped to HTTP entry points, so a\n")

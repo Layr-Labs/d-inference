@@ -14,7 +14,8 @@ func TestCoordinatorMapHasNoDrift(t *testing.T) {
 	if testing.Short() {
 		t.Skip("type-checks the whole coordinator")
 	}
-	if err := run("", defaultModule, defaultOverlay, defaultOut, fixtureRevision, true, true); err != nil {
+	if err := run(options{Module: defaultModule, Overlay: defaultOverlay, Prose: defaultProse,
+		Out: defaultOut, Revision: fixtureRevision, Check: true, Quiet: true}); err != nil {
 		t.Fatalf("%v\n\ninspect with: make -C tools/systemmap", err)
 	}
 }

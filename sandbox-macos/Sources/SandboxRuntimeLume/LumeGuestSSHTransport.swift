@@ -29,7 +29,9 @@ package struct LumeGuestSSHTransport: LumeGuestCommandTransport {
         executable: URL,
         storagePath: String,
         environment: [String: String],
-        credential: LumeGuestCredential = .legacy
+        // No default: a transport that guesses its own account is how the
+        // wrapper ended up naming one the guest did not have.
+        credential: LumeGuestCredential
     ) {
         self.runner = runner
         self.executable = executable

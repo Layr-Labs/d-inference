@@ -181,26 +181,36 @@ func sshTransportErrorName() {
         runner: SandboxProcessRunner(),
         executable: URL(fileURLWithPath: "/usr/bin/true"),
         storagePath: "/tmp",
-        environment: [:]
+        environment: [:],
+        credential: .generate()
     )
     // `commandFailed(command: "lume ssh", ...)` is asserted verbatim elsewhere.
     #expect(transport.description == "lume ssh")
 }
 
-@Test("the SSH transport prepares the same encoded script as before")
+@Test("the SSH transport encodes for the account it authenticates as")
 func sshTransportPreparesSameScript() throws {
+    // The script's HOME has to follow the transport's own credential. It used
+    // to default to the shared `lume` account, which per-sandbox identities
+    // deleted, so the launchd job named a home no guest had.
+    let credential = LumeGuestCredential.generate()
     let transport = LumeGuestSSHTransport(
         runner: SandboxProcessRunner(),
         executable: URL(fileURLWithPath: "/usr/bin/true"),
         storagePath: "/tmp",
-        environment: [:]
+        environment: [:],
+        credential: credential
     )
     let request = try request()
     guard case .encodedScript(let script) = try transport.prepare(request).payload else {
         Issue.record("SSH transport must prepare an encoded script")
         return
     }
-    #expect(script == (try LumeGuestCommandEncoder.encode(request)))
+    #expect(script == (try LumeGuestCommandEncoder.encode(
+        request, home: credential.bootstrapHome)))
+    // And the credential is actually consulted rather than a constant reached.
+    #expect(script != (try LumeGuestCommandEncoder.encode(
+        request, home: LumeGuestCredential.legacy.bootstrapHome)))
 }
 
 @Test("a request converts to a wire form with a lowercased key")

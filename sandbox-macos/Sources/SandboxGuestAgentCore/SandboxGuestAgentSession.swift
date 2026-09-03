@@ -24,7 +24,10 @@ public struct SandboxGuestAgentSession: Sendable {
             agentVersion: String,
             imageID: String,
             executionEnabled: Bool = false,
-            guestHome: String = "/Users/lume"
+            // No default: this becomes HOME for every command the agent
+            // spawns, and the literal that used to be here named an account
+            // that per-sandbox identities stopped creating.
+            guestHome: String
         ) {
             self.agentVersion = agentVersion
             self.imageID = imageID

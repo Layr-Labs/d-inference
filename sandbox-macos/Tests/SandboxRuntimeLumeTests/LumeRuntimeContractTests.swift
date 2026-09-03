@@ -313,6 +313,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                             "darkbloom-live-cancellation",
                             cancellationMarker,
                         ],
+                        workingDirectory: "/tmp",
                         timeoutSeconds: 30
                     )
                 )
@@ -336,6 +337,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                     idempotencyKey: UUID(),
                     executable: "/bin/test",
                     arguments: ["!", "-e", cancellationMarker],
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -349,6 +351,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                         idempotencyKey: UUID(),
                         executable: "/bin/rm",
                         arguments: ["-f", marker],
+                        workingDirectory: "/tmp",
                         timeoutSeconds: 30
                     )
                 )
@@ -360,6 +363,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/touch",
                     arguments: [marker],
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -370,6 +374,7 @@ final class LumeRuntimeContractTests: XCTestCase {
                     idempotencyKey: UUID(),
                     executable: "/bin/test",
                     arguments: ["!", "-e", marker],
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )

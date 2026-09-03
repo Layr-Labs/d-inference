@@ -878,7 +878,7 @@ extension LumeVirtualMachineRuntime {
     }
 
     private func waitForGuestReady(
-        credential: LumeGuestCredential = .legacy,
+        credential: LumeGuestCredential,
         name: String,
         timeoutSeconds: UInt32
     ) async throws {

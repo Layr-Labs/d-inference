@@ -124,6 +124,13 @@ package struct MacOSBaseImagePreparer: Sendable {
         }
     }
 
+    /// Reading a guest fact does not care where it runs, only that the
+    /// directory exists: the wrapper's `[[ -d ... ]]` guard exits 70 without
+    /// output if it does not. The root is the one path guaranteed to be there
+    /// on any guest, whatever the account layout is, which is exactly what the
+    /// previous default -- a specific user's home -- was not.
+    static let factWorkingDirectory = "/"
+
     private func guestFact(
         name: String,
         executable: String,
@@ -135,6 +142,7 @@ package struct MacOSBaseImagePreparer: Sendable {
                 idempotencyKey: UUID(),
                 executable: executable,
                 arguments: arguments,
+                workingDirectory: Self.factWorkingDirectory,
                 timeoutSeconds: 30
             )
         )

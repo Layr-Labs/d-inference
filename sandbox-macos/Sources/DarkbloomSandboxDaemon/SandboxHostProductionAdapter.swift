@@ -349,7 +349,16 @@ actor SandboxHostProductionAdapter:
                 executable: executable,
                 arguments: Array(payload.arguments.dropFirst()),
                 environment: payload.environment ?? [:],
-                workingDirectory: payload.workingDirectory ?? "/Users/lume",
+                // Tenant work runs as the tenant, so it belongs in the
+                // tenant's home -- derived from the one constant that names
+                // that account rather than repeated as a literal, which is how
+                // the previous value survived the account being removed.
+                //
+                // 🛑 Stage 4b should thread the resolved credential here
+                // instead: this is right for every image this branch builds,
+                // but it is still the caller guessing rather than being told.
+                workingDirectory: payload.workingDirectory
+                    ?? "/Users/\(LumeGuestCredential.tenantAccountName)",
                 timeoutSeconds: payload.timeoutSeconds
             )
         } catch {

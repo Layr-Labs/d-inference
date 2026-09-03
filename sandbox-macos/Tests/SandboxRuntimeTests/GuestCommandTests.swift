@@ -20,28 +20,33 @@ final class GuestCommandTests: XCTestCase {
     func testRejectsUnboundedOrAmbiguousCommandInputs() {
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
-            executable: "xcodebuild"
-        ))
+            executable: "xcodebuild",
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/env",
-            environment: ["BAD-KEY": "value"]
-        ))
+            environment: ["BAD-KEY": "value"],
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/env",
-            environment: ["ÜNICODE": "value"]
-        ))
+            environment: ["ÜNICODE": "value"],
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/bin/sleep",
+            workingDirectory: "/tmp",
             timeoutSeconds: 901
         ))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
-            arguments: ["bad\0argument"]
-        ))
+            arguments: ["bad\0argument"],
+            workingDirectory: "/tmp"
+))
     }
 
     func testEnforcesArgumentEnvironmentAndAggregateBudgets() throws {
@@ -52,13 +57,15 @@ final class GuestCommandTests: XCTestCase {
         XCTAssertNoThrow(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
-            arguments: [maximumValue]
-        ))
+            arguments: [maximumValue],
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
-            arguments: [maximumValue + "x"]
-        ))
+            arguments: [maximumValue + "x"],
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
@@ -66,8 +73,9 @@ final class GuestCommandTests: XCTestCase {
                 repeating: "x",
                 count:
                     SandboxGuestCommandRequest.maximumArgumentCount + 1
-            )
-        ))
+            ),
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/env",
@@ -76,13 +84,15 @@ final class GuestCommandTests: XCTestCase {
                     .maximumEnvironmentVariableCount).map {
                         ("KEY_\($0)", "value")
                     }
-            )
-        ))
+            ),
+            workingDirectory: "/tmp"
+))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
-            arguments: Array(repeating: maximumValue, count: 5)
-        ))
+            arguments: Array(repeating: maximumValue, count: 5),
+            workingDirectory: "/tmp"
+))
     }
 
     func testRejectsControlPlaneEnvironmentOverrides() {
@@ -102,8 +112,9 @@ final class GuestCommandTests: XCTestCase {
                 try SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/env",
-                    environment: [key: "attacker-controlled"]
-                ),
+                    environment: [key: "attacker-controlled"],
+                    workingDirectory: "/tmp"
+),
                 "reserved environment key \(key) must be rejected"
             )
         }

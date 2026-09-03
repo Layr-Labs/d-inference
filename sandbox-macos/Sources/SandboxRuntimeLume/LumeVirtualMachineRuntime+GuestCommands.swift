@@ -167,7 +167,8 @@ extension LumeVirtualMachineRuntime {
                 do {
                     try await cancelGuestCommandIgnoringCancellation(
                         name: name,
-                        idempotencyKey: request.idempotencyKey
+                        idempotencyKey: request.idempotencyKey,
+                        credential: ownership.guestCredential
                     )
                 } catch let cleanupError {
                     cancellationFailure = cleanupError
@@ -247,7 +248,8 @@ extension LumeVirtualMachineRuntime {
 
     private func cancelGuestCommandIgnoringCancellation(
         name: String,
-        idempotencyKey: UUID
+        idempotencyKey: UUID,
+        credential: LumeGuestCredential
     ) async throws {
         let executable = configuration.executable
         let storagePath = configuration.storageDirectory.path
@@ -257,8 +259,11 @@ extension LumeVirtualMachineRuntime {
             UInt32(30),
             min(configuration.commandTimeoutSeconds, UInt32(120))
         )
+        // The same control root the execution script wrote into, which is the
+        // bootstrap account's home and not the shared account's.
         let cancellation = LumeGuestCommandEncoder.encodeCancellation(
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            home: credential.bootstrapHome
         )
         let cleanup = Task.detached {
             let result = try await Self.runGuestSSH(

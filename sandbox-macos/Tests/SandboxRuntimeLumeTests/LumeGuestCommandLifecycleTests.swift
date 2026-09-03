@@ -18,6 +18,7 @@ final class LumeGuestCommandLifecycleTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
 
@@ -56,6 +57,7 @@ final class LumeGuestCommandLifecycleTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let runtime = context.runtime
@@ -124,6 +126,7 @@ final class LumeGuestCommandLifecycleTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let runtime = context.runtime

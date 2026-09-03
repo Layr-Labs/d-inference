@@ -20,7 +20,16 @@ public struct SandboxGuestCommandRequest: Equatable, Sendable {
         executable: String,
         arguments: [String] = [],
         environment: [String: String] = [:],
-        workingDirectory: String = "/Users/lume",
+        // No default. A working directory has to exist inside one specific
+        // guest, so there is no value that is right at compile time -- and the
+        // one that used to be here, /Users/lume, stopped existing the moment
+        // per-sandbox accounts replaced the shared one. Measured: the wrapper's
+        // own `[[ -d ... ]]` guard then exits 70 before it writes anything, so
+        // every wrapped guest command failed as an unexplained timeout. (Were
+        // that guard absent, launchd would accept the job and fail it
+        // EX_CONFIG at spawn -- also measured -- so the path is wrong twice
+        // over.)
+        workingDirectory: String,
         timeoutSeconds: UInt32 = 900
     ) throws {
         let aggregateInputBytes = executable.utf8.count

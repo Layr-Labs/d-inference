@@ -25,7 +25,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             workingDirectory: directory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let result = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/zsh"),
@@ -55,7 +55,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         for iteration in 0..<32 {
             let process = try await SandboxProcessRunner().run(
@@ -93,7 +93,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let process = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/zsh"),
@@ -123,7 +123,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let process = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/zsh"),
@@ -174,7 +174,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             arguments: [
                 "-f",
                 "-c",
-                try LumeGuestCommandEncoder.encode(request),
+                try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome),
             ],
             environment: ["ZDOTDIR": directory.path],
             timeoutSeconds: 5,
@@ -206,7 +206,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             timeoutSeconds: 5
         )
 
-        let script = try LumeGuestCommandEncoder.script(request)
+        let script = try LumeGuestCommandEncoder.script(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let cleanup = try XCTUnwrap(script.range(of: "cleanup() {"))
         let cleanupBootout = try XCTUnwrap(
@@ -309,7 +309,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             script.contains(#"[[ -f "$status_file" ]] || exit 70"#)
         )
         XCTAssertTrue(
-            LumeGuestCommandScript.cancellation(request.idempotencyKey)
+            LumeGuestCommandScript.cancellation(request.idempotencyKey, home: LumeGuestCredential.legacy.bootstrapHome)
                 .contains(
                     #"/usr/bin/lockf -t 30 "$command_lock" /bin/zsh -f -c"#
                 )
@@ -370,7 +370,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
     // cancellation that succeeded reported exit 70 whenever launchd's
     // asynchronous unload lagged the check.
     func testCancellationWaitsBoundedForLaunchdToUnloadTheJob() throws {
-        let script = LumeGuestCommandScript.cancellation(UUID())
+        let script = LumeGuestCommandScript.cancellation(UUID(), home: LumeGuestCredential.legacy.bootstrapHome)
 
         let bootout = try XCTUnwrap(
             script.range(
@@ -437,7 +437,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             executable: URL(fileURLWithPath: "/bin/zsh"),
             arguments: [
                 "-c",
-                try LumeGuestCommandEncoder.encode(request),
+                try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome),
             ],
             maximumOutputBytes:
                 LumeGuestCommandEnvelope.maximumEnvelopeBytes
@@ -449,7 +449,8 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             arguments: [
                 "-c",
                 LumeGuestCommandEncoder.encodeCancellation(
-                    idempotencyKey: idempotencyKey
+                    idempotencyKey: idempotencyKey,
+                    home: LumeGuestCredential.legacy.bootstrapHome
                 ),
             ],
             timeoutSeconds: 5
@@ -490,7 +491,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             executable: URL(fileURLWithPath: "/bin/zsh"),
             arguments: [
                 "-c",
-                try LumeGuestCommandEncoder.encode(request),
+                try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome),
             ],
             timeoutSeconds: 5,
             maximumOutputBytes:
@@ -516,7 +517,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 1
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         for iteration in 0..<4 {
             let process = try await SandboxProcessRunner().run(
@@ -554,7 +555,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let process = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/zsh"),
@@ -613,7 +614,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
-        let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+        let encodedCommand = try LumeGuestCommandEncoder.encode(request, home: LumeGuestCredential.legacy.bootstrapHome)
 
         let process = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/bin/zsh"),

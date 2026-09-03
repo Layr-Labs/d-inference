@@ -33,13 +33,22 @@ enum LumeCredentialedGuestReadinessProbe {
     // proves credentialed reachability and executor readiness, not server
     // identity: production tenant commands remain disabled until a signed
     // guest-control agent pins a per-VM identity.
-    static func command(idempotencyKey: UUID) throws -> String {
+    /// Takes the credential because both paths in the wrapped command have to
+    /// name an account that exists in *this* guest: the launchd job's
+    /// `WorkingDirectory` and its `HOME`. Not taking it here is why they were
+    /// left pointing at the shared account that per-sandbox identities removed.
+    static func command(
+        idempotencyKey: UUID,
+        credential: LumeGuestCredential
+    ) throws -> String {
         try LumeGuestCommandEncoder.encode(
             SandboxGuestCommandRequest(
                 idempotencyKey: idempotencyKey,
                 executable: "/usr/bin/true",
+                workingDirectory: credential.bootstrapHome,
                 timeoutSeconds: guestCommandTimeoutSeconds
-            )
+            ),
+            home: credential.bootstrapHome
         )
     }
 
@@ -49,7 +58,7 @@ enum LumeCredentialedGuestReadinessProbe {
         storagePath: String,
         environment: [String: String],
         name: String,
-        credential: LumeGuestCredential = .legacy,
+        credential: LumeGuestCredential,
         policy: LumeGuestReadinessPolicy,
         clock: ContinuousClock,
         deadline: ContinuousClock.Instant
@@ -63,7 +72,10 @@ enum LumeCredentialedGuestReadinessProbe {
                     credential.bootstrapPassword,
             ]
         ) { _, deterministic in deterministic }
-        let encodedCommand = try command(idempotencyKey: UUID())
+        let encodedCommand = try command(
+            idempotencyKey: UUID(),
+            credential: credential
+        )
         let result = try await LumeGuestReadinessDeadline.run(
             clock: clock,
             deadline: deadline

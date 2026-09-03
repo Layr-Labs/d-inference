@@ -142,6 +142,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -326,6 +327,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: try SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -1656,25 +1658,74 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
-    func testCredentialedReadinessUsesBootstrapGuestCommandWrapper() throws {
+    /// Recovers the zsh script from the base64 wrapper the encoder emits.
+    ///
+    /// Asserting on the wrapper itself proves nothing: it is base64, so every
+    /// path inside it is unreadable and a `contains` check silently passes
+    /// whatever it is given. This is the text that actually runs in the guest.
+    private static func decodeWrappedScript(
+        _ encodedCommand: String
+    ) throws -> String {
+        let payload = try XCTUnwrap(
+            encodedCommand
+                .components(separatedBy: "'")
+                .first(where: { Data(base64Encoded: $0) != nil && !$0.isEmpty }),
+            "the encoder must wrap a base64 payload in single quotes"
+        )
+        let data = try XCTUnwrap(Data(base64Encoded: payload))
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
+
+    /// The wrapped readiness command must name an account that exists in *this*
+    /// guest.
+    ///
+    /// Per-sandbox identities removed the shared `lume` account, but the launchd
+    /// job's `WorkingDirectory` and `HOME` both kept defaulting to `/Users/lume`.
+    /// The wrapper guards its own working directory and exits 70 with no
+    /// output when it is missing, so every wrapped command died on its fourth
+    /// line and the caller saw only `guest readiness` timing out. Verified by
+    /// running the real encoded command: `/Users/lume` exits 70 silently, an
+    /// existing home returns a well-formed result envelope.
+    func testCredentialedReadinessTargetsTheCredentialsOwnHome() throws {
         let idempotencyKey = UUID(
             uuidString: "B57A4FA2-BCA8-45EF-A7D8-F4A20FE85DBA"
         )!
-        let expected = try LumeGuestCommandEncoder.encode(
-            SandboxGuestCommandRequest(
+        let credential = LumeGuestCredential.generate()
+        XCTAssertFalse(credential.isLegacyShared)
+
+        let script = try Self.decodeWrappedScript(
+            LumeCredentialedGuestReadinessProbe.command(
                 idempotencyKey: idempotencyKey,
-                executable: "/usr/bin/true",
-                timeoutSeconds:
-                    LumeCredentialedGuestReadinessProbe.guestCommandTimeoutSeconds
+                credential: credential
             )
         )
 
-        XCTAssertEqual(
-            try LumeCredentialedGuestReadinessProbe.command(
-                idempotencyKey: idempotencyKey
-            ),
-            expected
+        XCTAssertTrue(
+            script.contains(credential.bootstrapHome),
+            "the wrapper must target the account this guest actually has"
         )
+        XCTAssertFalse(
+            script.contains(LumeGuestCredential.legacy.bootstrapHome),
+            "no reference to the shared account may survive"
+        )
+
+        // The absence assertion above is only worth having if it can fail. The
+        // legacy credential's home *is* `/Users/lume`, so encoding with it must
+        // produce exactly the string the real credential must not contain --
+        // otherwise this test would pass against a wrapper that hardcoded any
+        // path at all.
+        let legacyScript = try Self.decodeWrappedScript(
+            LumeCredentialedGuestReadinessProbe.command(
+                idempotencyKey: idempotencyKey,
+                credential: .legacy
+            )
+        )
+        XCTAssertTrue(
+            legacyScript.contains(LumeGuestCredential.legacy.bootstrapHome),
+            "the check above is vacuous unless this path is reachable"
+        )
+        XCTAssertNotEqual(script, legacyScript)
+
         XCTAssertEqual(LumeCredentialedGuestReadinessProbe.lumeTimeoutSeconds, 35)
         XCTAssertEqual(
             LumeGuestReadinessPolicy.standard.attemptTimeoutSeconds,
@@ -1912,6 +1963,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: try SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -1959,6 +2011,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: try SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -2008,6 +2061,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
@@ -2061,6 +2115,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: try SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -2091,6 +2146,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: SandboxGuestCommandRequest(
                     idempotencyKey: UUID(),
                     executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -2123,6 +2179,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
 
@@ -2154,6 +2211,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             request: SandboxGuestCommandRequest(
                 idempotencyKey: idempotencyKey,
                 executable: "/usr/bin/true",
+                workingDirectory: "/tmp",
                 timeoutSeconds: 30
             )
         )
@@ -2164,6 +2222,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: SandboxGuestCommandRequest(
                     idempotencyKey: idempotencyKey,
                     executable: "/usr/bin/false",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 30
                 )
             )
@@ -2192,6 +2251,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             idempotencyKey: UUID(),
             executable: "/bin/sleep",
             arguments: ["60"],
+            workingDirectory: "/tmp",
             timeoutSeconds: 1
         )
 
@@ -2227,6 +2287,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 request: SandboxGuestCommandRequest(
                     idempotencyKey: request.idempotencyKey,
                     executable: "/usr/bin/false",
+                    workingDirectory: "/tmp",
                     timeoutSeconds: 1
                 )
             )
@@ -2252,6 +2313,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let identity = try LumeVirtualMachineOwnership.requireOwned(
@@ -2298,11 +2360,13 @@ final class LumeRuntimeFailureTests: XCTestCase {
         let original = try SandboxGuestCommandRequest(
             idempotencyKey: idempotencyKey,
             executable: "/usr/bin/true",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let conflicting = try SandboxGuestCommandRequest(
             idempotencyKey: idempotencyKey,
             executable: "/usr/bin/false",
+            workingDirectory: "/tmp",
             timeoutSeconds: 30
         )
         let identity = try LumeVirtualMachineOwnership.requireOwned(

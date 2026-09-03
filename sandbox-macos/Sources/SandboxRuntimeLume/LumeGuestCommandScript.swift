@@ -220,7 +220,7 @@ enum LumeGuestCommandScript {
 
     static func cancellation(
         _ idempotencyKey: UUID,
-        home: String = LumeGuestCredential.legacy.bootstrapHome
+        home: String
     ) -> String {
         let identifier = LumeGuestCommandIdentity.identifier(
             for: idempotencyKey

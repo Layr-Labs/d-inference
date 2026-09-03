@@ -79,11 +79,33 @@ log("listening on vsock port \(port)")
 // reports the error instead.
 signal(SIGPIPE, SIG_IGN)
 
+// The agent runs as the unprivileged tenant, so its own home is the tenant's
+// home by construction -- more reliable than any value the host could name, and
+// it cannot drift when the account layout changes.
+//
+// launchd does populate HOME from the job's user record (measured), but the
+// agent does not have to trust that: `NSHomeDirectory()` reads the password
+// database directly, so an empty or non-absolute HOME degrades to the same
+// answer instead of stopping the agent from starting at all.
+private func resolveHome() -> String {
+    let fromEnvironment = ProcessInfo.processInfo.environment["HOME"] ?? ""
+    if fromEnvironment.hasPrefix("/") { return fromEnvironment }
+    let fromAccount = NSHomeDirectory()
+    guard fromAccount.hasPrefix("/") else {
+        fail(
+            "no absolute home for this account; refusing to run commands",
+            code: 64
+        )
+    }
+    return fromAccount
+}
+
 let session = SandboxGuestAgentSession(
     configuration: .init(
         agentVersion: AgentDefaults.agentVersion,
         imageID: ProcessInfo.processInfo.environment["DARKBLOOM_GUEST_IMAGE_ID"] ?? "",
-        executionEnabled: false
+        executionEnabled: false,
+        guestHome: resolveHome()
     ),
     log: log
 )

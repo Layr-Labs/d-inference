@@ -27,7 +27,7 @@ prompt. The coordinator is blind to plaintext (it re-encrypts per-request to
 the provider), but the provider is not.
 
 APNs-based code-identity attestation bounds which binary may act as the
-decryption endpoint. See [`architecture/decisions/apns-code-attestation.md`](../architecture/decisions/apns-code-attestation.md).
+decryption endpoint. See [`design/apns-code-attestation.md`](../design/apns-code-attestation.md).
 
 ## SIP and Secure Boot
 

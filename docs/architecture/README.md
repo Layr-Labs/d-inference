@@ -34,11 +34,11 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 
 | Doc | Concern |
 |---|---|
-| [operations/routing.md](operations/routing.md) | Provider selection and cost-based scheduling |
-| [operations/scheduling.md](operations/scheduling.md) | Queues, slot states, token budgets, and model swaps |
-| [operations/billing.md](operations/billing.md) | Pricing, reservations, ledger, and payouts |
-| [operations/model-registry.md](operations/model-registry.md) | Model manifests, aliases, and provider downloads |
-| [operations/telemetry.md](operations/telemetry.md) | Telemetry schema, symmetry, and ingestion |
+| [operations/routing.md](routing.md) | Provider selection and cost-based scheduling |
+| [operations/scheduling.md](scheduling.md) | Queues, slot states, token budgets, and model swaps |
+| [operations/billing.md](billing.md) | Pricing, reservations, ledger, and payouts |
+| [operations/model-registry.md](model-registry.md) | Model manifests, aliases, and provider downloads |
+| [operations/telemetry.md](telemetry.md) | Telemetry schema, symmetry, and ingestion |
 
 ## Cross-cutting topics
 
@@ -49,7 +49,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | Local prompt planning, artifact identity, binary block hashing, and failure isolation |
 | [request-outcome-observability.md](request-outcome-observability.md) | Request outcome taxonomy across client, provider, and billing paths |
 | [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation, query recipes |
-| [telemetry-inventory.md](telemetry-inventory.md) | Inventory of every telemetry datum collected today, its producer, sink, cadence, and gaps |
+| [telemetry-inventory.md](../reference/telemetry-inventory.md) | Inventory of every telemetry datum collected today, its producer, sink, cadence, and gaps |
 | [storage.md](storage.md) | KV cache, prefix cache, and on-disk model storage |
 | [payments.md](payments.md) | Payments architecture (Stripe Connect, ledger, withdrawals) |
 | [hardware-support.md](hardware-support.md) | Supported Apple Silicon tiers and capability mapping |
@@ -58,9 +58,9 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 
 | Doc | Decision |
 |---|---|
-| [decisions/apns-code-attestation.md](decisions/apns-code-attestation.md) | APNs-based code-identity attestation for genuine-binary proof |
-| [decisions/ssd-kv-cache.md](decisions/ssd-kv-cache.md) | SSD-backed prefix cache architecture |
-| [decisions/kv-cache-lookup-shadowing.md](decisions/kv-cache-lookup-shadowing.md) | RAM-first lookup shadowing on hybrid sliding-window models |
+| [decisions/apns-code-attestation.md](../design/apns-code-attestation.md) | APNs-based code-identity attestation for genuine-binary proof |
+| [decisions/ssd-kv-cache.md](../design/ssd-kv-cache.md) | SSD-backed prefix cache architecture |
+| [decisions/kv-cache-lookup-shadowing.md](../design/kv-cache-lookup-shadowing.md) | RAM-first lookup shadowing on hybrid sliding-window models |
 
 ## Rules
 

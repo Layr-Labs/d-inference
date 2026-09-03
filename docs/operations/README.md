@@ -17,7 +17,7 @@ Runbooks are written for operators. For architecture and security context, see t
 | [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
 | [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer / human-approved agent |
-| [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer / human-approved agent |
+| [`eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer / human-approved agent |
 | [`m5-stress-runbook.md`](m5-stress-runbook.md) | Archived pre-v0.7.5 SSD soak; do not use for EngineV2 | Historical reference |
 
 ## Safety rules that apply to every runbook

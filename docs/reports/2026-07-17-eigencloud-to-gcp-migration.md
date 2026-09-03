@@ -2,14 +2,14 @@
 
 How to move the prod coordinator off EigenCloud onto a GCP Confidential VM with **no fleet disruption**, and how to handle the `darkbloom.dev → darkbloom.ai` domain change (separately).
 
-Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed state — see [`state-export.md`](state-export.md)) → `DAR-105` (security review) → `DAR-71` (cutover). `DAR-243` (`.ai`) is **decoupled**.
+Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed state — see [`state-export.md`](../operations/state-export.md)) → `DAR-105` (security review) → `DAR-71` (cutover). `DAR-243` (`.ai`) is **decoupled**.
 
 > The completed production migration was human-operated. Current production
 > mutation rules live in `coordinator-deploy.md`.
 
 > **Historical record, not an operational runbook.** The migration is complete.
 > Current production is the GCE VM documented in
-> [`coordinator-deploy.md`](coordinator-deploy.md). The deployed VM reports AMD
+> [`coordinator-deploy.md`](../operations/coordinator-deploy.md). The deployed VM reports AMD
 > **SEV** with maintenance policy `MIGRATE`, not the proposed SEV-SNP /
 > `TERMINATE` shape below. Host Caddy currently uses a pre-provisioned static
 > certificate. step-ca is not running; any `step-ca/` disk tree and `/acme/*`
@@ -20,7 +20,7 @@ Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed st
 
 1. [ ] A fully configured **dev GCP environment** already running (`deploy/gcp/*`) so the container image, startup scripts, and Secret Manager wiring are known-good.
 2. [ ] A **separate prod GCP project** with billing, IAM, and APIs enabled.
-3. [ ] The **state-export runbook** reviewed and the offline `age` identity generated. See [`state-export.md`](state-export.md).
+3. [ ] The **state-export runbook** reviewed and the offline `age` identity generated. See [`state-export.md`](../operations/state-export.md).
 4. [ ] A decision on HA posture: CVMs can't live-migrate (`--maintenance-policy=TERMINATE`), so host maintenance reboots the box. With local-disk state (MicroMDM BoltDB + push cert) there is **no clean multi-instance HA** — accept a single-CVM availability regression vs blue-green, or plan a maintenance-window posture.
 5. [ ] `DAR-105` policy sign-off: confirm that a one-shot in-TEE export of the MDM state (BoltDB + push key) to an offline-held key is acceptable, or choose the alternative (fresh MDM state on GCP + full fleet re-enroll).
 6. [ ] Confirmation that the domain stays `api.darkbloom.dev` for this move (scopes `DAR-243` out).
@@ -72,14 +72,14 @@ curl https://<cvm-staging-host>/health
 
 ### Phase 2 — Extract the sealed state (`DAR-70`)
 
-Human ships the export build to EigenCloud and runs the one-shot extraction per [`state-export.md`](state-export.md). Output: an age-encrypted archive of `micromdm/**` (plus any legacy `step-ca/**` present on the old disk — no longer needed since the ACME leg was removed 2026-07-03; destroy rather than migrate it), decrypted offline.
+Human ships the export build to EigenCloud and runs the one-shot extraction per [`state-export.md`](../operations/state-export.md). Output: an age-encrypted archive of `micromdm/**` (plus any legacy `step-ca/**` present on the old disk — no longer needed since the ACME leg was removed 2026-07-03; destroy rather than migrate it), decrypted offline.
 
 ### Phase 3 — Rehydrate + verify on the CVM (no prod traffic yet)
 
 1. Land the decrypted `/data` at `/mnt/disks/userdata` **before** the coordinator's first boot (so `start.sh` finds the real MicroMDM state and push cert instead of generating fresh ones).
 2. Inject `MNEMONIC` (byte-identical) + the full secret set.
 3. Boot the CVM on a **staging hostname**.
-4. Run the verification gates from [`state-export.md`](state-export.md):
+4. Run the verification gates from [`state-export.md`](../operations/state-export.md):
    - `GET /v1/encryption-key` `kid` == prod EigenCloud's (proves `MNEMONIC` continuity).
    - A known-enrolled Mac pointed at the CVM completes a MicroMDM SecurityInfo round-trip and reaches hardware trust.
    - SCEP re-enroll succeeds against the carried MicroMDM state.

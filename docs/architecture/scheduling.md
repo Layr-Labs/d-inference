@@ -6,7 +6,7 @@ Canonical code lives in `coordinator/registry/scheduler.go`, `coordinator/regist
 
 ## Privacy boundary
 
-The coordinator decrypts request bodies inside Confidential-VM memory to estimate token counts for admission and billing, then immediately re-encrypts the body to the selected provider's X25519 key. Prompt content is not logged or retained. See the canonical privacy model in [`../../AGENTS.md`](../../AGENTS.md).
+The coordinator decrypts request bodies inside Confidential-VM memory to estimate token counts for admission and billing, then immediately re-encrypts the body to the selected provider's X25519 key. Prompt content is not logged or retained. See the canonical privacy model in [`../../AGENTS.md`](../AGENTS.md).
 
 ## Request queue
 

@@ -2,10 +2,10 @@
 
 > Historical pre-v0.7.5 design. The one-engine release replaced these
 > implementation details; see the current
-> [`SSD KV Cache Reference`](./ssd-kv-cache.md).
+> [`SSD KV Cache Reference`](../reference/ssd-kv-cache.md).
 
 Design rationale, threat model, and phased plan for the encrypted SSD KV cache.
-For the as-built reference see [`reference/ssd-kv-cache.md`](./ssd-kv-cache.md).
+For the as-built reference see [`reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
 
 ## Goal
 

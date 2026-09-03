@@ -4,7 +4,7 @@
 // telemetry for offline analysis and calibration. They are admin-gated and
 // metadata-only: no prompt or response content is recorded or exported, so
 // every column is safe to download in bulk. See
-// docs/architecture/routing-telemetry-and-calibration.md.
+// docs/design/routing-telemetry-and-calibration.md.
 
 package api
 

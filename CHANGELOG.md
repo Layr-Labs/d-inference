@@ -52,7 +52,7 @@
   (clamped, `timing_anomaly` flag) and gains additive `pre_handler_us`,
   `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`,
   `socket_us`, `provider_ack_us`. Docs: `docs/architecture/system-profiler.md`,
-  `docs/architecture/telemetry-inventory.md`; threat model T-051.
+  `docs/reference/telemetry-inventory.md`; threat model T-051.
 
 ## Release candidate v0.8.16 (not shipped; 2026-08-31)
 

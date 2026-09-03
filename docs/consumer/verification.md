@@ -53,4 +53,4 @@ See [`api-contracts.md`](../reference/api-contracts.md).
 The strongest production gate is APNs-based code-identity attestation. It is
 not exposed as a separate consumer-visible field today, but it gates whether a
 provider is eligible for private-tier routing. See
-[`architecture/decisions/apns-code-attestation.md`](../architecture/decisions/apns-code-attestation.md).
+[`design/apns-code-attestation.md`](../design/apns-code-attestation.md).

@@ -5,7 +5,7 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 > **Prod moved off EigenCloud (July 2026).** The production coordinator now runs on a GCE VM
 > in project `darkbloom-mainnet`. If you are reading instructions that mention `ecloud`,
 > they are for the retired EigenCloud deployment — see
-> [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) for the migration record.
+> [`eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) for the migration record.
 
 ## Prerequisites
 

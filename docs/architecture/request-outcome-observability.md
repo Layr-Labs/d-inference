@@ -2,7 +2,7 @@
 
 **Status:** Plan (Phase 4 partially implemented — see "Implemented (DAR-332)")
 **Scope:** Coordinator inference request outcomes for `/v1/chat/completions`, `/v1/responses`, `/v1/completions`, and `/v1/messages`.
-**Related:** [routing-telemetry-and-calibration.md](routing-telemetry-and-calibration.md), [operations/telemetry.md](operations/telemetry.md), [operations/billing.md](operations/billing.md).
+**Related:** [routing-telemetry-and-calibration.md](../design/routing-telemetry-and-calibration.md), [operations/telemetry.md](telemetry.md), [operations/billing.md](billing.md).
 
 ## Goal
 

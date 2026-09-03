@@ -137,7 +137,7 @@ challenge response marks the provider untrusted immediately.
 
 The strongest production gate is APNs code-identity attestation (v0.6.0+), which
 proves the running provider binary is genuine and team-provisioned. See
-[`decisions/apns-code-attestation.md`](decisions/apns-code-attestation.md) and
+[`decisions/apns-code-attestation.md`](../design/apns-code-attestation.md) and
 [`security/attestation.md`](security/attestation.md).
 
 ## Routing and scheduling
@@ -145,7 +145,7 @@ proves the running provider binary is genuine and team-provisioned. See
 Production routing is a **cost-minimization scheduler**, not round-robin. The
 dispatch hot path is `Registry.ReserveProviderEx`
 (`coordinator/registry/scheduler.go:213-292`); the full algorithm is documented
-in [`operations/routing.md`](operations/routing.md).
+in [`operations/routing.md`](routing.md).
 
 The scheduler (`coordinator/registry/scheduler.go:302-462`):
 
@@ -167,7 +167,7 @@ providers are eligible but pay a large state penalty, so warm providers are
 strongly preferred.
 
 For the request queue, slot-state semantics, token-budget admission, and
-demand-driven model loading, see [`operations/scheduling.md`](operations/scheduling.md).
+demand-driven model loading, see [`operations/scheduling.md`](scheduling.md).
 
 > **Outdated claim corrected:** the old `ARCHITECTURE.md` described routing as a
 > multiplicative score
@@ -208,7 +208,7 @@ account) settles at zero cost and is excluded from public stats
 (`coordinator/api/provider.go:1694-1866`).
 
 For the full price-resolution rules, reservation/settlement flow, and ledger
-entries, see [`operations/billing.md`](operations/billing.md).
+entries, see [`operations/billing.md`](billing.md).
 
 ## Model registry and telemetry
 
@@ -216,12 +216,12 @@ The coordinator owns the canonical model catalog. Model metadata, versioned
 manifests, and file fingerprints live in Postgres; consumer-facing model names
 are aliases that resolve to concrete builds. Providers download approved models
 from R2 and verify per-file and aggregate SHA-256 hashes. See
-[`operations/model-registry.md`](operations/model-registry.md).
+[`operations/model-registry.md`](model-registry.md).
 
 Telemetry events share a single wire type across Go, Swift, and TypeScript.
 The three implementations must keep enum values, snake_case field names, and
 the field allowlist in sync. See
-[`operations/telemetry.md`](operations/telemetry.md).
+[`operations/telemetry.md`](telemetry.md).
 
 ## Storage
 

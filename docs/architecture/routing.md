@@ -4,7 +4,7 @@ Darkbloom's production dispatch path is a **cost-minimization scheduler**. For e
 
 The canonical primary entry point is `Registry.ReserveProviderWithPlan` (`coordinator/registry/dispatch_plan.go:317-325`); it and the legacy `ReserveProviderEx` wrapper share `reserveProvider` (`coordinator/registry/scheduler.go:383-668`).
 
-![Routing request flow](../../assets/diagrams/routing-flow.svg)
+![Routing request flow](../assets/diagrams/routing-flow.svg)
 
 The flow above maps to the consumer handler in `coordinator/api/consumer.go`: auth and rate-limit, optional sender-seal, NaCl Box decryption, token estimation and balance reservation, then a `QuickCapacityCheck` before `ReserveProviderWithPlan` selects and reserves the primary provider (`coordinator/api/consumer.go:813-888`). The request-local `DispatchPlan` supplies revalidated alternatives for retries and hedges without repeating the full fleet scan (`coordinator/registry/dispatch_plan.go:117-205,317-565`). The chosen request is re-encrypted with a fresh per-request NaCl Box to the provider's attested X25519 key and dispatched over the provider WebSocket as an `inference_request`.
 
@@ -17,7 +17,7 @@ Routing decisions are made after the coordinator has decrypted the request body:
 * The coordinator decrypts bodies in Confidential-VM memory for routing and billing, but does **not** log or retain prompt content.
 * The provider is the decryption endpoint for prompts.
 
-See the canonical privacy model in [`../../AGENTS.md`](../../AGENTS.md) and the overview in [`../overview.md`](../overview.md).
+See the canonical privacy model in [`../../AGENTS.md`](../AGENTS.md) and the overview in [`../overview.md`](overview.md).
 
 ## Entry points
 

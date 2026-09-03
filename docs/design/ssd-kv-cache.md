@@ -1,7 +1,7 @@
 # Encrypted SSD prefix KV cache
 
 **Status:** Superseded in v0.7.5 by the EngineV2 `KVCacheSSD` implementation.
-See [`../../reference/ssd-kv-cache.md`](../../reference/ssd-kv-cache.md). The
+See [`../../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md). The
 decision record below describes the retired pre-v0.7.5 implementation.
 
 ## Context

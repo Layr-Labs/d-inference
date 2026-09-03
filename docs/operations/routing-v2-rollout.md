@@ -5,8 +5,8 @@ prod**. Routing v2 flips many admission/routing behaviours on at once (most are
 default-ON in the branch), so this runbook stages them with env flags, keeps a
 single kill-switch, and gates the security-sensitive pieces behind sign-off.
 
-- Design doc (source of truth): [`../architecture/routing-v2.md`](../architecture/routing-v2.md)
-- Attestation churn design: [`../architecture/routing-v2-attestation-churn.md`](../architecture/routing-v2-attestation-churn.md)
+- Design doc (source of truth): [`../design/routing-v2.md`](../design/routing-v2.md)
+- Attestation churn design: [`../design/routing-v2-attestation-churn.md`](../design/routing-v2-attestation-churn.md)
 - Base deploy mechanics (EigenCloud/GCP, build, env injection): [`coordinator-deploy.md`](coordinator-deploy.md)
 
 > **No deploys by the agent.** A human applies every stage (EigenCloud/GCP).
@@ -19,7 +19,7 @@ single kill-switch, and gates the security-sensitive pieces behind sign-off.
 Today prod 429s **~71%** of `chat/completions` (9,804×200 vs 23,837×429 over a
 ~67-min window); **97.9%** of rejects are `ttft_too_slow`, **100%** had
 `could_have_served=true`, `machine_busy`=0, while token budget is 99.94% free
-([`../architecture/routing-v2.md`](../architecture/routing-v2.md) §1). It is not a
+([`../design/routing-v2.md`](../design/routing-v2.md) §1). It is not a
 capacity problem — it is over-rejection plus locked-out trusted machines.
 
 Routing v2 (stacked on PR #381) changes, relative to `master`:
@@ -245,7 +245,7 @@ from ~67/176.
 - **Provider release for W1 measured telemetry.** The new prefill term only
   becomes *measured* once enough of the fleet ships the provider build that emits
   `observed_prefill_tps` + `model_load_time_ms` on `BackendSlotCapacity`
-  ([`../architecture/routing-v2.md`](../architecture/routing-v2.md) W1). Until then
+  ([`../design/routing-v2.md`](../design/routing-v2.md) W1). Until then
   prefill is the `EIGENINFERENCE_PREFILL_DECODE_RATIO=12` fallback. When that
   provider build is released, bump `LatestProviderVersion`
   ([`coordinator/api/server.go:146`](../../coordinator/api/server.go), currently
@@ -259,7 +259,7 @@ from ~67/176.
   `main.go:659`; no code change.
 - **PR #381 relationship.** `routing-v2` is **stacked on PR #381** — the soft TTFT
   gate + prefill ×12 + kill-switch (W0) are included as the *base* of this branch
-  ([`../architecture/routing-v2.md`](../architecture/routing-v2.md) lines 8-9, W0).
+  ([`../design/routing-v2.md`](../design/routing-v2.md) lines 8-9, W0).
   Do not treat #381 as a separate deploy; deploying `routing-v2` ships it.
 
 ---
@@ -267,7 +267,7 @@ from ~67/176.
 ## Verification
 
 Watch these per stage; cite-before numbers are from
-[`../architecture/routing-v2.md`](../architecture/routing-v2.md) §1.
+[`../design/routing-v2.md`](../design/routing-v2.md) §1.
 
 | Signal | Endpoint / metric | Before | Expected after |
 |---|---|---|---|
@@ -298,7 +298,7 @@ changed** first; escalate to the kill-switch / binary revert if needed.
 
 - **No routing change ships without the `coordinator/registry/routingsim` harness
   green** (W7 safety net,
-  [`../architecture/routing-v2.md`](../architecture/routing-v2.md) §10). If a stage
+  [`../design/routing-v2.md`](../design/routing-v2.md) §10). If a stage
   needs a code change, re-run the harness before redeploy.
 - **Full revert (code-level changes, incl. attestation fixes):** roll the
   coordinator back to the previous EigenCloud revision per
@@ -316,7 +316,7 @@ The attestation changes (W5b) are **code-level and ship in the binary from Stage
   decoupled from the 90s connection-blocking wait; verification moves *byte-for-byte*
   (no new attest path), and `CodeAttested` is set under `provider.Mu()`
   ([`coordinator/api/provider.go:461-478`](../../coordinator/api/provider.go);
-  [`../architecture/routing-v2-attestation-churn.md`](../architecture/routing-v2-attestation-churn.md)
+  [`../design/routing-v2-attestation-churn.md`](../design/routing-v2-attestation-churn.md)
   Fix 1). Confirm fail-closed code identity (nonce==pushed AND `Sign_SE` verifies
   against the registration-bound SE key) is preserved.
 - [ ] **Freshness 6m → 16m.** `challengeFreshnessMaxAge`
@@ -331,7 +331,7 @@ The attestation changes (W5b) are **code-level and ship in the binary from Stage
 - [ ] **W5 Fix 2 (deferred) does not weaken trust.** When it lands: the APNs token
   in the heartbeat **does NOT grant trust**, and reuse persistence is
   **version-gated + windowed** (same 30-min window + version gate)
-  ([`../architecture/routing-v2-attestation-churn.md`](../architecture/routing-v2-attestation-churn.md)
+  ([`../design/routing-v2-attestation-churn.md`](../design/routing-v2-attestation-churn.md)
   Fix 2). Re-review before that change ships.
 - [ ] **INV-6 — alert-mode safety.** `APNS_MODE=alert` is safe only while the
   provider never requests `UNUserNotificationCenter` auth. Confirm the CI assertion
@@ -345,13 +345,13 @@ The attestation changes (W5b) are **code-level and ship in the binary from Stage
   the MLX 4-bit `gatherQuantizedMM` small-batch path (gemma decodes at ~21 tok/s ≈
   dense-26B bandwidth vs ~142 sparse expectation; gemma is ~63% of demand, ~3×
   recoverable). The anomaly detector will **keep flagging gemma** until this lands
-  ([`../architecture/routing-v2.md`](../architecture/routing-v2.md) §1, W6).
+  ([`../design/routing-v2.md`](../design/routing-v2.md) §1, W6).
 - **`make e2e-integration` run** — requires Postgres + the Swift provider binary +
   an MLX model downloaded; run in Stage 0 (dev) before prod.
 - **W1 deferred sub-fields** — `observed_ttft_ms` and `decode_knee` are deferred to a
   follow-up; until then the per-request decode projection unwinds measured decode
   rather than reading a measured knee
-  ([`../architecture/routing-v2.md`](../architecture/routing-v2.md) W1, §11).
+  ([`../design/routing-v2.md`](../design/routing-v2.md) W1, §11).
 - **W8 decode-class table coverage** — `ModelDecodeClasses` in
   `coordinator/registry/throughput_anomaly.go` keys on the served model id
   (`gpt-oss-20b`, `gemma-4-26b-qat-4bit` today, matching what the prod fleet

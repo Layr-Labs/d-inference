@@ -30,11 +30,11 @@ model.
 | Console UI | [`architecture/components/console-ui.md`](./architecture/components/console-ui.md) |
 | MLX-Swift integration | [`architecture/components/mlx-swift.md`](./architecture/components/mlx-swift.md) |
 | Consumer HTTP surface | [`architecture/components/consumer.md`](./architecture/components/consumer.md) |
-| Routing | [`architecture/operations/routing.md`](./architecture/operations/routing.md) |
-| Scheduling | [`architecture/operations/scheduling.md`](./architecture/operations/scheduling.md) |
-| Billing & pricing | [`architecture/operations/billing.md`](./architecture/operations/billing.md) |
-| Model registry | [`architecture/operations/model-registry.md`](./architecture/operations/model-registry.md) |
-| Telemetry | [`architecture/operations/telemetry.md`](./architecture/operations/telemetry.md) |
+| Routing | [`architecture/operations/routing.md`](./architecture/routing.md) |
+| Scheduling | [`architecture/operations/scheduling.md`](./architecture/scheduling.md) |
+| Billing & pricing | [`architecture/operations/billing.md`](./architecture/billing.md) |
+| Model registry | [`architecture/operations/model-registry.md`](./architecture/model-registry.md) |
+| Telemetry | [`architecture/operations/telemetry.md`](./architecture/telemetry.md) |
 | Inference & prefix cache | [`architecture/inference.md`](./architecture/inference.md) |
 | Storage backends | [`architecture/storage.md`](./architecture/storage.md) |
 | Hardware support | [`architecture/hardware-support.md`](./architecture/hardware-support.md) |
@@ -47,7 +47,7 @@ model.
 | Provider attestation | [`architecture/security/attestation.md`](./architecture/security/attestation.md) |
 | MDM enrollment & MDA | [`architecture/security/enrollment.md`](./architecture/security/enrollment.md) |
 | Identity binding | [`architecture/security/identity-binding.md`](./architecture/security/identity-binding.md) |
-| APNs code-identity attestation | [`architecture/decisions/apns-code-attestation.md`](./architecture/decisions/apns-code-attestation.md) |
+| APNs code-identity attestation | [`architecture/decisions/apns-code-attestation.md`](./design/apns-code-attestation.md) |
 | Privacy expectations (consumer) | [`consumer/privacy-expectations.md`](./consumer/privacy-expectations.md) |
 
 ### Consumer docs
@@ -93,7 +93,7 @@ model.
 | Dev environment | [`operations/dev-environment.md`](./operations/dev-environment.md) |
 | Model migration | [`operations/model-migration.md`](./operations/model-migration.md) |
 | State export (`DAR-70`) | [`operations/state-export.md`](./operations/state-export.md) |
-| EigenCloud → GCP migration | [`operations/eigencloud-to-gcp-migration.md`](./operations/eigencloud-to-gcp-migration.md) |
+| EigenCloud → GCP migration | [`operations/eigencloud-to-gcp-migration.md`](./reports/2026-07-17-eigencloud-to-gcp-migration.md) |
 | Archived pre-v0.7.5 SSD soak | [`operations/m5-stress-runbook.md`](./operations/m5-stress-runbook.md) |
 
 ### Reference
@@ -106,9 +106,9 @@ model.
 | Pricing model | [`reference/pricing-model.md`](./reference/pricing-model.md) |
 | Model registry format | [`reference/model-registry-format.md`](./reference/model-registry-format.md) |
 | SSD KV cache (as-built) | [`reference/ssd-kv-cache.md`](./reference/ssd-kv-cache.md) |
-| SSD KV cache design | [`reference/ssd-kv-cache-design.md`](./reference/ssd-kv-cache-design.md) |
+| SSD KV cache design | [`reference/ssd-kv-cache-design.md`](./design/ssd-kv-cache-v1-design.md) |
 | SSD KV cache hybrid models | [`reference/ssd-kv-cache-hybrid-models.md`](./reference/ssd-kv-cache-hybrid-models.md) |
-| KV-cache lookup shadowing finding | [`architecture/decisions/kv-cache-lookup-shadowing.md`](./architecture/decisions/kv-cache-lookup-shadowing.md) |
+| KV-cache lookup shadowing finding | [`architecture/decisions/kv-cache-lookup-shadowing.md`](./design/kv-cache-lookup-shadowing.md) |
 
 ### Legal
 

@@ -19,8 +19,8 @@ of a request and must not log or retain prompt content.
 | Per-request coordinator→provider NaCl Box encryption | `coordinator/internal/e2e/e2e.go`, `coordinator/api/consumer.go` |
 | Prepaid ledger, pricing, and usage accounting | `coordinator/payments/pricing.go`, `coordinator/billing/billing.go`, `coordinator/store/interface.go` |
 | Rate limiting (RPM + ITPM/OTPM) | `coordinator/ratelimit/`, `coordinator/api/server.go` |
-| Model registry, aliases, and public catalog | `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`; see [`../operations/model-registry.md`](../operations/model-registry.md) |
-| Telemetry ingestion and Datadog forwarding | `coordinator/api/telemetry_handlers.go`, `coordinator/protocol/telemetry.go`, `coordinator/datadog/`; see [`../operations/telemetry.md`](../operations/telemetry.md) |
+| Model registry, aliases, and public catalog | `coordinator/api/model_registry_handlers.go`, `coordinator/api/model_alias_handlers.go`; see [`../operations/model-registry.md`](../model-registry.md) |
+| Telemetry ingestion and Datadog forwarding | `coordinator/api/telemetry_handlers.go`, `coordinator/protocol/telemetry.go`, `coordinator/datadog/`; see [`../operations/telemetry.md`](../telemetry.md) |
 | MDM/SCEP enrollment and APNs code-identity attestation | `coordinator/api/enroll.go`, `coordinator/mdm/`, `coordinator/apns/`, `coordinator/api/provider.go` |
 
 ## Key modules

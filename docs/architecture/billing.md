@@ -6,7 +6,7 @@ Canonical pricing math is in `coordinator/payments/pricing.go`. Settlement is in
 
 ## Privacy note
 
-Billing requires token counts. The coordinator decrypts the request body in Confidential-VM memory to estimate prompt tokens for the pre-flight reservation and receives final token counts in the provider's `inference_complete` message. Prompt content is not logged or retained. See the canonical privacy model in [`../../AGENTS.md`](../../AGENTS.md).
+Billing requires token counts. The coordinator decrypts the request body in Confidential-VM memory to estimate prompt tokens for the pre-flight reservation and receives final token counts in the provider's `inference_complete` message. Prompt content is not logged or retained. See the canonical privacy model in [`../../AGENTS.md`](../AGENTS.md).
 
 ## Price resolution hierarchy
 

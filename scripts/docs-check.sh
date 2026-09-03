@@ -89,9 +89,9 @@ normpath() {
 check_links() {
     local f=$1 dir target path
     dir=$(dirname "$f")
-    # Inline links [text](target) and reference definitions [id]: target
-    { grep -oE '\]\([^)[:space:]]+' "$f" | sed 's/^](//' ;
-      grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$f" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null |
+    # Inline links [text](target) and reference definitions [id]: target.
+    # The loop reads from process substitution (not a pipeline) so that `fail`
+    # increments ERRORS in this shell rather than in a throwaway subshell.
     while IFS= read -r target; do
         case "$target" in
             http://*|https://*|mailto:*|\#*|tel:*) continue ;;
@@ -108,7 +108,10 @@ check_links() {
         if [ ! -e "$path" ]; then
             fail "$f: broken link -> $target"
         fi
-    done
+    done < <(
+        { grep -oE '\]\([^)[:space:]]+' "$f" | sed 's/^](//' ;
+          grep -oE '^\[[^]]+\]:[[:space:]]+[^[:space:]]+' "$f" | sed -E 's/^\[[^]]+\]:[[:space:]]+//' ; } 2>/dev/null
+    )
 }
 
 for f in "${FILES[@]}" "${EXTRA_LINK_FILES[@]}"; do
@@ -122,11 +125,8 @@ done
 CITE_ROOTS='coordinator|provider-swift|console-ui|admin-ui|landing|scripts|deploy|e2e|docs|\.github|\.githooks|libs|fixtures'
 
 check_citations() {
-    local f=$1 cite path
-    strip_fences "$f" |
-    grep -oE '`('"$CITE_ROOTS"')/[^` ]*`' 2>/dev/null |
-    tr -d '`' |
-    sort -u |
+    local f=$1 cite path sub
+    # Process substitution, not a pipeline: see check_links.
     while IFS= read -r cite; do
         # Skip globs, placeholders, ranges, and prose fragments.
         case "$cite" in
@@ -150,7 +150,12 @@ check_citations() {
         if [ ! -e "$path" ]; then
             fail "$f: cites missing path \`$cite\`"
         fi
-    done
+    done < <(
+        strip_fences "$f" |
+        grep -oE '`('"$CITE_ROOTS"')/[^` ]*`' 2>/dev/null |
+        tr -d '`' |
+        sort -u
+    )
 }
 
 for f in "${FILES[@]}"; do

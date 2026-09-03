@@ -493,6 +493,11 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// looks like a statement is text a long query is full of. Two reads because two
 		// of its three literals parse on their own, which is exactly the point.
 		{"RankSplitAppend", []string{"pg.models R", "pg.models R"}},
+		// The CTE declared in one literal and joined in the next, where the literal doing
+		// the joining parses on its own. `usage` is a real table, so drawing what that
+		// literal names on its own would put an edge in the map that the query does not
+		// have — invented state, not missing state.
+		{"RankSplitCTEJoin", []string{"pg.models R", "pg.models R"}},
 		// A query assembled tail first, where the rebinding that prepends the base reads
 		// the local back. A reset that quotes the old value is the same query still being
 		// built, and cutting the CTE scope there would report its own `usage` CTE.

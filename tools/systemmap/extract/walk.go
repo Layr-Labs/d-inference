@@ -165,6 +165,7 @@ type fnWalk struct {
 	gens         map[any]int                // how many queries a scope has been bound to
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
+	stmtTables   []statementTable           // tables named by whole statements, drawn at body end
 
 	out []ir.Access
 }
@@ -977,13 +978,7 @@ func (f *fnWalk) classify(s string, pos token.Pos) {
 	case IsSQL(s):
 		f.sqlSeen++
 		f.auditText(s, pos, true)
-		for _, acc := range Tables(s) {
-			if !f.w.tables[acc.Table] {
-				f.w.Rep.UnknownTable(acc.Table, f.w.P.PosRef(pos))
-				continue
-			}
-			f.record("pg."+acc.Table, acc.Mode, pos)
-		}
+		f.noteTables(s, pos)
 	case strings.Contains(s, "://"):
 		host := hostOf(s)
 		if host == "" || isLocalHost(host) {

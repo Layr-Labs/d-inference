@@ -375,7 +375,10 @@ this dies of:
 
   Four consequences worth knowing. A CTE in one query does not silence a same-named
   real table in another *as long as the two are separate Go expressions* — see the
-  limits below for the two shapes where they are not — and the unit a query is scoped
+  limits below for the two shapes where they are not — and it does not draw one either:
+  the tables a statement names are settled against the same scoped CTE sets before any
+  edge is drawn, so a `WITH usage AS (…)` in one literal and the `JOIN usage u` in the
+  next do not put an edge to the real `usage` table in the map. The unit a query is scoped
   to is small enough for that to mean something: an element of a slice literal, an
   argument to a call, and the condition of an `if` each stand for their own query, so
   the hundred statements in `migrations := []string{…}` do not pool their `WITH` names. A query assembled through anything but a bare string

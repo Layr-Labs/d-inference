@@ -58,6 +58,7 @@ func (f *fnWalk) isQueryCall(sel *ast.SelectorExpr) bool {
 // driven through one `Exec` in a loop, and a helper may declare the statement its
 // caller runs.
 func (f *fnWalk) auditQueries() {
+	f.settleTables()
 	f.settleFragments()
 	if declared, ok := f.declared(); ok {
 		f.settleDeclared(declared)
@@ -370,6 +371,54 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	if m := reTrailingKeyword.FindStringSubmatch(masked); m != nil {
 		f.opaque(pos, fmt.Sprintf("the text ends at `%s`, so the table that follows it is spliced in at run time (`%s`)",
 			m[1], ellipsis(s)))
+	}
+}
+
+// noteTables buffers the tables a whole statement names, to be drawn once every CTE
+// name in the body is known.
+//
+// `Tables` reads one text and strips the CTE names declared *in that text*, which is
+// the whole answer for a query written as one literal. A query spliced from several
+// literals declares its `WITH` clause in one of them and joins it in another, and the
+// literal doing the joining routinely parses as a statement on its own — so `Tables`
+// saw `SELECT ... FROM usage` with no CTE in sight and drew an edge to the real `usage`
+// table, which the query never touches. An invented edge is the worst thing this
+// extractor can produce: everything else it does is checked against the map, and a
+// wrong edge *is* the map.
+//
+// Buffering settles it the same way a fragment is settled, against the CTE names in
+// force where the text was read. The unknown-table report waits with it, so a CTE
+// named after nothing in the schema is not reported as drift either.
+func (f *fnWalk) noteTables(s string, pos token.Pos) {
+	owner := f.cteKey()
+	for _, acc := range Tables(s) {
+		f.stmtTables = append(f.stmtTables, statementTable{
+			table: acc.Table, mode: acc.Mode, pos: pos, owner: owner,
+		})
+	}
+}
+
+// statementTable is one table named by a whole statement, held until the body's CTE
+// names are known.
+type statementTable struct {
+	table string
+	mode  string
+	pos   token.Pos
+	owner cteKey
+}
+
+// settleTables draws the buffered tables, dropping the ones that turned out to be a
+// CTE the same query declares elsewhere.
+func (f *fnWalk) settleTables() {
+	for _, t := range f.stmtTables {
+		if f.ctes[t.owner][t.table] {
+			continue
+		}
+		if !f.w.tables[t.table] {
+			f.w.Rep.UnknownTable(t.table, f.w.P.PosRef(t.pos))
+			continue
+		}
+		f.record("pg."+t.table, t.mode, t.pos)
 	}
 }
 

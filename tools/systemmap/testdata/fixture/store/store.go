@@ -673,6 +673,22 @@ func (p *Postgres) RankResetAfter(ctx context.Context, all bool) error {
 	return err
 }
 
+// RankSplitCTEJoin declares its CTE in one literal and joins it in the next, where
+// the joining literal parses as a statement on its own and the CTE is named after a
+// table that really exists. `Tables` strips a CTE name from the text it declares in,
+// which is the whole answer for a query written as one literal and no answer at all
+// here — read alone, the second literal is a plain read of the `usage` table, which
+// this query never touches. The tables a statement names are drawn once the body's
+// CTE names are known, so the edge is not invented.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankSplitCTEJoin(ctx context.Context, all bool) error {
+	q := `WITH usage AS (SELECT id FROM models)`
+	q += ` SELECT u.id FROM usage u JOIN models m ON m.id = u.id`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
 // RankResetThenAppend rebinds its local to text that is not a statement and only
 // then appends the next query. Both halves are needed: the `q = ""` carries no
 // statement, and the `q +=` is not a binding. While the generation boundary was

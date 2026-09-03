@@ -730,6 +730,27 @@ func (p *Postgres) RankTailFirstReuse(ctx context.Context, all bool) error {
 	return err
 }
 
+// RankTailAfterExec prepends a WITH clause to a local that has already been handed to
+// the driver. It reads the local back, exactly as RankTailFirstReuse does, and it is
+// the opposite case: the first query is over, so its real read of `usage` must not be
+// shadowed by a CTE the second query declares. What separates the two is whether a
+// driver call has taken the scope — the tail-first exception is only for text that has
+// not run yet.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterExec(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
 // RankTailBeforeBase collects the tail into a local that has been declared but never
 // bound, then prepends the base. The fragment is read in a generation nothing has
 // opened yet, and has to settle against the WITH clause that arrives after it.

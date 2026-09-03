@@ -369,9 +369,12 @@ this dies of:
   binding *statement* that draws the line and not the text it carries, so `q = ""`
   starts a query as much as `q = "SELECT …"` does — deciding it from the text let
   `q = ""; q += "WITH usage AS (…) …"` land in the previous query's scope and shadow a
-  real read there. The one exception is a binding that reads the local back:
-  `q = "WITH usage AS (…) …" + q` is a query assembled tail first, so it continues the
-  scope rather than starting one.
+  real read there. The one exception is a binding that reads the local back *before the
+  local has been run*: `q = "WITH usage AS (…) …" + q` is a query assembled tail first,
+  so it continues the scope rather than starting one — but the same line after an
+  `Exec(ctx, q)` is a second query reusing the local, and starts one, because a query
+  that has already gone to the database cannot have its tables shadowed by a `WITH`
+  clause written after it.
 
   Four consequences worth knowing. A CTE in one query does not silence a same-named
   real table in another *as long as the two are separate Go expressions* — see the

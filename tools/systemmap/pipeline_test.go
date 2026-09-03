@@ -412,6 +412,12 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 			"2 database call(s) but only 1 readable statement(s) in the body",
 			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
 		}},
+		// The tail-first exception's other side: the same `q = "WITH …" + q` after the
+		// local has already been run. The first query is over, so its real read of
+		// `usage` cannot be shadowed by the second query's CTE.
+		{"RankTailAfterExec", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
 		// A local reset to text that is not a statement, then appended to. Neither line
 		// is a boundary if the text decides, so the second query's CTE reached back and
 		// shadowed the first query's real read of `usage` — a table dropped from the map

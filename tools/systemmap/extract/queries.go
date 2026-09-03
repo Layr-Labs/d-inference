@@ -236,6 +236,7 @@ func (f *fnWalk) openStatement() {
 		f.gens = map[any]int{}
 	}
 	f.gens[f.textScope]++
+	delete(f.dispatched, f.textScope) // the query that ran is the one that just ended
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the

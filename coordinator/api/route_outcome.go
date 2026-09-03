@@ -150,6 +150,7 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
+	s.emitTimingDecompositionMetric(model, outcome.FinalStatus, outcome)
 	s.submitTelemetry("updateInferenceRoute", func() {
 		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
 			s.logger.Error("inference_routes outcome update failed",
@@ -184,6 +185,18 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if terminal {
 		if !pr.MarkRouteOutcomeFinalized() {
 			return
+		}
+		if ap := pr.Profile; ap != nil {
+			ap.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "", "")
+			// Consumer-side synthetic terminals ARE the terminal half; a success
+			// outcome is written at commit time and must wait for the provider's
+			// terminal so the record carries settlement stamps and its profile.
+			// A terminal already claimed by a provider frame is completed by
+			// that frame once its provider outcome is written, so the record is
+			// never built with an empty provider_outcome in between.
+			if outcome.FinalStatus != finalStatusSuccess {
+				ap.CompleteTerminalUnlessClaimed()
+			}
 		}
 		// Consumer-side synthetic terminals (notably registry.Disconnect's
 		// ErrorCh delivery, local timeout, and grace expiry) do not pass through a
@@ -232,6 +245,22 @@ func committedRouteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOut
 	out := &store.InferenceRouteOutcome{}
 	applyPendingRouteTelemetry(out, pr)
 	return out
+}
+
+// profileErrorReason is the reason vocabulary request_profiles.error_reason
+// carries: the routes row's specific closed error_class when one was recorded
+// (queue_timeout, first_chunk_timeout, speculative_loser, …), falling back to
+// the normalized error_reason. Every profile writer (this funnel, the
+// provider terminal path, closeUndispatchedAttempt via dispatchErrorClass and
+// the queue exits) therefore speaks the error_class vocabulary.
+func profileErrorReason(outcome *store.InferenceRouteOutcome) string {
+	if outcome == nil {
+		return ""
+	}
+	if outcome.ErrorClass != "" {
+		return outcome.ErrorClass
+	}
+	return outcome.ErrorReason
 }
 
 func pendingRouteOutcome(pr *registry.PendingRequest, status, class string, code int) *store.InferenceRouteOutcome {

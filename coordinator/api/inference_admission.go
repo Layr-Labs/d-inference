@@ -219,6 +219,22 @@ type inferenceAdmissionParams struct {
 	onModelFallback func(newModel string) (ok bool)
 }
 
+// preflightScanWait is the admission gate's slot-wait budget: a short slice
+// (a quarter) of the request's first-content deadline, capped at one second.
+// Under saturation admission must shed FAST — a fast 429 relieves CPU — while
+// a dispatch attempt may park for its whole remaining budget. Requests
+// without a deadline (bare fixtures) get a 250ms slice.
+func preflightScanWait(deadline time.Duration) time.Duration {
+	wait := deadline / 4
+	if wait <= 0 {
+		wait = 250 * time.Millisecond
+	}
+	if wait > time.Second {
+		wait = time.Second
+	}
+	return wait
+}
+
 // runInferenceAdmission performs the shared routing/capacity preflight for both
 // inference handlers. On a rejection it writes the exact terminal response
 // (refunding the reservation) and returns handled=true; on success it returns
@@ -275,6 +291,53 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			withCode("payload_too_large")))
 		return true
 	}
+
+	// Gate EVERY preflight fleet walk (self-route/prefer OwnedProviderSummary,
+	// the public QuickCapacityCheck family, alias-fallback probes, the
+	// servability walk) behind the SAME routing-scan semaphore that bounds the
+	// dispatch reservation scans. Without this the 2026-09-01 retry storm
+	// still burns unbounded CPU BEFORE the dispatch loop: every admission runs
+	// a full fleet walk. The wait is a short slice of the first-content budget
+	// — under saturation admission must shed fast, not park for the whole
+	// budget the way a dispatch attempt may. The slot is held only for the
+	// CPU-bounded walks in this function (released before dispatch/queueing,
+	// which take their own slot per reservation; no registry locks are held at
+	// acquisition). On timeout: the same capacity-shaped routing_saturated 429
+	// with the distress-scaled Retry-After, zero walks. On client-gone: refund
+	// and stop silently — never the 429 path or a rejection-ledger row.
+	switch s.acquireRoutingScanSlot(preflightScanWait(p.deadline), r.Context().Done()) {
+	case scanSlotClientGone:
+		refundReservation()
+		return model, true
+	case scanSlotTimeout:
+		refundReservation()
+		retryAfter := s.estimateRetryAfter(model)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		s.ddIncr("routing.scan_admission_timeout", []string{"model:" + model, "stage:preflight"})
+		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:routing_saturated"})
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "preflight_capacity",
+			reasonCode:            rejectionReasonRoutingSaturated,
+			httpStatus:            http.StatusTooManyRequests,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                p.stream,
+			estimatedPromptTokens: p.estimatedPromptTokens,
+			requestedMaxTokens:    p.requestedMaxTokens,
+			requiresVision:        p.requiresVision,
+			hasTools:              p.hasTools,
+			retryAfterMs:          retryAfter * 1000,
+			params:                rejectionSamplingParams(parsed),
+		})
+		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+			"the coordinator is at routing capacity — please retry",
+			withCode("rate_limit_exceeded")))
+		return model, true
+	}
+	defer s.releaseRoutingScanSlot()
 
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.

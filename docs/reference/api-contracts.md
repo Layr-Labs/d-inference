@@ -275,7 +275,7 @@ If the consumer does not set a max-output bound, the coordinator injects one so 
 |---|---|
 | `X-Darkbloom-Route` | `self` requests self-routing to an owned provider (free); see [`self-route`](../provider/self-route.md) |
 | `X-Inference-Job-ID` | Provider-side job UUID for the winning attempt |
-| `X-Timing` | Per-request latency decomposition (when emitted by middleware) |
+| `X-Timing` | Per-request latency decomposition JSON (committed responses only). Legacy keys keep their original formulas for compatibility: `parse_us`, `reserve_us`, `media_fetch_us`, `route_us` (includes queue wait for queued requests), `queue_us` (overlaps `encrypt_us`/`dispatch_us`), `encrypt_us`, `dispatch_us` (submit → provider-writer dequeue), `provider_us` (dequeue → first chunk). Negative legacy values are clamped to 0 and flagged with `timing_anomaly: true`. Additive, non-overlapping keys from the system profiler (omitted when unavailable): `pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`. Prefer the additive keys for new consumers; the legacy keys are deprecated for analysis. |
 | `X-Darkbloom-Metadata-Details` | `true` asks `POST /v1/chat/completions` to copy the consumer-safe `X-Provider-*` / `X-Timing` details into the JSON `metadata` object. Equivalent body flag: `metadata_details`. |
 
 ## Error format

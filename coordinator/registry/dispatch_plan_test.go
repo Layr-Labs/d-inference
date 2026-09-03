@@ -134,6 +134,11 @@ func TestReserveProviderWithPlanPrimarySelectionUnchanged(t *testing.T) {
 	if pA == nil || pB == nil || pA.ID != pB.ID {
 		t.Fatalf("winners differ: ReserveProviderEx=%v ReserveProviderWithPlan=%v", pA, pB)
 	}
+	// The profiler's wall-clock stamps (lock wait, scan, admit, heartbeat age)
+	// legitimately differ between two reservations; everything else must match.
+	for _, d := range []*RoutingDecision{&decA, &decB} {
+		d.LockWaitUS, d.ScanUS, d.AdmitUS, d.SnapshotAgeMs = 0, 0, 0, 0
+	}
 	if decA != decB {
 		t.Fatalf("decisions differ:\n ex:   %+v\n plan: %+v", decA, decB)
 	}

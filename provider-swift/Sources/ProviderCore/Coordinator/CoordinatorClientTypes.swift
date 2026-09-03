@@ -105,7 +105,10 @@ public enum CoordinatorEvent: Sendable {
         prefixCacheProtocol: Int?,
         toolSchemaMetadataProtocol: Int?,
         firstContentDeadline: FirstContentDeadline?,
-        receivedAt: ContinuousClock.Instant
+        receivedAt: ContinuousClock.Instant,
+        /// Profiler accumulator anchored at frame receipt (created
+        /// unconditionally, unlike the budget-derived deadline).
+        profile: RequestProfileBuilder
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -220,16 +223,23 @@ public struct RuntimeHashes: Sendable {
 public enum OutboundMessage: Sendable {
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
+    /// `profile` rides the terminal as the live BUILDER, not the wire
+    /// struct: `SendHandle.send` stamps the flush barrier and the send
+    /// instant on it, and `CoordinatorClientCodec.providerMessage(for:)`
+    /// materializes `wireObject()` at encode time so those stamps (and the
+    /// outbound-queue latency in `total_us`) land in the object.
     case inferenceComplete(
         requestId: String,
         usage: UsageInfo,
         stopSequence: String?,
         seSignature: String?,
-        responseHash: String?
+        responseHash: String?,
+        profile: RequestProfileBuilder? = nil
     )
     case inferenceError(
         requestId: String,
-        failure: InferenceFailure
+        failure: InferenceFailure,
+        profile: RequestProfileBuilder? = nil
     )
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)

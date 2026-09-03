@@ -119,6 +119,7 @@ type dispatchState struct {
 	allowedProviderSerials []string
 	cachePlan              registry.CachePlan
 	timing                 *registry.RequestTiming
+	profile                *registry.RequestProfile
 	deadline               time.Duration
 	speculativeAt          time.Duration
 	// Deterministic test seams for speculative timer/ingress arbitration.
@@ -184,6 +185,14 @@ type dispatchState struct {
 	// DETERMINISTIC-context rejection (prompt > model context) stops on the first
 	// attempt regardless (see classifyRejection / failoverOutcome).
 	capacityRetries int
+	// firstChunkTimeoutRetries counts attempts that ended in a
+	// coordinator-synthesized first-chunk TIMEOUT (untyped 504 → the
+	// "first_chunk_timeout" 429 on exhaustion). Bounded by
+	// maxFirstChunkTimeoutRetries so a slow-provider storm cannot burn a
+	// fresh fleet scan per attempt across the ladder (the 2026-09-01
+	// congestion collapse; see the constant). Each counted attempt was on a
+	// distinct provider — the timed-out provider joins excludeProviders.
+	firstChunkTimeoutRetries int
 	// lastFailureDeadline is scoped to the most recent terminal attempt. A
 	// deadline refusal remains eligible for deadline_unreachable only while no
 	// later genuine provider fault has replaced it.
@@ -586,6 +595,7 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	d.firstChunk = chunk
 	pr.MarkFirstChunkArrived()
 	pr.MarkFirstContentArrived()
+	d.stampFirstContent(pr)
 	// Mark THIS attempt as the committed one so handleComplete's fallback only
 	// ever stamps FirstContentAt for the attempt that actually delivered content —
 	// never a late-completing abandoned/retried attempt sharing the same Timing.
@@ -988,6 +998,55 @@ func dispatchErrorClass(errText string) string {
 	}
 }
 
+// queuedExitOutcome records the terminal route outcome of a queue-wait exit
+// and mirrors its status/reason onto the placeholder attempt profile. While
+// the request waits, d.pr is nil, so updateRoutingOutcome takes the request-id
+// path and never reaches the attempt profile; the pair is written here, in one
+// place, so the row and the profile cannot drift. It is deliberately NOT
+// routed through updateInferenceRouteOutcomeForPending, which would also fire
+// the cache-selection terminal for a request that never had a provider.
+func (d *dispatchState) queuedExitOutcome(ap *registry.AttemptProfile, status, reason string, code int) {
+	d.updateRoutingOutcome(d.errorRoutingOutcome(status, reason, code))
+	ap.SetOutcome(status, reason, "", "", "")
+}
+
+// closeQueuedAttempt closes the queue-path placeholder attempt when it never
+// reached the wire (closeUndispatchedAttempt is a no-op for a dispatched or
+// winning attempt), recording the error the failing branch left on d.
+//
+// AttemptProfile.SetOutcome is first-write-wins, and every queue-path exit
+// has already written its final_status/error_reason on the placeholder by the
+// time this runs: the pre-assignment exits (queue full, client gone, deadline,
+// ttft_too_slow, tool constraint, queue timeout) write it explicitly
+// (queuedExitOutcome / the queue-full SetOutcome), and the post-assignment
+// exits (top-up, key, encrypt, writer timeout, write error) write it through
+// the pending route-outcome funnel because d.pr is set by then. This close
+// therefore contributes provider_outcome=not_dispatched, and its own
+// status/class only as a fallback for an exit that recorded nothing. A status
+// code of 0 means the branch had no HTTP status: the code is defaulted by how
+// the wait ended, but the text only when nothing was recorded, so a real error
+// text with no code (e.g. "no provider with E2E encryption") keeps its own
+// class instead of collapsing to queue_rejected.
+func (d *dispatchState) closeQueuedAttempt(ap *registry.AttemptProfile) {
+	errText, code := d.lastErr, d.lastErrCode
+	if code == 0 {
+		clientGone := d.r != nil && d.r.Context().Err() != nil
+		if clientGone {
+			code = 499
+		} else {
+			code = http.StatusTooManyRequests
+		}
+		if errText == "" {
+			if clientGone {
+				errText = "client_gone"
+			} else {
+				errText = "queue_rejected"
+			}
+		}
+	}
+	closeUndispatchedAttempt(ap, errText, code)
+}
+
 func (d *dispatchState) rejectionInfo(stage, reason string, status, retryAfterMs int) rejectionInfo {
 	info := rejectionInfo{
 		r:                     d.r,
@@ -1122,6 +1181,7 @@ func (d *dispatchState) updateSpeculativeClientGone(pr *registry.PendingRequest)
 // once per logical client_gone at the central classification sites so speculative
 // backup bookkeeping (updateSpeculativeClientGone) never double-counts.
 func (d *dispatchState) emitClientGone(phase string) {
+	d.stampClientGone(phase)
 	d.s.emitClientGone(d.model, d.estimatedPromptTokens, providerChipFamily(d.provider), phase)
 }
 
@@ -1162,7 +1222,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	planTried := false
 	if attempt > 0 {
 		d.provider, d.pr, decision, dispatchErr, dispatchErrCode, planTried =
-			d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, recordRoute)
+			d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, "", recordRoute)
 	}
 	if !planTried {
 		var plan *registry.DispatchPlan
@@ -1171,7 +1231,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
-			d.attempt,
+			d.attempt, d.profile, "",
 			recordRoute,
 			d.noteProviderDispatched,
 		)
@@ -1211,6 +1271,31 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			// wire. This is coordinator-owned deadline exhaustion, not a
 			// provider send fault, and another attempt cannot regain time.
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
+			return outcomeFailFast
+		}
+		if dispatchErr == errClientGoneBeforeScan {
+			// The caller's context fired while parked for a scan slot. Mirror
+			// the queue-wait cancellation arm exactly: cancelled route
+			// outcome, refund, no response body — NEVER the routing_saturated
+			// 429 or a rejection-ledger row (the client is not retrying; the
+			// ledger must not count a shed that never happened).
+			d.emitClientGone(phaseBeforeFirstToken)
+			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+			d.refundReservation()
+			return outcomeClientGone
+		}
+		if dispatchErr == errRoutingScanSaturated {
+			// No provider-selection scan slot freed up within the request's
+			// whole remaining first-content budget — the coordinator itself is
+			// saturated (2026-09-01 collapse). Zero providers were scanned or
+			// contacted, so latch the capacity-shaped verdict: the exhausted
+			// ladder emits ONE uptime-neutral retryable 429 (whose Retry-After
+			// scales with the route-latency distress EWMA) and never scans
+			// again for this request.
+			s.ddIncr("routing.scan_admission_timeout", []string{"model:" + d.model})
+			d.setLastError(dispatchErr, http.StatusTooManyRequests)
+			d.unservable = true
+			d.unservableReason = rejectionReasonRoutingSaturated
 			return outcomeFailFast
 		}
 		if d.lastFailureDeadline && dispatchErr == errTTFTTooSlow {
@@ -1327,8 +1412,24 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		queuePR.Timing.QueuedAt = time.Now()
+		queuePR.Profile = d.profile.NewAttempt(d.requestID, d.attempt, "")
+		queuePR.Profile.Mark(registry.StampAttemptStart)
+		queuePR.Profile.Mark(registry.StampQueued)
+		// Every exit of the queue path that never reached the wire (queue full,
+		// wait cancelled/expired, TTFT/tool refusals, and a pre-wire failure
+		// after the queue handed over a provider: top-up, key, encrypt, writer
+		// timeout, write error) closes the placeholder attempt here so it never
+		// waits on a provider terminal that cannot come. Keyed on the attempt's
+		// own write-done stamp inside closeUndispatchedAttempt, never on d.pr:
+		// d.pr is assigned before the write, so a failure between assignment
+		// and the wire is still undispatched.
+		defer d.closeQueuedAttempt(queuePR.Profile)
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:over_capacity"})
+			// No route row exists for a request the queue refused (the routing
+			// decision is recorded only after a successful enqueue); the
+			// placeholder carries the rejection vocabulary directly.
+			queuePR.Profile.SetOutcome("rejected", "queue_full", "", "", "")
 			retryAfter := s.estimateRetryAfter(d.model)
 			d.refundReservation()
 			info := d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision)
@@ -1364,15 +1465,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			if errors.Is(err, context.Canceled) {
 				s.recordWarmPoolQueueState(d.model)
 				d.emitClientGone(phaseBeforeFirstToken)
-				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+				d.queuedExitOutcome(queuePR.Profile, "cancelled", "client_gone", 0)
 				d.refundReservation()
 				return outcomeClientGone
 			}
 			if errors.Is(err, context.DeadlineExceeded) ||
 				errors.Is(err, registry.ErrQueueFirstContentDeadline) {
 				s.recordWarmPoolQueueState(d.model)
-				d.updateRoutingOutcome(d.errorRoutingOutcome(
-					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
+				d.queuedExitOutcome(queuePR.Profile,
+					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout)
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				return outcomeFailFast
 			}
@@ -1381,7 +1482,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// ceiling — deterministic, so answer with the standard
 				// ttft_too_slow 429 instead of waiting out the queue.
 				s.recordWarmPoolQueueState(d.model)
-				d.updateRoutingOutcome(d.errorRoutingOutcome("error", "ttft_too_slow", http.StatusTooManyRequests))
+				d.queuedExitOutcome(queuePR.Profile, "error", "ttft_too_slow", http.StatusTooManyRequests)
 				d.refundReservation()
 				s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
 				s.triggerWarmPool()
@@ -1395,9 +1496,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
 				s.recordWarmPoolQueueState(d.model)
-				d.updateRoutingOutcome(d.errorRoutingOutcome(
+				d.queuedExitOutcome(queuePR.Profile,
 					"error", "model_capability_unsupported",
-					http.StatusServiceUnavailable))
+					http.StatusServiceUnavailable)
 				d.refundReservation()
 				d.preContentTerminal(
 					d.rejectionInfoWithDecision(
@@ -1411,7 +1512,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"model_unavailable")
 				return outcomeResponseWritten
 			}
-			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
+			d.queuedExitOutcome(queuePR.Profile, "timeout", "queue_timeout", http.StatusTooManyRequests)
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
@@ -1434,6 +1535,17 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.pr = queuePR
 		d.requestID = d.pr.RequestID
 		d.timing.RoutedAt = time.Now()
+		if ap := d.pr.Profile; ap != nil {
+			ap.Mark(registry.StampDequeued)
+			ap.Mark(registry.StampReserveDone)
+			ap.SetDecision(queuedReq.Decision)
+			ap.ProviderID = d.provider.ID
+			d.provider.Mu().Lock()
+			ap.ProviderVersion = d.provider.Version
+			ap.ChipFamily = d.provider.Hardware.ChipFamily
+			d.provider.Mu().Unlock()
+			ap.KVBackend, _ = d.provider.SlotKVBackendTags(d.model)
+		}
 		d.recordRoutingDecisionFor(d.provider, d.pr, d.requestID, d.pr.Attempt, queuedReq.Decision, "", "selected")
 
 		// Log missing payout destination but don't skip — earnings
@@ -1555,6 +1667,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeRetry
 		}
 		d.timing.EncryptedAt = time.Now()
+		d.pr.Profile.Mark(registry.StampEncrypted)
 		d.pr.SessionPrivKey = &sessionKeys.PrivateKey
 		// pr.ReservedMicroUSD was already set in the struct literal and may
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
@@ -1563,6 +1676,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// allows 5-30s per frame), so an unbounded write could eat the budget
 		// while the aggregator's cancel clock keeps running.
 		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
+		d.pr.Profile.Mark(registry.StampWriteSubmitted)
 		_, writeErr := writeProviderInferenceRequestDeferred(
 			writeCtx,
 			d.provider,
@@ -1571,9 +1685,13 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			func(metadata registry.TextFrameWriteMetadata) {
 				d.timing.DispatchedAt = metadata.DequeuedAt
 				d.noteProviderDispatched()
+				d.pr.Profile.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
 			},
 		)
 		cancelWrite()
+		if writeErr == nil {
+			d.pr.Profile.Mark(registry.StampWriteDone)
+		}
 		if writeErr != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
@@ -1582,6 +1700,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			if errors.Is(writeErr, context.DeadlineExceeded) ||
 				errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
+				d.pr.Profile.Mark(registry.StampCancelSent)
 				s.sendProviderCancel(d.provider, d.requestID)
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				d.updateRoutingOutcome(d.errorRoutingOutcome(
@@ -1652,6 +1771,13 @@ func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *regis
 // "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
 const rejectionReasonOversized = "oversized_request"
 
+// rejectionReasonRoutingSaturated is the rejection-ledger reason_code for a
+// request shed because no provider-selection scan slot freed up within its
+// remaining first-content budget (Server.routingScanSem — the coordinator
+// itself was the bottleneck, 2026-09-01 collapse). Capacity-shaped: one
+// retryable 429, uptime-neutral, zero providers contacted.
+const rejectionReasonRoutingSaturated = "routing_saturated"
+
 // rejectionReasonDeadlineUnreachable is the rejection-ledger reason for a
 // request whose remaining absolute first-content budget was refused by one or
 // more providers and whose untried candidates were then exhausted.
@@ -1719,6 +1845,28 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// model_capability rejection. Kill switch: EIGENINFERENCE_JINJA_TERMINAL_REJECT.
 	if d.latchJinjaTerminalReject(d.lastErrReason, "") {
 		return true
+	}
+	// Timeout-class ladder cap: a coordinator-synthesized first-chunk timeout
+	// is an untyped 504 (setLastError clears the typed cause for synthetic
+	// terminals; a typed safety_deadline/backpressure_timeout 504 is a real
+	// provider terminal and keeps its fault failover). The provider went
+	// silent — a fresh provider MAY answer, so fail over, but each retry
+	// costs a full fleet reservation scan; unbounded, that is the exact
+	// CPU-amplification loop of the 2026-09-01 congestion collapse. Bounded
+	// like maxCapacityClassRetries: at the cap the ladder exhausts and the
+	// synthetic 504 reclassifies to the retryable 429 with reason
+	// "first_chunk_timeout" (classifyExhaustedStatus). Same discriminator as
+	// waitFirstChunk's route-outcome writer, so a timeout never double-counts
+	// as anything else. Behavior below the cap is unchanged: classifyRejection
+	// already returns rejectionNotCapacity for the synthetic timeout string
+	// (see rejection_classify_test.go), i.e. "keep failing over".
+	if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
+		d.firstChunkTimeoutRetries++
+		if d.firstChunkTimeoutRetries >= maxFirstChunkTimeoutRetries {
+			d.s.ddIncr("routing.first_chunk_timeout_ladder_capped", []string{"model:" + d.model})
+			return true
+		}
+		return false
 	}
 	// Typed-cause override (highest-fidelity signal): a provider that attaches
 	// terminal_cause=admission_timeout is TELLING us its engine was too busy to
@@ -2162,7 +2310,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		backupTiming := &registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt}
 		planTried := false
 		backupProvider, backupPR, _, backupErr, backupErrCode, planTried =
-			d.dispatchFromPlanMachinery(backupTiming, backupExclude, recordBackupRoute)
+			d.dispatchFromPlanMachinery(backupTiming, backupExclude, d.requestID, recordBackupRoute)
 		if !planTried {
 			backupProvider, backupPR, _, _, backupErr, backupErrCode = s.dispatchOneProvider(
 				r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
@@ -2173,7 +2321,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 				d.serviceReservation,
 				d.cachePlan,
 				backupExclude,
-				d.attempt,
+				d.attempt, d.profile, d.requestID,
 				recordBackupRoute,
 				d.noteProviderDispatched,
 			)
@@ -2206,6 +2354,9 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	// Backup dispatched — race primary vs backup.
 	if d.pr != nil {
 		d.pr.UsedBackup = true
+		if ap := d.pr.Profile; ap != nil {
+			ap.BackupLaunched.Store(true)
+		}
 	}
 	if backupPR != nil {
 		backupPR.UsedBackup = true
@@ -2367,6 +2518,12 @@ func (d *dispatchState) awaitBackupEmptyCompletion(
 	d.s.registry.RecordWarmPoolSpeculativeWon(d.model)
 	d.markSpeculativeLoser(primaryPR)
 	backupPR.BackupWon = true
+	if ap := backupPR.Profile; ap != nil {
+		ap.BackupWon.Store(true)
+		if primaryPR != nil {
+			ap.CopyPreDispatchFrom(primaryPR.Profile)
+		}
+	}
 	d.provider = backupProvider
 	d.pr = backupPR
 	d.requestID = backupPR.RequestID
@@ -2673,6 +2830,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				continue
 			}
 			if !s.cancelDispatchForFirstContentTimeout(backupProvider, backupPR) {
+				// The primary was cancelled for the timeout but the backup
+				// won its ingress race: record the primary's timeout (route
+				// outcome + attempt profile) before its identity is cleared.
+				d.updateSpeculativeTimeout(pr, "first_chunk_timeout")
 				d.excludeProviders[provider.ID] = struct{}{}
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				d.provider = nil
@@ -3231,6 +3392,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 // attestation headers, timing header, settlement defer, and final response handoff.
 func (d *dispatchState) run() {
 	s := d.s
+	defer d.finalizeProfile()
 	w, r := d.w, d.r
 	d.preflightLegacyCacheBust()
 
@@ -3577,7 +3739,8 @@ func (d *dispatchState) writeCommittedResponse() {
 	// them to the JSON body (OpenAI SDKs often hide custom headers).
 	info := collectCommittedProviderInfo(provider)
 	writeCommittedProviderHeaders(w, info)
-	writeTimingHeader(w, pr.Timing)
+	d.writeTimingHeaderWithProfile(w, pr)
+	d.stampCommitted(pr)
 	writeInferenceJobIDHeader(w, pr.RequestID)
 	snapshotChatCompletionMetadata(pr, info)
 
@@ -3590,6 +3753,9 @@ func (d *dispatchState) writeCommittedResponse() {
 	// FinalizeReservation-guarded, so the park-then-remove overlap can't double-bill.
 	defer func() {
 		if stale := provider.GetPending(requestID); stale != nil {
+			// The provider is still generating for a client that is gone: this
+			// cancel is the one that stops real work, so stamp it.
+			stale.Profile.Mark(registry.StampCancelSent)
 			s.holdForSettlement(stale)
 		} else {
 			// A terminal already claimed the pending. In every normal path the

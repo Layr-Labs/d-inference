@@ -93,6 +93,22 @@ const (
 	// provider) stops on the FIRST attempt regardless — see classifyRejection.
 	maxCapacityClassRetries = 3
 
+	// maxFirstChunkTimeoutRetries bounds failover for coordinator-synthesized
+	// first-chunk TIMEOUTS (the untyped 504 the exhausted ladder reclassifies
+	// to a retryable 429 with reason "first_chunk_timeout"). Unlike capacity
+	// rejections these carried NO cap: every retry re-ran a full fleet
+	// reservation scan (~1,260 providers, registry.ReserveProviderEx), and in
+	// the 2026-09-01 congestion collapse retry-amplified inbound (~100 req/s
+	// of retryable 429 traffic from OpenRouter) times per-request fleet scans
+	// saturated every coordinator CPU — attempt-0 route p50 went 40ms → 4.6s,
+	// success ~40%, 429s were delivered after 11s, inbound ~6k/min vs served
+	// ~550/min. The request-absolute first-content budget already bounds WALL
+	// time per request; this bounds CPU: after this many timed-out attempts
+	// (each on a distinct provider — a timed-out provider is excluded from
+	// re-selection) the ladder exhausts immediately into the existing
+	// synthetic-timeout → 429 reclassification (classifyExhaustedStatus).
+	maxFirstChunkTimeoutRetries = 3
+
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
 	// the coordinator launches a speculative backup dispatch. The primary
 	// provider gets this fraction of the deadline before the backup is
@@ -221,6 +237,7 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
+	pr.Profile.Mark(registry.StampCancelSent)
 	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
 		s.refundProviderExtra(pr)
@@ -243,6 +260,7 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 	}
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	s.registry.SetProviderIdle(provider.ID)
+	pr.Profile.Mark(registry.StampCancelSent)
 	s.sendProviderCancel(provider, pr.RequestID)
 	s.refundProviderExtra(pr)
 	return true
@@ -587,6 +605,37 @@ const errTTFTTooSlow = "all available providers exceed the TTFT target"
 // charging provider health.
 const errFirstContentDeadlineExpired = "first-content deadline expired before provider dispatch"
 
+// errRoutingScanSaturated is returned when no provider-selection scan slot
+// (Server.routingScanSem) freed up within the request's remaining
+// first-content budget: the coordinator itself is the bottleneck (the
+// 2026-09-01 congestion collapse). No provider was scanned or contacted, so
+// callers shed ONE capacity-shaped retryable 429 — never a 5xx, never more
+// scans.
+const errRoutingScanSaturated = "routing scan capacity saturated — coordinator busy"
+
+// errClientGoneBeforeScan is returned when the caller's context fired while
+// the dispatch goroutine was parked for a provider-selection scan slot. No
+// provider was scanned or contacted; the dispatch loop takes its ordinary
+// client-gone terminal (cancelled route outcome, refund, no response body) —
+// never the routing_saturated 429 or a rejection-ledger row.
+const errClientGoneBeforeScan = "client disconnected before provider selection"
+
+// attempt0RouteAnchor returns the instant the attempt-0 route-latency EWMA
+// sample is measured from — the SAME anchor applyTimingDecomposition uses for
+// route_ms (MediaFetchedAt when a remote-media fetch happened, else
+// ReservedAt) — so download or parse time can never fake routing distress.
+// Zero when the request never stamped a reservation (bare test fixtures):
+// the caller then records no sample.
+func attempt0RouteAnchor(t *registry.RequestTiming) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	if !t.MediaFetchedAt.IsZero() {
+		return t.MediaFetchedAt
+	}
+	return t.ReservedAt
+}
+
 // consumerModel returns the model name to echo back to the consumer: the public
 // alias they requested when set, otherwise the concrete build id (raw-id
 // requests and any internal caller that didn't populate PublicModel).
@@ -854,6 +903,8 @@ func (s *Server) dispatchOneProvider(
 	cachePlan registry.CachePlan,
 	excludeProviders map[string]struct{},
 	attempt int,
+	rp *registry.RequestProfile,
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 	onDispatched func(),
 ) (
@@ -869,8 +920,9 @@ func (s *Server) dispatchOneProvider(
 		reservedMicroUSD, estimatedPromptTokens, requestDeadline,
 		requestedMaxTokens, tokenAdmission, requiresVision, traits,
 		allowedProviderSerials, isResponsesAPI, policy, timing,
-		serviceReservation, cachePlan, excludeProviders, attempt,
+		serviceReservation, cachePlan, excludeProviders, attempt, rp, backupOf,
 		recordRoute, onDispatched,
+		true, // ReserveProviderWithPlan is the O(fleet) full scan
 		func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
 			return s.registry.ReserveProviderWithPlan(model, pr, excludeIDs...)
 		},
@@ -907,8 +959,11 @@ func (s *Server) dispatchWithReserver(
 	cachePlan registry.CachePlan,
 	excludeProviders map[string]struct{},
 	attempt int,
+	rp *registry.RequestProfile,
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 	onDispatched func(),
+	fullScan bool,
 	reserve dispatchReserver,
 ) (
 	provider *registry.Provider,
@@ -925,8 +980,18 @@ func (s *Server) dispatchWithReserver(
 	}
 
 	requestID := uuid.New().String()
+	ap := rp.NewAttempt(requestID, attempt, backupOf)
+	ap.Mark(registry.StampAttemptStart)
+	// Any failure return closes the attempt as not dispatched (terminal half; the handler half lands in finalizeProfile);
+	// a dispatched attempt is left for the provider terminal / relay to close.
+	defer func() {
+		if provider == nil {
+			closeUndispatchedAttempt(ap, lastErr, lastErrCode)
+		}
+	}()
 	pr = &registry.PendingRequest{
 		RequestID: requestID,
+		Profile:   ap,
 		// Attempt is stamped at construction — BEFORE the request is encrypted
 		// and sent to the provider — so a fast provider that returns
 		// inference_complete immediately is correlated to the right route row.
@@ -995,8 +1060,61 @@ func (s *Server) dispatchWithReserver(
 		return ids
 	}
 
+	// noteSelectionSample feeds the attempt-0 route-latency distress EWMA
+	// behind estimateRetryAfter (2026-09-01: route p50 40ms → 4.6s while the
+	// empty-queue heuristic kept answering "retry in 2s"). Anchored exactly
+	// where applyTimingDecomposition anchors route_ms (MediaFetchedAt when
+	// set, else ReservedAt) so a multi-second media download or slow body
+	// parse can never masquerade as routing distress. Called on BOTH the
+	// successful reservation (at the RoutedAt stamp) and every failed
+	// attempt-0 selection (semaphore acquisition timeout, scan that yields no
+	// provider): under TOTAL overload no selection ever succeeds, and an
+	// EWMA fed only by successes would sit at 0 — keeping Retry-After at the
+	// legacy 2s exactly when distress scaling matters most.
+	noteSelectionSample := func() {
+		if attempt != 0 {
+			return
+		}
+		if anchor := attempt0RouteAnchor(timing); !anchor.IsZero() {
+			s.noteAttempt0RouteLatency(time.Since(anchor))
+		}
+	}
+
+	// Bound concurrent provider-selection scans (2026-09-01 congestion
+	// collapse: retry-amplified inbound × a fresh full fleet scan per attempt
+	// saturated every coordinator CPU). Only O(fleet) reservers take a slot —
+	// the full scan, the plan REFRESH (itself a full re-scan), and the
+	// speculative-backup scan. A retained-plan step (ReserveNextFromPlan)
+	// revalidates at most the plan's bounded entries, so it bypasses the
+	// semaphore: a held slot must never starve the cheap retry path that
+	// exists precisely to avoid rescans. The wait is bounded by the request's
+	// remaining first-content budget: a goroutine parks cheaply on the channel
+	// and either scans as soon as a slot frees or sheds capacity-shaped
+	// (errRoutingScanSaturated → one retryable 429) once the budget is gone.
+	if fullScan {
+		switch s.acquireRoutingScanSlot(
+			firstTokenRemainingSince(receivedAt, requestDeadline),
+			r.Context().Done(),
+		) {
+		case scanSlotClientGone:
+			// The caller vanished while parked for a slot: this is the
+			// ordinary client-gone terminal, never the routing_saturated
+			// 429/rejection row (and no distress sample — a vanished caller
+			// proves nothing about selection latency).
+			return nil, nil, decision, nil, errClientGoneBeforeScan, 0
+		case scanSlotTimeout:
+			noteSelectionSample()
+			return nil, nil, decision, nil, errRoutingScanSaturated, http.StatusTooManyRequests
+		}
+	}
 	provider, decision, plan = reserve(pr, excludeList())
+	ap.Mark(registry.StampReserveDone)
+	ap.SetDecision(decision)
+	if fullScan {
+		s.releaseRoutingScanSlot()
+	}
 	if provider == nil {
+		noteSelectionSample()
 		// Providers serve this model but none can physically fit it: don't make
 		// the caller queue/retry for something that will never load.
 		if decision.CandidateCount == 0 && decision.CapacityRejections == 0 && decision.ModelTooLargeRejections > 0 {
@@ -1020,6 +1138,15 @@ func (s *Server) dispatchWithReserver(
 	defer cleanupPending()
 	if pr.Timing != nil {
 		pr.Timing.RoutedAt = time.Now()
+	}
+	noteSelectionSample()
+	if ap != nil {
+		ap.ProviderID = provider.ID
+		provider.Mu().Lock()
+		ap.ProviderVersion = provider.Version
+		ap.ChipFamily = provider.Hardware.ChipFamily
+		provider.Mu().Unlock()
+		ap.KVBackend, _ = provider.SlotKVBackendTags(model)
 	}
 	if recordRoute != nil {
 		recordRoute(provider, pr, decision)
@@ -1057,6 +1184,7 @@ func (s *Server) dispatchWithReserver(
 			return nil, nil, decision, plan, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
 		}
 	}
+	ap.Mark(registry.StampTopupDone)
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
@@ -1124,6 +1252,7 @@ func (s *Server) dispatchWithReserver(
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
 	}
+	ap.Mark(registry.StampEncrypted)
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	// pr.ReservedMicroUSD was already set in the struct literal and may have
 	// been increased by reserveAdditionalForProvider above. Don't overwrite.
@@ -1133,6 +1262,7 @@ func (s *Server) dispatchWithReserver(
 	// the budget while the aggregator's cancel clock keeps running.
 	writeCtx, cancelWrite := firstTokenWriteContext(
 		r.Context(), receivedAt, requestDeadline)
+	ap.Mark(registry.StampWriteSubmitted)
 	_, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
 		provider,
@@ -1145,9 +1275,13 @@ func (s *Server) dispatchWithReserver(
 			if onDispatched != nil {
 				onDispatched()
 			}
+			ap.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
 		},
 	)
 	cancelWrite()
+	if writeErr == nil {
+		ap.Mark(registry.StampWriteDone)
+	}
 	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
@@ -1158,6 +1292,7 @@ func (s *Server) dispatchWithReserver(
 			// The writer either discarded the frame before handoff or aborted
 			// its connection during an in-flight write. Cancel defensively in
 			// case the provider decoded the final bytes before disconnect.
+			ap.Mark(registry.StampCancelSent)
 			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
@@ -1426,21 +1561,77 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	return true
 }
 
+// routeLatencyEWMAAlpha weights the newest attempt-0 route-latency sample in
+// the distress EWMA: ~10 healthy requests pull a degraded average back under
+// the threshold once the collapse clears.
+const routeLatencyEWMAAlpha = 0.2
+
+// degradedRouteEWMAThresholdMs is the attempt-0 route-latency EWMA above which
+// estimateRetryAfter switches from the queue-depth heuristic to distress
+// scaling. Healthy routing runs ~40ms; anything over a second means the
+// coordinator itself is the bottleneck.
+const degradedRouteEWMAThresholdMs = 1000.0
+
+// maxDistressRetryAfter caps the distress-scaled Retry-After (seconds).
+const maxDistressRetryAfter = 60
+
+// noteAttempt0RouteLatency folds one attempt-0 route latency (ReceivedAt →
+// RoutedAt) into the distress EWMA. Called from dispatchWithReserver where
+// RoutedAt is stamped; negative samples (clock skew) are dropped.
+func (s *Server) noteAttempt0RouteLatency(d time.Duration) {
+	ms := float64(d) / float64(time.Millisecond)
+	if ms < 0 {
+		return
+	}
+	s.routeLatencyMu.Lock()
+	if s.routeLatencyEWMAMs == 0 {
+		s.routeLatencyEWMAMs = ms
+	} else {
+		s.routeLatencyEWMAMs = routeLatencyEWMAAlpha*ms +
+			(1-routeLatencyEWMAAlpha)*s.routeLatencyEWMAMs
+	}
+	s.routeLatencyMu.Unlock()
+}
+
+// attempt0RouteEWMAMs reads the current attempt-0 route-latency EWMA (ms).
+func (s *Server) attempt0RouteEWMAMs() float64 {
+	s.routeLatencyMu.Lock()
+	defer s.routeLatencyMu.Unlock()
+	return s.routeLatencyEWMAMs
+}
+
 // estimateRetryAfter returns a suggested wait time in seconds before retrying
 // a request for the given model. Based on queue depth as a rough proxy for
 // fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
+//
+// Distress scaling (2026-09-01 congestion collapse): queue depth alone was a
+// LIAR under CPU saturation — the queue was empty (nothing could even reach
+// it), so every 429 carried "Retry-After: 2" and upstream obligingly hammered
+// the coordinator every 2s, sustaining the death loop. When the attempt-0
+// route-latency EWMA shows routing itself is degraded (> 1s), the answer
+// scales with the observed degradation — max(base, ceil(EWMA seconds)×5),
+// capped at 60s — so upstream backoff actually relieves pressure. Queue-depth
+// behavior is unchanged while routing is healthy.
 func (s *Server) estimateRetryAfter(model string) int {
-	queueDepth := s.registry.Queue().QueueSize(model)
-	if queueDepth == 0 {
-		return 2 // Light load, retry soon
+	estimate := 2 // Light load, retry soon
+	if queueDepth := s.registry.Queue().QueueSize(model); queueDepth > 0 {
+		// Rough estimate: each queued request takes ~3 seconds to drain.
+		estimate = queueDepth * 3
+		if estimate < 2 {
+			estimate = 2
+		}
+		if estimate > 30 {
+			estimate = 30
+		}
 	}
-	// Rough estimate: each queued request takes ~3 seconds to drain.
-	estimate := queueDepth * 3
-	if estimate < 2 {
-		estimate = 2
-	}
-	if estimate > 30 {
-		estimate = 30
+	if ewmaMs := s.attempt0RouteEWMAMs(); ewmaMs > degradedRouteEWMAThresholdMs {
+		scaled := int(math.Ceil(ewmaMs/1000)) * 5
+		if scaled > maxDistressRetryAfter {
+			scaled = maxDistressRetryAfter
+		}
+		if scaled > estimate {
+			estimate = scaled
+		}
 	}
 	return estimate
 }
@@ -1573,6 +1764,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int)
 // source for accounting and consumer-facing response conversion.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas, parse, require a model,
 	// enforce the per-key model allowlist. (See parseInferencePrelude.)
@@ -1745,8 +1937,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
+	registryReadStart := time.Now()
 	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		profileDBCall(rp, registryReadStart)
 		resolvedRuntimeParameters = rec.RuntimeParameters
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
 			rawBody, _ = marshalForwardBody(parsed)
@@ -1785,6 +1979,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -1893,6 +2088,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timing.ReservedAt = time.Now()
+	rp.Mark(registry.StampReqReserved)
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
@@ -2059,6 +2255,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return refreshForwardBody(body, newModel)
 	}
 	var preflightHandled bool
+	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -2077,6 +2274,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
 	})
+	if rp != nil {
+		rp.PreflightUS = time.Since(preflightStart).Microseconds()
+		rp.Mark(registry.StampReqPreflightDone)
+		if preflightHandled {
+			rp.PreflightOutcome = "handled"
+		} else {
+			rp.PreflightOutcome = "passed"
+		}
+	}
 	if preflightHandled {
 		return
 	}
@@ -2105,11 +2311,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// the originally-resolved model's context. Overwrite only on a successful lookup
 	// (fallback builds of the same alias normally share a context window; a build
 	// absent from the store keeps the prior value, matching the initial read).
+	registryReadStart2 := time.Now()
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		modelMaxContext = rec.MaxContextLength
 	}
+	profileDBCall(rp, registryReadStart2)
 	cachePlan := s.planCacheRoute(
 		r.Context(), consumerKey, model, providerBody, requiresVision)
+	rp.Mark(registry.StampReqPlanDone)
+	if rp != nil {
+		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
+		rp.FirstContentBudgetMs = int(deadline.Milliseconds())
+		rp.EstimatedPromptTokens, rp.RequestedMaxTokens = estimatedPromptTokens, requestedMaxTokens
+		rp.RequiresVision, rp.HasTools = requiresVision, hasTools
+		rp.BodyBytes = len(rawBody)
+		if mediaInlined {
+			rp.Mark(registry.StampReqMediaFetched)
+		}
+	}
 
 	d := &dispatchState{
 		s:                      s,
@@ -2139,6 +2358,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
 		timing:                 timing,
+		profile:                rp,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
 		modelMaxContext:        modelMaxContext,
@@ -2183,6 +2403,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 
 	writeSSEResponseHeader(w, pr.RequestID)
 	flusher.Flush()
+	rs := newRelayStamps(pr.Profile.Parent())
 
 	// Detect Responses API format to skip appending chat-completions-style
 	// termination events (SE signature chunk + [DONE]).
@@ -2232,8 +2453,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				pendingFinish = obj
 			} else {
 				firstChunk = rewriteChunkModel(firstChunk, pr)
-				fmt.Fprintf(w, "%s\n\n", firstChunk)
+				n, werr := fmt.Fprintf(w, "%s\n\n", firstChunk)
 				flusher.Flush()
+				rs.wrote(n, werr)
 			}
 		}
 	}
@@ -2323,12 +2545,15 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 						}
 						attachChatCompletionMetadata(event, pr)
 						sigEvent, _ := json.Marshal(event)
-						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
+						n, werr := fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
+						rs.wrote(n, werr)
 					}
 					// Exactly one terminator, after every coordinator-appended event.
-					fmt.Fprint(w, "data: [DONE]\n\n")
+					n, werr := fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
+					rs.wrote(n, werr)
+					rs.done()
 				}
 				return
 			}
@@ -2386,8 +2611,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
-			fmt.Fprintf(w, "%s\n\n", chunk)
+			n, werr := fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
+			rs.wrote(n, werr)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
@@ -2404,6 +2630,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			return
 
 		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
 			return
 		}
 	}
@@ -2513,6 +2740,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 			return
 
 		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
 			return
 		}
 	}
@@ -2621,7 +2849,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									msg := extractMessage([]string{"data: " + string(encoded)})
 									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
 									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, resp)
+									writeNonStreamBody(w, pr.Profile.Parent(), resp)
 									return
 								}
 								if pr.IsResponsesAPI {
@@ -2641,7 +2869,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 										chatResp, consumerModel(pr), pr.SESignature,
 										pr.ResponseHash, pr.Traits)
 									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, respObj)
+									writeNonStreamBody(w, pr.Profile.Parent(), respObj)
 									return
 								}
 							} else {
@@ -2661,7 +2889,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 								attachChatCompletionMetadata(obj, pr)
 							}
 							s.noteInferenceSuccess(pr)
-							writeJSON(w, http.StatusOK, obj)
+							writeNonStreamBody(w, pr.Profile.Parent(), obj)
 							return
 						}
 					}
@@ -2697,7 +2925,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 						resp = chatResp
 					}
 					s.noteInferenceSuccess(pr)
-					writeJSON(w, http.StatusOK, resp)
+					writeNonStreamBody(w, pr.Profile.Parent(), resp)
 				case <-ctx.Done():
 					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
@@ -4100,6 +4328,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas (Anthropic /v1/messages
 	// bodies carry a top-level "tools" array too; the provider body is rebuilt
@@ -4240,6 +4469,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -4278,6 +4508,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	timing.ReservedAt = time.Now()
+	rp.Mark(registry.StampReqReserved)
 
 	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
@@ -4351,6 +4582,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
 	var preflightHandled bool
+	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -4369,6 +4601,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
 	})
+	if rp != nil {
+		rp.PreflightUS = time.Since(preflightStart).Microseconds()
+		rp.Mark(registry.StampReqPreflightDone)
+		if preflightHandled {
+			rp.PreflightOutcome = "handled"
+		} else {
+			rp.PreflightOutcome = "passed"
+		}
+	}
 	if preflightHandled {
 		return
 	}
@@ -4389,8 +4630,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,
 	// typed deadline refusals, and terminal 429 semantics identical.
+	genericRegistryReadStart := time.Now()
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		modelMaxContext = rec.MaxContextLength
+	}
+	profileDBCall(rp, genericRegistryReadStart)
+	rp.Mark(registry.StampReqPlanDone)
+	if rp != nil {
+		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
+		rp.FirstContentBudgetMs = int(genericDeadline.Milliseconds())
+		rp.EstimatedPromptTokens, rp.RequestedMaxTokens = estimatedPromptTokens, requestedMaxTokens
+		rp.RequiresVision, rp.HasTools = requiresVision, hasTools
+		rp.BodyBytes = len(rawBody)
 	}
 	d := &dispatchState{
 		s:                      s,
@@ -4421,6 +4672,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
 		timing:                 timing,
+		profile:                rp,
 		deadline:               genericDeadline,
 		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
 		modelMaxContext:        modelMaxContext,

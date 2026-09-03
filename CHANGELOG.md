@@ -1,5 +1,96 @@
 # Changelog
 
+## Unreleased (2026-09-02) — system profiler
+
+- **Per-request profiler** — the coordinator records one prompt-free row per
+  dispatched attempt in `request_profiles` (joins `inference_routes` on
+  `(request_id, attempt)`): microsecond offsets from middleware entry for every
+  coordinator stage (auth, parse, reserve, media, preflight, plan, reserve lock
+  wait/scan/admit, queue, encrypt, writer submit/dequeue/wire, provider ack,
+  chunk ingress, first content, headers, flushes, `[DONE]`, client-gone,
+  cancel, completion ingress, settlement), the routing decision context
+  (gate rejections by closed reason, top-4 candidates, runner-up, best idle
+  alternative, near-tie size, selection path, heartbeat age at decision,
+  predicted vs raw TTFT, calibration ratio, queue position/drain trigger), and
+  a validated provider profile: the provider now sends an optional `profile`
+  object on `inference_complete`/`inference_error` (decrypt/parse/admission/
+  model-load wait/prompt prep/engine submit & admitted/first & last delta/
+  terminal build & send/cancel stage, plus the engine's own
+  `CBv2RequestTiming`: admission, KV allocation, prefill chunks, prompt
+  computed, first token, decode steps and batch rows, MTP accept counts,
+  pauses, detokenization delay, prefix-cache lookup/adoption). Numbers,
+  booleans and closed enums only; validated, folded and stored from a separate
+  closed struct; never routing-, billing- or health-affecting.
+- **Fleet snapshots** — `fleet_snapshots` samples every provider slot each
+  minute (running/waiting, budgets, KV bytes, EWMAs, MTP totals, eligibility
+  reason, cooldown/breaker/clamp flags, heartbeat age, cumulative cancel
+  counters, low-power/thermal posture) plus a coordinator row (queue depth by
+  model, in-flight, sink depth/drops, zombie-frame count). Heartbeats carry new
+  optional `telemetry` sub-objects; `eval_in_flight_ms` finally has a producer.
+- **Egress and attempt accounting** — non-streaming 200 bodies stamp the same
+  first/last flush and bytes-out fields as SSE relays; attempts that never reach
+  a provider close only their terminal half at the failure site so the record is
+  built after the handler returns; a speculative primary cancelled for the
+  first-content timeout keeps its timeout outcome even when the backup wins the
+  ingress race.
+- **Review hardening** — heartbeat-reported counts are clamped to the snapshot
+  column range so one bad heartbeat cannot abort a fleet sample batch; the
+  recorded TTFT calibration ratio is the one the candidate was scored with;
+  routing replays count `no_provider` / `model_too_large` explicitly; terminal
+  usage is recorded at ingress (outside billing) and each provider-profile
+  consistency check runs independently; a speculative loser's discarded empty
+  completion still closes its attempt row.
+- **Operations** — admin browse/NDJSON export for both tables
+  (`/v1/admin/profiles`, `/v1/admin/snapshots`), a manual `request_waterfall`
+  view, retention sweeps (14 d / 30 d), a dedicated batched profile sink with
+  `telemetry.sink_dropped{sink}` / `telemetry.sink_depth{sink}` metrics,
+  `inference.unknown_request_frames{kind}`, knobs `EIGENINFERENCE_PROFILER=off`
+  and `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (default 0.1; slow, failed, retried,
+  backup and client-gone requests are always recorded), routingsim NDJSON
+  loaders for profile and fleet exports, `request_rejections.request_id`
+  populated with a coordinator-minted id. `X-Timing` keeps its legacy keys
+  (clamped, `timing_anomaly` flag) and gains additive `pre_handler_us`,
+  `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`,
+  `socket_us`, `provider_ack_us`. Docs: `docs/architecture/system-profiler.md`,
+  `docs/architecture/telemetry-inventory.md`; threat model T-051.
+
+## Release candidate v0.8.16 (not shipped; 2026-08-31)
+
+- **Per-model activation floors + measured resident weights** — the flat
+  5.5 GiB activation reserve is now resolved per serving set from measured
+  per-model floors (gpt-oss-20b: 3.5 GiB — its load requirement drops from
+  20.0 to 18.0 GB, which narrows the 32 GB flap band reported in #653 by ~2 GB; the
+  24 GB catalog tier stays borderline until the admit-time weight padding and
+  the small-box `memory_reserve_gb` default are revisited, #653/#683), and the coordinator's
+  POST-load token-budget estimate uses measured MLX residency for measured
+  text-only artifacts (gpt-oss-20b: 11.5 GiB steady vs the 13.5 padded
+  estimate) via `servabilityColdWeightsGiB`, version-gated at 0.8.16.
+  ADMIT-time gates — provider load gate and the coordinator's cold-load
+  admit — deliberately keep the padded disk×1.2 figure: it covers the load
+  transient (shard staging), which steady residency does not. Vision-capable models (the qwens, the gemma VLM builds) keep the
+  flat floor and padded weights until vision-inclusive measurements exist;
+  measured text baselines and the full sweep live in
+  `docs/reports/2026-08-30-activation-floor-measurements.md`.
+- **Serving-set reserve race hardening** — epoch-stamped reserve pushes
+  (cross-actor delivery is not FIFO), in-flight loads join the reserve
+  basis, failed-load cleanup holds the load gate through its awaits,
+  shrink paths regrow survivor grants, and failed-self-test retirement is
+  fail-closed end to end: durable failed-hash record (slot-bound hash or
+  refuse-all sentinel) consulted at every prefetch guard, a retirement
+  tombstone spanning foreign-owned drains, registration convergence on the
+  announce-undo, and new-inference rejection on both resident-slot fast
+  paths while a retirement drains.
+- **MLX-LM pin advances past the 0.32.2 core bump** — on top of #790's
+  `libs/mlx-swift-lm` pin (`81dd564`, which already carried Qwen3-VL CBv2
+  DeepStack #125 and the dense Qwen3.8 MTP artifacts #118), this release
+  moves to `30da946`: the gather-QMM sorted-hint lane
+  ([#126](https://github.com/Layr-Labs/mlx-swift-lm/pull/126)), vision batch
+  performance ([#127](https://github.com/Layr-Labs/mlx-swift-lm/pull/127)),
+  a serving-correctness batch
+  ([#128](https://github.com/Layr-Labs/mlx-swift-lm/pull/128)), and the
+  bench-harness hybrid-trunk paged fix
+  ([#129](https://github.com/Layr-Labs/mlx-swift-lm/pull/129)).
+
 ## Release candidate v0.8.15 (not shipped; 2026-08-28)
 
 - **Exact Qwen3.8 dense VLM artifact** — Providers serve

@@ -140,9 +140,22 @@ extension ProviderLoop {
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
                         weightsGb: info.estimatedMemoryGb,
-                        headroomGb: Self.loadHeadroomGb)))
+                        headroomGb: loadHeadroomGb)))
         }
         return plan
+    }
+
+    /// The LIVE preload requirement for a candidate: measured-or-padded
+    /// weights plus the CURRENT serving-set headroom. Consulted at each
+    /// preloader admission step because a fail-closed retirement earlier in
+    /// the run can relax the floor the plan-time figure captured. nil when
+    /// the id left the advertised set (the preloader then keeps its planned
+    /// figure; the load itself re-guards).
+    internal func livePreloadRequiredGb(_ modelId: String) -> Double? {
+        guard let info = advertisedModels[modelId] else { return nil }
+        return ModelLoadAdmission.requiredToLoadGb(
+            weightsGb: info.estimatedMemoryGb,
+            headroomGb: loadHeadroomGb)
     }
 
     // MARK: - Readiness gate
@@ -194,7 +207,8 @@ extension ProviderLoop {
             selfTestFailClosed: failClosed,
             retire: { modelId in await me.retireModelAfterFailedSelfTest(modelId: modelId) },
             onSelfTestFailed: onSelfTestFailed,
-            log: { line in log.info("\(line)") }
+            log: { line in log.info("\(line)") },
+            currentRequiredGb: { modelId in await me.livePreloadRequiredGb(modelId) }
         )
 
         let preloader = StartupPreloader(deps: deps)
@@ -299,12 +313,121 @@ extension ProviderLoop {
     /// preload finished inside the gate) both are nil and the `run()` filter
     /// handles it with no extra traffic.
     private func retireModelAfterFailedSelfTest(modelId: String) async {
-        await unloadModel(modelId)
+        // Tombstone for the whole retirement, including the unload drain:
+        // with the slot still resident, a concurrent same-id prefetch sees
+        // `.alreadyAvailable` and its verified-insert would re-advertise the
+        // failed model, undoing the fail-closed removal below.
+        retiringModels.insert(modelId)
+        defer { retiringModels.remove(modelId) }
+        // Durable fail-closed mark, keyed by the bytes that failed: the
+        // tombstone above dies with this function, but a prefetch whose
+        // scan/hash suspension spans this whole retirement must STILL
+        // refuse to re-advertise the same weights (`applyVerifiedPrefetch`
+        // checks this map). A future build with a different hash clears it
+        // there and gets its chance.
+        // ALWAYS mark, from the SLOT-BOUND hash or the "" sentinel — never
+        // the scanner maps: those keep a previous value when recomputation
+        // fails, so a stale H1 could be recorded while H2's bytes actually
+        // loaded and failed, and a later verified H2 would sail past the
+        // record. `cacheEligibleWeightHash` is the slot's own verified
+        // binding for the bytes it loaded; absent that (or a cold retire),
+        // the sentinel refuses every same-id build until a daemon restart —
+        // conservative, fail-closed.
+        failedSelfTestHashes[modelId] =
+            modelSlots[modelId]?.cacheEligibleWeightHash ?? ""
+        // Un-advertise BEFORE unloading so unloadModel's own
+        // refresh-then-regrow runs against the SHRUNKEN serving set — with
+        // the old order the regrow was sized under the retiring model's
+        // floor and survivors stayed under-granted until the next lifecycle
+        // event (grant clamps are min(granted, current); heartbeats cannot
+        // heal upward).
         advertisedModels.removeValue(forKey: modelId)
-        if let client = coordinatorClient {
-            await client.unadvertiseModel(modelId)
-            await client.forceReconnect()
+        // Remove from the client's advertised store BEFORE the drain (any
+        // reconnect that happens during it re-registers without the failed
+        // model) — but do NOT force the reconnect yet: cancelling the
+        // WebSocket here would cancelAllInflight() and interrupt every
+        // unrelated in-flight request rather than letting them ride out the
+        // target's drain window. Until the post-drain reconnect lands, a
+        // newly routed request for the retired id can still arrive and 404
+        // at the advertised guard — bounded, and absorbed by the
+        // coordinator's dispatch retry machinery.
+        await coordinatorClient?.unadvertiseModel(modelId)
+        await unloadModel(modelId)
+        // Another task may already own the drain (unloadModel returns
+        // immediately for modelsUnloading ids) — hold the tombstone until
+        // the slot is actually gone, or a same-id prefetch landing between
+        // our defer and the real unload end would re-advertise the failed
+        // build against a still-resident slot.
+        if modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
         }
+        // Cold retirement (the model never held a slot): unloadModel
+        // no-ops, so relax the reserve and regrow survivors here.
+        await refreshActivationReserve()
+        await resliceGrowSurvivors()
+        await updateAggregateCapacity()
+        scheduleRetirementReconnect()
+    }
+
+    /// The reconnect that communicates a removal (`models_update` is
+    /// additive; a fresh register is the wire mechanism) — DETACHED and
+    /// COALESCED. Detached: the startup preloader awaits retirement inline,
+    /// so waiting here would stall every remaining preload candidate
+    /// behind a busy box. Coalesced: a burst of retirements needs one
+    /// re-registration, and the client store already excludes every
+    /// retired id (un-advertised synchronously above) by the time it
+    /// fires. The wait lets unrelated in-flight work ride out first —
+    /// closing the socket cancels EVERY in-flight request on the box
+    /// (`.disconnected` → cancelAllInflight), not just the retired
+    /// model's (already drained by unloadModel) — bounded by the shutdown
+    /// drain budget. Until it lands, a routed request for a retired id
+    /// 404s at the advertised guard and the coordinator's dispatch retry
+    /// absorbs it: the wait extends that bounded window, it does not add
+    /// a failure mode.
+    /// True while `modelId` must be refused because of a failed self-test:
+    /// mid-retirement (tombstone), or retired and un-advertised with the
+    /// durable failed-hash record standing while the coordinator's
+    /// registered inventory has not yet converged (reconnect pending). Both
+    /// are `slot_state` rejections — the coordinator reroutes to a provider
+    /// whose build passed.
+    internal func isRefusedByRetirement(_ modelId: String) -> Bool {
+        retiringModels.contains(modelId)
+            || (advertisedModels[modelId] == nil && failedSelfTestHashes[modelId] != nil)
+    }
+
+    private func scheduleRetirementReconnect() {
+        guard pendingRetirementReconnect == nil else { return }
+        pendingRetirementReconnect = Task { [weak self] in
+            guard let self else { return }
+            _ = await self.waitForInflightDrain(
+                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+            // Shutdown cancels this task (`beginShutdown`); a cancelled
+            // reconnect must not re-register a session shutdown is closing.
+            guard !Task.isCancelled else { return }
+            await self.fireRetirementReconnect()
+        }
+    }
+
+    private func fireRetirementReconnect() async {
+        pendingRetirementReconnect = nil
+        guard !isShuttingDown, coordinatorClient != nil else { return }
+        // Admission barrier across the reconnect: between the drain's last
+        // observation and the socket closing there is an actor hop, and a
+        // routed request admitted in it would only be cancelled by the
+        // `.disconnected` handler. Raised here, actor-isolated, before any
+        // suspension; lifted by the `.connected` event of the new session.
+        isReconnectingAfterRetirement = true
+        if hasInflightWork {
+            // Work landed in the hop after the drain observed empty: let it
+            // ride out under the barrier (nothing new is admitted), then close.
+            _ = await waitForInflightDrain(
+                timeout: Self.shutdownDrainTimeout, reason: "retirement reconnect")
+            if isShuttingDown || Task.isCancelled {
+                isReconnectingAfterRetirement = false
+                return
+            }
+        }
+        await coordinatorClient?.forceReconnect()
     }
 
     // MARK: - Self-test decode (the serving path)

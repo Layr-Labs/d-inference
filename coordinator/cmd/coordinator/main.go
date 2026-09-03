@@ -26,7 +26,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"os/signal"
@@ -43,6 +45,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/modelpolicy"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -591,6 +594,22 @@ func main() {
 	srv.SetMinDecodeTPS(minDecodeTPS)
 	logger.Info("per-request decode floor (quality bar)", "min_decode_tps", minDecodeTPS)
 
+	// Routing-scan concurrency limit (2026-09-01 congestion collapse: a fresh
+	// full fleet scan per dispatch attempt × retry-amplified inbound saturated
+	// every coordinator CPU). Default runtime.NumCPU() (min 2); override via
+	// EIGENINFERENCE_ROUTING_CONCURRENCY. Requests that cannot get a scan slot
+	// within their remaining first-content budget shed as capacity-shaped 429s.
+	routingConcurrency := api.DefaultRoutingConcurrency()
+	if v := os.Getenv("EIGENINFERENCE_ROUTING_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 2 {
+			routingConcurrency = n
+			srv.SetRoutingConcurrency(n)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_ROUTING_CONCURRENCY (need an integer >= 2); using default", "value", v, "default", routingConcurrency)
+		}
+	}
+	logger.Info("routing-scan concurrency limit", "max_concurrent_scans", routingConcurrency)
+
 	// Smart early-429 admission gate. ON by default: a request whose
 	// (prompt+max_tokens) cannot fit the model context window or any provider's
 	// structural token budget is rejected with an uptime-neutral 429 at preflight
@@ -654,6 +673,33 @@ func main() {
 		logger.Info("runtime manifest configured from env",
 			"template_hashes", len(manifest.TemplateHashes),
 		)
+	}
+
+	// Exact-model first-content deadline base overrides
+	// ("<model>=<upstream_ms>,...", 0/"off" removes an entry so the model
+	// falls back to the global base). The built-in table (Qwen3-VL 5s/4s) can
+	// only tighten the global base — during the 2026-09-01 incident that
+	// hardcoding killed ~47% of vision traffic with no operator recourse.
+	if v := os.Getenv("EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES"); v != "" {
+		if replaced, removed := modelpolicy.SetFirstContentBasesFromEnv(v); replaced+removed > 0 {
+			logger.Info("exact-model first-content deadline bases overridden via EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES",
+				"replaced", replaced, "removed", removed, "value", v)
+		} else {
+			logger.Warn("invalid EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES; using built-in table", "value", v)
+		}
+	}
+
+	// Optional pprof listener on a DEDICATED private mux/port — never the
+	// public mux. The 2026-09-01 collapse was diagnosed blind because the
+	// binary shipped without pprof (GET /debug/pprof/ = 404). Unset = nothing
+	// listens.
+	if addr := os.Getenv("EIGENINFERENCE_PPROF_ADDR"); addr != "" {
+		if ln, err := startPprofListener(addr); err != nil {
+			logger.Error("pprof listener failed to start", "addr", addr, "error", err)
+		} else {
+			logger.Warn("pprof debug listener ENABLED via EIGENINFERENCE_PPROF_ADDR — profiling data is sensitive; keep this address private (bind loopback / firewall it)",
+				"addr", ln.Addr().String())
+		}
 	}
 
 	billingCfg := cfg.BillingConfig
@@ -813,6 +859,7 @@ func main() {
 
 	// Push gauge values to DogStatsD periodically.
 	go srv.StartDDGaugeLoop(ctx)
+	srv.StartProfilerLoops(ctx)
 
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
@@ -1047,4 +1094,34 @@ func loadAPNsAttestor(logger *slog.Logger) *apns.APNsPushAttestor {
 		return nil
 	}
 	return attestor
+}
+
+// startPprofListener starts net/http/pprof on a DEDICATED mux bound to addr
+// (EIGENINFERENCE_PPROF_ADDR, e.g. "127.0.0.1:6060") and serves it on its own
+// listener — the public mux never gains /debug/pprof/ routes. An empty addr
+// never reaches here (the caller gates on the env var), so nothing listens by
+// default. The 2026-09-01 congestion collapse had to be diagnosed without any
+// profiler (GET /debug/pprof/ = 404 on the running binary); this closes that
+// gap without exposing profiles publicly.
+func startPprofListener(addr string) (net.Listener, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		// The listener lives for the whole process; Serve only returns on a
+		// listener error, which is not worth crashing the coordinator over.
+		_ = server.Serve(ln)
+	}()
+	return ln, nil
 }

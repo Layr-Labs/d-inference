@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -155,7 +156,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.15"
+var LatestProviderVersion = "0.8.16"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -484,6 +485,13 @@ type Server struct {
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
 
+	// profiler owns the per-request profile records and their dedicated sink
+	// (system profiler). Nil on a Server built without NewServer.
+	profiler *profiler
+	// unknownRequestFrames counts provider frames for requests the coordinator
+	// no longer tracks (zombie streams); exported on the fleet coordinator row.
+	unknownRequestFrames atomic.Int64
+
 	// mediaResolver fetches remote http(s) image_url/video_url links into
 	// inline base64 data: URIs before the request body is E2E-encrypted to a
 	// provider, so consumers can pass links instead of pre-encoding media
@@ -492,6 +500,31 @@ type Server struct {
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
 	mediaResolver *mediafetch.Resolver
+	// routingScanSem bounds how many provider-selection scans (the
+	// ReserveProviderEx/ReserveProviderWithPlan family — a read-lock walk of
+	// ~1,260 providers per attempt) may run concurrently. During the
+	// 2026-09-01 congestion collapse, retry-amplified inbound (~100 req/s of
+	// retryable 429 traffic) times a fresh full scan per dispatch attempt
+	// saturated every coordinator CPU (attempt-0 route p50 40ms → 4.6s,
+	// success ~40%, 429s delivered after 11s) — a stable death loop. With the
+	// semaphore, excess requests park cheaply on the channel instead of
+	// piling onto the scheduler; one that cannot acquire within its remaining
+	// first-content budget sheds as a capacity-shaped 429
+	// (errRoutingScanSaturated). Capacity defaults to runtime.NumCPU()
+	// (min 2); override via EIGENINFERENCE_ROUTING_CONCURRENCY
+	// (SetRoutingConcurrency, called before serving starts).
+	routingScanSem chan struct{}
+
+	// routeLatencyEWMAMs is an EWMA of attempt-0 route latency (ReceivedAt →
+	// RoutedAt, milliseconds), updated where RoutedAt is stamped in
+	// dispatchWithReserver. estimateRetryAfter consults it: when routing
+	// itself is degraded (EWMA > 1s) the returned Retry-After scales up so
+	// upstream backoff actually relieves pressure — during the 2026-09-01
+	// collapse the queue-depth heuristic returned 2s on an empty queue and
+	// invited 2s retry storms. Guarded by routeLatencyMu (one tiny critical
+	// section per request; no allocation).
+	routeLatencyMu     sync.Mutex
+	routeLatencyEWMAMs float64
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -793,6 +826,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
 	}
 	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
 		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
@@ -817,6 +851,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	s.profiler = newProfilerFromEnv(s)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -912,6 +947,9 @@ func (s *Server) Close() {
 		s.trustAuthority = nil
 	}
 	s.trustAuthorityMu.Unlock()
+	if s.profiler != nil {
+		s.profiler.close()
+	}
 }
 
 // SetAdminKey configures the admin API key for admin-only endpoints.
@@ -1292,6 +1330,95 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 		tps = 0
 	}
 	s.minDecodeTPS = tps
+}
+
+// DefaultRoutingConcurrency is the built-in routing-scan semaphore capacity:
+// one scan per CPU (a scan is pure CPU under the registry read lock), floored
+// at 2 so a tiny container never serializes routing entirely. Exported so
+// main.go can log the effective default alongside the env override.
+func DefaultRoutingConcurrency() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// SetRoutingConcurrency replaces the routing-scan semaphore with one of the
+// given capacity (EIGENINFERENCE_ROUTING_CONCURRENCY). Values < 2 clamp to 2.
+// Call before serving starts — replacing the channel while scans are in
+// flight would strand slots.
+func (s *Server) SetRoutingConcurrency(n int) {
+	if n < 2 {
+		n = 2
+	}
+	s.routingScanSem = make(chan struct{}, n)
+}
+
+// scanSlotResult is the outcome of acquireRoutingScanSlot. Client
+// disconnection is distinguished from acquisition timeout so callers route a
+// vanished caller onto the existing client-gone terminal (cancelled outcome,
+// refund, no response body) and NEVER onto the routing_saturated 429 /
+// rejection-ledger path.
+type scanSlotResult int
+
+const (
+	scanSlotAcquired scanSlotResult = iota
+	scanSlotTimeout
+	scanSlotClientGone
+)
+
+// acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
+// the wait budget elapses, or done fires (client gone). On scanSlotTimeout the
+// caller sheds the attempt as capacity-shaped (errRoutingScanSaturated)
+// instead of piling another scan onto saturated CPUs; on scanSlotClientGone it
+// takes its ordinary client-gone path. A nil semaphore (a &Server{} built
+// directly in tests) admits immediately, preserving legacy behavior for bare
+// fixtures; a nil done channel never fires.
+func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) scanSlotResult {
+	if s.routingScanSem == nil {
+		return scanSlotAcquired
+	}
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	default:
+	}
+	clientGone := func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	if wait <= 0 {
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	case <-timer.C:
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	case <-done:
+		return scanSlotClientGone
+	}
+}
+
+// releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
+func (s *Server) releaseRoutingScanSlot() {
+	if s.routingScanSem == nil {
+		return
+	}
+	<-s.routingScanSem
 }
 
 // SetServabilityGate toggles the smart early-429 admission gate. See the
@@ -2749,6 +2876,10 @@ func (s *Server) routes() {
 	// enforce admin auth internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
+	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
+	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
 
@@ -3058,6 +3189,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3065,6 +3197,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			stampAuth(r, "admin", false)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -3072,9 +3205,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		authKind := "apikey_cache"
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
+			authKind = "apikey_db"
 			// Cache miss — resolve the key (with its per-key limits) in one
 			// query. A disabled/expired/unknown key returns an error and falls
 			// through to the provider-token path below.
@@ -3135,7 +3270,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// references, or logs.
 		accountID := keyRec.OwnerAccountID
 		ctx := r.Context()
+		authDBRead := authKind == "apikey_db"
 		if accountID != "" {
+			authDBRead = true
 			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
@@ -3145,6 +3282,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		stampAuth(r, authKind, authDBRead)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -3233,6 +3371,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		}
 		rl := getLimiter()
 		if rl == nil {
+			stampRateLimit(r)
 			next(w, r)
 			return
 		}
@@ -3269,6 +3408,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			return
 		}
 		setRequestRateLimitHeaders(w, rl.Stat(accountID))
+		stampRateLimit(r)
 		next(w, r)
 	}
 }
@@ -3344,6 +3484,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
+		// X-Request-ID above is echoed and logged but never persisted).
+		if s.profilerEnabled() {
+			meta := &requestMeta{coordID: reqID, start: start}
+			if r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = newRequestID()
+			}
+			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
+		}
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(sw, r)

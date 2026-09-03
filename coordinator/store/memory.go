@@ -11,6 +11,7 @@ package store
 // the PostgresStore, so lookup semantics match across backends.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -142,6 +143,13 @@ type MemoryStore struct {
 	// Rejected inbound inference requests (4xx/5xx) with servability snapshot.
 	inferenceRejections []RejectionRecord
 
+	// System profiler: per-attempt request profiles (write-once per
+	// request_id/attempt, mirroring the Postgres UNIQUE + DO NOTHING) and
+	// per-tick fleet snapshots. Both are append-only and capped by Prune.
+	requestProfiles    []RequestProfileRecord
+	requestProfileKeys map[string]struct{} // request_id/attempt -> present
+	fleetSnapshots     []FleetSnapshotRow
+
 	// Base rewards — per-epoch floor draws (idempotent on provider_key|epoch_id).
 	providerFloorDraws []ProviderFloorDraw
 	floorDrawSeq       int64
@@ -201,6 +209,9 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRouteIndex:           make(map[string]int),
 		inferenceRouteOutcomes:        make(map[string]InferenceRouteOutcome),
 		inferenceRejections:           make([]RejectionRecord, 0),
+		requestProfiles:               make([]RequestProfileRecord, 0),
+		requestProfileKeys:            make(map[string]struct{}),
+		fleetSnapshots:                make([]FleetSnapshotRow, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
 	}
@@ -263,6 +274,16 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	// it could let a re-settle double-credit.
 	if n := len(s.providerFloorDraws); n > maxEntries {
 		s.providerFloorDraws = append([]ProviderFloorDraw(nil), s.providerFloorDraws[n-maxEntries:]...)
+	}
+	// System profiler slices. The write-once key set is rebuilt from the kept
+	// rows so a pruned (request_id, attempt) can be written again later, as it
+	// can in Postgres after the retention DELETE.
+	if n := len(s.requestProfiles); n > maxEntries {
+		s.requestProfiles = append([]RequestProfileRecord(nil), s.requestProfiles[n-maxEntries:]...)
+		s.rebuildRequestProfileKeysLocked()
+	}
+	if n := len(s.fleetSnapshots); n > maxEntries {
+		s.fleetSnapshots = append([]FleetSnapshotRow(nil), s.fleetSnapshots[n-maxEntries:]...)
 	}
 	// Expired device codes can be dropped outright.
 	now := time.Now()
@@ -1025,6 +1046,167 @@ func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {
 		return []RejectionRecord{}
 	}
 	return out
+}
+
+// requestProfileKey is the write-once identity of a profile row, matching the
+// Postgres UNIQUE (request_id, attempt).
+func requestProfileKey(requestID string, attempt int) string {
+	return requestID + "/" + strconv.Itoa(attempt)
+}
+
+// rebuildRequestProfileKeysLocked recomputes the write-once key set from the
+// retained rows. Caller holds s.mu.
+func (s *MemoryStore) rebuildRequestProfileKeysLocked() {
+	s.requestProfileKeys = make(map[string]struct{}, len(s.requestProfiles))
+	for i := range s.requestProfiles {
+		r := &s.requestProfiles[i]
+		s.requestProfileKeys[requestProfileKey(r.RequestID, r.Attempt)] = struct{}{}
+	}
+}
+
+// RecordRequestProfiles appends one row per record, skipping any
+// (request_id, attempt) already present (ON CONFLICT DO NOTHING semantics).
+// RawMessage fields are cloned so the caller may reuse its buffers.
+func (s *MemoryStore) RecordRequestProfiles(records []*RequestProfileRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		key := requestProfileKey(record.RequestID, record.Attempt)
+		if _, dup := s.requestProfileKeys[key]; dup {
+			continue
+		}
+		rec := *record
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = now
+		}
+		rec.GateRejections = bytes.Clone(jsonbParam(rec.GateRejections))
+		rec.Candidates = bytes.Clone(jsonbParam(rec.Candidates))
+		rec.ProviderProfile = bytes.Clone(jsonbParam(rec.ProviderProfile))
+		s.requestProfiles = append(s.requestProfiles, rec)
+		s.requestProfileKeys[key] = struct{}{}
+	}
+	return nil
+}
+
+// RequestProfilesSince returns profiles created at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
+	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
+}
+
+// RequestProfilesSinceFiltered applies the filter before the read cap.
+func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]RequestProfileRecord, 0, len(s.requestProfiles))
+	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
+		r := s.requestProfiles[i]
+		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		if !filter.Matches(&r) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// RecordFleetSnapshots appends one sampler tick. RawMessage fields are cloned.
+func (s *MemoryStore) RecordFleetSnapshots(rows []FleetSnapshotRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range rows {
+		row := rows[i]
+		if row.SampledAt.IsZero() {
+			row.SampledAt = now
+		}
+		row.QueueDepthByModel = bytes.Clone(jsonbParam(row.QueueDepthByModel))
+		s.fleetSnapshots = append(s.fleetSnapshots, row)
+	}
+	return nil
+}
+
+// FleetSnapshotsSince returns snapshot rows sampled at or after since, newest
+// first (reverse insertion order), capped at maxTelemetryReadRows.
+func (s *MemoryStore) FleetSnapshotsSince(since time.Time) []FleetSnapshotRow {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]FleetSnapshotRow, 0, len(s.fleetSnapshots))
+	for i := len(s.fleetSnapshots) - 1; i >= 0; i-- {
+		r := s.fleetSnapshots[i]
+		if !since.IsZero() && r.SampledAt.Before(since) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= maxTelemetryReadRows {
+			break
+		}
+	}
+	return out
+}
+
+// PruneTelemetry drops profiles created before profilesBefore and snapshots
+// sampled before snapshotsBefore. There is no per-batch transaction in the
+// memory store, so batch is accepted for interface parity and ignored; ctx is
+// checked before each table. A zero cutoff prunes nothing for that table.
+func (s *MemoryStore) PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, _ int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	deleted := 0
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !profilesBefore.IsZero() {
+		kept := s.requestProfiles[:0:0]
+		for i := range s.requestProfiles {
+			if s.requestProfiles[i].CreatedAt.Before(profilesBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.requestProfiles[i])
+		}
+		if len(kept) != len(s.requestProfiles) {
+			s.requestProfiles = kept
+			s.rebuildRequestProfileKeysLocked()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return deleted, err
+	}
+	if !snapshotsBefore.IsZero() {
+		kept := s.fleetSnapshots[:0:0]
+		for i := range s.fleetSnapshots {
+			if s.fleetSnapshots[i].SampledAt.Before(snapshotsBefore) {
+				deleted++
+				continue
+			}
+			kept = append(kept, s.fleetSnapshots[i])
+		}
+		s.fleetSnapshots = kept
+	}
+	return deleted, nil
 }
 
 // addKeySpendLocked increments the per-key spend accumulator. Caller holds s.mu.

@@ -1,0 +1,259 @@
+{
+  "_comment": "Shared Go/Swift wire fixture for the system profiler (slice 2). Each top-level key (except this one) is one complete provider->coordinator frame. Offsets are microseconds from the provider's frame-receipt anchor and are monotonic; engine values are nanoseconds from engine enqueue. wall_ms is 2026-09-02T00:00:00.123Z. Go: coordinator/protocol/messages_inference_test.go, coordinator/api/profiler_provider_test.go. Swift: provider-swift/Tests/ProviderCoreTests via a relative path to this file.",
+  "inference_complete_full": {
+    "type": "inference_complete",
+    "request_id": "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",
+    "usage": {
+      "prompt_tokens": 812,
+      "completion_tokens": 147,
+      "reasoning_tokens": 0
+    },
+    "profile": {
+      "schema": 1,
+      "wall_ms": 1788307200123,
+      "dequeued_us": 120,
+      "decrypted_us": 480,
+      "parsed_us": 910,
+      "admission_us": 1450,
+      "accepted_sent_us": 1600,
+      "load_wait_start_us": 1700,
+      "load_wait_end_us": 1750,
+      "task_spawned_us": 1900,
+      "prompt_prep_start_us": 2100,
+      "prompt_prep_end_us": 38500,
+      "engine_submit_us": 39000,
+      "engine_admitted_us": 41200,
+      "first_delta_us": 412000,
+      "first_frame_us": 412600,
+      "last_delta_us": 3980000,
+      "terminal_built_us": 3981200,
+      "terminal_sent_us": 3981900,
+      "cancel_received_us": 3981500,
+      "cancel_aborted_us": 3981550,
+      "total_us": 3982400,
+      "tool_constraint_us": 850,
+      "vision_prep_us": 0,
+      "ssd_stage_us": 0,
+      "kv_reserve_us": 310,
+      "flush_us": 95,
+      "se_sign_us": 1200,
+      "slept_us": 0,
+      "projected_service_us": 3500000,
+      "budget_remaining_at_admit_us": 28500000,
+      "prompt_tokens": 812,
+      "frames_emitted": 147,
+      "running_at_admit": 2,
+      "waiting_at_admit": 0,
+      "queued_prefill_tokens_at_admit": 0,
+      "steps_at_submit": 15320,
+      "steps_at_finish": 15470,
+      "projected_prefill_tokens": 812,
+      "projected_decode_tokens": 256,
+      "partial_prefill_cap": 4096,
+      "tokens_after_cancel": 0,
+      "bytes_emitted": 18944,
+      "kv_bytes_in_use_at_admit": 1610612736,
+      "kv_bytes_capacity": 8589934592,
+      "mlx_active_bytes_at_finish": 17179869184,
+      "mlx_peak_bytes": 18253611008,
+      "usage_recovered": false,
+      "load_cold": false,
+      "load_parked": false,
+      "mtp_active": true,
+      "low_power_mode": false,
+      "deadline_mode": "projected",
+      "thermal_state": "nominal",
+      "cancel_stage": "post_terminal",
+      "engine": {
+        "admitted_ns": 2200000,
+        "kv_allocated_ns": 2650000,
+        "prefill_first_launch_ns": 3100000,
+        "prompt_computed_ns": 361000000,
+        "first_token_ns": 370800000,
+        "finished_ns": 3939000000,
+        "readmissions": 0,
+        "preemptions": 0,
+        "capacity_requeues": 0,
+        "prefill_chunks": 2,
+        "packed_prefill_chunks": 1,
+        "vision_chunks": 0,
+        "solo_stripe_chunks": 0,
+        "prefill_chunk_tokens_max": 512,
+        "decode_steps": 150,
+        "chained_decode_steps": 148,
+        "batch_rows_sum": 420,
+        "batch_rows_min": 2,
+        "batch_rows_max": 3,
+        "step_latency_ns_sum": 3560000000,
+        "step_latency_ns_max": 41000000,
+        "mtp_rounds": 150,
+        "mtp_proposed": 300,
+        "mtp_accepted": 96,
+        "paused_ns": 0,
+        "pause_count": 0,
+        "detok_delay_first_ns": 180000,
+        "prefix_lookup_ns": 95000,
+        "prefix_adoption_ns": 0,
+        "finish_reason": "stop"
+      }
+    }
+  },
+  "inference_complete_omitted": {
+    "type": "inference_complete",
+    "request_id": "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e10",
+    "usage": {
+      "prompt_tokens": 812,
+      "completion_tokens": 147
+    }
+  },
+  "inference_error_minimal": {
+    "type": "inference_error",
+    "request_id": "5d9e7a1c-3b2f-4e6d-8c0a-1f2e3d4c5b6a",
+    "error": "request rejected: provider capacity unavailable",
+    "status_code": 503,
+    "error_reason": "capacity_timeout",
+    "failure_code": "capacity",
+    "terminal_cause": "admission_timeout",
+    "profile": {
+      "schema": 1,
+      "wall_ms": 1788307200123,
+      "dequeued_us": 95,
+      "decrypted_us": 400,
+      "parsed_us": 800,
+      "admission_us": 1200,
+      "terminal_built_us": 30000100,
+      "terminal_sent_us": 30000400,
+      "total_us": 30000500,
+      "running_at_admit": 4,
+      "waiting_at_admit": 3,
+      "load_cold": false,
+      "deadline_mode": "projected",
+      "cancel_stage": "none"
+    }
+  },
+  "inference_error_omitted": {
+    "type": "inference_error",
+    "request_id": "5d9e7a1c-3b2f-4e6d-8c0a-1f2e3d4c5b6b",
+    "error": "request rejected: provider capacity unavailable",
+    "status_code": 503,
+    "error_reason": "capacity_timeout",
+    "failure_code": "capacity",
+    "terminal_cause": "admission_timeout"
+  },
+  "heartbeat_telemetry": {
+    "type": "heartbeat",
+    "status": "serving",
+    "active_model": "mlx-community/gemma-4-26b-it-qat-4bit",
+    "stats": {
+      "requests_served": 1523,
+      "tokens_generated": 4892310,
+      "cancellations_received": 41,
+      "cancellations_before_output": 12,
+      "cancellations_partial_complete": 29,
+      "generation_errors_after_output": 2,
+      "chunk_encryption_errors": 1,
+      "stream_closed_without_terminal": 1,
+      "cancel_during_model_load": 3,
+      "usage_gaps": 1,
+      "cancel_stage_pre_accept_total": 3,
+      "cancel_stage_pre_engine_total": 9,
+      "cancel_stage_prefill_total": 7,
+      "cancel_stage_decode_total": 20,
+      "cancel_stage_post_terminal_total": 2,
+      "tokens_after_cancel_total": 58,
+      "cancel_abort_ns_sum": 1284000000
+    },
+    "warm_models": [
+      "mlx-community/gemma-4-26b-it-qat-4bit"
+    ],
+    "system_metrics": {
+      "memory_pressure": 0.42,
+      "cpu_usage": 0.18,
+      "thermal_state": "nominal"
+    },
+    "backend_capacity": {
+      "slots": [
+        {
+          "model": "mlx-community/gemma-4-26b-it-qat-4bit",
+          "state": "running",
+          "num_running": 2,
+          "num_waiting": 1,
+          "max_concurrency": 4,
+          "active_tokens": 2310,
+          "max_tokens_potential": 6144,
+          "observed_decode_tps": 38.5,
+          "observed_prefill_tps": 1420.0,
+          "active_token_budget_used": 9216,
+          "active_token_budget_max": 32768,
+          "queued_token_budget": 0,
+          "kv_bytes_per_token": 262144,
+          "model_load_time_ms": 8420,
+          "kv_backend": "contiguous",
+          "steps_executed": 15470,
+          "admits": 1531,
+          "first_tokens_emitted": 1529,
+          "telemetry": {
+            "queued_prefill_tokens": 640,
+            "partial_prefill_rows": 1,
+            "prefill_tokens_total": 1237904,
+            "isolated_prefill_tps": 1655.2,
+            "ewma_initialized": true,
+            "pump_tasks": 2,
+            "mtp_rounds_total": 228900,
+            "mtp_proposed_total": 457800,
+            "mtp_accepted_total": 146496,
+            "kv_bytes_in_use": 2415919104,
+            "kv_bytes_capacity": 8589934592,
+            "eval_in_flight_ms": 12
+          }
+        }
+      ],
+      "gpu_memory_active_gb": 17.2,
+      "gpu_memory_peak_gb": 18.4,
+      "gpu_memory_cache_gb": 1.1,
+      "total_memory_gb": 64.0,
+      "free_for_load_gb": 31.5,
+      "telemetry": {
+        "low_power_mode": false,
+        "memory_pressure_level": "normal",
+        "mlx_num_resources": 412,
+        "in_admission": 1,
+        "inflight_tasks": 3
+      }
+    }
+  },
+  "heartbeat_omitted": {
+    "type": "heartbeat",
+    "status": "serving",
+    "active_model": "mlx-community/gemma-4-26b-it-qat-4bit",
+    "stats": {
+      "requests_served": 1523,
+      "tokens_generated": 4892310,
+      "cancellations_received": 41
+    },
+    "warm_models": [
+      "mlx-community/gemma-4-26b-it-qat-4bit"
+    ],
+    "system_metrics": {
+      "memory_pressure": 0.42,
+      "cpu_usage": 0.18,
+      "thermal_state": "nominal"
+    },
+    "backend_capacity": {
+      "slots": [
+        {
+          "model": "mlx-community/gemma-4-26b-it-qat-4bit",
+          "state": "running",
+          "num_running": 2,
+          "num_waiting": 1,
+          "active_tokens": 2310,
+          "max_tokens_potential": 6144
+        }
+      ],
+      "gpu_memory_active_gb": 17.2,
+      "gpu_memory_peak_gb": 18.4,
+      "gpu_memory_cache_gb": 1.1,
+      "total_memory_gb": 64.0
+    }
+  }
+}

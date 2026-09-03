@@ -204,6 +204,7 @@ func (s *Server) sealedTransport(next http.HandlerFunc) http.HandlerFunc {
 		r2.Header.Set("Content-Type", "application/json")
 		r2.Header.Del("Content-Length")
 
+		stampSealedOpen(r2, len(raw))
 		sw := newSealingResponseWriter(w, &coordPriv, &ephemPub, s.coordinatorKey.KID)
 		defer sw.finish()
 		next(sw, r2)

@@ -225,3 +225,61 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(abs(decoded.totalMemoryGb - 64) < 0.001)
     #expect(decoded.mlxCacheReclaimer == nil, "legacy payload has no reclaimer telemetry")
 }
+
+/// The allocation-time re-check runs after the load's own pending
+/// reservation is in the shared ledger; `availableMemoryGb()` nets that
+/// out, so the check must add it back or it double-counts the target. The
+/// 24 GB gpt-oss-20b tier is the regression: padded 13.5 + floor 3.5 +
+/// headroom 1.0 = 18.0 required; after reserving 13.5 the netted figure is
+/// ~4.6 — a raw comparison refuses every load on the tier this fix exists for.
+@Test func fitsAtAllocationAddsBackTheLoadsOwnReservation() {
+    let gib: UInt64 = 1024 * 1024 * 1024
+    let ownReservation = UInt64(13.5 * Double(gib))
+    let required = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 3.5 + 1.0)
+    // 18.1 free before the reservation → 4.6 netted: fits.
+    #expect(ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: 18.1 - 13.5, ownReservationBytes: ownReservation, requiredGb: required))
+    // The floor moved to 5.5 during admission (required 20.0): refused.
+    let raised = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 5.5 + 1.0)
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: 18.1 - 13.5, ownReservationBytes: ownReservation, requiredGb: raised))
+    // Raw comparison (no add-back) would have refused the fitting case — the bug.
+    #expect(18.1 - 13.5 < required)
+    // Non-finite inputs never admit.
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: .nan, ownReservationBytes: ownReservation, requiredGb: required))
+}
+
+/// With a separately staged MTP assistant retained, the pending reservation
+/// covers target + assistant, so the requirement at allocation must too:
+/// adding the whole reservation back against a target-only requirement
+/// would pass a box where the target fits but target + assistant no longer does.
+@Test func fitsAtAllocationRequirementCoversTheRetainedAssistant() {
+    let gib: UInt64 = 1024 * 1024 * 1024
+    let assistantGb = 0.5
+    let ownReservation = UInt64((13.5 + assistantGb) * Double(gib))
+    let targetOnly = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5, headroomGb: 4.5)  // 18.0
+    let withAssistant = ModelLoadAdmission.requiredToLoadGb(weightsGb: 13.5 + assistantGb, headroomGb: 4.5)  // 18.5
+    // 18.2 free before the reservation: the target alone fits, target + assistant does not.
+    let netted = 18.2 - (13.5 + assistantGb)
+    #expect(ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: netted, ownReservationBytes: ownReservation, requiredGb: targetOnly))
+    #expect(!ModelLoadAdmission.fitsAtAllocation(
+        availableNetOfLedgerGb: netted, ownReservationBytes: ownReservation, requiredGb: withAssistant))
+}
+
+/// Eviction feasibility: the #653 32 GB report — a request for a model the
+/// box cannot fit evicted the resident model it could serve, then failed
+/// anyway. Evicting must be refused up front when even every idle model's
+/// weights plus the buffer cache cannot reach the requirement.
+@Test func evictionCanReachRefusesHopelessEvictions() {
+    // 19.4 free, gemma needs 23.9, the only evictable slot holds 13.5 (gpt-oss)
+    // plus 0.5 of buffer cache: 19.4 + 14.0 = 33.4 ≥ 23.9 → eviction CAN reach.
+    #expect(ModelLoadAdmission.evictionCanReach(availableGb: 19.4, reclaimableGb: 14.0, requiredGb: 23.9))
+    // 6.2 free, evictable 13.5 + 0.5, need 23.9: 20.2 < 23.9 → refuse without evicting.
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: 6.2, reclaimableGb: 14.0, requiredGb: 23.9))
+    // Boundary is inclusive; negatives clamp; non-finite never admits.
+    #expect(ModelLoadAdmission.evictionCanReach(availableGb: 10.0, reclaimableGb: 8.0, requiredGb: 18.0))
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: -1.0, reclaimableGb: 8.0, requiredGb: 8.5))
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: .nan, reclaimableGb: 8.0, requiredGb: 1.0))
+}

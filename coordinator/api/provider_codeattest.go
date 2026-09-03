@@ -755,6 +755,6 @@ func (s *Server) handleCodeAttestationResponse(providerID string, provider *regi
 	// attested provider instead of waiting for the next heartbeat tick. Off the read
 	// loop so verification stays responsive.
 	saferun.Go(s.logger, "codeAttestDrain", func() {
-		s.registry.DrainQueuedRequestsForProvider(provider)
+		s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 	})
 }

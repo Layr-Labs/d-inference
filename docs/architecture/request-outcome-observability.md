@@ -87,6 +87,8 @@ This is metadata-only observability.
 | Provider messages | Store stable `error_class` and HTTP-like status code. Keep raw provider error text in operational logs only unless a scrubbed allowlist is added. |
 | Media | Store only booleans and counts such as `requires_vision`, `has_image`, `has_audio`, and request body byte size. Do not store image/audio bytes. |
 | Timing and billing | Timings, token counts, cost in micro-USD, refund/charge outcome, and provider model/version metadata are allowed. |
+| `request_profiles` (system profiler) | One row per dispatched attempt: coordinator-clock microsecond offsets, bounded counters, closed-enum outcomes, routing-decision context (session `provider_id`s only), and a validated provider-reported profile of numbers/booleans/closed enums. Never a serial, Secure Enclave key, account id, stable hardware identity, prompt-derived value, or client-supplied `X-Request-ID` (the persisted `coord_request_id` is always coordinator-minted). Retention 14 days; admin-key export only. See `docs/architecture/system-profiler.md`. |
+| `fleet_snapshots` (system profiler) | One row per (provider session, model slot) per 60 s plus one coordinator row: heartbeat capacity numbers, folded slot state and eligibility reason, cumulative provider counters, coordinator queue/sink depths. No identities beyond the session `provider_id` and catalog model id. Retention 30 days; admin-key export only. |
 
 ## Implementation Phases
 

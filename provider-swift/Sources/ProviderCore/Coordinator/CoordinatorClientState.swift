@@ -22,8 +22,46 @@ public final class AtomicProviderStats: Sendable {
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
+    // Profiler cancel-stage counters (slice 2). Bumped at the cancel sites
+    // from the request's `RequestProfileBuilder`; reported on the heartbeat
+    // as cumulative, delta-merged by the coordinator.
+    private let _cancelStagePreAcceptTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePreEngineTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePrefillTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStageDecodeTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePostTerminalTotal = ManagedAtomic<UInt64>(0)
+    private let _tokensAfterCancelTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelAbortNsSum = ManagedAtomic<UInt64>(0)
 
     public init() {}
+
+    public var cancelStagePreAcceptTotal: UInt64 { _cancelStagePreAcceptTotal.load() }
+    public var cancelStagePreEngineTotal: UInt64 { _cancelStagePreEngineTotal.load() }
+    public var cancelStagePrefillTotal: UInt64 { _cancelStagePrefillTotal.load() }
+    public var cancelStageDecodeTotal: UInt64 { _cancelStageDecodeTotal.load() }
+    public var cancelStagePostTerminalTotal: UInt64 { _cancelStagePostTerminalTotal.load() }
+    public var tokensAfterCancelTotal: UInt64 { _tokensAfterCancelTotal.load() }
+    public var cancelAbortNsSum: UInt64 { _cancelAbortNsSum.load() }
+
+    /// Bump the cumulative counter for the lifecycle stage a cancel landed in.
+    public func incrementCancelStage(_ stage: CancelStage) {
+        switch stage {
+        case .preAccept: _cancelStagePreAcceptTotal.add(1)
+        case .preEngine: _cancelStagePreEngineTotal.add(1)
+        case .prefill: _cancelStagePrefillTotal.add(1)
+        case .decode: _cancelStageDecodeTotal.add(1)
+        case .postTerminal: _cancelStagePostTerminalTotal.add(1)
+        case .none, .other: break
+        }
+    }
+
+    public func addTokensAfterCancel(_ count: UInt64) {
+        _tokensAfterCancelTotal.add(count)
+    }
+
+    public func addCancelAbortNs(_ ns: UInt64) {
+        _cancelAbortNsSum.add(ns)
+    }
 
     public var requestsServed: UInt64 {
         get { _requestsServed.load() }
@@ -126,7 +164,14 @@ public final class AtomicProviderStats: Sendable {
             chunkEncryptionErrors: chunkEncryptionErrors,
             streamClosedWithoutTerminal: streamClosedWithoutTerminal,
             cancelDuringModelLoad: cancelDuringModelLoad,
-            usageGaps: usageGaps
+            usageGaps: usageGaps,
+            cancelStagePreAcceptTotal: cancelStagePreAcceptTotal,
+            cancelStagePreEngineTotal: cancelStagePreEngineTotal,
+            cancelStagePrefillTotal: cancelStagePrefillTotal,
+            cancelStageDecodeTotal: cancelStageDecodeTotal,
+            cancelStagePostTerminalTotal: cancelStagePostTerminalTotal,
+            tokensAfterCancelTotal: tokensAfterCancelTotal,
+            cancelAbortNsSum: cancelAbortNsSum
         )
     }
 }

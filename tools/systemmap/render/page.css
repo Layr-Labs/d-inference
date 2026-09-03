@@ -1,0 +1,234 @@
+/* Explorer styles. Injected verbatim into page.html, so the published file stays
+   self-contained: no remote stylesheet, no build step. */
+:root {
+  --bg: #0b0d10; --panel: #12161b; --panel2: #171c22; --line: #232b34;
+  --fg: #e6edf3; --dim: #8b98a5; --accent: #6ea8fe; --r: #7ee2a8; --w: #ffb86b; --rw: #c4a6ff;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* Provenance palette: blue is a curated structural decision, amber is prose.
+     --barh is the height of whichever banner is showing; the graph is sized
+     against the viewport, so the stage gives that height back instead of pushing
+     the graph below the fold. Measured in JS, because the banners wrap. */
+  --pc: #6ea8fe; --pp: #ffb86b; --barh: 0px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+header { padding: 12px 24px 10px; border-bottom: 1px solid var(--line); }
+h1 { margin: 0 0 4px; font-size: 19px; letter-spacing: -0.01em; }
+.sub { color: var(--dim); font-size: 12.5px; }
+.sub b { color: var(--fg); font-weight: 600; }
+.wrap { padding: 0 24px 64px; max-width: 1500px; margin: 0 auto; }
+/* The stage is the graph's own full-width region, sized so the graph fills what is
+   left of the viewport under the header and the filters. */
+.stage { padding: 0 24px 8px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  position: sticky; top: 0; z-index: 5; background: var(--bg);
+  padding: 10px 0; border-bottom: 1px solid var(--line); }
+.gnote { margin-top: 8px; }
+input, select, button { background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 13px; }
+input[type=search] { min-width: 240px; }
+button { cursor: pointer; }
+button:hover, .chip:hover { border-color: var(--accent); }
+.count { color: var(--dim); margin-left: auto; font-size: 12.5px; }
+section { margin-top: 26px; }
+h2 { font-size: 15px; margin: 0 0 4px; }
+h2 .hint { color: var(--dim); font-weight: 400; font-size: 12.5px; margin-left: 8px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 12px; }
+.col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.col h3 { margin: 0 0 2px; font-size: 13px; }
+.col p { margin: 0 0 10px; color: var(--dim); font-size: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; margin: 0 4px 6px 0;
+  font-size: 12px; cursor: pointer; }
+.chip.on { border-color: var(--accent); background: #1b2635; }
+.chip.off { opacity: .35; }
+.badge { font-family: var(--mono); font-size: 10.5px; border-radius: 4px; padding: 0 4px; }
+.m-R { background: #16351f; color: var(--r); } .m-W { background: #3a2a13; color: var(--w); }
+.m-RW { background: #2c2340; color: var(--rw); } .m-\? { background: #23262b; color: var(--dim); }
+
+/* ---------------------------------------------------------------------------
+   Provenance. Three ways to read the page, selected in the toolbar:
+
+     all     — every fact, nothing marked (the default)
+     code    — only what the compiler derived; every curated word is withheld,
+               which is what makes "the overlay is additive" checkable: the
+               graph is identical and only words disappear
+     overlay — every fact, with each curated layer marked where it appears
+
+   Under `overlay`, `p-c` is a curated structural decision (it moves an edge, and
+   the drift gates check it against source in both directions), `p-p` is prose (it
+   changes nothing the graph draws, and only its presence is checked, never its
+   truth), and `p-x` is prose no gate touches at all.
+   --------------------------------------------------------------------------- */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 6px 10px; background: var(--panel2);
+  color: var(--dim); font-size: 12.5px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: #1b2635; color: var(--fg); }
+.seg button.on[data-view=code] { box-shadow: inset 0 -2px 0 var(--accent); }
+.seg button.on[data-view=overlay] { box-shadow: inset 0 -2px 0 var(--pp); }
+.bar { display: none; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 8px;
+  padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  font-size: 12px; color: var(--dim); }
+body.v-overlay #provbar, body.v-code #codebar { display: flex; }
+.bar .pk { display: inline-flex; align-items: center; gap: 6px; }
+.bar .sw { width: 10px; height: 10px; border-radius: 3px; border: 1px solid var(--line); }
+.bar b { color: var(--fg); font-weight: 600; }
+.provonly { display: none; }
+body.v-overlay .provonly { display: inline; }
+body.v-overlay .p-c, body.v-overlay .p-p, body.v-overlay .p-x { border-radius: 3px;
+  padding-left: 5px; box-shadow: inset 2px 0 0 var(--line); }
+body.v-overlay .p-c { background: rgba(110, 168, 254, .11); box-shadow: inset 2px 0 0 var(--pc); }
+body.v-overlay .p-p { background: rgba(255, 184, 107, .11); box-shadow: inset 2px 0 0 var(--pp); }
+body.v-overlay .p-x { background: rgba(255, 184, 107, .11); box-shadow: none;
+  outline: 1px dashed var(--pp); outline-offset: 1px; }
+/* Inline marks sit inside a sentence or a chip, where a left rule would break the
+   line box, so they tint only. */
+body.v-overlay .p-c.pin, body.v-overlay .p-p.pin { padding: 0 3px; box-shadow: none; }
+/* Sections that exist only to hold prose are withheld whole in the code view,
+   rather than rendered empty. */
+body.v-code .prose-section { display: none; }
+.withheld { color: var(--dim); font-style: italic; }
+
+/* ---------------------------------------------------------------------------
+   Knowledge graph. Sized to the viewport by default, expandable to the whole
+   screen; 460px is the floor at which the nested boundaries are still legible.
+   200px is what the header, the filter bar, the cluster key and the caption take.
+   --------------------------------------------------------------------------- */
+.graph { position: relative; height: calc(100vh - 200px - var(--barh)); min-height: 420px;
+  margin-top: 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; overflow: hidden; }
+.graph:fullscreen, .graph:-webkit-full-screen { height: 100%; width: 100%; margin: 0;
+  border: 0; border-radius: 0; }
+.graph::backdrop { background: var(--bg); }
+.graph svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.graph svg.drag { cursor: grabbing; }
+.hull { stroke-width: 1.5; }
+.hull.k-service { stroke-dasharray: none; }
+.hull.k-datastore { stroke-dasharray: 7 4; }
+.hull.k-external { stroke-dasharray: 2 5; }
+/* Every label lives in an unscaled layer above the scene, so text keeps one size
+   at every zoom and can be dropped when it would collide. */
+.hull-label { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; pointer-events: none; }
+.hull-sub { font-size: 10px; fill: var(--dim); pointer-events: none; }
+.hull-g { stroke-width: 1; fill-opacity: .05; stroke-opacity: .4; stroke-dasharray: 3 4;
+  pointer-events: none; }
+.hull-glabel { font-size: 10px; font-weight: 600; letter-spacing: .02em; opacity: .75;
+  pointer-events: none; }
+/* Under the overlay view the boundary names are underlined, because the ring is a
+   person's grouping of nodes the compiler found. */
+svg.prov .hull-label, svg.prov .hull-glabel {
+  text-decoration: underline 1px dotted; text-underline-offset: 3px; }
+svg.prov .hull-sub { fill: var(--pp); }
+.glink { stroke-width: 1; opacity: .22; }
+.glink.hi { stroke-width: 2.2; opacity: .95; }
+.glink.mute { opacity: .04; }
+.glink.shade { opacity: .015; }
+.gnode { cursor: pointer; }
+.gnode circle { stroke: #0b0d10; stroke-width: 1.5; }
+.gnode.unreached { opacity: .6; }
+.gnode.unreached circle { stroke-dasharray: 2 2; stroke: var(--dim); }
+.gnode.ep rect { stroke: #0b0d10; stroke-width: 1.2; }
+.gnode.hi circle, .gnode.hi rect { stroke: #fff; stroke-width: 2; }
+.gnode.sel circle, .gnode.sel rect { stroke: var(--accent); stroke-width: 2.5; }
+.gnode.mute { opacity: .12; }
+/* A click focuses one node: everything off its edges is shadowed, so the picture
+   answers "what does this actually touch" instead of "what exists". */
+.gnode.shade { opacity: .07; }
+.glabel { font-size: 11px; fill: var(--fg); pointer-events: none; paint-order: stroke;
+  stroke: #0b0d10; stroke-width: 3px; stroke-linejoin: round; }
+.glabel.ep { font-size: 10px; font-weight: 500; fill: #cfe0f5; }
+.glabel.pri { font-weight: 700; fill: #fff; }
+.ginfo { position: absolute; top: 10px; right: 10px; width: 300px; max-height: calc(100% - 20px);
+  overflow: auto; background: rgba(11,13,16,.94); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+/* A hover is a preview; a click pins a panel wide enough to hold the prose that
+   explains what the thing is. */
+.ginfo.pinned { width: 400px; max-width: calc(100% - 20px); border-color: var(--accent); }
+.ginfo h4 { margin: 0 0 2px; font-size: 13px; }
+.ginfo h5 { margin: 10px 0 2px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--dim); font-weight: 600; }
+.ginfo .k { color: var(--dim); }
+.ginfo ul { margin: 6px 0 0; padding-left: 16px; color: var(--dim); }
+.ginfo dl { margin: 4px 0 0; }
+.ginfo dt { color: var(--dim); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .04em; margin-top: 6px; }
+.ginfo dd { margin: 0; }
+.ginfo .row { display: flex; align-items: baseline; gap: 6px; }
+.ginfo .row h4 { flex: 1; }
+.ginfo .x { padding: 0 6px; background: transparent; line-height: 1.4; }
+.ginfo .lk { cursor: pointer; text-decoration: underline dotted; }
+.ident { font-size: 10.5px; border-radius: 4px; padding: 1px 5px; border: 1px solid var(--line);
+  color: var(--dim); }
+.ident.i-sql { border-color: #2f5d3f; color: var(--r); }
+.ident.i-literal { border-color: #3d4f6b; color: var(--accent); }
+.ident.i-symbol { border-color: #5c452a; color: var(--pp); }
+.ident.i-declared { border-style: dashed; }
+.gbar { position: absolute; bottom: 10px; left: 10px; display: flex; gap: 6px; }
+.gbar button { padding: 3px 9px; background: rgba(11,13,16,.92); }
+.gfocus { position: absolute; bottom: 10px; right: 10px; display: none; gap: 6px;
+  align-items: center; background: rgba(11,13,16,.92); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+body.focused .gfocus { display: flex; }
+
+/* Table definition drawer — inside the graph so it survives full screen. A table
+   with 79 columns is the reason it can be widened rather than only scrolled. */
+.gschema { position: absolute; top: 10px; left: 10px; width: 560px; max-width: calc(100% - 20px);
+  max-height: calc(100% - 60px); overflow: auto; background: rgba(11,13,16,.97);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+.gschema.wide { width: calc(100% - 20px); max-height: calc(100% - 20px); }
+.gschema[hidden] { display: none; }
+.gs-head { display: flex; align-items: baseline; gap: 8px; position: sticky; top: -10px;
+  background: rgba(11,13,16,.97); padding: 2px 0 6px; z-index: 2; }
+.gs-head h4 { margin: 0; flex: 1; font-family: var(--mono); font-size: 13px; }
+.gs-head button { padding: 0 7px; background: transparent; line-height: 1.5; }
+.gschema table { margin-top: 8px; }
+.gschema thead th { position: sticky; top: 26px; background: var(--panel); z-index: 1; }
+.gschema th { padding: 4px 6px; font-size: 10px; }
+.gschema td { padding: 4px 6px; font-size: 11.5px; }
+.gs-mig { background: #3a2a13; color: var(--w); margin-left: 5px; }
+.gschema details { margin-top: 8px; }
+.gschema summary { cursor: pointer; color: var(--dim); font-size: 11.5px; }
+.gschema pre { margin: 6px 0 0; padding: 8px 9px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 6px; overflow: auto;
+  font-family: var(--mono); font-size: 11px; line-height: 1.45; }
+.gs-reach { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.gkey { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.gkey .ck { display: inline-flex; align-items: center; gap: 7px; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+.gkey .ck:hover { border-color: var(--accent); }
+.gkey .sw { width: 10px; height: 10px; border-radius: 3px; }
+.gkey .ck small { color: var(--dim); }
+
+table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--dim); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr.ep { cursor: pointer; }
+tr.ep:hover td { background: var(--panel); }
+tr.ep.sel td { background: #16202c; }
+.method { font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.GET { color: var(--r); } .POST { color: var(--w); } .DELETE { color: #ff8f8f; }
+.PATCH, .PUT { color: var(--rw); } .ANY { color: var(--dim); }
+.path { font-family: var(--mono); }
+.desc { color: var(--dim); font-size: 12.5px; }
+.deps .chip { margin: 0 4px 4px 0; }
+.detail { background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--accent);
+  border-radius: 8px; padding: 12px 14px; margin: 4px 0 10px; }
+.detail dl { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; margin: 8px 0 0; }
+.detail dt { color: var(--dim); font-size: 12px; }
+.detail dd { margin: 0; font-size: 12.5px; }
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; }
+.legend > div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; }
+.legend dl { display: grid; grid-template-columns: 108px 1fr; gap: 2px 10px; margin: 6px 0 0;
+  font-size: 12px; }
+.legend dt { color: var(--dim); }
+.legend dd { margin: 0; }
+.legend .kind { color: var(--dim); font-size: 11.5px; }
+.empty { color: var(--dim); padding: 14px 8px; }
+footer { color: var(--dim); font-size: 12px; padding: 20px 24px 40px; border-top: 1px solid var(--line); }

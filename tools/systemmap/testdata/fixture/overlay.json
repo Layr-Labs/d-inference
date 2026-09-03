@@ -1,0 +1,124 @@
+{
+  "service": {
+    "id": "svcfix",
+    "title": "Fixture service",
+    "language": "go",
+    "root": ".",
+    "routeTable": {
+      "package": "api",
+      "type": "Server",
+      "method": "routes",
+      "mux": "mux"
+    }
+  },
+  "repo": {
+    "remote": "https://example.invalid/fixture"
+  },
+  "clusters": {
+    "svcfix": { "title": "Fixture process", "kind": "service", "color": "#4f5f8f" },
+    "db": { "title": "Postgres", "kind": "datastore", "color": "#2f6f4f" },
+    "outside": { "title": "Third parties", "kind": "external", "color": "#8f5f2f" }
+  },
+  "categories": {
+    "pg": { "title": "Postgres", "color": "#2f6f4f", "desc": "Tables the fixture queries.", "cluster": "db" },
+    "mem": { "title": "In-memory", "color": "#4f5f8f", "desc": "Server-held state.", "cluster": "svcfix" },
+    "ext": { "title": "External", "color": "#8f5f2f", "desc": "Outbound surfaces.", "cluster": "outside" }
+  },
+  "categoryDocs": {
+    "pg": { "summary": "Durable state." }
+  },
+  "labels": {
+    "mem.cache": "Rendered model/alias response cache",
+    "mem.aliases": "Model alias table",
+    "mem.admins": "Admin allowlist",
+    "mem.inflight": "Outbound request in-flight counter",
+    "mem.flight": "Coalescing alias-answer cache",
+    "ext.icons": "Icon CDN",
+    "ext.opaque": "Caller-supplied callback URL"
+  },
+  "depDocs": {
+    "mem.cache": { "summary": "Filled on miss, keyed by request path." },
+    "mem.aliases": { "summary": "Alias to canonical model name." },
+    "mem.admins": { "summary": "Emails allowed through the admin gate." },
+    "mem.inflight": { "summary": "Mutex-guarded count of outbound fetches." },
+    "mem.flight": { "summary": "One answer per alias, filled by the first caller." },
+    "ext.icons": { "summary": "Icon CDN named by a package constant." },
+    "ext.opaque": { "summary": "Whatever URL the caller supplied." },
+    "pg.models": { "summary": "Model rows." },
+    "pg.usage": { "summary": "Usage rows." }
+  },
+  "cacheSemantics": {
+    "mem.cache": { "ttl": "none", "invalidation": "overwritten on fill" }
+  },
+  "roles": [{ "id": "consumer", "title": "Consumer" }],
+  "credentials": [{ "id": "bearer", "title": "Bearer token" }],
+  "namespaces": [
+    { "prefix": "/v1/admin", "namespace": "Admin" },
+    { "prefix": "/v1", "namespace": "Public" },
+    { "prefix": "/legacy", "namespace": "Legacy" }
+  ],
+  "authRules": [
+    {
+      "middleware": ["withAuth"],
+      "anyGate": ["isAdmin"],
+      "auth": "Admin",
+      "detail": "Bearer middleware plus an in-handler admin check."
+    },
+    {
+      "middleware": ["withAuth"],
+      "auth": "Bearer",
+      "detail": "Authorization header required by middleware."
+    },
+    { "auth": "Public", "detail": "No authorization." }
+  ],
+  "gates": ["isAdmin"],
+  "gateDepth": 2,
+  "routes": {
+    "GET /v1/models": {
+      "description": "Lists the models, filling the response cache and resolving aliases.",
+      "callers": ["console"]
+    },
+    "GET /v1/aliases": { "description": "Resolves one model alias." },
+    "POST /v1/usage": { "description": "Records usage and notifies the caller's callback." },
+    "GET /v1/admin/stats": { "description": "Reports the age of a usage row." },
+    "ANY /legacy/": { "description": "Retired surface; answers 410 from the cache." }
+  },
+  "deps": {
+    "analyze": ["./..."],
+    "traverse": ["api", "store", "fetch", "flight"],
+    "inherit": [],
+    "preferImpl": ["Postgres"],
+    "sqlDriver": {
+      "package": "database/sql",
+      "methods": ["QueryContext", "QueryRowContext", "ExecContext"]
+    },
+    "strict": ["api:Server"],
+    "fields": {
+      "api:Server.mux": "@skip",
+      "api:Server.store": "@sql",
+      "api:Server.fetcher": "@skip",
+      "api:Server.cache": "mem.cache",
+      "api:Server.aliases": "mem.aliases",
+      "api:Server.admins": "mem.admins",
+      "api:Server.flights": "mem.flight",
+      "fetch:Client.mu": "mem.inflight",
+      "fetch:Client.inflight": "mem.inflight"
+    },
+    "functions": {
+      "fetch:Client.FetchOpaque": "ext.opaque"
+    },
+    "packageDefault": {
+      "store": "@sql",
+      "fetch": "@skip",
+      "flight": "@skip"
+    },
+    "types": {
+      "flight:Cache": "mem.flight"
+    },
+    "hosts": {
+      "icons.fixture.test": "ext.icons"
+    },
+    "endpoints": {},
+    "messages": {}
+  }
+}

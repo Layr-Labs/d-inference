@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Darkbloom system map</title>
+<style>{{.PageCSS}}</style>
+</head>
+<body>
+<header>
+  <h1>Darkbloom system map</h1>
+  <div class="sub">
+    <b>{{.Routes}}</b> entry points · <b>{{.Nodes}}</b> dependencies · <b>{{.Edges}}</b> associations ·
+    revision <code>{{.ShortRev}}</code> · overlay {{.Drift}}
+  </div>
+</header>
+
+<!-- The graph is the map. It gets the viewport by default, and the whole screen on
+     demand; the inventory tables that explain it scroll underneath. -->
+<div class="stage">
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="Search path, handler, dependency, prose…" autocomplete="off">
+    <select id="ns"><option value="">All namespaces</option></select>
+    <select id="auth"><option value="">All auth classes</option></select>
+    <select id="dep"></select>
+    <select id="mode">
+      <option value="">Any access mode</option>
+      <option value="R">Reads only</option>
+      <option value="W">Writes only</option>
+      <option value="RW">Read + write</option>
+    </select>
+    <!-- The ontological axis: who named each node. Reaching a node is derived; the
+         name it is reached by is not always, and this is where you see which. -->
+    <select id="ont" title="Filter dependencies by where their identity comes from.">
+      <option value="">Any identity</option>
+      <option value="source">Named by source (CREATE TABLE)</option>
+      <option value="literal">Curated name on a source literal</option>
+      <option value="symbol">Curated name on a Go symbol</option>
+      <option value="unreached">Declared but never reached</option>
+    </select>
+    <button id="reset">Reset</button>
+    <!-- Not a filter on the system: a statement about who wrote the page. -->
+    <div class="seg" role="group" aria-label="Provenance view">
+      <button data-view="all" title="Every fact, nothing marked.">All</button>
+      <button data-view="code" title="Only what the compiler derived, plus the curated identifiers the drift gates prove against source. Every unverifiable word is withheld.">Code only</button>
+      <button data-view="overlay" title="Every fact, with each curated layer marked where it appears.">Overlay marked</button>
+    </div>
+    <span class="count" id="count"></span>
+  </div>
+
+  <!-- Code-only view. Subtractive by construction: the graph is untouched and the
+       fingerprint in the caption proves it, so what disappears is exactly the half
+       a language model can write and no gate can contradict. -->
+  <div class="bar" id="codebar">
+    <span class="pk"><b>Code only.</b> Every node, edge, access mode, citation and table
+      definition below is type-checked out of source by <code>go/packages</code>, and the
+      curated identifiers that remain — node ids, namespaces, auth classes — are the ones the
+      drift gates prove against source in both directions.</span>
+    <span class="pk">Withheld: <b id="withheld"></b>, plus every category blurb and caller
+      list. None of it can move an edge — the drawn topology is the same fingerprint the other
+      two views show.</span>
+  </div>
+  <!-- Overlay-marked view. A lens, not a filter: it hides nothing and selects
+       nothing, it colours the page by who is responsible for each fact. -->
+  <div class="bar" id="provbar">
+    <span class="pk"><span class="sw" style="background:transparent"></span>
+      unmarked = <b>derived</b> — type-checked from source: routes, middleware, gates,
+      reached state, access modes, citations, table definitions</span>
+    <span class="pk"><span class="sw" style="background:rgba(110,168,254,.5); border-color:#6ea8fe"></span>
+      <b>curated structure</b> — a person decided it and it moves an edge; drift gates check it
+      against source both ways</span>
+    <span class="pk"><span class="sw" style="background:rgba(255,184,107,.5); border-color:#ffb86b"></span>
+      <b>prose</b> — synthesizable enrichment; only its presence is checked, never its truth,
+      so it can be stale while the build stays green</span>
+    <span class="pk"><span class="sw" style="background:transparent; border:1px dashed #ffb86b"></span>
+      <b>unchecked prose</b> — passed through to the page with no gate at all</span>
+    <span class="pk">in the graph, every node and every edge is derived; the
+      <b>underlined boundary names</b> are the curated indirection that decides which
+      ring a node falls inside</span>
+  </div>
+
+  <div class="graph" id="graph">
+    <svg id="gsvg" role="img" aria-label="Darkbloom system knowledge graph">
+      <g id="scene">
+        <g id="hulls"></g>
+        <g id="glinks" fill="none"></g>
+        <g id="gnodes"></g>
+      </g>
+      <!-- Outside the scene on purpose: text that scales with the zoom collides the
+           same way at every zoom, which is what buried the picture under its own
+           names. Everything in here is positioned per frame in screen space and
+           dropped when it would overlap. -->
+      <g id="glabels"></g>
+    </svg>
+    <div class="ginfo" id="ginfo"></div>
+    <div class="gschema" id="gschema" hidden></div>
+    <div class="gbar">
+      <button data-z="in" title="Zoom in">+</button>
+      <button data-z="out" title="Zoom out">−</button>
+      <button data-z="fit" title="Fit the whole graph">Fit</button>
+      <button data-z="full" id="gfull" title="Expand the graph to the whole screen">Full screen</button>
+    </div>
+    <div class="gfocus">
+      <span class="mono" id="gfocusname"></span>
+      <span id="gfocuscount"></span>
+      <button id="gfocusclear" title="Show the whole system again (Esc)">Clear focus</button>
+    </div>
+  </div>
+  <div class="gkey" id="gkey"></div>
+  <div class="sub gnote">
+    Squares are endpoints, circles are dependencies · inner boundaries are namespaces and
+    dependency categories, outer boundaries are processes and stores · drag to move · scroll to
+    zoom · <b>click a node to shadow everything it does not touch</b> and pin its detail ·
+    click a Postgres table for its derived definition · Esc or the canvas clears the focus ·
+    drawn topology <code id="topo"></code> (nodes, edges, modes and boundaries, no prose — it
+    does not move when the provenance view does).
+  </div>
+</div>
+
+<div class="wrap">
+  <section>
+    <h2>Provenance</h2>
+    <div class="sub">
+      Extracted services:{{range .Graph.Services}} <b>{{.Title}}</b> ({{.Language}},
+      <code>{{.Root}}/</code>, {{.Routes}} entry points){{end}}. The Swift provider and the
+      Next.js consoles are not extracted yet; each lands as another cluster in the same graph.
+    </div>
+    <div class="sub" style="margin-top:6px">
+      Derived from source by <code>{{.Graph.Generator.Tool}}</code>: {{.Graph.Generator.Derived}}.
+      Curated in <code>{{.Graph.Generator.Overlay}}</code>: {{.Graph.Generator.Curated}}.
+    </div>
+    <div class="sub" style="margin-top:6px">
+      The curated half is itself two layers, and the view control above separates them.
+      <b>Structural</b> curation — node identity, cluster and group membership, namespaces,
+      auth-class names — decides what the graph <i>is</i>: a wrong entry moves an edge, so every
+      one of them is checked against source in both directions and cannot go stale.
+      <b>Prose</b> — endpoint descriptions, node documentation, callers, actors and credentials —
+      decides only whether a reader can follow the picture: it is presence-checked, never
+      verified, and is the half a language model can write. <b>Code only</b> withholds exactly
+      that half and leaves the graph untouched, which is the claim being made checkable rather
+      than asserted; <b>Overlay marked</b> shows both halves and colours them in place.
+    </div>
+  </section>
+
+  <section>
+    <h2>System boundaries <span class="hint">click a dependency to filter the endpoints that reach it</span></h2>
+    <div class="cols" id="boundaries"></div>
+  </section>
+
+  <section>
+    <h2>Endpoints <span class="hint">click a row for middleware, gates, citations and source links</span></h2>
+    <table id="routes">
+      <thead><tr>
+        <th style="width:52px">Method</th><th>Path</th><th style="width:150px">Namespace</th>
+        <th style="width:160px">Auth</th><th>Dependencies</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="noroutes" hidden>No endpoint matches these filters.</div>
+  </section>
+
+  <section>
+    <h2>Namespace → dependency associations <span class="hint">mode and citations are derived from reachable code</span></h2>
+    <table id="edges">
+      <thead><tr>
+        <th style="width:150px">Namespace</th><th style="width:210px">Dependency</th>
+        <th style="width:44px">Mode</th><th>Evidence</th><th style="width:70px">Routes</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Access modes</h2>
+    <div class="legend" id="modes"></div>
+  </section>
+
+  <section class="prose-section">
+    <h2>Actors <span class="hint provonly">prose, and the generator has no gate for it —
+      source cannot contradict these words</span></h2>
+    <div class="legend" id="roles"></div>
+  </section>
+
+  <section class="prose-section">
+    <h2>Credentials <span class="hint provonly">prose, and the generator has no gate for it —
+      source cannot contradict these words</span></h2>
+    <div class="legend" id="creds"></div>
+  </section>
+</div>
+
+<footer>
+  Generated from revision <code>{{.Revision}}</code>. Regenerate with
+  <code>make -C tools/systemmap</code>; verify with <code>make -C tools/systemmap check</code>.
+  The machine-readable graph is embedded in this page and written beside it as
+  <code>inventory.json</code>; neither file is committed.
+</footer>
+
+<script type="application/json" id="inventory">{{.Inventory}}</script>
+<script>{{.PageJS}}</script>
+</body>
+</html>

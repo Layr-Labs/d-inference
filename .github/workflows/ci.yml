@@ -56,6 +56,42 @@ jobs:
             exit 1
           fi
 
+  system-map:
+    name: System Map
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Extractor tests
+        # systemmap is its own Go module, so the coordinator's `go test ./...`
+        # does not reach it.
+        run: make -C tools/systemmap test
+      - name: Build the map
+        # The map is generated, never committed, so there is nothing to diff
+        # against: this fails when a route, a piece of coordinator state, a table
+        # or a host exists that the curated overlay does not explain. The
+        # revision is the PR head rather than the merge commit, so every citation
+        # in the artifact links to a commit a reviewer can open.
+        run: |
+          make -C tools/systemmap \
+            ARGS="-revision ${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Upload the map
+        # Downloadable from the job summary: system-map.html is self-contained, so
+        # a reviewer can open it locally without building anything. Uploaded even
+        # when the step above failed, because a drift failure still writes
+        # report.md — that file is the explanation of the failure.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: system-map
+          path: |
+            docs/reference/api-map/system-map.html
+            docs/reference/api-map/inventory.json
+            docs/reference/api-map/report.md
+          if-no-files-found: warn
+
   lint-coordinator:
     name: Coordinator Lint
     runs-on: blacksmith-4vcpu-ubuntu-2404

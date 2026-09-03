@@ -92,3 +92,9 @@ docs/RUNBOOK.md
 
 # also match a .build symlink (not just the dir)
 .build
+
+# Generated system map (tools/systemmap). CI builds it per PR and publishes it to
+# Pages from master; only the curated overlay and README are committed.
+docs/reference/api-map/system-map.html
+docs/reference/api-map/inventory.json
+docs/reference/api-map/report.md

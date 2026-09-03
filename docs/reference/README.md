@@ -8,6 +8,7 @@ Dry reference material for Darkbloom's public interfaces, wire protocols, schema
 |---|---|
 | [api-contracts.md](api-contracts.md) | OpenAI-compatible HTTP endpoints, auth, headers, errors |
 | [protocol-messages.md](protocol-messages.md) | WebSocket message types between coordinator and provider |
+| [api-map/](api-map/README.md) | Generated Darkbloom system map: clustered knowledge graph, per-route auth, state reached, R/W mode, citations |
 
 ## Schemas and formats
 

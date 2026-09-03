@@ -1100,6 +1100,11 @@ func (s *MemoryStore) RecordRequestProfiles(records []*RequestProfileRecord) err
 // RequestProfilesSince returns profiles created at or after since, newest
 // first (reverse insertion order), capped at maxTelemetryReadRows.
 func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
+	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
+}
+
+// RequestProfilesSinceFiltered applies the filter before the read cap.
+func (s *MemoryStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1107,6 +1112,9 @@ func (s *MemoryStore) RequestProfilesSince(since time.Time) []RequestProfileReco
 	for i := len(s.requestProfiles) - 1; i >= 0; i-- {
 		r := s.requestProfiles[i]
 		if !since.IsZero() && r.CreatedAt.Before(since) {
+			continue
+		}
+		if !filter.Matches(&r) {
 			continue
 		}
 		out = append(out, r)

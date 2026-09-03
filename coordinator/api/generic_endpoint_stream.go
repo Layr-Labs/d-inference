@@ -172,8 +172,9 @@ func (e *completionsStreamEmitter) finish(usage protocol.UsageInfo) {
 	}
 	addResponseProof(event, e.pr)
 	e.emit(event)
-	fmt.Fprint(e.w, "data: [DONE]\n\n")
+	n, werr := fmt.Fprint(e.w, "data: [DONE]\n\n")
 	e.flusher.Flush()
+	e.stamps.wrote(n, werr)
 	e.stamps.done()
 }
 
@@ -186,11 +187,9 @@ func (e *completionsStreamEmitter) emit(value any) {
 	if err != nil {
 		return
 	}
-	if _, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded); werr != nil {
-		e.stamps.writeErr()
-	}
+	n, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded)
 	e.flusher.Flush()
-	e.stamps.flushed(len(encoded))
+	e.stamps.wrote(n, werr)
 }
 
 type messagesStreamEmitter struct {
@@ -344,9 +343,7 @@ func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
 	if err != nil {
 		return
 	}
-	if _, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded); werr != nil {
-		e.stamps.writeErr()
-	}
+	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
 	e.flusher.Flush()
-	e.stamps.flushed(len(encoded))
+	e.stamps.wrote(n, werr)
 }

@@ -202,7 +202,7 @@ func newRelayStamps(rp *registry.RequestProfile) *relayStamps {
 
 // flushed records one chunk written + flushed to the client.
 func (r *relayStamps) flushed(bytes int) {
-	if r == nil || r.rp == nil {
+	if r == nil || r.rp == nil || bytes <= 0 {
 		return
 	}
 	now := time.Now()
@@ -225,7 +225,27 @@ func (r *relayStamps) done() {
 		return
 	}
 	r.rp.Stamp(&r.rp.LastFlushUS)
+	// A stream whose write failed never completed its egress: leave
+	// done_flushed_us absent so the row does not claim a terminal flush.
+	if r.rp.ClientWriteErr.Load() {
+		return
+	}
 	r.rp.Stamp(&r.rp.DoneFlushedUS)
+}
+
+// wrote records the outcome of one client write: only bytes the ResponseWriter
+// accepted count as flushed, and a failed or short write marks client_write_err
+// so the record never claims output the client did not receive.
+func (r *relayStamps) wrote(n int, err error) {
+	if r == nil || r.rp == nil {
+		return
+	}
+	if err != nil {
+		r.writeErr()
+	}
+	if n > 0 {
+		r.flushed(n)
+	}
 }
 
 // writeErr records a failed client write.

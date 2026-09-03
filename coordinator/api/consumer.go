@@ -2453,9 +2453,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				pendingFinish = obj
 			} else {
 				firstChunk = rewriteChunkModel(firstChunk, pr)
-				fmt.Fprintf(w, "%s\n\n", firstChunk)
+				n, werr := fmt.Fprintf(w, "%s\n\n", firstChunk)
 				flusher.Flush()
-				rs.flushed(len(firstChunk))
+				rs.wrote(n, werr)
 			}
 		}
 	}
@@ -2545,12 +2545,14 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 						}
 						attachChatCompletionMetadata(event, pr)
 						sigEvent, _ := json.Marshal(event)
-						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
+						n, werr := fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
+						rs.wrote(n, werr)
 					}
 					// Exactly one terminator, after every coordinator-appended event.
-					fmt.Fprint(w, "data: [DONE]\n\n")
+					n, werr := fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
+					rs.wrote(n, werr)
 					rs.done()
 				}
 				return
@@ -2609,11 +2611,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
-			if _, werr := fmt.Fprintf(w, "%s\n\n", chunk); werr != nil {
-				rs.writeErr()
-			}
+			n, werr := fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
-			rs.flushed(len(chunk))
+			rs.wrote(n, werr)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
@@ -4582,6 +4582,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
 	var preflightHandled bool
+	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -4600,6 +4601,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
 	})
+	if rp != nil {
+		rp.PreflightUS = time.Since(preflightStart).Microseconds()
+		rp.Mark(registry.StampReqPreflightDone)
+		if preflightHandled {
+			rp.PreflightOutcome = "handled"
+		} else {
+			rp.PreflightOutcome = "passed"
+		}
+	}
 	if preflightHandled {
 		return
 	}

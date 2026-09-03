@@ -195,6 +195,11 @@ type TelemetryStore interface {
 	// returns the newest rows across all time.
 	RequestProfilesSince(since time.Time) []RequestProfileRecord
 
+	// RequestProfilesSinceFiltered is RequestProfilesSince with the admin
+	// browse/export predicates applied BEFORE the read cap, so a matching row
+	// older than the newest maxTelemetryReadRows rows is still returned.
+	RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord
+
 	// RecordFleetSnapshots bulk-writes one sampler tick (one row per provider
 	// slot plus the coordinator row). nil/empty input is a no-op. Best-effort.
 	RecordFleetSnapshots(rows []FleetSnapshotRow) error

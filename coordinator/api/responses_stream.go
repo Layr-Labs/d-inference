@@ -183,11 +183,9 @@ func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
 	if err != nil {
 		return
 	}
-	if _, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data); werr != nil {
-		e.stamps.writeErr()
-	}
+	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
 	e.flusher.Flush()
-	e.stamps.flushed(len(data))
+	e.stamps.wrote(n, werr)
 }
 
 // start emits response.created and response.in_progress.

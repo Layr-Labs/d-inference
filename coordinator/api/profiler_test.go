@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -1232,4 +1233,36 @@ func TestClaimedErrorFrameFinalizesAfterPendingRemoved(t *testing.T) {
 		return
 	}
 	t.Fatalf("the remover never won the claim→RemovePending window in %d attempts", attempts)
+}
+
+// TestRelayStampsCountOnlyWrittenBytes pins the egress accounting contract:
+// only bytes the ResponseWriter accepted are flushed, a failed write marks
+// client_write_err, and a stream whose write failed never claims done.
+func TestRelayStampsCountOnlyWrittenBytes(t *testing.T) {
+	rp := registry.NewRequestProfile(time.Now(), "c", nil, 0)
+	rs := newRelayStamps(rp)
+	rs.wrote(5, nil)
+	rs.wrote(7, nil)
+	if got := rp.BytesOut.Load(); got != 12 || rp.ChunksOut.Load() != 2 || rp.FirstFlushUS.Load() == 0 {
+		t.Fatalf("clean writes: bytes=%d chunks=%d first_flush=%d", got, rp.ChunksOut.Load(), rp.FirstFlushUS.Load())
+	}
+	rs.wrote(0, errors.New("broken pipe"))
+	if rp.BytesOut.Load() != 12 || rp.ChunksOut.Load() != 2 || !rp.ClientWriteErr.Load() {
+		t.Fatalf("failed write must count nothing and flag client_write_err: bytes=%d chunks=%d err=%v", rp.BytesOut.Load(), rp.ChunksOut.Load(), rp.ClientWriteErr.Load())
+	}
+	rs.wrote(3, errors.New("short")) // partial: the 3 accepted bytes count, the error is kept
+	if rp.BytesOut.Load() != 15 || !rp.ClientWriteErr.Load() {
+		t.Fatalf("short write: bytes=%d err=%v", rp.BytesOut.Load(), rp.ClientWriteErr.Load())
+	}
+	rs.done()
+	if rp.DoneFlushedUS.Load() != 0 || rp.LastFlushUS.Load() == 0 {
+		t.Fatalf("done after a failed write must not claim done_flushed (done=%d last=%d)", rp.DoneFlushedUS.Load(), rp.LastFlushUS.Load())
+	}
+	clean := registry.NewRequestProfile(time.Now(), "c", nil, 0)
+	cs := newRelayStamps(clean)
+	cs.wrote(4, nil)
+	cs.done()
+	if clean.DoneFlushedUS.Load() == 0 || clean.ClientWriteErr.Load() {
+		t.Fatal("clean stream must stamp done_flushed")
+	}
 }

@@ -110,7 +110,7 @@ func fullSnapshot(providerID, model string, at time.Time) FleetSnapshotRow {
 		ObservedDecodeTPS: 42.5, ObservedPrefillTPS: 1800.25, IsolatedPrefillTPS: 2200, EWMAInitialized: boolp(true),
 		MaxConcurrency: 4, PendingCount: 3, EffectiveCap: 4,
 		CooldownActive: false, BreakerOpen: false, ClampActive: true, Ejected: false,
-		GPUMemoryActiveGB: 30.5, GPUMemoryPeakGB: 33.25, FreeForLoadGB: 12, MemoryPressure: 0.6, CPUUsage: 0.2,
+		GPUMemoryActiveGB: 30.5, GPUMemoryPeakGB: 33.25, FreeForLoadGB: ptrF64(12), MemoryPressure: 0.6, CPUUsage: 0.2,
 		ThermalState: "nominal", LowPowerMode: boolp(false), MemoryPressureLevel: "normal",
 		StepsExecuted: 100000, StepWallNSTotal: 5e12, DecodeRowsTotal: 250000, PrefillTokensTotal: 9000000,
 		MTPRoundsTotal: 5000, MTPProposedTotal: 10000, MTPAcceptedTotal: 7000,
@@ -647,5 +647,90 @@ func TestRequestWaterfallViewListsEveryProfileColumn(t *testing.T) {
 	}
 	if costMs != nil || routeID != nil {
 		t.Fatalf("orphan profile should have NULL route columns, got cost_ms=%v route_id=%v", costMs, routeID)
+	}
+}
+
+func ptrF64(v float64) *float64 { return &v }
+
+// TestRequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap pins the admin
+// browse/export contract: a matching row older than the newest
+// maxTelemetryReadRows rows is still returned when a filter is given.
+func TestRequestProfilesSinceFilteredAppliesPredicatesBeforeTheCap(t *testing.T) {
+	s := NewMemory(Config{})
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	old := &RequestProfileRecord{CoordRequestID: "coord-old", RequestID: "req-old", ProviderID: "prov-old", Model: "m", PublicModel: "alias", FinalStatus: "error", CreatedAt: base}
+	if err := s.RecordRequestProfiles([]*RequestProfileRecord{old}); err != nil {
+		t.Fatal(err)
+	}
+	batch := make([]*RequestProfileRecord, 0, 512)
+	for i := 0; i < maxTelemetryReadRows; i++ {
+		batch = append(batch, &RequestProfileRecord{CoordRequestID: "coord-new", RequestID: "req-new", Attempt: i, ProviderID: "prov-new", Model: "m", FinalStatus: "success", CreatedAt: base.Add(time.Duration(i+1) * time.Millisecond)})
+		if len(batch) == 512 {
+			if err := s.RecordRequestProfiles(batch); err != nil {
+				t.Fatal(err)
+			}
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		if err := s.RecordRequestProfiles(batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.RequestProfilesSince(time.Time{}); len(got) != maxTelemetryReadRows || got[len(got)-1].ProviderID == "prov-old" {
+		t.Fatalf("unfiltered read must be capped to the newest rows (got %d, last=%s)", len(got), got[len(got)-1].ProviderID)
+	}
+	for name, f := range map[string]RequestProfileFilter{
+		"provider":      {ProviderID: "prov-old"},
+		"model alias":   {Model: "alias"},
+		"final_status":  {FinalStatus: "error"},
+		"coord request": {CoordRequestID: "coord-old"},
+	} {
+		got := s.RequestProfilesSinceFiltered(time.Time{}, f)
+		if len(got) != 1 || got[0].RequestID != "req-old" {
+			t.Fatalf("filter %s returned %d rows (want the one old row): %+v", name, len(got), got)
+		}
+	}
+	if got := s.RequestProfilesSinceFiltered(time.Time{}, RequestProfileFilter{Model: "m", FinalStatus: "success"}); len(got) != maxTelemetryReadRows {
+		t.Fatalf("combined filter = %d rows, want the capped %d", len(got), maxTelemetryReadRows)
+	}
+}
+
+// TestRequestProfilesSinceFilteredPostgresPredicates runs the filtered read
+// against a real database so the WHERE clause (provider, model-or-alias,
+// final_status, coord_request_id) is exercised, not just the memory matcher.
+func TestRequestProfilesSinceFilteredPostgresPredicates(t *testing.T) {
+	s := testPostgresStore(t)
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	rows := []*RequestProfileRecord{
+		{CoordRequestID: "coord-x", RequestID: "req-x", ProviderID: "prov-a", Model: "m1", PublicModel: "alias-1", FinalStatus: "success", CreatedAt: base},
+		{CoordRequestID: "coord-y", RequestID: "req-y", ProviderID: "prov-b", Model: "m2", PublicModel: "alias-2", FinalStatus: "error", CreatedAt: base.Add(time.Second)},
+		{CoordRequestID: "coord-z", RequestID: "req-z", ProviderID: "prov-a", Model: "m2", PublicModel: "alias-2", FinalStatus: "success", CreatedAt: base.Add(2 * time.Second)},
+	}
+	if err := s.RecordRequestProfiles(rows); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		f    RequestProfileFilter
+		want []string
+	}{
+		"provider":      {RequestProfileFilter{ProviderID: "prov-a"}, []string{"req-z", "req-x"}},
+		"model":         {RequestProfileFilter{Model: "m2"}, []string{"req-z", "req-y"}},
+		"alias":         {RequestProfileFilter{Model: "alias-1"}, []string{"req-x"}},
+		"status":        {RequestProfileFilter{FinalStatus: "error"}, []string{"req-y"}},
+		"coord":         {RequestProfileFilter{CoordRequestID: "coord-z"}, []string{"req-z"}},
+		"combined":      {RequestProfileFilter{ProviderID: "prov-a", Model: "m2"}, []string{"req-z"}},
+		"none-match":    {RequestProfileFilter{ProviderID: "prov-a", FinalStatus: "error"}, nil},
+		"empty = since": {RequestProfileFilter{}, []string{"req-z", "req-y", "req-x"}},
+	}
+	for name, tc := range cases {
+		got := s.RequestProfilesSinceFiltered(time.Time{}, tc.f)
+		ids := make([]string, 0, len(got))
+		for _, r := range got {
+			ids = append(ids, r.RequestID)
+		}
+		if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("%s: got %v, want %v", name, ids, tc.want)
+		}
 	}
 }

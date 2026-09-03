@@ -197,8 +197,11 @@ func providerSpecFromRows(id string, hw HardwareSpec, rows []store.FleetSnapshot
 		Version:           first.ProviderVersion,
 		ModelFlags:        map[string]ModelFlags{},
 	}
-	if first.FreeForLoadGB > 0 {
-		v := first.FreeForLoadGB
+	// Presence is the signal: nil means the provider never reported
+	// free-for-load (legacy → heuristic), while an explicit 0 is a saturated
+	// provider that the live scheduler refuses cold loads on — keep it 0.
+	if first.FreeForLoadGB != nil {
+		v := *first.FreeForLoadGB
 		ps.FreeForLoadGB = &v
 	}
 

@@ -35,6 +35,10 @@ type Arrival struct {
 	// attempt) for joining a replay result back to production records.
 	CoordRequestID string
 	Attempt        int
+	// Served is true when the row this arrival came from was the winning
+	// attempt; a fully-failed logical request is replayed as demand with
+	// Served=false and no ActualTTFTMs.
+	Served bool
 }
 
 // PromptRange is a half-open [Min,Max) prompt-token range that contributes

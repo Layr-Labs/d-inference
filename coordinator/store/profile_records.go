@@ -198,22 +198,24 @@ type FleetSnapshotRow struct {
 	Ejected               bool    `json:"ejected"`
 	GPUMemoryActiveGB     float64 `json:"gpu_memory_active_gb"`
 	GPUMemoryPeakGB       float64 `json:"gpu_memory_peak_gb"`
-	FreeForLoadGB         float64 `json:"free_for_load_gb"`
-	MemoryPressure        float64 `json:"memory_pressure"`
-	CPUUsage              float64 `json:"cpu_usage"`
-	ThermalState          string  `json:"thermal_state"`
-	LowPowerMode          *bool   `json:"low_power_mode"`
-	MemoryPressureLevel   string  `json:"memory_pressure_level"`
-	StepsExecuted         int64   `json:"steps_executed"`
-	StepWallNSTotal       int64   `json:"step_wall_ns_total"`
-	DecodeRowsTotal       int64   `json:"decode_rows_total"`
-	PrefillTokensTotal    int64   `json:"prefill_tokens_total"`
-	MTPRoundsTotal        int64   `json:"mtp_rounds_total"`
-	MTPProposedTotal      int64   `json:"mtp_proposed_total"`
-	MTPAcceptedTotal      int64   `json:"mtp_accepted_total"`
-	HeartbeatAgeMs        int     `json:"heartbeat_age_ms"`
-	WedgeSuspected        bool    `json:"wedge_suspected"`
-	EvalInFlightMs        int64   `json:"eval_in_flight_ms"`
+	// FreeForLoadGB is nil when the provider did not report free-for-load
+	// headroom (legacy heartbeat); an explicit 0 is a real "no headroom" sample.
+	FreeForLoadGB       *float64 `json:"free_for_load_gb"`
+	MemoryPressure      float64  `json:"memory_pressure"`
+	CPUUsage            float64  `json:"cpu_usage"`
+	ThermalState        string   `json:"thermal_state"`
+	LowPowerMode        *bool    `json:"low_power_mode"`
+	MemoryPressureLevel string   `json:"memory_pressure_level"`
+	StepsExecuted       int64    `json:"steps_executed"`
+	StepWallNSTotal     int64    `json:"step_wall_ns_total"`
+	DecodeRowsTotal     int64    `json:"decode_rows_total"`
+	PrefillTokensTotal  int64    `json:"prefill_tokens_total"`
+	MTPRoundsTotal      int64    `json:"mtp_rounds_total"`
+	MTPProposedTotal    int64    `json:"mtp_proposed_total"`
+	MTPAcceptedTotal    int64    `json:"mtp_accepted_total"`
+	HeartbeatAgeMs      int      `json:"heartbeat_age_ms"`
+	WedgeSuspected      bool     `json:"wedge_suspected"`
+	EvalInFlightMs      int64    `json:"eval_in_flight_ms"`
 
 	// HeartbeatStats cumulative counters (as reported).
 	RequestsServed               int64 `json:"requests_served"`
@@ -456,4 +458,35 @@ func fleetSnapshotScanTargets(f *FleetSnapshotRow, queueDepthByModel *[]byte) []
 		&f.ProfileSinkDepth, &f.ProfileSinkDroppedTotal, &f.RouteSinkDroppedTotal, &f.UnknownRequestFramesTotal, &f.Goroutines,
 		&f.ProviderVersion, &f.ModelVision, &f.TemplateRenderOK,
 	}
+}
+
+// RequestProfileFilter narrows a profile read. Empty fields impose no
+// constraint; Model matches either the catalog id or the public alias.
+type RequestProfileFilter struct {
+	ProviderID     string
+	Model          string
+	FinalStatus    string
+	CoordRequestID string
+}
+
+// IsZero reports whether the filter imposes no constraint.
+func (f RequestProfileFilter) IsZero() bool {
+	return f.ProviderID == "" && f.Model == "" && f.FinalStatus == "" && f.CoordRequestID == ""
+}
+
+// Matches reports whether r satisfies every non-empty predicate.
+func (f RequestProfileFilter) Matches(r *RequestProfileRecord) bool {
+	if f.ProviderID != "" && r.ProviderID != f.ProviderID {
+		return false
+	}
+	if f.Model != "" && r.Model != f.Model && r.PublicModel != f.Model {
+		return false
+	}
+	if f.FinalStatus != "" && r.FinalStatus != f.FinalStatus {
+		return false
+	}
+	if f.CoordRequestID != "" && r.CoordRequestID != f.CoordRequestID {
+		return false
+	}
+	return true
 }

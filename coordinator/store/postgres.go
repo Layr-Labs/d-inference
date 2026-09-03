@@ -1162,6 +1162,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requires_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS has_tools BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
+		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS model_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		fleetSnapshotsProviderIndexDDL,
@@ -6113,7 +6115,7 @@ const (
 			ejected BOOL NOT NULL DEFAULT FALSE,
 			gpu_memory_active_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
 			gpu_memory_peak_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
-			free_for_load_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			free_for_load_gb DOUBLE PRECISION,
 			memory_pressure DOUBLE PRECISION NOT NULL DEFAULT 0,
 			cpu_usage DOUBLE PRECISION NOT NULL DEFAULT 0,
 			thermal_state TEXT NOT NULL DEFAULT '',

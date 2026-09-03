@@ -35,7 +35,7 @@ func slotRow(at time.Time, provider, model, state string, running int, tps float
 		NumRunning: running, NumWaiting: 1, ActiveTokenBudgetUsed: 1000, ActiveTokenBudgetMax: 65536,
 		ObservedDecodeTPS: tps, ObservedPrefillTPS: 900, MaxConcurrency: 4,
 		MemoryPressure: 0.2, CPUUsage: 0.3, ThermalState: "nominal",
-		GPUMemoryActiveGB: 30, GPUMemoryPeakGB: 33, FreeForLoadGB: 12,
+		GPUMemoryActiveGB: 30, GPUMemoryPeakGB: 33, FreeForLoadGB: ptrF64(12),
 	}
 }
 
@@ -426,5 +426,42 @@ func TestFleetSpecCarriesCapabilities(t *testing.T) {
 	}
 	if candidates, _, _, _, _ := reg.QuickCapacityCheckWithTTFTForRequest(simModel2, 300, 128, registry.RequestTraits{}, false); candidates != 0 {
 		t.Fatalf("render-broken simModel2 preflight candidates = %d, want 0", candidates)
+	}
+}
+
+func ptrF64(v float64) *float64 { return &v }
+
+// TestLoadFleetNDJSONPreservesReportedZeroFreeCapacity pins the presence
+// semantics of free_for_load_gb: an explicit 0 from a current provider is a
+// saturated box (kept as 0 so cold loads are refused exactly as live), while
+// a nil (legacy, unreported) value falls back to the total-memory heuristic.
+func TestLoadFleetNDJSONPreservesReportedZeroFreeCapacity(t *testing.T) {
+	t0 := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	tick := t0.Add(-15 * time.Second)
+	zero := slotRow(tick, "prov-zero", simModel, "running", 0, 25)
+	zero.FreeForLoadGB = ptrF64(0)
+	legacy := slotRow(tick, "prov-legacy", simModel, "running", 0, 25)
+	legacy.FreeForLoadGB = nil
+	fleet, err := routingsim.LoadFleetNDJSON(snapshotsNDJSON(t, zero, legacy, store.FleetSnapshotRow{SampledAt: tick, ProviderID: "coordinator"}), t0, nil)
+	if err != nil {
+		t.Fatalf("LoadFleetNDJSON: %v", err)
+	}
+	var sawZero, sawLegacy bool
+	for _, ps := range fleet.Providers {
+		switch ps.ID {
+		case "prov-zero":
+			sawZero = true
+			if ps.FreeForLoadGB == nil || *ps.FreeForLoadGB != 0 {
+				t.Fatalf("prov-zero FreeForLoadGB = %v, want an explicit 0", ps.FreeForLoadGB)
+			}
+		case "prov-legacy":
+			sawLegacy = true
+			if ps.FreeForLoadGB != nil {
+				t.Fatalf("prov-legacy FreeForLoadGB = %v, want nil (heuristic)", *ps.FreeForLoadGB)
+			}
+		}
+	}
+	if !sawZero || !sawLegacy {
+		t.Fatalf("providers missing from the reconstructed fleet: zero=%v legacy=%v", sawZero, sawLegacy)
 	}
 }

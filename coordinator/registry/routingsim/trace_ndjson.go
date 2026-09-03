@@ -22,12 +22,13 @@ import (
 // GET /v1/admin/profiles/export format: one store.RequestProfileRecord JSON
 // object per line — and turns it into a replay trace.
 //
-// Row selection: only WINNING attempts become arrivals (a coord_request_id
-// with a losing backup attempt contributes exactly one arrival), and rows
-// whose estimated_prompt_tokens is zero are skipped — they predate the
-// request-shape columns or never reached the router, so there is no shape to
-// replay. Arrivals are sorted by received_at (stable, so rows sharing a
-// timestamp keep file order).
+// Row selection: one arrival per logical request (coord_request_id) — the
+// winning attempt when one exists, otherwise a representative non-winning
+// attempt (primary before backup, lowest attempt) so fully-failed requests
+// stay in the trace as demand; rows whose estimated_prompt_tokens is zero are
+// skipped — they predate the request-shape columns or never reached the
+// router, so there is no shape to replay. Arrivals are sorted by received_at
+// (stable, so rows sharing a timestamp keep file order).
 //
 // Blank lines are ignored. A malformed line fails the whole load with an error
 // naming the 1-based line number; a partial trace is never returned.
@@ -35,20 +36,50 @@ func LoadProfilesNDJSON(r io.Reader) ([]Arrival, error) {
 	if r == nil {
 		return nil, errors.New("routingsim: nil profiles reader")
 	}
-	var arrivals []Arrival
+	// One arrival per logical request (coord_request_id): the winning row
+	// when there is one, otherwise ONE representative non-winning row so a
+	// request whose every attempt failed still counts as demand — those are
+	// always-recorded and dominate exactly the incident windows a replay is
+	// meant to study. Representative = the primary (empty backup_of) with the
+	// lowest attempt; a backup row only stands in when no primary row exists.
+	type pick struct {
+		rec   store.RequestProfileRecord
+		order int
+	}
+	byRequest := map[string]pick{}
+	var keys []string
+	order := 0
 	err := forEachNDJSONLine(r, func(lineNo int, line []byte) error {
 		var rec store.RequestProfileRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
 			return fmt.Errorf("routingsim: profiles ndjson line %d: %w", lineNo, err)
 		}
-		if !rec.Winning || rec.EstimatedPromptTokens <= 0 {
+		if rec.EstimatedPromptTokens <= 0 {
 			return nil
 		}
-		arrivals = append(arrivals, arrivalFromProfile(&rec))
+		key := rec.CoordRequestID
+		if key == "" {
+			key = rec.RequestID
+		}
+		cur, seen := byRequest[key]
+		if !seen {
+			byRequest[key] = pick{rec: rec, order: order}
+			keys = append(keys, key)
+			order++
+			return nil
+		}
+		if betterArrivalRow(&rec, &cur.rec) {
+			byRequest[key] = pick{rec: rec, order: cur.order}
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	arrivals := make([]Arrival, 0, len(keys))
+	for _, key := range keys {
+		rec := byRequest[key].rec
+		arrivals = append(arrivals, arrivalFromProfile(&rec))
 	}
 	sort.SliceStable(arrivals, func(i, j int) bool {
 		return arrivals[i].ArrivedAt.Before(arrivals[j].ArrivedAt)
@@ -56,9 +87,28 @@ func LoadProfilesNDJSON(r io.Reader) ([]Arrival, error) {
 	return arrivals, nil
 }
 
-// arrivalFromProfile maps one winning profile row onto an Arrival.
+// betterArrivalRow reports whether candidate should replace current as the
+// row representing a logical request: winning beats non-winning; among
+// non-winning rows a primary beats a backup and a lower attempt beats a
+// higher one.
+func betterArrivalRow(candidate, current *store.RequestProfileRecord) bool {
+	if candidate.Winning != current.Winning {
+		return candidate.Winning
+	}
+	if candidate.Winning {
+		return false // keep the first winner seen
+	}
+	if (candidate.BackupOf == "") != (current.BackupOf == "") {
+		return candidate.BackupOf == ""
+	}
+	return candidate.Attempt < current.Attempt
+}
+
+// arrivalFromProfile maps one profile row onto an Arrival. Served is true
+// only for a winning row; ActualTTFTMs is left unknown otherwise.
 func arrivalFromProfile(rec *store.RequestProfileRecord) Arrival {
 	a := Arrival{
+		Served:           rec.Winning,
 		Model:            rec.Model,
 		PromptTokens:     rec.EstimatedPromptTokens,
 		MaxTokens:        rec.RequestedMaxTokens,
@@ -73,7 +123,7 @@ func arrivalFromProfile(rec *store.RequestProfileRecord) Arrival {
 	// present; a negative span (clock anomaly, already flagged by
 	// timing_anomaly at the source) is reported as unknown rather than as a
 	// nonsense negative latency.
-	if rec.FirstContentIngressUS != nil && rec.WriteDoneUS != nil {
+	if rec.Winning && rec.FirstContentIngressUS != nil && rec.WriteDoneUS != nil {
 		if span := *rec.FirstContentIngressUS - *rec.WriteDoneUS; span >= 0 {
 			a.ActualTTFTMs = float64(span) / 1000
 		}

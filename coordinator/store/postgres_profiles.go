@@ -138,13 +138,40 @@ func orNow(t, now time.Time) time.Time {
 // rows in reverse insertion order (an incremental sort on the created_at
 // index, not a full sort).
 func (s *PostgresStore) RequestProfilesSince(since time.Time) []RequestProfileRecord {
+	return s.RequestProfilesSinceFiltered(since, RequestProfileFilter{})
+}
+
+// RequestProfilesSinceFiltered applies the admin predicates in the WHERE
+// clause, before ORDER/LIMIT, so the read cap never hides a matching row.
+func (s *PostgresStore) RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	where := []string{"created_at >= $1"}
+	args := []any{since}
+	add := func(clause string, v string) {
+		args = append(args, v)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if filter.ProviderID != "" {
+		add("provider_id = $%d", filter.ProviderID)
+	}
+	if filter.Model != "" {
+		args = append(args, filter.Model)
+		where = append(where, fmt.Sprintf("(model = $%d OR public_model = $%d)", len(args), len(args)))
+	}
+	if filter.FinalStatus != "" {
+		add("final_status = $%d", filter.FinalStatus)
+	}
+	if filter.CoordRequestID != "" {
+		add("coord_request_id = $%d", filter.CoordRequestID)
+	}
+	args = append(args, maxTelemetryReadRows)
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+strings.Join(requestProfileColumns, ", ")+
-			` FROM request_profiles WHERE created_at >= $1 ORDER BY created_at DESC, id DESC LIMIT $2`,
-		since, maxTelemetryReadRows)
+			` FROM request_profiles WHERE `+strings.Join(where, " AND ")+
+			fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args)),
+		args...)
 	if err != nil {
 		return nil
 	}

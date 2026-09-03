@@ -19,10 +19,11 @@ func (s *Server) handleAdminProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	records := filterProfileRecords(
-		s.store.RequestProfilesSince(parseSince(r)),
-		q.Get("provider"), q.Get("model"), q.Get("final_status"), q.Get("coord_request_id"),
-	)
+	// Predicates go to the store so the read cap applies AFTER filtering.
+	records := s.store.RequestProfilesSinceFiltered(parseSince(r), store.RequestProfileFilter{
+		ProviderID: q.Get("provider"), Model: q.Get("model"),
+		FinalStatus: q.Get("final_status"), CoordRequestID: q.Get("coord_request_id"),
+	})
 	records = capRecords(records, parseLimit(r, defaultBrowseLimit))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -37,10 +38,11 @@ func (s *Server) handleAdminProfilesExport(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	q := r.URL.Query()
-	records := filterProfileRecords(
-		s.store.RequestProfilesSince(parseSince(r)),
-		q.Get("provider"), q.Get("model"), q.Get("final_status"), q.Get("coord_request_id"),
-	)
+	// Predicates go to the store so the read cap applies AFTER filtering.
+	records := s.store.RequestProfilesSinceFiltered(parseSince(r), store.RequestProfileFilter{
+		ProviderID: q.Get("provider"), Model: q.Get("model"),
+		FinalStatus: q.Get("final_status"), CoordRequestID: q.Get("coord_request_id"),
+	})
 	records = capRecords(records, parseLimit(r, 0))
 	setExportHeaders(w, "profiles", "ndjson")
 	if err := writeNDJSON(w, records); err != nil {
@@ -75,29 +77,6 @@ func (s *Server) handleAdminSnapshotsExport(w http.ResponseWriter, r *http.Reque
 	if err := writeNDJSON(w, rows); err != nil {
 		s.logger.Error("admin snapshots ndjson export failed", "error", err)
 	}
-}
-
-func filterProfileRecords(in []store.RequestProfileRecord, provider, model, finalStatus, coordID string) []store.RequestProfileRecord {
-	if provider == "" && model == "" && finalStatus == "" && coordID == "" {
-		return in
-	}
-	out := make([]store.RequestProfileRecord, 0, len(in))
-	for _, rec := range in {
-		if provider != "" && rec.ProviderID != provider {
-			continue
-		}
-		if model != "" && rec.Model != model && rec.PublicModel != model {
-			continue
-		}
-		if finalStatus != "" && rec.FinalStatus != finalStatus {
-			continue
-		}
-		if coordID != "" && rec.CoordRequestID != coordID {
-			continue
-		}
-		out = append(out, rec)
-	}
-	return out
 }
 
 func filterSnapshotRows(in []store.FleetSnapshotRow, provider, model string) []store.FleetSnapshotRow {

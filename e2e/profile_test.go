@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +57,23 @@ func runProfiledLoad(t *testing.T, s *testbed.Suite, cfg testbed.RequestConfig) 
 // produced one complete, internally consistent request_profiles row per
 // winning attempt, that the fleet sampler writes rows, and that the additive
 // X-Timing keys reach the client.
+
+// postCompletions sends one legacy /v1/completions request (the generic
+// endpoint path) so its profile row can be asserted alongside the chat rows.
+func postCompletions(t *testing.T, s *testbed.Suite, prompt string, maxTokens int) *http.Response {
+	t.Helper()
+	body := map[string]any{"model": s.PrimaryModelID(), "prompt": prompt, "max_tokens": maxTokens, "temperature": 0.0}
+	bodyJSON, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(s.Ctx, http.MethodPost,
+		s.Coordinator.BaseURL()+"/v1/completions", strings.NewReader(string(bodyJSON)))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer testbed-admin-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
 func TestProfile_RequestProfilesRecorded(t *testing.T) {
 	// Record every request (the default 10 % sample would drop fast successes).
 	t.Setenv("EIGENINFERENCE_PROFILE_SAMPLE_RATE", "1")
@@ -74,6 +93,12 @@ func TestProfile_RequestProfilesRecorded(t *testing.T) {
 		require.True(t, time.Now().Before(warmDeadline), "provider never warmed (last status %d)", code)
 		time.Sleep(2 * time.Second)
 	}
+
+	// One generic-endpoint request: its row must carry the admission preflight
+	// stamps exactly like the chat rows (review finding on /v1/completions).
+	genericResp := postCompletions(t, s, "generic path", 8)
+	genericResp.Body.Close()
+	require.Equal(t, 200, genericResp.StatusCode, "generic completions request")
 
 	cfg := testbed.DefaultRequestConfig()
 	cfg.Streaming = true
@@ -111,11 +136,19 @@ func TestProfile_RequestProfilesRecorded(t *testing.T) {
 	require.NotEmpty(t, rows, "no request_profiles rows persisted")
 
 	checked := 0
+	sawGeneric := false
 	for _, r := range rows {
 		if !r.Winning {
 			continue
 		}
 		checked++
+		if r.Endpoint == "POST-/v1/completions" {
+			sawGeneric = true
+			require.NotNil(t, r.PreflightDoneUS, "generic endpoint must stamp preflight_done_us")
+			require.Greater(t, r.PreflightUS, int64(0), "generic endpoint must record preflight_us")
+			require.NotEmpty(t, r.PreflightOutcome, "generic endpoint must record preflight_outcome")
+			continue // the chat-shaped assertions below do not apply to the generic row
+		}
 		if checked == 1 {
 			// One full row in the log makes a failure diagnosable without a DB.
 			if dump, err := json.MarshalIndent(r, "", "  "); err == nil {
@@ -210,6 +243,7 @@ func TestProfile_RequestProfilesRecorded(t *testing.T) {
 		require.NotNil(t, r.EngPrefillChunks, "engine prefill chunks")
 		require.NotNil(t, r.EngDecodeSteps, "engine decode steps")
 	}
+	require.True(t, sawGeneric, "no winning /v1/completions row was recorded")
 	require.Greater(t, checked, 0, "no winning rows")
 
 	// Fleet snapshots: one sample writes provider slot rows plus the coordinator row.

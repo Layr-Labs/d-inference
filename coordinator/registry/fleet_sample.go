@@ -137,7 +137,8 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		base.GPUMemoryActiveGB = bc.GPUMemoryActiveGB
 		base.GPUMemoryPeakGB = bc.GPUMemoryPeakGB
 		if bc.FreeForLoadGB != nil {
-			base.FreeForLoadGB = *bc.FreeForLoadGB
+			v := *bc.FreeForLoadGB // presence preserved: nil stays nil, 0 stays 0
+			base.FreeForLoadGB = &v
 		}
 		// Slice-2 capacity telemetry (BackendCapacity.Telemetry); nil sub-object
 		// (pre-slice-2 provider) leaves the fields nil/"". The level is folded onto

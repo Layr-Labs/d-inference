@@ -85,6 +85,19 @@ func TestTables(t *testing.T) {
 		name: "read and write of the same table is RW",
 		sql:  `UPDATE usage SET tokens = 0 WHERE id IN (SELECT id FROM usage LIMIT 10)`,
 		want: []TableAccess{{"usage", "RW"}},
+	}, {
+		// The locking mask has to look at what follows the words it blanks. Statement
+		// text is scanned after normalization, which lower-cases it and flattens the
+		// newline that ended this comment, so a comment whose last word is "for" sits
+		// directly in front of a real UPDATE. Blanking it dropped the write entirely —
+		// the map losing a table with every count still balanced.
+		name: "a comment ending in for does not blank the UPDATE after it",
+		sql:  "CREATE TABLE IF NOT EXISTS models (id text);\n-- rows queued for\nUPDATE usage SET tokens = 0",
+		want: []TableAccess{{"models", "W"}, {"usage", "W"}},
+	}, {
+		name: "the lock itself is still masked, however it continues",
+		sql:  `SELECT id FROM models WHERE id = $1 FOR NO KEY UPDATE OF models SKIP LOCKED`,
+		want: []TableAccess{{"models", "R"}},
 	}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

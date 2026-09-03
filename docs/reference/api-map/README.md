@@ -349,9 +349,12 @@ this dies of:
   `WITH providers AS (…)` and then `JOIN providers p`, which is the CTE and not the
   `providers` table, and no schema check can tell them apart because `providers` is
   also real. Those names are scoped to the **string variable the query is assembled
-  into** — a bare `q`, including `var q = …`. Anything else scopes to the
-  **statement the text appears in**: two literals handed straight to `Exec` do not
-  pool their CTE names, and neither do two queries that share only an `err`. A
+  into** — a bare `q`, including `var q = …` and a `~string` type parameter, whose
+  type set is read rather than its underlying type (which is only its constraint).
+  Anything else scopes to the **expression or statement the text appears in**: two
+  literals handed straight to `Exec` do not pool their CTE names, and neither do two
+  queries that share only an `err`, sit in one slice literal, or arrive as two
+  arguments of one call. A
   variable holding several queries in turn holds one set of names per query, and a
   fragment is settled against the set in force where the fragment was read, so
   reusing one `q` neither carries a CTE name forward to the next query nor takes it
@@ -364,8 +367,11 @@ this dies of:
   then `q += "SELECT … FROM models"` then `q += "UNION SELECT id FROM usage"` is one
   query, and its own CTE still shadows the `usage` table in the tail.
 
-  Three consequences worth knowing. A CTE in one query does not silence a same-named
-  real table in another. A query assembled through anything but a bare string
+  Four consequences worth knowing. A CTE in one query does not silence a same-named
+  real table in another, and the unit a query is scoped to is small enough for that to
+  mean something: an element of a slice literal and an argument to a call each stand
+  for their own query, so the hundred statements in `migrations := []string{…}` do not
+  pool their `WITH` names. A query assembled through anything but a bare string
   variable — `qs[0] += tail`, `s.q += tail`, `*p += tail` — is reported even though
   the SQL is legal, because `qs[0]` and `qs[1]` are one variable and `a.q` and `b.q`
   are one field: resolving through to them would let a CTE in one element or one
@@ -381,6 +387,19 @@ this dies of:
   silence: an upper-case keyword in a message — `fmt.Errorf("could not UPDATE %s
   rows", t)` — reads as a spliced table name, and writing that word in lower case
   clears it.
+
+  Case is also what tells the `FOR UPDATE` family from prose running into a statement.
+  A comment whose last word is "for" sits directly in front of the line below it once
+  whitespace is flattened, so `"-- rows queued for\nUPDATE " + table` would read as a
+  lock and hide the spliced table; the fragment scan therefore masks the clause only
+  when it is written in upper case. `Tables` cannot do that — it reads normalized
+  lower-case text — so it decides on what *follows* instead, and masks the words only
+  when the end of the text, a `;`/`,`/`)`, or `OF`/`NOWAIT`/`SKIP`/`SET` comes next.
+  An identifier there means the word was `UPDATE` heading a statement after all;
+  blanking it once dropped a real write of `usage` from the map with every count still
+  balanced. What is left over is the upper-case blind spot in the other direction:
+  `-- QUEUED FOR` above an `UPDATE ` + `table` is read as a lock and its splice goes
+  unreported.
 
   A query that genuinely cannot be one expression — the earnings CTE chains, where
   a conditional `WHERE` is spliced into the middle — names its tables in

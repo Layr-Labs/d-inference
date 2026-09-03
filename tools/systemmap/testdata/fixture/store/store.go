@@ -313,6 +313,21 @@ func (p *Postgres) LockModelNoKey(ctx context.Context, id string) error {
 	return err
 }
 
+// SpliceAfterComment ends a comment with the word "for" and heads the next line with
+// a spliced update. The mask that steps over `FOR UPDATE` must not step over this:
+// blanking the keyword here hides a write to a table nobody can see, and the count of
+// database calls against readable statements balances, so the map simply loses the
+// table. Case is the only thing that separates the two — the lock is written `FOR`,
+// the comment ends in `for` — which is why this reader's mask is case-sensitive while
+// `Tables`, reading normalized text, decides on what follows the words instead.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) SpliceAfterComment(ctx context.Context, table string) error {
+	q := "-- rows queued for\nUPDATE " + table + " SET name = $1"
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
 // LockModelSkipInline is LockModelSkip in a single literal, which is the form the
 // remedy text tells a reader to prefer. `Tables` has to step over the clause too:
 // reading `UPDATE SKIP` as an update statement put a table called `skip` in the map,
@@ -521,6 +536,69 @@ func (p *Postgres) RankSplitCTE(ctx context.Context, modelWhere, order string) e
 	      UNION SELECT id FROM usage`
 	_, err := p.db.ExecContext(ctx, q)
 	return err
+}
+
+// RankSliceLiteral holds two queries in one slice literal: the first declares a CTE
+// named after a real table, the second is a fragment that reads that table. Scoping
+// text by the statement pooled them, and the CTE muted the read — the store's
+// `migrations := []string{…}` is a hundred statements in one such pool, which is the
+// size at which nobody would notice. An element stands for its own query.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankSliceLiteral(ctx context.Context, base string) error {
+	for _, q := range []string{
+		`WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		base + ` JOIN usage u ON u.id = base.id`,
+	} {
+		if _, err := p.db.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RankTwoArgs is the same collision one statement further in: two queries as the
+// arguments of a single call. The call is immediate so that the driver sees them in
+// this body rather than another, which is also the shape the service's bounded-
+// concurrency workers use.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTwoArgs(ctx context.Context, base string) error {
+	var err error
+	func(first, second string) {
+		if _, e := p.db.ExecContext(ctx, first); e != nil {
+			err = e
+			return
+		}
+		_, err = p.db.ExecContext(ctx, second)
+	}(`WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		base+` JOIN usage u ON u.id = base.id`)
+	return err
+}
+
+// queryish is a constraint whose type set is all strings, so a value of it holds
+// statement text the way a string does.
+type queryish interface{ ~string }
+
+// rankGeneric assembles its query in a type parameter. A type parameter's underlying
+// type is its constraint interface, which holds nothing, so answering "can this hold
+// text" from the underlying type put the WITH clause and the fragment appended to it
+// in different scopes and reported a correct query. The type set is the thing to ask.
+func rankGeneric[T queryish](p *Postgres, ctx context.Context, all bool) error {
+	var q T = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if all {
+		q += ` JOIN usage u ON u.id = usage.id`
+	}
+	_, err := p.db.ExecContext(ctx, string(q))
+	return err
+}
+
+// RankGeneric reaches it, because a method cannot carry a type parameter of its own
+// and the direct-walk tests address methods.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankGeneric(ctx context.Context, all bool) error {
+	return rankGeneric[string](p, ctx, all)
 }
 
 // RankSplitAppend is one query bound once and extended twice, where the middle

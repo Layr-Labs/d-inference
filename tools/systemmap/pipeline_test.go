@@ -393,6 +393,24 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"RankReversed", []string{
 			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
 		}},
+		// Two queries in one slice literal, and two as the arguments of one call. Both
+		// used to share a scope with everything else in their statement, so the first
+		// one's CTE muted the second one's real read of the same name — the mute this
+		// whole check exists to break, at the one size where it would never be noticed.
+		{"RankSliceLiteral", []string{
+			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
+		}},
+		{"RankTwoArgs", []string{
+			"2 database call(s) but only 1 readable statement(s) in the body",
+			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
+		}},
+		// A comment whose last word is `for`, in front of a spliced update. The mask
+		// that steps over the `FOR UPDATE` lock must not step over this, or the write
+		// leaves the map with every count still balanced.
+		{"SpliceAfterComment", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+			"the text ends at `UPDATE`, so the table that follows it is spliced in at run time (`-- rows queued for UPDATE`)",
+		}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			if got := opaqueDetails(t, tc.method); !reflect.DeepEqual(got, tc.want) {
@@ -441,6 +459,10 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// A query split across a `var` declaration, which has to be scoped the way an
 		// assignment is or the WITH clause and the fragment land apart.
 		{"RankDeclaredVar", []string{"pg.models R"}},
+		// The same query in a `~string` type parameter. A type parameter's underlying
+		// type is its constraint interface, so the question "can this hold text" has to
+		// be put to the type set instead.
+		{"RankGeneric", []string{"pg.models R"}},
 		// One local, two statements, the fragment belonging to the first. Its CTE names
 		// are still in force where it was read, however the local is reused afterwards.
 		{"RankResetAfter", []string{"pg.models R", "pg.models R"}},

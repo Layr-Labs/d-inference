@@ -339,7 +339,12 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	// naming a table; `FOR UPDATE`, `FOR NO KEY UPDATE` and `ON CONFLICT ... DO
 	// UPDATE` spell UPDATE without heading a statement. Neither may be read here as
 	// a table spliced in at run time.
-	masked := string(maskLockingClauses(maskKeywordCalls([]byte(s))))
+	//
+	// The locking mask is the upper-case one, because this is the only reader that
+	// still has the case to judge by: a lower-case `for` ending a comment above an
+	// upper-case `UPDATE ` + table is prose running into a splice, and masking it
+	// hid exactly the splice this scan exists to find.
+	masked := string(maskLockingClauses(maskKeywordCalls([]byte(s)), reLockingUpperCase))
 	if statement && f.textFresh {
 		f.openStatement()
 	}

@@ -201,6 +201,27 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
 }
 
+// textElem walks an expression that stands for a query of its own — an element of a
+// composite literal, an argument to a call — with the text scope set to the
+// expression itself.
+//
+// Without this, a statement holding several queries pooled their CTE names, and one
+// query's `WITH usage AS (…)` muted a real read of the `usage` table in the next.
+// `migrations := []string{…}` in the store is a hundred statements in one scope; a
+// slice built as `[]string{base, base + " JOIN usage u"}`, or two queries handed to
+// one call, are the same shape at a size where nobody would notice the mute. Scoping
+// per element only ever narrows a scope, so it can turn a silence into a finding and
+// never the reverse.
+//
+// A query genuinely assembled across two elements is the cost, and it is a finding
+// with a remedy (inline the `WITH`, or declare the tables) rather than a wrong edge.
+func (f *fnWalk) textElem(e ast.Expr, mode string) {
+	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
+	f.textScope, f.textStmt, f.textFresh = e, nil, true
+	f.visit(e, mode)
+	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
+}
+
 // bindsScope reports whether a statement gives its text scope a new value rather
 // than adding to the value already there. `q := ...` and `q = ...` start a query;
 // `q += ...` continues the one already in q. Every other statement kind that owns a
@@ -383,9 +404,52 @@ func (f *fnWalk) assignTarget(lhs []ast.Expr) types.Object {
 }
 
 // carriesText reports whether a value of this type can hold statement text.
+//
+// A type parameter is answered from its type set rather than from its underlying
+// type, which is the constraint interface and holds nothing. `func q[T ~string]`
+// builds a query in a T exactly the way the store builds one in a string, and
+// reading the interface would have scoped the `WITH` clause and the fragment
+// appended to it apart — a finding against SQL that is entirely correct.
 func carriesText(t types.Type) bool {
+	if tp, ok := t.(*types.TypeParam); ok {
+		return typeSetIsText(tp.Constraint())
+	}
 	basic, ok := t.Underlying().(*types.Basic)
 	return ok && basic.Info()&types.IsString != 0
+}
+
+// typeSetIsText reports whether every type a constraint admits is a string. Every
+// one, not any: a `~string | []byte` parameter can hold a query in one instantiation
+// and something else in another, and treating the two as one query is the shadowing
+// this check exists to prevent.
+func typeSetIsText(constraint types.Type) bool {
+	iface, ok := constraint.Underlying().(*types.Interface)
+	if !ok || iface.NumEmbeddeds() == 0 {
+		return false // `any`, or a method-only constraint: nothing to read
+	}
+	for i := range iface.NumEmbeddeds() {
+		emb := iface.EmbeddedType(i)
+		if _, ok := emb.Underlying().(*types.Interface); ok {
+			// A constraint embedding another one: its type set is the same question.
+			if !typeSetIsText(emb) {
+				return false
+			}
+			continue
+		}
+		union, ok := emb.(*types.Union)
+		if !ok {
+			if !carriesText(emb) { // a single non-union term
+				return false
+			}
+			continue
+		}
+		for j := range union.Len() {
+			if !carriesText(union.Term(j).Type()) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // bindVars propagates node attribution through `x := s.registry` so later uses
@@ -477,7 +541,7 @@ func (f *fnWalk) visit(e ast.Expr, mode string) {
 		f.stmt(x.Body)
 	case *ast.CompositeLit:
 		for _, el := range x.Elts {
-			f.visit(el, ModeRead)
+			f.textElem(el, ModeRead)
 		}
 	case *ast.KeyValueExpr:
 		f.visit(x.Key, ModeRead)
@@ -643,7 +707,7 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 	}
 
 	for _, arg := range x.Args {
-		f.visit(arg, ModeRead)
+		f.textElem(arg, ModeRead)
 	}
 	f.traverse(x, fn)
 }

@@ -117,10 +117,35 @@ type DepsConfig struct {
 	Hosts          map[string]string            `json:"hosts"`
 	Endpoints      map[string]map[string]string `json:"endpoints"`
 	Messages       map[string]map[string]string `json:"messages"`
+	SQLDriver      SQLDriverConfig              `json:"sqlDriver"`
 
 	traverse map[string]bool
 	inherit  map[string]bool
 	strict   map[string]bool
+	driver   map[string]bool
+}
+
+// SQLDriverConfig names the database driver whose calls carry a statement.
+//
+// The extractor recovers tables from the statement text, so a call whose text it
+// cannot see contributes nothing — and, unlike a table it does not recognize,
+// leaves no trace to report. Knowing which calls are supposed to carry a
+// statement is what turns that silence into drift. Which package that is cannot
+// be derived: it is a fact about this service, so it lives here. Leaving it out
+// disables the check rather than guessing.
+type SQLDriverConfig struct {
+	Package string   `json:"package"`
+	Methods []string `json:"methods"`
+
+	// Assembled names the functions whose statement genuinely cannot be one
+	// expression — a CTE chain with a conditional WHERE spliced into the middle —
+	// together with the tables that statement touches and the mode it touches them
+	// in. The extractor cannot read those tables, so a human writes them down here
+	// and the map draws them. The entry is what makes the declaration honest work
+	// rather than a mute: it is checked against the schema, it is reported when the
+	// function stops needing it, and adding a new assembled statement is still
+	// drift until someone explains it here.
+	Assembled map[string]map[string]string `json:"assembled"`
 }
 
 // Load reads and validates the overlay. Unknown fields are an error: a typo in
@@ -139,6 +164,26 @@ func Load(path, module string) (*Config, error) {
 	cfg.Deps.traverse = index(cfg.Deps.Traverse)
 	cfg.Deps.inherit = index(cfg.Deps.Inherit)
 	cfg.Deps.strict = index(cfg.Deps.Strict)
+	cfg.Deps.driver = index(cfg.Deps.SQLDriver.Methods)
+	if cfg.Deps.SQLDriver.Package != "" && len(cfg.Deps.SQLDriver.Methods) == 0 {
+		return nil, fmt.Errorf("overlay %s: deps.sqlDriver.package is set but deps.sqlDriver.methods is empty, which disables the readable-statement check entirely", path)
+	}
+	for fn, tables := range cfg.Deps.SQLDriver.Assembled {
+		// An entry that names no table would suppress every finding in the function
+		// and draw nothing in its place — a mute, which is the one thing this
+		// mechanism must not be.
+		if len(tables) == 0 {
+			return nil, fmt.Errorf("overlay %s: deps.sqlDriver.assembled[%q] declares no tables; an entry that explains nothing only silences the check", path, fn)
+		}
+		for table, mode := range tables {
+			if table == "" {
+				return nil, fmt.Errorf("overlay %s: deps.sqlDriver.assembled[%q] declares an empty table name", path, fn)
+			}
+			if mode != "R" && mode != "W" && mode != "RW" {
+				return nil, fmt.Errorf("overlay %s: deps.sqlDriver.assembled[%q][%q] = %q, want R, W or RW", path, fn, table, mode)
+			}
+		}
+	}
 	if cfg.Deps.Hosts == nil {
 		cfg.Deps.Hosts = map[string]string{}
 	}
@@ -322,6 +367,33 @@ func (c *Config) MessageNode(importPath, ident string) (string, bool) {
 	}
 	node, ok := table[ident]
 	return node, ok
+}
+
+// QueryCall reports whether a method call on a type from the SQL driver hands a
+// statement to the database. The receiver's package is checked as a prefix so
+// every type the driver exports counts — a pool, a connection, a transaction and
+// a batch all take statements, and they live in sibling packages. The prefix has
+// to end at a path separator, or `github.com/jackc/pgx` would also claim a
+// `pgxmock` standing in for it.
+func (c *Config) QueryCall(recvPkgPath, method string) bool {
+	pkg := c.Deps.SQLDriver.Package
+	if pkg == "" || !c.Deps.driver[method] {
+		return false
+	}
+	return recvPkgPath == pkg || strings.HasPrefix(recvPkgPath, pkg+"/")
+}
+
+// AssembledDeclarations returns every assembled-statement declaration, keyed
+// `package:Receiver.Func`, so a name matching no function can be reported.
+func (c *Config) AssembledDeclarations() map[string]map[string]string {
+	return c.Deps.SQLDriver.Assembled
+}
+
+// AssembledTables returns the tables the overlay declares for a function that
+// builds its statement out of fragments, keyed `package:Receiver.Func`.
+func (c *Config) AssembledTables(pkgRel, fn string) (map[string]string, bool) {
+	tables, ok := c.Deps.SQLDriver.Assembled[pkgRel+":"+fn]
+	return tables, ok
 }
 
 // GateNames returns the authorization gates worth detecting.

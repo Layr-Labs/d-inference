@@ -188,6 +188,303 @@ func TestFixtureAbsorbedConcurrentState(t *testing.T) {
 	}
 }
 
+// walkFixtureMethod walks one store method directly, outside the route table.
+//
+// The statement shapes these tests pin are properties of a function body, not of a
+// route, and putting them behind a new endpoint would repin every route fixture
+// for no extra coverage.
+func walkFixtureMethod(t *testing.T, method string, mutate ...func(*config.Config)) ([]string, *report.Report) {
+	t.Helper()
+	root, err := filepath.Abs("testdata/fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(root, "overlay.json"), "svcfix.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range mutate {
+		fn(cfg)
+	}
+	prog, err := extract.Load(root, cfg.Module(), cfg.AnalyzePatterns())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sym := prog.Method("svcfix.test/store", "Postgres", method)
+	if sym == nil {
+		t.Fatalf("fixture method store.Postgres.%s not found", method)
+	}
+	rep := report.New()
+	res := extract.NewWalker(prog, cfg, rep).Func(sym)
+	var accesses []string
+	for _, acc := range res.Accesses {
+		accesses = append(accesses, acc.Node+" "+acc.Mode)
+	}
+	sort.Strings(accesses)
+	return accesses, rep
+}
+
+// declare is the overlay entry that accounts for an assembled statement.
+func declare(fn string, tables map[string]string) func(*config.Config) {
+	return func(cfg *config.Config) {
+		cfg.Deps.SQLDriver.Assembled = map[string]map[string]string{"store:Postgres." + fn: tables}
+	}
+}
+
+// TestFixtureConstantFoldedQuery is the regression for classifying a statement
+// spliced together from constants. `"SELECT " + modelColumns + " FROM models ..."`
+// is one string to the compiler, but a walker that classified the operands it was
+// written as would see only fragments — neither " FROM models WHERE id = $1" nor
+// the column list is a statement — and record no table at all. On the coordinator
+// that shape is 14 store reads, including the API-key lookup on every inference
+// request, so the map published api_keys as write-only.
+func TestFixtureConstantFoldedQuery(t *testing.T) {
+	accesses, rep := walkFixtureMethod(t, "GetModel")
+	if !reflect.DeepEqual(accesses, []string{"pg.models R"}) {
+		t.Errorf("accesses = %v, want [pg.models R]", accesses)
+	}
+	if !rep.Clean() {
+		t.Errorf("a readable statement was reported as drift: %s\n\n%s", rep.Counts(), rep.Markdown())
+	}
+}
+
+// opaqueDetails returns what the report says about one fixture method, so a test
+// can assert the explanation the reader gets rather than an internal shape.
+func opaqueDetails(t *testing.T, method string, mutate ...func(*config.Config)) []string {
+	t.Helper()
+	_, rep := walkFixtureMethod(t, method, mutate...)
+	var out []string
+	for site, q := range rep.OpaqueQueries {
+		if q.Func != "Postgres."+method {
+			t.Errorf("finding attributed to %s, want Postgres.%s", q.Func, method)
+		}
+		if !strings.HasPrefix(site, "store/store.go:") {
+			t.Errorf("site = %q, want a position in store/store.go", site)
+		}
+		out = append(out, q.Detail)
+	}
+	sort.Strings(out)
+	if len(out) > 0 && rep.Clean() {
+		t.Error("report is clean despite text the extractor cannot read")
+	}
+	if len(out) > 0 && !strings.Contains(rep.Markdown(), "Statement text the extractor cannot read") {
+		t.Error("report does not explain the unreadable statement")
+	}
+	return out
+}
+
+// TestFixtureOpaqueQuery is the regression for the check itself: a statement built
+// at run time. This is the one failure mode the rest of the report cannot express —
+// there is no unknown table and no unmapped field, because the extractor saw
+// nothing. Counting what the driver was handed against what was readable, and
+// checking the text around every table name, turns that silence into drift.
+//
+// The four fixture methods are the four ways the text can go dark, and each is
+// caught by only one half of the check: no readable statement at all (the count),
+// a fragment naming a table the base statement does not (the text), a table name
+// spliced in at run time (the text again, inside a statement that parses), and the
+// same splice behind a table the scan could read (the text again, only if it keeps
+// looking past the first name it recognizes).
+func TestFixtureOpaqueQuery(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   []string
+	}{
+		{"ListModelsFiltered", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+		}},
+		{"ListModelsWithUsage", []string{
+			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
+		}},
+		{"CountRows", []string{
+			"the table after `FROM` is spliced in at run time (`FROM %s`)",
+		}},
+		{"ListModelsJoined", []string{
+			"the table after `JOIN` is spliced in at run time (`JOIN %s`)",
+		}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			if got := opaqueDetails(t, tc.method); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("findings for %s:\n got %q\nwant %q", tc.method, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFixtureReadableSQLIsNotDrift is the other side of the check, and the reason
+// it has to be tested as carefully as the drift it finds: a table-name scan reads
+// SQL without parsing it, so shapes that are entirely readable can still trip it.
+// A false positive here is worse than a miss — it cannot be silenced except by
+// declaring tables that are already correct in the map, which turns the escape
+// hatch into a habit.
+func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   []string
+	}{
+		// `q += " FOR UPDATE"`, the immediate cousin of the `q += " LIMIT $2"` the
+		// docs recommend: a clause that ends at a table-introducing keyword.
+		{"LockModel", []string{"pg.models R"}},
+		// A column list opening where a table name's next character would be.
+		{"InsertModel", []string{"pg.models W"}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			accesses, rep := walkFixtureMethod(t, tc.method)
+			if !reflect.DeepEqual(accesses, tc.want) {
+				t.Errorf("accesses = %v, want %v", accesses, tc.want)
+			}
+			if !rep.Clean() {
+				t.Errorf("readable SQL reported as drift: %s\n\n%s", rep.Counts(), rep.Markdown())
+			}
+		})
+	}
+}
+
+// TestFixtureAssembledDeclaration covers the overlay's answer to a statement that
+// genuinely cannot be one expression: a human writes down the tables, the map
+// draws them, and the finding stands down. What keeps that from being a mute is
+// the rest of this test — the declaration is checked against the schema, and it is
+// reported the moment the source stops needing it.
+func TestFixtureAssembledDeclaration(t *testing.T) {
+	t.Run("declared", func(t *testing.T) {
+		accesses, rep := walkFixtureMethod(t, "ListModelsWithUsage",
+			declare("ListModelsWithUsage", map[string]string{"usage": "R"}))
+		if want := []string{"pg.models R", "pg.usage R"}; !reflect.DeepEqual(accesses, want) {
+			t.Errorf("accesses = %v, want %v", accesses, want)
+		}
+		if !rep.Clean() {
+			t.Errorf("a declared assembled statement was still reported: %s\n\n%s", rep.Counts(), rep.Markdown())
+		}
+	})
+
+	t.Run("unknown table", func(t *testing.T) {
+		_, rep := walkFixtureMethod(t, "ListModelsWithUsage",
+			declare("ListModelsWithUsage", map[string]string{"sessions": "R"}))
+		if _, ok := rep.UnknownTables["sessions"]; !ok {
+			t.Errorf("a declared table with no CREATE TABLE went unreported: %s", rep.Counts())
+		}
+	})
+
+	t.Run("stale", func(t *testing.T) {
+		want := []string{"the overlay declares the tables this function assembles, but every statement in it is now readable — delete the entry"}
+		got := opaqueDetails(t, "GetModel", declare("GetModel", map[string]string{"models": "R"}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("findings for a readable body:\n got %q\nwant %q", got, want)
+		}
+	})
+
+	// A declaration explains the tables it names, not the function that carries it.
+	// Absorbing every silence in the body would make the entry a standing exemption:
+	// a table added to the assembled statement later would be missing from the map
+	// with nothing to report it, which is what the entry was written to prevent.
+	t.Run("undeclared table in a fragment", func(t *testing.T) {
+		want := []string{"the overlay declares the tables this function assembles, but text here names `usage`, which the declaration does not — add it"}
+		got := opaqueDetails(t, "ListModelsWithUsage",
+			declare("ListModelsWithUsage", map[string]string{"models": "R"}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("findings for a fragment the declaration does not cover:\n got %q\nwant %q", got, want)
+		}
+	})
+
+	// The staleness signal is "nothing here was unreadable", so it is only as good as
+	// the text check: while the scan stopped at the first table it could read, a
+	// function whose second table was spliced in looked readable, and the report told
+	// the reader to delete an entry the map still depended on.
+	t.Run("still assembled", func(t *testing.T) {
+		accesses, rep := walkFixtureMethod(t, "ListModelsJoined",
+			declare("ListModelsJoined", map[string]string{"usage": "R"}))
+		if want := []string{"pg.models R", "pg.usage R"}; !reflect.DeepEqual(accesses, want) {
+			t.Errorf("accesses = %v, want %v", accesses, want)
+		}
+		if !rep.Clean() {
+			t.Errorf("a live declaration was reported: %s\n\n%s", rep.Counts(), rep.Markdown())
+		}
+	})
+
+	// A name that matches no function draws nothing, so an entry that outlives a
+	// rename is the same silence the declaration was meant to break.
+	t.Run("names no function", func(t *testing.T) {
+		_, rep := buildFixture(t, declare("NoSuchMethod", map[string]string{"models": "R"}))
+		q := rep.OpaqueQueries["store:Postgres.NoSuchMethod"]
+		if q == nil {
+			t.Fatalf("a declaration matching no function went unreported: %s", rep.Counts())
+		}
+		if !strings.Contains(q.Detail, "no function the walk reached has it") {
+			t.Errorf("detail = %q, want it to say the name matches nothing", q.Detail)
+		}
+	})
+}
+
+// TestOverlayRejectsMuteDeclaration covers the validation that keeps the escape
+// hatch honest. An entry naming no table would suppress every finding in the
+// function and put nothing in the map in their place — a silencer wearing the
+// shape of an explanation — and a driver package with no methods would switch off
+// the readable-statement check for the whole service.
+func TestOverlayRejectsMuteDeclaration(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		patch func(map[string]any)
+		want  string
+	}{
+		{"no tables", func(driver map[string]any) {
+			driver["assembled"] = map[string]any{"store:Postgres.ListModelsFiltered": map[string]any{}}
+		}, "declares no tables"},
+		{"empty table name", func(driver map[string]any) {
+			driver["assembled"] = map[string]any{"store:Postgres.ListModelsFiltered": map[string]any{"": "R"}}
+		}, "empty table name"},
+		{"bad mode", func(driver map[string]any) {
+			driver["assembled"] = map[string]any{"store:Postgres.ListModelsFiltered": map[string]any{"models": "RWX"}}
+		}, "want R, W or RW"},
+		{"no methods", func(driver map[string]any) {
+			driver["methods"] = []any{}
+		}, "disables the readable-statement check"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loadPatchedOverlay(t, tc.patch)
+			if err == nil {
+				t.Fatalf("overlay loaded despite %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// loadPatchedOverlay loads the fixture overlay with one patch applied to its
+// `deps.sqlDriver` block, so what `config.Load` rejects is tested against the
+// overlay shape the fixture actually uses rather than a hand-written stub.
+func loadPatchedOverlay(t *testing.T, patch func(driver map[string]any)) error {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "fixture", "overlay.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	deps, ok := doc["deps"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture overlay has no deps block")
+	}
+	driver, ok := deps["sqlDriver"].(map[string]any)
+	if !ok {
+		t.Fatal("fixture overlay has no deps.sqlDriver block")
+	}
+	patch(driver)
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = config.Load(path, "svcfix.test")
+	return err
+}
+
 // TestFixtureUndocumentedNode covers the prose requirement: a node the graph
 // draws with only a label is a boundary the page cannot explain.
 func TestFixtureUndocumentedNode(t *testing.T) {

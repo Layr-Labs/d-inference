@@ -183,15 +183,15 @@ which side of a boundary it is on.
 
 ## How much of it is opinion
 
-Everything countable is derived: **101 routes, 92 nodes, 20 groups, 256
-associations, 39 table definitions (441 columns), 1,025 citations**. The opinions are a bounded, greppable set of
+Everything countable is derived: **101 routes, 92 nodes, 20 groups, 259
+associations, 39 table definitions (441 columns), 1,053 citations**. The opinions are a bounded, greppable set of
 overlay tables:
 
 | Kind of opinion | Where | Size today |
 |---|---|---|
 | what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 145 (21 wildcards, 37 sentinels), 56, 1 |
 | what a literal points at | `deps.hosts`, `deps.endpoints`, `deps.messages` | 21, 7, 25 |
-| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `gateDepth` | 21, 3, 21, 1, 1, 1 |
+| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 21, 1, 1, 1 (+2 assembled statements), 1 |
 | how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 56 |
 | prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 101, 92, 6, 4 |
 
@@ -303,7 +303,7 @@ fails in the workflow.
 `coordinator/api:Server` is declared `strict`, so new coordinator state gets no
 package-level default: adding a field is drift until the map explains it.
 
-Two checks exist specifically because *silence* is the failure mode a map like
+Four checks exist specifically because *silence* is the failure mode a map like
 this dies of:
 
 - **Absorbed concurrent state.** A struct with a mutex, an `atomic`, a `sync.Map`
@@ -318,6 +318,34 @@ this dies of:
   `CREATE TABLE` anywhere in the analyzed source is a table the map claims and the
   service never creates — a typo'd or dynamically built table name — so it is
   reported rather than drawn with an empty schema.
+- **Statement text the extractor cannot read.** Every table edge comes from
+  statement text, so text it cannot read contributes nothing — and leaves nothing
+  for the checks above to catch: no unknown table, no unmapped field, a clean
+  report and a route published as touching fewer tables than it does. Two things
+  are checked, because each covers what the other cannot see. A body's calls into
+  `deps.sqlDriver` are counted against the statements recoverable from it, so a
+  statement that arrived from outside the body is drift. And wherever text names a
+  table after an **upper-case** `FROM`, `JOIN`, `INTO` or `UPDATE`, the name has to
+  be readable and the text around it has to be a statement, so `q += " UNION
+  SELECT id FROM usage"` and `fmt.Sprintf("... FROM %s", t)` are drift too — those
+  leave the count balanced and a table missing. Every such keyword in a literal is
+  examined, not just the first: `fmt.Sprintf("... FROM models m JOIN %s u ...")`
+  hides its second table behind a readable first one. Constants count as one
+  statement: `"SELECT " + userColumns + " FROM users"` is folded by `go/types`,
+  which is why the column-list splice the store uses throughout stays readable.
+  Three things the scan deliberately says nothing about, because it reads SQL
+  rather than parsing it: a lower-case keyword (the tree writes SQL in upper case,
+  and `deps.strict` prose is full of "update … from …"), a clause that ends at a
+  keyword (`q += " FOR UPDATE"` names no table), and a name with no `CREATE TABLE`
+  — usually a CTE the same body declared, since `WITH providers AS (…)` then `JOIN
+  providers p` is the CTE and not the `providers` table. A query that genuinely
+  cannot be one expression — the earnings CTE chains, where a conditional `WHERE`
+  is spliced into the middle — names its tables in `deps.sqlDriver.assembled`
+  instead. That entry is held to being an explanation rather than a mute: the map
+  draws its tables, the names are checked against the schema, a table the text
+  names but the entry omits is still reported, an entry is reported once the
+  function no longer needs it or no longer exists, and an entry declaring no tables
+  is rejected outright.
 
 ## Scope
 

@@ -15,6 +15,7 @@ import (
 type Report struct {
 	UnmappedFields map[string]*Finding
 	AbsorbedTypes  map[string]*Holder
+	OpaqueQueries  map[string]*OpaqueQuery
 	UnknownTables  map[string][]string
 	UnknownHosts   map[string][]string
 	MissingLabels  map[string]bool
@@ -46,14 +47,39 @@ type Holder struct {
 	Site    string
 }
 
+// OpaqueQuery is statement text the extractor could not read. The map's table
+// edges come from that text, so text it cannot read is state the map silently
+// omits — no unknown table, no unmapped field, nothing for the other checks to
+// catch. One entry per site, because two of these in one body are two problems.
+type OpaqueQuery struct {
+	Package string
+	Func    string
+	Detail  string // what was unreadable, in the report's own words
+	Remedy  string // what to do about it, when the detail does not say so itself
+	Site    string
+}
+
 func New() *Report {
 	return &Report{
 		UnmappedFields: map[string]*Finding{},
 		AbsorbedTypes:  map[string]*Holder{},
+		OpaqueQueries:  map[string]*OpaqueQuery{},
 		UnknownTables:  map[string][]string{},
 		UnknownHosts:   map[string][]string{},
 		MissingLabels:  map[string]bool{},
 	}
+}
+
+// OpaqueQuery records statement text the extractor could not read, keyed by the
+// site so that two findings in one body — or in two closures the walker labels
+// alike — stay two findings. The remedy is separate from the detail because not
+// every finding here has the same one: a declaration that no longer matches its
+// source is not fixed by rewriting a statement.
+func (r *Report) OpaqueQuery(pkgRel, fn, site, detail, remedy string) {
+	if _, ok := r.OpaqueQueries[site]; ok {
+		return
+	}
+	r.OpaqueQueries[site] = &OpaqueQuery{Package: pkgRel, Func: fn, Detail: detail, Remedy: remedy, Site: site}
 }
 
 // AbsorbedState records a concurrent-state struct that a package-wide rule
@@ -105,7 +131,8 @@ func (r *Report) AddUnreachedNode(s string) { r.Unreached = append(r.Unreached, 
 
 // Clean reports whether source and overlay agree completely.
 func (r *Report) Clean() bool {
-	return len(r.UnmappedFields) == 0 && len(r.AbsorbedTypes) == 0 && len(r.UnknownTables) == 0 &&
+	return len(r.UnmappedFields) == 0 && len(r.AbsorbedTypes) == 0 && len(r.OpaqueQueries) == 0 &&
+		len(r.UnknownTables) == 0 &&
 		len(r.UnknownHosts) == 0 && len(r.MissingLabels) == 0 && len(r.MissingProse) == 0 &&
 		len(r.UndocumentedN) == 0 && len(r.UndefinedTable) == 0 && len(r.StaleProse) == 0 &&
 		len(r.Unclassified) == 0 && len(r.BadClusters) == 0
@@ -113,8 +140,8 @@ func (r *Report) Clean() bool {
 
 // Counts summarizes the report for a one-line status.
 func (r *Report) Counts() string {
-	return fmt.Sprintf("%d unmapped state, %d absorbed concurrent types, %d unknown tables, %d unknown hosts, %d unlabeled nodes, %d undocumented nodes, %d undefined tables, %d routes missing prose, %d stale prose, %d unclassified, %d cluster problems",
-		len(r.UnmappedFields), len(r.AbsorbedTypes), len(r.UnknownTables), len(r.UnknownHosts),
+	return fmt.Sprintf("%d unmapped state, %d absorbed concurrent types, %d unreadable statements, %d unknown tables, %d unknown hosts, %d unlabeled nodes, %d undocumented nodes, %d undefined tables, %d routes missing prose, %d stale prose, %d unclassified, %d cluster problems",
+		len(r.UnmappedFields), len(r.AbsorbedTypes), len(r.OpaqueQueries), len(r.UnknownTables), len(r.UnknownHosts),
 		len(r.MissingLabels), len(r.UndocumentedN), len(r.UndefinedTable), len(r.MissingProse), len(r.StaleProse),
 		len(r.Unclassified), len(r.BadClusters))
 }
@@ -156,6 +183,18 @@ func (r *Report) Markdown() string {
 	}
 	section("Concurrent in-memory types absorbed by a package-wide rule",
 		"None — every mutex-, atomic- or channel-bearing type an endpoint reaches is named.", holders)
+
+	var opaque []string
+	for _, key := range keys(r.OpaqueQueries) {
+		q := r.OpaqueQueries[key]
+		line := fmt.Sprintf("`%s:%s` — %s", q.Package, q.Func, q.Detail)
+		if q.Remedy != "" {
+			line += ", " + q.Remedy
+		}
+		opaque = append(opaque, line+"; "+key)
+	}
+	section("Statement text the extractor cannot read",
+		"None — every statement resolves to a literal or a constant, and no fragment names a table on its own.", opaque)
 
 	var tables []string
 	for _, name := range keys(r.UnknownTables) {

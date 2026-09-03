@@ -2,6 +2,7 @@ package extract
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,27 @@ func TestTables(t *testing.T) {
 				t.Errorf("Tables(%q)\n got %v\nwant %v", tc.sql, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMaskKeywordCallsStaysAligned pins the one property the mask depends on: the
+// case-folded copy it searches has to line up byte for byte with the text it
+// blanks. strings.ToLower does not guarantee that — U+212A KELVIN SIGN is three
+// bytes and folds to one — so a single such rune in a statement would shift every
+// offset after it and blank the wrong bytes, quietly turning the keyword-call mask
+// off for the rest of the string.
+func TestMaskKeywordCallsStaysAligned(t *testing.T) {
+	// The Kelvin sign sits before the call, so a length-changing fold would move
+	// the argument list out from under the offsets the mask writes at.
+	sql := `SELECT x FROM models WHERE n = 'K' AND y = EXTRACT(EPOCH FROM created_at)`
+	got := string(maskKeywordCalls([]byte(sql)))
+	if len(got) != len(sql) {
+		t.Fatalf("mask changed the length of the text: %d, want %d", len(got), len(sql))
+	}
+	if strings.Contains(strings.ToLower(got), "epoch") {
+		t.Errorf("keyword-call arguments survived the mask: %q", got)
+	}
+	if !strings.Contains(got, "FROM models") {
+		t.Errorf("mask blanked text outside the call: %q", got)
 	}
 }

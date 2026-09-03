@@ -48,5 +48,6 @@ func Go(root string, cfg *config.Config, rep *report.Report) (*Service, *Program
 		ev.Gates = walker.Gates(route.Entry)
 		svc.Routes = append(svc.Routes, ev)
 	}
+	walker.AuditAssembled()
 	return svc, prog, nil
 }

@@ -35,6 +35,7 @@ type Walker struct {
 	memo    map[string]*Result
 	active  map[string]bool
 	holders map[string]bool // structs already audited for concurrent state
+	claimed map[string]bool // assembled-statement declarations a real function used
 }
 
 // Result is the evidence collected from one function and everything it calls.
@@ -60,6 +61,7 @@ func NewWalker(p *Program, cfg *config.Config, rep *report.Report) *Walker {
 		memo:    map[string]*Result{},
 		active:  map[string]bool{},
 		holders: map[string]bool{},
+		claimed: map[string]bool{},
 	}
 }
 
@@ -112,8 +114,10 @@ func (w *Walker) Func(sym *FuncSym) *Result {
 		return &Result{pending: map[string]bool{key: true}}
 	}
 	w.active[key] = true
-	f := &fnWalk{w: w, sym: sym, pkg: sym.Pkg, info: sym.Pkg.TypesInfo, varNode: map[types.Object]string{}}
+	f := &fnWalk{w: w, sym: sym, pkg: sym.Pkg, info: sym.Pkg.TypesInfo,
+		varNode: map[types.Object]string{}, declPos: sym.Decl.Pos()}
 	f.stmt(sym.Decl.Body)
+	f.auditQueries()
 	delete(w.active, key)
 	// This frame just supplied its own body, so it is no longer pending for
 	// anyone; whatever remains is a cycle still being unwound above us.
@@ -128,8 +132,10 @@ func (w *Walker) Func(sym *FuncSym) *Result {
 // Lit returns the evidence for an inline function literal (a handler written
 // directly in the route table).
 func (w *Walker) Lit(pkg *packages.Package, lit *ast.FuncLit, label string) *Result {
-	f := &fnWalk{w: w, sym: &FuncSym{Pkg: pkg, Name: label}, pkg: pkg, info: pkg.TypesInfo, varNode: map[types.Object]string{}}
+	f := &fnWalk{w: w, sym: &FuncSym{Pkg: pkg, Name: label}, pkg: pkg, info: pkg.TypesInfo,
+		varNode: map[types.Object]string{}, declPos: lit.Pos()}
 	f.stmt(lit.Body)
+	f.auditQueries()
 	return &Result{Accesses: dedupeAccesses(f.out)}
 }
 
@@ -144,6 +150,16 @@ type fnWalk struct {
 	calls   []*ast.CallExpr         // innermost call, for literal-mode context
 	compare int                     // >0 while inside a comparison or switch tag
 	pending map[string]bool         // in-progress callees this frame did not fold in
+
+	// This body's side of the readable-statement checks: how much text was
+	// recoverable here against how much the driver was handed. See queries.go.
+	sqlSeen      int
+	dbSites      []string
+	dbPos        token.Pos         // the first driver call, for citing a declared table
+	declPos      token.Pos         // this function's own declaration
+	opaqueSeen   bool              // unreadable text was found, reported or declared
+	opaqueTables map[string]string // tables named in unreadable text, and where
+	ctes         map[string]bool   // WITH clauses this body declares, which shadow tables
 
 	out []ir.Access
 }
@@ -352,6 +368,14 @@ func (f *fnWalk) visit(e ast.Expr, mode string) {
 		f.visit(x.Key, ModeRead)
 		f.visit(x.Value, ModeRead)
 	case *ast.BinaryExpr:
+		// A statement or URL assembled from constants — `"SELECT " + userColumns +
+		// " FROM users"` — is a single string as far as the program is concerned, and
+		// go/types has already folded it. Classifying the operands one at a time
+		// would only ever see fragments, and " FROM users WHERE id = $1" is not a
+		// statement, so the table would go unrecorded while the report stayed clean.
+		if f.constant(x) {
+			return
+		}
 		if x.Op == token.EQL || x.Op == token.NEQ {
 			f.compare++
 			f.visit(x.X, ModeRead)
@@ -482,6 +506,12 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 
 	fn := funcObject(f.info, x.Fun)
 	if sel, ok := unparen(x.Fun).(*ast.SelectorExpr); ok {
+		if f.isQueryCall(sel) {
+			if len(f.dbSites) == 0 {
+				f.dbPos = x.Pos()
+			}
+			f.dbSites = append(f.dbSites, f.w.P.PosRef(x.Pos()))
+		}
 		if selection := f.info.Selections[sel]; selection != nil && selection.Kind() != types.FieldVal {
 			recvType := selection.Recv()
 			mode := syncMode(recvType, sel.Sel.Name)
@@ -730,6 +760,8 @@ func (f *fnWalk) classify(s string, pos token.Pos) {
 	}
 	switch {
 	case IsSQL(s):
+		f.sqlSeen++
+		f.auditText(s, pos, true)
 		for _, acc := range Tables(s) {
 			if !f.w.tables[acc.Table] {
 				f.w.Rep.UnknownTable(acc.Table, f.w.P.PosRef(pos))
@@ -748,6 +780,10 @@ func (f *fnWalk) classify(s string, pos token.Pos) {
 			return
 		}
 		f.record(node, f.ioMode(), pos)
+	default:
+		// Text that did not parse as a statement but still names a table is a
+		// fragment of one, assembled at run time out of the extractor's sight.
+		f.auditText(s, pos, false)
 	}
 }
 

@@ -88,6 +88,10 @@
     "traverse": ["api", "store", "fetch", "flight"],
     "inherit": [],
     "preferImpl": ["Postgres"],
+    "sqlDriver": {
+      "package": "database/sql",
+      "methods": ["QueryContext", "QueryRowContext", "ExecContext"]
+    },
     "strict": ["api:Server"],
     "fields": {
       "api:Server.mux": "@skip",

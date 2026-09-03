@@ -2234,6 +2234,25 @@
     "preferImpl": [
       "Postgres"
     ],
+    "sqlDriver": {
+      "package": "github.com/jackc/pgx",
+      "methods": [
+        "Query",
+        "QueryRow",
+        "Exec",
+        "Queue"
+      ],
+      "assembled": {
+        "coordinator/store:PostgresStore.Leaderboard": {
+          "provider_earnings": "R",
+          "ledger_entries": "R"
+        },
+        "coordinator/store:PostgresStore.NetworkTotals": {
+          "provider_earnings": "R",
+          "ledger_entries": "R"
+        }
+      }
+    },
     "strict": [
       "coordinator/api:Server"
     ],

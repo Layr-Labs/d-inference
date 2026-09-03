@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"go/ast"
 	"regexp"
 	"sort"
@@ -133,18 +134,34 @@ func Tables(sql string) []TableAccess {
 var keywordCalls = []string{"extract", "substring", "trim", "overlay", "position"}
 
 // maskKeywordCalls blanks the argument list of each keyword-argument call,
-// tracking nesting so a call containing parentheses is masked in full.
+// tracking nesting so a call containing parentheses is masked in full. Names are
+// matched without regard to case, so the mask works on statement text that has
+// not been normalized — `auditText` needs the original case to tell SQL keywords
+// from the same words in prose.
+//
+// The case-folded copy is folded byte by byte over ASCII rather than through
+// strings.ToLower, whose output can be a different length than its input (U+212A
+// KELVIN SIGN is three bytes and folds to one). One such rune anywhere in a
+// statement would shift every offset after it and mask the wrong bytes; the names
+// being matched are ASCII, so folding only ASCII loses nothing.
 func maskKeywordCalls(b []byte) []byte {
+	lower := make([]byte, len(b))
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		lower[i] = c
+	}
 	for _, name := range keywordCalls {
 		for at := 0; at < len(b); {
-			j := strings.Index(string(b[at:]), name+"(")
+			j := bytes.Index(lower[at:], []byte(name+"("))
 			if j < 0 {
 				break
 			}
 			start := at + j
 			open := start + len(name)
 			at = open + 1
-			if start > 0 && isIdentByte(b[start-1]) {
+			if start > 0 && isIdentByte(lower[start-1]) {
 				continue // the tail of a longer identifier
 			}
 			depth := 0
@@ -161,6 +178,7 @@ func maskKeywordCalls(b []byte) []byte {
 				}
 				if k > open {
 					b[k] = ' '
+					lower[k] = ' '
 				}
 			}
 		}

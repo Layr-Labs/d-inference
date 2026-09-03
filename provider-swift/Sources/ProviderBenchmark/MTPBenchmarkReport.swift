@@ -88,6 +88,50 @@ public struct MTPBenchmarkMTPExpectation: Codable, Equatable, Sendable {
     }
 }
 
+/// How the runner treats a candidate mode whose emitted tokens differ from the
+/// target-only baseline.
+///
+/// `.enforce` is the certification contract: any divergence aborts the run,
+/// because a production matrix may not publish a speedup for a stream that is
+/// not the target's. `.record` is the measurement contract: divergence is
+/// written into the case as evidence (which rows, where they first differ) and
+/// the arm still reports throughput. A long-output THE-TEST sweep uses
+/// `.record` — near-tie greedy divergence at 1,024 tokens is expected and is
+/// answered by an end-of-program task eval, not by aborting the sweep.
+public enum MTPBenchmarkParityPolicy: String, Codable, Sendable {
+    case enforce
+    case record
+}
+
+/// One row's divergence from the target-only baseline. `firstDivergenceIndex`
+/// is the emitted-token position (0-based) where the two streams first differ;
+/// it is nil when one stream is a strict prefix of the other, in which case the
+/// counts carry the whole story.
+public struct MTPBenchmarkParityDivergence: Codable, Equatable, Sendable {
+    public let row: Int
+    public let firstDivergenceIndex: Int?
+    public let baselineTokenCount: Int
+    public let candidateTokenCount: Int
+    public let baselineFinishReason: String
+    public let candidateFinishReason: String
+
+    public init(
+        row: Int,
+        firstDivergenceIndex: Int?,
+        baselineTokenCount: Int,
+        candidateTokenCount: Int,
+        baselineFinishReason: String,
+        candidateFinishReason: String
+    ) {
+        self.row = row
+        self.firstDivergenceIndex = firstDivergenceIndex
+        self.baselineTokenCount = baselineTokenCount
+        self.candidateTokenCount = candidateTokenCount
+        self.baselineFinishReason = baselineFinishReason
+        self.candidateFinishReason = candidateFinishReason
+    }
+}
+
 public struct MTPBenchmarkStopPolicy: Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case rawFixedLengthNoStop = "raw_fixed_length_no_stop"
@@ -485,6 +529,14 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
     public let medianAggregateDecodeTokensPerSecond: Double?
     public let tokenParity: Bool
     public let parityMismatchRows: [Int]
+    /// Where each mismatching row first left the baseline. Populated only under
+    /// `MTPBenchmarkParityPolicy.record`; `.enforce` throws before a case with
+    /// a mismatch can be aggregated, so this stays empty there.
+    public let parityDivergences: [MTPBenchmarkParityDivergence]
+    /// True when every measurement repetition of this case emitted the same
+    /// tokens and terminal reasons. `.enforce` throws on an unstable case;
+    /// `.record` reports it here and keeps the median.
+    public let repetitionStable: Bool
     public let rows: [MTPBenchmarkRowResult]
     public let metrics: MTPBenchmarkMetrics
 
@@ -495,6 +547,8 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         medianAggregateDecodeTokensPerSecond: Double?,
         tokenParity: Bool,
         parityMismatchRows: [Int],
+        parityDivergences: [MTPBenchmarkParityDivergence] = [],
+        repetitionStable: Bool = true,
         rows: [MTPBenchmarkRowResult],
         metrics: MTPBenchmarkMetrics
     ) {
@@ -504,6 +558,8 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         self.medianAggregateDecodeTokensPerSecond = medianAggregateDecodeTokensPerSecond
         self.tokenParity = tokenParity
         self.parityMismatchRows = parityMismatchRows
+        self.parityDivergences = parityDivergences
+        self.repetitionStable = repetitionStable
         self.rows = rows
         self.metrics = metrics
     }
@@ -516,6 +572,8 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
             medianAggregateDecodeTokensPerSecond: nil,
             tokenParity: tokenParity,
             parityMismatchRows: parityMismatchRows,
+            parityDivergences: parityDivergences,
+            repetitionStable: repetitionStable,
             rows: rows.map { $0.withoutPerformanceMeasurements() },
             metrics: metrics.withoutPerformanceMeasurements())
     }
@@ -550,7 +608,15 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
     public static func shortContextMatrix(
         target: MTPBenchmarkArtifactFacts,
         assistant: MTPBenchmarkArtifactFacts,
-        purpose: MTPBenchmarkPurpose = .rawParityStress
+        purpose: MTPBenchmarkPurpose = .rawParityStress,
+        /// False when a performance sweep opted into the fixed-length no-stop
+        /// policy: throughput is then measured without the production EOS set,
+        /// so the serving-stop gate is out of scope for that report.
+        productionStopPolicy: Bool = true,
+        /// True only when every prompt in the run is long enough to have
+        /// crossed the target's sliding-window boundary (Gemma 4 slides at
+        /// 1,024). A short chat matrix must keep claiming `not_implemented`.
+        longContext: Bool = false
     ) -> MTPBenchmarkCoverage {
         let targetName = target.modelID.lowercased()
         let assistantName = assistant.modelID.lowercased()
@@ -585,15 +651,15 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
             structuredOutput: .notImplemented,
             imagePrefill: .notInThisReport,
             videoPrefill: .notImplemented,
-            longSlidingAndPrefixContexts: .notImplemented,
+            longSlidingAndPrefixContexts: longContext ? .covered : .notImplemented,
             opaqueTokenEvidence: .covered,
-            productionServingStopPolicy: purpose == .rawParityStress
+            productionServingStopPolicy: purpose == .rawParityStress || !productionStopPolicy
                 ? .notInThisReport : .covered,
             artifactProvenanceAndDrift:
                 target.hasVerifiableProvenance && assistant.hasVerifiableProvenance
                     ? .covered : .notRun,
             conservativeAssistantSizing: .covered,
-            scopeNote: "Short-context text matrix only. \(pairingNote) Generated token arrays are never persisted. Official-tensor, structured-output, video, and long/prefix-context gates are not implemented here.")
+            scopeNote: "\(longContext ? "Long-context" : "Short-context") text matrix only. \(pairingNote) Generated token arrays are never persisted. Official-tensor, structured-output, video, and long/prefix-context gates are not implemented here.")
     }
 
     public init(
@@ -641,7 +707,7 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 5
+    public static let currentSchemaVersion = 6
 
     public let schemaVersion: Int
     public let runFingerprint: String
@@ -649,6 +715,10 @@ public struct MTPBenchmarkReport: Codable, Sendable {
     public let purpose: MTPBenchmarkPurpose
     public let mtpExpectation: MTPBenchmarkMTPExpectation
     public let stopPolicy: MTPBenchmarkStopPolicySummary
+    public let parityPolicy: MTPBenchmarkParityPolicy
+    /// Prompt lengths in tokens, in submission order. THE TEST's evidence that
+    /// the measured context really was 17,408 tokens lives here.
+    public let promptTokenCounts: [Int]
     public let startedAt: Date
     public let generatedAt: Date
     public let completedAt: Date?
@@ -680,6 +750,8 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         purpose: MTPBenchmarkPurpose,
         mtpExpectation: MTPBenchmarkMTPExpectation = .active,
         stopPolicy: MTPBenchmarkStopPolicy,
+        parityPolicy: MTPBenchmarkParityPolicy = .enforce,
+        promptTokenCounts: [Int] = [],
         startedAt: Date,
         generatedAt: Date = Date(),
         completedAt: Date?,
@@ -705,6 +777,8 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         self.purpose = purpose
         self.mtpExpectation = mtpExpectation
         self.stopPolicy = MTPBenchmarkStopPolicySummary(stopPolicy)
+        self.parityPolicy = parityPolicy
+        self.promptTokenCounts = promptTokenCounts
         self.startedAt = startedAt
         self.generatedAt = generatedAt
         self.completedAt = completedAt
@@ -945,6 +1019,7 @@ public enum MTPBenchmarkError: Error, CustomStringConvertible, Sendable {
     case invalidMetrics(String)
     case inconsistentRepetition(String)
     case tokenParityMismatch(mode: String, batchSize: Int, rows: [Int])
+    case invalidSyntheticPrompt(String)
     case invalidBuildConfiguration(String)
     case artifactIdentity(String)
     case artifactDrift(String)
@@ -985,6 +1060,8 @@ public enum MTPBenchmarkError: Error, CustomStringConvertible, Sendable {
             return "invalid MTP benchmark token timeline: \(detail)"
         case .invalidMetrics(let detail):
             return "invalid MTP benchmark engine metrics: \(detail)"
+        case .invalidSyntheticPrompt(let detail):
+            return "synthetic MTP benchmark prompt is invalid: \(detail)"
         case .inconsistentRepetition(let detail):
             return "inconsistent MTP benchmark repetition: \(detail)"
         case .tokenParityMismatch(let mode, let batchSize, let rows):

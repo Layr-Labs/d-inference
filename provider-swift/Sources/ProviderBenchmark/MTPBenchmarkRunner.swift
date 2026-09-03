@@ -51,6 +51,19 @@ public struct MTPBenchmarkConfiguration: Sendable {
     public let adaptiveDraftingBatchSizes: Set<Int>
     public let allowedSkipReasons: Set<String>
     public let runFingerprint: String
+    /// `.enforce` aborts the run on the first divergence from the target-only
+    /// baseline; `.record` writes the divergence into the case and keeps
+    /// measuring. See `MTPBenchmarkParityPolicy`.
+    public let parityPolicy: MTPBenchmarkParityPolicy
+    /// Opt-in escape from the purpose/stop-policy pairing: a performance sweep
+    /// may run the raw fixed-length policy so every arm emits exactly
+    /// `maxTokensPerRow` tokens and the tok/s numbers are comparable across
+    /// modes that would otherwise stop at different EOS positions. Off by
+    /// default — a certification run must carry the production stop set.
+    public let allowsRawFixedLengthPerformance: Bool
+    /// Declares that every prompt crosses the target's sliding window, so the
+    /// report's long-context coverage gate may say `covered`.
+    public let longContextEvidence: Bool
     public let checkpointDestination: MTPBenchmarkReportDestination?
     /// Elapsed run budget checked around factory creation, submission,
     /// consumption, and shutdown. Synchronous MLX calls are not safely
@@ -72,6 +85,9 @@ public struct MTPBenchmarkConfiguration: Sendable {
         adaptiveDraftingBatchSizes: Set<Int>? = nil,
         allowedSkipReasons: Set<String> = [],
         runFingerprint: String = UUID().uuidString,
+        parityPolicy: MTPBenchmarkParityPolicy = .enforce,
+        allowsRawFixedLengthPerformance: Bool = false,
+        longContextEvidence: Bool = false,
         checkpointDestination: MTPBenchmarkReportDestination? = nil,
         deadline: Duration = .seconds(3600)
     ) {
@@ -88,6 +104,9 @@ public struct MTPBenchmarkConfiguration: Sendable {
         self.adaptiveDraftingBatchSizes = adaptiveDraftingBatchSizes ?? Set(batchSizes)
         self.allowedSkipReasons = allowedSkipReasons
         self.runFingerprint = runFingerprint
+        self.parityPolicy = parityPolicy
+        self.allowsRawFixedLengthPerformance = allowsRawFixedLengthPerformance
+        self.longContextEvidence = longContextEvidence
         self.checkpointDestination = checkpointDestination
         self.deadline = deadline
     }
@@ -145,7 +164,11 @@ public enum MTPBenchmarkRunner {
 
         let deadlineAt = startedAt + configuration.deadline
         let coverage = MTPBenchmarkCoverage.shortContextMatrix(
-            target: target, assistant: assistant, purpose: configuration.purpose)
+            target: target,
+            assistant: assistant,
+            purpose: configuration.purpose,
+            productionStopPolicy: configuration.stopPolicy.kind == .productionTargetEOS,
+            longContext: configuration.longContextEvidence)
         let orderedCases = caseOrder(configuration: configuration)
         let tokenEvidenceSalt = MTPBenchmarkDigest.randomSalt()
         var results: [MTPBenchmarkCaseResult] = []
@@ -159,6 +182,8 @@ public enum MTPBenchmarkRunner {
                 purpose: configuration.purpose,
                 mtpExpectation: configuration.mtpExpectation,
                 stopPolicy: configuration.stopPolicy,
+                parityPolicy: configuration.parityPolicy,
+                promptTokenCounts: configuration.prompts.map { $0.tokenIDs.count },
                 startedAt: startedDate,
                 completedAt: complete ? Date() : nil,
                 complete: complete,
@@ -192,11 +217,17 @@ public enum MTPBenchmarkRunner {
                     deadlineAt: deadlineAt,
                     sessions: sessions))
             }
-            try validateRepetitionConsistency(samples, key: key)
+            let repetitionStable = repetitionsAgree(samples)
+            if !repetitionStable, configuration.parityPolicy == .enforce {
+                throw MTPBenchmarkError.inconsistentRepetition(
+                    "\(key.mode.label), B=\(key.batchSize) changed tokens, prompts, "
+                        + "or terminal reason")
+            }
 
             let sampleTokens = samples.map { $0.batch.rows.map(\.tokenIDs) }
             let sampleReasons = samples.map { $0.batch.rows.map(\.finishReason) }
             let canonicalTokens = sampleTokens[0]
+            var divergences: [MTPBenchmarkParityDivergence] = []
             if key.mode.kind == .targetOnly {
                 baselineTokens[key.batchSize] = canonicalTokens
                 baselineFinishReasons[key.batchSize] = sampleReasons[0]
@@ -206,26 +237,34 @@ public enum MTPBenchmarkRunner {
                 else {
                     throw MTPBenchmarkError.missingTargetOnlyBaseline
                 }
-                for tokens in sampleTokens {
-                    let mismatches = parityMismatches(baseline: baseline, candidate: tokens)
-                    guard mismatches.isEmpty, baseline.count == tokens.count else {
-                        throw MTPBenchmarkError.tokenParityMismatch(
-                            mode: key.mode.label,
-                            batchSize: key.batchSize,
-                            rows: mismatches)
-                    }
-                }
                 // Identical tokens with a different terminal reason is still
                 // an OpenAI-visible behavior divergence (for example EOS
                 // exactly at the budget reported as "stop" by target-only but
                 // "length" by MTP). Parity certifies both.
-                for reasons in sampleReasons where reasons != baselineReasons {
-                    let rows = zip(reasons, baselineReasons).enumerated()
-                        .filter { $0.element.0 != $0.element.1 }
-                        .map(\.offset)
+                divergences = parityDivergences(
+                    baselineTokens: baseline,
+                    baselineFinishReasons: baselineReasons,
+                    sampleTokens: sampleTokens,
+                    sampleFinishReasons: sampleReasons)
+                if !divergences.isEmpty, configuration.parityPolicy == .enforce {
+                    // A row whose streams are the same length with no differing
+                    // position emitted identical tokens: the divergence is the
+                    // terminal reason alone, which is its own OpenAI-visible
+                    // defect and reads nothing like a parity break.
+                    let tokenRows = divergences.filter {
+                        !($0.firstDivergenceIndex == nil
+                            && $0.baselineTokenCount == $0.candidateTokenCount)
+                    }
+                    guard tokenRows.isEmpty else {
+                        throw MTPBenchmarkError.tokenParityMismatch(
+                            mode: key.mode.label,
+                            batchSize: key.batchSize,
+                            rows: tokenRows.map(\.row))
+                    }
                     throw MTPBenchmarkError.invalidMetrics(
                         "\(key.mode.label), B=\(key.batchSize) finish reasons diverge "
-                            + "from the target-only baseline at rows \(rows)")
+                            + "from the target-only baseline at rows "
+                            + "\(divergences.map(\.row))")
                 }
             }
 
@@ -233,7 +272,9 @@ public enum MTPBenchmarkRunner {
                 samples: samples,
                 key: key,
                 performanceEligible: configuration.purpose.performanceEligible,
-                tokenEvidenceSalt: tokenEvidenceSalt))
+                tokenEvidenceSalt: tokenEvidenceSalt,
+                divergences: divergences,
+                repetitionStable: repetitionStable))
             if let checkpointDestination = configuration.checkpointDestination {
                 try requireBeforeDeadline(deadlineAt)
                 try report(complete: false).write(to: checkpointDestination)
@@ -302,6 +343,21 @@ public enum MTPBenchmarkRunner {
             guard configuration.stopPolicy.stopTokenIDs.isEmpty else {
                 throw MTPBenchmarkError.invalidStopPolicy(
                     "raw parity must not carry stop token IDs")
+            }
+        case (.productionPerformance, .rawFixedLengthNoStop):
+            // Opt-in only. A fixed-length performance sweep makes every arm
+            // emit exactly maxTokensPerRow tokens, so tok/s is not confounded
+            // by arms stopping at different EOS positions. It certifies
+            // nothing about production stop behaviour, which is why the
+            // configuration has to ask for it by name.
+            guard configuration.allowsRawFixedLengthPerformance else {
+                throw MTPBenchmarkError.invalidStopPolicy(
+                    "production performance requires the production stop policy "
+                        + "unless allowsRawFixedLengthPerformance is set")
+            }
+            guard configuration.stopPolicy.stopTokenIDs.isEmpty else {
+                throw MTPBenchmarkError.invalidStopPolicy(
+                    "raw fixed length must not carry stop token IDs")
             }
         case (.productionCorrectness, .productionTargetEOS),
              (.productionPerformance, .productionTargetEOS):
@@ -914,30 +970,69 @@ public enum MTPBenchmarkRunner {
             finishReason: finishReason)
     }
 
-    private static func validateRepetitionConsistency(
-        _ samples: [CaseSample],
-        key: CaseKey
-    ) throws {
-        guard let first = samples.first else {
-            throw MTPBenchmarkError.invalidMeasurementRepetitions(0)
-        }
+    /// True when every measurement repetition emitted the same prompts,
+    /// tokens, and terminal reasons.
+    private static func repetitionsAgree(_ samples: [CaseSample]) -> Bool {
+        guard let first = samples.first else { return false }
         let expected = first.batch.rows.map { ($0.promptName, $0.tokenIDs, $0.finishReason) }
         for sample in samples.dropFirst() {
             let actual = sample.batch.rows.map { ($0.promptName, $0.tokenIDs, $0.finishReason) }
             guard actual.elementsEqual(expected, by: {
                 $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2
-            }) else {
-                throw MTPBenchmarkError.inconsistentRepetition(
-                    "\(key.mode.label), B=\(key.batchSize) changed tokens, prompts, or terminal reason")
+            }) else { return false }
+        }
+        return true
+    }
+
+    /// Every row that left the target-only baseline in ANY repetition, with the
+    /// earliest emitted-token position at which it did. A row whose stream is a
+    /// strict prefix of the baseline (or vice versa) reports a nil index and is
+    /// identified by the two token counts. Row counts that disagree are
+    /// themselves a divergence, reported against the rows that exist.
+    static func parityDivergences(
+        baselineTokens: [[Int]],
+        baselineFinishReasons: [String],
+        sampleTokens: [[[Int]]],
+        sampleFinishReasons: [[String]]
+    ) -> [MTPBenchmarkParityDivergence] {
+        var byRow: [Int: MTPBenchmarkParityDivergence] = [:]
+        for (tokens, reasons) in zip(sampleTokens, sampleFinishReasons) {
+            let rowCount = max(baselineTokens.count, tokens.count)
+            for row in 0..<rowCount {
+                let base = row < baselineTokens.count ? baselineTokens[row] : []
+                let candidate = row < tokens.count ? tokens[row] : []
+                let baseReason = row < baselineFinishReasons.count
+                    ? baselineFinishReasons[row] : "missing"
+                let candidateReason = row < reasons.count ? reasons[row] : "missing"
+                guard base != candidate || baseReason != candidateReason else { continue }
+                let firstIndex = (0..<min(base.count, candidate.count))
+                    .first { base[$0] != candidate[$0] }
+                let divergence = MTPBenchmarkParityDivergence(
+                    row: row,
+                    firstDivergenceIndex: firstIndex,
+                    baselineTokenCount: base.count,
+                    candidateTokenCount: candidate.count,
+                    baselineFinishReason: baseReason,
+                    candidateFinishReason: candidateReason)
+                if let existing = byRow[row] {
+                    let existingIndex = existing.firstDivergenceIndex ?? Int.max
+                    let newIndex = firstIndex ?? Int.max
+                    if newIndex < existingIndex { byRow[row] = divergence }
+                } else {
+                    byRow[row] = divergence
+                }
             }
         }
+        return byRow.keys.sorted().compactMap { byRow[$0] }
     }
 
     private static func aggregate(
         samples: [CaseSample],
         key: CaseKey,
         performanceEligible: Bool,
-        tokenEvidenceSalt: Data
+        tokenEvidenceSalt: Data,
+        divergences: [MTPBenchmarkParityDivergence],
+        repetitionStable: Bool
     ) -> MTPBenchmarkCaseResult {
         let sortedSamples = samples.sorted {
             $0.batch.aggregateDecodeTokensPerSecond < $1.batch.aggregateDecodeTokensPerSecond
@@ -973,20 +1068,12 @@ public enum MTPBenchmarkRunner {
             medianAggregateDecodeTokensPerSecond: performanceEligible
                 ? median(samples.map { $0.batch.aggregateDecodeTokensPerSecond })
                 : nil,
-            tokenParity: true,
-            parityMismatchRows: [],
+            tokenParity: divergences.isEmpty,
+            parityMismatchRows: divergences.map(\.row),
+            parityDivergences: divergences,
+            repetitionStable: repetitionStable,
             rows: rows,
             metrics: representative.metrics)
-    }
-
-    private static func parityMismatches(
-        baseline: [[Int]], candidate: [[Int]]
-    ) -> [Int] {
-        let count = max(baseline.count, candidate.count)
-        return (0..<count).filter { row in
-            guard row < baseline.count, row < candidate.count else { return true }
-            return baseline[row] != candidate[row]
-        }
     }
 
     private static func validateArtifactBoundary(

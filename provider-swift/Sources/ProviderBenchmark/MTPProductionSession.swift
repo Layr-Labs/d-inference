@@ -153,6 +153,47 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         return MTPBenchmarkPrompt(name: name, tokenIDs: tokens)
     }
 
+    /// One chat turn of exactly `totalTokens` prompt tokens, ending in a
+    /// continuation instruction. `variant` rotates the filler so a multi-row
+    /// batch does not submit B identical prompts (identical prompts route to
+    /// identical experts and understate MoE traffic).
+    ///
+    /// The prompt is grown through the real chat template until the tokenizer
+    /// reports at least `totalTokens`, then trimmed to exactly that count by
+    /// deleting mid-filler tokens. Growth is bounded: a template that never
+    /// reaches the target throws rather than looping.
+    public func syntheticPrompt(
+        name: String,
+        totalTokens: Int,
+        variant: Int = 0
+    ) throws -> MTPBenchmarkPrompt {
+        guard totalTokens > 0 else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "totalTokens must be positive, got \(totalTokens)")
+        }
+        var paragraphs = max(1, totalTokens / 180)
+        var tokens: [Int] = []
+        for _ in 0..<12 {
+            let body = "Revision \(variant). "
+                + MTPBenchmarkSyntheticPrompt.body(paragraphs: paragraphs)
+            tokens = try tokenize(
+                name: name,
+                messages: [["role": "user", "content": body]]).tokenIDs
+            if tokens.count >= totalTokens { break }
+            let shortfall = totalTokens - tokens.count
+            paragraphs += max(1, shortfall / 180 + 1)
+        }
+        guard tokens.count >= totalTokens else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "could not grow the templated prompt to \(totalTokens) tokens "
+                    + "(reached \(tokens.count))")
+        }
+        return MTPBenchmarkPrompt(
+            name: name,
+            tokenIDs: try MTPBenchmarkSyntheticPrompt.trimmedToExactLength(
+                tokenIDs: tokens, target: totalTokens))
+    }
+
     public func makeSessionFactory() -> MTPBenchmarkSessionFactory {
         MTPBenchmarkSessionFactory { [self] mode, batchSize in
             try await self.makeSession(mode: mode, batchSize: batchSize)

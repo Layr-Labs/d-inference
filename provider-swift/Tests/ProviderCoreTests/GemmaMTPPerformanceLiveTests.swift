@@ -6,7 +6,7 @@ import Testing
 @Suite("Gemma 4 production MTP validation matrix", .serialized)
 struct GemmaMTPPerformanceLiveTests {
     @Test(
-        "B=1/2/4/8 raw parity or production performance matrix",
+        "raw parity or production performance matrix over the configured modes and batch sizes",
         .enabled(
             if: MTPProductionLiveFixtures.enabled,
             MTPProductionLiveFixtures.disabledReason))
@@ -15,14 +15,19 @@ struct GemmaMTPPerformanceLiveTests {
         let bundle = try await MTPProductionLiveFixtures.loadBundle()
         let purpose = MTPProductionLiveFixtures.benchmarkPurpose
         let mtpExpectation = MTPProductionLiveFixtures.benchmarkMTPExpectation
+        let batchSizes = MTPProductionLiveFixtures.benchmarkBatchSizes
+        let modes = try MTPProductionLiveFixtures.benchmarkModes()
+        let parityPolicy = MTPProductionLiveFixtures.benchmarkParityPolicy
+        let prompts = try MTPProductionLiveFixtures.prompts(bundle: bundle)
+        print("[mtp-benchmark] prompt token counts: \(prompts.map(\.tokenIDs.count))")
         let report = try await MTPBenchmarkRunner.run(
             target: bundle.targetFacts,
             assistant: bundle.assistantFacts,
             hardware: try MTPBenchmarkModelFacts.hardware(),
             configuration: MTPBenchmarkConfiguration(
-                prompts: try MTPProductionLiveFixtures.prompts(bundle: bundle),
-                batchSizes: [1, 2, 4, 8],
-                modes: MTPBenchmarkRunner.standardModes,
+                prompts: prompts,
+                batchSizes: batchSizes,
+                modes: modes,
                 maxTokensPerRow: MTPProductionLiveFixtures.benchmarkMaxTokens,
                 purpose: purpose,
                 mtpExpectation: mtpExpectation,
@@ -31,15 +36,36 @@ struct GemmaMTPPerformanceLiveTests {
                 measurementRepetitions: MTPProductionLiveFixtures.benchmarkRepetitions,
                 modeOrderSeed: MTPProductionLiveFixtures.benchmarkModeOrderSeed,
                 runFingerprint: try MTPProductionLiveFixtures.benchmarkRunFingerprint(),
+                parityPolicy: parityPolicy,
+                allowsRawFixedLengthPerformance:
+                    MTPProductionLiveFixtures.benchmarkUsesRawStopPolicy,
+                longContextEvidence:
+                    MTPProductionLiveFixtures.benchmarkLongContextEvidence,
                 checkpointDestination: output,
                 deadline: MTPProductionLiveFixtures.benchmarkDeadline),
             sessions: bundle.makeSessionFactory())
 
-        #expect(report.cases.count == 40)
+        #expect(report.cases.count == modes.count * batchSizes.count)
         #expect(report.complete)
         #expect(report.purpose == purpose)
         #expect(report.mtpExpectation == mtpExpectation)
-        #expect(report.cases.allSatisfy { $0.tokenParity })
+        // Under `.enforce` the runner has already thrown on any divergence, so
+        // this is the certification assertion. Under `.record` divergence is
+        // the measurement's output, not its failure: the case carries the rows
+        // and the first divergence position, and the arm still reports tok/s.
+        if parityPolicy == .enforce {
+            #expect(report.cases.allSatisfy { $0.tokenParity })
+        } else {
+            for result in report.cases where !result.tokenParity {
+                print(
+                    "[mtp-benchmark] parity divergence \(result.mode.label) B=\(result.batchSize): "
+                        + result.parityDivergences.map {
+                            "row \($0.row) first=\($0.firstDivergenceIndex.map(String.init) ?? "prefix") "
+                                + "base=\($0.baselineTokenCount)/\($0.baselineFinishReason) "
+                                + "cand=\($0.candidateTokenCount)/\($0.candidateFinishReason)"
+                        }.joined(separator: "; "))
+            }
+        }
         let requestedCases = report.cases.filter { $0.mode.requestsMTP }
         if mtpExpectation.expectsInactive {
             #expect(requestedCases.allSatisfy {

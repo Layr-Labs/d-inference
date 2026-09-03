@@ -25,7 +25,17 @@ package struct LumeGuestReadinessPolicy: Sendable {
 }
 
 enum LumeCredentialedGuestReadinessProbe {
-    static let guestCommandTimeoutSeconds: UInt32 = 1
+    /// The guest-side deadline for the probe's `/usr/bin/true`.
+    ///
+    /// This was 1 second, which made the probe measure load rather than
+    /// readiness. A guest one minute out of a fresh macOS install sits at a
+    /// load average around 60, and the wrapper's `/usr/bin/true` is spawned but
+    /// killed before it finishes, which the envelope reports as `124` and
+    /// `timed_out` -- indistinguishable from a broken executor. Measured on the
+    /// same VM: at load 60 the probe reports a timeout, and one minute later at
+    /// load 28 the identical command returns exit 0. Ten seconds stays well
+    /// inside the 35s Lume budget and the 40s attempt timeout.
+    static let guestCommandTimeoutSeconds: UInt32 = 10
     static let lumeTimeoutSeconds: UInt32 = 35
     static let maximumOutputBytes = 4 * 1_024
 
@@ -52,6 +62,17 @@ enum LumeCredentialedGuestReadinessProbe {
         )
     }
 
+    /// Why the guest is not ready yet, in words a timeout can repeat.
+    ///
+    /// The probe used to return `Bool`, so a readiness timeout could say only
+    /// that it had happened. Working out whether that meant no SSH, a broken
+    /// wrapper, or a guest that was merely busy took a live VM and a hand-run
+    /// command; the reason belongs in the error.
+    package enum Readiness: Sendable, Equatable {
+        case ready
+        case notReady(String)
+    }
+
     static func run(
         runner: SandboxProcessRunner,
         executable: URL,
@@ -62,7 +83,7 @@ enum LumeCredentialedGuestReadinessProbe {
         policy: LumeGuestReadinessPolicy,
         clock: ContinuousClock,
         deadline: ContinuousClock.Instant
-    ) async throws -> Bool {
+    ) async throws -> Readiness {
         let deterministicEnvironment = environment.merging(
             [
                 "LANG": "C",
@@ -96,16 +117,36 @@ enum LumeCredentialedGuestReadinessProbe {
                 maximumOutputBytes: maximumOutputBytes
             )
         }
-        let guestResult = try? LumeGuestCommandResultDecoder.decode(
+        guard result.exitCode == 0 else {
+            return .notReady("lume ssh exited \(result.exitCode)")
+        }
+        guard !result.standardOutputTruncated,
+              !result.standardErrorTruncated
+        else {
+            return .notReady("lume ssh output was truncated")
+        }
+        guard let guestResult = try? LumeGuestCommandResultDecoder.decode(
             result.standardOutput
-        )
-        return result.exitCode == 0
-            && !result.standardOutputTruncated
-            && !result.standardErrorTruncated
-            && guestResult?.exitCode == 0
-            && guestResult?.timedOut == false
-            && guestResult?.standardOutputTruncated == false
-            && guestResult?.standardErrorTruncated == false
+        ) else {
+            return .notReady("the guest returned no decodable result envelope")
+        }
+        guard !guestResult.timedOut else {
+            return .notReady(
+                "the guest command hit its \(guestCommandTimeoutSeconds)s "
+                    + "deadline, which a heavily loaded first boot can do"
+            )
+        }
+        guard guestResult.exitCode == 0 else {
+            return .notReady(
+                "the guest command exited \(guestResult.exitCode)"
+            )
+        }
+        guard !guestResult.standardOutputTruncated,
+              !guestResult.standardErrorTruncated
+        else {
+            return .notReady("the guest command output was truncated")
+        }
+        return .ready
     }
 }
 

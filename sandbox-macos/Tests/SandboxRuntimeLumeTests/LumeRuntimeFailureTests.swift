@@ -1642,11 +1642,21 @@ final class LumeRuntimeFailureTests: XCTestCase {
             try await runtime.start(name: fixture.virtualMachineName)
             XCTFail("guest that never becomes ready should time out")
         } catch let error as SandboxRuntimeError {
-            XCTAssertEqual(
-                error,
-                .operationTimedOut(
-                    "\(fixture.virtualMachineName) guest readiness"
-                )
+            // The reason is part of the contract now: a readiness timeout that
+            // cannot say why costs a live VM to diagnose.
+            guard case .operationTimedOut(let message) = error else {
+                return XCTFail("expected a timeout, got \(error)")
+            }
+            XCTAssertTrue(
+                message.hasPrefix(
+                    "\(fixture.virtualMachineName) guest readiness: "
+                ),
+                message
+            )
+            XCTAssertGreaterThan(
+                message.count,
+                "\(fixture.virtualMachineName) guest readiness: ".count,
+                "the timeout must carry an observation, not an empty one"
             )
         }
         let state = try await runtime.inspect(
@@ -1828,11 +1838,21 @@ final class LumeRuntimeFailureTests: XCTestCase {
             try await runtime.start(name: fixture.virtualMachineName)
             XCTFail("TCP readiness must not bypass authentication")
         } catch let error as SandboxRuntimeError {
-            XCTAssertEqual(
-                error,
-                .operationTimedOut(
-                    "\(fixture.virtualMachineName) guest readiness"
-                )
+            // The reason is part of the contract now: a readiness timeout that
+            // cannot say why costs a live VM to diagnose.
+            guard case .operationTimedOut(let message) = error else {
+                return XCTFail("expected a timeout, got \(error)")
+            }
+            XCTAssertTrue(
+                message.hasPrefix(
+                    "\(fixture.virtualMachineName) guest readiness: "
+                ),
+                message
+            )
+            XCTAssertGreaterThan(
+                message.count,
+                "\(fixture.virtualMachineName) guest readiness: ".count,
+                "the timeout must carry an observation, not an empty one"
             )
         }
 
@@ -1867,11 +1887,21 @@ final class LumeRuntimeFailureTests: XCTestCase {
             try await runtime.start(name: fixture.virtualMachineName)
             XCTFail("credentialed guest readiness must time out")
         } catch let error as SandboxRuntimeError {
-            XCTAssertEqual(
-                error,
-                .operationTimedOut(
-                    "\(fixture.virtualMachineName) guest readiness"
-                )
+            // The reason is part of the contract now: a readiness timeout that
+            // cannot say why costs a live VM to diagnose.
+            guard case .operationTimedOut(let message) = error else {
+                return XCTFail("expected a timeout, got \(error)")
+            }
+            XCTAssertTrue(
+                message.hasPrefix(
+                    "\(fixture.virtualMachineName) guest readiness: "
+                ),
+                message
+            )
+            XCTAssertGreaterThan(
+                message.count,
+                "\(fixture.virtualMachineName) guest readiness: ".count,
+                "the timeout must carry an observation, not an empty one"
             )
         }
 

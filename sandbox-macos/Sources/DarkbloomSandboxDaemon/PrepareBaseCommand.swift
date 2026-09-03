@@ -24,7 +24,11 @@ enum PrepareBaseCommand {
         let runtime = LumeVirtualMachineRuntime(configuration: try LumeRuntimeConfiguration(
             executable: parsed.lumeExecutable,
             storageDirectory: parsed.storageDirectory,
-            commandTimeoutSeconds: 120,
+            // Readiness is bounded by this, and a guest that has just
+            // finished installing macOS is heavily loaded for the first couple
+            // of minutes. At 120s the wait ended while the guest was still
+            // settling, which made base-image preparation a coin flip.
+            commandTimeoutSeconds: 600,
             createTimeoutSeconds: 7_200,
             trustPolicy: parsed.developmentAdHocLume
                 ? .developmentAdHoc

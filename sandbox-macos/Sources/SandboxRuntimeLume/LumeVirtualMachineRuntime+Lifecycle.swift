@@ -884,6 +884,10 @@ extension LumeVirtualMachineRuntime {
     ) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        // Carried into the timeout. Without it, a readiness failure says only
+        // that it happened, and telling "no SSH" from "busy guest" from
+        // "broken wrapper" costs a live VM and a hand-run command.
+        var lastObservation = "the guest never reported ssh availability"
         repeat {
             let record: SandboxVirtualMachineRecord?
             do {
@@ -898,7 +902,7 @@ extension LumeVirtualMachineRuntime {
             }
             if record?.guestReady == true {
                 do {
-                    if try await LumeCredentialedGuestReadinessProbe.run(
+                    switch try await LumeCredentialedGuestReadinessProbe.run(
                         runner: processRunner,
                         executable: configuration.executable,
                         storagePath: configuration.storageDirectory.path,
@@ -909,13 +913,17 @@ extension LumeVirtualMachineRuntime {
                         clock: clock,
                         deadline: deadline
                     ) {
+                    case .ready:
                         return
+                    case .notReady(let reason):
+                        lastObservation = reason
                     }
                 } catch let error as CancellationError {
                     throw error
                 } catch is LumeGuestReadinessDeadlineExceeded {
                     break
                 } catch {
+                    lastObservation = "the readiness probe failed: \(error)"
                     if clock.now >= deadline {
                         break
                     }
@@ -934,7 +942,7 @@ extension LumeVirtualMachineRuntime {
             )
         } while clock.now < deadline
         throw SandboxRuntimeError.operationTimedOut(
-            "\(name) guest readiness"
+            "\(name) guest readiness: \(lastObservation)"
         )
     }
 

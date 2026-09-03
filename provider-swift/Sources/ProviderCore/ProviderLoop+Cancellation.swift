@@ -121,9 +121,9 @@ extension ProviderLoop {
         !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
     }
 
-    internal func waitForInflightDrain(timeout: Duration) async -> Bool {
+    internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {
         guard hasInflightWork else { return true }
-        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
+        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before \(reason)")
         let started = ContinuousClock.now
         while hasInflightWork {
             if Task.isCancelled { return false }

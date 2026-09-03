@@ -104,7 +104,7 @@ type routingSnapshot struct {
 	// binaryVersion is the provider's reported binary version (p.Version, read
 	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
 	// version-gated activation-reserve selection in the cold servability
-	// estimate (servabilityActivationFloorForVersion) so a mixed-version fleet
+	// estimate (servabilityActivationFloor) so a mixed-version fleet
 	// is charged the reserve each binary actually holds.
 	binaryVersion    string
 	slotState        string
@@ -1533,7 +1533,17 @@ func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {
 // or unknown catalog size that can't be normalized). Used by every cold-load
 // decision path (direct admission, the swap planner, the warm pool, and the
 // cold-spill predicate) so they cannot drift.
-func reportedFreeForLoadAdmits(catalogSizeGB float64, freeForLoadGB *float64) (admit bool, reported bool) {
+// The PADDED conversion on purpose, for every binary and model: this
+// mirrors the provider's ADMIT gate, which deliberately charges the
+// disk×1.2 load-transient figure (shard staging exceeds steady residency).
+// Measured post-load residency (servabilityMeasuredResidentGiB) informs
+// only coldTokenBudgetEstimate — the POST-load arithmetic. binaryVersion
+// and modelID are accepted for parity with that estimate's selection and
+// for future load-peak measurements; today they are deliberately unused.
+func reportedFreeForLoadAdmits(
+	catalogSizeGB float64, freeForLoadGB *float64, binaryVersion, modelID string,
+) (admit bool, reported bool) {
+	_, _ = binaryVersion, modelID
 	if freeForLoadGB == nil || catalogSizeGB <= 0 {
 		return false, false
 	}
@@ -1642,7 +1652,7 @@ func freeMemoryAdmits(snap routingSnapshot, reqPromptTokens, reqMaxTokens int) b
 		// provider's padded-GiB load basis so it exactly mirrors the provider's own
 		// ModelLoadAdmission gate (no over-admit → OOM, no under-admit on evictable
 		// weights).
-		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); reported {
+		if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB, snap.binaryVersion, snap.model); reported {
 			return admit
 		}
 		// Fallback for legacy providers that don't report freeForLoadGB: the old

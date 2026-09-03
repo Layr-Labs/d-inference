@@ -67,7 +67,18 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func updateAggregateCapacity() async {
+    /// `attempt`: internal retry counter for the stale-snapshot guard below;
+    /// callers use the default.
+    internal func updateAggregateCapacity(attempt: Int = 0) async {
+        // Reserve epoch at entry: the hops below (engine summary, KV
+        // outstanding) are actor suspensions, and a reserve push landing
+        // across them (a verified prefetch raising the floor, a retirement
+        // relaxing it, a load's own marker transitions) would leave this
+        // invocation publishing pre-push figures. Not every push site
+        // publishes a replacement, so a tripped guard RECOMPUTES rather
+        // than returns (bounded: the third attempt publishes regardless —
+        // a snapshot one epoch behind beats none until the next tick).
+        let reserveEpochAtEntry = activationReserveEpoch
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -100,6 +111,7 @@ extension ProviderLoop {
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
+                    activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),
                     physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
@@ -140,6 +152,11 @@ extension ProviderLoop {
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
+            // The serving set's resolved headroom (measured per-model floors),
+            // not the flat default — free_for_load_gb must mirror the load
+            // gate this box actually applies (ensureModelLoaded), or the
+            // coordinator's cold-load routing desyncs from it.
+            headroomGb: loadHeadroomGb,
             outstandingReservationBytes: outstandingKV)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
@@ -150,6 +167,17 @@ extension ProviderLoop {
             reclaimedBytes: reclaimer.reclaimedBytes,
             lastReclaimedBytes: reclaimer.lastReclaimedBytes,
             lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
+
+        // Stale-snapshot guard (see the epoch capture at entry): the reserve
+        // moved while this invocation was suspended — slot budgets and
+        // free_for_load_gb here predate the floor the KV gate already
+        // enforces. Recompute over the current state instead of publishing
+        // them; bounded so a push storm cannot starve the publish.
+        guard activationReserveEpoch == reserveEpochAtEntry || attempt >= 2 else {
+            logger.info(
+                "Capacity snapshot recomputed: activation reserve moved during refresh (attempt \(attempt + 1))")
+            return await updateAggregateCapacity(attempt: attempt + 1)
+        }
 
         state.backendCapacity = BackendCapacity(
             slots: allSlots,

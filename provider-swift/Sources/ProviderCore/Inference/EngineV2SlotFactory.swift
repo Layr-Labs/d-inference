@@ -272,6 +272,7 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
+        activationReserveBytes: UInt64? = nil,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         prefillDeadlineMode: PrefillDeadlineMode? = nil,
@@ -392,6 +393,7 @@ enum EngineV2SlotFactory {
                     model: servingModel,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
+                    activationReserveBytes: activationReserveBytes,
                     kvBackend: kvBackendSelection,
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,

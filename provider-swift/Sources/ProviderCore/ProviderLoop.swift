@@ -223,6 +223,64 @@ public actor ProviderLoop {
     /// eviction decisions and overcommit memory.
     internal var loadingWaiters: [String: [CheckedContinuation<Void, any Error>]] = [:]
     internal var modelsLoading: Set<String> = []
+    /// Models being retired (failed self-test) — a tombstone held across the
+    /// retirement's unload drain. Prefetch must not re-advertise a tombstoned
+    /// id: with the slot still resident during the drain, `prefetchPreCheck`
+    /// reports `.alreadyAvailable` and the verified-insert path would undo
+    /// the fail-closed local un-advertisement.
+    internal var retiringModels: Set<String> = []
+    /// Weight hash that FAILED the load self-test, by model id — persistent
+    /// (unlike the `retiringModels` tombstone, which only covers the
+    /// retirement's own window): a prefetch verification whose scan/hash
+    /// suspension spans an ENTIRE retirement would otherwise observe no
+    /// tombstone and re-advertise the failed build, which could then reload
+    /// and serve without re-passing the self-test (ABA). A verified build
+    /// with a DIFFERENT hash is genuinely new bytes and clears the entry.
+    internal var failedSelfTestHashes: [String: String] = [:]
+    /// Monotonic sequence for activation-reserve pushes into `kvBudget`.
+    /// Every push is stamped under THIS actor's isolation, so the epoch
+    /// order equals the true serving-set mutation order — the budget actor
+    /// discards a stale push that lands after a newer one (cross-actor
+    /// jobs from different tasks are not FIFO, so pushed values alone are
+    /// not linearizable).
+    internal var activationReserveEpoch: UInt64 = 0
+
+    /// The single pending post-retirement reconnect (see
+    /// `scheduleRetirementReconnect`): a burst of failed-self-test
+    /// retirements coalesces into one re-registration, fired once
+    /// box-wide in-flight work has drained.
+    internal var pendingRetirementReconnect: Task<Void, Never>?
+
+    /// Admission barrier across the post-retirement reconnect: raised on
+    /// the actor immediately before the socket is closed, cleared when the
+    /// new session connects. Without it a routed request could be admitted
+    /// in the hop between the drain's last observation and the close, only
+    /// to be cancelled by the `.disconnected` handler.
+    internal var isReconnectingAfterRetirement = false
+
+    /// Builds a verified prefetch is about to advertise: pinned into the
+    /// live reserve basis (`resolvedActivationReserveBytes`) from just
+    /// before the reserve push until the id joins `advertisedModels`, so a
+    /// load admitted during the push's suspension already resolves its gate
+    /// and fleet budget against the raised floor.
+    internal var pendingAdvertise: Set<String> = []
+
+    /// Desired builds whose verified prefetch was deferred for a CAPACITY
+    /// reason (the reserve raise would strand a resident slot, or a load
+    /// was in flight). The bounded backoff retries them for ~18 minutes;
+    /// the capacity change that actually frees the room (an idle unload at
+    /// the 60-minute default, a load finishing) can come later, so those
+    /// events re-offer every id here with a fresh budget
+    /// (`retryReserveDeferredPrefetches`). Cleared when the build
+    /// advertises or leaves the desired set.
+    internal var reserveDeferredPrefetches: Set<String> = []
+
+    /// One-shot wake-ups for deferrals kept because their prefetch attempt
+    /// was still finishing when a capacity change fired: each waits for the
+    /// coordinator's attempt to reach terminal cleanup, then re-offers.
+    /// Without it an explicit `prefetch_model` (no desired backoff) would
+    /// wait for an unrelated later capacity event that may never come.
+    internal var deferredPrefetchWakeups: [String: Task<Void, Never>] = [:]
     internal var loadGateWaiters: [CheckedContinuation<Void, Never>] = []
     internal var isLoadingAny: Bool = false
     internal var isShuttingDown: Bool = false
@@ -555,7 +613,13 @@ public actor ProviderLoop {
         // (loadReserveBytes = max(configReserve, physical − cap)) — so runtime KV
         // can't grow into memory the operator explicitly reserved once a model is
         // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
+        // The activation reserve is resolved for the advertised serving set
+        // (measured per-model floors; env raise-only above them) and re-pushed
+        // via refreshActivationReserve() whenever that set changes, so the
+        // runtime KV gate and the load gate always carve the same reserve.
         self.kvBudget = GlobalKVCacheBudget(
+            activationReserveBytes: UnifiedMemoryCap.resolvedActivationReserveBytes(
+                modelIDs: Array(advertised.keys)),
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
@@ -567,6 +631,18 @@ public actor ProviderLoop {
         self.liveModelHashes = config.modelHashes
         self.modelHashFingerprints = config.modelHashFingerprints
         // Phase-1 complete — safe to touch self.logger now.
+        // Operator-visible record of the resolved floor: on a measured-only
+        // set this is the model's measured floor; ANY unmeasured id (a new
+        // build id included — exact match only) pins the flat default, which
+        // on small boxes is the difference between serving and not.
+        logger.info(
+            "Activation reserve resolved to "
+                + String(
+                    format: "%.1f",
+                    Double(
+                        UnifiedMemoryCap.resolvedActivationReserveBytes(
+                            modelIDs: Array(advertised.keys))) / (1024.0 * 1024.0 * 1024.0))
+                + " GiB for serving set [\(advertised.keys.sorted().joined(separator: ", "))]")
         if !unsupportedModelIds.isEmpty {
             logger.warning(
                 "Not advertising \(unsupportedModelIds.count) model(s) without a CBv2 adapter "

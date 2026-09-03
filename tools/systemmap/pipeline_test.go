@@ -404,6 +404,13 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 			"2 database call(s) but only 1 readable statement(s) in the body",
 			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
 		}},
+		// A local reset to text that is not a statement, then appended to. Neither line
+		// is a boundary if the text decides, so the second query's CTE reached back and
+		// shadowed the first query's real read of `usage` — a table dropped from the map
+		// with every count balanced and nothing reported.
+		{"RankResetThenAppend", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
 		// A comment whose last word is `for`, in front of a spliced update. The mask
 		// that steps over the `FOR UPDATE` lock must not step over this, or the write
 		// leaves the map with every count still balanced.
@@ -456,6 +463,9 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// a statement already in one literal has no remedy left if one of them is read
 		// as a splice.
 		{"LockModelNoKey", []string{"pg.models R"}},
+		// A lock with a comment after it. What may follow the masked words is a list, and
+		// a comment start belongs in it: leaving it out read `--` as the spliced table.
+		{"LockModelComment", []string{"pg.models R"}},
 		// A query split across a `var` declaration, which has to be scoped the way an
 		// assignment is or the WITH clause and the fragment land apart.
 		{"RankDeclaredVar", []string{"pg.models R"}},
@@ -475,6 +485,13 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// looks like a statement is text a long query is full of. Two reads because two
 		// of its three literals parse on their own, which is exactly the point.
 		{"RankSplitAppend", []string{"pg.models R", "pg.models R"}},
+		// A query assembled tail first, where the rebinding that prepends the base reads
+		// the local back. A reset that quotes the old value is the same query still being
+		// built, and cutting the CTE scope there would report its own `usage` CTE.
+		{"RankTailFirstReuse", []string{"pg.models R", "pg.models R"}},
+		// The tail collected into a declared-but-unbound local before the base exists,
+		// so the fragment is read in a generation nothing has opened.
+		{"RankTailBeforeBase", []string{"pg.models R"}},
 		// Fragments whose FROM belongs to a keyword call and to a set-returning
 		// function. Neither names a table, and the fragment scan has to know that as
 		// well as `Tables` does.

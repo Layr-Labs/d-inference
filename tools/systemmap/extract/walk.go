@@ -162,7 +162,7 @@ type fnWalk struct {
 	textScope    any                        // what the text being walked belongs to; see textScopeFor
 	textStmt     ast.Stmt                   // the statement that text is being assembled in
 	textFresh    bool                       // this statement binds the scope rather than appending to it
-	gens         map[any]generation         // how many statements a scope has held, and by whom
+	gens         map[any]int                // how many queries a scope has been bound to
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
 
@@ -196,6 +196,9 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
 	if scope := f.textScopeFor(s); scope != nil {
 		f.textScope, f.textStmt, f.textFresh = scope, s, bindsScope(s)
+		if f.textFresh && !f.readsScope(s) {
+			f.openStatement()
+		}
 	}
 	f.walkStmt(s)
 	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
@@ -238,6 +241,35 @@ func bindsScope(s ast.Stmt) bool {
 		return a.Tok == token.ASSIGN || a.Tok == token.DEFINE
 	}
 	return true
+}
+
+// readsScope reports whether a binding builds its new value out of the old one:
+// `q = "WITH ... " + q`, `q = strings.TrimSpace(q)`. Syntactically that rebinds the
+// scope; semantically it is the same query still being assembled, and the text
+// already read into the current generation belongs with the text arriving now.
+//
+// Without this, a query assembled tail-first — the `UNION` collected into q, then
+// the base and its `WITH` clause prepended — would put the tail and the WITH clause
+// that covers it in different generations and report the query's own CTE as a table.
+func (f *fnWalk) readsScope(s ast.Stmt) bool {
+	a, ok := s.(*ast.AssignStmt)
+	if !ok {
+		return false
+	}
+	found := false
+	for _, rhs := range a.Rhs {
+		ast.Inspect(rhs, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if !ok || found {
+				return !found
+			}
+			if obj := f.objOf(id); obj != nil && any(obj) == f.textScope {
+				found = true
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // textScopeFor names what the statement text inside s belongs to.
@@ -300,6 +332,7 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 				prevScope, prevFresh := f.textScope, f.textFresh
 				if obj := f.assignTarget(identExprs(vs.Names)); obj != nil {
 					f.textScope, f.textFresh = obj, true
+					f.openStatement() // the declaration binds q, so it starts a query; see stmt
 				}
 				for _, v := range vs.Values {
 					f.visit(v, ModeRead)

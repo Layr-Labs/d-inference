@@ -200,53 +200,41 @@ type cteKey struct {
 	gen   int
 }
 
-// generation is one query's worth of CTE names in a scope, and the statement that
-// opened it.
-type generation struct {
-	n      int
-	opener any
-}
-
-// cteKey is generation 1 until a second statement opens generation 2, so a fragment
-// read before the statement it belongs to — a tail assembled above the base query —
-// still finds that statement's CTE names.
+// cteKey names the generation in force where the text being walked was read. A
+// scope nothing has bound yet — a tail appended to a `var q string` above the base
+// query, an element of a slice literal — is generation zero, and reads and CTE names
+// there settle against each other like any other generation.
 func (f *fnWalk) cteKey() cteKey {
-	gen := f.gens[f.textScope].n
-	if gen == 0 {
-		gen = 1
-	}
-	return cteKey{scope: f.textScope, gen: gen}
+	return cteKey{scope: f.textScope, gen: f.gens[f.textScope]}
 }
 
-// openStatement starts a new generation of CTE names for the current scope, unless
-// the statement being walked opened the current one already.
+// openStatement starts a new generation of CTE names for the current scope. It is
+// called once per *binding* of the scope, from `stmt`, and never from the text: the
+// boundary between one query and the next is a `q :=` or `q =`, and `q +=` continues
+// the query already there.
 //
-// The boundary is a binding, not a literal. A scope *rebound* is a scope whose
-// previous statement's WITH clauses have stopped applying; a scope appended to is the
-// same query still being assembled. Two shapes force that reading, and drawing the
-// boundary at statement-shaped text broke both — silently, since orphaning a CTE name
-// invents a table rather than losing one:
+// Deciding it from the text instead was wrong in three shapes, all of them silent,
+// since orphaning a CTE name invents a table and stranding one mutes a real read:
 //
 //   - one assignment, several literals: a long query spliced together routinely has a
 //     middle literal that parses on its own (`SELECT DISTINCT account_id FROM
-//     provider_earnings WHERE ...` between two CTE definitions). Reformatting the
-//     coordinator's network-totals query — moving a line break, changing no SQL —
-//     reported its own `providers` CTE as an undeclared table. Hence the opener check
-//     here.
+//     provider_earnings WHERE ...` between two CTE definitions), and bumping there
+//     orphaned every CTE name declared above it.
 //   - several assignments, one query: `q := WITH usage AS (...)` then `q += SELECT ...
 //     FROM models` then `q += UNION SELECT id FROM usage`, where the middle append is
-//     also a statement on its own. Hence the caller's `textFresh` gate, which is what
-//     distinguishes the append that continues a query from the assignment that starts
-//     the next one.
+//     also a statement on its own — same orphaning, one statement later.
+//   - a binding whose text is *not* a statement: `q = ""` then `q += WITH usage AS
+//     (...)`. Neither line opened a generation while the text decided, so the second
+//     query's CTE landed in the first query's generation and muted a real read of
+//     `usage` there. Binding on the statement kind rather than on its text is what
+//     closes that one, which is why this is called before the text is walked at all.
+//
+// The exception is a binding that reads the scope back — see `readsScope`.
 func (f *fnWalk) openStatement() {
 	if f.gens == nil {
-		f.gens = map[any]generation{}
+		f.gens = map[any]int{}
 	}
-	cur := f.gens[f.textScope]
-	if cur.n > 0 && cur.opener == f.textStmt {
-		return
-	}
-	f.gens[f.textScope] = generation{n: cur.n + 1, opener: f.textStmt}
+	f.gens[f.textScope]++
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the
@@ -345,9 +333,6 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	// upper-case `UPDATE ` + table is prose running into a splice, and masking it
 	// hid exactly the splice this scan exists to find.
 	masked := string(maskLockingClauses(maskKeywordCalls([]byte(s)), reLockingUpperCase))
-	if statement && f.textFresh {
-		f.openStatement()
-	}
 	f.noteCTEs(masked)
 	var names []string
 	spliced := ""

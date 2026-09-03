@@ -207,12 +207,17 @@ var (
 	reLockingUpperCase = regexp.MustCompile(`\b(?:FOR[ \t\n\r]+(?:NO[ \t\n\r]+KEY[ \t\n\r]+)?UPDATE|DO[ \t\n\r]+UPDATE)\b`)
 	// reLockContinues is what may legally follow the masked words: the end of the
 	// text (a literal that closes right after the lock, or splices its SET clause on),
-	// a clause or statement boundary, the rest of a lock (`OF t`, `NOWAIT`, `SKIP
-	// LOCKED`), or the upsert's `SET`. An identifier that is none of those means the
-	// word was `UPDATE` heading a statement after all, and masking it lost a real
-	// write: `-- rows queued for\nUPDATE usage SET tokens = 0` dropped `usage` from
-	// the map entirely.
-	reLockContinues = regexp.MustCompile(`(?i)^[ \t\n\r]*(?:$|[;,)]|(?:of|nowait|skip|set)\b)`)
+	// a clause or statement boundary, the start of a comment, the rest of a lock (`OF
+	// t`, `NOWAIT`, `SKIP LOCKED`), or the upsert's `SET`. An identifier that is none
+	// of those means the word was `UPDATE` heading a statement after all, and masking
+	// it lost a real write: `-- rows queued for\nUPDATE usage SET tokens = 0` dropped
+	// `usage` from the map entirely.
+	//
+	// A comment is in the list because `... FOR UPDATE -- lock the row` is as legal as
+	// `... FOR UPDATE NOWAIT`, and refusing to mask it made `auditText` read `--` as a
+	// table spliced in at run time: a finding against correct, fully readable SQL whose
+	// only remedy was to move the comment.
+	reLockContinues = regexp.MustCompile(`(?i)^[ \t\n\r]*(?:$|[;,)]|--|/\*|(?:of|nowait|skip|set)\b)`)
 )
 
 // maskLockingClauses blanks those clauses, keeping the text the same length so

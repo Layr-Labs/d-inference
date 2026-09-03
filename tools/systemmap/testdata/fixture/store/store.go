@@ -313,6 +313,19 @@ func (p *Postgres) LockModelNoKey(ctx context.Context, id string) error {
 	return err
 }
 
+// LockModelComment ends its lock with a trailing comment, which is as legal as ending
+// it with `NOWAIT`. The gate that decides whether the mask may take the words away has
+// to allow a comment start, or the comment marker itself is read as the table spliced
+// in after `UPDATE` — a finding against a complete, readable statement whose only
+// remedy is to move a comment.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) LockModelComment(ctx context.Context, id string) error {
+	_, err := p.db.ExecContext(ctx,
+		"SELECT id FROM models WHERE id = $1 FOR UPDATE -- lock the row\n", id)
+	return err
+}
+
 // SpliceAfterComment ends a comment with the word "for" and heads the next line with
 // a spliced update. The mask that steps over `FOR UPDATE` must not step over this:
 // blanking the keyword here hides a write to a table nobody can see, and the count of
@@ -633,6 +646,62 @@ func (p *Postgres) RankResetAfter(ctx context.Context, all bool) error {
 		return err
 	}
 	q = `SELECT id FROM models WHERE id = $1`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankResetThenAppend rebinds its local to text that is not a statement and only
+// then appends the next query. Both halves are needed: the `q = ""` carries no
+// statement, and the `q +=` is not a binding. While the generation boundary was
+// decided by the text, neither line opened one, the second query's `WITH usage AS
+// (...)` landed in the first query's generation, and the first query's real read of
+// `usage` was shadowed by a CTE declared two statements below it — a table dropped
+// from the map with nothing reported. The boundary is the binding, so the reset
+// starts a query whatever text it carries.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankResetThenAppend(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	q += ` JOIN usage u ON u.id = models.id`
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = ``
+	q += `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankTailFirstReuse assembles a query tail first: the local is rebound to the
+// `UNION` and then rebound again to the base *plus itself*. The second rebinding is
+// syntactically a reset and semantically a continuation, and it must stay clean —
+// treating it as a boundary would put the tail and the WITH clause that covers it in
+// different generations and report the query's own CTE as an undeclared table. That is
+// what `readsScope` is for.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailFirstReuse(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = ` UNION SELECT id FROM usage`
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankTailBeforeBase collects the tail into a local that has been declared but never
+// bound, then prepends the base. The fragment is read in a generation nothing has
+// opened yet, and has to settle against the WITH clause that arrives after it.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailBeforeBase(ctx context.Context, all bool) error {
+	var q string
+	if all {
+		q += ` UNION SELECT id FROM usage`
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
 	_, err := p.db.ExecContext(ctx, q)
 	return err
 }

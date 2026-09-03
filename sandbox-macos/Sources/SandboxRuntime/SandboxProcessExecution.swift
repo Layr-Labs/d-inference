@@ -12,6 +12,7 @@ final class ProcessExecution: @unchecked Sendable {
     private let standardError: BoundedProcessOutput
     private let cooperativeControl: ProcessControlChannel?
     private let guestChannel: GuestChannelReceiver?
+    private let networkGateway: NetworkGatewayEndpoint?
     private let testHooks: ProcessExecutionTestHooks
     private let lock = NSLock()
     private var started = false
@@ -30,6 +31,8 @@ final class ProcessExecution: @unchecked Sendable {
             SandboxCooperativeProcessControl? = nil,
         guestChannel guestChannelConfiguration:
             SandboxGuestChannelControl? = nil,
+        networkGateway networkGatewayConfiguration:
+            SandboxNetworkGatewayControl? = nil,
         testHooks: ProcessExecutionTestHooks = .none
     ) throws {
         let standardOutput = try BoundedProcessOutput(
@@ -66,6 +69,20 @@ final class ProcessExecution: @unchecked Sendable {
             cooperativeControl?.closeChildSourceEndpoint()
             throw error
         }
+        let networkGateway: NetworkGatewayEndpoint?
+        do {
+            networkGateway = try networkGatewayConfiguration.map { _ in
+                try NetworkGatewayEndpoint()
+            }
+        } catch {
+            _ = standardOutput.finish()
+            _ = standardError.finish()
+            cooperativeControl?.closeParentEndpoint()
+            cooperativeControl?.closeChildSourceEndpoint()
+            guestChannel?.closeParentEndpoint()
+            guestChannel?.closeChildSourceEndpoint()
+            throw error
+        }
         var childEnvironment = environment
         if let configuration {
             childEnvironment[configuration.environmentVariable] =
@@ -79,10 +96,16 @@ final class ProcessExecution: @unchecked Sendable {
                 guestChannelConfiguration.portEnvironmentVariable
             ] = String(guestChannelConfiguration.port)
         }
+        if let networkGatewayConfiguration {
+            childEnvironment[
+                networkGatewayConfiguration.descriptorEnvironmentVariable
+            ] = String(NetworkGatewayEndpoint.childDescriptor)
+        }
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.cooperativeControl = cooperativeControl
         self.guestChannel = guestChannel
+        self.networkGateway = networkGateway
         self.executable = executable
         self.arguments = arguments
         self.environment = childEnvironment
@@ -174,6 +197,7 @@ final class ProcessExecution: @unchecked Sendable {
         }
         cooperativeControl?.closeChildSourceEndpoint()
         guestChannel?.closeChildSourceEndpoint()
+        networkGateway?.closeChildSourceEndpoint()
         standardOutput.closeParentWriter()
         standardError.closeParentWriter()
         guard spawnStatus == 0 else {
@@ -195,6 +219,12 @@ final class ProcessExecution: @unchecked Sendable {
 
     func waitUntilExit() async {
         await exitSignal.wait()
+    }
+
+    var networkGatewayDescriptor: Int32? {
+        guard let networkGateway else { return nil }
+        let descriptor = networkGateway.frameDescriptor
+        return descriptor >= 0 ? descriptor : nil
     }
 
     func requestStop() {
@@ -287,6 +317,7 @@ final class ProcessExecution: @unchecked Sendable {
         cooperativeControl?.closeParentEndpoint()
         cooperativeControl?.closeChildSourceEndpoint()
         guestChannel?.closeChildSourceEndpoint()
+        networkGateway?.closeChildSourceEndpoint()
         _ = finishOutputCapture()
     }
 
@@ -378,6 +409,26 @@ final class ProcessExecution: @unchecked Sendable {
                 )
             }
         }
+        if let networkGateway {
+            let sourceDescriptor = networkGateway.inheritedSourceDescriptor
+            guard sourceDescriptor >= 0,
+                  posix_spawn_file_actions_adddup2(
+                      &actions,
+                      sourceDescriptor,
+                      NetworkGatewayEndpoint.childDescriptor
+                  ) == 0,
+                  sourceDescriptor
+                      == NetworkGatewayEndpoint.childDescriptor
+                      || posix_spawn_file_actions_addclose(
+                          &actions,
+                          sourceDescriptor
+                      ) == 0
+            else {
+                throw SandboxRuntimeError.unsupported(
+                    "failed to inherit the guest network endpoint"
+                )
+            }
+        }
         if let guestChannel {
             let sourceDescriptor = guestChannel.inheritedSourceDescriptor
             guard sourceDescriptor >= 0,
@@ -460,6 +511,7 @@ final class ProcessExecution: @unchecked Sendable {
         cooperativeControl?.closeParentEndpoint()
         cooperativeControl?.closeChildSourceEndpoint()
         guestChannel?.closeChildSourceEndpoint()
+        networkGateway?.closeChildSourceEndpoint()
         exitSignal.signal()
     }
 

@@ -1,0 +1,252 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index 68f7a86..10fcabb 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -103,7 +103,7 @@ struct Run: AsyncParsableCommand {
+ 
+     @Option(
+         name: .customLong("network"),
+-        help: "Optional network override: 'nat', 'none', 'bridged', or 'bridged:<interface>' (e.g. 'bridged:en0'). 'none' attaches no network device at all. Defaults to the VM's configured mode.")
++        help: "Optional network override: 'nat', 'none', 'gateway', or 'bridged:<interface>' (e.g. 'bridged:en0'). 'none' attaches no network device at all; 'gateway' sends frames to a userspace gateway on an inherited datagram socket. Defaults to the VM's configured mode.")
+     var network: String?
+ 
+     @Flag(
+@@ -119,7 +119,7 @@ struct Run: AsyncParsableCommand {
+             }
+             guard let mode = NetworkMode.parse(network) else {
+                 throw ValidationError(
+-                    "Invalid network mode '\(network)'. Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
++                    "Invalid network mode '\(network)'. Expected 'nat', 'none', 'gateway', or 'bridged[:<interface>]'."
+                 )
+             }
+             return mode
+diff --git a/libs/lume/src/Server/Requests.swift b/libs/lume/src/Server/Requests.swift
+index e9d333e..bb8e267 100644
+--- a/libs/lume/src/Server/Requests.swift
++++ b/libs/lume/src/Server/Requests.swift
+@@ -5,7 +5,7 @@ import Virtualization
+ private func parseNetworkModeString(_ value: String) throws -> NetworkMode {
+     guard let mode = NetworkMode.parse(value) else {
+         throw ValidationError(
+-            "Invalid network mode '\(value)'. Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
++            "Invalid network mode '\(value)'. Expected 'nat', 'none', 'gateway', or 'bridged[:<interface>]'."
+         )
+     }
+     return mode
+diff --git a/libs/lume/src/VM/NetworkGatewayCapability.swift b/libs/lume/src/VM/NetworkGatewayCapability.swift
+new file mode 100644
+index 0000000..b4f3bf6
+--- /dev/null
++++ b/libs/lume/src/VM/NetworkGatewayCapability.swift
+@@ -0,0 +1,86 @@
++import Darwin
++import Foundation
++import Virtualization
++
++/// A pre-spawn datagram descriptor carrying the guest's Ethernet frames.
++///
++/// `VZFileHandleNetworkDeviceAttachment` exchanges data "at the level of the
++/// data link layer" over a handle that "must hold a connected datagram socket"
++/// — so the peer is a userspace gateway, not a kernel NAT, and every frame the
++/// guest emits is delivered to whoever holds the other end.
++///
++/// The descriptor is inherited rather than opened here for the same reason the
++/// guest channel is: only the spawning process can create the pair and keep the
++/// peer, and passing a number through the environment is the one mechanism that
++/// survives `POSIX_SPAWN_CLOEXEC_DEFAULT`.
++enum NetworkGatewayCapability {
++    static let environmentVariable = "DARKBLOOM_LUME_NETWORK_FD"
++
++    /// Apple's header: `SO_RCVBUF` is "expected to be at least double the value
++    /// of `SO_SNDBUF`, and for optimal performance ... four times". Both must
++    /// be set explicitly; the defaults are far too small for 1500-byte frames
++    /// at link rate and silently drop them.
++    static let sendBufferBytes: Int32 = 1 * 1024 * 1024
++    static let receiveBufferBytes: Int32 = 4 * sendBufferBytes
++
++    /// The inherited descriptor, or nil when no gateway was attached.
++    static func inheritedDescriptor() throws -> Int32? {
++        let environment = ProcessInfo.processInfo.environment
++        guard let value = environment[environmentVariable] else {
++            return nil
++        }
++        unsetenv(environmentVariable)
++        guard let descriptor = Int32(value),
++              descriptor > STDERR_FILENO,
++              fcntl(descriptor, F_GETFD) >= 0
++        else {
++            throw VMError.internalError("Invalid network gateway capability")
++        }
++
++        // A stream socket here would be accepted by the initialiser and then
++        // fail as corrupt frames, because a stream has no datagram boundaries
++        // and the attachment treats each datagram as exactly one frame.
++        var socketType: Int32 = 0
++        var length = socklen_t(MemoryLayout<Int32>.size)
++        guard getsockopt(
++            descriptor, SOL_SOCKET, SO_TYPE, &socketType, &length
++        ) == 0, socketType == SOCK_DGRAM else {
++            throw VMError.internalError(
++                "Network gateway capability is not a datagram socket"
++            )
++        }
++        return descriptor
++    }
++
++    /// Builds the attachment, sizing the socket buffers first.
++    static func attachment(
++        forDescriptor descriptor: Int32
++    ) throws -> VZFileHandleNetworkDeviceAttachment {
++        try setBuffer(SO_SNDBUF, sendBufferBytes, on: descriptor)
++        try setBuffer(SO_RCVBUF, receiveBufferBytes, on: descriptor)
++        // Owns the descriptor from here: the handle closes it on deinit, and
++        // the VM configuration holds the attachment for the life of the run.
++        return VZFileHandleNetworkDeviceAttachment(
++            fileHandle: FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
++        )
++    }
++
++    private static func setBuffer(
++        _ option: Int32,
++        _ bytes: Int32,
++        on descriptor: Int32
++    ) throws {
++        var value = bytes
++        guard setsockopt(
++            descriptor,
++            SOL_SOCKET,
++            option,
++            &value,
++            socklen_t(MemoryLayout<Int32>.size)
++        ) == 0 else {
++            throw VMError.internalError(
++                "Could not size the network gateway socket buffers"
++            )
++        }
++    }
++}
+diff --git a/libs/lume/src/VM/NetworkMode.swift b/libs/lume/src/VM/NetworkMode.swift
+index 76121e3..792b1c6 100644
+--- a/libs/lume/src/VM/NetworkMode.swift
++++ b/libs/lume/src/VM/NetworkMode.swift
+@@ -21,12 +21,19 @@ enum NetworkMode: Equatable, CustomStringConvertible {
+     /// sandboxes; base images are still built over NAT, because the unattended
+     /// installer's health check and first-boot finalization both run over SSH.
+     case isolated
++    /// Frames go to a userspace gateway over an inherited datagram socket.
++    ///
++    /// The host, not the kernel, decides what a guest may reach: every frame
++    /// arrives in a process that can inspect and drop it. That is the whole
++    /// point — `nat` reaches whatever the host can, including its LAN.
++    case gateway
+ 
+     /// Parse a network mode string.
+     ///
+     /// Accepted formats:
+     ///   - `"nat"` → NAT mode (default)
+     ///   - `"none"` → no network device at all
++    ///   - `"gateway"` → frames to a userspace gateway on an inherited socket
+     ///   - `"bridged"` → Bridged mode with auto-detected interface
+     ///   - `"bridged:<interface>"` → Bridged mode on a specific interface (e.g. `"bridged:en0"`)
+     ///
+@@ -43,6 +50,10 @@ enum NetworkMode: Equatable, CustomStringConvertible {
+             return .isolated
+         }
+ 
++        if lowercased == "gateway" {
++            return .gateway
++        }
++
+         if lowercased == "bridged" {
+             return .bridged(interface: nil)
+         }
+@@ -69,6 +80,8 @@ enum NetworkMode: Equatable, CustomStringConvertible {
+             return "bridged"
+         case .isolated:
+             return "none"
++        case .gateway:
++            return "gateway"
+         }
+     }
+ 
+@@ -87,7 +100,7 @@ extension NetworkMode: Codable {
+         guard let mode = NetworkMode.parse(string) else {
+             throw DecodingError.dataCorruptedError(
+                 in: container,
+-                debugDescription: "Invalid network mode: \(string). Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
++                debugDescription: "Invalid network mode: \(string). Expected 'nat', 'none', 'gateway', or 'bridged[:<interface>]'."
+             )
+         }
+         self = mode
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index f6c4fff..1dee28f 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -304,6 +304,19 @@ class BaseVirtualizationService: VMVirtualizationService {
+         switch networkMode {
+         case .isolated:
+             return nil
++        case .gateway:
++            guard let descriptor =
++                try NetworkGatewayCapability.inheritedDescriptor()
++            else {
++                // Fail rather than silently falling back to NAT: a caller that
++                // asked for a filtered guest must never get an unfiltered one.
++                throw VMError.internalError(
++                    "gateway networking requires an inherited "
++                        + NetworkGatewayCapability.environmentVariable
++                )
++            }
++            network.attachment =
++                try NetworkGatewayCapability.attachment(forDescriptor: descriptor)
+         case .nat:
+             network.attachment = VZNATNetworkDeviceAttachment()
+         case .bridged(let interfaceName):
+diff --git a/libs/lume/tests/GuestAgentInstallTests.swift b/libs/lume/tests/GuestAgentInstallTests.swift
+index f6c55f3..9aa9aa9 100644
+--- a/libs/lume/tests/GuestAgentInstallTests.swift
++++ b/libs/lume/tests/GuestAgentInstallTests.swift
+@@ -256,3 +256,43 @@ func isolatedNetworkModeAttachesNothing() throws {
+     #expect(try BaseVirtualizationService.createNetworkDeviceConfiguration(
+         macAddress: "aa:bb:cc:dd:ee:ff", networkMode: .nat) != nil)
+ }
++
++@Test("the gateway mode round-trips and refuses to fall back")
++func gatewayNetworkModeRoundTrips() throws {
++    #expect(NetworkMode.parse("gateway") == NetworkMode.gateway)
++    #expect(NetworkMode.gateway.description == "gateway")
++    #expect(NetworkMode.gateway.configString == "gateway")
++
++    // The other modes keep their spellings.
++    #expect(NetworkMode.parse("none") == NetworkMode.isolated)
++    #expect(NetworkMode.parse("nat") == NetworkMode.nat)
++    #expect(NetworkMode.parse("gatewayx") == nil)
++}
++
++@Test("a gateway descriptor must be a datagram socket")
++func gatewayCapabilityRejectsAStreamSocket() throws {
++    // The attachment treats one datagram as exactly one Ethernet frame, so a
++    // stream socket would be accepted here and then deliver corrupt frames --
++    // a failure that looks like a broken guest rather than a wrong socket.
++    var pair: [Int32] = [0, 0]
++    #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
++    defer { close(pair[0]); close(pair[1]) }
++
++    setenv(NetworkGatewayCapability.environmentVariable, "\(pair[0])", 1)
++    defer { unsetenv(NetworkGatewayCapability.environmentVariable) }
++    #expect(throws: (any Error).self) {
++        _ = try NetworkGatewayCapability.inheritedDescriptor()
++    }
++
++    var datagramPair: [Int32] = [0, 0]
++    #expect(socketpair(AF_UNIX, SOCK_DGRAM, 0, &datagramPair) == 0)
++    defer { close(datagramPair[0]); close(datagramPair[1]) }
++    setenv(NetworkGatewayCapability.environmentVariable, "\(datagramPair[0])", 1)
++    #expect(try NetworkGatewayCapability.inheritedDescriptor() == datagramPair[0])
++}
++
++@Test("no inherited descriptor means no gateway, not a silent NAT")
++func gatewayWithoutADescriptorIsRefused() throws {
++    unsetenv(NetworkGatewayCapability.environmentVariable)
++    #expect(try NetworkGatewayCapability.inheritedDescriptor() == nil)
++}

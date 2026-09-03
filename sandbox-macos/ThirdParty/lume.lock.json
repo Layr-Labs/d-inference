@@ -39,6 +39,10 @@
     {
       "path": "ThirdParty/lume-patches/0009-isolated-tenant-network.patch",
       "sha256": "bc0193fa661dd77c161124e4e3be2fce6f9055d5618dfac64f1c9bb99961e09e"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0010-gateway-network-mode.patch",
+      "sha256": "2c4771cbc7c1c07478a44f7d43d7a82b161fb22684ae5576e2a96a8c3b21f4b6"
     }
   ],
   "license": "MIT",

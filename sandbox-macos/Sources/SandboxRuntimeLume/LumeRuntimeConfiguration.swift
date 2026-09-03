@@ -10,6 +10,9 @@ package enum LumeTenantNetworkPolicy: Sendable, Equatable {
     /// unattended install needs SSH; wrong for tenant code, which would sit on
     /// the provider's LAN.
     case hostNAT
+    /// Frames go to this daemon's userspace gateway, which decides what the
+    /// guest may reach.
+    case filteredEgress
 
     /// The value `lume run --network` takes.
     package var lumeArgument: String {
@@ -18,6 +21,8 @@ package enum LumeTenantNetworkPolicy: Sendable, Equatable {
             return "none"
         case .hostNAT:
             return "nat"
+        case .filteredEgress:
+            return "gateway"
         }
     }
 
@@ -28,7 +33,18 @@ package enum LumeTenantNetworkPolicy: Sendable, Equatable {
             return true
         case .hostNAT:
             return false
+        case .filteredEgress:
+            // 🛑 Still false. Frames reach the gateway but nothing filters them
+            // yet, so claiming confinement here would be a lie that opens the
+            // whole plane. The filter lands before this returns true.
+            return false
         }
+    }
+
+    /// Whether a started VM needs a gateway descriptor handed to it.
+    package var requiresNetworkGateway: Bool {
+        if case .filteredEgress = self { return true }
+        return false
     }
 }
 
@@ -112,6 +128,10 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0009-isolated-tenant-network.patch"
     public static let pinnedIsolatedNetworkPatchSHA256 =
         "bc0193fa661dd77c161124e4e3be2fce6f9055d5618dfac64f1c9bb99961e09e"
+    public static let pinnedGatewayNetworkPatchPath =
+        "ThirdParty/lume-patches/0010-gateway-network-mode.patch"
+    public static let pinnedGatewayNetworkPatchSHA256 =
+        "2c4771cbc7c1c07478a44f7d43d7a82b161fb22684ae5576e2a96a8c3b21f4b6"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -122,6 +142,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedEmergencyStopPatchPath: pinnedEmergencyStopPatchSHA256,
         pinnedGuestAgentPatchPath: pinnedGuestAgentPatchSHA256,
         pinnedIsolatedNetworkPatchPath: pinnedIsolatedNetworkPatchSHA256,
+        pinnedGatewayNetworkPatchPath: pinnedGatewayNetworkPatchSHA256,
     ]
 
     public let executable: URL
@@ -165,6 +186,9 @@ public struct LumeRuntimeConfiguration: Sendable {
         "DARKBLOOM_LUME_GUEST_CHANNEL_FD"
     public static let guestChannelPortEnvironmentVariable =
         "DARKBLOOM_LUME_GUEST_CHANNEL_PORT"
+    /// Names the inherited datagram socket a gateway-mode VM attaches to.
+    public static let networkGatewayEnvironmentVariable =
+        "DARKBLOOM_LUME_NETWORK_FD"
 
     /// The policy stays `.disabled` here, and that is not the hardcode it
     /// looks like: `LumeGuestCommandPolicy` is `package`, so this initializer

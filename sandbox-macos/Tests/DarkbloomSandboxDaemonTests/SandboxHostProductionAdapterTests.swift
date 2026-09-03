@@ -192,6 +192,46 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         XCTAssertEqual(nat.blockingReason, "no enforced tenant network policy")
     }
 
+    /// A gateway that exists but does not filter yet must not claim
+    /// confinement.
+    ///
+    /// This is the trap this stage most needs guarded: frames reach the
+    /// gateway long before anything drops them, and a policy that reported
+    /// `networkPolicy` at that point would open the entire plane to guests with
+    /// unfiltered egress. It flips only when the filter lands.
+    func testGatewayPolicyDoesNotClaimConfinementBeforeItFilters() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let readiness = SandboxHostIsolationReadiness.derived(
+            from: try LumeRuntimeConfiguration(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                storageDirectory: storage,
+                trustPolicy: .production,
+                guestCommandPolicy: .tenantExecution,
+                guestChannelPort: LumeRuntimeConfiguration
+                    .defaultGuestChannelPort,
+                tenantNetworkPolicy: .filteredEgress
+            )
+        )
+
+        XCTAssertFalse(readiness.networkPolicy)
+        XCTAssertFalse(readiness.permitsJobs)
+        XCTAssertEqual(
+            readiness.blockingReason,
+            "no enforced tenant network policy"
+        )
+        // It does ask for the descriptor, which is what makes frames flow.
+        XCTAssertTrue(
+            LumeTenantNetworkPolicy.filteredEgress.requiresNetworkGateway
+        )
+        XCTAssertEqual(
+            LumeTenantNetworkPolicy.filteredEgress.lumeArgument, "gateway"
+        )
+        // The other two never want one.
+        XCTAssertFalse(LumeTenantNetworkPolicy.isolated.requiresNetworkGateway)
+        XCTAssertFalse(LumeTenantNetworkPolicy.hostNAT.requiresNetworkGateway)
+    }
+
     /// A development host has not verified the Lume it is driving, so it must
     /// not claim a verified guest-control path either.
     func testDevelopmentTrustDoesNotClaimSignedGuestControl() throws {

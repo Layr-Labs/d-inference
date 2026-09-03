@@ -65,6 +65,9 @@ REQUIRED_PATCHED_LUME_TESTS=(
     executionIsOffUnlessRequested
     finalizationScriptSplicesTheAgentBlock
     isolatedNetworkModeAttachesNothing
+    gatewayNetworkModeRoundTrips
+    gatewayCapabilityRejectsAStreamSocket
+    gatewayWithoutADescriptorIsRefused
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

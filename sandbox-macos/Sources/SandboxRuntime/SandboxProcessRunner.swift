@@ -68,6 +68,15 @@ public final class SandboxManagedProcess: @unchecked Sendable {
         try execution.receiveGuestChannelDescriptor()
     }
 
+    /// The host end of this VM's link-layer connection, when one was attached.
+    ///
+    /// Borrowed, not transferred: the execution closes it on teardown, so a
+    /// gateway reading frames here stops when the VM does. That is what makes
+    /// the network fail closed without anything having to notice the exit.
+    public var networkGatewayDescriptor: Int32? {
+        execution.networkGatewayDescriptor
+    }
+
     public func wait() async -> SandboxProcessResult {
         await execution.waitUntilExit()
         return execution.result()
@@ -99,7 +108,8 @@ public struct SandboxProcessRunner: Sendable {
         currentDirectory: URL? = nil,
         maximumOutputBytes: Int = defaultMaximumOutputBytes,
         cooperativeControl: SandboxCooperativeProcessControl? = nil,
-        guestChannel: SandboxGuestChannelControl? = nil
+        guestChannel: SandboxGuestChannelControl? = nil,
+        networkGateway: SandboxNetworkGatewayControl? = nil
     ) throws -> SandboxManagedProcess {
         try validate(
             executable: executable,
@@ -111,7 +121,8 @@ public struct SandboxProcessRunner: Sendable {
             environment: environment,
             currentDirectory: currentDirectory,
             cooperativeControl: cooperativeControl,
-            guestChannel: guestChannel
+            guestChannel: guestChannel,
+            networkGateway: networkGateway
         )
         let execution = try ProcessExecution(
             executable: executable,
@@ -120,7 +131,8 @@ public struct SandboxProcessRunner: Sendable {
             currentDirectory: currentDirectory,
             maximumOutputBytes: maximumOutputBytes,
             cooperativeControl: cooperativeControl,
-            guestChannel: guestChannel
+            guestChannel: guestChannel,
+            networkGateway: networkGateway
         )
         do {
             try execution.start()
@@ -209,7 +221,8 @@ public struct SandboxProcessRunner: Sendable {
         environment: [String: String],
         currentDirectory: URL?,
         cooperativeControl: SandboxCooperativeProcessControl?,
-        guestChannel: SandboxGuestChannelControl? = nil
+        guestChannel: SandboxGuestChannelControl? = nil,
+        networkGateway: SandboxNetworkGatewayControl? = nil
     ) throws {
         guard arguments.allSatisfy({ !$0.contains("\0") }),
               environment.allSatisfy({
@@ -241,6 +254,20 @@ public struct SandboxProcessRunner: Sendable {
                       && environment[$0.descriptorEnvironmentVariable] == nil
                       && environment[$0.portEnvironmentVariable] == nil
                       && $0.port > 0
+              }) ?? true,
+              // Its own variable, distinct from every other channel's: two
+              // channels sharing a name would silently overwrite one another.
+              networkGateway.map({
+                  Self.isValidEnvironmentVariable(
+                      $0.descriptorEnvironmentVariable
+                  )
+                      && $0.descriptorEnvironmentVariable
+                          != cooperativeControl?.environmentVariable
+                      && $0.descriptorEnvironmentVariable
+                          != guestChannel?.descriptorEnvironmentVariable
+                      && $0.descriptorEnvironmentVariable
+                          != guestChannel?.portEnvironmentVariable
+                      && environment[$0.descriptorEnvironmentVariable] == nil
               }) ?? true
         else {
             throw SandboxRuntimeError.unsupported(

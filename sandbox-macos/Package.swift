@@ -32,6 +32,16 @@ let package = Package(
             dependencies: ["SandboxGuestProtocol"],
             path: "Sources/SandboxGuestAgentCore"
         ),
+        .testTarget(
+            name: "SandboxNetworkGatewayTests",
+            dependencies: ["SandboxNetworkGateway"],
+            path: "Tests/SandboxNetworkGatewayTests"
+        ),
+        .target(
+            name: "SandboxNetworkGateway",
+            dependencies: ["SandboxCore", "SandboxRuntime"],
+            path: "Sources/SandboxNetworkGateway"
+        ),
         .target(
             name: "SandboxSecurity",
             dependencies: ["SandboxCore"],
@@ -50,7 +60,8 @@ let package = Package(
         ),
         .target(
             name: "SandboxRuntimeLume",
-            dependencies: ["SandboxCore", "SandboxRuntime"],
+            dependencies: [
+                "SandboxNetworkGateway","SandboxCore", "SandboxRuntime"],
             path: "Sources/SandboxRuntimeLume",
             linkerSettings: [.linkedFramework("Security")]
         ),

@@ -461,7 +461,15 @@ extension LumeVirtualMachineRuntime {
                             .guestChannelPortEnvironmentVariable,
                         port: $0
                     )
-                }
+                },
+                networkGateway: configuration.tenantNetworkPolicy
+                    .requiresNetworkGateway
+                    ? SandboxNetworkGatewayControl(
+                        descriptorEnvironmentVariable:
+                            LumeRuntimeConfiguration
+                                .networkGatewayEnvironmentVariable
+                    )
+                    : nil
             )
         } catch {
             do {

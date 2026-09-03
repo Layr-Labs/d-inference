@@ -117,6 +117,21 @@ public enum ModelLoadAdmission {
         max(0, weightsGb) + max(0, headroomGb)
     }
 
+    /// Eviction feasibility (pure): whether evicting EVERY idle resident
+    /// model could reach the requirement at all. `reclaimableGb` is the sum of
+    /// the evictable slots' resident weights plus the MLX buffer cache (what
+    /// an unload plus clearCache hands back). When even that cannot reach
+    /// `requiredGb`, the caller must refuse WITHOUT evicting: unloading a
+    /// model the box can serve for one it cannot leaves it serving nothing
+    /// (#653, the 32 GB report: "a request for a model I can't serve killed
+    /// the one I could").
+    public static func evictionCanReach(
+        availableGb: Double, reclaimableGb: Double, requiredGb: Double
+    ) -> Bool {
+        guard availableGb.isFinite, reclaimableGb.isFinite, requiredGb.isFinite else { return false }
+        return max(0, availableGb) + max(0, reclaimableGb) >= requiredGb
+    }
+
     /// Allocation-time re-check of the load gate, run AFTER this load's own
     /// pending reservation sits in the shared ledger. `availableNetOfLedgerGb`
     /// is the free-for-load figure (which nets out EVERY ledger entry), so

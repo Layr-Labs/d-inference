@@ -5,7 +5,7 @@
 - **Per-model activation floors + measured resident weights** — the flat
   5.5 GiB activation reserve is now resolved per serving set from measured
   per-model floors (gpt-oss-20b: 3.5 GiB — its load requirement drops from
-  20.0 to 18.0 GB, which closes the 32 GB flap band reported in #653; the
+  20.0 to 18.0 GB, which narrows the 32 GB flap band reported in #653 by ~2 GB; the
   24 GB catalog tier stays borderline until the admit-time weight padding and
   the small-box `memory_reserve_gb` default are revisited, #653/#683), and the coordinator's
   POST-load token-budget estimate uses measured MLX residency for measured

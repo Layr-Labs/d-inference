@@ -1053,10 +1053,30 @@ extension ProviderLoop {
                 weightsGb: weightsGb, headroomGb: loadHeadroomGb)
             if available >= requiredGb { return }
             let modelsWithInflight = Set(requestToModel.values)
+            let evictable = modelSlots
+                .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
+            // Feasibility BEFORE the first eviction: if even evicting every
+            // idle model (plus the reclaimable buffer cache) cannot reach the
+            // requirement, refuse now rather than unload a model the box can
+            // serve for one it cannot — the #653 32 GB report's "a request
+            // for a model I can't serve killed the one I could".
+            if allowEviction, !evictable.isEmpty {
+                let reclaimableGb = evictable.reduce(0.0) {
+                    $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+                } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+                if !ModelLoadAdmission.evictionCanReach(
+                    availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+                {
+                    let availableText = String(format: "%.1f", available)
+                    let requiredText = String(format: "%.1f", requiredGb)
+                    let reclaimableText = String(format: "%.1f", reclaimableGb)
+                    throw InferenceError.modelLoadFailed(
+                        "Insufficient memory (\(availableText) GB free, need \(requiredText) GB) even after "
+                            + "evicting every idle model (\(reclaimableText) GB reclaimable) — refusing without evicting")
+                }
+            }
             let candidate = allowEviction
-                ? modelSlots
-                    .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
-                    .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
+                ? evictable.min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
                 : nil
 
             guard let (modelId, _) = candidate else {
@@ -1169,8 +1189,24 @@ extension ProviderLoop {
         // An idle slot (loaded, no in-flight work, not already unloading) can be
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
-        let hasEvictable = modelSlots.contains {
+        let evictable = modelSlots.filter {
             !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+        }
+        let hasEvictable = !evictable.isEmpty
+        // ...but only if evicting could actually reach the requirement: when
+        // even every idle model's weights plus the buffer cache fall short,
+        // the load path refuses without evicting (see evictUntilAvailable),
+        // so reject fast here and let the coordinator reroute instead of
+        // accepting a request that would only fail after the same check.
+        if available < requiredGb, hasEvictable {
+            let reclaimableGb = evictable.reduce(0.0) {
+                $0 + Double(max(0, $1.value.sizing.weightsBytes)) / 1_073_741_824.0
+            } + Double(max(0, MLX.GPU.cacheMemory)) / 1_073_741_824.0
+            if !ModelLoadAdmission.evictionCanReach(
+                availableGb: available, reclaimableGb: reclaimableGb, requiredGb: requiredGb)
+            {
+                return true
+            }
         }
 
         // Not enough free memory and nothing idle to evict. Drop the reclaimable

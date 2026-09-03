@@ -119,11 +119,6 @@ var servabilityModelActivationFloorsGB = map[string]float64{
 	// Raw peak-over-resident @500-token B=8 basis (July 2026 sweep;
 	// compiled 3.20 + slack — the current engine measures 2.63 raw).
 	"gpt-oss-20b": 3.5,
-	// Decomposed basis (2026-08-30 sweep, served artifact 73a03825):
-	// non-KV transient saturates ~3.3 GiB across 500→8k prompts (the raw
-	// figure's growth is cell KV, which the token budget accounts) + ~0.4
-	// inline-MTP allowance + slack. Mirrors the provider table's entry —
-	// same commit, same basis note.
 	// qwen3.5/3.6 (measured text-decode envelope ~3.3 GiB) are
 	// deliberately ABSENT pending a vision-inclusive measurement — they are
 	// vision-capable and the tower transient rides the reserve this floor

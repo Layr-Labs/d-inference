@@ -187,12 +187,13 @@ re-run with `BenchCBv2` built at exactly those pins (`--print-revision` = `30da9
 |---|---|---|---|---|
 | 500 | 2.27 | ~0.21 | ~2.1 | 2.63 |
 | 4000 | 4.17 | ~1.49 | ~2.7 | 4.17 |
+| 4000, `--solo-stripe 2048` (production's prefill construction: chunk 512, solo stripe 2048) | 4.17 | ~1.49 | ~2.7 | — |
 
-The saturated non-KV envelope is unchanged at ~2.7 GiB; the 3.5 GiB floor carries
-~0.8 GiB of margin on the pins that ship. Raw reports (committed, unlike the
-August raw files, which were lost with their worktree):
-`docs/reports/raw/gptoss-20b-actfloor-shipped-pins-L4000-2026-09-02.md` and
-`docs/reports/raw/gptoss-20b-actfloor-shipped-pins-L500-2026-09-02.md`.
+The saturated non-KV envelope is unchanged at ~2.7 GiB under both prefill
+constructions; the 3.5 GiB floor carries ~0.8 GiB of margin on the pins that ship.
+Raw reports (committed, unlike the August raw files, which were lost with their
+worktree): `docs/reports/raw/gptoss-20b-actfloor-shipped-pins-L4000-2026-09-02.md`,
+`…-L4000-solostripe2048-2026-09-02.md` and `…-L500-2026-09-02.md`.
 
 The 48 KB/token/seq slope equals all 24 layers carrying unbounded KV in this
 conversion (2×8 kv-heads×64 head_dim×2 B = 2 KiB/layer/token) — the sliding-window

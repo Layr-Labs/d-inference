@@ -1,7 +1,9 @@
 # Activation reserve overhaul — plan
 
 Fixes the over-reservation class that leaves machines online but unable to load (or
-serve) models they should fit: issue #653, the unserveable 24 GB gpt-oss tier, the
+serve) models they should fit: issue #653 (the 32 GB gpt-oss flap band, and the
+24 GB gpt-oss tier — which Phase 1 alone does NOT rescue: with the 4 GiB
+`memory_reserve_gb` default the live gate still needs ~22 GB free of 24), the
 32 GB qwen3.6 tier, and the padded-weights overshoot that breaks the 36 GB
 gemma-8bit tier.
 
@@ -21,7 +23,9 @@ KVHeadroomProbe/GlobalKVCacheBudget on the flat reserve — the admit-then-unloa
 
 ## Phase 1 — per-model activation floors (#683 + corrections) → one PR, ships first
 
-Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
+Drops gpt-oss's requirement 20.0 → 18.0 GB: narrows the 32 GB flap band by ~2 GB;
+on 24 GB it is necessary but not sufficient (the admit-time ×1.2 padding and the
+small-box `memory_reserve_gb` default are the remaining levers, Phase 3/follow-ups).
 
 1. ✅ Cherry-pick #683 onto master (clean; 24 files, +599/−127).
 2. ✅ `servabilityPerModelFloorMinVersion` "0.8.11" (stale placeholder) →
@@ -75,7 +79,9 @@ Unblocks the 24 GB gpt-oss tier (needs 20.0 → 18.0 GB).
 residency); 3b fully DEFERRED (both qwen floors + the default retune, all
 behind vision-inclusive measurement); 3c resolved by discovery.**
 
-Tier truth at the shipped tables: gpt-oss@24 fits (measured floor+weights);
+Tier truth at the shipped tables: gpt-oss@24 fits the STATIC cap arithmetic
+(13.5 + 3.5 + 1.0 = 18.0 ≤ 21.6) but not the live gate at the default reserve
+(needs ~22 GB free-plus-inactive of 24; #653 reporters measured 12.3/16.1 usable);
 qwen3.5@36 and gemma-qat4@36 fit at the 5.5 default; **qwen3.6's 32 GB tier
 does NOT fit at 5.5 (23.8 + 5.5 + 1.0 = 30.3 > 28.8 cap) — the re-tier to
 36 remains REQUIRED**; and **gemma-8bit's 36 GB tier remains blocked at

@@ -267,3 +267,19 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!ModelLoadAdmission.fitsAtAllocation(
         availableNetOfLedgerGb: netted, ownReservationBytes: ownReservation, requiredGb: withAssistant))
 }
+
+/// Eviction feasibility: the #653 32 GB report — a request for a model the
+/// box cannot fit evicted the resident model it could serve, then failed
+/// anyway. Evicting must be refused up front when even every idle model's
+/// weights plus the buffer cache cannot reach the requirement.
+@Test func evictionCanReachRefusesHopelessEvictions() {
+    // 19.4 free, gemma needs 23.9, the only evictable slot holds 13.5 (gpt-oss)
+    // plus 0.5 of buffer cache: 19.4 + 14.0 = 33.4 ≥ 23.9 → eviction CAN reach.
+    #expect(ModelLoadAdmission.evictionCanReach(availableGb: 19.4, reclaimableGb: 14.0, requiredGb: 23.9))
+    // 6.2 free, evictable 13.5 + 0.5, need 23.9: 20.2 < 23.9 → refuse without evicting.
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: 6.2, reclaimableGb: 14.0, requiredGb: 23.9))
+    // Boundary is inclusive; negatives clamp; non-finite never admits.
+    #expect(ModelLoadAdmission.evictionCanReach(availableGb: 10.0, reclaimableGb: 8.0, requiredGb: 18.0))
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: -1.0, reclaimableGb: 8.0, requiredGb: 8.5))
+    #expect(!ModelLoadAdmission.evictionCanReach(availableGb: .nan, reclaimableGb: 8.0, requiredGb: 1.0))
+}

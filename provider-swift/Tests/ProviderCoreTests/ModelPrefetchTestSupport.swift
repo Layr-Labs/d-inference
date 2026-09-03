@@ -320,3 +320,15 @@ final class RecordingBlockingPrefetcher: ModelPrefetcher, @unchecked Sendable {
         while !startedIDs.contains(modelID) { await started.wait() }
     }
 }
+
+/// Poll `condition` until true or timeout. Returns whether it became true.
+/// Master keeps this file-private in its prefetch monolith; the split suites
+/// share it here (internal, so every ModelPrefetch* file resolves it).
+func waitUntil(timeout: Duration = .seconds(5), _ condition: @Sendable () async -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}

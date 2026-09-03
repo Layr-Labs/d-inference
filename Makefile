@@ -5,6 +5,7 @@
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
+        docs-check docs-stamp \
         test build all clean
 
 help:
@@ -108,9 +109,17 @@ e2e-benchmark: ## go test ./e2e/... -run TestBenchmark (load benchmarks)
 
 e2e: e2e-integration ## Run the integration suite
 
+# ---- Docs -------------------------------------------------------------------
+
+docs-check: ## Lint docs/: freshness stamps, relative links, cited code paths, orphans
+	./scripts/docs-check.sh
+
+docs-stamp: ## Refresh the freshness stamp on changed docs (FILES=... to target specific files)
+	./scripts/docs-stamp.sh $(FILES)
+
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test ## Run all unit tests
+test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test docs-check ## Run all unit tests + docs lint
 
 build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
 

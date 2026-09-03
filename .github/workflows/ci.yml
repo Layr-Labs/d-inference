@@ -17,6 +17,14 @@ jobs:
           ./scripts/sync-install-embed.sh check
           ./scripts/test-prod-env-refresh.sh
 
+  docs:
+    name: Docs Lint
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check freshness stamps, links, cited paths, orphans
+        run: ./scripts/docs-check.sh
+
   test-coordinator:
     name: Coordinator Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -298,60 +306,5 @@ jobs:
           submodules: recursive
       - name: Restore SwiftPM cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
-          restore-keys: |
-            spm-v3-${{ runner.os }}-
-      - name: Discard metallibs restored by the generic SwiftPM cache
-        run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
-            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
-          done
-      - name: Build provider-swift
-        working-directory: provider-swift
-        run: |
-          swift build -c release --product darkbloom
-          swift build -c release --product darkbloom-fan-helper
-      - name: Build nested mlx-swift-lm tests (warms nested cache)
-        working-directory: libs/mlx-swift-lm
-        # The test-provider job runs the CBv2 paged suites (safety, kernel
-        # parity, backend, eligibility, KV-sharing parity) from this nested
-        # .build; saving it here keeps that lane warm across PRs.
-        timeout-minutes: 35
-        run: |
-          # Keep the warmed nested workspace on the same local MLX source used
-          # by provider builds and scripts/fetch-metallib.sh.
-          swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-          swift package edit --path ../mlx-swift mlx-swift
-          swift build --build-tests
-      - name: Save SwiftPM cache
-        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
-        with:
-          path: |
-            ~/Library/Caches/org.swift.swiftpm
-            ~/Library/org.swift.swiftpm
-            provider-swift/.build
-            libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
-  lint-console:
-    name: Console UI Lint & Build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: console-ui/package-lock.json
-      - name: Install dependencies
-        run: cd console-ui && npm ci
-      - name: Lint
-        run: cd console-ui && npx eslint src/
-      - name: Build
-        run: cd console-ui && npm run build
+[Showing lines 1-300 of 358. Use :301 to continue]

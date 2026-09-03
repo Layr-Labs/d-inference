@@ -160,13 +160,13 @@ type fnWalk struct {
 	opaqueSeen   bool                       // unreadable text was found, reported or declared
 	opaqueTables map[string]string          // tables named in unreadable text, and where
 	textScope    any                        // what the text being walked belongs to; see textScopeFor
-	textFresh    bool                       // this statement binds the scope rather than appending to it
 	gens         map[any]int                // how many queries a scope has been bound to
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
 	stmtTables   []statementTable           // tables named by whole statements, drawn at body end
 	sent         map[cteKey]bool            // queries this body has handed to the driver
-	alias        map[cteKey]cteKey          // a query copied into a second local: `r := q`
+	aliases      map[cteKey][]cteKey        // queries a query was copied out of: `r := q`
+	textUnion    map[cteKey]cteKey          // queries observed concatenated into one; see unifyText
 	openLoop     map[any]int                // the loop a scope's current query was opened inside
 	loopSeq      int                        // loops entered, so each one has a name
 	loopID       int                        // the innermost loop being walked, 0 outside any
@@ -199,15 +199,15 @@ func (f *fnWalk) merge(res *Result) {
 // assembles into, so the SQL inside it is read as belonging to one query rather
 // than to the body at large. See textScopeFor.
 func (f *fnWalk) stmt(s ast.Stmt) {
-	prevScope, prevFresh := f.textScope, f.textFresh
+	prev := f.textScope
 	if scope := f.textScopeFor(s); scope != nil {
-		f.textScope, f.textFresh = scope, bindsScope(s)
-		if f.textFresh && (f.queryIsOver(scope) || !f.readsScope(s)) {
+		f.textScope = scope
+		if bindsScope(s) && (f.queryIsOver(scope) || !f.readsScope(s)) {
 			f.openStatement()
 		}
 	}
 	f.walkStmt(s)
-	f.textScope, f.textFresh = prevScope, prevFresh
+	f.textScope = prev
 }
 
 // textElem walks an expression that stands for a query of its own — an element of a
@@ -222,13 +222,17 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 // per element only ever narrows a scope, so it can turn a silence into a finding and
 // never the reverse.
 //
-// A query genuinely assembled across two elements is the cost, and it is a finding
-// with a remedy (inline the `WITH`, or declare the tables) rather than a wrong edge.
+// A query genuinely assembled across two elements is the cost. Where the walk can
+// see the two being concatenated — `Exec(ctx, base+" "+tail)` — `unifyText` puts them
+// back together, so the CTE one declares still covers the table the other names.
+// Where it cannot (a `strings.Join`, a helper returning both halves), the narrower
+// scope draws the CTE as if it were the table of the same name: a wrong edge, and the
+// reason the README lists this shape as a known hole rather than a closed one.
 func (f *fnWalk) textElem(e ast.Expr, mode string) {
-	prevScope, prevFresh := f.textScope, f.textFresh
-	f.textScope, f.textFresh = e, true
+	prev := f.textScope
+	f.textScope = e
 	f.visit(e, mode)
-	f.textScope, f.textFresh = prevScope, prevFresh
+	f.textScope = prev
 }
 
 // bindsScope reports whether a statement gives its text scope a new value rather
@@ -309,13 +313,21 @@ func (f *fnWalk) queryIsOver(scope any) bool {
 // loopBody walks a loop's body as a loop. Nothing else about the walk depends on how
 // often a statement runs; the tail-first exception does, because it is an argument
 // about what a local held a moment ago. See queryIsOver.
-func (f *fnWalk) loopBody(body *ast.BlockStmt) {
+//
+// A `for` loop's post statement is walked here rather than beside the condition,
+// because it repeats with the body and is where a prepend can hide:
+// `for i := 0; i < n; q = "WITH …" + q` rebinds q once per pass exactly as a statement
+// in the body would. Walking it outside meant it carried the enclosing loop's id, so
+// the rebinding looked like it belonged to the query opened before the loop and its
+// `WITH` clause shadowed the table the first iteration really read.
+func (f *fnWalk) loopBody(body *ast.BlockStmt, post ast.Stmt) {
 	prevID, prevDispatch := f.loopID, f.loopDispatch
 	f.loopSeq++
 	f.loopID = f.loopSeq
-	if f.hasQueryCall(body) {
+	if f.hasQueryCall(body) || f.hasQueryCall(post) {
 		f.loopDispatch++
 	}
+	f.stmt(post)
 	f.stmt(body)
 	f.loopID, f.loopDispatch = prevID, prevDispatch
 }
@@ -327,6 +339,9 @@ func (f *fnWalk) loopBody(body *ast.BlockStmt) {
 // so the exception survives it, which is the same answer this check gave before loops
 // were tracked at all.
 func (f *fnWalk) hasQueryCall(n ast.Node) bool {
+	if n == nil {
+		return false // a `for` with no post statement, a `range`
+	}
 	found := false
 	ast.Inspect(n, func(n ast.Node) bool {
 		if found {
@@ -389,8 +404,9 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 		// read of `usage`, the mute textElem exists to break. A lone value is already
 		// alone in its scope, and scoping it to itself would only lose the local.
 		if len(x.Rhs) > 1 {
-			for _, rhs := range x.Rhs {
+			for i, rhs := range x.Rhs {
 				f.textElem(rhs, ModeRead)
+				f.noteValueScope(x.Lhs, i, rhs)
 			}
 		} else {
 			for _, rhs := range x.Rhs {
@@ -417,24 +433,26 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 				// `var q = ...` scopes its text the same way an assignment does, and
 				// `var a, b = q1, q2` scopes each value to itself for the same reason a
 				// multi-value assignment does.
-				prevScope, prevFresh := f.textScope, f.textFresh
+				prev := f.textScope
 				switch obj := f.assignTarget(identExprs(vs.Names)); {
 				case obj != nil:
-					f.textScope, f.textFresh = obj, true
+					f.textScope = obj
 					f.openStatement() // the declaration binds q, so it starts a query; see stmt
 					for _, v := range vs.Values {
 						f.visit(v, ModeRead)
 					}
 				case len(vs.Values) > 1:
-					for _, v := range vs.Values {
+					names := identExprs(vs.Names)
+					for i, v := range vs.Values {
 						f.textElem(v, ModeRead)
+						f.noteValueScope(names, i, v)
 					}
 				default:
 					for _, v := range vs.Values {
 						f.visit(v, ModeRead)
 					}
 				}
-				f.textScope, f.textFresh = prevScope, prevFresh
+				f.textScope = prev
 				f.noteTextAlias(identExprs(vs.Names), vs.Values)
 				f.bindSpec(vs)
 			}
@@ -463,12 +481,11 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 		f.compare++
 		f.visit(x.Cond, ModeRead)
 		f.compare--
-		f.stmt(x.Post)
-		f.loopBody(x.Body)
+		f.loopBody(x.Body, x.Post)
 	case *ast.RangeStmt:
 		f.visit(x.X, ModeRead)
 		f.bindRange(x)
-		f.loopBody(x.Body)
+		f.loopBody(x.Body, nil)
 	case *ast.SwitchStmt:
 		f.stmt(x.Init)
 		f.compare++
@@ -693,6 +710,10 @@ func (f *fnWalk) visit(e ast.Expr, mode string) {
 		// statement, so the table would go unrecorded while the report stayed clean.
 		if f.constant(x) {
 			return
+		}
+		if x.Op == token.ADD {
+			// Two queries concatenated are one query: see unifyText.
+			f.unifyText(x)
 		}
 		if x.Op == token.EQL || x.Op == token.NEQ {
 			f.compare++

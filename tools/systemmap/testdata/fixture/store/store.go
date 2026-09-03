@@ -900,6 +900,140 @@ func (p *Postgres) RankTailInLoop(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// RankTailInLoopPost is RankTailInLoop with the prepend written as the loop's post
+// statement. The post statement runs once per iteration exactly as the body does, so
+// walking it outside the loop's context — which is where a `for` clause naturally sits
+// — granted the tail-first exception to a rebinding that repeats, and the CTE shadowed
+// the `usage` the tail really reads.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailInLoopPost(ctx context.Context, n int) error {
+	q := ` UNION SELECT id FROM usage`
+	for i := 0; i < n; q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q {
+		if _, err := p.db.ExecContext(ctx, q, i); err != nil {
+			return err
+		}
+		i++
+	}
+	return nil
+}
+
+// RankTailAfterPairAlias is RankTailAfterAlias with the copy made by a statement that
+// binds two names. There is no single target to hang the copy on, so the link from `r`
+// back to `q` cannot be recorded — and without it nothing says `q`'s query ran, so the
+// CTE below would cover the `usage` that query really reads. Marking the source
+// dispatched where the copy is made is what keeps the read.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterPairAlias(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	r, n := q, 1
+	if _, err := p.db.ExecContext(ctx, r, n); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// held is somewhere other than a local to park a statement in.
+type held struct {
+	q string
+}
+
+// RankTailAfterFieldAlias is the same copy into a struct field, and
+// RankTailAfterSliceAlias into a slice element. Neither target is a name that stands
+// for one query — a field or an element can hold a different statement on every pass —
+// so neither can carry a generation, and the source has to be settled where it is read
+// instead.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterFieldAlias(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	var h held
+	h.q = q
+	if _, err := p.db.ExecContext(ctx, h.q); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterSliceAlias(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	qs := make([]string, 1)
+	qs[0] = q
+	if _, err := p.db.ExecContext(ctx, qs[0]); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankTailAfterTwoSourceAlias copies two queries into one: `r := q + tail`. Both are
+// sources of the copy, and keeping only one link per target dropped whichever the walk
+// read last — here `q`, whose read of `usage` the CTE below would then shadow.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterTwoSourceAlias(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	tail := ` LIMIT 10`
+	r := q + tail
+	if _, err := p.db.ExecContext(ctx, r); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankJoinedPair is RankPairAssign with the two halves handed to the driver joined,
+// which makes them one query rather than two. Scoping text per value is what keeps one
+// query's CTE from muting the next one's real read — but where the walk can see the
+// concatenation, the CTE does cover the read, and treating the halves as two queries
+// would draw an edge to a `usage` table this statement never touches. An invented edge
+// is worse than a missing one, so the concatenation is followed.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankJoinedPair(ctx context.Context) error {
+	base, tail := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		` UNION SELECT id FROM usage`
+	_, err := p.db.ExecContext(ctx, base+tail)
+	return err
+}
+
+// RankBindParamThenTail passes a string local as a bind parameter of a literal
+// statement, then assembles the next query tail first out of that same local. Only the
+// statement argument was dispatched; marking every argument said this query had already
+// run, which opened a generation the tail was not in and un-shadowed the `usage` its
+// own CTE declares — a table drawn in the map that the query does not read.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankBindParamThenTail(ctx context.Context, family string) error {
+	filter := ` UNION SELECT id FROM usage`
+	if _, err := p.db.ExecContext(ctx, `INSERT INTO models (id, family) VALUES ($1, $2)`, filter, family); err != nil {
+		return err
+	}
+	filter = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + filter
+	_, err := p.db.ExecContext(ctx, filter)
+	return err
+}
+
 // UsageWindow appends a fragment whose FROM belongs to a keyword call. The mask
 // that keeps `EXTRACT(EPOCH FROM ...)` from naming a table has to run over
 // fragments too — without it the map would gain a table called `created_at`, which

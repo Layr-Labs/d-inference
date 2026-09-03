@@ -58,8 +58,11 @@ func (f *fnWalk) isQueryCall(sel *ast.SelectorExpr) bool {
 // driven through one `Exec` in a loop, and a helper may declare the statement its
 // caller runs.
 func (f *fnWalk) auditQueries() {
-	f.settleTables()
-	f.settleFragments()
+	// The CTE names in force for a table are the ones its own query declares plus the
+	// ones declared by every query it was observed concatenated with; see unifyText.
+	groups := f.cteGroups()
+	f.settleTables(groups)
+	f.settleFragments(groups)
 	if declared, ok := f.declared(); ok {
 		f.settleDeclared(declared)
 		return
@@ -245,12 +248,23 @@ func (f *fnWalk) openStatement() {
 // noteSent marks the query a driver call is dispatching, so a rebinding after it is
 // read as a new query rather than as the same one assembled tail first.
 //
-// Every local the call names is marked, at the generation it is holding now: the text
-// may have been concatenated into the argument (`Exec(ctx, q+" LIMIT 1")`) or handed
-// over through a helper, and marking one variable too many only ends an exception
-// early — a finding with a remedy, never a silent mute.
+// Only the statement argument is marked: the first argument whose type can hold text,
+// which for every driver in the tree is the statement itself. Every local named inside
+// that argument counts, because the text may have been concatenated into it
+// (`Exec(ctx, q+" LIMIT 1")`), and marking one too many there only ends an exception
+// early — a finding with a remedy.
+//
+// Marking every argument was worse than untidy. `Exec(ctx, "INSERT INTO models …", q)`
+// hands the driver a literal and passes `q` as a bind parameter; marking `q` said a
+// query had run when it had not, so the next `q = "WITH …" + q` opened a new generation
+// and the whole statement `q` already held was un-shadowed — an edge the SQL does not
+// have, drawn with nothing reported.
 func (f *fnWalk) noteSent(args []ast.Expr) {
 	for _, arg := range args {
+		t := f.info.TypeOf(arg)
+		if t == nil || !carriesText(t) {
+			continue
+		}
 		ast.Inspect(arg, func(n ast.Node) bool {
 			ident, ok := n.(*ast.Ident)
 			if !ok {
@@ -261,6 +275,7 @@ func (f *fnWalk) noteSent(args []ast.Expr) {
 			}
 			return true
 		})
+		return
 	}
 }
 
@@ -269,55 +284,195 @@ func (f *fnWalk) noteSent(args []ast.Expr) {
 // does `r`'s — without following the copy, a rebinding of `q` afterwards would inherit
 // a generation the database has already seen and its `WITH` clause would shadow a table
 // that query really read.
+//
+// A copy can have several sources (`r := q + suffix`) and the graph can hold a cycle
+// (`r := q` then `q = q + r`), so this is a traversal rather than a walk up a chain.
+// Marking is idempotent and a key is only followed the first time it is marked, which
+// is what terminates it.
 func (f *fnWalk) markSent(key cteKey) {
 	if f.sent == nil {
 		f.sent = map[cteKey]bool{}
 	}
-	// A copy chain is finite and acyclic by construction — each link is recorded at
-	// the generation in force when it was written, and a generation is never reopened
-	// — but the loop is bounded anyway rather than trusting that.
-	for range len(f.alias) + 1 {
-		if f.sent[key] {
-			return
+	queue := []cteKey{key}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if f.sent[cur] {
+			continue
 		}
-		f.sent[key] = true
-		next, ok := f.alias[key]
-		if !ok {
-			return
-		}
-		key = next
+		f.sent[cur] = true
+		queue = append(queue, f.aliases[cur]...)
 	}
 }
 
 // noteTextAlias records that one query local was copied out of another, which is what
-// lets a dispatch under the copy's name settle the original. Only a bare identifier on
-// each side counts, for the reason `assignTarget` gives: `qs[0]` and `s.q` stand for
-// several queries at once, and following them would mark queries that never ran.
+// lets a dispatch under the copy's name settle the original.
+//
+// Every text-carrying local on the right is recorded, not the first one: `r := q +
+// suffix` is a copy of both, and keeping one link per target lost whichever the walk
+// saw last.
 //
 // A binding that reads itself — `q = "WITH …" + q` — records nothing: it is the same
 // query still being assembled, not a copy of another one.
+//
+// Where the left side is not a single local the walk can follow — `r, n := q, 1`,
+// `h.s = q`, `qs[0] = q` — there is no generation to hang a link on, for the reason
+// `assignTarget` gives. The query on the right is marked sent instead: it may well be
+// dispatched under that name, and this walk would never see it. Ending the exception
+// early costs a finding with a remedy; losing the link costs a table, silently.
 func (f *fnWalk) noteTextAlias(lhs, rhs []ast.Expr) {
+	sources := f.textObjects(rhs)
 	target := f.assignTarget(lhs)
 	if target == nil {
+		if !f.holdsText(lhs) {
+			return
+		}
+		for _, obj := range sources {
+			f.markSent(cteKey{scope: obj, gen: f.gens[obj]})
+		}
 		return
 	}
-	for _, r := range rhs {
-		ast.Inspect(r, func(n ast.Node) bool {
+	for _, obj := range sources {
+		if obj == target {
+			continue
+		}
+		if f.aliases == nil {
+			f.aliases = map[cteKey][]cteKey{}
+		}
+		key := cteKey{scope: target, gen: f.gens[target]}
+		f.aliases[key] = append(f.aliases[key], cteKey{scope: obj, gen: f.gens[obj]})
+	}
+}
+
+// textObjects lists the distinct text-carrying locals an expression list names, in
+// source order.
+func (f *fnWalk) textObjects(exprs []ast.Expr) []types.Object {
+	var out []types.Object
+	seen := map[types.Object]bool{}
+	for _, e := range exprs {
+		ast.Inspect(e, func(n ast.Node) bool {
 			ident, ok := n.(*ast.Ident)
 			if !ok {
 				return true
 			}
 			obj := f.objOf(ident)
-			if obj == nil || obj == target || obj.Type() == nil || !carriesText(obj.Type()) {
+			if obj == nil || seen[obj] || obj.Type() == nil || !carriesText(obj.Type()) {
 				return true
 			}
-			if f.alias == nil {
-				f.alias = map[cteKey]cteKey{}
-			}
-			f.alias[cteKey{scope: target, gen: f.gens[target]}] = cteKey{scope: obj, gen: f.gens[obj]}
-			return false
+			seen[obj] = true
+			out = append(out, obj)
+			return true
 		})
 	}
+	return out
+}
+
+// holdsText reports whether anything an assignment writes to can hold statement text.
+// `_, err := …` cannot; `r, n := q, 1` and `qs[0] = q` can.
+func (f *fnWalk) holdsText(lhs []ast.Expr) bool {
+	for _, e := range lhs {
+		if id, ok := e.(*ast.Ident); ok && id.Name == "_" {
+			continue
+		}
+		if t := f.info.TypeOf(e); t != nil && carriesText(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// unifyText records that two queries were concatenated into one expression, so that
+// from here on the CTE names either of them declared cover the tables the other named.
+//
+// This is the other half of scoping text per expression (see textElem). Splitting
+// `base, tail := "WITH usage AS (…)", "SELECT … FROM usage"` into two scopes is what
+// keeps one query's CTE from muting the next query's real read — but when the two are
+// halves of one statement, `Exec(ctx, base+" "+tail)`, the CTE does cover the read, and
+// leaving them apart drew an edge to a `usage` table the query never touches. An
+// invented edge is the worst thing this extractor can produce.
+//
+// Following the concatenation answers it exactly rather than reporting a finding
+// against SQL that is correct: text observed joined is one query, text never observed
+// joined is two. What remains out of reach is a join this walk cannot see — through
+// `strings.Join`, or a helper that returns both halves — where the narrow scope still
+// draws the CTE as a table.
+func (f *fnWalk) unifyText(e ast.Expr) {
+	objs := f.textObjects([]ast.Expr{e})
+	if len(objs) < 2 {
+		return
+	}
+	for _, obj := range objs[1:] {
+		f.union(cteKey{scope: objs[0], gen: f.gens[objs[0]]}, cteKey{scope: obj, gen: f.gens[obj]})
+	}
+}
+
+// noteValueScope ties the local a value is bound to to the scope that value's text was
+// read in, for the values of a statement that binds several at once. Those have no
+// single target (see assignTarget), so each value is its own text scope and the local
+// carrying it is not the scope's name — which leaves `base, tail := …` followed by
+// `Exec(ctx, base+tail)` with a concatenation of two locals that name nothing unifyText
+// can join. This is the link across: the concatenation reaches the locals, the locals
+// reach their values.
+//
+// A local bound this way twice in one body ties both values to the same key, since no
+// generation is ever opened for it — the two queries would then share their CTE names.
+// That is the same trade as `qs[0] = q`: a name that stands for more than one query
+// cannot be told apart, and the safe direction there is to keep the names.
+func (f *fnWalk) noteValueScope(lhs []ast.Expr, i int, value ast.Expr) {
+	if i >= len(lhs) {
+		return // `a, b := f()` — the values are not positional
+	}
+	id, ok := lhs[i].(*ast.Ident)
+	if !ok {
+		return
+	}
+	obj := f.objOf(id)
+	if obj == nil || obj.Type() == nil || !carriesText(obj.Type()) {
+		return
+	}
+	f.union(cteKey{scope: obj, gen: f.gens[obj]}, cteKey{scope: value, gen: f.gens[value]})
+}
+
+func (f *fnWalk) union(a, b cteKey) {
+	ra, rb := f.textRoot(a), f.textRoot(b)
+	if ra == rb {
+		return
+	}
+	if f.textUnion == nil {
+		f.textUnion = map[cteKey]cteKey{}
+	}
+	f.textUnion[ra] = rb
+}
+
+// textRoot names the group of queries a key has been concatenated into. The walk is
+// bounded by the number of links rather than trusting the structure, because a link is
+// only ever written to a key that is currently a root and the map is never rewritten.
+func (f *fnWalk) textRoot(k cteKey) cteKey {
+	for range len(f.textUnion) + 1 {
+		next, ok := f.textUnion[k]
+		if !ok {
+			return k
+		}
+		k = next
+	}
+	return k
+}
+
+// cteGroups collects the CTE names in force for each group of concatenated queries. It
+// is built once the body is walked, so every concatenation the walk saw is already
+// recorded and the groups cannot depend on the order the text was read in.
+func (f *fnWalk) cteGroups() map[cteKey]map[string]bool {
+	out := map[cteKey]map[string]bool{}
+	for key, names := range f.ctes {
+		root := f.textRoot(key)
+		if out[root] == nil {
+			out[root] = map[string]bool{}
+		}
+		for name := range names {
+			out[root][name] = true
+		}
+	}
+	return out
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the
@@ -491,9 +646,9 @@ type statementTable struct {
 
 // settleTables draws the buffered tables, dropping the ones that turned out to be a
 // CTE the same query declares elsewhere.
-func (f *fnWalk) settleTables() {
+func (f *fnWalk) settleTables(groups map[cteKey]map[string]bool) {
 	for _, t := range f.stmtTables {
-		if f.ctes[t.owner][t.table] {
+		if groups[f.textRoot(t.owner)][t.table] {
 			continue
 		}
 		if !f.w.tables[t.table] {
@@ -516,20 +671,22 @@ type fragment struct {
 // settleFragments decides the buffered fragment names once the whole body has been
 // walked, so a fragment read before the WITH clause that covers it — a tail collected
 // above the base query, a conditional clause appended before the literal below it is
-// reached — is still settled against that clause. What it cannot do is reach across
-// scopes: a WITH clause hoisted into a *different* variable is a different query as far
-// as this check is concerned, and the fragment is reported.
+// reached — is still settled against that clause. A WITH clause held in a *different*
+// variable counts too, but only where the walk saw the two concatenated (unifyText);
+// halves joined out of its sight — through `strings.Join`, or returned as a pair by a
+// helper — are two queries as far as this check is concerned, and the fragment is
+// reported.
 //
 // Every non-CTE name is recorded, because a declaration is held to each table the
 // text names; only the report stops at one finding per literal, which is all a
 // reader needs to go and look.
-func (f *fnWalk) settleFragments() {
+func (f *fnWalk) settleFragments(groups map[cteKey]map[string]bool) {
 	for _, fr := range f.frags {
 		// A CTE of the same name shadows the table: the earnings queries define
 		// `WITH providers AS (...)` and then `JOIN providers p`, which is the CTE and
 		// not the providers table — and `providers` is a real table, so the schema
 		// cannot settle this on its own.
-		if f.ctes[fr.owner][fr.table] {
+		if groups[f.textRoot(fr.owner)][fr.table] {
 			continue
 		}
 		f.opaqueTable(fr.table, fr.pos)

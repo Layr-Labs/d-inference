@@ -405,7 +405,12 @@ this dies of:
   queries that share only an `err`, sit in one slice literal, arrive as two
   arguments of one call, or are bound or handed back side by side (`base, tail := …`,
   `var base, tail = …`, `return base, tail` — several values in one statement are
-  several queries, and there is no single variable to scope them to). A
+  several queries, and there is no single variable to scope them to). Where those two
+  values turn out to be halves of *one* statement, the concatenation says so and puts
+  them back together: `Exec(ctx, base+tail)` settles the tail against the base's CTE
+  names, because a `WITH usage AS (…)` that really does cover the read below it must not
+  draw an edge to the `usage` table — invented state is worse than missing state, and
+  splitting the scope was what invented it. A
   variable holding several queries in turn holds one set of names per query, and a
   fragment is settled against the set in force where the fragment was read, so
   reusing one `q` neither carries a CTE name forward to the next query nor takes it
@@ -426,14 +431,23 @@ this dies of:
   `Exec(ctx, q)` is a second query reusing the local, and starts one, because a query
   that has already gone to the database cannot have its tables shadowed by a `WITH`
   clause written after it. What ends the exception is *that* query going to the
-  database. The call is attributed to the query it dispatched, following a copy so
-  `r := q; Exec(ctx, r)` ends `q`'s query as well as `r`'s; counting the body's calls
-  instead let an `Exec` belonging to some other statement cut a query that had not run,
-  which both reported a legal assembly and drew the table its own CTE was shadowing.
+  database. The call is attributed to the query it dispatched — the *statement*
+  argument, not every argument, since a string handed over as a bind parameter did not
+  run and marking it un-shadowed the CTE of the query that local was still holding —
+  and copies are followed, so `r := q; Exec(ctx, r)` ends `q`'s query as well as `r`'s,
+  and `r := q + tail` ends both of its sources. Counting the body's calls instead let an
+  `Exec` belonging to some other statement cut a query that had not run, which both
+  reported a legal assembly and drew the table its own CTE was shadowing. Where a copy
+  lands somewhere no name can be followed — `r, n := q, 1`, `h.q = q`, `qs[0] = q`, for
+  the same reason those cannot scope a query — the source is settled at the copy itself:
+  the dispatch may well happen under that name and out of this walk's sight, and ending
+  the exception early costs a finding with a remedy where losing it costs a table.
   A loop ends it too: the walk reads a body once where the program runs it many times,
   so a prepend inside a loop that calls the driver, onto a local bound *outside* that
-  loop, is a fresh query from the second pass onward and is read as one. A local bound
-  and run within one iteration keeps the exception.
+  loop, is a fresh query from the second pass onward and is read as one. That covers the
+  `for` clause's post statement as well as the body, since it repeats with the body — it
+  is walked as part of the loop for exactly that reason. A local bound and run within one
+  iteration keeps the exception.
 
   Four consequences worth knowing. A CTE in one query does not silence a same-named
   real table in another *as long as the two are separate Go expressions* — see the
@@ -477,7 +491,7 @@ this dies of:
   driver calls the write leaves the map with nothing reported at all — not a degraded
   message, a silence. Nothing in the tree spells a comment that way.
 
-  Four more limits, all in shapes no store query has. Two whole statements in one
+  The remaining limits, all in shapes no store query has. Two whole statements in one
   literal — `"WITH usage AS (…) SELECT … FROM usage; SELECT … FROM usage WHERE …"` —
   are one text to `Tables`, which strips a CTE name from all of it, so the second
   statement's read of the real table is dropped. The scan reads a body in source order
@@ -487,10 +501,17 @@ this dies of:
   leaves no call in this body to count, so a tail-first prepend after it still reads as
   the same query and its `WITH` clause reaches back — but that helper takes its
   statement as a parameter, which is the first rule's own failure, and the report says
-  so at the helper. Those two are the ways a CTE is known to mute a table with nothing
+  so at the helper. One local bound twice by the same multi-value statement is a fourth:
+  the values are scoped to themselves and tied to the local carrying them, and with no
+  generation to tell two bindings of it apart the two queries share their CTE names.
+  Those are the ways a CTE is known to mute a table with nothing
   reported anywhere; what is claimed for them is that no store query has the shape, not
   that the list is closed — each was found by looking for another one, and the fixtures
-  are where a new one gets pinned. And a `q` shadowed in an inner block is a different variable, so a fragment
+  are where a new one gets pinned. The mirror-image hole is a statement whose halves are
+  joined where the walk cannot see it — `strings.Join(parts, " ")`, or a helper that
+  returns a base and a tail for its caller to concatenate — where the CTE is drawn as the
+  real table of the same name, again with nothing reported; keep such a statement in one
+  expression. And a `q` shadowed in an inner block is a different variable, so a fragment
   there is reported rather than settled against the outer query's CTE names; that costs
   a finding with a remedy, not a silence.
 

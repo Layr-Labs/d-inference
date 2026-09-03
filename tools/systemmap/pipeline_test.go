@@ -439,6 +439,30 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"RankTailInLoop", []string{
 			"`UNION SELECT id FROM usage` names a table but is only a fragment of a statement",
 		}},
+		// The same rebinding written as the loop's post statement, which is where a `for`
+		// clause puts it and outside the body the loop rule was reading. It repeats with
+		// the body, so it has to be walked as part of it.
+		{"RankTailInLoopPost", []string{
+			"`UNION SELECT id FROM usage` names a table but is only a fragment of a statement",
+		}},
+		// The dispatch-under-a-copy shape where the copy has no single target to hang the
+		// link on: two names bound at once, a struct field, a slice element. Nothing then
+		// says the first query ran, and the second query's CTE would shadow its real read
+		// — the mute is broken by settling the source where the copy is made instead.
+		{"RankTailAfterPairAlias", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
+		{"RankTailAfterFieldAlias", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
+		{"RankTailAfterSliceAlias", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
+		// A copy with two sources, `r := q + tail`. Keeping one link per target dropped
+		// whichever was read last, which is the one whose read the CTE below then muted.
+		{"RankTailAfterTwoSourceAlias", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
 		// A local reset to text that is not a statement, then appended to. Neither line
 		// is a boundary if the text decides, so the second query's CTE reached back and
 		// shadowed the first query's real read of `usage` — a table dropped from the map
@@ -511,6 +535,14 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		{"RankPairAssign", []string{"pg.models R", "pg.usage R"}},
 		{"RankDeclPair", []string{"pg.models R", "pg.usage R"}},
 		{"RankReturnPair", []string{"pg.models R", "pg.usage R"}},
+		// The other side of that pair: the two halves handed to the driver concatenated,
+		// which makes them one query whose CTE does cover the read. Two scopes here would
+		// draw a `usage` edge the statement does not have — invented state, not missing.
+		{"RankJoinedPair", []string{"pg.models R"}},
+		// A string local passed as a bind parameter, then reused to assemble the next query
+		// tail first. Only the statement argument is dispatched; counting the parameter said
+		// the query had run and un-shadowed the `usage` its own CTE declares.
+		{"RankBindParamThenTail", []string{"pg.models R", "pg.models W"}},
 		// A query declared, assembled tail first and run inside one iteration. The loop
 		// rule that ends the tail-first exception must not reach a local that never
 		// outlives the body — and the declaration has to open a generation for it, or

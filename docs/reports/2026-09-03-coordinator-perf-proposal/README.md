@@ -60,6 +60,15 @@ instant ≈150 goroutines were queued on the write lock and 66 on the semaphore 
 Net: the coordinator adds **≈2.6 s to the median first byte** (0.5 + 1.7 + 0.19 + 0.2) on a
 request whose provider needs 2.7 s. The provider is not the bottleneck; the lock is.
 
+*Caveat and cross-check.* The stamp table above was measured 21:25–22:10 UTC, inside the
+25–30 min recovery window after the 21:13 UTC redeploy, so its absolute values may be inflated.
+The pre-deploy steady state says the same thing: `inference_routes.route_ms` (reserved →
+routed, all attempts) for 20:00–21:00 UTC was **p50 2,393 ms / p90 9,384 ms** with 30,743
+`routing_saturated` rejections in that hour (M); a re-measure at 21:19–21:54 UTC gave p50
+2,900 ms / p90 10,179 ms and 23,115/h. The convoy is episodic — 0 goroutines were waiting on
+the lock or the semaphore at 21:54 UTC versus ≈150 + 66 at 21:07 — which is why the medians
+over a window are the right acceptance metric, not an instantaneous dump.
+
 ### 2.2 Every attempt walks the whole fleet, allocating as it goes (01, 04)
 
 `scanCandidatesLocked` builds a snapshot of every advertising provider per attempt: three
@@ -149,7 +158,7 @@ Landing it is the single largest CPU step (−1.8 core, C): scan 0.99 → 0.21 c
 | C, D | the provider-optimization branch's coordinator commits **minus** its duplicate scan/index/sink slices (they re-implement PR B; only one can land); Retry-After policy is an owner decision (H6) | 3 d |
 
 Master is squash-only, so merge master into a copy of the branch once, then PR. The concurrent
-`sysopt-0903` session had **0 commits** as of 22:30 UTC and plans to hand-port the same work;
+`sysopt-0903` session had **0 commits** as of 21:45 UTC and plans to hand-port the same work;
 coordinate before it writes `registry/` code (05 §sysopt).
 
 ### Tier 3 — take the global write lock off the request path (4–6 eng-days, on top of Tier 2; 01)

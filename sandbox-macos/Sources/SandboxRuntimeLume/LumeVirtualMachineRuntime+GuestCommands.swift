@@ -363,7 +363,11 @@ extension LumeVirtualMachineRuntime {
         name: String,
         credential: LumeGuestCredential
     ) -> any LumeGuestCommandTransport {
-        if let channel = guestChannel(for: name) {
+        // A channel is necessary but not sufficient. The agent gates its own
+        // executor, so routing to a channel whose peer refuses everything
+        // would turn a working operator path into a per-command refusal --
+        // which is exactly what it did once adoption started succeeding.
+        if guestChannelServesCommands(name), let channel = guestChannel(for: name) {
             return LumeGuestVsockTransport(channel: channel)
         }
         return LumeGuestSSHTransport(

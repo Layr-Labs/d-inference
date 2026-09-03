@@ -95,6 +95,54 @@ final class SandboxGuestMessageTests: XCTestCase {
         XCTAssertTrue(legal.isSelfConsistent)
     }
 
+    /// The executor flag rides the handshake so the host can route on a fact.
+    ///
+    /// It is deliberately *not* part of acceptance: an agent that refuses
+    /// commands is still the agent this host provisioned, and rejecting its
+    /// handshake would throw away the identity proof along with it.
+    func testHandshakeCarriesTheAgentsExecutorState() throws {
+        let serving = SandboxGuestHandshake(
+            agentVersion: "0.1.0",
+            imageID: "base-2026-09",
+            executionEnabled: true
+        )
+        let wire = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(serving)
+        ) as? [String: Any]
+        XCTAssertEqual(wire?["execution_enabled"] as? Bool, true)
+
+        // Refusing is the default, so a caller that forgets cannot accidentally
+        // advertise an executor it does not have.
+        XCTAssertFalse(
+            SandboxGuestHandshake(agentVersion: "0.1.0", imageID: "i")
+                .executionEnabled
+        )
+
+        // Neither value changes whether the peer is trusted.
+        XCTAssertTrue(serving.isAcceptable(expectedImageID: "base-2026-09"))
+        XCTAssertTrue(
+            SandboxGuestHandshake(
+                agentVersion: "0.1.0",
+                imageID: "base-2026-09",
+                executionEnabled: false
+            ).isAcceptable(expectedImageID: "base-2026-09")
+        )
+    }
+
+    /// An agent baked before the field existed still handshakes, and is read as
+    /// refusing -- which is what such an agent does.
+    func testHandshakeFromAnOlderAgentDecodesAsRefusing() throws {
+        let legacyWire = Data(
+            #"{"magic":"darkbloom_guest_agent","protocol_version":1,"#
+            .appending(#""agent_version":"0.1.0","image_id":"x-1"}"#).utf8
+        )
+        let decoded = try JSONDecoder().decode(
+            SandboxGuestHandshake.self, from: legacyWire
+        )
+        XCTAssertTrue(decoded.isAcceptable(expectedImageID: "x-1"))
+        XCTAssertFalse(decoded.executionEnabled)
+    }
+
     func testHandshakeAcceptanceChecksMagicVersionAndImage() {
         let handshake = SandboxGuestHandshake(
             agentVersion: "0.1.0",

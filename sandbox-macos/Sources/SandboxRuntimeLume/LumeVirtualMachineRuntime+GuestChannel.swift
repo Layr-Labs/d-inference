@@ -46,7 +46,7 @@ extension LumeVirtualMachineRuntime {
             .guestChannelAdoptionBudget
     ) async -> SandboxGuestChannelClient? {
         if let existing = guestChannels[name] {
-            return existing
+            return existing.client
         }
         // No device was attached, so no descriptor is ever coming and polling
         // would just add latency to every start on an agentless image.
@@ -94,7 +94,11 @@ extension LumeVirtualMachineRuntime {
     ) -> SandboxGuestChannelClient? {
         do {
             let client = try SandboxGuestChannelClient(descriptor: descriptor)
-            guestChannels[name] = client
+            // Refusing until the handshake says otherwise: a peer that has not
+            // identified itself must never be routed a command.
+            guestChannels[name] = AdoptedGuestChannel(
+                client: client, servesCommands: false
+            )
             return client
         } catch {
             Darwin.close(descriptor)
@@ -118,12 +122,16 @@ extension LumeVirtualMachineRuntime {
         expectedImageID: String?
     ) async -> SandboxGuestChannelClient? {
         do {
-            _ = try await Task.detached(priority: .userInitiated) {
+            let outcome = try await Task.detached(priority: .userInitiated) {
                 try LumeGuestChannelReadinessProbe.run(
                     channel: client,
                     expectedImageID: expectedImageID
                 )
             }.value
+            // Routing follows what the agent said about itself. While its
+            // executor is off this leaves the channel adopted and proven but
+            // unused for commands, which is exactly the state 4a wants.
+            guestChannels[name]?.servesCommands = outcome.executionEnabled
             return client
         } catch {
             // A mismatched image, a bad protocol version, or a peer that says
@@ -135,7 +143,16 @@ extension LumeVirtualMachineRuntime {
 
     /// The channel for a VM, if it has one.
     func guestChannel(for name: String) -> SandboxGuestChannelClient? {
-        guestChannels[name]
+        guestChannels[name]?.client
+    }
+
+    /// Whether the VM's agent said it will actually run commands.
+    ///
+    /// False for a channel that has not handshaked yet, and false for an agent
+    /// whose executor is off. Both mean the same thing to a caller: send the
+    /// command another way.
+    func guestChannelServesCommands(_ name: String) -> Bool {
+        guestChannels[name]?.servesCommands ?? false
     }
 
     /// Closes and forgets a VM's channel.
@@ -148,6 +165,6 @@ extension LumeVirtualMachineRuntime {
     /// Safe to call for a VM that never had a channel, which is what lets every
     /// teardown path call it unconditionally.
     func releaseGuestChannel(name: String) {
-        guestChannels.removeValue(forKey: name)?.close()
+        guestChannels.removeValue(forKey: name)?.client.close()
     }
 }

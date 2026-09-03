@@ -24,6 +24,10 @@ package enum LumeGuestChannelReadinessProbe {
     package struct Outcome: Sendable, Equatable {
         package let agentVersion: String
         package let imageID: String
+        /// What the agent said about its own executor. Not a readiness
+        /// condition: an agent that refuses commands is still a valid,
+        /// identity-proving peer. It decides transport selection, not trust.
+        package let executionEnabled: Bool
     }
 
     /// Returns the agent's identity, or throws if it cannot be trusted.
@@ -43,7 +47,8 @@ package enum LumeGuestChannelReadinessProbe {
             )
             return Outcome(
                 agentVersion: handshake.agentVersion,
-                imageID: handshake.imageID
+                imageID: handshake.imageID,
+                executionEnabled: handshake.executionEnabled
             )
         } catch let error as SandboxGuestChannelClient.ClientError {
             throw LumeGuestVsockTransport.mapped(error)

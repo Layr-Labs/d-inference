@@ -65,16 +65,43 @@ public struct SandboxGuestHandshake: Codable, Equatable, Sendable {
     public let agentVersion: String
     public let imageID: String
 
+    /// Whether this agent will actually run commands, or refuse every one.
+    ///
+    /// The agent's executor is gated independently of anything the host knows,
+    /// so a channel existing says nothing about whether commands sent down it
+    /// will be served. Advertising it here lets the host route on a fact
+    /// instead of an assumption: an agent that refuses is still worth a
+    /// channel, because the handshake is what proves the image, but commands
+    /// have to go the other way.
+    public let executionEnabled: Bool
+
     public init(
         magic: String = SandboxGuestHandshake.magic,
         protocolVersion: UInt16 = SandboxGuestHandshake.currentProtocolVersion,
         agentVersion: String,
-        imageID: String
+        imageID: String,
+        executionEnabled: Bool = false
     ) {
         self.magic = magic
         self.protocolVersion = protocolVersion
         self.agentVersion = agentVersion
         self.imageID = imageID
+        self.executionEnabled = executionEnabled
+    }
+
+    /// Decoded leniently for this one field so an agent baked before it
+    /// existed still handshakes, and is read as refusing -- which is what such
+    /// an agent does.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.magic = try container.decode(String.self, forKey: .magic)
+        self.protocolVersion = try container.decode(
+            UInt16.self, forKey: .protocolVersion)
+        self.agentVersion = try container.decode(
+            String.self, forKey: .agentVersion)
+        self.imageID = try container.decode(String.self, forKey: .imageID)
+        self.executionEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .executionEnabled) ?? false
     }
 
     /// Host-side validation. A handshake that does not satisfy this is a
@@ -97,6 +124,7 @@ public struct SandboxGuestHandshake: Codable, Equatable, Sendable {
         case protocolVersion = "protocol_version"
         case agentVersion = "agent_version"
         case imageID = "image_id"
+        case executionEnabled = "execution_enabled"
     }
 }
 

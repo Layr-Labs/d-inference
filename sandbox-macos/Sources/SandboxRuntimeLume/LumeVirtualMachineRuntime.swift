@@ -11,6 +11,16 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
     var runningProcesses: [String: SandboxManagedProcess] = [:]
+    /// A channel plus what its peer said it can do.
+    ///
+    /// The two are separate facts. The channel proves the image; whether the
+    /// agent will run anything is its own gate, and the host needs both to
+    /// route correctly.
+    struct AdoptedGuestChannel {
+        let client: SandboxGuestChannelClient
+        var servesCommands: Bool
+    }
+
     /// Guest vsock channels for VMs this process spawned, keyed the same way
     /// as `runningProcesses`.
     ///
@@ -18,7 +28,7 @@ package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
     /// dictionary entry is the VM's life support, because dropping the last
     /// reference requests a cooperative stop. Retaining the process here would
     /// silently stop `runningProcesses.removeValue` from being teardown.
-    var guestChannels: [String: SandboxGuestChannelClient] = [:]
+    var guestChannels: [String: AdoptedGuestChannel] = [:]
 
     package init(
         configuration: LumeRuntimeConfiguration,

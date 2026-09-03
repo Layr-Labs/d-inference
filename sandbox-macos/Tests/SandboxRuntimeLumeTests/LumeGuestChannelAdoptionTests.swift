@@ -146,28 +146,79 @@ final class LumeGuestChannelAdoptionTests: XCTestCase {
         )
     }
 
-    /// Selection follows the channel, and falls back rather than failing.
+    /// Selection follows the channel *and* what its peer said it can do.
     ///
     /// A VM has a channel only when this process spawned it and the image's
     /// baked agent bound its port, so an agentless or externally-started guest
-    /// must keep working over SSH exactly as before.
+    /// must keep working over SSH exactly as before. A channel alone is not
+    /// enough, though: the agent gates its own executor independently, and
+    /// routing to one that refuses everything turned base-image preparation
+    /// into a per-command refusal the moment adoption started succeeding.
     func testTransportFollowsTheChannelAndFallsBackToSSH() async throws {
         let fixture = try FakeLumeFixture(initialState: "stopped")
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
-        let credential = LumeGuestCredential.legacy
+        let credential = LumeGuestCredential.generate()
 
         let fallback = await runtime.guestCommandTransport(
             name: "vm-t", credential: credential
         )
         XCTAssertEqual(fallback.description, "lume ssh")
 
+        // Adopted but not yet handshaked: the peer has not identified itself,
+        // so it gets nothing.
         let (host, guest) = try connectedPair()
         defer { close(guest) }
         _ = await runtime.adopt(descriptor: host, name: "vm-t")
+        let unvalidated = await runtime.guestCommandTransport(
+            name: "vm-t", credential: credential
+        )
+        XCTAssertEqual(
+            unvalidated.description, "lume ssh",
+            "an unidentified peer must not be routed commands"
+        )
+
+        // Handshaked, but its executor is off. The channel is real and proven
+        // -- it is what verifies the image -- and still must not carry
+        // commands.
+        try sendHandshake(
+            on: guest, imageID: "base-image-7", executionEnabled: false
+        )
+        // Split deliberately: XCTUnwrap's autoclosure does not support await.
+        let stored = await runtime.guestChannel(for: "vm-t")
+        let client = try XCTUnwrap(stored)
+        let validated = await runtime.validate(
+            client, name: "vm-t", expectedImageID: "base-image-7"
+        )
+        XCTAssertNotNil(validated, "a refusing agent is still a valid peer")
+        let refusing = await runtime.guestCommandTransport(
+            name: "vm-t", credential: credential
+        )
+        XCTAssertEqual(refusing.description, "lume ssh")
+
+        await runtime.releaseGuestChannel(name: "vm-t")
+    }
+
+    /// The other half: an agent that says it will execute does get the traffic.
+    func testTransportUsesTheChannelOnceTheAgentServesCommands() async throws {
+        let fixture = try FakeLumeFixture(initialState: "stopped")
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime()
+        let credential = LumeGuestCredential.generate()
+
+        let (host, guest) = try connectedPair()
+        defer { close(guest) }
+        try sendHandshake(
+            on: guest, imageID: "base-image-7", executionEnabled: true
+        )
+        let adopted = await runtime.adopt(descriptor: host, name: "vm-x")
+        let client = try XCTUnwrap(adopted)
+        _ = await runtime.validate(
+            client, name: "vm-x", expectedImageID: "base-image-7"
+        )
 
         let selected = await runtime.guestCommandTransport(
-            name: "vm-t", credential: credential
+            name: "vm-x", credential: credential
         )
         XCTAssertEqual(selected.description, "guest agent")
 
@@ -177,10 +228,10 @@ final class LumeGuestChannelAdoptionTests: XCTestCase {
         )
         XCTAssertEqual(other.description, "lume ssh")
 
-        await runtime.releaseGuestChannel(name: "vm-t")
+        await runtime.releaseGuestChannel(name: "vm-x")
         // Once the channel is gone, so is the vsock selection.
         let afterRelease = await runtime.guestCommandTransport(
-            name: "vm-t", credential: credential
+            name: "vm-x", credential: credential
         )
         XCTAssertEqual(afterRelease.description, "lume ssh")
     }
@@ -190,13 +241,15 @@ final class LumeGuestChannelAdoptionTests: XCTestCase {
         on descriptor: Int32,
         imageID: String,
         agentVersion: String = "0.1.0",
-        protocolVersion: Int = 1
+        protocolVersion: Int = 1,
+        executionEnabled: Bool = false
     ) throws {
         let payload = try JSONSerialization.data(withJSONObject: [
             "magic": "darkbloom_guest_agent",
             "protocol_version": protocolVersion,
             "agent_version": agentVersion,
             "image_id": imageID,
+            "execution_enabled": executionEnabled,
         ])
         var frame = Data([1])                      // kind: handshake
         let length = UInt32(payload.count)

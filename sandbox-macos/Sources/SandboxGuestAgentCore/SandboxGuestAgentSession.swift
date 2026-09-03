@@ -55,9 +55,13 @@ public struct SandboxGuestAgentSession: Sendable {
     /// Runs until the peer closes or the conversation must be abandoned.
     /// Does not close `descriptor`; the caller owns it.
     public func serve(descriptor: Int32) {
+        // Say up front whether commands will be served. The host uses it to
+        // pick a transport, so an agent that refuses everything sends the host
+        // back to SSH instead of collecting a refusal per command.
         let handshake = SandboxGuestHandshake(
             agentVersion: configuration.agentVersion,
-            imageID: configuration.imageID
+            imageID: configuration.imageID,
+            executionEnabled: configuration.executionEnabled
         )
         guard let payload = try? JSONEncoder().encode(handshake),
               send(

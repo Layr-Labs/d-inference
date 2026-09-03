@@ -261,6 +261,8 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"speculative_started", snap.SpeculativeStarted,
 				"speculative_won", snap.SpeculativeWon,
 				"cold_dispatches", snap.ColdDispatches,
+				"cold_ineligible", snap.ColdIneligible,
+				"cold_disqualifiers", snap.ColdDisqualifiers,
 				"actions", len(snap.Actions),
 				"observe_only", snap.ObserveOnly,
 			)

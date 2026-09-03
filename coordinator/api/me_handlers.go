@@ -97,6 +97,10 @@ type myProvider struct {
 	MaxConcurrency  int                       `json:"max_concurrency"`
 	PrefillTPS      float64                   `json:"prefill_tps,omitempty"`
 	DecodeTPS       float64                   `json:"decode_tps,omitempty"`
+	// WarmPool is the coordinator's per-model answer to "would you pre-load a
+	// model onto this machine, and if not, why not". Only set when the machine
+	// is currently connected, since every input is live registry state.
+	WarmPool *registry.ProviderWarmPoolEligibility `json:"warm_pool,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -333,8 +337,10 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
 	for i := range fleet {
 		s.attachStoredReputation(r.Context(), &fleet[i])
+		s.attachWarmPoolEligibility(&fleet[i], now)
 	}
 
 	resp := myProvidersResponse{
@@ -421,6 +427,25 @@ func emittedIdentity(mp *myProvider) string {
 		return "sekey:" + mp.SEPublicKey
 	}
 	return "id:" + mp.ID
+}
+
+// attachWarmPoolEligibility populates mp.WarmPool from the live registry. It is
+// a no-op for a machine that is not currently connected: every input (slot
+// state, thermal state, reported free-for-load memory, pending-load cooldowns)
+// is live state that does not survive disconnect, and a stale verdict on an
+// offline card would be worse than none.
+//
+// Called AFTER buildMyProvider returns rather than inside it, because
+// WarmPoolEligibility acquires r.mu and p.mu itself and buildMyProvider holds
+// p.mu across its overlay block.
+func (s *Server) attachWarmPoolEligibility(mp *myProvider, now time.Time) {
+	if mp == nil || mp.ID == "" || !mp.Online {
+		return
+	}
+	if s.registry == nil {
+		return
+	}
+	mp.WarmPool = s.registry.WarmPoolEligibility(mp.ID, now)
 }
 
 func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {

@@ -15,7 +15,28 @@ const (
 	gemmaBuildOrg  = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 	gemmaBuildSmol = "gemma-4-12b-qat-4bit"
 	qwenBuild      = "qwen-3-32b"
+
+	// The three Qwen builds the fleet actually serves (live catalog via
+	// GET /v1/models/catalog, mirrored in console-ui's model-brand test). All
+	// three were unseeded until 2026-09, so unsampled providers read the
+	// model-agnostic sqrt(memory_bandwidth) proxy as their solo rate.
+	qwen36Build = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+	qwen35Build = "qwen3.5-35b-a3b"
+	qwenVLBuild = "qwen3-vl-30b-a3b-instruct"
 )
+
+// servedCatalogBuilds is every build id the production catalog serves today
+// (gpt-oss-20b, both gemma builds, and the three Qwen builds). The quality-cap
+// solo-rate tests that assert seed coverage iterate this so an unseeded
+// catalog build fails here rather than silently falling back to the
+// sqrt(memory_bandwidth) proxy.
+var servedCatalogBuilds = []string{
+	gemmaBuild,
+	gptossBuild,
+	qwen36Build,
+	qwen35Build,
+	qwenVLBuild,
+}
 
 // addAdvertisedModel appends an advertised model id to an already-registered
 // provider (makeSchedulerProvider gives it exactly one). Mirrors how a real

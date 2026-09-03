@@ -31,4 +31,21 @@ const (
 	// gate run. docs/reports/2026-07-25-paged-gate-results.md
 	measuredSoloTPSPaged      = 98.8
 	measuredSoloTPSContiguous = 107.2
+
+	// measuredQwen36SoloTPS is the single-stream decode anchor for the Qwen3.6
+	// 35B-A3B production build (EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8,
+	// served as qwen3.6-35b-a3b-vl-mtp-mxfp8): the target-only STOCK AR decode,
+	// 140.0 steady-state tok/s (105.4 ms TTFT) on an Apple M5 Max, 128 GiB. The
+	// MTP lanes on the same machine measure 191.1 (exact K2) / 211.6 (fast K2)
+	// at 1K, so 140 is the conservative non-MTP anchor. Measured alongside the
+	// optimization ledger in mlx-swift-lm benchmarks/qwen36-a3b/ (source
+	// receipts decode-stock-20260824, context-matrix context-L1024-*-source-final).
+	measuredQwen36SoloTPS = 140.0
+
+	// measuredQwen35SoloTPS is the fleet MoE build (EigenLabs/Qwen3.5-35B-A3B-MLX-
+	// VL-4bit-g64, served as qwen3.5-35b-a3b): B=1 24.5 tok/s and B=4 78.8 tok/s
+	// aggregate on an Apple M4 Max (546 GB/s), production CBv2 engine, contiguous
+	// KV, VLM extraction + parity gate. 2026-08-28 qwen3.5-9b validation & MTP
+	// report (docs/reports/2026-08-28-qwen35-9b-validation-and-mtp.md).
+	measuredQwen35SoloTPS = 24.5
 )

@@ -667,6 +667,31 @@ func TestSoloSeedReachesProductionEnv(t *testing.T) {
 			modelSoloTPSSeedEnv, soloSeedClassSep)
 	}
 
+	// Every model the catalog serves must be seeded (unqualified or
+	// class-qualified). This is the regression guard for the 2026-09 bug where
+	// all three Qwen builds were unseeded: an unseeded model reads the
+	// model-agnostic sqrt(memory_bandwidth) proxy, which caps a fast Qwen box
+	// at 1-2 regardless of true speed (#688). Adding a model to the catalog
+	// without a seed entry fails here. The parsed map is consulted directly —
+	// this test does not populate the runtime tables SetQualityConcurrencyCap
+	// builds, it verifies what the shipped CSV carries.
+	for _, model := range servedCatalogBuilds {
+		if _, ok := seed[model]; ok {
+			continue
+		}
+		qualifiedFor := false
+		for key := range seed {
+			if m, _, qualified := strings.Cut(key, soloSeedClassSep); qualified && m == model {
+				qualifiedFor = true
+				break
+			}
+		}
+		if !qualifiedFor {
+			t.Fatalf("served catalog build %q has no seed entry in %s — it would resolve the model-agnostic sqrt(memory_bandwidth) proxy at cold start",
+				model, modelSoloTPSSeedEnv)
+		}
+	}
+
 	// refresh-env.sh hard-fails a coordinator env that lacks a manifest key,
 	// so listing it here is what makes the seed non-optional in production.
 	manifest, err := os.ReadFile(repoFile(t, "deploy/gcp/prod/required-env-keys.txt"))
@@ -739,6 +764,92 @@ func TestSoloSeedIsChipClassScoped(t *testing.T) {
 					tc.family, tc.tier, got.tps)
 			}
 		})
+	}
+}
+
+// TestQwen36SeedIsChipClassScoped is the Qwen half of the P1 guard. The three
+// Qwen builds were unseeded until 2026-09, so a warm M1 Ultra serving
+// qwen3.6-35b-a3b-vl-mtp-mxfp8 at 2,144 tok/s (#688) resolved the
+// model-agnostic sqrt(memory_bandwidth) proxy (14-29 tok/s) and sat capped at
+// 1-2 with zero requests. The seed is now anchored to the classes with
+// measurements and must never leak a fast class's rate onto a slower one.
+func TestQwen36SeedIsChipClassScoped(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "")
+
+	cases := []struct {
+		name    string
+		family  string
+		tier    string
+		wantTPS float64
+		wantCap int
+	}{
+		{name: "m5_max_measured_class", family: "M5", tier: "Max", wantTPS: 140, wantCap: 8},
+		{name: "m4_max_measured_family", family: "M4", tier: "Max", wantTPS: 120, wantCap: 8},
+		{name: "m1_ultra_issue_688_class", family: "M1", tier: "Ultra", wantTPS: 100, wantCap: 8},
+		{name: "m1_pro_slower_class", family: "M1", tier: "Pro", wantTPS: 30, wantCap: 3},
+		{name: "m2_max_unnamed_class", family: "M2", tier: "Max", wantTPS: 30, wantCap: 3},
+		{name: "unrecognized_chip", family: "Unknown", tier: "Unknown", wantTPS: 30, wantCap: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := classProvider(t, reg, "box-"+tc.name, qwen36Build, tc.family, tc.tier)
+			got := resolveSolo(reg, p, qwen36Build)
+			if got.tps != tc.wantTPS || !got.perModel {
+				t.Fatalf("%s|%s resolved %+v, want tps %v perModel true",
+					tc.family, tc.tier, got, tc.wantTPS)
+			}
+			if cap := effCapResolved(reg, p, qwen36Build); cap != tc.wantCap {
+				t.Fatalf("%s|%s cap = %d, want %d", tc.family, tc.tier, cap, tc.wantCap)
+			}
+			// Slower/unnamed classes must never out-rank the conservative
+			// unqualified floor, and in particular never inherit the fast-class
+			// rates (the exact over-admission the class scoping exists to stop).
+			// A fast class is exactly one the case expects >= 100 for.
+			if tc.wantTPS < 100 && got.tps >= 100 {
+				t.Fatalf("%s|%s resolved %v tok/s — inherited a fast-class rate", tc.family, tc.tier, got.tps)
+			}
+		})
+	}
+}
+
+// TestQwenClassSeedYieldsToMeasuredSamples: the Qwen class-qualified seeds are
+// cold-start floors, not pins. Gated solo samples from a class supersede them
+// exactly as they do the gemma/gpt-oss seeds.
+func TestQwenClassSeedYieldsToMeasuredSamples(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "5")
+	p := classProvider(t, reg, "m5max", qwen36Build, "M5", "Max")
+	for _, v := range []float64{150, 152, 153, 154, 156} { // median 153
+		reg.tpsRegistry.RecordSolo(qwen36Build, "M5|Max", v)
+	}
+	if got := resolveSolo(reg, p, qwen36Build); got.tps != 153 {
+		t.Fatalf("resolved %v, want the measured 153 — the class seed must not outrank its own class's samples", got.tps)
+	}
+}
+
+// TestQwenColdStartCapsSizedBySeedNotProxy pins the complaint's headline: with
+// the Qwen builds seeded, a fresh coordinator (post-restart, no solo samples)
+// sizes a fast Qwen box from the measured seed, not from the model-agnostic
+// sqrt(memory_bandwidth) proxy that capped it at 1-2 before. The M1 Ultra from
+// issue #688 — 2,144 tok/s measured — must reach the full reported cap, and
+// the slower Qwen builds must stay honestly sized (cap 2 at ~24 tok/s solo).
+func TestQwenColdStartCapsSizedBySeedNotProxy(t *testing.T) {
+	reg := New(testLogger()) // fresh registry == post-restart state
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "")
+
+	// qwen3.6 on the #688 machine: full cap, not 1-2.
+	ultra := classProvider(t, reg, "m1ultra", qwen36Build, "M1", "Ultra")
+	if got := effCapResolved(reg, ultra, qwen36Build); got != 8 {
+		t.Fatalf("qwen3.6 cold-start cap on M1 Ultra = %d, want 8 — the seed must lift the #688 box off the 1-2 proxy cap", got)
+	}
+
+	// qwen3.5 and qwen3-vl on M4 Max: honest sizing at their slower solo rate.
+	for _, model := range []string{qwen35Build, qwenVLBuild} {
+		p := classProvider(t, reg, "m4max-"+model, model, "M4", "Max")
+		if got := effCapResolved(reg, p, model); got != 2 {
+			t.Fatalf("%s cold-start cap on M4 Max = %d, want 2 (seed 22 <= floor 15 -> quality batch 1 x 1.2)", model, got)
+		}
 	}
 }
 
@@ -1169,10 +1280,11 @@ func TestSoloSeedUnqualifiedEntryMakesEveryClassSeeded(t *testing.T) {
 
 	// Classes the seed does not name, including the identity an unrecognized
 	// chip reaches the coordinator with.
-	for _, class := range []string{"M1|Pro", "M2|Ultra", "M3|Max", "Unknown|Unknown"} {
-		for _, model := range []string{gemmaBuild, gptossBuild} {
+	classes := []string{"M1|Pro", "M2|Ultra", "M3|Max", "Unknown|Unknown"}
+	for _, class := range classes {
+		for _, model := range servedCatalogBuilds {
 			if _, ok := soloTPSSeedForClass(model, class); !ok {
-				t.Fatalf("soloTPSSeedForClass(%q, %q) reports no seed — the unqualified entry that makes hasSeed true fleet-wide is gone, so crossClassBounded now leans on `allClasses > 1`, which bounds the sampled population and not the destination box",
+				t.Fatalf("soloTPSSeedForClass(%q, %q) reports no seed — the unqualified entry that makes hasSeed true fleet-wide is gone (or the model was added to the catalog without one), so crossClassBounded now leans on `allClasses > 1`, which bounds the sampled population and not the destination box",
 					model, class)
 			}
 		}

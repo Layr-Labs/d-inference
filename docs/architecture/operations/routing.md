@@ -184,6 +184,20 @@ non-dedicated one the guard in `effectiveMaxConcurrencyForModelRateLocked`
 (`concurrency_cap.go:425`) leaves the provider's reported cap alone. This is
 why the seed at step 4 stays configured — see the v0.8.0 release notes.
 
+All **five** catalog models are seeded (gemma-4-26b-qat-4bit, gpt-oss-20b, and
+since 2026-09 the three Qwen builds qwen3.6-35b-a3b-vl-mtp-mxfp8, qwen3.5-35b-
+a3b, qwen3-vl-30b-a3b-instruct). That Qwen gap was the 2026-09 mis-size a fleet
+of idle M1 Ultra boxes exposed (#688): unseeded, a warm qwen3.6 provider
+resolved `sqrt(memory_bandwidth)` (14–29 tok/s across Apple silicon and a
+number that has nothing to do with the model) and sat capped at 1–2 while the
+model benchmarked at 2,144 tok/s on the same machine. The Qwen seeds are
+anchored to measured solo rates — qwen3.6 at 140 tok/s (M5 Max stock AR) with
+class entries for M4|Max 120 / M5|Max 140 / M1|Ultra 100 and a 30 tok/s
+unqualified floor; qwen3.5 and qwen3-vl conservatively at M4|Max 22 /
+unqualified 18 — each well under measurement so over-admission stays
+impossible, and every class-qualified value is superseded by the first
+`EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` gated solos that class reports.
+
 ## Slot states and penalties
 
 `slotStatePenalty` (`scheduler.go:896-914`) maps the backend-reported slot state:

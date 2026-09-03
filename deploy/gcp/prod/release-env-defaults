@@ -42,4 +42,7 @@ EIGENINFERENCE_MEDIA_FETCH_ENABLED=true
 # cap falls to the model-agnostic sqrt(memory_bandwidth) proxy on every restart.
 # It is also the upper bound on cross-class solo-median transfer. Keep the
 # unqualified entries conservative: they apply to every class not named here.
-EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70
+# The three Qwen builds are seeded here too; without them a fast Qwen box
+# (qwen3.6-35b-a3b-vl-mtp-mxfp8 on an M1 Ultra measured 2,144 tok/s, #688) read
+# the sqrt proxy (14-29 tok/s) and got capped at 1-2 regardless of true speed.
+EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70,qwen3.6-35b-a3b-vl-mtp-mxfp8=30,qwen3.6-35b-a3b-vl-mtp-mxfp8@M4|Max=120,qwen3.6-35b-a3b-vl-mtp-mxfp8@M5|Max=140,qwen3.6-35b-a3b-vl-mtp-mxfp8@M1|Ultra=100,qwen3.5-35b-a3b=18,qwen3.5-35b-a3b@M4|Max=22,qwen3-vl-30b-a3b-instruct=18,qwen3-vl-30b-a3b-instruct@M4|Max=22

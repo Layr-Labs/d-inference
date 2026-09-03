@@ -297,6 +297,59 @@ func TestFailQueuedRequestsForModelSkipsSelfRoute(t *testing.T) {
 	}
 }
 
+// TestCompetingQueueDepth pins the routing-compatibility filter behind the
+// hedge governor's queued-demand input: only waiters that could drain onto
+// capacity available to the probing request count.
+func TestCompetingQueueDepth(t *testing.T) {
+	q := NewRequestQueue(10, 30*time.Second)
+	model := "queue-competing"
+
+	add := func(id string, pending *PendingRequest) {
+		t.Helper()
+		if err := q.Enqueue(&QueuedRequest{
+			RequestID:  id,
+			Model:      model,
+			ResponseCh: make(chan *Provider, 1),
+			Pending:    pending,
+		}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+	add("pub", &PendingRequest{RequestID: "pub", Model: model})
+	add("self", &PendingRequest{RequestID: "self", Model: model, SelfRouteOnly: true, OwnerAccountID: "acct-A"})
+	add("pinned", &PendingRequest{RequestID: "pinned", Model: model, AllowedProviderSerials: []string{"SER-1"}})
+	add("nilpending", nil)
+
+	// Unconstrained request: the public waiter and the conservative
+	// nil-Pending waiter compete; self-route and serial-pinned do not.
+	public := &PendingRequest{RequestID: "probe", Model: model}
+	if depth := q.CompetingQueueDepth(model, public); depth != 2 {
+		t.Fatalf("public depth = %d, want 2 (pub + nil-Pending)", depth)
+	}
+
+	// Overlapping-pinned request: the pinned waiter now competes too.
+	overlapping := &PendingRequest{RequestID: "probe-pin", Model: model, AllowedProviderSerials: []string{"SER-1", "SER-2"}}
+	if depth := q.CompetingQueueDepth(model, overlapping); depth != 3 {
+		t.Fatalf("overlapping-pinned depth = %d, want 3", depth)
+	}
+
+	// Disjoint-pinned request: back to 2 — the SER-1 waiter cannot use its pool.
+	disjoint := &PendingRequest{RequestID: "probe-dis", Model: model, AllowedProviderSerials: []string{"SER-9"}}
+	if depth := q.CompetingQueueDepth(model, disjoint); depth != 2 {
+		t.Fatalf("disjoint-pinned depth = %d, want 2", depth)
+	}
+
+	// No constraint context (nil pr): only structural exclusions apply.
+	if depth := q.CompetingQueueDepth(model, nil); depth != 2 {
+		t.Fatalf("nil-pr depth = %d, want 2", depth)
+	}
+
+	// QueueSize stays the raw count.
+	if q.QueueSize(model) != 4 {
+		t.Fatalf("QueueSize = %d, want 4", q.QueueSize(model))
+	}
+}
+
 // TestFailQueuedRequestsForModelSkipsEligiblePreferOwner verifies a prefer
 // waiter whose owner HAS an owned provider for the model survives a
 // public-unservable verdict (its own busy machine may free up).

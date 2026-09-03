@@ -26,6 +26,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -51,6 +53,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"golang.org/x/mod/semver"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -153,7 +156,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // assistant support; model-aware MTP defaults remain provider-side policy.
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.15"
+var LatestProviderVersion = "0.8.16"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send
@@ -173,6 +176,23 @@ func (s *Server) latestReleasedVersion() string {
 	return LatestProviderVersion
 }
 
+type approvedReleasePolicy struct {
+	Version        string
+	Platform       string
+	Backend        string
+	BinaryHash     string
+	MetallibHash   string
+	PythonHash     string
+	RuntimeHash    string
+	TemplateHashes map[string]string
+}
+
+type releaseTrustPolicySnapshot struct {
+	Generation   uint64
+	Required     bool
+	ByBinaryHash map[string][]approvedReleasePolicy
+}
+
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
@@ -183,14 +203,16 @@ type Server struct {
 	baseRewards                   *baserewards.Engine
 	logger                        *slog.Logger
 	mux                           *http.ServeMux
-	modelAliasMutationMu          sync.Mutex          // serializes cross-endpoint alias validation + persistence
-	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
-	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
-	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
-	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
-	adminEmails                   map[string]bool     // emails that have admin access
-	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
+	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
+	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool // emails that have admin access
+	adminKey                      string          // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client     // MicroMDM client for provider security verification
+	mdmScheduler                  *mdmVerificationScheduler
+	mdmSchedulerConfig            MDMSchedulerConfig
 	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
 	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
 	promptArtifacts               *promptcontract.Provisioner
@@ -208,6 +230,25 @@ type Server struct {
 	codeResumeFallbackBeforeAPNs  func()              // test seam after nonce consume, before ctx recheck
 	codeAttestThrottle            *codeAttestThrottle // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache    // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	trustReuseJournal             hardUntrustJournal
+	trustRevocationMu             sync.Mutex
+	trustSafetyMu                 sync.RWMutex
+	trustSafetySticky             bool
+	trustSafetyReplayBlocked      bool
+	pendingHardUntrustKeyHashes   map[string]int
+	trustAuthorityMu              sync.Mutex
+	trustAuthority                *trustAuthorityLock
+	trustReplayCtx                context.Context
+	trustReplayCancel             context.CancelFunc
+	trustReplayMu                 sync.Mutex
+	trustReplayInFlight           map[string]struct{}
+	// Connection-continuity coverage tracker: seKey → providerID of the live
+	// covered connection. Advanced by the batched trustCoverageLoop and the
+	// disconnect/shutdown sweeps (see trust_reuse.go).
+	trustCoverageMu     sync.Mutex
+	trustCoverage       map[string]string
+	trustCoverageCtx    context.Context
+	trustCoverageCancel context.CancelFunc
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -224,6 +265,7 @@ type Server struct {
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
 	// missing or doesn't match are rejected.
 	// Auto-populated from active releases via SyncBinaryHashes().
+	releasePolicySyncMu               sync.Mutex
 	binaryHashPolicyMu                sync.RWMutex
 	knownBinaryHashes                 map[string]bool
 	manualKnownBinaryHashes           map[string]bool
@@ -231,6 +273,9 @@ type Server struct {
 	manualBinaryHashPolicyConfigured  bool
 	releaseBinaryHashPolicyConfigured bool
 	binaryHashPolicyConfigured        bool
+	releaseTrustPolicy                atomic.Pointer[releaseTrustPolicySnapshot]
+	releaseTrustPolicyGeneration      atomic.Uint64
+	releaseInventoryEverConfigured    atomic.Bool
 
 	// binaryHashEnforce gates whether a self-reported binaryHash mismatch actually
 	// DEROUTES a provider. Default false as of v0.6.0: binaryHash is self-reported
@@ -306,6 +351,13 @@ type Server struct {
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
 	zombieCanceller *zombieStreamCanceller
+
+	// hedgeGov is the fleet-wide hedge admission governor (Routing v2 Phase 4):
+	// the mutable half of the speculative-launch verdict — the global
+	// concurrent-hedge counter and per-model win-rate EWMAs. One instance per
+	// Server; runSpeculative consults it before every backup launch and
+	// resolves it exactly once per launched hedge. See hedge_governor.go.
+	hedgeGov *hedgeGovernor
 
 	// minProviderVersion is the minimum provider version accepted for routing.
 	// Providers below this version are excluded and told to update.
@@ -430,6 +482,13 @@ type Server struct {
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
 
+	// profiler owns the per-request profile records and their dedicated sink
+	// (system profiler). Nil on a Server built without NewServer.
+	profiler *profiler
+	// unknownRequestFrames counts provider frames for requests the coordinator
+	// no longer tracks (zombie streams); exported on the fleet coordinator row.
+	unknownRequestFrames atomic.Int64
+
 	// mediaResolver fetches remote http(s) image_url/video_url links into
 	// inline base64 data: URIs before the request body is E2E-encrypted to a
 	// provider, so consumers can pass links instead of pre-encoding media
@@ -438,6 +497,31 @@ type Server struct {
 	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
 	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
 	mediaResolver *mediafetch.Resolver
+	// routingScanSem bounds how many provider-selection scans (the
+	// ReserveProviderEx/ReserveProviderWithPlan family — a read-lock walk of
+	// ~1,260 providers per attempt) may run concurrently. During the
+	// 2026-09-01 congestion collapse, retry-amplified inbound (~100 req/s of
+	// retryable 429 traffic) times a fresh full scan per dispatch attempt
+	// saturated every coordinator CPU (attempt-0 route p50 40ms → 4.6s,
+	// success ~40%, 429s delivered after 11s) — a stable death loop. With the
+	// semaphore, excess requests park cheaply on the channel instead of
+	// piling onto the scheduler; one that cannot acquire within its remaining
+	// first-content budget sheds as a capacity-shaped 429
+	// (errRoutingScanSaturated). Capacity defaults to runtime.NumCPU()
+	// (min 2); override via EIGENINFERENCE_ROUTING_CONCURRENCY
+	// (SetRoutingConcurrency, called before serving starts).
+	routingScanSem chan struct{}
+
+	// routeLatencyEWMAMs is an EWMA of attempt-0 route latency (ReceivedAt →
+	// RoutedAt, milliseconds), updated where RoutedAt is stamped in
+	// dispatchWithReserver. estimateRetryAfter consults it: when routing
+	// itself is degraded (EWMA > 1s) the returned Retry-After scales up so
+	// upstream backoff actually relieves pressure — during the 2026-09-01
+	// collapse the queue-depth heuristic returned 2s on an empty queue and
+	// invited 2s retry storms. Guarded by routeLatencyMu (one tiny critical
+	// section per request; no allocation).
+	routeLatencyMu     sync.Mutex
+	routeLatencyEWMAMs float64
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -730,14 +814,40 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		trustReuseCache:          newTrustReuseCache(),
+		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
+		hedgeGov:                 newHedgeGovernor(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
 		mediaResolver:            mediafetch.NewResolver(mediaFetchCfg, logger),
 		firstContentDeadlineBase: firstContentDeadlineBase,
+		routingScanSem:           make(chan struct{}, DefaultRoutingConcurrency()),
+	}
+	if _, clampedDown := trustReuseReconnectGapFromEnv(); clampedDown {
+		logger.Warn("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP exceeds the 120s security ceiling; clamping DOWN",
+			"requested", os.Getenv("EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP"),
+			"allowance", maxTrustReuseReconnectGap,
+			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
+		)
+	}
+	s.trustCoverage = make(map[string]string)
+	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
+	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
+	if cfg.DurableTrustReuse {
+		journalPath := cfg.TrustReuseJournalPath
+		if strings.TrimSpace(journalPath) == "" {
+			journalPath = resolveTrustReuseRevocationJournalPath()
+		}
+		s.trustReuseJournal = newFileHardUntrustJournal(journalPath)
+		s.pendingHardUntrustKeyHashes = make(map[string]int)
+		s.trustReplayCtx, s.trustReplayCancel = context.WithCancel(
+			context.Background(),
+		)
+		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	s.profiler = newProfilerFromEnv(s)
 	s.registerDefaultGauges()
 	s.routes()
 
@@ -803,6 +913,21 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	// Graceful-shutdown continuity sweep: stop the periodic coverage loop,
+	// then persist the exact shutdown instant for every covered provider so a
+	// short deploy reconnects into the continuity fast-skip on the next
+	// coordinator instead of a fleet-wide live MDM herd. A crash skips this —
+	// the last periodic write stands and the gap is over-estimated (fail-safe).
+	if s.trustCoverageCancel != nil {
+		s.trustCoverageCancel()
+	}
+	s.finalTrustCoverageSweep()
+	if s.trustReplayCancel != nil {
+		s.trustReplayCancel()
+	}
+	if s.mdmScheduler != nil {
+		s.mdmScheduler.Close()
+	}
 	if s.promptPreloader != nil {
 		s.promptPreloader.Close()
 	}
@@ -811,6 +936,15 @@ func (s *Server) Close() {
 	}
 	if s.routeTelemetry != nil {
 		s.routeTelemetry.close()
+	}
+	s.trustAuthorityMu.Lock()
+	if s.trustAuthority != nil {
+		_ = s.trustAuthority.Close()
+		s.trustAuthority = nil
+	}
+	s.trustAuthorityMu.Unlock()
+	if s.profiler != nil {
+		s.profiler.close()
 	}
 }
 
@@ -989,6 +1123,16 @@ func (s *Server) SetAdminEmails(emails []string) {
 // When set, providers are verified against MDM on registration.
 func (s *Server) SetMDMClient(client *mdm.Client) {
 	s.mdmClient = client
+	if client != nil && s.mdmScheduler == nil {
+		s.mdmScheduler = newMDMVerificationScheduler(s, s.mdmSchedulerConfig, mdmSchedulerDeps{})
+	}
+}
+
+// StartMDMScheduler starts the single durable dispatcher and fixed worker pool.
+func (s *Server) StartMDMScheduler() {
+	if s.mdmScheduler != nil {
+		s.mdmScheduler.Start()
+	}
 }
 
 // SetCodeAttestor wires the APNs code-identity attestor (v0.6.0). When set, the
@@ -1184,6 +1328,95 @@ func (s *Server) SetMinDecodeTPS(tps float64) {
 	s.minDecodeTPS = tps
 }
 
+// DefaultRoutingConcurrency is the built-in routing-scan semaphore capacity:
+// one scan per CPU (a scan is pure CPU under the registry read lock), floored
+// at 2 so a tiny container never serializes routing entirely. Exported so
+// main.go can log the effective default alongside the env override.
+func DefaultRoutingConcurrency() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	return n
+}
+
+// SetRoutingConcurrency replaces the routing-scan semaphore with one of the
+// given capacity (EIGENINFERENCE_ROUTING_CONCURRENCY). Values < 2 clamp to 2.
+// Call before serving starts — replacing the channel while scans are in
+// flight would strand slots.
+func (s *Server) SetRoutingConcurrency(n int) {
+	if n < 2 {
+		n = 2
+	}
+	s.routingScanSem = make(chan struct{}, n)
+}
+
+// scanSlotResult is the outcome of acquireRoutingScanSlot. Client
+// disconnection is distinguished from acquisition timeout so callers route a
+// vanished caller onto the existing client-gone terminal (cancelled outcome,
+// refund, no response body) and NEVER onto the routing_saturated 429 /
+// rejection-ledger path.
+type scanSlotResult int
+
+const (
+	scanSlotAcquired scanSlotResult = iota
+	scanSlotTimeout
+	scanSlotClientGone
+)
+
+// acquireRoutingScanSlot blocks until a provider-selection scan slot is free,
+// the wait budget elapses, or done fires (client gone). On scanSlotTimeout the
+// caller sheds the attempt as capacity-shaped (errRoutingScanSaturated)
+// instead of piling another scan onto saturated CPUs; on scanSlotClientGone it
+// takes its ordinary client-gone path. A nil semaphore (a &Server{} built
+// directly in tests) admits immediately, preserving legacy behavior for bare
+// fixtures; a nil done channel never fires.
+func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}) scanSlotResult {
+	if s.routingScanSem == nil {
+		return scanSlotAcquired
+	}
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	default:
+	}
+	clientGone := func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	if wait <= 0 {
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return scanSlotAcquired
+	case <-timer.C:
+		if clientGone() {
+			return scanSlotClientGone
+		}
+		return scanSlotTimeout
+	case <-done:
+		return scanSlotClientGone
+	}
+}
+
+// releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
+func (s *Server) releaseRoutingScanSlot() {
+	if s.routingScanSem == nil {
+		return
+	}
+	<-s.routingScanSem
+}
+
 // SetServabilityGate toggles the smart early-429 admission gate. See the
 // servabilityGate field. Call before serving starts.
 func (s *Server) SetServabilityGate(enabled bool) {
@@ -1281,9 +1514,64 @@ func (s *Server) SetCoordinatorKey(k *e2e.CoordinatorKey) {
 
 // SyncBinaryHashes rebuilds knownBinaryHashes from all active releases.
 // Called at startup and after release changes.
-func (s *Server) SyncBinaryHashes() {
-	releases := s.store.ListReleases()
+//
+// An inventory read failure is an OPERATIONAL condition, not a security signal:
+// with a previously published policy the last-known-good snapshot is retained
+// untouched (mirroring SyncRuntimeManifest's nil handling) so a store hiccup
+// can never deroute a healthy fleet. Only a cold start with no prior snapshot
+// publishes a deny-all generation — there is nothing known-good to retain, and
+// startup refuses to proceed on the returned error.
+func (s *Server) SyncBinaryHashes() error {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		if last := s.releaseTrustPolicy.Load(); last != nil {
+			s.logger.Error("release inventory unavailable; retaining last-known-good release policy",
+				"generation", last.Generation,
+				"error", err,
+			)
+			s.ddIncr("release_policy.sync_failure", []string{"outcome:retained_last_known_good"})
+			return fmt.Errorf("sync binary hashes: %w", err)
+		}
+		// Cold start: no last-known-good policy exists. Publish deny-all so a
+		// half-started coordinator cannot route on an unknown inventory.
+		generation := s.releaseTrustPolicyGeneration.Add(1)
+		trustSnapshot := &releaseTrustPolicySnapshot{
+			Generation:   generation,
+			Required:     true,
+			ByBinaryHash: make(map[string][]approvedReleasePolicy),
+		}
+		s.releaseTrustPolicy.Store(trustSnapshot)
+		if s.registry != nil {
+			s.registry.SetReleasePolicyGeneration(trustSnapshot.Generation, true, nil)
+		}
+		s.binaryHashPolicyMu.Lock()
+		s.releaseKnownBinaryHashes = make(map[string]bool)
+		s.releaseBinaryHashPolicyConfigured = true
+		s.rebuildBinaryHashPolicyLocked()
+		s.binaryHashPolicyMu.Unlock()
+		s.logger.Error("release inventory unavailable at cold start; published deny-all release policy",
+			"generation", generation,
+			"error", err,
+		)
+		s.ddIncr("release_policy.sync_failure", []string{"outcome:cold_start_deny_all"})
+		return fmt.Errorf("sync binary hashes: %w", err)
+	}
+
 	hashes := make(map[string]bool)
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	everConfigured := s.releaseInventoryEverConfigured.Load()
+	if len(releases) > 0 {
+		s.releaseInventoryEverConfigured.Store(true)
+		everConfigured = true
+	}
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     everConfigured,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
+
 	policyConfigured := false
 	for _, r := range releases {
 		if !r.Active {
@@ -1300,17 +1588,443 @@ func (s *Server) SyncBinaryHashes() {
 			continue
 		}
 		hashes[normalized] = true
+		templates := make(map[string]string)
+		for _, pair := range strings.Split(r.TemplateHashes, ",") {
+			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				templates[parts[0]] = parts[1]
+			}
+		}
+		trustSnapshot.ByBinaryHash[normalized] = append(
+			trustSnapshot.ByBinaryHash[normalized],
+			approvedReleasePolicy{
+				Version: r.Version, Platform: r.Platform, Backend: r.Backend,
+				BinaryHash: normalized, MetallibHash: r.MetallibHash,
+				PythonHash: r.PythonHash, RuntimeHash: r.RuntimeHash,
+				TemplateHashes: templates,
+			})
+	}
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		// Evidence still approved under the NEW snapshot is carried forward at
+		// the new generation. For a REQUIRED policy the registry returns every
+		// provider NOT carried forward — including providers that held no
+		// evidence at all (first required activation over a cold fleet) — and
+		// each one is re-challenged immediately instead of waiting for the
+		// periodic ticker (whose interval outlives the request queue).
+		needChallenge := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range needChallenge {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(needChallenge) > 0 {
+			s.logger.Info("release policy refresh left providers without current evidence; re-challenging immediately",
+				"generation", trustSnapshot.Generation,
+				"providers", len(needChallenge),
+			)
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
+		}
 	}
 
 	s.binaryHashPolicyMu.Lock()
 	s.releaseKnownBinaryHashes = hashes
-	s.releaseBinaryHashPolicyConfigured = policyConfigured
+	s.releaseBinaryHashPolicyConfigured = policyConfigured || everConfigured
 	s.rebuildBinaryHashPolicyLocked()
 	knownHashCount := len(s.knownBinaryHashes)
 	effectivePolicyConfigured := s.binaryHashPolicyConfigured
 	s.binaryHashPolicyMu.Unlock()
 
 	s.logger.Info("binary hashes synced from releases", "known_hashes", knownHashCount, "policy_configured", effectivePolicyConfigured)
+	return nil
+}
+
+// convergeReleasePolicyWithCommittedRelease folds an already-committed release
+// registration into the in-memory release trust policy when the post-mutation
+// inventory read failed. GET /v1/releases/latest serves the committed row
+// straight from the store, so retaining the pre-registration snapshot would
+// distribute a release the policy can never authorize — providers installing it
+// could never earn evidence and, with no background resync, would stay
+// unroutable indefinitely. The merged snapshot is exactly what a successful
+// rebuild over "last-known-good inventory + this row" publishes: entries for
+// the same version/platform are replaced, everything else is carried forward
+// (so still-approved evidence survives and routine registration never deroutes
+// the fleet), and the newly saved release is immediately authorized. The next
+// successful sync rebuilds from the exact inventory.
+func (s *Server) convergeReleasePolicyWithCommittedRelease(release *store.Release, cause error) {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+
+	normalized, err := normalizeSHA256Hex(release.BinaryHash, "release.binary_hash")
+	if err != nil {
+		// Unreachable for the register handler (the hash was validated before
+		// the row committed), and a full rebuild would skip such a row too.
+		s.logger.Error("committed release has invalid binary hash; policy not converged",
+			"version", release.Version, "platform", release.Platform, "error", err)
+		return
+	}
+
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	s.releaseInventoryEverConfigured.Store(true)
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     true,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
+	if last := s.releaseTrustPolicy.Load(); last != nil {
+		for hash, policies := range last.ByBinaryHash {
+			for _, policy := range policies {
+				if policy.Version == release.Version && policy.Platform == release.Platform {
+					continue // replaced by this registration
+				}
+				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
+			}
+		}
+	}
+	templates := make(map[string]string)
+	for _, pair := range strings.Split(release.TemplateHashes, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			templates[parts[0]] = parts[1]
+		}
+	}
+	trustSnapshot.ByBinaryHash[normalized] = append(
+		trustSnapshot.ByBinaryHash[normalized],
+		approvedReleasePolicy{
+			Version: release.Version, Platform: release.Platform, Backend: release.Backend,
+			BinaryHash: normalized, MetallibHash: release.MetallibHash,
+			PythonHash: release.PythonHash, RuntimeHash: release.RuntimeHash,
+			TemplateHashes: templates,
+		})
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		needChallenge := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range needChallenge {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(needChallenge) > 0 {
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
+		}
+	}
+	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
+	for hash := range trustSnapshot.ByBinaryHash {
+		hashes[hash] = true
+	}
+	s.binaryHashPolicyMu.Lock()
+	s.releaseKnownBinaryHashes = hashes
+	s.releaseBinaryHashPolicyConfigured = true
+	s.rebuildBinaryHashPolicyLocked()
+	s.binaryHashPolicyMu.Unlock()
+
+	s.logger.Warn("release inventory unreadable after registration; converged policy from the committed release",
+		"version", release.Version,
+		"platform", release.Platform,
+		"generation", generation,
+		"error", cause,
+	)
+	s.ddIncr("release_policy.sync_failure", []string{"outcome:converged_from_mutation"})
+}
+
+// convergeReleasePolicyWithCommittedDeactivation folds an already-committed
+// release deactivation into the in-memory release trust policy when the
+// post-mutation inventory read failed. Retaining the pre-deactivation snapshot
+// would keep authorizing the deactivated release indefinitely — there is no
+// background resync, so in a force=true emergency pull of a compromised
+// release the affected providers would keep routing until an admin retried.
+// The merged snapshot is exactly what a successful rebuild over
+// "last-known-good inventory minus this row" publishes: entries for the
+// deactivated version/platform are dropped, everything else is carried forward
+// (so still-approved evidence survives and pulling one release never deroutes
+// the rest of the fleet), and providers whose evidence rested on the
+// deactivated release are invalidated and kicked for an immediate
+// re-challenge. The next successful sync rebuilds from the exact inventory.
+func (s *Server) convergeReleasePolicyWithCommittedDeactivation(version, platform string, cause error) {
+	s.releasePolicySyncMu.Lock()
+	defer s.releasePolicySyncMu.Unlock()
+
+	last := s.releaseTrustPolicy.Load()
+	generation := s.releaseTrustPolicyGeneration.Add(1)
+	// Deactivation never un-configures the inventory: once releases have been
+	// published the evidence gate stays required, exactly as a full rebuild
+	// over the remaining (possibly empty) release set would keep it.
+	required := s.releaseInventoryEverConfigured.Load()
+	if last != nil && last.Required {
+		required = true
+	}
+	trustSnapshot := &releaseTrustPolicySnapshot{
+		Generation:   generation,
+		Required:     required,
+		ByBinaryHash: make(map[string][]approvedReleasePolicy),
+	}
+	if last != nil {
+		for hash, policies := range last.ByBinaryHash {
+			for _, policy := range policies {
+				if policy.Version == version && policy.Platform == platform {
+					continue // removed by this deactivation
+				}
+				trustSnapshot.ByBinaryHash[hash] = append(trustSnapshot.ByBinaryHash[hash], policy)
+			}
+		}
+	}
+	s.releaseTrustPolicy.Store(trustSnapshot)
+	if s.registry != nil {
+		needChallenge := s.registry.SetReleasePolicyGeneration(
+			trustSnapshot.Generation, trustSnapshot.Required,
+			func(evidence registry.ApplicationEvidence) bool {
+				return releaseEvidenceStillApproved(trustSnapshot, evidence)
+			})
+		for _, providerID := range needChallenge {
+			if provider := s.registry.GetProvider(providerID); provider != nil {
+				provider.RequestImmediateChallenge()
+			}
+		}
+		if len(needChallenge) > 0 {
+			s.ddIncr("release_policy.evidence_invalidated", []string{fmt.Sprintf("providers:%d", len(needChallenge))})
+		}
+	}
+	hashes := make(map[string]bool, len(trustSnapshot.ByBinaryHash))
+	for hash := range trustSnapshot.ByBinaryHash {
+		hashes[hash] = true
+	}
+	s.binaryHashPolicyMu.Lock()
+	s.releaseKnownBinaryHashes = hashes
+	s.releaseBinaryHashPolicyConfigured = len(hashes) > 0 || required
+	s.rebuildBinaryHashPolicyLocked()
+	s.binaryHashPolicyMu.Unlock()
+
+	s.logger.Warn("release inventory unreadable after deactivation; converged policy from the committed deactivation",
+		"version", version,
+		"platform", platform,
+		"generation", generation,
+		"error", cause,
+	)
+	s.ddIncr("release_policy.sync_failure", []string{"outcome:converged_from_mutation"})
+}
+
+// releaseEvidenceStillApproved reports whether previously granted application
+// evidence remains approved under a freshly built release-policy snapshot: the
+// same binary hash still maps to an active release with the same version,
+// platform, and backend, and that release's metallib hash is unchanged. These
+// are the ONLY facts application evidence proves — python/runtime/per-family
+// template facts were deliberately removed (mlx-swift providers never report
+// them; requiring them made evidence underivable fleet-wide, 2026-08-31
+// incident). Binary hash and metallib fail closed on absence or mismatch.
+func releaseEvidenceStillApproved(
+	snapshot *releaseTrustPolicySnapshot,
+	evidence registry.ApplicationEvidence,
+) bool {
+	if evidence.BinaryHash == "" || evidence.MetallibHash == "" {
+		return false
+	}
+	for _, candidate := range snapshot.ByBinaryHash[evidence.BinaryHash] {
+		if candidate.Version != evidence.Version ||
+			candidate.Platform != evidence.Platform ||
+			candidate.Platform == "" {
+			continue
+		}
+		// Legacy release rows may carry an empty backend (the column was added
+		// with an empty default); treat it as matching the evidence backend,
+		// mirroring deriveApprovedReleaseTransition.
+		if candidate.Backend != "" && candidate.Backend != evidence.Backend {
+			continue
+		}
+		expectedMetallib, err := normalizeSHA256Hex(candidate.MetallibHash, "release.metallib_hash")
+		if err != nil || expectedMetallib != evidence.MetallibHash {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// Closed outcome set for application-evidence derivation. Every
+// deriveApprovedReleaseTransition return path records exactly one of these as
+// a release_evidence.outcome DogStatsD counter tag so a candidate coordinator
+// can be judged in SHADOW mode from per-reason fleet counts instead of a
+// silent boolean (the 2026-08-31 zero-capacity deploys were undiagnosable
+// precisely because every rejection branch looked identical). No hashes,
+// keys, serials, or tokens ride on these tags.
+const (
+	evidenceOutcomeGranted                 = "granted"
+	evidenceReasonPrecondition             = "precondition"
+	evidenceReasonInvalidBinaryHash        = "invalid_binary_hash"
+	evidenceReasonPolicyUnavailable        = "policy_unavailable"
+	evidenceReasonPolicyNotRequired        = "policy_not_required"
+	evidenceReasonProcessIdentity          = "process_identity"
+	evidenceReasonRuntimeGate              = "runtime_gate"
+	evidenceReasonVersionFloor             = "version_floor"
+	evidenceReasonRegistrationHashMismatch = "registration_hash_mismatch"
+	evidenceReasonNoActiveRelease          = "no_active_release"
+	evidenceReasonMetallibMismatch         = "metallib_mismatch"
+)
+
+// recordReleaseEvidenceOutcome counts one application-evidence derivation
+// outcome. No-op without DogStatsD.
+func (s *Server) recordReleaseEvidenceOutcome(outcome string) {
+	s.ddIncr("release_evidence.outcome", []string{"outcome:" + outcome})
+}
+
+// evidenceRejected records the typed rejection reason and returns the empty
+// derivation result.
+func (s *Server) evidenceRejected(reason string) (approvedReleaseTransitionFact, registry.ApplicationEvidence, bool) {
+	s.recordReleaseEvidenceOutcome(reason)
+	return approvedReleaseTransitionFact{}, registry.ApplicationEvidence{}, false
+}
+
+func (s *Server) deriveApprovedReleaseTransition(
+	provider *registry.Provider,
+	resp *protocol.AttestationResponseMessage,
+	statusFieldsTrusted bool,
+) (approvedReleaseTransitionFact, registry.ApplicationEvidence, bool) {
+	if provider == nil || resp == nil || !statusFieldsTrusted ||
+		resp.SIPEnabled == nil || !*resp.SIPEnabled ||
+		resp.SecureBootEnabled == nil || !*resp.SecureBootEnabled ||
+		provider.ChallengeShouldStop() {
+		return s.evidenceRejected(evidenceReasonPrecondition)
+	}
+	freshHash, err := normalizeSHA256Hex(resp.BinaryHash, "binary_hash")
+	if err != nil {
+		return s.evidenceRejected(evidenceReasonInvalidBinaryHash)
+	}
+	snapshot := s.releaseTrustPolicy.Load()
+	if snapshot == nil {
+		return s.evidenceRejected(evidenceReasonPolicyUnavailable)
+	}
+
+	provider.Mu().Lock()
+	version, backend, processKey := provider.Version, provider.Backend, provider.PublicKey
+	apnsToken := provider.APNsDeviceToken
+	runtimeVerified := provider.RuntimeVerified
+	manifestChecked := provider.RuntimeManifestChecked
+	metallibVerified := provider.MetallibVerified
+	attested := provider.AttestationResult
+	provider.Mu().Unlock()
+	// An APNs device token is deliberately NOT required: application evidence
+	// proves the live binary/runtime is an active approved release, while APNs
+	// token possession is enforced exclusively by the code-identity gate (with
+	// its own grace semantics). Tokenless legacy/headless providers with a
+	// valid signed challenge must still derive and keep evidence.
+	if !snapshot.Required {
+		return s.evidenceRejected(evidenceReasonPolicyNotRequired)
+	}
+	if processKey == "" || attested == nil || !attested.Valid ||
+		attested.PublicKey == "" || attested.SerialNumber == "" {
+		return s.evidenceRejected(evidenceReasonProcessIdentity)
+	}
+	if !runtimeVerified || !manifestChecked || !metallibVerified {
+		return s.evidenceRejected(evidenceReasonRuntimeGate)
+	}
+	if s.minProviderVersion != "" &&
+		(version == "" || semverLess(version, s.minProviderVersion)) {
+		return s.evidenceRejected(evidenceReasonVersionFloor)
+	}
+	// Registration-time binary_hash is optional and the production fleet omits
+	// it. The fresh hash is carried by this already-signature-verified challenge
+	// from the same attested SE identity and is still required to match an active
+	// release below. When registration did carry a hash, keep the stronger
+	// cross-check and fail closed on a mismatch.
+	if strings.TrimSpace(attested.BinaryHash) != "" {
+		attestedHash, hashErr := normalizeSHA256Hex(attested.BinaryHash, "attested binary_hash")
+		if hashErr != nil || attestedHash != freshHash {
+			return s.evidenceRejected(evidenceReasonRegistrationHashMismatch)
+		}
+	}
+
+	// Legacy release rows can carry an empty backend: the migration added the
+	// column with an empty default and registration accepts an omitted backend.
+	// Such rows MUST NOT leave providers permanently unroutable — an empty
+	// backend matches the provider-reported backend (an exact match is
+	// preferred when both exist), and the derived fact/evidence is stamped with
+	// the provider-reported backend so routing's evidence.Backend == p.Backend
+	// check keeps holding.
+	var current approvedReleasePolicy
+	found := false
+	for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+		if candidate.Version == version && candidate.Backend == backend &&
+			candidate.Platform != "" {
+			current = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		for _, candidate := range snapshot.ByBinaryHash[freshHash] {
+			if candidate.Version == version && candidate.Backend == "" &&
+				candidate.Platform != "" {
+				current = candidate
+				current.Backend = backend
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return s.evidenceRejected(evidenceReasonNoActiveRelease)
+	}
+	if !releaseMetallibMatches(current, resp) {
+		return s.evidenceRejected(evidenceReasonMetallibMismatch)
+	}
+
+	approvedFrom := make(map[string]struct{})
+	for binaryHash := range snapshot.ByBinaryHash {
+		if approvedTransitionPredecessor(
+			snapshot, binaryHash,
+			current.Platform, current.Backend, current.Version,
+		) {
+			approvedFrom[binaryHash] = struct{}{}
+		}
+	}
+	metallibHash, _ := normalizeSHA256Hex(
+		resp.TemplateHashes["mlx_metallib"], "mlx_metallib")
+	fact := approvedReleaseTransitionFact{
+		Approved: true, BinaryHash: freshHash, Version: current.Version,
+		Platform: current.Platform, Backend: current.Backend,
+		PolicyGeneration:         snapshot.Generation,
+		ApprovedFromBinaryHashes: approvedFrom,
+	}
+	evidence := registry.ApplicationEvidence{
+		SEPublicKey: attested.PublicKey, Serial: attested.SerialNumber,
+		ProcessPublicKey: processKey, APNsToken: apnsToken,
+		BinaryHash: freshHash,
+		Version:    current.Version, Platform: current.Platform,
+		Backend:      current.Backend,
+		MetallibHash: metallibHash, VerifiedAt: time.Now().UTC(),
+		PolicyGeneration: snapshot.Generation,
+	}
+	s.recordReleaseEvidenceOutcome(evidenceOutcomeGranted)
+	return fact, evidence, true
+}
+
+// releaseMetallibMatches verifies the ONE release-specific runtime fact both
+// sides always hold: the release row's metallib hash must equal the provider's
+// reported mlx_metallib template hash (both normalized 64-hex; absence on
+// either side fails closed). Nothing else is compared here by design — the
+// python plane is gone (mlx-swift providers hardcode it nil), and release
+// rows' per-model-family template hashes were CI fabrications (hashed from
+// CDN jinja files by release-swift.yml) that no provider ever reported;
+// requiring provider coverage of those made application evidence underivable
+// for 100% of the production fleet (2026-08-31 zero-capacity incident).
+// Binary-hash ↔ active-release matching is the caller's job.
+func releaseMetallibMatches(policy approvedReleasePolicy, resp *protocol.AttestationResponseMessage) bool {
+	if policy.MetallibHash == "" {
+		return false
+	}
+	expectedMetallib, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash")
+	if err != nil {
+		return false
+	}
+	gotMetallib, err := normalizeSHA256Hex(resp.TemplateHashes["mlx_metallib"], "mlx_metallib")
+	return err == nil && gotMetallib == expectedMetallib
 }
 
 func (s *Server) rebuildBinaryHashPolicyLocked() {
@@ -1334,15 +2048,12 @@ func (s *Server) binaryHashPolicySnapshot() (bool, map[string]bool) {
 
 // SyncRuntimeManifest builds the runtime manifest from active releases.
 // Called after a release is registered to auto-update the expected hashes.
-func (s *Server) SyncRuntimeManifest() {
-	releases := s.store.ListReleases()
-
-	// Guard: if the store returns nil (e.g. Postgres timeout), do NOT nuke
-	// a previously-good manifest. A transient DB failure should not
-	// instantly deroute every provider on the network.
-	if releases == nil {
-		s.logger.Warn("SyncRuntimeManifest: ListReleases returned nil (DB timeout?), keeping existing manifest")
-		return
+func (s *Server) SyncRuntimeManifest() error {
+	releases, err := s.store.ListReleasesWithError()
+	if err != nil {
+		s.logger.Warn("SyncRuntimeManifest: release inventory unavailable; keeping existing manifest",
+			"error", err)
+		return fmt.Errorf("sync runtime manifest: %w", err)
 	}
 
 	// Minimum provider version is set manually via EIGENINFERENCE_MIN_PROVIDER_VERSION
@@ -1418,17 +2129,147 @@ func (s *Server) SyncRuntimeManifest() {
 		// existing manifest if one exists.
 		if s.knownRuntimeManifest != nil {
 			s.logger.Warn("SyncRuntimeManifest: zero releases returned, keeping existing manifest")
-			return
+			return nil
 		}
 		s.knownRuntimeManifest = nil
 	}
 
 	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+	return nil
+}
+
+// convergeRuntimeManifestWithCommittedRelease folds an already-committed
+// release registration into the runtime manifest when the post-mutation
+// inventory read failed, so a transient store hiccup cannot leave the manifest
+// rejecting the runtime facts of the release that /v1/releases/latest is
+// already distributing. Hash sets are additive, exactly like a full rebuild
+// (which unions every active release); template hashes are overwritten by the
+// new release, matching the rebuild's newest-release-wins ordering for a
+// freshly registered latest release. The next successful sync rebuilds from
+// the exact inventory.
+func (s *Server) convergeRuntimeManifestWithCommittedRelease(release *store.Release, cause error) {
+	merged := &RuntimeManifest{
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
+	}
+	if existing := s.knownRuntimeManifest; existing != nil {
+		for hash := range existing.PythonHashes {
+			merged.PythonHashes[hash] = true
+		}
+		for hash := range existing.RuntimeHashes {
+			merged.RuntimeHashes[hash] = true
+		}
+		for name, hash := range existing.TemplateHashes {
+			merged.TemplateHashes[name] = hash
+		}
+	}
+	contributed := false
+	if release.PythonHash != "" {
+		merged.PythonHashes[release.PythonHash] = true
+		contributed = true
+	}
+	if release.RuntimeHash != "" {
+		merged.RuntimeHashes[release.RuntimeHash] = true
+		contributed = true
+	}
+	if release.TemplateHashes != "" {
+		for _, pair := range strings.Split(release.TemplateHashes, ",") {
+			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(parts) == 2 {
+				merged.TemplateHashes[parts[0]] = parts[1]
+				contributed = true
+			}
+		}
+	}
+	if release.MetallibHash != "" {
+		if normalized, err := normalizeSHA256Hex(release.MetallibHash, "release.metallib_hash"); err == nil {
+			merged.TemplateHashes["mlx_metallib"] = normalized
+			contributed = true
+		}
+	}
+	if !contributed {
+		// The committed release carries no runtime facts; a full rebuild would
+		// republish the union of the remaining releases — the current manifest.
+		return
+	}
+	s.knownRuntimeManifest = merged
+	s.logger.Warn("release inventory unreadable after registration; converged runtime manifest from the committed release",
+		"version", release.Version,
+		"platform", release.Platform,
+		"error", cause,
+	)
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
+}
+
+// convergeRuntimeManifestWithCommittedDeactivation folds an already-committed
+// release deactivation into the runtime manifest when the post-mutation
+// inventory read failed. Unlike registration (where the new release's facts
+// are simply unioned in), deactivation cannot blindly subtract the pulled
+// release's hashes — another active release may share them — so the manifest
+// is rebuilt from the live release trust snapshot, which at this point already
+// excludes the deactivated version/platform (SyncBinaryHashes either succeeded
+// or was converged from the same committed deactivation first). Hash sets are
+// unioned and template hashes applied newest-release-wins, mirroring the full
+// rebuild's ordering. Active releases whose binary hash failed normalization
+// are absent from the snapshot and thus from this approximation; the next
+// successful sync rebuilds from the exact inventory.
+func (s *Server) convergeRuntimeManifestWithCommittedDeactivation(version, platform string, cause error) {
+	merged := &RuntimeManifest{
+		PythonHashes:   make(map[string]bool),
+		RuntimeHashes:  make(map[string]bool),
+		TemplateHashes: make(map[string]string),
+	}
+	hasAny := false
+	if snapshot := s.releaseTrustPolicy.Load(); snapshot != nil {
+		policies := make([]approvedReleasePolicy, 0, len(snapshot.ByBinaryHash))
+		for _, entries := range snapshot.ByBinaryHash {
+			policies = append(policies, entries...)
+		}
+		sort.SliceStable(policies, func(i, j int) bool {
+			return semverGreater(policies[j].Version, policies[i].Version)
+		})
+		for _, policy := range policies {
+			if policy.PythonHash != "" {
+				merged.PythonHashes[policy.PythonHash] = true
+				hasAny = true
+			}
+			if policy.RuntimeHash != "" {
+				merged.RuntimeHashes[policy.RuntimeHash] = true
+				hasAny = true
+			}
+			for name, hash := range policy.TemplateHashes {
+				merged.TemplateHashes[name] = hash
+				hasAny = true
+			}
+			if policy.MetallibHash != "" {
+				if normalized, err := normalizeSHA256Hex(policy.MetallibHash, "release.metallib_hash"); err == nil {
+					merged.TemplateHashes["mlx_metallib"] = normalized
+					hasAny = true
+				}
+			}
+		}
+	}
+	if !hasAny {
+		// The deactivated row committed, so releases exist(ed) but none of the
+		// remaining authorized ones carry runtime facts: explicit withdrawal,
+		// exactly like the full rebuild's "releases exist but none have
+		// hashes" branch. Providers proving the pulled release's facts must
+		// not keep passing the manifest gate.
+		merged = nil
+	}
+	s.knownRuntimeManifest = merged
+	s.logger.Warn("release inventory unreadable after deactivation; converged runtime manifest from the retained policy snapshot",
+		"version", version,
+		"platform", platform,
+		"error", cause,
+	)
+	s.revalidateConnectedProvidersAgainstRuntimePolicy()
 }
 
 func (s *Server) revalidateConnectedProvidersAgainstRuntimePolicy() {
-	// Note: the DB-timeout case (ListReleases returns nil) is already guarded
-	// in SyncRuntimeManifest — it returns early before reaching this function.
+	// Release-inventory errors are already guarded in SyncRuntimeManifest, which
+	// returns the error before reaching this function.
 	// A nil manifest here means releases exist but none carry runtime hashes,
 	// i.e. an intentional manifest withdrawal. Providers must be derouted.
 
@@ -1508,10 +2349,10 @@ type RuntimeManifest struct {
 	TemplateHashes map[string]string `json:"template_hashes"` // template_name -> expected hash
 }
 
-// SetRuntimeManifest configures the known-good runtime manifest for provider
-// verification. Pass nil to disable runtime verification (all providers pass).
-// semverGreater returns true if version a is greater than version b.
-// Compares numeric components (e.g. "0.2.31" > "0.2.9" = true).
+// semverGreater returns true when a has higher SemVer precedence than b,
+// including the numeric/alphanumeric prerelease identifier rules. Invalid
+// non-empty versions sort below valid versions so minimum-version gates fail
+// closed.
 func semverGreater(a, b string) bool {
 	if a == "" {
 		return false
@@ -1519,24 +2360,23 @@ func semverGreater(a, b string) bool {
 	if b == "" {
 		return true
 	}
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-	for i := 0; i < len(aParts) || i < len(bParts); i++ {
-		var ai, bi int
-		if i < len(aParts) {
-			fmt.Sscanf(aParts[i], "%d", &ai)
-		}
-		if i < len(bParts) {
-			fmt.Sscanf(bParts[i], "%d", &bi)
-		}
-		if ai > bi {
-			return true
-		}
-		if ai < bi {
-			return false
-		}
+	av := a
+	if !strings.HasPrefix(av, "v") {
+		av = "v" + av
 	}
-	return false // equal
+	bv := b
+	if !strings.HasPrefix(bv, "v") {
+		bv = "v" + bv
+	}
+	aValid, bValid := semver.IsValid(av), semver.IsValid(bv)
+	switch {
+	case aValid && bValid:
+		return semver.Compare(av, bv) > 0
+	case aValid:
+		return true
+	default:
+		return false
+	}
 }
 
 // semverLess returns true if version a is less than version b.
@@ -1544,6 +2384,8 @@ func semverLess(a, b string) bool {
 	return semverGreater(b, a)
 }
 
+// SetRuntimeManifest configures the known-good runtime manifest for provider
+// verification. Pass nil to disable runtime verification (all providers pass).
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
@@ -2030,6 +2872,10 @@ func (s *Server) routes() {
 	// enforce admin auth internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)
+	s.mux.HandleFunc("GET /v1/admin/profiles", s.handleAdminProfiles)
+	s.mux.HandleFunc("GET /v1/admin/profiles/export", s.handleAdminProfilesExport)
+	s.mux.HandleFunc("GET /v1/admin/snapshots", s.handleAdminSnapshots)
+	s.mux.HandleFunc("GET /v1/admin/snapshots/export", s.handleAdminSnapshotsExport)
 	s.mux.HandleFunc("GET /v1/admin/rejections", s.handleAdminRejections)
 	s.mux.HandleFunc("GET /v1/admin/rejections/export", s.handleAdminRejectionsExport)
 
@@ -2339,6 +3185,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, user.AccountID)
 			ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
+			stampAuth(r, "privy", true)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2346,6 +3193,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Accept admin key (admin endpoints handle further authorization in-handler).
 		if s.adminKey != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminKey)) == 1 {
 			ctx := context.WithValue(r.Context(), ctxKeyConsumer, "admin")
+			stampAuth(r, "admin", false)
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -2353,9 +3201,11 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Fall back to API key auth.
 		// Check cache first to skip DB on repeat requests with the same key.
 		var keyRec *store.APIKey
+		authKind := "apikey_cache"
 		if cached, ok := s.lookupAPIKeyCache(token); ok {
 			keyRec = cached.key
 		} else {
+			authKind = "apikey_db"
 			// Cache miss — resolve the key (with its per-key limits) in one
 			// query. A disabled/expired/unknown key returns an error and falls
 			// through to the provider-token path below.
@@ -2416,7 +3266,9 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// references, or logs.
 		accountID := keyRec.OwnerAccountID
 		ctx := r.Context()
+		authDBRead := authKind == "apikey_db"
 		if accountID != "" {
+			authDBRead = true
 			if user, err := s.store.GetUserByAccountID(accountID); err == nil {
 				ctx = context.WithValue(ctx, auth.CtxKeyUser, user)
 			}
@@ -2426,6 +3278,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx = context.WithValue(ctx, ctxKeyConsumer, accountID)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, keyRec)
+		stampAuth(r, authKind, authDBRead)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -2514,6 +3367,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		}
 		rl := getLimiter()
 		if rl == nil {
+			stampRateLimit(r)
 			next(w, r)
 			return
 		}
@@ -2550,6 +3404,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			return
 		}
 		setRequestRateLimitHeaders(w, rl.Stat(accountID))
+		stampRateLimit(r)
 		next(w, r)
 	}
 }
@@ -2625,6 +3480,15 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
+		// X-Request-ID above is echoed and logged but never persisted).
+		if s.profilerEnabled() {
+			meta := &requestMeta{coordID: reqID, start: start}
+			if r.Header.Get("X-Request-ID") != "" {
+				meta.coordID = newRequestID()
+			}
+			ctx = context.WithValue(ctx, requestMetaKey{}, meta)
+		}
 		r = r.WithContext(ctx)
 
 		next.ServeHTTP(sw, r)

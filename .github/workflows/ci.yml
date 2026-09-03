@@ -387,6 +387,54 @@ jobs:
         # Hermetic multi-token stop detection in the package that owns it.
         timeout-minutes: 5
         run: ../../scripts/run-swift-suite.sh SequenceStateMachineTests --skip-build
+      # The v0.8.16 submodule pin added four upstream-ported regression files
+      # (M-RoPE interleave, Qwen3VL sRGB tone curve, vision fused-SDPA parity,
+      # streaming-detokenizer common-prefix delta). They are hermetic —
+      # synthetic arrays and stub tokenizers, no checkpoints, no skips — but
+      # were compile-only until listed here. One step per suite class, through
+      # the same tripwire wrapper, so a dark or slow suite is attributable.
+      - name: Run nested Qwen3.5 M-RoPE interleave tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Interleaved M-RoPE takeAlong path vs the replaced slice-loop
+        # reference (VLM text tower). Small synthetic MLX arrays.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen35MRoPETests --skip-build
+      - name: Run nested Qwen3VL M-RoPE interleave tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Same interleave-vs-reference contract for the Qwen3VL rotary
+        # embedding, default and custom mrope sections.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLMRoPETests --skip-build
+      - name: Run nested Qwen3.5 LLM M-RoPE parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Full apply(queries:keys:) output parity for the production
+        # text-extraction path against the replaced per-frequency loop.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen35LLMMRoPEParityTests --skip-build
+      - name: Run nested Qwen3VL tone-curve tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # sRGB tone curve on the Qwen3VL image path (dark-content contrast);
+        # CoreImage over synthetic bitmaps, no model weights.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLToneCurveTests --skip-build
+      - name: Run nested Qwen3VL vision-attention parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Block-diagonal fused-SDPA vs dense joint-mask reference, incl. the
+        # pad-to-80 head-dim exactness contract. Dispatches Metal kernels.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLVisionAttentionTests --skip-build
+      - name: Run nested streaming-detokenizer tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Common-prefix incremental delta vs character-count (SentencePiece
+        # whitespace collapse). Pure Swift, stub tokenizers.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh StreamingDetokenizerTests --skip-build
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

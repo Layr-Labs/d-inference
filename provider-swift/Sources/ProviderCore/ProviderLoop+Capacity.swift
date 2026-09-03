@@ -67,7 +67,18 @@ extension ProviderLoop {
         writeDaemonState()
     }
 
-    internal func updateAggregateCapacity() async {
+    /// `attempt`: internal retry counter for the stale-snapshot guard below;
+    /// callers use the default.
+    internal func updateAggregateCapacity(attempt: Int = 0) async {
+        // Reserve epoch at entry: the hops below (engine summary, KV
+        // outstanding) are actor suspensions, and a reserve push landing
+        // across them (a verified prefetch raising the floor, a retirement
+        // relaxing it, a load's own marker transitions) would leave this
+        // invocation publishing pre-push figures. Not every push site
+        // publishes a replacement, so a tripped guard RECOMPUTES rather
+        // than returns (bounded: the third attempt publishes regardless —
+        // a snapshot one epoch behind beats none until the next tick).
+        let reserveEpochAtEntry = activationReserveEpoch
         // ONE ENGINE (v0.7.5): `EngineV2Runtime.capacitySummary` is the ONLY
         // slot source — every loaded model serves through a v2 bridge; the
         // legacy scheduler fold is gone. Same `BackendSlotCapacity` wire
@@ -100,6 +111,7 @@ extension ProviderLoop {
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
+                    activationReserveBytes: resolvedActivationReserveBytes,
                     configReserveBytes: Self.memoryReserveBytes(
                         forGiB: loopConfig.config.provider.memoryReserveGB),
                     physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
@@ -140,6 +152,11 @@ extension ProviderLoop {
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
+            // The serving set's resolved headroom (measured per-model floors),
+            // not the flat default — free_for_load_gb must mirror the load
+            // gate this box actually applies (ensureModelLoaded), or the
+            // coordinator's cold-load routing desyncs from it.
+            headroomGb: loadHeadroomGb,
             outstandingReservationBytes: outstandingKV)
         let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
         let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
@@ -151,6 +168,32 @@ extension ProviderLoop {
             lastReclaimedBytes: reclaimer.lastReclaimedBytes,
             lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
 
+        // Stale-snapshot guard (see the epoch capture at entry): the reserve
+        // moved while this invocation was suspended — slot budgets and
+        // free_for_load_gb here predate the floor the KV gate already
+        // enforces. Recompute over the current state instead of publishing
+        // them; bounded so a push storm cannot starve the publish.
+        guard activationReserveEpoch == reserveEpochAtEntry || attempt >= 2 else {
+            logger.info(
+                "Capacity snapshot recomputed: activation reserve moved during refresh (attempt \(attempt + 1))")
+            return await updateAggregateCapacity(attempt: attempt + 1)
+        }
+
+        // Profiler process posture (slice 2). ALWAYS attached — the object's
+        // presence is the coordinator's "new provider" sentinel.
+        let pressureLevel: MemoryPressureLevelWire
+        switch lastMemoryPressureLevel.value {
+        case .normal: pressureLevel = .normal
+        case .warning: pressureLevel = .warning
+        case .critical: pressureLevel = .critical
+        }
+        let capacityTelemetry = CapacityTelemetry(
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            memoryPressureLevel: pressureLevel,
+            mlxNumResources: Int64(max(0, MLX.Memory.numResources)),
+            inAdmission: Int64(requestToModel.count),
+            inflightTasks: Int64(inflightTasks.count))
+
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
@@ -158,7 +201,8 @@ extension ProviderLoop {
             gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb,
-            mlxCacheReclaimer: reclaimerTelemetry
+            mlxCacheReclaimer: reclaimerTelemetry,
+            telemetry: capacityTelemetry
         )
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot
@@ -195,6 +239,58 @@ extension ProviderLoop {
             postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
         }
         lastLiveSlotPostures = postures
+
+        // Routing v2, Phase 1: every capacity rebuild flows through here —
+        // request admitted (post-submit refresh), completed/cancelled, model
+        // loaded/unloaded/evicted, wedge recovery flipping a slot to
+        // "crashed"/"reloading", and the periodic tick that picks up token
+        // budget drift. Comparing the fresh payload against the last SENT
+        // heartbeat's payload (the published snapshot) is therefore the one
+        // seam that implements all of the plan's event triggers without
+        // forking any of those call sites.
+        scheduleEventHeartbeatIfMaterial()
+    }
+
+    /// Fire (or schedule) an out-of-band heartbeat when the freshly rebuilt
+    /// capacity materially differs from the last one the coordinator saw.
+    /// Rate-capped at 2/s with trailing-edge coalescing; a change inside the
+    /// cap window is never dropped — the trailing timer guarantees exactly
+    /// one heartbeat at window end carrying the then-current payload. The 5s
+    /// baseline heartbeat keeps running untouched as liveness.
+    internal func scheduleEventHeartbeatIfMaterial() {
+        guard let capacity = state.backendCapacity else { return }
+        guard CapacityHeartbeatMateriality.isMaterial(
+            previous: state.publishedCapacity, current: capacity)
+        else { return }
+        switch capacityHeartbeatThrottle.noteMaterialChange(now: .now) {
+        case .sendNow:
+            guard let client = coordinatorClient else { return }
+            Task { await client.sendEventHeartbeat() }
+        case .scheduled(let after):
+            let me = self
+            // `Task.sleep(nanoseconds:)`, NOT the Duration/Clock overload —
+            // same -O task-allocator crash documented on the capacity poll
+            // loop above.
+            let delayNs = UInt64(max(0, after.components.seconds)) * 1_000_000_000
+                + UInt64(max(0, after.components.attoseconds / 1_000_000_000))
+            trailingHeartbeatTask = Task {
+                try? await Task.sleep(nanoseconds: delayNs)
+                if Task.isCancelled { return }
+                await me.fireTrailingEventHeartbeat()
+            }
+        case .coalesced:
+            break
+        }
+    }
+
+    /// Trailing-edge send: services the one scheduled verdict. Deliberately
+    /// does NOT rebuild capacity first — `state.backendCapacity` already
+    /// holds the latest rebuild (that rebuild is what coalesced into this
+    /// timer), and rebuilding here would re-enter the materiality check.
+    internal func fireTrailingEventHeartbeat() async {
+        trailingHeartbeatTask = nil
+        guard capacityHeartbeatThrottle.takeScheduledSend(now: .now) else { return }
+        await coordinatorClient?.sendEventHeartbeat()
     }
 
 }

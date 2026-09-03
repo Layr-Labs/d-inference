@@ -36,7 +36,7 @@ Before dispatch, the handler:
 
 ## 3. Provider Selection
 
-The production dispatch hot path calls `Registry.ReserveProviderEx` (`coordinator/registry/scheduler.go:213-292`). The candidate cost is the sum of (`coordinator/registry/scheduler.go:802-894`):
+The production primary dispatch path calls `Registry.ReserveProviderWithPlan` (`coordinator/registry/dispatch_plan.go:317-325`); its shared `reserveProvider` implementation performs a concurrent read-locked fleet scan followed by a short, deadline-checked, fully revalidated atomic commit (`coordinator/registry/scheduler.go:414-668`). The resulting request-local plan supplies bounded alternatives without a full re-scan (`coordinator/registry/dispatch_plan.go:151-205,326-565`). Candidate cost is the sum of (`coordinator/registry/scheduler.go:1721-1854`):
 
 | Term | Meaning |
 |---|---|

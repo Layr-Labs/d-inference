@@ -132,7 +132,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		// the request into its queue — the planner (modelLoadCandidatePendingLocked)
 		// would refuse the load and the request would wait out the 120s queue timeout
 		// instead of failing fast (#390).
-		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
 			return false
 		}
 	}

@@ -104,6 +104,12 @@ extension CoordinatorClient {
             // Nil the stored reference so sendOnCurrentConnection fast-returns
             // during the reconnect window instead of firing on a cancelled connection.
             self.nwConnection = nil
+            // Routing v2: this connection's capacity-seq session is over. A
+            // reconnect re-registers and restarts seq at 1; the published
+            // quote snapshot is dropped with it so quotes never answer from a
+            // session the new coordinator connection has not seen.
+            self.sessionRegistered = false
+            self.state.resetCapacitySession()
             // Detach the inference-chunk fast path from this connection (drops any
             // queued chunks; their requests are cancelled on disconnect). Guarded
             // by identity so a concurrent reconnect's freshly-bound writer isn't
@@ -159,6 +165,11 @@ extension CoordinatorClient {
 
         try await sendRegistration(connection: connection)
         logger.info(.coordinatorRegistrationSent)
+        // Fresh capacity-seq session for this connection (routing v2): seq
+        // restarts at 1 on the first heartbeat and out-of-band event
+        // heartbeats are permitted from here on.
+        state.resetCapacitySession()
+        sessionRegistered = true
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -363,8 +374,9 @@ extension CoordinatorClient {
             // callback won't fire until the connection is cancelled. Cancel it
             // here so the continuation unblocks and the reconnect loop proceeds
             // immediately instead of hanging until the transport times out.
-            let (data, context, receivedAt):
-                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant) =
+            let (data, context, receivedAt, profileAnchor):
+                (Data?, NWConnection.ContentContext?, ContinuousClock.Instant,
+                 SuspendingClock.Instant) =
                 try await withTaskCancellationHandler {
                     try await withCheckedThrowingContinuation { cont in
                         connection.receiveMessage { data, context, _isComplete, error in
@@ -372,11 +384,16 @@ extension CoordinatorClient {
                             // scheduling or any UTF-8/String materialization can
                             // consume the coordinator's relative deadline.
                             let receivedAt = ContinuousClock.now
+                            // Profiler anchor `t0p` on the suspending clock
+                            // (mach_absolute_time, the engine's DispatchTime
+                            // domain). Taken beside — never instead of — the
+                            // continuous deadline stamp (plan v2 P3).
+                            let profileAnchor = SuspendingClock.now
                             if let error {
                                 cont.resume(throwing: CoordinatorError.connectionClosed(error))
                                 return
                             }
-                            cont.resume(returning: (data, context, receivedAt))
+                            cont.resume(returning: (data, context, receivedAt, profileAnchor))
                         }
                     }
                 } onCancel: {
@@ -410,7 +427,8 @@ extension CoordinatorClient {
                 throw CoordinatorError.connectionClosed(NWError.posix(.ECONNRESET))
             }
 
-            await handleIncomingFrame(data, receivedAt: receivedAt)
+            await handleIncomingFrame(
+                data, receivedAt: receivedAt, profileAnchor: profileAnchor)
         }
     }
 

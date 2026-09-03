@@ -144,7 +144,7 @@ struct CoordinatorIntegrationTests {
                 switch event {
                 case .inferenceRequest(
                     let rid, let ciphertext, let senderKey, let nonce, let scope, _, _,
-                    let firstContentDeadline
+                    let firstContentDeadline, _, _
                 ):
                     #expect(rid == requestId)
                     #expect(nonce == "nonce-int-1")

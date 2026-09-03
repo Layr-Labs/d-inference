@@ -97,6 +97,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		CreatedAt:             time.Now(),
 	}
 	if info.r != nil {
+		rec.RequestID = coordRequestIDFromContext(info.r.Context())
 		rec.Endpoint = info.r.URL.Path
 		rec.ClientClass = clientClassFromUserAgent(info.r.UserAgent())
 		if rec.RequestBodyBytes == 0 && info.r.ContentLength > 0 {

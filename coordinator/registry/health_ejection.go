@@ -94,14 +94,12 @@ func healthEjectionEnabled() bool {
 // an identity from it would bind a hostile session's fault state under
 // "serial:<victim>" and deroute the legitimate machine when it reconnects.
 // Valid-gating (not MDA-gating) is deliberate: VerificationResult carries no
-// MDA/trust field — that state lives on the Provider and is granted later by
-// the MDM/MDA loops, so keying on it would flip a session's identity
-// mid-connection with no rebind — and a Valid-but-uncrosschecked serial cannot
-// accumulate served-fault state in production because routing requires
-// hardware trust, which MDM/MDA grant only after matching the attested serial
-// (SetMDAProofIfHardware*, mdmVerificationLoop). The account fallback is safe
-// on ANY result: AccountID is stamped from the authenticated provider token at
-// registration, never from the attestation blob.
+// MDA/trust field — that state lives on Provider and is granted later by the
+// bounded MDM/MDA scheduler. A Valid-but-uncrosschecked serial cannot accumulate
+// served-fault state in production because routing requires hardware trust, and
+// every grant still cross-checks the attested serial/device identity.
+// The account fallback is safe on any result: AccountID is stamped from the
+// authenticated provider token at registration, never from the attestation blob.
 //
 // Reads p.AttestationResult / p.AccountID DIRECTLY — it must NOT take p.mu. The
 // routing gate (providerPassesRoutingGatesLockedEx) calls this with p.mu ALREADY

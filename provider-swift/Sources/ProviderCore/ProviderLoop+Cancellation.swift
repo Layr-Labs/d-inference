@@ -24,6 +24,17 @@ extension ProviderLoop {
         if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
             stats.incrementCancellationsReceived()
         }
+        // Profiler: stamp cancel receipt and derive the lifecycle stage from
+        // the stamps present right now (one lock). The stage counters count
+        // COORDINATOR cancels only — a disconnect-driven cancel-all is not
+        // a client decision.
+        let profile = inflightProfiles[requestId]
+        if let profile,
+            let stage = profile.markCancelReceived(),
+            receivedFromCoordinator
+        {
+            stats.incrementCancelStage(stage)
+        }
 
         // MLXLMServer mints an internal request id before submitting to the
         // EngineV2 bridge, so the coordinator id held here may not match the
@@ -47,8 +58,6 @@ extension ProviderLoop {
         // `if token.isCancelled` check inside the streaming loop also
         // fires on the next iteration (defense in depth — both paths
         // reach the same teardown).
-        await cancellationRegistry.cancel(requestId: requestId)
-
         // Forward the coordinator request-id to the owning EngineV2 bridge so
         // `CBv2Engine.cancel` drops the row promptly (the in-flight step
         // completes, then the engine delivers `.finished(.cancelled)` and
@@ -58,9 +67,22 @@ extension ProviderLoop {
         // documented above (the bridge stream's onTermination cancels the
         // engine-minted id); this fan-out additionally catches any submit
         // made directly under the coordinator id.
+        // The profile rides along so the owning bridge can take the
+        // `tokens_after_cancel` snapshot at cancel receipt even though the
+        // coordinator id misses its `req-…` map (profile-identity match).
+        // ORDER: the bridge snapshot runs BEFORE the registry await below.
+        // The profile-identity scan is serialized on the bridge actor against
+        // `recordFinish`, so a miss means "never submitted" or "already
+        // finished" — the latter records `tokens_after_cancel = 0` rather
+        // than omitting the field.
         if hasEngineV2Slots {
-            await engineV2Runtime.cancel(requestId: requestId)
+            let owned = await engineV2Runtime.cancel(requestId: requestId, profile: profile)
+            if !owned {
+                profile?.recordTokensAfterCancelIfFinished()
+            }
         }
+
+        await cancellationRegistry.cancel(requestId: requestId)
 
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {
@@ -84,6 +106,7 @@ extension ProviderLoop {
         }
         inflightTasks.removeAll()
         completedBeforeTaskRegistration.removeAll()
+        inflightProfiles.removeAll()
         if !requestToModel.isEmpty {
             powerAssertion.releaseAll()
         }
@@ -102,6 +125,12 @@ extension ProviderLoop {
     internal func finishInflightRequest(requestId: String) async {
         let hadRegisteredTask = inflightTasks.removeValue(forKey: requestId) != nil
         let modelId = requestToModel.removeValue(forKey: requestId)
+        // Dropping the map entry does not disarm the builder's
+        // `onTokensAfterCancel` hook: the bridge holds the builder through
+        // `ActiveRequestState.profile` until its own finish, and the hook
+        // captures only the process-lifetime stats sink (never this map or
+        // the loop), so a counter that lands after this removal still adds.
+        inflightProfiles.removeValue(forKey: requestId)
         if !hadRegisteredTask, modelId != nil {
             completedBeforeTaskRegistration.insert(requestId)
         }
@@ -121,9 +150,9 @@ extension ProviderLoop {
         !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
     }
 
-    internal func waitForInflightDrain(timeout: Duration) async -> Bool {
+    internal func waitForInflightDrain(timeout: Duration, reason: String = "shutdown") async -> Bool {
         guard hasInflightWork else { return true }
-        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before shutdown")
+        logger.info("Waiting up to \(timeout.components.seconds)s for active inference to finish before \(reason)")
         let started = ContinuousClock.now
         while hasInflightWork {
             if Task.isCancelled { return false }

@@ -60,6 +60,9 @@ func canonicalHeartbeatModelState(
 	}
 	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
 		reportedCapacity.MLXCacheReclaimer)
+	// System-profiler sub-objects hold pointer numerics; deep-clone so the
+	// registry copy owns what clampBackendCapacity mutates in place.
+	capacity.Telemetry = reportedCapacity.Telemetry.Clone()
 	if reportedCapacity.Slots != nil {
 		slotLimit := len(reportedCapacity.Slots)
 		if slotLimit > len(accepted) {
@@ -84,6 +87,7 @@ func canonicalHeartbeatModelState(
 				fallbackReason := *reportedSlot.KVBackendFallbackReason
 				slot.KVBackendFallbackReason = &fallbackReason
 			}
+			slot.Telemetry = reportedSlot.Telemetry.Clone()
 			capacity.Slots = append(capacity.Slots, slot)
 		}
 	}
@@ -109,6 +113,7 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 	}
 	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
 		p.BackendCapacity.MLXCacheReclaimer)
+	capacity.Telemetry = p.BackendCapacity.Telemetry.Clone()
 	if p.BackendCapacity.Slots != nil {
 		capacity.Slots = make([]protocol.BackendSlotCapacity, len(p.BackendCapacity.Slots))
 		for index, retainedSlot := range p.BackendCapacity.Slots {
@@ -121,6 +126,7 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 				fallbackReason := *retainedSlot.KVBackendFallbackReason
 				slot.KVBackendFallbackReason = &fallbackReason
 			}
+			slot.Telemetry = retainedSlot.Telemetry.Clone()
 			capacity.Slots[index] = slot
 		}
 	}

@@ -188,6 +188,10 @@ public enum EngineV2Factory {
                 prefillDeadlineProjectionEnabled:
                     prefillDeadlineProjectionSupported(
                         environment: runtimePolicyEnvironment),
+                // Profiler `partial_prefill_cap`: the same resolved value the
+                // slot factory logs; nil ⇒ unlimited (omitted on the wire).
+                partialPrefillCap: EngineV2Factory.maxConcurrentPartialPrefills(
+                    environment: runtimePolicyEnvironment),
                 kvBytesPerToken: kvBytesPerToken,
                 fixedRequestBytes: build.fixedRequestBytes,
                 auxiliaryBytesPerToken: auxiliaryBytesPerToken,

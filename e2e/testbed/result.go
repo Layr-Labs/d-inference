@@ -40,6 +40,16 @@ type RequestResult struct {
 	EncryptUs    int64
 	DispatchUs   int64
 	ProviderUs   int64
+
+	// Additive system-profiler segments (request waterfall); zero when the
+	// coordinator did not report them.
+	PreHandlerUs   int64
+	PreflightUs    int64
+	RouteReserveUs int64
+	QueuePureUs    int64
+	WriterUs       int64
+	SocketUs       int64
+	ProviderAckUs  int64
 }
 
 type RequestFailure struct {
@@ -76,6 +86,28 @@ type SegmentStatsView struct {
 	P95    time.Duration
 	P99    time.Duration
 	Max    time.Duration
+}
+
+// summarySegmentOrder is the presentation order shared by SummaryTable and
+// SummaryMarkdown: the coarse X-Timing decomposition first, then the additive
+// system-profiler waterfall, then TTFT.
+var summarySegmentOrder = []Segment{
+	SegmentTotalE2E,
+	SegmentParse,
+	SegmentReserve,
+	SegmentRoute,
+	SegmentQueueWait,
+	SegmentEncrypt,
+	SegmentDispatch,
+	SegmentCoordinatorToProvider,
+	SegmentPreHandler,
+	SegmentPreflight,
+	SegmentRouteReserve,
+	SegmentQueuePure,
+	SegmentWriter,
+	SegmentSocket,
+	SegmentProviderAck,
+	SegmentTTFT,
 }
 
 func (r *LoadResult) aggregate(requestResults []RequestResult, totalDuration time.Duration) {
@@ -131,6 +163,13 @@ func appendTimingSegments(segmentTimings map[Segment][]time.Duration, result Req
 	appendTimingSegment(segmentTimings, SegmentEncrypt, result.EncryptUs)
 	appendTimingSegment(segmentTimings, SegmentDispatch, result.DispatchUs)
 	appendTimingSegment(segmentTimings, SegmentCoordinatorToProvider, result.ProviderUs)
+	appendTimingSegment(segmentTimings, SegmentPreHandler, result.PreHandlerUs)
+	appendTimingSegment(segmentTimings, SegmentPreflight, result.PreflightUs)
+	appendTimingSegment(segmentTimings, SegmentRouteReserve, result.RouteReserveUs)
+	appendTimingSegment(segmentTimings, SegmentQueuePure, result.QueuePureUs)
+	appendTimingSegment(segmentTimings, SegmentWriter, result.WriterUs)
+	appendTimingSegment(segmentTimings, SegmentSocket, result.SocketUs)
+	appendTimingSegment(segmentTimings, SegmentProviderAck, result.ProviderAckUs)
 }
 
 func appendTimingSegment(segmentTimings map[Segment][]time.Duration, segment Segment, micros int64) {
@@ -189,17 +228,7 @@ func (r *LoadResult) SummaryTable() string {
 		s.WriteString(fmt.Sprintf("%-30s %8s %8s %8s %8s %8s\n", "SEGMENT", "COUNT", "MEAN", "P50", "P95", "MAX"))
 		s.WriteString("─────────────────────────────────────────────────────────────────────\n")
 
-		for _, seg := range []Segment{
-			SegmentTotalE2E,
-			SegmentParse,
-			SegmentReserve,
-			SegmentRoute,
-			SegmentQueueWait,
-			SegmentEncrypt,
-			SegmentDispatch,
-			SegmentCoordinatorToProvider,
-			SegmentTTFT,
-		} {
+		for _, seg := range summarySegmentOrder {
 			durations, ok := r.ProfileRun.SegmentTimings[seg]
 			if !ok || len(durations) == 0 {
 				continue
@@ -240,17 +269,7 @@ func (r *LoadResult) SummaryMarkdown() string {
 		s.WriteString("\n### Latency Decomposition\n\n")
 		s.WriteString("| Segment | Count | Mean | P50 | P95 | Max |\n|---|---|---|---|---|---|\n")
 
-		for _, seg := range []Segment{
-			SegmentTotalE2E,
-			SegmentParse,
-			SegmentReserve,
-			SegmentRoute,
-			SegmentQueueWait,
-			SegmentEncrypt,
-			SegmentDispatch,
-			SegmentCoordinatorToProvider,
-			SegmentTTFT,
-		} {
+		for _, seg := range summarySegmentOrder {
 			durations, ok := r.ProfileRun.SegmentTimings[seg]
 			if !ok || len(durations) == 0 {
 				continue

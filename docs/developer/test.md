@@ -171,7 +171,7 @@ Rust, Go, and the real Swift serving tokenizer consume the same working file
 ### Relocated MLX package CI suites
 
 Provider CI first runs `swift build --build-tests` in `libs/mlx-swift-lm`, so
-the whole nested test package is compiled. It then executes exactly these 12
+the whole nested test package is compiled. It then executes exactly these 18
 suites:
 
 1. `CBv2PagedSafetyTests`
@@ -186,6 +186,18 @@ suites:
 10. `CBv2PagedKernelTests`
 11. `CBv2KVSharingParityTests`
 12. `SequenceStateMachineTests`
+13. `Qwen35MRoPETests`
+14. `Qwen3VLMRoPETests`
+15. `Qwen35LLMMRoPEParityTests`
+16. `Qwen3VLToneCurveTests`
+17. `Qwen3VLVisionAttentionTests`
+18. `StreamingDetokenizerTests`
+
+Suites 13–18 are the v0.8.16 upstream-ported regressions (M-RoPE interleave
+parity, the Qwen3VL sRGB tone curve and fused-SDPA vision parity, and the
+streaming-detokenizer common-prefix delta). They are hermetic — synthetic
+arrays and stub tokenizers, no checkpoints — and run one wrapper step per
+suite class so none of them can go dark behind an alternation filter.
 
 Every explicit suite goes through:
 
@@ -203,7 +215,7 @@ directly exercises the core QMV Metal routing and numerics rather than provider
 integration. The lane stages the same source-matched `mlx.metallib` beside the
 relocated test runner, then invokes the guarded wrapper with
 `QMVWideMetalTests --skip-build`; all other `mlx-swift` tests are compile-only
-in this workflow. Across both relocated packages, provider CI therefore runs 13
+in this workflow. Across both relocated packages, provider CI therefore runs 19
 explicitly selected suites
 ([`scripts/run-swift-suite.sh`](../../scripts/run-swift-suite.sh),
 [provider CI](../../.github/workflows/ci.yml)).

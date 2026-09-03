@@ -111,10 +111,58 @@ enum DoctorRunner {
             let alternatives = allModels.map {
                 ModelFitDiagnostic.ModelOption(id: $0.id, weightGb: $0.estimatedMemoryGb)
             }
+            // The daemon's load gate holds the max activation floor over its
+            // WHOLE serving set — mirror the daemon's ADVERTISE basis, not
+            // the raw scan: the daemon selects from the memory-filtered
+            // scan (`scanModels`) and then drops unsupported families
+            // (`ProviderLoop.init`), so a cached too-large or unadapted
+            // model can never advertise and must not pin this verdict's
+            // floor (it would falsely FAIL a target the daemon serves at a
+            // lower floor). `allModels` (unfiltered) stays the basis for
+            // TARGET diagnosis above, so a too-large configured model is
+            // still flagged rather than silently skipped. Alternatives keep
+            // their solo floors: each models `enabled_models = [candidate]`.
+            // Prefer the daemon's OWN advertised list when it is up and
+            // fresh: CLI selection overrides (`--all` bypasses a non-empty
+            // enabled_models filter; `--model` restricts an unfiltered
+            // config) make any config-derived reconstruction wrong in both
+            // directions. The config-derived basis remains the offline
+            // fallback.
+            let servingSetIDs: [String]
+            let servingSetIsLive: Bool
+            if stateFresh, let live = state?.advertisedModels {
+                servingSetIsLive = true
+                // Authoritative INCLUDING empty: a daemon that retired every
+                // model after failed self-tests legitimately advertises [],
+                // and reconstructing from config would credit floors for
+                // models the daemon is not serving.
+                servingSetIDs = live
+            } else {
+                servingSetIsLive = false
+                let runtimeCapabilities = ProviderRuntimeCapabilityDetector.detectLive(hardware: hw)
+                let daemonBasis = ModelScanner.scanModels(hardwareInfo: hw)
+                    .filter { EngineV2SupportedModels.isSupported(modelType: $0.modelType) }
+                    .filter {
+                        ModelRuntimeRequirements.isEligible(modelID: $0.id, available: runtimeCapabilities)
+                    }
+                let enabled = snapshot.config.backend.enabledModels
+                servingSetIDs =
+                    enabled.isEmpty
+                    ? daemonBasis.map(\.id)
+                    : daemonBasis.map(\.id).filter(enabled.contains)
+            }
             if let targetID, let target = allModels.first(where: { $0.id == targetID }) {
                 out.append(ModelFitDiagnostic.diagnose(
                     modelID: targetID, weightGb: target.estimatedMemoryGb,
-                    usableGb: usableGb, alternatives: alternatives))
+                    usableGb: usableGb, alternatives: alternatives,
+                    // A LIVE empty set is authoritative (the daemon retired
+                    // everything) and must reach the verdict as [] — the
+                    // open-world default floor — not collapse to nil, which
+                    // credits the retired target its own solo floor. Only the
+                    // offline reconstruction treats empty as "unknown".
+                    servingSetIDs: servingSetIsLive
+                        ? servingSetIDs
+                        : (servingSetIDs.isEmpty ? nil : servingSetIDs)))
             } else if !alternatives.isEmpty {
                 // No specific/known target; check the largest local model fits.
                 if let biggest = alternatives.max(by: { $0.weightGb < $1.weightGb }) {

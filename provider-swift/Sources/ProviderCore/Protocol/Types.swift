@@ -179,6 +179,18 @@ public struct ProviderStats: Codable, Sendable, Equatable {
     public var streamClosedWithoutTerminal: UInt64
     public var cancelDuringModelLoad: UInt64
     public var usageGaps: UInt64
+    // Profiler cancel-stage counters (slice 2): where coordinator cancels
+    // land in the request lifecycle, cumulative per process, delta-merged by
+    // the coordinator. Encoded only when non-zero like the counters above.
+    public var cancelStagePreAcceptTotal: UInt64
+    public var cancelStagePreEngineTotal: UInt64
+    public var cancelStagePrefillTotal: UInt64
+    public var cancelStageDecodeTotal: UInt64
+    public var cancelStagePostTerminalTotal: UInt64
+    /// Σ tokens the engine generated after the cancel was received.
+    public var tokensAfterCancelTotal: UInt64
+    /// Σ (cancel_aborted − cancel_received) in nanoseconds.
+    public var cancelAbortNsSum: UInt64
 
     enum CodingKeys: String, CodingKey {
         case requestsServed = "requests_served"
@@ -191,6 +203,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         case streamClosedWithoutTerminal = "stream_closed_without_terminal"
         case cancelDuringModelLoad = "cancel_during_model_load"
         case usageGaps = "usage_gaps"
+        case cancelStagePreAcceptTotal = "cancel_stage_pre_accept_total"
+        case cancelStagePreEngineTotal = "cancel_stage_pre_engine_total"
+        case cancelStagePrefillTotal = "cancel_stage_prefill_total"
+        case cancelStageDecodeTotal = "cancel_stage_decode_total"
+        case cancelStagePostTerminalTotal = "cancel_stage_post_terminal_total"
+        case tokensAfterCancelTotal = "tokens_after_cancel_total"
+        case cancelAbortNsSum = "cancel_abort_ns_sum"
     }
 
     public init(
@@ -203,7 +222,14 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         chunkEncryptionErrors: UInt64 = 0,
         streamClosedWithoutTerminal: UInt64 = 0,
         cancelDuringModelLoad: UInt64 = 0,
-        usageGaps: UInt64 = 0
+        usageGaps: UInt64 = 0,
+        cancelStagePreAcceptTotal: UInt64 = 0,
+        cancelStagePreEngineTotal: UInt64 = 0,
+        cancelStagePrefillTotal: UInt64 = 0,
+        cancelStageDecodeTotal: UInt64 = 0,
+        cancelStagePostTerminalTotal: UInt64 = 0,
+        tokensAfterCancelTotal: UInt64 = 0,
+        cancelAbortNsSum: UInt64 = 0
     ) {
         self.requestsServed = requestsServed
         self.tokensGenerated = tokensGenerated
@@ -215,6 +241,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         self.streamClosedWithoutTerminal = streamClosedWithoutTerminal
         self.cancelDuringModelLoad = cancelDuringModelLoad
         self.usageGaps = usageGaps
+        self.cancelStagePreAcceptTotal = cancelStagePreAcceptTotal
+        self.cancelStagePreEngineTotal = cancelStagePreEngineTotal
+        self.cancelStagePrefillTotal = cancelStagePrefillTotal
+        self.cancelStageDecodeTotal = cancelStageDecodeTotal
+        self.cancelStagePostTerminalTotal = cancelStagePostTerminalTotal
+        self.tokensAfterCancelTotal = tokensAfterCancelTotal
+        self.cancelAbortNsSum = cancelAbortNsSum
     }
 
     public init(from decoder: Decoder) throws {
@@ -229,6 +262,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         self.streamClosedWithoutTerminal = try c.decodeIfPresent(UInt64.self, forKey: .streamClosedWithoutTerminal) ?? 0
         self.cancelDuringModelLoad = try c.decodeIfPresent(UInt64.self, forKey: .cancelDuringModelLoad) ?? 0
         self.usageGaps = try c.decodeIfPresent(UInt64.self, forKey: .usageGaps) ?? 0
+        self.cancelStagePreAcceptTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePreAcceptTotal) ?? 0
+        self.cancelStagePreEngineTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePreEngineTotal) ?? 0
+        self.cancelStagePrefillTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePrefillTotal) ?? 0
+        self.cancelStageDecodeTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStageDecodeTotal) ?? 0
+        self.cancelStagePostTerminalTotal = try c.decodeIfPresent(UInt64.self, forKey: .cancelStagePostTerminalTotal) ?? 0
+        self.tokensAfterCancelTotal = try c.decodeIfPresent(UInt64.self, forKey: .tokensAfterCancelTotal) ?? 0
+        self.cancelAbortNsSum = try c.decodeIfPresent(UInt64.self, forKey: .cancelAbortNsSum) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -243,6 +283,13 @@ public struct ProviderStats: Codable, Sendable, Equatable {
         try encodeIfNonZero(streamClosedWithoutTerminal, to: &c, forKey: .streamClosedWithoutTerminal)
         try encodeIfNonZero(cancelDuringModelLoad, to: &c, forKey: .cancelDuringModelLoad)
         try encodeIfNonZero(usageGaps, to: &c, forKey: .usageGaps)
+        try encodeIfNonZero(cancelStagePreAcceptTotal, to: &c, forKey: .cancelStagePreAcceptTotal)
+        try encodeIfNonZero(cancelStagePreEngineTotal, to: &c, forKey: .cancelStagePreEngineTotal)
+        try encodeIfNonZero(cancelStagePrefillTotal, to: &c, forKey: .cancelStagePrefillTotal)
+        try encodeIfNonZero(cancelStageDecodeTotal, to: &c, forKey: .cancelStageDecodeTotal)
+        try encodeIfNonZero(cancelStagePostTerminalTotal, to: &c, forKey: .cancelStagePostTerminalTotal)
+        try encodeIfNonZero(tokensAfterCancelTotal, to: &c, forKey: .tokensAfterCancelTotal)
+        try encodeIfNonZero(cancelAbortNsSum, to: &c, forKey: .cancelAbortNsSum)
     }
 
     private func encodeIfNonZero(
@@ -536,6 +583,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// running for THIS slot's engine (0 = none). A seconds-range value with no
     /// exit pins the clearCache/IOKit race. See `EngineCore.idleClearElapsedMs`.
     public var idleClearInFlightMs: Int64
+    /// Profiler slot telemetry (slice 2). OPTIONAL and encoded with
+    /// `encodeIfPresent`: the object's PRESENCE is the "new provider"
+    /// sentinel (P7), so a producing bridge always attaches one — possibly
+    /// sparse — and a legacy provider omits the key entirely. Mirrors Go
+    /// `Telemetry *SlotTelemetry \`json:"telemetry,omitempty"\``.
+    public var telemetry: SlotTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -562,6 +615,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case wedgeSuspected = "wedge_suspected"
         case evalInFlightMs = "eval_in_flight_ms"
         case idleClearInFlightMs = "idle_clear_in_flight_ms"
+        case telemetry
     }
 
     public init(
@@ -588,7 +642,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         secondsSinceLastFirstToken: Double = 0,
         wedgeSuspected: Bool = false,
         evalInFlightMs: Int64 = 0,
-        idleClearInFlightMs: Int64 = 0
+        idleClearInFlightMs: Int64 = 0,
+        telemetry: SlotTelemetry? = nil
     ) {
         self.model = model
         self.state = state
@@ -614,6 +669,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.wedgeSuspected = wedgeSuspected
         self.evalInFlightMs = evalInFlightMs
         self.idleClearInFlightMs = idleClearInFlightMs
+        self.telemetry = telemetry
     }
 
     public init(from decoder: Decoder) throws {
@@ -648,6 +704,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         wedgeSuspected = try container.decodeIfPresent(Bool.self, forKey: .wedgeSuspected) ?? false
         evalInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .evalInFlightMs) ?? 0
         idleClearInFlightMs = try container.decodeIfPresent(Int64.self, forKey: .idleClearInFlightMs) ?? 0
+        // Absent stays absent (legacy provider); never synthesize an empty
+        // object, which would forge the "new provider" sentinel.
+        telemetry = try container.decodeIfPresent(SlotTelemetry.self, forKey: .telemetry)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -681,6 +740,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         }
         try encodeIfNonZero(evalInFlightMs, forKey: .evalInFlightMs, into: &container)
         try encodeIfNonZero(idleClearInFlightMs, forKey: .idleClearInFlightMs, into: &container)
+        try container.encodeIfPresent(telemetry, forKey: .telemetry)
     }
 
     private func encodeIfNonZero<T: BinaryInteger & Encodable>(
@@ -758,6 +818,17 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// Optional so coordinators and tooling can distinguish providers with the
     /// reclaimer instrumentation from older providers whose counters are unknown.
     public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
+    /// Per-connection, monotonically increasing sequence stamped on every
+    /// heartbeat's capacity payload (routing v2). Starts at 1 on each fresh
+    /// coordinator connection so the coordinator can discard loss/reorder of
+    /// out-of-band event heartbeats; 0 means "not stamped" and is OMITTED on
+    /// the wire (mirrors Go `capacity_seq,omitempty` — a session that has sent
+    /// any heartbeat with capacity_seq > 0 is thereby quote-capable).
+    public var capacitySeq: UInt64
+    /// Profiler process-level telemetry (slice 2). Optional pointer-style
+    /// sub-object: present (possibly sparse) from a producing provider,
+    /// absent from a legacy one. Mirrors Go `Telemetry *CapacityTelemetry`.
+    public var telemetry: CapacityTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -767,6 +838,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
         case mlxCacheReclaimer = "mlx_cache_reclaimer"
+        case capacitySeq = "capacity_seq"
+        case telemetry
     }
 
     public init(
@@ -776,7 +849,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
         freeForLoadGb: Double = 0,
-        mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil
+        mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil,
+        capacitySeq: UInt64 = 0,
+        telemetry: CapacityTelemetry? = nil
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -785,10 +860,12 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
         self.mlxCacheReclaimer = mlxCacheReclaimer
+        self.capacitySeq = capacitySeq
+        self.telemetry = telemetry
     }
 
-    // Explicit decode so older payloads without `free_for_load_gb` or
-    // `mlx_cache_reclaimer` still decode. Encoding stays synthesized.
+    // Explicit decode so older payloads without `free_for_load_gb`,
+    // `mlx_cache_reclaimer`, or `capacity_seq` still decode.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
@@ -799,6 +876,26 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
         self.mlxCacheReclaimer = try c.decodeIfPresent(
             MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
+        self.telemetry = try c.decodeIfPresent(CapacityTelemetry.self, forKey: .telemetry)
+        self.capacitySeq = try c.decodeIfPresent(UInt64.self, forKey: .capacitySeq) ?? 0
+    }
+
+    // Explicit encode (the other fields' encoding is unchanged from the
+    // synthesized form): `capacity_seq` mirrors Go `omitempty` — an unstamped
+    // payload (0) keeps the legacy wire shape byte-identical.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(slots, forKey: .slots)
+        try c.encode(gpuMemoryActiveGb, forKey: .gpuMemoryActiveGb)
+        try c.encode(gpuMemoryPeakGb, forKey: .gpuMemoryPeakGb)
+        try c.encode(gpuMemoryCacheGb, forKey: .gpuMemoryCacheGb)
+        try c.encode(totalMemoryGb, forKey: .totalMemoryGb)
+        try c.encode(freeForLoadGb, forKey: .freeForLoadGb)
+        try c.encodeIfPresent(mlxCacheReclaimer, forKey: .mlxCacheReclaimer)
+        if capacitySeq != 0 {
+            try c.encode(capacitySeq, forKey: .capacitySeq)
+        }
+        try c.encodeIfPresent(telemetry, forKey: .telemetry)
     }
 }
 

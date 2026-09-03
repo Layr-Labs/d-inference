@@ -1954,15 +1954,34 @@ threats:
           lets a reconnecting, recently-fully-verified provider regain hardware trust from a
           persisted record without re-running the live MDM SecurityInfo round-trip — avoiding a
           fleet-wide MDM/APNs re-verification herd on a planned coordinator restart/swap. ACCEPTED
-          TRADE-OFF (relative to TB-005): within the reuse window the fast-skip captures the prior
-          SIP/Secure-Boot posture but does NOT re-prove MDA cert-chain freshness. It is bounded by
-          (1) the short reuse window (EIGENINFERENCE_TRUST_REUSE_WINDOW, default 10m — cannot span a
-          SIP-disable reboot cycle), (2) the ALWAYS-run live SE challenge that re-proves
-          identity + SIP/Secure-Boot posture + unchanged binary on every reuse, (3) a durable
-          hard-untrust epoch that refuses/removes a record if a hard untrust races the grant, and
-          (4) declining the fast-skip entirely when no MDM client is configured. A genuine MDA
-          re-verification still runs for every first-ever connection and for any reconnect outside
-          the window or failing a gate.
+          TRADE-OFF (relative to TB-005): within the reuse admission the fast-skip captures the
+          prior SIP/Secure-Boot posture but does NOT re-prove MDA cert-chain freshness. Admission
+          requires ONE of two premises: (a) STALENESS BOUND — the last live MDM verification is
+          within the reuse window (EIGENINFERENCE_TRUST_REUSE_WINDOW, default 5m, tightened from
+          10m — cannot span a SIP-disable reboot cycle); or (b) CONNECTION CONTINUITY — the
+          provider was live-verified, stayed continuously connected and hardware-trusted (the
+          coordinator batch-advances a durable continuous_coverage_until watermark ~every 30s
+          while it observes the live SE-challenged connection, plus exact-time disconnect and
+          graceful-shutdown sweeps), and the coordinator-MEASURED offline gap
+          (now - continuous_coverage_until) is within the reconnect allowance
+          (EIGENINFERENCE_TRUST_REUSE_RECONNECT_GAP, default 90s, HARD-clamped to [0,120s] —
+          values above the ceiling clamp DOWN). Premise (b) is sound on RecoveryOS physics:
+          SIP/Secure Boot can only change in RecoveryOS, and entering and leaving Recovery on
+          Apple Silicon (One True Recovery: manual power-button entry, credentialed
+          csrutil/bputil, two boot transitions) takes >= ~3 minutes and drops any WebSocket, so a
+          contiguous coordinator-measured gap <= 120s cannot span a posture flip. The gap is
+          never provider-claimed; a coordinator crash leaves the last periodic watermark standing
+          so the gap is only ever OVER-estimated (fail-safe). Chained sub-allowance gaps are safe:
+          each continuity reconnect runs the live SE challenge (proving a normal-OS boot) and
+          re-anchors coverage at the grant, while the hardware-proof timestamp is NEVER advanced
+          by reuse. Both premises stay bounded by (1) the ALWAYS-run live SE challenge that
+          re-proves identity + SIP/Secure-Boot posture + approved binary on every reuse, (2) a
+          durable hard-untrust epoch/tombstone that refuses/removes a record if a hard untrust
+          races the grant (tombstones win; coverage never resurrects), and (3) declining the
+          fast-skip entirely when no MDM client is configured. A genuine MDA re-verification
+          still runs for every first-ever connection and for any reconnect failing both premises
+          or any other gate. Continuity grants carry a distinct decision label ("continuity" /
+          "continuity_release_transition") in logs and metrics so both premises are observable.
         status: accepted
     open_findings: [SEC-004]
     severity: critical
@@ -2663,3 +2682,38 @@ threats:
       MemoryBackedVideoAsset ownership, resource-loader ranges, reference
       restrictions, MIME support, cancellation, or startup cleanup require the
       focused provider and mlx-swift-lm media suites.
+
+  - id: T-051
+    trust_boundary: TB-001
+    stride: Information_Disclosure
+    title: System profiler tables and admin exports leak identity or content
+    description: >
+      The system profiler persists one prompt-free row per dispatched attempt
+      (request_profiles) and one row per provider slot per minute (fleet_snapshots),
+      exported via admin-key-gated NDJSON endpoints. A provider could try to smuggle
+      free-form text through its profile object, a client could plant a
+      spreadsheet-formula or PII string via X-Request-ID, or a hardware serial /
+      stable identity could re-enter a bulk-export surface.
+    adversaries: [ADV-002, ADV-004]
+    affected_assets: [A-007, A-009]
+    affected_files:
+      - coordinator/api/profiler*.go
+      - coordinator/registry/request_profile.go
+      - coordinator/registry/fleet_sample.go
+      - coordinator/store/profile_records.go
+      - coordinator/store/postgres_profiles.go
+    mitigations:
+      - description: Provider profile rides the terminal message as raw JSON, is length-capped before any byte is read, decoded only after the terminal is fully processed, and persisted from a separate typed struct whose enums are closed and folded (no free-form string can reach a row).
+        status: implemented
+      - description: The persisted correlation id is always coordinator-minted; the client-supplied X-Request-ID never enters a row, and CSV writers prefix formula triggers.
+        status: implemented
+      - description: No serial, Secure Enclave key, account id, or stable hardware identity column exists in either table; only the session provider_id and catalog model id.
+        status: implemented
+      - description: Retention sweeps (14 d profiles, 30 d snapshots) bound the exposure window.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Any new column on request_profiles/fleet_snapshots, any new field on the
+      provider profile wire object, or any new admin export must be reviewed
+      against the closed-enum / no-identity rules in docs/architecture/system-profiler.md.

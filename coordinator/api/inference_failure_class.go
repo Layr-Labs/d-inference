@@ -1,6 +1,10 @@
 package api
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // isCapacityClassProviderError reports whether a provider inference-error string
 // names a CAPACITY/LIFECYCLE condition rather than a genuine server fault. The
@@ -149,19 +153,17 @@ const (
 // in which case it is transient. An explicit "exceeds … context" phrasing names
 // the context directly and is always deterministic.
 //
-// LIMITATION (residual stale-snapshot edge): providerBudget is the LAST
-// heartbeat's ActiveTokenBudgetMax, not the live budget the provider rejected
-// against — the wire InferenceErrorMessage carries no rejection-time budget. So if
-// a provider's budget was >= context at the last heartbeat but memory pressure
-// shrank it below context just before this request, we still classify
-// deterministic and stop after one attempt. This is strictly better than the
-// pre-DAR-347 behavior (which classified EVERY batch-budget rejection
-// deterministic) and degrades only to a rare uptime-neutral 429 the client
-// retries — never a 503 storm. The complete fix is provider-side: emit a distinct
-// reason for "prompt > context" vs "prompt > this node's budget" so the
-// coordinator never has to infer it from a stale snapshot (tracked as a follow-up;
-// requires a protocol/provider change across a mixed fleet, out of scope here).
-func classifyRejection(reason, errStr string, providerBudget int64, modelContext int) rejectionKind {
+// typedRejection is the wire CapacityRejectionReason from an enriched
+// rejection ("" for legacy frames and funnels without one). A typed
+// token_budget is AUTHORITATIVE transient for the batch-budget family: the
+// provider's live gate named "the active-token budget cannot fit this request
+// RIGHT NOW" (it frees as running sequences retire), so a deterministic-
+// unservable verdict must never be re-derived from the stale heartbeat budget
+// fallback — including when the enriched live budget is an explicit zero,
+// which the heuristic below cannot tell apart from "unknown". This closes the
+// residual stale-snapshot LIMITATION for enriched providers; legacy frames
+// (no typed reason, heartbeat budget only) keep the heuristic unchanged.
+func classifyRejection(reason, errStr string, providerBudget int64, modelContext int, typedRejection protocol.CapacityRejectionReason) rejectionKind {
 	// P1 (structured provider reason): when a provider tells us EXACTLY why it
 	// rejected, trust it instead of inferring deterministic-vs-transient from a
 	// stale heartbeat snapshot. request_exceeds_context is fleet-wide deterministic
@@ -176,10 +178,7 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	case errorReasonDeadlineUnreachable:
 		return rejectionDeadlineUnreachable
 	case "request_exceeds_batch_token_budget":
-		if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
-			return rejectionTransientCapacity
-		}
-		return rejectionDeterministicUnservable
+		return batchBudgetRejectionKind(typedRejection, providerBudget, modelContext)
 	}
 	// Capacity-class is gated by isCapacityClassProviderError so fault strings
 	// (checked first there) can never be miscategorised as a capacity shed.
@@ -210,10 +209,7 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	// treat as transient (failover, capped). Otherwise (budget >= context, or
 	// either value unknown) the binding term is the context, identical fleet-wide.
 	if strings.Contains(s, "batch token budget") {
-		if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
-			return rejectionTransientCapacity
-		}
-		return rejectionDeterministicUnservable
+		return batchBudgetRejectionKind(typedRejection, providerBudget, modelContext)
 	}
 	// Everything else capacity-class is provider/time-specific — this node's live
 	// KV budget ("exceeds active token budget" / "requires N tokens but only M
@@ -221,6 +217,30 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 	// update drain, or a cold "not loaded" miss. Another provider (bigger budget,
 	// free queue, already warm) may serve it, so fail over under the cap.
 	return rejectionTransientCapacity
+}
+
+// batchBudgetRejectionKind resolves the "request exceeds batch token budget"
+// family, shared by classifyRejection's reason-first and string paths. The
+// admission cap is min(context, activeTokenBudget), so the rejection is
+// deterministic only when the binding term was the fleet-wide CONTEXT:
+//
+//  1. A typed token_budget rejection is authoritative transient — the live
+//     gate itself said the binding term was THIS node's budget, so the stale
+//     heartbeat fallback must not overrule it (see classifyRejection's
+//     typedRejection contract).
+//  2. Absent a typed reason, positive evidence of memory pressure (a known
+//     reported budget below a known model context) means a less-pressured
+//     provider could serve — transient, capped failover.
+//  3. Otherwise (budget >= context, or either value unknown) the binding term
+//     is the context, identical fleet-wide — deterministic, stop at once.
+func batchBudgetRejectionKind(typedRejection protocol.CapacityRejectionReason, providerBudget int64, modelContext int) rejectionKind {
+	if typedRejection == protocol.RejectionReasonTokenBudget {
+		return rejectionTransientCapacity
+	}
+	if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
+		return rejectionTransientCapacity
+	}
+	return rejectionDeterministicUnservable
 }
 
 // isCapacityRejectStrike reports whether a provider rejection should count

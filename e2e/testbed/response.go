@@ -21,6 +21,17 @@ type responseTiming struct {
 	EncryptUs    int64 `json:"encrypt_us"`
 	DispatchUs   int64 `json:"dispatch_us"`
 	ProviderUs   int64 `json:"provider_us"`
+
+	// Additive system-profiler segments (request waterfall); the coordinator
+	// omits them when the profiler did not stamp the attempt, so zero means
+	// "not reported", never "instantaneous".
+	PreHandlerUs   int64 `json:"pre_handler_us"`
+	PreflightUs    int64 `json:"preflight_us"`
+	RouteReserveUs int64 `json:"route_reserve_us"`
+	QueuePureUs    int64 `json:"queue_pure_us"`
+	WriterUs       int64 `json:"writer_us"`
+	SocketUs       int64 `json:"socket_us"`
+	ProviderAckUs  int64 `json:"provider_ack_us"`
 }
 
 func (t responseTiming) TTFT() time.Duration {
@@ -42,6 +53,13 @@ func decodeResponse(resp *http.Response, requestStart time.Time, streaming bool,
 	result.EncryptUs = timing.EncryptUs
 	result.DispatchUs = timing.DispatchUs
 	result.ProviderUs = timing.ProviderUs
+	result.PreHandlerUs = timing.PreHandlerUs
+	result.PreflightUs = timing.PreflightUs
+	result.RouteReserveUs = timing.RouteReserveUs
+	result.QueuePureUs = timing.QueuePureUs
+	result.WriterUs = timing.WriterUs
+	result.SocketUs = timing.SocketUs
+	result.ProviderAckUs = timing.ProviderAckUs
 
 	body, observedTTFT, readErr := readResponseBody(resp.Body, requestStart, streaming)
 	closeErr := resp.Body.Close()
@@ -88,29 +106,29 @@ func parseResponseTiming(header string) (responseTiming, error) {
 	if err := json.Unmarshal([]byte(header), &timing); err != nil {
 		return responseTiming{}, fmt.Errorf("decode X-Timing %q: %w", header, err)
 	}
-	if err := validateTimingValue("parse_us", timing.ParseUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("reserve_us", timing.ReserveUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("media_fetch_us", timing.MediaFetchUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("route_us", timing.RouteUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("queue_us", timing.QueueUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("encrypt_us", timing.EncryptUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("dispatch_us", timing.DispatchUs); err != nil {
-		return responseTiming{}, err
-	}
-	if err := validateTimingValue("provider_us", timing.ProviderUs); err != nil {
-		return responseTiming{}, err
+	for _, tv := range []struct {
+		name  string
+		value int64
+	}{
+		{"parse_us", timing.ParseUs},
+		{"reserve_us", timing.ReserveUs},
+		{"media_fetch_us", timing.MediaFetchUs},
+		{"route_us", timing.RouteUs},
+		{"queue_us", timing.QueueUs},
+		{"encrypt_us", timing.EncryptUs},
+		{"dispatch_us", timing.DispatchUs},
+		{"provider_us", timing.ProviderUs},
+		{"pre_handler_us", timing.PreHandlerUs},
+		{"preflight_us", timing.PreflightUs},
+		{"route_reserve_us", timing.RouteReserveUs},
+		{"queue_pure_us", timing.QueuePureUs},
+		{"writer_us", timing.WriterUs},
+		{"socket_us", timing.SocketUs},
+		{"provider_ack_us", timing.ProviderAckUs},
+	} {
+		if err := validateTimingValue(tv.name, tv.value); err != nil {
+			return responseTiming{}, err
+		}
 	}
 	return timing, nil
 }

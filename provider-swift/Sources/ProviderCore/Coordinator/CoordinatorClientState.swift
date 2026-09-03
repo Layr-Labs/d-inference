@@ -22,8 +22,46 @@ public final class AtomicProviderStats: Sendable {
     // Count of completed requests whose usage chunk was missing/zero. Surfaced
     // in the daemon state file so `doctor` can flag a billing under-count.
     private let _usageGaps = ManagedAtomic<UInt64>(0)
+    // Profiler cancel-stage counters (slice 2). Bumped at the cancel sites
+    // from the request's `RequestProfileBuilder`; reported on the heartbeat
+    // as cumulative, delta-merged by the coordinator.
+    private let _cancelStagePreAcceptTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePreEngineTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePrefillTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStageDecodeTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelStagePostTerminalTotal = ManagedAtomic<UInt64>(0)
+    private let _tokensAfterCancelTotal = ManagedAtomic<UInt64>(0)
+    private let _cancelAbortNsSum = ManagedAtomic<UInt64>(0)
 
     public init() {}
+
+    public var cancelStagePreAcceptTotal: UInt64 { _cancelStagePreAcceptTotal.load() }
+    public var cancelStagePreEngineTotal: UInt64 { _cancelStagePreEngineTotal.load() }
+    public var cancelStagePrefillTotal: UInt64 { _cancelStagePrefillTotal.load() }
+    public var cancelStageDecodeTotal: UInt64 { _cancelStageDecodeTotal.load() }
+    public var cancelStagePostTerminalTotal: UInt64 { _cancelStagePostTerminalTotal.load() }
+    public var tokensAfterCancelTotal: UInt64 { _tokensAfterCancelTotal.load() }
+    public var cancelAbortNsSum: UInt64 { _cancelAbortNsSum.load() }
+
+    /// Bump the cumulative counter for the lifecycle stage a cancel landed in.
+    public func incrementCancelStage(_ stage: CancelStage) {
+        switch stage {
+        case .preAccept: _cancelStagePreAcceptTotal.add(1)
+        case .preEngine: _cancelStagePreEngineTotal.add(1)
+        case .prefill: _cancelStagePrefillTotal.add(1)
+        case .decode: _cancelStageDecodeTotal.add(1)
+        case .postTerminal: _cancelStagePostTerminalTotal.add(1)
+        case .none, .other: break
+        }
+    }
+
+    public func addTokensAfterCancel(_ count: UInt64) {
+        _tokensAfterCancelTotal.add(count)
+    }
+
+    public func addCancelAbortNs(_ ns: UInt64) {
+        _cancelAbortNsSum.add(ns)
+    }
 
     public var requestsServed: UInt64 {
         get { _requestsServed.load() }
@@ -126,7 +164,14 @@ public final class AtomicProviderStats: Sendable {
             chunkEncryptionErrors: chunkEncryptionErrors,
             streamClosedWithoutTerminal: streamClosedWithoutTerminal,
             cancelDuringModelLoad: cancelDuringModelLoad,
-            usageGaps: usageGaps
+            usageGaps: usageGaps,
+            cancelStagePreAcceptTotal: cancelStagePreAcceptTotal,
+            cancelStagePreEngineTotal: cancelStagePreEngineTotal,
+            cancelStagePrefillTotal: cancelStagePrefillTotal,
+            cancelStageDecodeTotal: cancelStageDecodeTotal,
+            cancelStagePostTerminalTotal: cancelStagePostTerminalTotal,
+            tokensAfterCancelTotal: tokensAfterCancelTotal,
+            cancelAbortNsSum: cancelAbortNsSum
         )
     }
 }
@@ -143,6 +188,16 @@ public final class ProviderState: @unchecked Sendable {
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
+    private var _publishedCapacity: BackendCapacity? = nil
+    private var _capacitySeq: UInt64 = 0
+    private var _refusingNewWork = false
+
+    /// Bounded per-(model, warm/cold, prompt-bucket, batch-bucket) end-to-end
+    /// TTFT statistics from completed real requests, fed by the ProviderLoop's
+    /// streaming path and read lock-free-ish by the quote path. Lives here
+    /// because ProviderState is the one object both the loop actor and the
+    /// CoordinatorClient actor already share without an actor hop.
+    public let ttftTracker = TTFTQuantileTracker()
 
     public init() {}
 
@@ -169,6 +224,57 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    /// Mirror of the ProviderLoop's "refuse new work" windows (update drain,
+    /// shutdown) for the quote path, which runs on the CoordinatorClient and
+    /// must not hop to the loop actor to learn what the live gate would do.
+    /// The loop writes it at the same transitions that flip its own gates, so
+    /// quotes and admissions refuse in the same windows.
+    public var refusingNewWork: Bool {
+        get { lock.withLock { _refusingNewWork } }
+        set { lock.withLock { _refusingNewWork = newValue } }
+    }
+
+    /// The capacity payload of the LAST heartbeat actually sent on the
+    /// current connection, seq-stamped (routing v2). This is the lock-free
+    /// published snapshot the capacity-quote path reads: quotes must be
+    /// computed from state the coordinator can order by `capacity_seq`, never
+    /// from a rebuild it has not seen — and reading it here costs one unfair
+    /// lock, no hop to the inference engine actor, no blocking of
+    /// admission/decode.
+    public var publishedCapacity: BackendCapacity? {
+        lock.withLock { _publishedCapacity }
+    }
+
+    /// Stamp the given heartbeat capacity payload with the next per-connection
+    /// `capacity_seq` (starting at 1) and publish it as the quote snapshot,
+    /// atomically. Called for EVERY outbound heartbeat — 5s baseline and
+    /// event-triggered alike — so seq is dense and strictly monotonic within a
+    /// connection. A nil payload (capacity not yet rebuilt after startup) is
+    /// passed through without burning a seq: `capacity_seq` only ever rides an
+    /// actual `backend_capacity` object.
+    public func stampAndPublishHeartbeatCapacity(
+        _ capacity: BackendCapacity?
+    ) -> BackendCapacity? {
+        guard var capacity else { return nil }
+        return lock.withLock {
+            _capacitySeq &+= 1
+            capacity.capacitySeq = _capacitySeq
+            _publishedCapacity = capacity
+            return capacity
+        }
+    }
+
+    /// Reset the capacity-seq session on a fresh coordinator connection: the
+    /// contract is per-connection monotonicity starting at 1, and the stale
+    /// published snapshot must not answer quotes for a connection whose
+    /// coordinator never saw it.
+    public func resetCapacitySession() {
+        lock.withLock {
+            _capacitySeq = 0
+            _publishedCapacity = nil
+        }
     }
 
     func setPrefixCacheSnapshot(

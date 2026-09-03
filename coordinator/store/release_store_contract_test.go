@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -20,6 +22,9 @@ func testReleaseStoreContract(t *testing.T, st Store) {
 	created := time.Date(2026, time.August, 22, 12, 0, 0, 0, time.UTC)
 	if releases := st.ListReleases(); len(releases) != 0 {
 		t.Fatalf("initial releases = %d, want 0", len(releases))
+	}
+	if releasesWithError, err := st.ListReleasesWithError(); err != nil || len(releasesWithError) != 0 {
+		t.Fatalf("empty ListReleasesWithError = %+v, err=%v", releasesWithError, err)
 	}
 	if latest := st.GetLatestRelease(platform); latest != nil {
 		t.Fatalf("initial latest = %+v, want nil", latest)
@@ -53,6 +58,12 @@ func testReleaseStoreContract(t *testing.T, st Store) {
 	releases := st.ListReleases()
 	if len(releases) != 2 {
 		t.Fatalf("releases = %d, want 2", len(releases))
+	}
+	// The error-preserving variant used by release-policy decisions must see
+	// the same inventory as the legacy error-swallowing lister.
+	releasesWithError, err := st.ListReleasesWithError()
+	if err != nil || len(releasesWithError) != 2 {
+		t.Fatalf("ListReleasesWithError = %+v, err=%v", releasesWithError, err)
 	}
 	if releases[0].CreatedAt.Before(releases[1].CreatedAt) {
 		t.Fatalf("releases are not ordered by created_at descending: %+v", releases)
@@ -109,5 +120,33 @@ func testReleaseStoreContract(t *testing.T, st Store) {
 	}
 	if latest := st.GetLatestRelease(semverPlatform); latest == nil || latest.Version != "0.3.9" {
 		t.Fatalf("semver latest = %+v, want 0.3.9", latest)
+	}
+}
+
+// TestPostgresListReleasesWithErrorSurfacesQueryFailure pins the fail-closed
+// half of the release-listing contract (#778): when the backing pool cannot be
+// queried, ListReleasesWithError must surface the error instead of returning
+// an empty — and therefore release-policy-satisfying — inventory. It opens a
+// dedicated connection rather than using testPostgresStore because the shared
+// harness resets contract tables on cleanup, which a closed pool would fail.
+func TestPostgresListReleasesWithErrorSurfacesQueryFailure(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping PostgreSQL integration test")
+	}
+
+	postgresTestMu.Lock()
+	defer postgresTestMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	s.Close()
+	if releases, err := s.ListReleasesWithError(); err == nil || releases != nil {
+		t.Fatalf("closed-pool ListReleasesWithError = %+v, err=%v; want nil result and non-nil error", releases, err)
 	}
 }

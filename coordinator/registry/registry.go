@@ -264,7 +264,10 @@ type PendingRequest struct {
 	// MarkFirstContentArrived/FirstContentAtSafe, which guard them with timingMu
 	// so cross-goroutine access is race-free. All other Timing fields remain
 	// dispatch-goroutine-only.
-	Timing   *RequestTiming
+	Timing *RequestTiming
+	// Profile is this attempt's profiler record (system profiler). Nil when the
+	// profiler is off. Stamped lock-free from any goroutine; see request_profile.go.
+	Profile  *AttemptProfile
 	timingMu sync.Mutex
 	// contentCommitted marks THIS attempt as the one that delivered its first
 	// content chunk to the client (set by commitFirstContent / the generic
@@ -334,6 +337,28 @@ func (pr *PendingRequest) FinishProviderChunkIngress(
 	}
 	pr.firstContentIngressAt = receivedAt
 	return true
+}
+
+// FirstContentIngressAtSafe returns the ingress timestamp of the first
+// content-bearing chunk (zero when none), under the ingress lock.
+func (pr *PendingRequest) FirstContentIngressAtSafe() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.firstContentIngressAt
+}
+
+// CompletionIngressAtSafe returns the completion-ingress timestamp (zero when
+// no terminal has been marked), under the ingress lock.
+func (pr *PendingRequest) CompletionIngressAtSafe() time.Time {
+	if pr == nil {
+		return time.Time{}
+	}
+	pr.firstContentIngressMu.Lock()
+	defer pr.firstContentIngressMu.Unlock()
+	return pr.completionIngressAt
 }
 
 func (pr *PendingRequest) HasFirstContentIngress() bool {
@@ -748,6 +773,43 @@ type RequestTiming struct {
 	FirstContentAt time.Time
 }
 
+// DeviceEvidence and ApplicationEvidence are independent live snapshots. A
+// durable store row may seed a device proof candidate, but only a fresh signed
+// connection challenge can create ApplicationEvidence.
+type DeviceEvidence struct {
+	SEPublicKey          string
+	Serial               string
+	VerifiedAt           time.Time
+	EvidenceGeneration   uint64
+	RevocationGeneration uint64
+}
+
+// ApplicationEvidence proves this connection's process runs an active approved
+// release: the SE-signed challenge binary hash matched an active release row
+// for the provider's version/platform/backend, and the runtime metallib hash
+// matched that release. Deliberately NO python/runtime/per-family-template
+// facts: mlx-swift providers never report them (python is gone; family
+// template hashes were CI fabrications no provider could echo — requiring
+// them made evidence underivable fleet-wide, 2026-08-31 incident).
+type ApplicationEvidence struct {
+	SEPublicKey      string
+	Serial           string
+	ProcessPublicKey string
+	// APNsToken binds the evidence to the provider's APNs device token when it
+	// has one. It MAY be empty: tokenless (legacy/headless) providers with a
+	// valid signed challenge still earn application evidence — APNs token
+	// possession is enforced exclusively by the APNs code-identity gate.
+	APNsToken          string
+	BinaryHash         string
+	Version            string
+	Platform           string
+	Backend            string
+	MetallibHash       string
+	VerifiedAt         time.Time
+	EvidenceGeneration uint64
+	PolicyGeneration   uint64
+}
+
 // Provider represents a connected provider agent.
 type Provider struct {
 	ID       string
@@ -768,6 +830,12 @@ type Provider struct {
 	MDACertChain                [][]byte               // DER-encoded Apple MDA certificate chain (leaf first)
 	MDAResult                   *attestation.MDAResult // parsed OIDs from Apple cert
 	SEKeyBound                  bool                   // true if SE key was bound to device via MDA nonce
+
+	// DeviceEvidence and ApplicationEvidence are connection state with separate
+	// clocks and generations. Neither is persisted as a bearer credential.
+	DeviceEvidence                DeviceEvidence
+	ApplicationEvidence           ApplicationEvidence
+	applicationEvidenceGeneration uint64
 
 	// restoredMDAChain holds the durable Apple-signed MDA cert chain recovered
 	// from the store on reconnect (see RestoreProviderState). It is a CANDIDATE
@@ -842,6 +910,20 @@ type Provider struct {
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
+	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
+	// connection; capacityQuoteCapable latches true the first time a heartbeat
+	// carries seq > 0 (routing v2 W2: seq-stamping providers also answer
+	// capacity probes — see protocol/messages.go CapacitySeq).
+	//
+	// Per-connection on purpose: the provider process restarts its counter on
+	// every reconnect, and Register creates a fresh *Provider per connection
+	// (see the CodeAttested field's contract), so both fields reset to their
+	// zero values with the object — a reconnected provider's seq 1 is never
+	// compared against the previous connection's high-water mark. Guarded by
+	// p.mu.
+	capacitySeq          uint64
+	capacityQuoteCapable bool
+
 	// kvBackends is the last KV-cache backend observation each SLOT (keyed by
 	// model) named on a heartbeat — the resolved kind AND, when the slot
 	// degraded, why — for the v0.8.0 paged rollout's per-backend segmentation.
@@ -890,14 +972,18 @@ type Provider struct {
 	LastChallengeVerified time.Time // last successful challenge verification
 	FailedChallenges      int       // consecutive failed challenges
 
-	// challengeSettled is a per-connection buffered (cap 1) signal fired by the
-	// challenge path AFTER a challenge passes but the trust-reuse fast-skip did NOT
-	// grant hardware (DAR-326). It lets awaitTrustReuseGrant stop waiting
-	// immediately for a non-fast-skip provider instead of stalling up to
-	// trustReuseGrantWait before falling back to the full live MDM verify. Created
-	// fresh per Provider (so it never carries a stale signal across reconnects); a
-	// nil channel degrades safely to the timer-based wait.
-	challengeSettled chan struct{}
+	// applicationProofSettled broadcasts completion of the initial direct
+	// application proof attempt. APNs waits for it so approved reconnects and
+	// releases cannot race an unnecessary push.
+	applicationProofSettled chan struct{}
+	applicationProofOnce    sync.Once
+
+	// challengeKick coalesces requests for an immediate out-of-band attestation
+	// challenge (e.g. after a release-policy refresh invalidated this provider's
+	// application evidence) so the connection's challenge loop re-verifies now
+	// instead of waiting out the periodic ticker. Buffered(1); nil on bare test
+	// Providers, where both endpoints degrade to no-ops.
+	challengeKick chan struct{}
 
 	// untrustEpoch is bumped on every HARD untrust of this provider (DAR-326
 	// FIX A). The trust-reuse write-through (api.recordTrustReuse) captures it at
@@ -947,6 +1033,15 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
+	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+}
+
+// providerSupportsPrivateTextModeLocked is the chokepoint body with the
+// evidence gate explicit: enforceEvidence=false is the SHADOW/baseline surface
+// (used live in shadow mode and by ApplicationEvidenceModelCoverage to compute
+// the per-model flip criterion); enforceEvidence=true additionally requires
+// generation-current application evidence. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -958,9 +1053,18 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	if !p.ChallengeVerifiedSIP {
 		return false
 	}
-	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
-	// exemption (gate everyone). Enforced only once configured AND past the grace
-	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
+	// A configured release policy makes current active-release application
+	// evidence mandatory independently of the APNs rollout deadline — but only
+	// once enforcement is switched on AND past any enforce-after delay. In
+	// shadow (the default) the predicate is still evaluated and counted
+	// (ApplicationEvidenceModelCoverage, CountProvidersWithCurrentApplicationEvidence)
+	// so operators prove coverage BEFORE anything can be derouted.
+	if r.releasePolicyRequired &&
+		enforceEvidence &&
+		!r.providerHoldsCurrentApplicationEvidenceLocked(p) {
+		return false
+	}
+	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
 	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
 		return false
 	}
@@ -1093,16 +1197,17 @@ func (p *Provider) reconcileRuntimeCapabilities() {
 	}
 }
 
-// GrantHardwareIfNotUntrusted atomically promotes the provider to hardware trust
-// unless it is currently untrusted, returning whether it granted. The status
-// check and the trust write happen under a SINGLE lock on purpose: a separate
-// GetStatus() check followed by SetAttested(hardware) is a TOCTOU — a concurrent
-// hard untrust from the challenge loop (binary-hash change / SIP disabled /
-// signature failure) landing in the gap would leave the registry in
-// hardware/untrusted and push a false "online" to the provider. Callers must only
-// run the rest of the grant (sendTrustStatus / persist / MDA) when this returns
-// true. Mirrors the SetMDAProofIfHardware single-lock pattern.
+// GrantHardwareIfNotUntrusted preserves the existing atomic grant surface.
 func (p *Provider) GrantHardwareIfNotUntrusted() bool {
+	p.mu.Lock()
+	evidence := p.DeviceEvidence
+	p.mu.Unlock()
+	return p.GrantHardwareEvidenceIfNotUntrusted(evidence)
+}
+
+// GrantHardwareEvidenceIfNotUntrusted atomically joins a valid device proof to
+// the live provider unless a hard untrust already won the provider lock.
+func (p *Provider) GrantHardwareEvidenceIfNotUntrusted(evidence DeviceEvidence) bool {
 	p.mu.Lock()
 	if p.Status == StatusUntrusted {
 		p.mu.Unlock()
@@ -1110,9 +1215,113 @@ func (p *Provider) GrantHardwareIfNotUntrusted() bool {
 	}
 	p.Attested = true
 	p.TrustLevel = TrustHardware
+	if evidence.SEPublicKey != "" && evidence.Serial != "" {
+		p.DeviceEvidence = evidence
+	}
 	p.mu.Unlock()
 	p.reconcileRuntimeCapabilities()
 	return true
+}
+
+// GrantHardwareEvidenceAtEpochIfNotUntrusted joins a durable device proof only
+// if the provider is still in the exact live security epoch observed before the
+// store CAS. A hard untrust either wins this lock or demotes a grant immediately
+// afterward; it can never be overwritten by a stale persistence result.
+func (p *Provider) GrantHardwareEvidenceAtEpochIfNotUntrusted(evidence DeviceEvidence, expectedEpoch uint64) bool {
+	p.mu.Lock()
+	if p.Status == StatusUntrusted || p.untrustEpoch.Load() != expectedEpoch {
+		p.mu.Unlock()
+		return false
+	}
+	p.Attested = true
+	p.TrustLevel = TrustHardware
+	if evidence.SEPublicKey != "" && evidence.Serial != "" {
+		p.DeviceEvidence = evidence
+	}
+	p.mu.Unlock()
+	p.reconcileRuntimeCapabilities()
+	return true
+}
+
+// GrantApplicationEvidenceIfNotUntrusted stores the server-derived current
+// release/runtime fact from a fresh signed process challenge. It deliberately
+// does not set either code-attestation flag: self-measured hashes authenticate
+// the claimant, not genuine Apple/APNs code identity.
+//
+// The evidence's policy generation is validated against the registry's live
+// release-policy generation ATOMICALLY with the install (registry read-lock
+// held across the provider-lock critical section, matching
+// SetReleasePolicyGeneration's r.mu → p.mu order). This closes the
+// clear/derive/grant race: a challenge that derived evidence from the OLD
+// policy snapshot must not install it after a generation sweep — the sweep's
+// kick (if any) may already have been consumed by an in-flight challenge, and
+// non-required sweeps kick nobody, so the provider would otherwise idle
+// un-kicked with stale-generation, unroutable evidence until the periodic
+// ticker. A grant carrying a non-current generation is refused and the
+// provider receives the same immediate out-of-band re-challenge kick a sweep
+// invalidation triggers.
+//
+// An APNs device token is deliberately NOT required: tokenless
+// (legacy/headless) providers with a valid signed challenge still earn
+// application evidence. Token possession is enforced exclusively by the APNs
+// code-identity gate; when the provider does hold a token, the evidence must
+// still be bound to it.
+func (p *Provider) GrantApplicationEvidenceIfNotUntrusted(evidence ApplicationEvidence) bool {
+	r := p.registry
+	if r != nil {
+		r.mu.RLock()
+	}
+	staleGeneration := r != nil && evidence.PolicyGeneration != r.releasePolicyGeneration
+	p.mu.Lock()
+	if staleGeneration ||
+		p.Status == StatusUntrusted ||
+		evidence.SEPublicKey == "" || evidence.Serial == "" ||
+		evidence.ProcessPublicKey == "" ||
+		evidence.PolicyGeneration == 0 ||
+		p.PublicKey != evidence.ProcessPublicKey ||
+		p.APNsDeviceToken != evidence.APNsToken ||
+		p.Version != evidence.Version ||
+		p.Backend != evidence.Backend ||
+		p.AttestationResult == nil || !p.AttestationResult.Valid ||
+		p.AttestationResult.PublicKey != evidence.SEPublicKey ||
+		p.AttestationResult.SerialNumber != evidence.Serial ||
+		!p.RuntimeVerified || !p.RuntimeManifestChecked || !p.MetallibVerified {
+		p.mu.Unlock()
+		if r != nil {
+			r.mu.RUnlock()
+		}
+		if staleGeneration {
+			// Same recovery path as a sweep invalidation: re-verify now
+			// instead of leaving the provider unroutable until the next tick.
+			p.RequestImmediateChallenge()
+		}
+		return false
+	}
+	p.applicationEvidenceGeneration++
+	evidence.EvidenceGeneration = p.applicationEvidenceGeneration
+	p.ApplicationEvidence = evidence
+	p.mu.Unlock()
+	if r != nil {
+		r.mu.RUnlock()
+	}
+	p.SignalApplicationProofSettled()
+	p.reconcileRuntimeCapabilities()
+	return true
+}
+
+func (p *Provider) ApplicationEvidenceSnapshot() (ApplicationEvidence, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	evidence := p.ApplicationEvidence
+	return evidence, evidence.EvidenceGeneration != 0
+}
+
+func (p *Provider) ClearApplicationEvidence() {
+	p.mu.Lock()
+	p.ApplicationEvidence = ApplicationEvidence{}
+	p.RuntimeCapabilities = nil
+	p.mu.Unlock()
+	p.reconcileRuntimeCapabilities()
 }
 
 // GetTrustLevel returns the current trust level (thread-safe).
@@ -1257,9 +1466,9 @@ func (p *Provider) SetChallengeVerifiedSIP(v bool) {
 	p.ChallengeVerifiedSIP = v
 }
 
-// SetCodeAttested records general APNs proof, including a valid cached reuse.
-// Cached reuse remains sufficient for unrelated models but never grants signed
-// protected runtime capabilities.
+// SetCodeAttested updates general code-proof state at validated call sites.
+// Persisted proof reuse never calls this with true: every new connection must
+// first complete a live encrypted process-key possession challenge.
 func (p *Provider) SetCodeAttested(v bool) {
 	p.mu.Lock()
 	p.CodeAttested = v
@@ -1281,7 +1490,7 @@ func (p *Provider) SetFreshCodeAttested() {
 	p.reconcileRuntimeCapabilities()
 }
 
-// GrantProcessCodeAttested atomically binds a verified response/reuse to the
+// GrantProcessCodeAttested atomically binds a verified live response to the
 // live token and registration X25519 process key. Rotation before grant fails;
 // rotation after grant clears the state under the same provider lock.
 func (p *Provider) GrantProcessCodeAttested(
@@ -1393,6 +1602,188 @@ func (r *Registry) SetCodeAttestationPolicy(configured bool, deadline time.Time)
 	r.codeAttestationDeadline = deadline
 }
 
+// SetReleasePolicyGeneration atomically publishes the active-release policy
+// generation used by routing. Existing application evidence that stillApproved
+// reports as valid under the NEW policy is carried forward at the new
+// generation — a routine release registration must not deroute the whole fleet
+// of healthy, still-approved providers for up to a challenge interval.
+// Evidence not carried forward is removed synchronously.
+//
+// When the new policy is REQUIRED, the returned slice holds every connected
+// provider that was NOT carried forward — including providers that held no
+// evidence at all (e.g. the first activation of a required policy over a fleet
+// that never needed evidence before). The caller must kick each one for an
+// immediate re-challenge; otherwise the fleet idles unroutable until the
+// periodic ticker, whose interval outlives the request queue. Carried-forward
+// providers are never returned, so already-current providers get no duplicate
+// kick. When the new policy is NOT required, nothing is returned: evidence is
+// not a routing gate, so the periodic ticker is soon enough.
+//
+// A concurrently completing old challenge cannot install evidence at all:
+// GrantApplicationEvidenceIfNotUntrusted refuses any grant whose generation is
+// not current (atomically, under the same registry lock) and kicks that
+// provider for an immediate re-challenge.
+func (r *Registry) SetReleasePolicyGeneration(
+	generation uint64, required bool,
+	stillApproved func(ApplicationEvidence) bool,
+) (needChallenge []string) {
+	r.mu.Lock()
+	r.releasePolicyGeneration = generation
+	r.releasePolicyRequired = required
+	enforced := r.releasePolicyEnforcedLocked()
+	for id, provider := range r.providers {
+		provider.mu.Lock()
+		evidence := provider.ApplicationEvidence
+		if evidence.EvidenceGeneration != 0 && stillApproved != nil && stillApproved(evidence) {
+			provider.ApplicationEvidence.PolicyGeneration = generation
+			provider.mu.Unlock()
+			continue
+		}
+		provider.ApplicationEvidence = ApplicationEvidence{}
+		// Capability invalidation is an ENFORCE-mode consequence: capabilities
+		// gate capability-required catalog models, so clearing them in shadow
+		// would let evidence bookkeeping remove real capacity — exactly what
+		// shadow mode promises not to do. The re-challenge kicked below
+		// re-reconciles capabilities within one challenge round-trip anyway.
+		if enforced {
+			provider.RuntimeCapabilities = nil
+		}
+		provider.mu.Unlock()
+		if required {
+			needChallenge = append(needChallenge, id)
+		}
+	}
+	r.mu.Unlock()
+	return needChallenge
+}
+
+// providerHoldsCurrentApplicationEvidenceLocked reports whether p holds
+// generation-current application evidence bound to its live identity: current
+// policy generation, this connection's process key, the current APNs token
+// (tokenless providers pass with matching empty tokens; token possession is
+// enforced only by the code-identity gate), the registered version/backend,
+// and the registration-attested SE identity. Caller must hold r.mu; provider
+// fields are read without p.mu, matching the routing chokepoint's semantics.
+func (r *Registry) providerHoldsCurrentApplicationEvidenceLocked(p *Provider) bool {
+	evidence := p.ApplicationEvidence
+	return evidence.EvidenceGeneration != 0 &&
+		evidence.PolicyGeneration == r.releasePolicyGeneration &&
+		evidence.ProcessPublicKey == p.PublicKey &&
+		evidence.APNsToken == p.APNsDeviceToken &&
+		evidence.Version == p.Version &&
+		evidence.Backend == p.Backend &&
+		evidence.BinaryHash != "" &&
+		p.AttestationResult != nil &&
+		evidence.SEPublicKey == p.AttestationResult.PublicKey &&
+		evidence.Serial == p.AttestationResult.SerialNumber
+}
+
+// SetReleasePolicyEnforcement switches the release-policy routing gate between
+// SHADOW (false, default: evidence derived/granted/swept and counted but never
+// blocks routing) and ENFORCE (true: the routing chokepoint requires current
+// evidence once any configured enforce-after delay has passed). Thread-safe.
+func (r *Registry) SetReleasePolicyEnforcement(enforced bool) {
+	r.mu.Lock()
+	r.releasePolicyEnforced = enforced
+	r.mu.Unlock()
+}
+
+// SetReleasePolicyEnforceAfter defers enforcement until t (zero = immediate).
+// Set at startup so a restart into enforce mode keeps routing like shadow
+// until the reconnected fleet has completed its first challenge cycles and
+// re-earned evidence. Thread-safe.
+func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
+	r.mu.Lock()
+	r.releasePolicyEnforceAfter = t
+	r.mu.Unlock()
+}
+
+// releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
+// now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforced &&
+		!time.Now().Before(r.releasePolicyEnforceAfter)
+}
+
+// ReleasePolicyEnforced reports whether missing application evidence currently
+// blocks routing. Thread-safe.
+func (r *Registry) ReleasePolicyEnforced() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.releasePolicyEnforcedLocked()
+}
+
+// ModelEvidenceCoverage is the per-model shadow→enforce acceptance record:
+// Routable counts providers passing every routing gate EXCEPT the evidence
+// gate for that catalog-allowed model; WithEvidence counts the subset also
+// holding generation-current application evidence. Enforcement is safe for a
+// model only when WithEvidence ≈ Routable.
+type ModelEvidenceCoverage struct {
+	Routable     int `json:"routable"`
+	WithEvidence int `json:"with_evidence"`
+}
+
+// ApplicationEvidenceModelCoverage computes ModelEvidenceCoverage for every
+// catalog-allowed model advertised by a connected provider, using the same
+// liveness surface as public capacity with the evidence gate bypassed — so the
+// flip criterion cannot be masked by fleet-wide averages hiding one model
+// family's uncovered providers. Thread-safe.
+func (r *Registry) ApplicationEvidenceModelCoverage() map[string]ModelEvidenceCoverage {
+	now := time.Now()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]ModelEvidenceCoverage)
+	for _, p := range r.providers {
+		p.mu.Lock()
+		baseline := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+			!p.PrivateOnly &&
+			trustRank(p.TrustLevel) >= trustRank(r.MinTrustLevel) &&
+			p.RuntimeVerified &&
+			r.providerSupportsPrivateTextModeLocked(p, false) &&
+			!p.LastChallengeVerified.IsZero() &&
+			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+		holds := baseline && r.providerHoldsCurrentApplicationEvidenceLocked(p)
+		if baseline {
+			for _, model := range p.Models {
+				if !r.providerModelAllowedByCatalogLocked(p, model) {
+					continue
+				}
+				coverage := out[model.ID]
+				coverage.Routable++
+				if holds {
+					coverage.WithEvidence++
+				}
+				out[model.ID] = coverage
+			}
+		}
+		p.mu.Unlock()
+	}
+	return out
+}
+
+// CountProvidersWithCurrentApplicationEvidence returns (holding, connected):
+// how many currently connected providers hold generation-current application
+// evidence, and the total connected count. This is the shadow-mode acceptance
+// instrument: enforcement must not be enabled until holding is near connected.
+// Thread-safe.
+func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	holding := 0
+	for _, provider := range r.providers {
+		// Evidence and token fields are written under p.mu by challenge and
+		// APNs handlers that do not hold r.mu; lock each provider so this
+		// flip-criterion counter never reads a torn record.
+		provider.mu.Lock()
+		holds := r.providerHoldsCurrentApplicationEvidenceLocked(provider)
+		provider.mu.Unlock()
+		if holds {
+			holding++
+		}
+	}
+	return holding, len(r.providers)
+}
+
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
 // connection handler should issue code-identity challenges). Thread-safe.
 func (r *Registry) CodeAttestationConfigured() bool {
@@ -1437,42 +1828,32 @@ func (p *Provider) ChallengeShouldStop() bool {
 	return p.Status == StatusUntrusted && !p.untrustedRecoverable
 }
 
-// SignalChallengeSettled fires the per-connection "challenge settled without a
-// trust-reuse fast-skip grant" signal (non-blocking; buffered cap 1). The
-// mdmVerificationLoop's awaitTrustReuseGrant selects on it so a non-fast-skip
-// provider proceeds to the full live MDM verify immediately instead of stalling
-// the trust-reuse grace window (DAR-326). The channel is set once at construction
-// and never reassigned, so no lock is needed; a nil channel is a no-op.
-func (p *Provider) SignalChallengeSettled() {
-	if p.challengeSettled == nil {
+func (p *Provider) SignalApplicationProofSettled() {
+	if p.applicationProofSettled == nil {
 		return
 	}
-	select {
-	case p.challengeSettled <- struct{}{}:
-	default: // a prior signal is still buffered — one is enough to stop the wait
-	}
+	p.applicationProofOnce.Do(func() { close(p.applicationProofSettled) })
 }
 
-// ChallengeSettledChan returns the per-connection challenge-settled signal for
-// awaitTrustReuseGrant to select on. May be nil for a zero-value Provider (the
-// select then simply never fires that case and falls back to the timer).
-func (p *Provider) ChallengeSettledChan() <-chan struct{} {
-	return p.challengeSettled
+func (p *Provider) ApplicationProofSettledChan() <-chan struct{} {
+	return p.applicationProofSettled
 }
 
-// ResetChallengeSettled drains any buffered challenge-settled signal so a fresh
-// connection can never consume a stale one (DAR-326 FIX 4c). Register allocates a
-// fresh channel per connection, so this is also belt-and-suspenders that keeps the
-// connection-scoping invariant explicit and robust to any future Provider reuse.
-// Non-blocking; safe on a nil channel.
-func (p *Provider) ResetChallengeSettled() {
-	if p.challengeSettled == nil {
-		return
-	}
+// RequestImmediateChallenge asks this connection's challenge loop to send an
+// out-of-band attestation challenge now instead of waiting for the next
+// periodic tick. Non-blocking; concurrent requests coalesce. No-op on bare
+// test Providers without a kick channel.
+func (p *Provider) RequestImmediateChallenge() {
 	select {
-	case <-p.challengeSettled:
+	case p.challengeKick <- struct{}{}:
 	default:
 	}
+}
+
+// ImmediateChallengeChan is the challenge loop's receive side of
+// RequestImmediateChallenge. Nil (never ready) on bare test Providers.
+func (p *Provider) ImmediateChallengeChan() <-chan struct{} {
+	return p.challengeKick
 }
 
 // HardUntrustEpoch returns the current hard-untrust epoch (thread-safe). It is
@@ -1674,6 +2055,7 @@ func (p *Provider) pendingLoadForModelLocked(model string) int {
 	if !p.hasReportedMaxConcurrencyForModelLocked(model) {
 		return p.pendingCount()
 	}
+
 	load := p.pendingCountForModelLocked(model)
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
@@ -1743,6 +2125,28 @@ type Registry struct {
 	codeAttestationConfigured bool
 	codeAttestationDeadline   time.Time
 
+	// Active-release authorization is generation-bound. When at least one
+	// release policy record exists, private routing requires application evidence
+	// derived from the current generation; APNs identity alone is insufficient.
+	releasePolicyGeneration uint64
+	releasePolicyRequired   bool
+	// releasePolicyEnforced gates whether missing/stale application evidence
+	// actually blocks routing. false = SHADOW: evidence is still derived,
+	// granted, swept, and counted (CountProvidersWithCurrentApplicationEvidence)
+	// but a provider without it keeps routing exactly like the pre-release-policy
+	// coordinator. true = ENFORCE: evidence is mandatory at the routing
+	// chokepoint. A brand-new global trust gate MUST prove fleet compatibility
+	// in shadow before it is allowed to deroute anything (2026-08-31 incident:
+	// an unprovable evidence predicate zeroed network capacity twice).
+	releasePolicyEnforced bool
+	// releasePolicyEnforceAfter delays enforcement past process start: a
+	// coordinator restarted with enforcement configured boots with an EMPTY
+	// in-memory registry (zero evidence), so enforcing from the first request
+	// would 429 every reconnecting provider until its first challenge —
+	// recreating the exact transient the shadow rollout exists to prevent.
+	// Zero means enforce immediately (tests, in-process flips).
+	releasePolicyEnforceAfter time.Time
+
 	modelCatalog map[string]CatalogEntry
 
 	// modelAliases maps a public-facing alias id (e.g. "gemma-4-26b") to the
@@ -1755,6 +2159,10 @@ type Registry struct {
 	tpsRegistry *TPSRegistry
 
 	logger *slog.Logger
+	// reservationAfterScan is a test-only barrier invoked with r.mu held for
+	// shared reading after winner selection and before the serialized commit.
+	// Production leaves it nil; tests set it before starting concurrent scans.
+	reservationAfterScan func(model string)
 
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
@@ -1906,6 +2314,12 @@ type Registry struct {
 	// or one missed heartbeat doesn't mass-reap a live fleet. Guarded by r.mu;
 	// rebuilt each sweep so disconnected providers drop out automatically.
 	evictStrikes map[string]int
+
+	// capacityQuotes correlates outstanding capacity probes with their quotes
+	// by quote_id (routing v2 W2). Value field with an internal LEAF mutex and
+	// a lazily-created map, so bare &Registry{} test constructions work
+	// without New(). See capacity_quotes.go.
+	capacityQuotes quoteTracker
 
 	cacheRouting                *cacheRoutingTracker
 	cacheActivation             *cacheActivationGate
@@ -3194,8 +3608,65 @@ func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.B
 				s.QueuedTokenBudget = maxTokenBudgetCap
 			}
 		}
+		if t := s.Telemetry; t != nil {
+			// System-profiler slot telemetry (measurement only). Silent
+			// clamps, like the token-budget fields above: nothing routes on
+			// these, so a bad value is not worth a log line per heartbeat.
+			// t is the registry-owned clone made by canonicalHeartbeatModelState.
+			clampTelemetryCount(t.QueuedPrefillTokens)
+			clampTelemetryCount(t.PartialPrefillRows)
+			clampTelemetryCount(t.PrefillTokensTotal)
+			clampTelemetryCount(t.PumpTasks)
+			clampTelemetryCount(t.MTPRoundsTotal)
+			clampTelemetryCount(t.MTPProposedTotal)
+			clampTelemetryCount(t.MTPAcceptedTotal)
+			clampTelemetryCount(t.DecodeRowsTotal)
+			clampTelemetryInt64(t.KVBytesInUse, maxTelemetryBytes)
+			clampTelemetryInt64(t.KVBytesCapacity, maxTelemetryBytes)
+			clampTelemetryInt64(t.EvalInFlightMS, maxTelemetryMS)
+			// Cumulative ns of engine step wall time: a count cap would wrap
+			// after ~17 min of stepping, so it gets the wide ns bound.
+			clampTelemetryInt64(t.StepWallNSTotal, maxTelemetryNSTotal)
+			if p := t.IsolatedPrefillTPS; p != nil {
+				if math.IsNaN(*p) || math.IsInf(*p, 0) {
+					t.IsolatedPrefillTPS = nil // garbage reads as "not reported"
+				} else if v, changed := clampNonNeg(*p, maxTelemetryTPS); changed {
+					*p = v
+				}
+			}
+		}
+	}
+	if t := bc.Telemetry; t != nil {
+		clampTelemetryCount(t.MLXNumResources)
+		clampTelemetryCount(t.InAdmission)
+		clampTelemetryCount(t.InflightTasks)
+		t.MemoryPressureLevel = t.MemoryPressureLevel.Fold()
 	}
 }
+
+// System-profiler heartbeat telemetry bounds (CONTRACT-WIRE.md §2). Pointer
+// numerics are clamped in place into [0, max]; nil (absent) is left alone so
+// presence semantics survive.
+const (
+	maxTelemetryCount   int64   = 1_000_000_000_000 // 1e12
+	maxTelemetryBytes   int64   = 1 << 48
+	maxTelemetryMS      int64   = 3_600_000                 // 1 h
+	maxTelemetryNSTotal int64   = 1_000_000_000_000_000_000 // 1e18 ≈ 31 y of cumulative ns
+	maxTelemetryTPS     float64 = 20_000
+)
+
+func clampTelemetryInt64(p *int64, limit int64) {
+	if p == nil {
+		return
+	}
+	if *p < 0 {
+		*p = 0
+	} else if *p > limit {
+		*p = limit
+	}
+}
+
+func clampTelemetryCount(p *int64) { clampTelemetryInt64(p, maxTelemetryCount) }
 
 // Register adds a new provider to the registry, returning its assigned ID.
 // Provider-reported model inventory is preserved even when the current catalog
@@ -3299,14 +3770,10 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		LastHeartbeat:               time.Now(),
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),
-		challengeSettled:            make(chan struct{}, 1),
+		applicationProofSettled:     make(chan struct{}),
+		challengeKick:               make(chan struct{}, 1),
 		registry:                    r,
 	}
-
-	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
-	// freshly allocated above, and draining here makes the "no stale signal carries
-	// into a new connection" invariant explicit and robust to future Provider reuse.
-	p.ResetChallengeSettled()
 
 	r.mu.Lock()
 	if existing, exists := r.providers[id]; exists {
@@ -3478,6 +3945,42 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	warmModels, currentModel, backendCapacity := canonicalHeartbeatModelState(
 		eligibleModels, msg.WarmModels, msg.ActiveModel, msg.BackendCapacity)
 	r.mu.RUnlock()
+	// Routing v2 W2 — capacity_seq gate. Event-triggered heartbeats share the
+	// bounded data lane with the 5s baseline, so an event frame published
+	// AFTER a baseline frame can be decoded BEFORE it (two frames in the
+	// writer queue, read-loop dispatch order vs. publish order is not the
+	// coordinator's to assume). Applying the older snapshot second would
+	// regress fresher slot/budget state — exactly the staleness window the
+	// event heartbeats exist to close. Seq ordering is per-connection: a
+	// reconnect restarts the provider's counter AND creates a fresh *Provider
+	// (capacitySeq zero), so cross-connection comparisons never happen.
+	//
+	// The gate reads msg.BackendCapacity (the wire truth) rather than the
+	// canonicalized copy: canonicalization can drop slots but never reorders
+	// frames. Seq 0/omitted is a legacy provider — every legacy heartbeat
+	// takes the unguarded path below, byte-identical to today.
+	if msg.BackendCapacity != nil && msg.BackendCapacity.CapacitySeq > 0 {
+		if msg.BackendCapacity.CapacitySeq <= p.capacitySeq {
+			// Stale/reordered frame: discard the ENTIRE application — capacity,
+			// KV/TPS observations, warm/current model, status, and the clamp
+			// release proof all derive from this one out-of-date snapshot.
+			// LastHeartbeat still advances: the frame proves the connection is
+			// alive, and eviction must key on liveness, not snapshot ordering.
+			// Uptime credit and stats deltas are deliberately NOT applied — a
+			// fresher frame just applied them microseconds ago (that is the
+			// only way this branch is reachable), so nothing is lost.
+			appliedSeq := p.capacitySeq
+			p.LastHeartbeat = time.Now()
+			p.mu.Unlock()
+			r.logger.Debug("discarding stale capacity heartbeat",
+				"provider_id", id, "seq", msg.BackendCapacity.CapacitySeq, "applied_seq", appliedSeq)
+			return
+		}
+		p.capacitySeq = msg.BackendCapacity.CapacitySeq
+		// Seq-stamping providers implement the wave-2 capacity protocol:
+		// mark the session quote-capable so the probe fanout can find it.
+		p.capacityQuoteCapable = true
+	}
 	// Clamp only after unknown slot identifiers have been removed. Besides
 	// keeping them out of routing state, this prevents an unaccepted model ID
 	// from reaching clamp diagnostics or TPS/KV observations.
@@ -3590,7 +4093,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
 	// rather than the legacy direct queue assignment path.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
 	// check if a cold provider should swap models to serve queued demand.
@@ -4065,7 +4568,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 		// so the warming planner can't send a load_model the provider then
 		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
 		// they time out. Legacy providers (no report) fall through to the static gate.
-		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity)); reported && !admit {
+		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
 			return 0, false
 		}
 	}
@@ -4379,6 +4882,14 @@ func applyHeartbeatStatsDelta(total *protocol.HeartbeatStats, previous, current 
 	total.StreamClosedWithoutTerminal += cumulativeDelta(previous.StreamClosedWithoutTerminal, current.StreamClosedWithoutTerminal)
 	total.CancelDuringModelLoad += cumulativeDelta(previous.CancelDuringModelLoad, current.CancelDuringModelLoad)
 	total.UsageGaps += cumulativeDelta(previous.UsageGaps, current.UsageGaps)
+	// System profiler cancel accountability counters (cumulative per session).
+	total.CancelStagePreAcceptTotal += cumulativeDelta(previous.CancelStagePreAcceptTotal, current.CancelStagePreAcceptTotal)
+	total.CancelStagePreEngineTotal += cumulativeDelta(previous.CancelStagePreEngineTotal, current.CancelStagePreEngineTotal)
+	total.CancelStagePrefillTotal += cumulativeDelta(previous.CancelStagePrefillTotal, current.CancelStagePrefillTotal)
+	total.CancelStageDecodeTotal += cumulativeDelta(previous.CancelStageDecodeTotal, current.CancelStageDecodeTotal)
+	total.CancelStagePostTerminalTotal += cumulativeDelta(previous.CancelStagePostTerminalTotal, current.CancelStagePostTerminalTotal)
+	total.TokensAfterCancelTotal += cumulativeDelta(previous.TokensAfterCancelTotal, current.TokensAfterCancelTotal)
+	total.CancelAbortNSSum += cumulativeDelta(previous.CancelAbortNSSum, current.CancelAbortNSSum)
 }
 
 func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) protocol.HeartbeatStats {
@@ -4406,6 +4917,19 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 	}
 	if merged.UsageGaps == 0 {
 		merged.UsageGaps = previous.UsageGaps
+	}
+	for _, f := range []struct{ cur, prev *int64 }{
+		{&merged.CancelStagePreAcceptTotal, &previous.CancelStagePreAcceptTotal},
+		{&merged.CancelStagePreEngineTotal, &previous.CancelStagePreEngineTotal},
+		{&merged.CancelStagePrefillTotal, &previous.CancelStagePrefillTotal},
+		{&merged.CancelStageDecodeTotal, &previous.CancelStageDecodeTotal},
+		{&merged.CancelStagePostTerminalTotal, &previous.CancelStagePostTerminalTotal},
+		{&merged.TokensAfterCancelTotal, &previous.TokensAfterCancelTotal},
+		{&merged.CancelAbortNSSum, &previous.CancelAbortNSSum},
+	} {
+		if *f.cur == 0 {
+			*f.cur = *f.prev
+		}
 	}
 	return merged
 }
@@ -4483,10 +5007,17 @@ func (r *Registry) Disconnect(id string) {
 	// from temporarily capacity-blocked into permanently unservable. Re-run
 	// the canonical drain after removal so those waiters receive the immediate
 	// capability-unavailable result instead of sleeping until maxWait.
-	r.drainQueuedRequestsForModels(disconnectedModels)
+	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
 	r.cacheRouting.disconnect(id, cacheHolderRemovalDisconnect)
+	// Outstanding capacity-probe waiters bound to this connection can never be
+	// answered now (the socket is gone) — resolve them as SendFailed so probe
+	// collectors demote the entries immediately instead of burning the full
+	// quote window. Like the cache-holder cleanup above, this runs after the
+	// registry/provider locks are released (quoteTracker has its own leaf
+	// mutex; see capacity_quotes.go).
+	r.capacityQuotes.failProvider(id)
 
 	// Close all pending request channels so consumers get errors. Pending
 	// requests created by tests may leave these channels nil, and consumer
@@ -4564,9 +5095,10 @@ func (r *Registry) GetProvider(id string) *Provider {
 }
 
 // CountProvidersByBinaryHash returns the number of currently connected
-// providers whose registration attested the given provider binary hash. Used by
-// release administration to avoid removing a hash from the forced allowlist
-// while old-but-still-connected providers are draining/restarting into a newer
+// providers whose registration or current, connection-bound application
+// evidence attests the given provider binary hash. Used by release
+// administration to avoid removing a hash from the forced allowlist while
+// old-but-still-connected providers are draining/restarting into a newer
 // release.
 func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	normalized := strings.ToLower(strings.TrimSpace(hash))
@@ -4580,14 +5112,26 @@ func (r *Registry) CountProvidersByBinaryHash(hash string) int {
 	count := 0
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		attestedHash := ""
-		if p.AttestationResult != nil {
-			attestedHash = p.AttestationResult.BinaryHash
+		if p.Status == StatusOffline {
+			p.mu.Unlock()
+			continue
 		}
+
+		registrationMatches := p.AttestationResult != nil &&
+			strings.EqualFold(p.AttestationResult.BinaryHash, normalized)
+		evidence := p.ApplicationEvidence
+		evidenceCurrent := evidence.EvidenceGeneration != 0 &&
+			(!r.releasePolicyRequired || evidence.PolicyGeneration == r.releasePolicyGeneration) &&
+			evidence.ProcessPublicKey == p.PublicKey &&
+			evidence.APNsToken == p.APNsDeviceToken
+		if evidenceCurrent && p.AttestationResult != nil {
+			evidenceCurrent = evidence.SEPublicKey == p.AttestationResult.PublicKey &&
+				evidence.Serial == p.AttestationResult.SerialNumber
+		}
+		evidenceMatches := evidenceCurrent && strings.EqualFold(evidence.BinaryHash, normalized)
 		p.mu.Unlock()
 
-		if status != StatusOffline && strings.EqualFold(attestedHash, normalized) {
+		if registrationMatches || evidenceMatches {
 			count++
 		}
 	}
@@ -4686,8 +5230,17 @@ func (r *Registry) markUntrusted(providerID string, recoverable bool) {
 	if !recoverable && p.AttestationResult != nil {
 		seKey = p.AttestationResult.PublicKey
 	}
+	if !recoverable {
+		p.DeviceEvidence = DeviceEvidence{}
+		p.ApplicationEvidence = ApplicationEvidence{}
+		p.CodeAttested = false
+		p.FreshCodeAttested = false
+	}
 	p.mu.Unlock()
 	r.mu.Unlock()
+	if !recoverable {
+		p.SignalApplicationProofSettled()
+	}
 	if capabilitiesChanged {
 		_ = r.ReconcileAttestedRuntimeCapabilities(providerID)
 	}
@@ -4776,7 +5329,7 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	// A newly verified (or newly recovered) provider may unlock queued requests
 	// for any model it serves.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerChallenge)
 
 	return recovered
 }
@@ -4892,7 +5445,7 @@ func (r *Registry) SetProviderIdle(id string) {
 	p.mu.Unlock()
 
 	// Use all newly available capacity, not just a single queued request.
-	r.drainQueuedRequestsForModels(providerModelIDs(p))
+	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerIdle)
 }
 
 // AttestationSummary provides aggregate attestation status for a model's providers.

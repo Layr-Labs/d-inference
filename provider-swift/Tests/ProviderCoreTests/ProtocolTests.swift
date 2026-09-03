@@ -960,6 +960,621 @@ import Testing
     #expect(try JSONDecoder().decode(UsageInfo.self, from: encoded) == detailed)
 }
 
+// MARK: - Profiler (slice 2): `profile` object + heartbeat `telemetry`
+
+/// Every `InferenceProfile` field set to the top of the coordinator's
+/// accepted range (`_us` ≤ 3.6e9, `_ns` ≤ 3.6e12, counts ≤ 1e9, bytes ≤ 2^48)
+/// so the size-cap tests exercise the widest encoding, not a toy one.
+private func fullInferenceProfile() -> InferenceProfile {
+    let maxUs: Int64 = 3_600_000_000
+    let maxNs: Int64 = 3_600_000_000_000
+    let maxCount: Int64 = 1_000_000_000
+    let maxBytes: Int64 = 1 << 48
+    var p = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
+    p.dequeuedUs = maxUs
+    p.decryptedUs = maxUs
+    p.parsedUs = maxUs
+    p.admissionUs = maxUs
+    p.acceptedSentUs = maxUs
+    p.loadWaitStartUs = maxUs
+    p.loadWaitEndUs = maxUs
+    p.taskSpawnedUs = maxUs
+    p.promptPrepStartUs = maxUs
+    p.promptPrepEndUs = maxUs
+    p.engineSubmitUs = maxUs
+    p.engineAdmittedUs = maxUs
+    p.firstDeltaUs = maxUs
+    p.firstFrameUs = maxUs
+    p.lastDeltaUs = maxUs
+    p.terminalBuiltUs = maxUs
+    p.terminalSentUs = maxUs
+    p.cancelReceivedUs = maxUs
+    p.cancelAbortedUs = maxUs
+    p.totalUs = maxUs
+    p.toolConstraintUs = maxUs
+    p.visionPrepUs = maxUs
+    p.ssdStageUs = maxUs
+    p.kvReserveUs = maxUs
+    p.flushUs = maxUs
+    p.seSignUs = maxUs
+    p.sleptUs = maxUs
+    p.promptTokens = maxCount
+    p.framesEmitted = maxCount
+    p.bytesEmitted = maxBytes
+    p.usageRecovered = true
+    p.loadCold = true
+    p.loadParked = true
+    p.runningAtAdmit = maxCount
+    p.waitingAtAdmit = maxCount
+    p.queuedPrefillTokensAtAdmit = maxCount
+    p.kvBytesInUseAtAdmit = maxBytes
+    p.kvBytesCapacity = maxBytes
+    p.stepsAtSubmit = maxCount
+    p.stepsAtFinish = maxCount
+    p.projectedPrefillTokens = maxCount
+    p.projectedDecodeTokens = maxCount
+    p.projectedServiceUs = maxUs
+    p.budgetRemainingAtAdmitUs = maxUs
+    p.mtpActive = true
+    p.partialPrefillCap = maxCount
+    p.mlxActiveBytesAtFinish = maxBytes
+    p.mlxPeakBytes = maxBytes
+    p.lowPowerMode = true
+    p.tokensAfterCancel = maxCount
+    p.deadlineMode = .projected
+    p.thermalState = .critical
+    p.cancelStage = .postTerminal
+    var e = EngineProfile()
+    e.admittedNs = maxNs
+    e.kvAllocatedNs = maxNs
+    e.prefillFirstLaunchNs = maxNs
+    e.promptComputedNs = maxNs
+    e.firstTokenNs = maxNs
+    e.finishedNs = maxNs
+    e.readmissions = maxCount
+    e.preemptions = maxCount
+    e.capacityRequeues = maxCount
+    e.prefillChunks = maxCount
+    e.packedPrefillChunks = maxCount
+    e.visionChunks = maxCount
+    e.soloStripeChunks = maxCount
+    e.prefillChunkTokensMax = maxCount
+    e.decodeSteps = maxCount
+    e.chainedDecodeSteps = maxCount
+    e.batchRowsSum = maxCount
+    e.batchRowsMin = maxCount
+    e.batchRowsMax = maxCount
+    e.stepLatencyNsSum = maxNs
+    e.stepLatencyNsMax = maxNs
+    e.mtpRounds = maxCount
+    e.mtpProposed = maxCount
+    e.mtpAccepted = maxCount
+    e.pausedNs = maxNs
+    e.pauseCount = maxCount
+    e.detokDelayFirstNs = maxNs
+    e.prefixLookupNs = maxNs
+    e.prefixAdoptionNs = maxNs
+    e.finishReason = .stopSequence
+    p.engine = e
+    return p
+}
+
+private func fullSlotTelemetry() -> SlotTelemetry {
+    SlotTelemetry(
+        queuedPrefillTokens: 1_000_000_000,
+        partialPrefillRows: 1_000_000_000,
+        prefillTokensTotal: 1_000_000_000_000,
+        isolatedPrefillTps: 19_999.987654321,
+        ewmaInitialized: true,
+        pumpTasks: 1_000_000_000,
+        mtpRoundsTotal: 1_000_000_000_000,
+        mtpProposedTotal: 1_000_000_000_000,
+        mtpAcceptedTotal: 1_000_000_000_000,
+        kvBytesInUse: 1 << 48,
+        kvBytesCapacity: 1 << 48,
+        evalInFlightMs: 3_600_000,
+        stepWallNsTotal: 1_000_000_000_000,
+        decodeRowsTotal: 1_000_000_000_000)
+}
+
+private func fullCapacityTelemetry() -> CapacityTelemetry {
+    CapacityTelemetry(
+        lowPowerMode: true,
+        memoryPressureLevel: .critical,
+        mlxNumResources: 1_000_000_000,
+        inAdmission: 1_000_000_000,
+        inflightTasks: 1_000_000_000)
+}
+
+/// Exact key set of `object`, recursing into nested objects as "a.b" paths.
+private func keyPaths(_ object: [String: Any], prefix: String = "") -> Set<String> {
+    var keys: Set<String> = []
+    for (key, value) in object {
+        let path = prefix.isEmpty ? key : "\(prefix).\(key)"
+        keys.insert(path)
+        if let nested = value as? [String: Any] {
+            keys.formUnion(keyPaths(nested, prefix: path))
+        }
+    }
+    return keys
+}
+
+@Test func profilerInferenceCompleteEncodesProfileOnlyWhenPresent() throws {
+    let profile = fullInferenceProfile()
+    let with = ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-profile",
+        usage: UsageInfo(promptTokens: 12, completionTokens: 34),
+        profile: profile))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(with)
+    let withObject = try jsonObject(withData)
+    let profileObject = try #require(withObject["profile"] as? [String: Any])
+    #expect(profileObject["schema"] as? Int == 1)
+    #expect(profileObject["engine_submit_us"] as? Int64 == 3_600_000_000)
+    #expect(profileObject["mlx_peak_bytes"] as? Int64 == 1 << 48)
+    #expect(profileObject["deadline_mode"] as? String == "projected")
+    #expect(profileObject["cancel_stage"] as? String == "post_terminal")
+    #expect((profileObject["engine"] as? [String: Any])?["finish_reason"] as? String == "stop_sequence")
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
+    #expect(decoded == with)
+    guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
+    #expect(c.profile == profile)
+
+    // Absent → key omitted (mirrors Go `omitempty`), round-trips to nil, and
+    // the legacy wire shape is untouched.
+    let without = ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-profile",
+        usage: UsageInfo(promptTokens: 12, completionTokens: 34)))
+    let withoutData = try ProviderProtocolCodec.encodeProviderMessage(without)
+    #expect(try jsonObject(withoutData)["profile"] == nil)
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withoutData) == without)
+
+    // A sparse profile (early reject) encodes only what was stamped.
+    let sparse = InferenceProfile(schema: 1, wallMs: 5)
+    let sparseData = try ProviderProtocolCodec.encodeProviderMessage(
+        .inferenceComplete(ProviderMessage.InferenceComplete(
+            requestId: "req-sparse",
+            usage: UsageInfo(promptTokens: 1, completionTokens: 1),
+            profile: sparse)))
+    let sparseObject = try #require(try jsonObject(sparseData)["profile"] as? [String: Any])
+    #expect(Set(sparseObject.keys) == ["schema", "wall_ms"])
+}
+
+@Test func profilerInferenceErrorEncodesProfileOnlyWhenPresent() throws {
+    var profile = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
+    profile.dequeuedUs = 95
+    profile.admissionUs = 1_200
+    profile.terminalBuiltUs = 30_000_100
+    profile.totalUs = 30_000_500
+    // `CancelStage.none` spelled out: a bare `.none` on an Optional resolves
+    // to `Optional.none` and silently drops the field.
+    profile.cancelStage = CancelStage.none
+    profile.deadlineMode = .legacy
+    let with = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        failure: InferenceFailure(
+            code: .capacity, statusCode: 503, errorReason: .capacityTimeout,
+            terminalCause: .admissionTimeout),
+        profile: profile))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(with)
+    let withObject = try jsonObject(withData)
+    let profileObject = try #require(withObject["profile"] as? [String: Any])
+    #expect(
+        Set(profileObject.keys) == [
+            "schema", "wall_ms", "dequeued_us", "admission_us", "terminal_built_us",
+            "total_us", "cancel_stage", "deadline_mode",
+        ])
+    #expect(profileObject["cancel_stage"] as? String == "none")
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
+    #expect(decoded == with)
+    guard case .inferenceError(let e) = decoded else { throw TestFailure.unexpectedMessage }
+    #expect(e.profile == profile)
+    #expect(e.terminalCause == .admissionTimeout)
+
+    let without = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)))
+    let withoutData = try ProviderProtocolCodec.encodeProviderMessage(without)
+    #expect(try jsonObject(withoutData)["profile"] == nil)
+    // Byte-identical legacy shape (same assertion as the typed-terminal test).
+    #expect(
+        String(data: withoutData, encoding: .utf8)
+            == #"{"error":"Requested model is unavailable.","failure_code":"model_unavailable","request_id":"req-error","status_code":503,"type":"inference_error"}"#)
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: withoutData) == without)
+}
+
+@Test func profilerEnumsFoldUnknownWireValuesToOther() throws {
+    // A newer provider's enum value must never fail the whole message decode:
+    // it folds to `other` (the coordinator does the same and flags it).
+    let json = #"{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":1},"profile":{"schema":1,"deadline_mode":"quantum","thermal_state":"melting","cancel_stage":"somewhere","engine":{"finish_reason":"teleported"}}}"#
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: json)
+    guard case .inferenceComplete(let c) = decoded else { throw TestFailure.unexpectedMessage }
+    let profile = try #require(c.profile)
+    #expect(profile.deadlineMode == .other)
+    #expect(profile.thermalState == .other)
+    #expect(profile.cancelStage == .other)
+    #expect(profile.engine?.finishReason == .other)
+    // Unknown KEYS are ignored (new provider + old coordinator symmetry).
+    let extra = #"{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":1},"profile":{"schema":1,"from_the_future_us":7}}"#
+    guard case .inferenceComplete(let c2) = try ProviderProtocolCodec.decodeProviderMessage(from: extra)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(c2.profile?.schema == 1)
+    // Every closed enum encodes its exact raw value.
+    #expect(DeadlineMode.allCases.map(\.rawValue) == ["none", "projected", "legacy", "other"])
+    #expect(
+        ProfileThermalState.allCases.map(\.rawValue)
+            == ["nominal", "fair", "serious", "critical", "other"])
+    #expect(
+        CancelStage.allCases.map(\.rawValue)
+            == ["none", "pre_accept", "pre_engine", "prefill", "decode", "post_terminal", "other"])
+    #expect(
+        EngineFinishReason.allCases.map(\.rawValue)
+            == ["stop", "length", "stop_sequence", "cancelled", "error", "other"])
+    #expect(
+        MemoryPressureLevelWire.allCases.map(\.rawValue)
+            == ["normal", "warning", "critical", "other"])
+}
+
+@Test func profilerFullProfileEncodesWithin4096Bytes() throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(fullInferenceProfile())
+    #expect(data.count <= 4096, "full profile encoded to \(data.count) bytes")
+    // And the whole terminal frame carrying it stays well clear of any
+    // coordinator frame limit.
+    let frame = try ProviderProtocolCodec.encodeProviderMessage(
+        .inferenceComplete(ProviderMessage.InferenceComplete(
+            requestId: "0f3c2b8e-6b1a-4c8f-9d2e-7a5b3c1d9e0f",
+            usage: UsageInfo(promptTokens: 812, completionTokens: 147, reasoningTokens: 12),
+            stopSequence: "<END>", seSignature: String(repeating: "s", count: 96),
+            responseHash: String(repeating: "h", count: 64),
+            profile: fullInferenceProfile())))
+    #expect(frame.count <= 4096 + 512)
+}
+
+@Test func profilerBackendSlotCapacityRoundTripsTelemetry() throws {
+    let telemetry = fullSlotTelemetry()
+    let slot = BackendSlotCapacity(
+        model: "mlx-community/Qwen2.5-7B-4bit", state: "running",
+        numRunning: 2, numWaiting: 1, activeTokens: 2_310, maxTokensPotential: 6_144,
+        maxConcurrency: 4, kvBackend: "contiguous", evalInFlightMs: 12,
+        telemetry: telemetry)
+    let data = try JSONEncoder().encode(slot)
+    let object = try jsonObject(data)
+    let telemetryObject = try #require(object["telemetry"] as? [String: Any])
+    #expect(
+        Set(telemetryObject.keys) == [
+            "queued_prefill_tokens", "partial_prefill_rows", "prefill_tokens_total",
+            "isolated_prefill_tps", "ewma_initialized", "pump_tasks", "mtp_rounds_total",
+            "mtp_proposed_total", "mtp_accepted_total", "kv_bytes_in_use", "kv_bytes_capacity",
+            "eval_in_flight_ms", "step_wall_ns_total", "decode_rows_total",
+        ])
+    #expect(object["eval_in_flight_ms"] as? Int == 12)
+    let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: data)
+    #expect(decoded == slot)
+    #expect(decoded.telemetry == telemetry)
+
+    // Absent → omitted and decodes to nil (legacy provider), never to an
+    // empty object (which would forge the "new provider" sentinel).
+    let legacy = BackendSlotCapacity(
+        model: "m", state: "idle", numRunning: 0, numWaiting: 0, activeTokens: 0,
+        maxTokensPotential: 0)
+    let legacyData = try JSONEncoder().encode(legacy)
+    #expect(try jsonObject(legacyData)["telemetry"] == nil)
+    #expect(try JSONDecoder().decode(BackendSlotCapacity.self, from: legacyData).telemetry == nil)
+    let raw = #"{"model":"m","state":"idle","num_running":0,"num_waiting":0,"active_tokens":0,"max_tokens_potential":0}"#
+    #expect(try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8)).telemetry == nil)
+
+    // A present-but-sparse object survives as present with nil numerics.
+    let sparse = #"{"model":"m","state":"idle","num_running":0,"num_waiting":0,"active_tokens":0,"max_tokens_potential":0,"telemetry":{"pump_tasks":0}}"#
+    let sparseDecoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(sparse.utf8))
+    #expect(sparseDecoded.telemetry == SlotTelemetry(pumpTasks: 0))
+}
+
+@Test func profilerBackendCapacityRoundTripsTelemetry() throws {
+    let telemetry = fullCapacityTelemetry()
+    let capacity = BackendCapacity(
+        slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2, gpuMemoryCacheGb: 0.5,
+        totalMemoryGb: 64, freeForLoadGb: 10, telemetry: telemetry)
+    let data = try JSONEncoder().encode(capacity)
+    let object = try jsonObject(data)
+    let telemetryObject = try #require(object["telemetry"] as? [String: Any])
+    #expect(
+        Set(telemetryObject.keys) == [
+            "low_power_mode", "memory_pressure_level", "mlx_num_resources", "in_admission",
+            "inflight_tasks",
+        ])
+    #expect(telemetryObject["memory_pressure_level"] as? String == "critical")
+    let decoded = try JSONDecoder().decode(BackendCapacity.self, from: data)
+    #expect(decoded == capacity)
+
+    let legacy = BackendCapacity(
+        slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 2, gpuMemoryCacheGb: 0.5,
+        totalMemoryGb: 64)
+    let legacyData = try JSONEncoder().encode(legacy)
+    #expect(try jsonObject(legacyData)["telemetry"] == nil)
+    #expect(try JSONDecoder().decode(BackendCapacity.self, from: legacyData).telemetry == nil)
+    let unknownLevel = #"{"slots":[],"gpu_memory_active_gb":1,"gpu_memory_peak_gb":2,"gpu_memory_cache_gb":0.5,"total_memory_gb":64,"telemetry":{"memory_pressure_level":"apocalyptic"}}"#
+    #expect(
+        try JSONDecoder().decode(BackendCapacity.self, from: Data(unknownLevel.utf8))
+            .telemetry?.memoryPressureLevel == .other)
+}
+
+@Test func profilerProviderStatsEncodeCancelCountersOnlyWhenNonZero() throws {
+    let stats = ProviderStats(
+        requestsServed: 1, tokensGenerated: 2,
+        cancelStagePreAcceptTotal: 3, cancelStagePreEngineTotal: 9, cancelStagePrefillTotal: 7,
+        cancelStageDecodeTotal: 20, cancelStagePostTerminalTotal: 2,
+        tokensAfterCancelTotal: 58, cancelAbortNsSum: 1_284_000_000)
+    let data = try JSONEncoder().encode(stats)
+    let object = try jsonObject(data)
+    #expect(object["cancel_stage_pre_accept_total"] as? Int == 3)
+    #expect(object["cancel_stage_pre_engine_total"] as? Int == 9)
+    #expect(object["cancel_stage_prefill_total"] as? Int == 7)
+    #expect(object["cancel_stage_decode_total"] as? Int == 20)
+    #expect(object["cancel_stage_post_terminal_total"] as? Int == 2)
+    #expect(object["tokens_after_cancel_total"] as? Int == 58)
+    #expect(object["cancel_abort_ns_sum"] as? Int == 1_284_000_000)
+    #expect(try JSONDecoder().decode(ProviderStats.self, from: data) == stats)
+
+    let zero = try jsonObject(JSONEncoder().encode(ProviderStats(requestsServed: 1, tokensGenerated: 2)))
+    #expect(zero["cancel_stage_pre_accept_total"] == nil)
+    #expect(zero["cancel_stage_pre_engine_total"] == nil)
+    #expect(zero["cancel_stage_prefill_total"] == nil)
+    #expect(zero["cancel_stage_decode_total"] == nil)
+    #expect(zero["cancel_stage_post_terminal_total"] == nil)
+    #expect(zero["tokens_after_cancel_total"] == nil)
+    #expect(zero["cancel_abort_ns_sum"] == nil)
+
+    // The atomic producer maps every stage onto its counter; `none`/`other`
+    // are not counted.
+    let atomic = AtomicProviderStats()
+    for stage in CancelStage.allCases { atomic.incrementCancelStage(stage) }
+    atomic.addTokensAfterCancel(5)
+    atomic.addCancelAbortNs(7)
+    let snapshot = atomic.snapshot()
+    #expect(snapshot.cancelStagePreAcceptTotal == 1)
+    #expect(snapshot.cancelStagePreEngineTotal == 1)
+    #expect(snapshot.cancelStagePrefillTotal == 1)
+    #expect(snapshot.cancelStageDecodeTotal == 1)
+    #expect(snapshot.cancelStagePostTerminalTotal == 1)
+    #expect(snapshot.tokensAfterCancelTotal == 5)
+    #expect(snapshot.cancelAbortNsSum == 7)
+}
+
+@Test func profilerHeartbeatWithTwoSlotsAndTelemetryEncodesWithin8192Bytes() throws {
+    func slot(_ model: String) -> BackendSlotCapacity {
+        BackendSlotCapacity(
+            model: model, state: "running", numRunning: 4, numWaiting: 64,
+            activeTokens: 1_000_000_000, maxTokensPotential: 1_000_000_000,
+            maxConcurrency: 4, observedDecodeTps: 123.456789, observedPrefillTps: 19_999.123456,
+            activeTokenBudgetUsed: 1_000_000_000, activeTokenBudgetMax: 1_000_000_000,
+            queuedTokenBudget: 0, kvBytesPerToken: 1_000_000, modelLoadTimeMs: 3_600_000,
+            kvBackend: "contiguous",
+            kvBackendFallbackReason: String(repeating: "k", count: EngineV2Bridge.maxHeartbeatFallbackReasonLength),
+            stepsExecuted: 1_000_000_000_000, admits: 1_000_000_000, firstTokensEmitted: 1_000_000_000,
+            secondsSinceLastStep: 3_600.123456, secondsSinceLastFirstToken: 3_600.123456,
+            wedgeSuspected: true, evalInFlightMs: 3_600_000, idleClearInFlightMs: 3_600_000,
+            telemetry: fullSlotTelemetry())
+    }
+    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .serving,
+        activeModel: "mlx-community/gemma-4-26b-it-qat-4bit-with-a-long-name",
+        warmModels: [
+            "mlx-community/gemma-4-26b-it-qat-4bit-with-a-long-name",
+            "mlx-community/Qwen3.6-35B-A3B-Instruct-4bit-with-a-long-name",
+        ],
+        stats: ProviderStats(
+            requestsServed: 1_000_000_000_000, tokensGenerated: 1_000_000_000_000,
+            cancellationsReceived: 1_000_000_000, cancellationsBeforeOutput: 1_000_000_000,
+            cancellationsPartialComplete: 1_000_000_000, generationErrorsAfterOutput: 1_000_000_000,
+            chunkEncryptionErrors: 1_000_000_000, streamClosedWithoutTerminal: 1_000_000_000,
+            cancelDuringModelLoad: 1_000_000_000, usageGaps: 1_000_000_000,
+            cancelStagePreAcceptTotal: 1_000_000_000, cancelStagePreEngineTotal: 1_000_000_000,
+            cancelStagePrefillTotal: 1_000_000_000, cancelStageDecodeTotal: 1_000_000_000,
+            cancelStagePostTerminalTotal: 1_000_000_000, tokensAfterCancelTotal: 1_000_000_000_000,
+            cancelAbortNsSum: 1_000_000_000_000_000),
+        systemMetrics: SystemMetrics(memoryPressure: 0.123456, cpuUsage: 0.987654, thermalState: .critical),
+        backendCapacity: BackendCapacity(
+            slots: [
+                slot("mlx-community/gemma-4-26b-it-qat-4bit-with-a-long-name"),
+                slot("mlx-community/Qwen3.6-35B-A3B-Instruct-4bit-with-a-long-name"),
+            ],
+            gpuMemoryActiveGb: 123.456789, gpuMemoryPeakGb: 123.456789, gpuMemoryCacheGb: 12.3456789,
+            totalMemoryGb: 512, freeForLoadGb: 123.456789,
+            mlxCacheReclaimer: MLXCacheReclaimerTelemetry(
+                cacheLimitBytes: 1 << 48, sweepSignals: 1_000_000_000, reclaims: 1_000_000_000,
+                reclaimedBytes: 1 << 48, lastReclaimedBytes: 1 << 48, lastReclaimDurationMs: 3_600_000),
+            telemetry: fullCapacityTelemetry()),
+        prefixCacheProtocol: 2))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(heartbeat)
+    #expect(data.count <= 8192, "heartbeat encoded to \(data.count) bytes")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == heartbeat)
+}
+
+@Test func profilerWireObjectsHaveNoStringStoredProperties() throws {
+    // Closed by construction: the profile and telemetry objects must never
+    // carry free-form text (mirrors the coordinator's reflective P2 test).
+    func assertNoStrings(_ subject: Any, label: String) {
+        for child in Mirror(reflecting: subject).children {
+            let typeName = String(describing: type(of: child.value))
+            #expect(!(child.value is String), "\(label).\(child.label ?? "?") is a String")
+            #expect(
+                !typeName.contains("String"),
+                "\(label).\(child.label ?? "?") has type \(typeName)")
+        }
+    }
+    let profile = fullInferenceProfile()
+    assertNoStrings(profile, label: "InferenceProfile")
+    assertNoStrings(try #require(profile.engine), label: "EngineProfile")
+    assertNoStrings(fullSlotTelemetry(), label: "SlotTelemetry")
+    assertNoStrings(fullCapacityTelemetry(), label: "CapacityTelemetry")
+    // 2 anchors + 20 offsets + 7 durations + 23 counts/flags + 3 enums + engine.
+    #expect(Mirror(reflecting: profile).children.count == 56)
+    #expect(Mirror(reflecting: try #require(profile.engine)).children.count == 30)
+}
+
+@Test func profilerSharedFixtureRoundTripsAndKeySetsMatch() throws {
+    // coordinator/protocol/testdata/profiler_wire_fixture.json — written by
+    // the Go side; both sides decode every frame, re-encode, and compare the
+    // key sets of the contract additions (`profile`, `telemetry`, `stats`).
+    let fixtureURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // ProviderCoreTests
+        .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // provider-swift
+        .deletingLastPathComponent()  // repo root
+        .appendingPathComponent("coordinator/protocol/testdata/profiler_wire_fixture.json")
+    let fixtureData = try Data(contentsOf: fixtureURL)
+    let fixture = try #require(
+        try JSONSerialization.jsonObject(with: fixtureData) as? [String: Any])
+    let frameNames = fixture.keys.filter { !$0.hasPrefix("_") }.sorted()
+    #expect(
+        Set(frameNames) == [
+            "heartbeat_omitted", "heartbeat_telemetry",
+            "inference_complete_full", "inference_complete_omitted",
+            "inference_error_minimal", "inference_error_omitted",
+        ])
+
+    func roundTrip(_ name: String) throws -> (ProviderMessage, [String: Any], [String: Any]) {
+        let frame = try #require(fixture[name] as? [String: Any], "\(name) frame missing")
+        let frameData = try JSONSerialization.data(withJSONObject: frame)
+        let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: frameData)
+        let reencodedData = try ProviderProtocolCodec.encodeProviderMessage(decoded)
+        let reencoded = try jsonObject(reencodedData)
+        #expect(
+            try ProviderProtocolCodec.decodeProviderMessage(from: reencodedData) == decoded,
+            "\(name) does not round-trip")
+        return (decoded, frame, reencoded)
+    }
+    func expectSameKeys(_ a: [String: Any]?, _ b: [String: Any]?, _ label: String) throws {
+        let lhs = try #require(a, "\(label): fixture object missing")
+        let rhs = try #require(b, "\(label): re-encoded object missing")
+        #expect(keyPaths(lhs) == keyPaths(rhs), "\(label): key sets differ \(keyPaths(lhs).symmetricDifference(keyPaths(rhs)))")
+    }
+
+    // inference_complete: full profile (incl. engine) ⇄ omitted.
+    let (completeFull, completeFrame, completeReencoded) = try roundTrip("inference_complete_full")
+    guard case .inferenceComplete(let c) = completeFull else { throw TestFailure.unexpectedMessage }
+    let fullProfile = try #require(c.profile)
+    #expect(fullProfile.schema == 1)
+    #expect(fullProfile.wallMs == 1_788_307_200_123)
+    #expect(fullProfile.engineAdmittedUs == 41_200)
+    #expect(fullProfile.deadlineMode == .projected)
+    #expect(fullProfile.cancelStage == .postTerminal)
+    #expect(fullProfile.engine?.finishReason == .stop)
+    #expect(fullProfile.engine?.mtpAccepted == 96)
+    try expectSameKeys(
+        completeFrame["profile"] as? [String: Any],
+        completeReencoded["profile"] as? [String: Any], "inference_complete_full.profile")
+    let (completeOmitted, _, completeOmittedReencoded) = try roundTrip("inference_complete_omitted")
+    guard case .inferenceComplete(let c2) = completeOmitted else { throw TestFailure.unexpectedMessage }
+    #expect(c2.profile == nil)
+    #expect(completeOmittedReencoded["profile"] == nil)
+
+    // inference_error: minimal profile ⇄ omitted.
+    let (errorMinimal, errorFrame, errorReencoded) = try roundTrip("inference_error_minimal")
+    guard case .inferenceError(let e) = errorMinimal else { throw TestFailure.unexpectedMessage }
+    let minimalProfile = try #require(e.profile)
+    #expect(minimalProfile.runningAtAdmit == 4)
+    #expect(minimalProfile.cancelStage == CancelStage.none)
+    #expect(minimalProfile.firstDeltaUs == nil)
+    #expect(e.terminalCause == .admissionTimeout)
+    try expectSameKeys(
+        errorFrame["profile"] as? [String: Any],
+        errorReencoded["profile"] as? [String: Any], "inference_error_minimal.profile")
+    let (errorOmitted, _, errorOmittedReencoded) = try roundTrip("inference_error_omitted")
+    guard case .inferenceError(let e2) = errorOmitted else { throw TestFailure.unexpectedMessage }
+    #expect(e2.profile == nil)
+    #expect(errorOmittedReencoded["profile"] == nil)
+
+    // heartbeat: both telemetry sub-objects + the new stats counters ⇄ omitted.
+    let (heartbeat, heartbeatFrame, heartbeatReencoded) = try roundTrip("heartbeat_telemetry")
+    guard case .heartbeat(let h) = heartbeat else { throw TestFailure.unexpectedMessage }
+    let capacity = try #require(h.backendCapacity)
+    #expect(capacity.telemetry?.memoryPressureLevel == .normal)
+    #expect(capacity.telemetry?.inflightTasks == 3)
+    #expect(capacity.slots.first?.telemetry?.prefillTokensTotal == 1_237_904)
+    #expect(capacity.slots.first?.telemetry?.isolatedPrefillTps == 1655.2)
+    #expect(capacity.slots.first?.evalInFlightMs == 0)  // top-level field absent in fixture
+    #expect(h.stats.cancelStageDecodeTotal == 20)
+    #expect(h.stats.cancelAbortNsSum == 1_284_000_000)
+    let fixtureCapacity = try #require(heartbeatFrame["backend_capacity"] as? [String: Any])
+    let reencodedCapacity = try #require(heartbeatReencoded["backend_capacity"] as? [String: Any])
+    try expectSameKeys(
+        fixtureCapacity["telemetry"] as? [String: Any],
+        reencodedCapacity["telemetry"] as? [String: Any], "heartbeat.backend_capacity.telemetry")
+    try expectSameKeys(
+        (fixtureCapacity["slots"] as? [[String: Any]])?.first?["telemetry"] as? [String: Any],
+        (reencodedCapacity["slots"] as? [[String: Any]])?.first?["telemetry"] as? [String: Any],
+        "heartbeat.backend_capacity.slots[0].telemetry")
+    try expectSameKeys(
+        heartbeatFrame["stats"] as? [String: Any],
+        heartbeatReencoded["stats"] as? [String: Any], "heartbeat.stats")
+    let (heartbeatOmitted, _, heartbeatOmittedReencoded) = try roundTrip("heartbeat_omitted")
+    guard case .heartbeat(let h2) = heartbeatOmitted else { throw TestFailure.unexpectedMessage }
+    #expect(h2.backendCapacity?.telemetry == nil)
+    #expect(h2.backendCapacity?.slots.first?.telemetry == nil)
+    #expect(h2.stats.cancelStagePreAcceptTotal == 0)
+    let omittedCapacity = try #require(heartbeatOmittedReencoded["backend_capacity"] as? [String: Any])
+    #expect(omittedCapacity["telemetry"] == nil)
+    #expect((omittedCapacity["slots"] as? [[String: Any]])?.first?["telemetry"] == nil)
+}
+
+@Test func profilerMessageEncoderSaturatesOverRangeProfiles() throws {
+    // The canonical `ProviderMessage` encoder — not only the builder — pins
+    // every numeric into the coordinator's accepted ranges, so an over-range
+    // value degrades one field instead of invalidating the record as `range`.
+    var over = InferenceProfile(schema: 1, wallMs: 1_788_307_200_123)
+    over.engineSubmitUs = 5_000_000_000          // > 3.6e9
+    over.engineAdmittedUs = 6_000_000_000
+    over.stepsAtSubmit = 7_000_000_000           // lifetime engine counter
+    over.stepsAtFinish = 7_000_000_100
+    over.kvBytesCapacity = 1 << 50               // > 2^48
+    over.tokensAfterCancel = -3
+    over.kvReserveUs = Int64.max
+    var engine = EngineProfile()
+    engine.finishedNs = 9_000_000_000_000        // > 3.6e12
+    engine.decodeSteps = 3_000_000_000
+    engine.batchRowsMin = -1
+    over.engine = engine
+
+    func assertSaturated(_ profileObject: [String: Any]) {
+        #expect(profileObject["engine_submit_us"] as? Int64 == InferenceProfile.maxWireMicros)
+        #expect(profileObject["engine_admitted_us"] as? Int64 == InferenceProfile.maxWireMicros)
+        #expect(profileObject["steps_at_submit"] as? Int64 == InferenceProfile.maxWireCount)
+        #expect(profileObject["steps_at_finish"] as? Int64 == InferenceProfile.maxWireCount)
+        #expect(profileObject["kv_bytes_capacity"] as? Int64 == InferenceProfile.maxWireBytes)
+        #expect(profileObject["tokens_after_cancel"] as? Int64 == 0)
+        #expect(profileObject["kv_reserve_us"] as? Int64 == InferenceProfile.maxWireMicros)
+        let engineObject = profileObject["engine"] as? [String: Any]
+        #expect(engineObject?["finished_ns"] as? Int64 == InferenceProfile.maxWireNanos)
+        #expect(engineObject?["decode_steps"] as? Int64 == InferenceProfile.maxWireCount)
+        #expect(engineObject?["batch_rows_min"] as? Int64 == 0)
+    }
+
+    let complete = ProviderMessage.inferenceComplete(ProviderMessage.InferenceComplete(
+        requestId: "req-over", usage: UsageInfo(promptTokens: 1, completionTokens: 1),
+        profile: over))
+    let completeData = try ProviderProtocolCodec.encodeProviderMessage(complete)
+    assertSaturated(try #require(try jsonObject(completeData)["profile"] as? [String: Any]))
+    guard case .inferenceComplete(let c) = try ProviderProtocolCodec.decodeProviderMessage(from: completeData)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(c.profile == over.saturatedToWireRanges())
+
+    let error = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-over",
+        failure: InferenceFailure(code: .capacity, statusCode: 503),
+        profile: over))
+    let errorData = try ProviderProtocolCodec.encodeProviderMessage(error)
+    assertSaturated(try #require(try jsonObject(errorData)["profile"] as? [String: Any]))
+    guard case .inferenceError(let e) = try ProviderProtocolCodec.decodeProviderMessage(from: errorData)
+    else { throw TestFailure.unexpectedMessage }
+    #expect(e.profile == over.saturatedToWireRanges())
+
+    // Idempotent: an in-range profile is byte-identical with or without it.
+    let inRange = fullInferenceProfile()
+    #expect(inRange.saturatedToWireRanges() == inRange)
+}
+
 private func sampleHardware() -> HardwareInfo {
     HardwareInfo(
         machineModel: "Mac16,5",

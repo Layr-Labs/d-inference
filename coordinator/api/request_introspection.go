@@ -321,6 +321,46 @@ func detectMediaRequirement(parsed map[string]any) bool {
 	return false
 }
 
+// countMediaParts counts the image/video content parts across a chat
+// (messages[]) or Responses API (input[]) body — the count-only vision shape
+// term a capacity probe carries (protocol.CapacityProbeMessage
+// VisionImageCount: counts, never bytes or content-derived dimensions).
+// Same traversal as detectMediaRequirement so the two can never disagree on
+// what constitutes a media part.
+func countMediaParts(parsed map[string]any) int {
+	count := 0
+	countContent := func(content any) {
+		parts, ok := content.([]any)
+		if !ok {
+			return
+		}
+		for _, part := range parts {
+			pm, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if typ, _ := pm["type"].(string); isMediaPartType(typ) {
+				count++
+			}
+		}
+	}
+	if messages, ok := parsed["messages"].([]any); ok {
+		for _, m := range messages {
+			if mm, ok := m.(map[string]any); ok {
+				countContent(mm["content"])
+			}
+		}
+	}
+	if input, ok := parsed["input"].([]any); ok {
+		for _, item := range input {
+			if im, ok := item.(map[string]any); ok {
+				countContent(im["content"])
+			}
+		}
+	}
+	return count
+}
+
 // isInlineDataURI reports whether a media reference is an inline base64 data: URI
 // — the ONLY form the provider's E2E-encrypted VLM path accepts (see
 // VLMRequestInference.MediaError.invalidURL, which 400s anything else).

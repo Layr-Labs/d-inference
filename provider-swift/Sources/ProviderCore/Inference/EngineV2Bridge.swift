@@ -184,6 +184,10 @@ public actor EngineV2Bridge {
     /// Explicit cap 0/unlimited therefore keeps serving through ordinary
     /// submission while the hard absolute-expiry checks remain authoritative.
     let prefillDeadlineProjectionEnabled: Bool
+    /// Resolved `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` cap the engine was built
+    /// with (nil = unlimited). Reported per request as the profiler's
+    /// `partial_prefill_cap`; never consulted for any decision here.
+    let partialPrefillCap: Int?
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
     /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
@@ -250,9 +254,20 @@ public actor EngineV2Bridge {
         var submittedAt: ContinuousClock.Instant
         var firstTokenAt: ContinuousClock.Instant?
         var firstEmissionTokens: Int = 0
+        /// Profiler accumulator (coordinator requests only). Written at
+        /// first token, cancel, and finish — never per token.
+        var profile: RequestProfileBuilder? = nil
     }
 
     var active: [String: ActiveRequestState] = [:]
+    /// Profiler: Σ `promptTokens` of requests inside `submitTokenized`
+    /// (validated but not yet returned from engine submission). Heartbeat
+    /// `telemetry.queued_prefill_tokens`; per-request
+    /// `queued_prefill_tokens_at_admit` reports the OTHER requests' share.
+    var queuedPrefillTokens = 0
+    /// Profiler: cumulative Σ(prompt − cached) over finished requests
+    /// (heartbeat `telemetry.prefill_tokens_total`; attributed at finish).
+    var prefillTokensTotal: Int64 = 0
     /// IDs that have passed bridge validation but have not yet completed
     /// engine admission. Atomic deadline submission suspends this actor; this
     /// guard prevents a reentrant duplicate from acquiring resources or
@@ -262,6 +277,19 @@ public actor EngineV2Bridge {
     /// suspended this actor. The marker survives an early engine-cancel miss
     /// and is consumed only after pre-submit cleanup or queue acknowledgement.
     var pendingCancellationIDs: Set<String> = []
+    /// Profiler identity for submissions that are pending engine admission
+    /// (between `pendingSubmissionIDs.insert` and the row landing in
+    /// `active`). A coordinator cancel arrives under the coordinator id and
+    /// is matched by profile identity; without this map a cancel that lands
+    /// while `engine.submit` is suspended would be invisible to the
+    /// `tokens_after_cancel` snapshot. Removed wherever the pending id is.
+    var pendingProfiles: [String: RequestProfileBuilder] = [:]
+    #if DEBUG
+    /// TEST SEAM (debug builds only): awaited once right after the pending id
+    /// is registered so a test can interleave a cancel with a suspended
+    /// submission. nil unless a test installed it (no suspension).
+    var _testPreSubmitGate: (@Sendable () async -> Void)?
+    #endif
     /// Engine identities reserved across async atomic admission. Provider
     /// request IDs are distinct: two concurrent deterministic seeded requests
     /// can have different provider IDs but derive the same engine ID.
@@ -379,6 +407,7 @@ public actor EngineV2Bridge {
         maxConcurrentRequests: Int = 4,
         prefillDeadlineMode: PrefillDeadlineMode = PrefillDeadlineMode.resolve(),
         prefillDeadlineProjectionEnabled: Bool = true,
+        partialPrefillCap: Int? = nil,
         kvBytesPerToken: Int = 0,
         fixedRequestBytes: Int = 0,
         auxiliaryBytesPerToken: Int = 0,
@@ -408,6 +437,7 @@ public actor EngineV2Bridge {
         self.maxConcurrentRequests = maxConcurrentRequests
         self.prefillDeadlineMode = prefillDeadlineMode
         self.prefillDeadlineProjectionEnabled = prefillDeadlineProjectionEnabled
+        self.partialPrefillCap = partialPrefillCap
         self.kvBytesPerToken = kvBytesPerToken
         self.fixedRequestBytes = max(0, fixedRequestBytes)
         self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
@@ -552,7 +582,8 @@ public actor EngineV2Bridge {
         positionState: CBv2PositionState? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil,
-        firstContentDeadline: FirstContentDeadline?
+        firstContentDeadline: FirstContentDeadline?,
+        profile: RequestProfileBuilder? = nil
     ) async throws -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -577,12 +608,24 @@ public actor EngineV2Bridge {
         }
         let retirementTransfer = EngineV2RetirementTransfer()
         pendingSubmissionIDs.insert(id)
+        if let profile { pendingProfiles[id] = profile }
+        // Profiler: this prompt is "queued for prefill" for exactly the span
+        // of this call (every exit path, admitted or rejected).
+        queuedPrefillTokens += promptTokens.count
+        defer { queuedPrefillTokens = max(0, queuedPrefillTokens - promptTokens.count) }
         defer {
             if !retirementTransfer.isClaimed {
                 pendingSubmissionIDs.remove(id)
                 pendingCancellationIDs.remove(id)
+                pendingProfiles.removeValue(forKey: id)
             }
         }
+        #if DEBUG
+        if let gate = _testPreSubmitGate {
+            _testPreSubmitGate = nil
+            await gate()
+        }
+        #endif
         try await checkFirstContentDeadline(
             firstContentDeadline,
             requestID: id,
@@ -667,10 +710,12 @@ public actor EngineV2Bridge {
                 failure: .policy,
                 fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
         } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID {
+            let stageStart = SuspendingClock.now
             let stageResult = await ssd.stage(
                 requestID: prefixCacheReceiptID,
                 promptTokens: promptTokens,
                 cacheScope: cacheScope)
+            profile?.markDuration(.ssdStage, start: stageStart)
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
             usageSignal?.record(stageResult: stageResult)
@@ -740,7 +785,8 @@ public actor EngineV2Bridge {
             (kvBytesPerToken > 0 || fixedRequestBytes > 0), cbv2Request.maxTokens > 0
         {
             sharedKVReserved = await reserveSharedRequestBytes(
-                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
+                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                profile: profile)
             try await checkFirstContentDeadline(
                 firstContentDeadline,
                 requestID: id,
@@ -763,7 +809,8 @@ public actor EngineV2Bridge {
                     readyReceiptRegistered: readyReceiptRegistered,
                     usageSignal: usageSignal)
                 sharedKVReserved = await reserveSharedRequestBytes(
-                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
+                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens,
+                profile: profile)
                 try await checkFirstContentDeadline(
                     firstContentDeadline,
                     requestID: id,
@@ -845,6 +892,40 @@ public actor EngineV2Bridge {
             }
         }
 
+        // Hoisted so the profiler can name the deadline mode; pure function of
+        // bridge state, no suspension between here and the submit below.
+        let deadlineAdmission = firstTokenDeadlineAdmission(
+            deadline: firstContentDeadline,
+            isMultimodal: multimodal != nil)
+        if let profile {
+            // Profiler engine-submit snapshot: ONE lock for the stamp and the
+            // whole occupancy posture at the submit boundary.
+            let snapshot = capacitySnapshot()
+            let queuedOthers = max(0, queuedPrefillTokens - promptTokens.count)
+            let deadlineMode: DeadlineMode
+            if firstContentDeadline == nil {
+                deadlineMode = .none
+            } else if deadlineAdmission != nil {
+                deadlineMode = .projected
+            } else {
+                deadlineMode = .legacy
+            }
+            let mtpActive = mtpActivationStatus.active
+            let cap = partialPrefillCap
+            profile.update { f, now in
+                f.mark(.engineSubmit, offsetUs: now)
+                f.set(.runningAtAdmit, Int64(snapshot.activeRequests))
+                f.set(.waitingAtAdmit, Int64(snapshot.waitingRequests))
+                f.set(.kvBytesInUseAtAdmit, Int64(snapshot.kvBytesInUse))
+                f.set(.kvBytesCapacity, Int64(snapshot.kvBytesCapacity))
+                f.set(.stepsAtSubmit, Int64(snapshot.stepsExecuted))
+                f.set(.queuedPrefillTokensAtAdmit, Int64(queuedOthers))
+                f.set(.mtpActive, mtpActive)
+                if let cap { f.set(.partialPrefillCap, Int64(cap)) }
+                f.deadlineMode = deadlineMode
+            }
+        }
+
         let events: AsyncStream<CBv2Event>
         // Ordinary submission registers synchronously; atomic submission
         // replaces this with the engine-queue commit instant returned by the
@@ -864,10 +945,7 @@ public actor EngineV2Bridge {
             return stream
         }
         do {
-            if let admission = firstTokenDeadlineAdmission(
-                deadline: firstContentDeadline,
-                isMultimodal: multimodal != nil)
-            {
+            if let admission = deadlineAdmission {
                 // The engine's serialized closure compares projection against
                 // this same absolute deadline. A second task-group race would
                 // cancel after commit and hide the generation-bound retirement
@@ -876,9 +954,14 @@ public actor EngineV2Bridge {
                     engineRequest,
                     firstTokenDeadline: admission)
                 switch result {
-                case .admitted(let stream, _, let admittedAt, let retirement):
+                case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         engine.cancel(cbv2Id)
+                        // Admitted, then torn down: an in-flight engine step
+                        // may already have produced a token before the cancel
+                        // was processed, so `tokens_after_cancel` is OMITTED
+                        // here (never a fabricated 0 — see
+                        // `recordCancelledBeforeGeneration`).
                         transferPreSubmitRetirement(
                             retirementTransfer,
                             requestID: id,
@@ -918,8 +1001,36 @@ public actor EngineV2Bridge {
                     }
                     events = stream
                     engineAdmittedAt = admittedAt
+                    if let profile {
+                        // The engine's commit instant is on the deadline
+                        // (continuous) clock: convert into the suspending
+                        // anchor's domain (µs window, no sleep possible) and
+                        // clamp ≥ engine_submit for the wire order invariant.
+                        // `projectedWork` was previously discarded here.
+                        let admittedOffset = profile.offsetUs(
+                            of: profile.suspendingInstant(fromContinuous: admittedAt))
+                        let remainingUs = firstContentDeadline.map {
+                            RequestProfileBuilder.budgetRemainingUs(
+                                $0.remainingDuration(now: admittedAt))
+                        }
+                        profile.update { f, _ in
+                            f.mark(.engineAdmitted,
+                                   offsetUs: max(admittedOffset, f.offset(.engineSubmit) ?? 0))
+                            if case .bounded(let work, let serviceDuration) = projectedWork {
+                                f.set(.projectedPrefillTokens, Int64(work.prefillTokens))
+                                f.set(.projectedDecodeTokens, Int64(work.decodeTokens))
+                                f.set(.projectedServiceUs,
+                                      RequestProfileBuilder.microseconds(serviceDuration))
+                            }
+                            if let remainingUs { f.set(.budgetRemainingAtAdmitUs, remainingUs) }
+                        }
+                    }
                 case .deadlineUnreachable:
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
+                        // Refused at admission after a latched cancel: nothing
+                        // was generated, record the explicit 0 (see the
+                        // `.admitted` teardown above).
+                        recordCancelledBeforeGeneration(profile)
                         throw CancellationError()
                     }
                     throw PreContentDeadlineFailure.deadlineUnreachable
@@ -929,9 +1040,22 @@ public actor EngineV2Bridge {
                 // been measured, or media makes token projection incomplete.
                 // Absolute expiry does not: it was checked immediately above.
                 events = try engine.submit(engineRequest)
+                if let profile {
+                    // Evaluated AFTER the submit returned: the deadline may
+                    // have expired meanwhile, hence the zero clamp.
+                    let remainingUs = firstContentDeadline.map {
+                        RequestProfileBuilder.budgetRemainingUs($0.remainingDuration())
+                    }
+                    profile.update { f, now in
+                        f.mark(.engineAdmitted, offsetUs: max(now, f.offset(.engineSubmit) ?? 0))
+                        if let remainingUs { f.set(.budgetRemainingAtAdmitUs, remainingUs) }
+                    }
+                }
             }
         } catch let cancellation as CBv2FirstTokenAdmissionCancellation {
             engine.cancel(cbv2Id)
+            // Post-admission cancellation: same rule as the `.admitted`
+            // teardown above — the field stays absent.
             transferPreSubmitRetirement(
                 retirementTransfer,
                 requestID: id,
@@ -1001,7 +1125,8 @@ public actor EngineV2Bridge {
                 && pendingSubmissionIDs.allSatisfy({ $0 == id })
                 && pendingEngineIDs.allSatisfy({ $0 == cbv2Id })
                 && active.isEmpty,
-            submittedAt: engineAdmittedAt
+            submittedAt: engineAdmittedAt,
+            profile: profile
         )
         // Wedge instrumentation: the request is now in the engine's hands.
         wedgeMonitor.recordAdmit(now: .now)
@@ -1022,7 +1147,8 @@ public actor EngineV2Bridge {
             logprobsChannel: logprobsChannel,
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
-            readyReceiptRegistered: readyReceiptRegistered
+            readyReceiptRegistered: readyReceiptRegistered,
+            profile: profile
         )
 
         let bridge = self
@@ -1148,6 +1274,7 @@ public actor EngineV2Bridge {
             failure: failure)
         pendingSubmissionIDs.remove(requestID)
         pendingCancellationIDs.remove(requestID)
+        pendingProfiles.removeValue(forKey: requestID)
         pendingEngineIDs.remove(engineID)
         if active[requestID] == nil, idMap[requestID] == engineID {
             idMap.removeValue(forKey: requestID)
@@ -1166,6 +1293,10 @@ public actor EngineV2Bridge {
         usageSignal: EngineV2RequestUsageSignal?
     ) async throws {
         if pendingCancellationIDs.contains(requestID) {
+            // Refused before the engine ever sees the row: nothing was
+            // generated after the cancel, so the profile records an explicit
+            // `tokens_after_cancel = 0` (baseline seeded by `latchPendingCancel`).
+            recordCancelledBeforeGeneration(pendingProfiles[requestID])
             await releasePreSubmitResources(
                 requestID: requestID,
                 sharedKVReserved: sharedKVReserved,
@@ -1222,12 +1353,18 @@ public actor EngineV2Bridge {
     }
 
     private func reserveSharedRequestBytes(
-        budget: GlobalKVCacheBudget, requestID: String, tokenCount: Int
+        budget: GlobalKVCacheBudget, requestID: String, tokenCount: Int,
+        profile: RequestProfileBuilder? = nil
     ) async -> Bool {
         guard let total = requestReservationBytes(tokenCount: tokenCount), total > 0 else {
             return false
         }
-        return await budget.reserveBytes(requestID: requestID, bytes: UInt64(total))
+        // Profiler `kv_reserve_us`: the shared-budget actor hop (accumulates
+        // across the SSD-abandon retry).
+        let reserveStart = SuspendingClock.now
+        let reserved = await budget.reserveBytes(requestID: requestID, bytes: UInt64(total))
+        profile?.markDuration(.kvReserve, start: reserveStart)
+        return reserved
     }
 
     func requestReservationBytes(tokenCount: Int) -> Int? {
@@ -1275,11 +1412,62 @@ public actor EngineV2Bridge {
     /// then delivers `.finished(.cancelled)` on the request's stream,
     /// which drives the normal bookkeeping/teardown in the pump.
     public func cancel(requestId: String) {
-        if pendingSubmissionIDs.contains(requestId) {
-            pendingCancellationIDs.insert(requestId)
+        // Same order as `cancelIfOwned`: an admitted row's real completion
+        // count wins; only a row that is still pending gets the 0 seed (a
+        // request briefly sits in both maps between `active[id] = …` and the
+        // pending id's removal, and the seed must never shadow the count).
+        if let state = active[requestId] {
+            snapshotTokensAtCancel(state)
+        } else if pendingSubmissionIDs.contains(requestId) {
+            latchPendingCancel(id: requestId)
         }
         if let cbv2Id = idMap[requestId] {
             ownedEngine?.cancel(cbv2Id)
+        }
+    }
+
+    /// A cancel reached the bridge while `id` is still pending engine
+    /// admission: latch it (the existing minted-id latch — the submission is
+    /// REFUSED at its next pre-submit check, strictly before the engine sees
+    /// the row, or torn down at atomic admission on the deadline path) and
+    /// seed the `tokens_after_cancel` baseline at 0, since the row has
+    /// produced nothing yet. First cancel wins; one lock, cancel path only.
+    private func latchPendingCancel(id: String) {
+        pendingCancellationIDs.insert(id)
+        guard let profile = pendingProfiles[id] else { return }
+        profile.update { f, _ in
+            if f.count(.tokensAtCancel) == nil {
+                f.set(.tokensAtCancel, 0)
+            }
+        }
+    }
+
+    /// RULE: `tokens_after_cancel = 0` is written only when the engine
+    /// PROVABLY never ran the row — the pre-submit refusal (latched before the
+    /// engine saw it) and the `.deadlineUnreachable` verdict (never admitted).
+    /// Once a row was admitted (the `.admitted` teardown, the
+    /// `CBv2FirstTokenAdmissionCancellation` catch) an in-flight step may
+    /// have produced a token before the cancel was processed and no pump will
+    /// reconcile it, so the field is OMITTED rather than fabricated. Writes
+    /// only when a cancel was actually received (baseline present).
+    private func recordCancelledBeforeGeneration(_ profile: RequestProfileBuilder?) {
+        profile?.update { f, _ in
+            if f.count(.tokensAtCancel) != nil, f.count(.tokensAfterCancel) == nil {
+                f.set(.tokensAfterCancel, 0)
+            }
+        }
+    }
+
+    /// Profiler `tokens_after_cancel`: snapshot the completion count the
+    /// moment a cancel reaches the bridge (first cancel wins); the delta is
+    /// computed at finish. One lock, cancel path only.
+    private func snapshotTokensAtCancel(_ state: ActiveRequestState) {
+        guard let profile = state.profile else { return }
+        let tokensNow = Int64(state.completionTokens)
+        profile.update { f, _ in
+            if f.count(.tokensAtCancel) == nil {
+                f.set(.tokensAtCancel, tokensNow)
+            }
         }
     }
 
@@ -1444,10 +1632,37 @@ public actor EngineV2Bridge {
     }
 
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
-    func cancelIfOwned(requestId: String) -> Bool {
-        guard let cbv2Id = idMap[requestId], let engine = ownedEngine else { return false }
-        engine.cancel(cbv2Id)
-        return true
+    func cancelIfOwned(requestId: String, profile: RequestProfileBuilder? = nil) -> Bool {
+        if let cbv2Id = idMap[requestId], let engine = ownedEngine {
+            if let state = active[requestId] {
+                snapshotTokensAtCancel(state)
+            } else if pendingSubmissionIDs.contains(requestId) {
+                latchPendingCancel(id: requestId)
+            }
+            engine.cancel(cbv2Id)
+            return true
+        }
+        // Miss path — the expected case for a COORDINATOR cancel: the
+        // coordinator id never matches the `req-…` id the engine tracks (see
+        // ProviderLoop+Cancellation). The request's profile is the one handle
+        // both sides share, so match on its identity. O(rows), cancel path only.
+        guard let profile else { return false }
+        // Admitted row: take the `tokens_after_cancel` snapshot NOW, at
+        // cancel receipt, instead of at Task-cancellation teardown.
+        // Cancellation semantics unchanged (still Task-propagation driven).
+        if let state = active.values.first(where: { $0.profile === profile }) {
+            snapshotTokensAtCancel(state)
+            return false
+        }
+        // Still pending engine admission: seed the zero baseline and latch
+        // the cancellation so the row is cancelled the moment submit returns
+        // (ordinary path) or torn down at atomic admission (deadline path).
+        // Owned — nothing else can hold this profile, so stop scanning.
+        if let pendingId = pendingProfiles.first(where: { $0.value === profile })?.key {
+            latchPendingCancel(id: pendingId)
+            return true
+        }
+        return false
     }
 
     /// Graceful drain (unload / process shutdown): running requests finish,
@@ -1507,7 +1722,8 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
-        readyReceiptRegistered: Bool = false
+        readyReceiptRegistered: Bool = false,
+        profile: RequestProfileBuilder? = nil
     ) {
         let bridge = self
         let task = Task {
@@ -1518,7 +1734,8 @@ public actor EngineV2Bridge {
                 logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
-                readyReceiptRegistered: readyReceiptRegistered
+                readyReceiptRegistered: readyReceiptRegistered,
+                profile: profile
             )
             await bridge.clearPumpTask(id: id)
         }
@@ -1540,7 +1757,8 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
-        readyReceiptRegistered: Bool = false
+        readyReceiptRegistered: Bool = false,
+        profile: RequestProfileBuilder? = nil
     ) async {
         // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
         // (the pre-engine admission gate), NOT here — the pump only RELEASES
@@ -1551,15 +1769,22 @@ public actor EngineV2Bridge {
         var sawFirstToken = false
         var sawTerminal = false
         var generatedTokens: [Int] = []
+        // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
+        // no lock), written to the profile exactly once at finish.
+        var lastDeltaAt: SuspendingClock.Instant?
         for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
+                if profile != nil, !tokens.isEmpty {
+                    lastDeltaAt = .now
+                }
                 // Key first-token on TOKEN count, not text: some tokens
                 // (BPE intermediates, specials) detokenize to "" and would
                 // otherwise leave the first-token bookkeeping unset.
                 if !sawFirstToken, !tokens.isEmpty {
                     sawFirstToken = true
-                    recordFirstToken(id: id, emissionTokens: tokens.count)
+                    recordFirstToken(
+                        id: id, emissionTokens: tokens.count, profileNow: lastDeltaAt)
                 }
                 recordProgress(id: id, newTokens: tokens.count)
                 if !stopSequences.isEmpty {
@@ -1612,7 +1837,8 @@ public actor EngineV2Bridge {
                 emitPrefixReuseTelemetry(requestId: id, usage: usage)
                 finishAndEmit(
                     id: id, reason: reason, usage: usage,
-                    sawFirstToken: sawFirstToken, continuation: continuation
+                    sawFirstToken: sawFirstToken, continuation: continuation,
+                    lastDeltaAt: lastDeltaAt
                 )
                 // Release the shared-budget KV reservation on the terminal
                 // (only when this request took one; release is idempotent).
@@ -1671,11 +1897,12 @@ public actor EngineV2Bridge {
         reason: CBv2FinishReason,
         usage: CBv2Usage,
         sawFirstToken: Bool,
-        continuation: AsyncStream<GenerationEvent>.Continuation
+        continuation: AsyncStream<GenerationEvent>.Continuation,
+        lastDeltaAt: SuspendingClock.Instant? = nil
     ) {
         switch reason {
         case .stop, .length:
-            let final = recordFinish(id: id, usage: usage, success: true)
+            let final = recordFinish(id: id, usage: usage, success: true, lastDeltaAt: lastDeltaAt, finishReason: reason)
             // Preserve the v2 engine's truncation signal: `.length` must
             // reach the client as finish_reason "length", not be flattened
             // to "stop" (max_tokens truncation was invisible on v2).
@@ -1686,7 +1913,9 @@ public actor EngineV2Bridge {
                 finishReason: reason == .length ? "length" : "stop"
             ))
         case .cancelled:
-            let final = recordFinish(id: id, usage: usage, success: false)
+            let final = recordFinish(
+                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                finishReason: reason)
             // A cancel that did real work emits its usage BEFORE the error
             // so a listener can still bill delivered tokens (legacy abort
             // framing).
@@ -1705,7 +1934,9 @@ public actor EngineV2Bridge {
             // non-natural finish, then carry BOTH the machine-readable cause
             // AND that usage through — instead of flattening the deadline into
             // a generic string with zero usage (the incident behavior).
-            let final = recordFinish(id: id, usage: usage, success: false)
+            let final = recordFinish(
+                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if let wireCause = Self.wireTerminalCause(cbCause) {
                 continuation.yield(.terminal(
@@ -1720,7 +1951,9 @@ public actor EngineV2Bridge {
                 continuation.yield(.error(message))
             }
         case .error(let message):
-            _ = recordFinish(id: id, usage: usage, success: false)
+            _ = recordFinish(
+                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
                 // Engine-side TERMINAL capacity exhaustion (the paged pool
@@ -1763,7 +1996,9 @@ public actor EngineV2Bridge {
 
     // MARK: - Bookkeeping
 
-    private func recordFirstToken(id: String, emissionTokens: Int) {
+    private func recordFirstToken(
+        id: String, emissionTokens: Int, profileNow: SuspendingClock.Instant? = nil
+    ) {
         let now = ContinuousClock.Instant.now
         wedgeMonitor.recordFirstToken(now: now)
         guard var state = active[id] else { return }
@@ -1771,6 +2006,16 @@ public actor EngineV2Bridge {
             state.firstTokenAt = now
             state.firstEmissionTokens = max(1, emissionTokens)
             active[id] = state
+            // Profiler `first_delta_us`: the same instant the pump stored as
+            // its last-delta, so a one-token response keeps first ≤ last.
+            // Clamped to `terminal_built`: on the cancel path the handler
+            // builds its terminal BEFORE the engine delivers `.finished`, so a
+            // late delta must never land after it (wire order invariant).
+            if let profileNow, let profile = state.profile {
+                profile.mark(
+                    .firstDelta, at: profileNow,
+                    notBefore: .engineAdmitted, notAfter: .terminalBuilt)
+            }
         }
     }
 
@@ -1787,7 +2032,9 @@ public actor EngineV2Bridge {
     private func recordFinish(
         id: String,
         usage: CBv2Usage,
-        success: Bool
+        success: Bool,
+        lastDeltaAt: SuspendingClock.Instant? = nil,
+        finishReason: CBv2FinishReason? = nil
     ) -> (prompt: Int, completion: Int, tps: Double) {
         idMap.removeValue(forKey: id)
         let now = ContinuousClock.Instant.now
@@ -1797,6 +2044,49 @@ public actor EngineV2Bridge {
         state.completionTokens = max(state.completionTokens, usage.completionTokens)
         let prompt = max(state.promptTokens, usage.promptTokens)
         let completion = state.completionTokens
+
+        // Profiler: cumulative cold-prefill tokens for the heartbeat (the
+        // cached count is only known from terminal usage, so attribution
+        // lands at finish, not first token) and the per-request finish
+        // fields — ONE lock.
+        let cachedTokens = max(
+            0,
+            usage.prefixCacheHitTokens,
+            usage.prefixCacheMatchedTokens,
+            usage.prefixCachePrefillTokensSaved)
+        let (nextPrefillTotal, prefillOverflow) = prefillTokensTotal
+            .addingReportingOverflow(Int64(max(0, prompt - cachedTokens)))
+        prefillTokensTotal = prefillOverflow ? .max : nextPrefillTotal
+        if let profile = state.profile {
+            let stepsNow = Int64(capacitySnapshot().stepsExecuted)
+            let lastDeltaOffset = lastDeltaAt.map { profile.offsetUs(of: $0) }
+            let completionNow = Int64(completion)
+            var tokensAfterCancel: Int64?
+            var tokensAfterCancelHook: (@Sendable (Int64) -> Void)?
+            profile.update { f, _ in
+                if let lastDeltaOffset {
+                    // Same ceiling as `first_delta`: never past the handler's
+                    // (possibly already built) terminal.
+                    f.mark(.lastDelta,
+                           offsetUs: f.clamp(
+                               lastDeltaOffset, notBefore: .firstDelta, notAfter: .terminalBuilt))
+                }
+                f.set(.stepsAtFinish, max(stepsNow, f.count(.stepsAtSubmit) ?? 0))
+                if let atCancel = f.count(.tokensAtCancel) {
+                    let after = max(0, completionNow - atCancel)
+                    f.set(.tokensAfterCancel, after)
+                    tokensAfterCancel = after
+                    tokensAfterCancelHook = f.onTokensAfterCancel
+                }
+                f.engine = EngineProfile(timing: usage.timing, finishReason: finishReason)
+            }
+            // Cumulative heartbeat counter, bumped HERE (outside the lock):
+            // the handler task's defer may already have run when a cancelled
+            // request's engine terminal arrives, so it cannot own this add.
+            if let tokensAfterCancel {
+                tokensAfterCancelHook?(tokensAfterCancel)
+            }
+        }
 
         let tps: Double
         if let firstTokenAt = state.firstTokenAt, completion > 1 {
@@ -2087,6 +2377,21 @@ public actor EngineV2Bridge {
 
     /// Number of bridge submissions currently suspended before admission.
     func _testPendingSubmissionCount() -> Int { pendingSubmissionIDs.count }
+    /// Profiler identities still retained for pending submissions (leak check).
+    func _testPendingProfileCount() -> Int { pendingProfiles.count }
+    #if DEBUG
+    /// Install a one-shot gate awaited right after the pending id is
+    /// registered in `submitTokenized` (see `_testPreSubmitGate`).
+    func _testInstallPreSubmitGate(_ gate: @escaping @Sendable () async -> Void) {
+        _testPreSubmitGate = gate
+    }
+    /// Seed the isolated cold-prefill EWMA so `firstTokenDeadlineAdmission`
+    /// takes the atomic deadline-submit path against a fake engine.
+    func _testSeedIsolatedPrefillEwma(_ tokensPerSecond: Double) {
+        isolatedPrefillTpsEwma = tokensPerSecond
+        isolatedPrefillEwmaInitialized = true
+    }
+    #endif
 
     /// Number of deterministic/monotonic engine IDs reserved across admission.
     func _testPendingEngineIDCount() -> Int { pendingEngineIDs.count }

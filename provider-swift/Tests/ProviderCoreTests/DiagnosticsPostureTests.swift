@@ -467,3 +467,101 @@ struct DesiredModelsForPostureTests {
     #expect(WarmModelsFormat.mostRecentlyUsedLabel == "Most recently used")
     #expect(WarmModelsFormat.mostRecentlyUsedLabel != "Current model")
 }
+
+@Test func modelFitRequiredUsesPerModelActivationFloor() {
+    // gpt-oss-20b: padded weights 13.5 + (3.5 GiB measured floor + 1 GiB min
+    // serveable KV) = 18.0 — NOT 13.5 + 6.5 = 20.0 sized off gemma-4's B=8
+    // peak. The flat floor made every 24 GB catalog-tier box unserveable
+    // (#653): usable ≥ 20 GB needs ~22.7 GiB reclaimable out of 24.
+    #expect(abs(
+        ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 13.5, modelID: "gpt-oss-20b") - 18.0)
+        < 0.01)
+    // Unmeasured model keeps the flat default: 28 + 6.5 = 34.5.
+    #expect(abs(
+        ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 28.0, modelID: "gemma-4-26b") - 34.5)
+        < 0.01)
+    // No id → flat default (regression): 13.5 + 6.5 = 20.0.
+    #expect(abs(ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 13.5) - 20.0) < 0.01)
+}
+
+@Test func modelFitVerdictReflectsPerModelFloor() {
+    // The #653 repro shape: 24 GB box, ~18.5 GB usable headless, gpt-oss-20b
+    // padded 13.53. Flat floor demanded 20.0 → permanent fail; the measured
+    // floor needs 18.03 → pass.
+    let d = ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5)
+    #expect(d.level == .pass)
+    // An unmeasured model on the same box still fails (25 + 6.5 = 31.5 > 18.5)
+    // AND the alternatives suggestion evaluates each candidate with ITS OWN
+    // floor — the suggestion models what enabled_models = [candidate] would do.
+    let alt = ModelFitDiagnostic.diagnose(
+        modelID: "gemma-4-26b", weightGb: 25.0, usableGb: 18.5,
+        alternatives: [.init(id: "gpt-oss-20b", weightGb: 13.53)])
+    #expect(alt.level == .fail)
+    #expect(alt.fix?.contains("gpt-oss-20b") == true)
+    #expect(alt.fix?.contains("18.0") == true)
+}
+
+@Test func modelFitVerdictTreatsAnEmptyLiveServingSetAsOpenWorld() {
+    // A fresh daemon that retired every model advertises [] — authoritative,
+    // not "unknown". The target cannot be joining an empty advertised set, so
+    // the verdict resolves at the DEFAULT floor (13.53 + 5.5 + 1.0 = 20.03 >
+    // 18.5 → FAIL), never the target's solo floor (18.03 → false PASS).
+    let empty = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5, servingSetIDs: [])
+    #expect(empty.level == .fail)
+    // nil (no declared set — offline/single-model box) keeps the solo floor.
+    let undeclared = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5, servingSetIDs: nil)
+    #expect(undeclared.level == .pass)
+}
+
+@Test func modelFitVerdictUsesTheServingSetFloorNotTheTargetsOwn() {
+    // A multi-model box: enabled_models = [gpt-oss-20b, gemma-4-26b]. The
+    // daemon's load gate carves the max floor over the WHOLE set (6.5 GiB
+    // headroom), so gpt-oss needs 13.53 + 6.5 = 20.03 on this box even
+    // though its solo requirement is 18.03 — the verdict must say FAIL, not
+    // the false PASS a target-only floor would print (the doctor promise:
+    // never drift from what the daemon enforces).
+    let d = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5,
+        servingSetIDs: ["gpt-oss-20b", "gemma-4-26b"])
+    #expect(d.level == .fail)
+    // Same target, single-model set: back to the solo floor → pass.
+    let solo = ModelFitDiagnostic.diagnose(
+        modelID: "gpt-oss-20b", weightGb: 13.53, usableGb: 18.5,
+        servingSetIDs: ["gpt-oss-20b"])
+    #expect(solo.level == .pass)
+}
+
+/// The tier arithmetic as the LIVE gate sees it, derived rather than assumed:
+/// usable = min(free-plus-inactive, total − MLX used) − max(memory_reserve_gb,
+/// total − 0.9·total). With the shipped 4 GiB reserve default, the 24 GB tier
+/// needs ~22 GB of free-plus-inactive memory to admit gpt-oss-20b at the 3.5
+/// GiB floor — the #653 reporters measured 12.3 and 16.1 GB usable, so the
+/// floor alone does not rescue 24 GB; it does turn the 32 GB flap band
+/// (15.9 vs 21.6 GB usable in the same minute) into a pass at 21.6.
+@Test func modelFitTierArithmeticIsDerivedFromTheLiveGate() {
+    let gib = 1024.0 * 1024.0 * 1024.0
+    func usable(totalGiB: Double, freePlusInactiveGiB: Double, configReserveGiB: UInt64) -> Double {
+        let total = UInt64(totalGiB * gib)
+        return ModelLoadAdmission.freeForLoadGb(
+            totalBytes: total,
+            systemAvailableBytes: UInt64(freePlusInactiveGiB * gib),
+            gpuActiveBytes: 0,
+            gpuCacheBytes: 0,
+            reserveBytes: UnifiedMemoryCap.loadReserveBytes(
+                physicalBytes: total, configReserveBytes: configReserveGiB * UInt64(gib)))
+    }
+    let weights = 13.53  // padded gpt-oss-20b catalog estimate
+    // 24 GB, default reserve: even the trimmed-headless projection (~18 GB
+    // free-plus-inactive after a clean boot) resolves to ~14 usable → fail.
+    let headless24 = usable(totalGiB: 24, freePlusInactiveGiB: 18.0, configReserveGiB: 4)
+    #expect(headless24 < 18.03)
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: headless24).level != .pass)
+    // 24 GB needs ~22 GB free-plus-inactive at the default reserve.
+    #expect(usable(totalGiB: 24, freePlusInactiveGiB: 22.1, configReserveGiB: 4) >= 18.03)
+    // 32 GB, the #653 flap sample: 21.6 usable passes the 18.03 requirement.
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: 21.6).level == .pass)
+    // ...and 15.9 usable still fails, under the new floor as under the old one.
+    #expect(ModelFitDiagnostic.diagnose(modelID: "gpt-oss-20b", weightGb: weights, usableGb: 15.9).level != .pass)
+}

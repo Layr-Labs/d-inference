@@ -23,6 +23,45 @@ disabled clients are
 [`TelemetryClient.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift)
 and [`telemetry.ts`](../../console-ui/src/lib/telemetry.ts).
 
+## Profiler wire fields are not telemetry events
+
+The system profiler's `profile` object (on `inference_complete` /
+`inference_error`) and the `telemetry` sub-objects on the heartbeat's
+`backend_capacity` and `backend_capacity.slots[]` are **protocol fields**, not
+`TelemetryEvent` records. They ride the existing provider WebSocket messages,
+never `POST /v1/telemetry/events`, and are governed by a two-way Go/Swift
+protocol sync ([`coordinator/protocol/profile.go`](../../coordinator/protocol/profile.go)
+↔ [`InferenceProfile.swift`](../../provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift),
+enforced by a shared fixture), not by the three-way Go/Swift/TypeScript
+allowlist on this page. Nothing below applies to them; see
+[`docs/architecture/system-profiler.md`](../architecture/system-profiler.md) §6
+and the [protocol reference](protocol-messages.md#system-profiler-objects).
+
+The [one key, one meaning](#adding-a-field-one-key-one-meaning) rule still
+holds across both channels:
+
+* `eval_in_flight_ms` on the heartbeat is now produced by the provider from
+  MLX `EvalProbe.currentEvalElapsedMs` (the v2 bridge previously left the
+  slot-level field at `0`). The pre-existing `backend_capacity.slots[].eval_in_flight_ms`
+  and the new `slots[].telemetry.eval_in_flight_ms` are the same read with the
+  documented meaning: milliseconds the currently running blocking `eval` has
+  held the process-global eval lock, `0` when none is in flight.
+* `slots[].telemetry.kv_bytes_in_use` / `kv_bytes_capacity` are raw bytes:
+  `CBv2CapacitySnapshot.kvBytesInUse`, and `kvBytesCapacity` (the admission
+  ledger) bounded by `kvBytesBackendCapacity` when that is known. They are not
+  the retired [`pool_utilization`](#paged-kv-pool) ratio, whose denominator is
+  the physical `kvBytesBackendCapacity`. Derive ratios downstream from the raw
+  terms; do not add one to the wire.
+* The `fleet_snapshots` capability columns `provider_version`, `model_vision`
+  and `template_render_ok` add **no** wire key: they are coordinator-side
+  copies of the register message's `version` (folded by
+  `registry.ProviderVersionFold` to a bounded semver or `invalid`) and of the
+  slot model's `models[].is_vision` / `models[].template_render_ok`, sampled
+  once a minute so `routingsim` can replay the tools version floor, the vision
+  gate and the template-render gate (see
+  [`system-profiler.md`](../architecture/system-profiler.md) §5.2). Their
+  meaning is the register message's, unchanged.
+
 ## Ingestion endpoint
 
 ```

@@ -424,3 +424,100 @@ func TestWriteGenericProviderErrorIgnoresRawErrorEvenWithValidCode(t *testing.T)
 		t.Fatalf("fixed client message missing: %s", recorder.Body.String())
 	}
 }
+
+// TestSanitizeProviderInferenceErrorLiveBudgetPresence pins the P1-4 wire
+// semantics at the confidentiality boundary: the live budget is a POINTER so
+// presence itself is signal — nil (legacy frame) stays nil and leaves the
+// stale-heartbeat fallback in play, an EXPLICIT zero ("no headroom right
+// now", transient) survives, and a nonsense negative is treated as absent.
+// The safe copy must never alias the raw provider message's allocation.
+func TestSanitizeProviderInferenceErrorLiveBudgetPresence(t *testing.T) {
+	base := protocol.InferenceErrorMessage{
+		Type:        protocol.TypeInferenceError,
+		StatusCode:  http.StatusServiceUnavailable,
+		FailureCode: protocol.FailureCodeCapacity,
+	}
+
+	legacy := base
+	safe, _, _ := sanitizeProviderInferenceError(&legacy)
+	if safe.AvailableTokenBudget != nil {
+		t.Fatalf("legacy nil budget crossed the boundary as %v, want nil", *safe.AvailableTokenBudget)
+	}
+
+	zero := base
+	zero.RejectionReason = protocol.RejectionReasonTokenBudget
+	zero.AvailableTokenBudget = i64ptr(0)
+	safe, _, _ = sanitizeProviderInferenceError(&zero)
+	if safe.AvailableTokenBudget == nil || *safe.AvailableTokenBudget != 0 {
+		t.Fatalf("explicit zero live budget = %v, want a preserved 0", safe.AvailableTokenBudget)
+	}
+	if safe.AvailableTokenBudget == zero.AvailableTokenBudget {
+		t.Fatal("safe frame aliases the raw provider message's budget allocation")
+	}
+
+	negative := base
+	negative.AvailableTokenBudget = i64ptr(-5)
+	safe, _, _ = sanitizeProviderInferenceError(&negative)
+	if safe.AvailableTokenBudget != nil {
+		t.Fatalf("negative budget crossed the boundary as %v, want dropped", *safe.AvailableTokenBudget)
+	}
+}
+
+// The provider profile crosses the sanitizer as an opaque byte copy (it is
+// validated later, on the profile sink), while the raw Error prose still
+// never does — with or without a profile attached.
+func TestSanitizeProviderInferenceErrorCarriesProfileNeverErrorText(t *testing.T) {
+	profile := []byte(`{"schema":1,"total_us":30000500,"cancel_stage":"none"}`)
+	input := &protocol.InferenceErrorMessage{
+		Type:          protocol.TypeInferenceError,
+		RequestID:     "req-profile",
+		Error:         "PROFILE_PATH_LEAK_SENTINEL /Users/provider/prompt.txt",
+		StatusCode:    http.StatusServiceUnavailable,
+		ErrorReason:   errorReasonCapacityTimeout,
+		FailureCode:   protocol.FailureCodeCapacity,
+		TerminalCause: terminalCauseAdmissionTimeout,
+		Profile:       json.RawMessage(append([]byte(nil), profile...)),
+	}
+	safe, invalidCode, invalidCause := sanitizeProviderInferenceError(input)
+	if invalidCode || invalidCause {
+		t.Fatalf("typed frame rejected: invalidCode=%v invalidCause=%v", invalidCode, invalidCause)
+	}
+	if !bytes.Equal(safe.Profile, profile) {
+		t.Fatalf("profile did not survive sanitization: %s", safe.Profile)
+	}
+	internal := normalizeInferenceErrorForInternalUse(*input)
+	if !bytes.Equal(internal.Profile, profile) {
+		t.Fatalf("internal normalization dropped the profile: %s", internal.Profile)
+	}
+	// A byte COPY: mutating the provider's buffer afterwards cannot reach the
+	// retained profile.
+	input.Profile[2] = 'X'
+	if !bytes.Equal(safe.Profile, profile) || !bytes.Equal(internal.Profile, profile) {
+		t.Fatal("sanitizer aliased the provider's profile buffer")
+	}
+	wire, err := json.Marshal(safe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(wire, []byte(`"profile":{"schema":1,"total_us":30000500,"cancel_stage":"none"}`)) {
+		t.Fatalf("profile missing from sanitized wire: %s", wire)
+	}
+	if bytes.Contains(wire, []byte("LEAK_SENTINEL")) || safe.Error != "request rejected: provider capacity unavailable" {
+		t.Fatalf("raw error text survived alongside the profile: %s", wire)
+	}
+	if safe.StatusCode != http.StatusServiceUnavailable || safe.TerminalCause != terminalCauseAdmissionTimeout {
+		t.Fatalf("closed fields changed by profile carry-through: %+v", safe)
+	}
+
+	// Idempotent with the profile attached, and nil stays nil (legacy frame).
+	second, _, _ := sanitizeProviderInferenceError(&safe)
+	if !reflect.DeepEqual(safe, second) {
+		t.Fatalf("sanitizer not idempotent with profile:\nfirst:  %+v\nsecond: %+v", safe, second)
+	}
+	legacy, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
+		Error: "LEGACY_LEAK_SENTINEL", StatusCode: http.StatusTooManyRequests,
+	})
+	if legacy.Profile != nil {
+		t.Fatalf("legacy frame grew a profile: %s", legacy.Profile)
+	}
+}

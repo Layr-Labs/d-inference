@@ -48,6 +48,11 @@ const (
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
 	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
 
+	// TypeCapacityQuote is the provider's answer to a capacity_probe: an
+	// admissibility verdict + calibrated TTFT estimate computed from its live
+	// capacity snapshot. See CapacityQuoteMessage.
+	TypeCapacityQuote = "capacity_quote"
+
 	// Coordinator → Provider.
 	TypeInferenceRequest               = "inference_request"
 	TypeCancel                         = "cancel"
@@ -57,7 +62,12 @@ const (
 	TypeLoadModel                      = "load_model"
 	TypePrefetchModel                  = "prefetch_model"
 	TypeDesiredModels                  = "desired_models"
-	TypeTrustStatus                    = "trust_status"
+
+	// TypeCapacityProbe asks a provider whether it could admit a request of a
+	// given bucketed shape right now. Carries shape metadata only — never
+	// prompt content or identity. See CapacityProbeMessage.
+	TypeCapacityProbe = "capacity_probe"
+	TypeTrustStatus   = "trust_status"
 )
 
 // LoadModelStatus is the lifecycle state reported by a provider in response
@@ -360,6 +370,13 @@ type BackendSlotCapacity struct {
 	WedgeSuspected             bool    `json:"wedge_suspected,omitempty"`                // provider-computed: ≥N consecutive admits, 0 first-tokens, ≥T seconds
 	EvalInFlightMs             int64   `json:"eval_in_flight_ms,omitempty"`              // ms the current blocking eval has run (process-global, evalLock); seconds-range = wedge smoking gun
 	IdleClearInFlightMs        int64   `json:"idle_clear_in_flight_ms,omitempty"`        // ms the current idle GPU drain+clearCache has run for this slot; seconds-range = clearCache/IOKit race
+
+	// Telemetry is the system-profiler per-slot sub-object (nil on providers
+	// that predate it; presence is the "new provider" sentinel). Pointer so
+	// omission and an empty object stay distinct. Clamped by
+	// registry.clampBackendCapacity, cloned by canonicalHeartbeatModelState.
+	// MEASUREMENT ONLY — routing is NOT gated on it.
+	Telemetry *SlotTelemetry `json:"telemetry,omitempty"`
 }
 
 // MLXCacheReclaimerTelemetry reports cumulative provider allocator-reclaim
@@ -394,6 +411,18 @@ type BackendCapacity struct {
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
 	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
 	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
+	// CapacitySeq is a per-connection monotonically increasing sequence number
+	// stamped on every capacity snapshot the provider publishes. The
+	// coordinator applies snapshots by seq (stale/reordered seq → discard) so
+	// event-triggered heartbeats can't regress the ledger, and a connection
+	// that has reported any seq > 0 is thereby quote-capable
+	// (capacity_probe/capacity_quote). Zero means a legacy provider: the field
+	// is omitted from the wire and the coordinator keeps last-write-wins
+	// heartbeat semantics.
+	CapacitySeq uint64 `json:"capacity_seq,omitempty"`
+	// Telemetry is the system-profiler machine-level sub-object (nil on
+	// providers that predate it). Same rules as BackendSlotCapacity.Telemetry.
+	Telemetry *CapacityTelemetry `json:"telemetry,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.
@@ -415,6 +444,16 @@ type HeartbeatStats struct {
 	StreamClosedWithoutTerminal  int64 `json:"stream_closed_without_terminal,omitempty"`
 	CancelDuringModelLoad        int64 `json:"cancel_during_model_load,omitempty"`
 	UsageGaps                    int64 `json:"usage_gaps,omitempty"`
+
+	// System-profiler cancel accounting (cumulative per session, delta-merged
+	// like the counters above; absent on providers that predate them).
+	CancelStagePreAcceptTotal    int64 `json:"cancel_stage_pre_accept_total,omitempty"`
+	CancelStagePreEngineTotal    int64 `json:"cancel_stage_pre_engine_total,omitempty"`
+	CancelStagePrefillTotal      int64 `json:"cancel_stage_prefill_total,omitempty"`
+	CancelStageDecodeTotal       int64 `json:"cancel_stage_decode_total,omitempty"`
+	CancelStagePostTerminalTotal int64 `json:"cancel_stage_post_terminal_total,omitempty"`
+	TokensAfterCancelTotal       int64 `json:"tokens_after_cancel_total,omitempty"`
+	CancelAbortNSSum             int64 `json:"cancel_abort_ns_sum,omitempty"`
 }
 
 // InferenceAcceptedMessage signals the provider accepted the request and is
@@ -534,6 +573,15 @@ type InferenceCompleteMessage struct {
 	StopSequence string    `json:"stop_sequence,omitempty"` // Exact caller-authored stop string matched by the engine
 	SESignature  string    `json:"se_signature,omitempty"`  // SE-signed response hash
 	ResponseHash string    `json:"response_hash,omitempty"` // SHA-256 of response data
+	// Profile is the optional provider request profile (system profiler).
+	// Deliberately json.RawMessage, not a typed struct: the WS read loop only
+	// length-checks it (≤ MaxInferenceProfileBytes) and retains the bytes; the
+	// typed decode into InferenceProfile happens on the profile sink worker
+	// after the terminal has been fully processed. A malformed profile can
+	// therefore never fail the envelope decode of a terminal frame. Absent on
+	// legacy providers. OBSERVABILITY ONLY: never routing, health, billing or
+	// client output.
+	Profile json.RawMessage `json:"profile,omitempty"`
 }
 
 // InferenceErrorMessage signals an error during inference.
@@ -564,6 +612,39 @@ type InferenceErrorMessage struct {
 	// on the route row and emitted in telemetry, but it never feeds billing,
 	// refunds, reservations, provider earnings, or payouts.
 	AttemptUsage *UsageInfo `json:"attempt_usage,omitempty"`
+
+	// Enriched rejection (routing v2). A current provider that fast-rejects at
+	// its live admission gate says WHY in machine-readable form, turning every
+	// rejection into a fresh capacity sample for the coordinator's ledger,
+	// budget clamp, and failure taxonomy — the gray-box incident
+	// (registry/budget_clamp.go) was 11,581 opaque capacity 503s that had to
+	// be re-learned one bounce at a time. All four fields are additive and
+	// absent on legacy frames, so those decode byte-identically.
+	//
+	// RejectionReason is the bounded CapacityRejectionReason enum (shared with
+	// capacity_quote). AvailableTokenBudget is the live gate's remaining token
+	// headroom at rejection time — a POINTER because zero is a meaningful
+	// measurement, not an unset default: a busy slot with exactly zero tokens
+	// free must encode that zero (nil = legacy/unenriched, absent on the
+	// wire), or the coordinator falls back to the stale heartbeat budget and
+	// can misclassify a transient token_budget reject as fleet-deterministic
+	// (codex P1-4). FeasibleAfterMS is the provider's busy-wait
+	// forecast of when a request of this shape could next be admitted
+	// (duration, never a wall clock) — emitted on busy-slot token_budget
+	// rejections by quote-capable providers, from the same queue estimator
+	// their capacity quotes use. CapacitySeq names the capacity snapshot the
+	// gate decided from, letting the coordinator order the rejection against
+	// heartbeats.
+	RejectionReason      CapacityRejectionReason `json:"rejection_reason,omitempty"`
+	AvailableTokenBudget *int64                  `json:"available_token_budget,omitempty"`
+	FeasibleAfterMS      int64                   `json:"feasible_after_ms,omitempty"`
+	CapacitySeq          uint64                  `json:"capacity_seq,omitempty"`
+	// Profile is the optional provider request profile of the failed attempt.
+	// Same contract as InferenceCompleteMessage.Profile: raw bytes on the
+	// wire, length-checked on the read loop, decoded on the profile sink
+	// worker. The sanitizer carries it through as an opaque byte copy so it
+	// survives the confidentiality boundary without ever being read there.
+	Profile json.RawMessage `json:"profile,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -956,6 +1037,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg PrefixCacheReadyV2Message
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal prefix_cache_ready_v2: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeCapacityQuote:
+		var msg CapacityQuoteMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal capacity_quote: %w", err)
 		}
 		pm.Payload = &msg
 

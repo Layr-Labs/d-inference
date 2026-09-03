@@ -86,6 +86,20 @@ type RequestTimingDetails struct {
 	EncryptUs    int64 `json:"encrypt_us"`
 	DispatchUs   int64 `json:"dispatch_us"`
 	ProviderUs   int64 `json:"provider_us"`
+
+	// Additive system-profiler segments, omitted when the profiler is off or
+	// the stamp is unavailable; they decompose the same wall time without
+	// overlapping the legacy keys above.
+	PreHandlerUs   int64 `json:"pre_handler_us,omitempty"`   // middleware entry → handler entry (auth, rate limit, sealed decrypt)
+	PreflightUs    int64 `json:"preflight_us,omitempty"`     // admission preflight (capacity/TTFT checks)
+	RouteReserveUs int64 `json:"route_reserve_us,omitempty"` // attempt start → provider reserved (the scheduler only)
+	QueuePureUs    int64 `json:"queue_pure_us,omitempty"`    // enqueue → dequeue, nothing else
+	WriterUs       int64 `json:"writer_us,omitempty"`        // frame submitted → dequeued by the provider writer
+	SocketUs       int64 `json:"socket_us,omitempty"`        // dequeued → frame on the wire
+	ProviderAckUs  int64 `json:"provider_ack_us,omitempty"`  // frame on the wire → inference_accepted
+	// TimingAnomaly is set when a legacy segment computed negative (retried
+	// attempts sharing one RequestTiming); the segment is clamped to 0.
+	TimingAnomaly bool `json:"timing_anomaly,omitempty"`
 }
 
 // ChatCompletionMetadata is the opt-in consumer-safe provider, attestation,

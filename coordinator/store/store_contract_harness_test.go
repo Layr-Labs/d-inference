@@ -106,7 +106,10 @@ var (
 )
 
 // Keep this list exhaustive for application tables created by PostgresStore.
-// schema_migrations is deliberately excluded; see testPostgresStore.
+// schema_migrations and usage_totals_backfill_state are deliberately excluded:
+// both are migration bookkeeping (the backfill-state row is one-time backfill
+// progress — truncating it mid-backfill would restart the backfill over data
+// another test owns); see testPostgresStore.
 var postgresContractTables = []string{
 	"model_active_versions",
 	"model_version_files",
@@ -121,7 +124,11 @@ var postgresContractTables = []string{
 	"provider_sessions",
 	"provider_floor_draws",
 	"provider_trust_reuse",
+	"provider_verification_jobs",
 	"code_attestations",
+	"code_attest_push_budgets",
+	"request_profiles",
+	"fleet_snapshots",
 	"request_rejections",
 	"inference_routes",
 	"stripe_withdrawals",

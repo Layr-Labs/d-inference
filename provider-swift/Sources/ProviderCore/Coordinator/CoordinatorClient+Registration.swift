@@ -75,7 +75,12 @@ extension CoordinatorClient {
         let isActive = state.inferenceActive
         let activeModel = state.currentModel
         let warmModels = state.warmModels
-        let capacity = state.backendCapacity
+        // Stamp this heartbeat's capacity payload with the next per-connection
+        // capacity_seq and publish it as the quote snapshot (routing v2).
+        // EVERY heartbeat build flows through here — the 5s baseline and the
+        // event-triggered sends — so seq is dense, monotonic, and the
+        // published snapshot is exactly what the coordinator last saw.
+        let capacity = state.stampAndPublishHeartbeatCapacity(state.backendCapacity)
         let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
@@ -127,6 +132,18 @@ extension CoordinatorClient {
             // rather than shipping malformed bytes the coordinator would drop.
             return "{\"type\":\"heartbeat\",\"status\":\"idle\",\"stats\":{\"requests_served\":0,\"tokens_generated\":0},\"system_metrics\":{\"memory_pressure\":0,\"cpu_usage\":0,\"thermal_state\":\"nominal\"}}"
         }
+    }
+
+    /// Out-of-band event-triggered heartbeat (routing v2, Phase 1): reuses the
+    /// baseline heartbeat builder verbatim — same payload, same seq stamping,
+    /// same publication — and fires it on the live connection immediately.
+    /// Rate-capping and coalescing happen at the caller (`ProviderLoop`'s
+    /// `CapacityHeartbeatThrottle`); this method only refuses to write into a
+    /// dead or not-yet-registered session, where a heartbeat frame ahead of
+    /// `register` would be a protocol violation.
+    func sendEventHeartbeat() {
+        guard sessionRegistered, let connection = nwConnection else { return }
+        sendTextFrame(buildHeartbeatJSON(), on: connection, identifier: "heartbeat")
     }
 
 }

@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -441,4 +442,301 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 	if legacy.StepsExecuted != 0 || legacy.Admits != 0 || legacy.WedgeSuspected {
 		t.Fatalf("legacy slot should default wedge fields to zero/false, got %+v", legacy)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// System profiler: `telemetry` sub-objects on BackendSlotCapacity /
+// BackendCapacity and the HeartbeatStats cancel counters.
+// ---------------------------------------------------------------------------
+
+func TestBackendCapacityTelemetryRoundTrip(t *testing.T) {
+	queued, rows, tps, ewma := int64(640), int64(1), 1655.2, true
+	kvUse, kvCap := int64(2415919104), int64(8589934592)
+	lowPower, resources := false, int64(412)
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "serving",
+		Stats: HeartbeatStats{
+			RequestsServed:            1523,
+			CancelStagePreAcceptTotal: 3,
+			CancelStageDecodeTotal:    20,
+			TokensAfterCancelTotal:    58,
+			CancelAbortNSSum:          1284000000,
+		},
+		BackendCapacity: &BackendCapacity{
+			Slots: []BackendSlotCapacity{{
+				Model: "gemma-4-26b-qat-4bit",
+				State: "running",
+				Telemetry: &SlotTelemetry{
+					QueuedPrefillTokens: &queued,
+					PartialPrefillRows:  &rows,
+					IsolatedPrefillTPS:  &tps,
+					EWMAInitialized:     &ewma,
+					KVBytesInUse:        &kvUse,
+					KVBytesCapacity:     &kvCap,
+				},
+			}},
+			Telemetry: &CapacityTelemetry{
+				LowPowerMode:        &lowPower,
+				MemoryPressureLevel: MemoryPressureNormal,
+				MLXNumResources:     &resources,
+			},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"telemetry":{"queued_prefill_tokens":640,"partial_prefill_rows":1,"isolated_prefill_tps":1655.2,"ewma_initialized":true,"kv_bytes_in_use":2415919104,"kv_bytes_capacity":8589934592}`,
+		`"telemetry":{"low_power_mode":false,"memory_pressure_level":"normal","mlx_num_resources":412}`,
+		`"cancel_stage_pre_accept_total":3`, `"cancel_stage_decode_total":20`,
+		`"tokens_after_cancel_total":58`, `"cancel_abort_ns_sum":1284000000`,
+	} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("wire missing %s in %s", want, data)
+		}
+	}
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	if bc == nil || len(bc.Slots) != 1 || bc.Slots[0].Telemetry == nil || bc.Telemetry == nil {
+		t.Fatalf("decoded capacity = %+v", bc)
+	}
+	st := bc.Slots[0].Telemetry
+	if *st.QueuedPrefillTokens != 640 || *st.PartialPrefillRows != 1 || *st.IsolatedPrefillTPS != 1655.2 ||
+		!*st.EWMAInitialized || *st.KVBytesInUse != kvUse || *st.KVBytesCapacity != kvCap {
+		t.Fatalf("slot telemetry = %+v", st)
+	}
+	if st.PumpTasks != nil || st.StepWallNSTotal != nil {
+		t.Fatalf("absent slot telemetry fields must decode nil: %+v", st)
+	}
+	if *bc.Telemetry.LowPowerMode || bc.Telemetry.MemoryPressureLevel != MemoryPressureNormal ||
+		*bc.Telemetry.MLXNumResources != 412 || bc.Telemetry.InAdmission != nil {
+		t.Fatalf("capacity telemetry = %+v", bc.Telemetry)
+	}
+	if decoded.Stats.CancelStagePreAcceptTotal != 3 || decoded.Stats.CancelStageDecodeTotal != 20 ||
+		decoded.Stats.TokensAfterCancelTotal != 58 || decoded.Stats.CancelAbortNSSum != 1284000000 {
+		t.Fatalf("stats = %+v", decoded.Stats)
+	}
+
+	// Clone must detach every pointer (the registry clamps the clone in place).
+	slotClone := st.Clone()
+	*slotClone.QueuedPrefillTokens = 1
+	slotClone.IsolatedPrefillTPS = nil
+	if *st.QueuedPrefillTokens != 640 || st.IsolatedPrefillTPS == nil {
+		t.Fatal("SlotTelemetry.Clone shares pointees with the original")
+	}
+	capClone := bc.Telemetry.Clone()
+	*capClone.MLXNumResources = 0
+	if *bc.Telemetry.MLXNumResources != 412 {
+		t.Fatal("CapacityTelemetry.Clone shares pointees with the original")
+	}
+	var nilSlot *SlotTelemetry
+	var nilCap *CapacityTelemetry
+	if nilSlot.Clone() != nil || nilCap.Clone() != nil {
+		t.Fatal("Clone of nil must stay nil (absence is the legacy sentinel)")
+	}
+}
+
+func TestBackendCapacityTelemetryOmittedCompatibility(t *testing.T) {
+	// Exactly the pre-profiler heartbeat shape.
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{"requests_served":1,"tokens_generated":2},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	if bc == nil || len(bc.Slots) != 1 {
+		t.Fatalf("decoded capacity = %+v", bc)
+	}
+	// nil == legacy provider, never an empty telemetry object.
+	if bc.Slots[0].Telemetry != nil || bc.Telemetry != nil {
+		t.Fatalf("omitted telemetry decoded non-nil: slot=%+v cap=%+v", bc.Slots[0].Telemetry, bc.Telemetry)
+	}
+	if decoded.Stats.CancelStagePrefillTotal != 0 || decoded.Stats.CancelAbortNSSum != 0 {
+		t.Fatalf("absent counters must read 0: %+v", decoded.Stats)
+	}
+
+	// Reverse direction: nothing set → prior wire shape, byte-compatible with
+	// pre-profiler consumers (no "telemetry", no zero-valued cancel counters).
+	legacy, err := json.Marshal(HeartbeatMessage{
+		Type: TypeHeartbeat, Status: "serving",
+		Stats:           HeartbeatStats{RequestsServed: 1, TokensGenerated: 2},
+		BackendCapacity: &BackendCapacity{Slots: []BackendSlotCapacity{{Model: "qwen", State: "running"}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, forbidden := range []string{"telemetry", "cancel_stage", "tokens_after_cancel", "cancel_abort_ns_sum"} {
+		if bytes.Contains(legacy, []byte(forbidden)) {
+			t.Fatalf("unset %s leaked onto the legacy wire: %s", forbidden, legacy)
+		}
+	}
+}
+
+func TestBackendCapacityTelemetryExplicitZeroCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{
+			"slots":[{"model":"qwen","state":"running","telemetry":{"queued_prefill_tokens":0,"isolated_prefill_tps":0}}],
+			"telemetry":{}
+		}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	bc := decoded.BackendCapacity
+	st := bc.Slots[0].Telemetry
+	if st == nil {
+		t.Fatal("present telemetry decoded nil: presence is the new-provider sentinel")
+	}
+	// An explicit 0 is a value, not an omission: pointer to 0, not nil.
+	if st.QueuedPrefillTokens == nil || *st.QueuedPrefillTokens != 0 || st.IsolatedPrefillTPS == nil || *st.IsolatedPrefillTPS != 0 {
+		t.Fatalf("explicit zeros = %+v", st)
+	}
+	if st.PartialPrefillRows != nil {
+		t.Fatal("unspecified field inside a present object must stay nil")
+	}
+	// An empty object is still presence.
+	if bc.Telemetry == nil || bc.Telemetry.MemoryPressureLevel != "" || bc.Telemetry.LowPowerMode != nil {
+		t.Fatalf("empty capacity telemetry = %+v", bc.Telemetry)
+	}
+
+	// Re-marshal keeps the distinction: omitempty tests the pointer, not the
+	// pointee, so the explicit zeros and the empty object survive.
+	reencoded, err := json.Marshal(bc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"telemetry":{"queued_prefill_tokens":0,"isolated_prefill_tps":0}`, `"telemetry":{}`} {
+		if !bytes.Contains(reencoded, []byte(want)) {
+			t.Fatalf("re-marshal lost %s: %s", want, reencoded)
+		}
+	}
+}
+
+// A wrong-typed telemetry value fails the whole heartbeat decode — existing
+// behaviour for every heartbeat field, documented here so nobody "fixes" the
+// sub-object into a RawMessage and starts retaining unvalidated bytes.
+func TestBackendCapacityTelemetryWrongTypeDropsHeartbeat(t *testing.T) {
+	for name, in := range map[string]string{
+		"slot count is a string": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{},"system_metrics":{},
+			"backend_capacity":{"slots":[{"model":"qwen","state":"running","telemetry":{"queued_prefill_tokens":"lots"}}]}}`,
+		"capacity level is a number": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{},"system_metrics":{},
+			"backend_capacity":{"slots":[],"telemetry":{"memory_pressure_level":3}}}`,
+		"cancel counter is a bool": `{"type":"heartbeat","status":"serving","active_model":null,"stats":{"cancel_stage_decode_total":true},"system_metrics":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var hb HeartbeatMessage
+			if err := json.Unmarshal([]byte(in), &hb); err == nil {
+				t.Fatal("struct decode accepted a wrong-typed telemetry value")
+			}
+			var pm ProviderMessage
+			if err := pm.UnmarshalJSON([]byte(in)); err == nil {
+				t.Fatal("ProviderMessage decode accepted a wrong-typed heartbeat; it must be dropped whole")
+			}
+		})
+	}
+}
+
+// The heartbeat frames of the shared Go/Swift fixture decode, and the Go
+// structs cover every key they carry (stats, slot telemetry, capacity
+// telemetry) — no silent drops between the contract and the structs.
+func TestProfilerWireFixtureHeartbeats(t *testing.T) {
+	frames := loadProfilerFixture(t)
+
+	t.Run("heartbeat_telemetry", func(t *testing.T) {
+		frame := frames["heartbeat_telemetry"]
+		if frame == nil {
+			t.Fatal("fixture frame missing")
+		}
+		var pm ProviderMessage
+		if err := pm.UnmarshalJSON(frame); err != nil {
+			t.Fatalf("UnmarshalJSON: %v", err)
+		}
+		hb, ok := pm.Payload.(*HeartbeatMessage)
+		if !ok {
+			t.Fatalf("payload %T", pm.Payload)
+		}
+		bc := hb.BackendCapacity
+		if bc == nil || len(bc.Slots) != 1 || bc.Slots[0].Telemetry == nil || bc.Telemetry == nil {
+			t.Fatalf("capacity = %+v", bc)
+		}
+		st := bc.Slots[0].Telemetry
+		if *st.QueuedPrefillTokens != 640 || *st.PrefillTokensTotal != 1237904 || *st.MTPAcceptedTotal != 146496 ||
+			*st.IsolatedPrefillTPS != 1655.2 || !*st.EWMAInitialized || *st.EvalInFlightMS != 12 {
+			t.Fatalf("slot telemetry = %+v", st)
+		}
+		if st.StepWallNSTotal != nil || st.DecodeRowsTotal != nil {
+			t.Fatal("slice-3 producers must be absent in the slice-2 fixture")
+		}
+		if bc.Telemetry.MemoryPressureLevel != MemoryPressureNormal || *bc.Telemetry.InflightTasks != 3 || *bc.Telemetry.LowPowerMode {
+			t.Fatalf("capacity telemetry = %+v", bc.Telemetry)
+		}
+		if hb.Stats.CancelStagePreEngineTotal != 9 || hb.Stats.CancelStagePostTerminalTotal != 2 ||
+			hb.Stats.TokensAfterCancelTotal != 58 || hb.Stats.CancelAbortNSSum != 1284000000 {
+			t.Fatalf("stats = %+v", hb.Stats)
+		}
+
+		// Key-set parity for the three profiler-owned objects.
+		var fx struct {
+			Stats           json.RawMessage `json:"stats"`
+			BackendCapacity struct {
+				Slots []struct {
+					Telemetry json.RawMessage `json:"telemetry"`
+				} `json:"slots"`
+				Telemetry json.RawMessage `json:"telemetry"`
+			} `json:"backend_capacity"`
+		}
+		if err := json.Unmarshal(frame, &fx); err != nil {
+			t.Fatalf("fixture shape: %v", err)
+		}
+		for name, pair := range map[string][2]any{
+			"stats":              {hb.Stats, fx.Stats},
+			"slot telemetry":     {st, fx.BackendCapacity.Slots[0].Telemetry},
+			"capacity telemetry": {bc.Telemetry, fx.BackendCapacity.Telemetry},
+		} {
+			re, err := json.Marshal(pair[0])
+			if err != nil {
+				t.Fatalf("%s re-marshal: %v", name, err)
+			}
+			got, want := jsonKeySet(t, re), jsonKeySet(t, pair[1].(json.RawMessage))
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s key set differs from fixture:\n got %v\nwant %v", name, got, want)
+			}
+		}
+	})
+
+	t.Run("heartbeat_omitted", func(t *testing.T) {
+		var pm ProviderMessage
+		if err := pm.UnmarshalJSON(frames["heartbeat_omitted"]); err != nil {
+			t.Fatalf("UnmarshalJSON: %v", err)
+		}
+		hb := pm.Payload.(*HeartbeatMessage)
+		if hb.BackendCapacity == nil || hb.BackendCapacity.Telemetry != nil || hb.BackendCapacity.Slots[0].Telemetry != nil {
+			t.Fatalf("omitted variant carried telemetry: %+v", hb.BackendCapacity)
+		}
+		if hb.Stats.CancelStageDecodeTotal != 0 || hb.Stats.CancelAbortNSSum != 0 {
+			t.Fatalf("omitted counters must read 0: %+v", hb.Stats)
+		}
+	})
 }

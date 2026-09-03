@@ -138,6 +138,14 @@ public actor ModelPrefetchCoordinator {
     /// Number of in-flight prefetch tasks (test/diagnostics).
     public func inFlightCount() -> Int { prefetchTasks.count }
 
+    /// Whether a prefetch for `modelId` is still running — including the
+    /// tail of an attempt whose `onVerified` callback has returned but whose
+    /// terminal status has not been emitted yet. A new `handlePrefetch` for
+    /// the same id during that window coalesces into the running attempt
+    /// (no second `onVerified`), so callers that need a genuinely NEW pass
+    /// must wait until this is false.
+    public func isInFlight(modelId: String) -> Bool { prefetchTasks[modelId] != nil }
+
     /// Number of requests waiting in the priority queue (test/diagnostics).
     public func queuedCount() -> Int { pendingQueue.count }
 

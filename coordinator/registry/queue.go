@@ -52,6 +52,32 @@ var ErrQueueFirstContentDeadline = errors.New("queued request first-content dead
 var ErrQueueToolConstraintUnavailable = errors.New(
 	"no provider supports inference-time tool constraints for queued request")
 
+// Bounded drain triggers: the event that ran the queue drain which reserved a
+// queued request. Recorded on QueuedRequest.DrainTrigger and
+// RoutingDecision.DrainTrigger for the system-profiler routing record. Closed
+// vocabulary — foldDrainTrigger maps anything else to DrainTriggerUnknown.
+const (
+	DrainTriggerHeartbeat  = "heartbeat"  // Registry.Heartbeat (a heartbeat may make a slot routable)
+	DrainTriggerIdle       = "idle"       // SetProviderIdle (a provider finished a job)
+	DrainTriggerChallenge  = "challenge"  // RecordChallengeSuccess / DrainQueuedRequestsForProvider
+	DrainTriggerLoad       = "load"       // load_model success (DrainQueuedRequestsForModel)
+	DrainTriggerDisconnect = "disconnect" // Disconnect (re-run so unservable waiters fail fast)
+	DrainTriggerKick       = "kick"       // cold-dispatch kick from the api layer
+	DrainTriggerUnknown    = "unknown"    // legacy caller that has not been migrated
+)
+
+// foldDrainTrigger returns reason if it is one of the bounded DrainTrigger*
+// values, else DrainTriggerUnknown. Constant strings only — no allocation.
+func foldDrainTrigger(reason string) string {
+	switch reason {
+	case DrainTriggerHeartbeat, DrainTriggerIdle, DrainTriggerChallenge, DrainTriggerLoad,
+		DrainTriggerDisconnect, DrainTriggerKick:
+		return reason
+	default:
+		return DrainTriggerUnknown
+	}
+}
+
 // QueuedRequest represents a request waiting for a provider.
 type QueuedRequest struct {
 	RequestID  string
@@ -60,8 +86,18 @@ type QueuedRequest struct {
 	Pending    *PendingRequest
 	ResponseCh chan *Provider // receives the assigned provider
 	EnqueuedAt time.Time
-	DoneCh     chan struct{} // closed when the waiter is no longer interested
-	doneOnce   sync.Once
+	// EnqueuePosition is the request's index in the model queue at enqueue
+	// (0 = head; equals the queue length before the append) and
+	// DepthAtEnqueue the same length — i.e. how many waiters were ahead of it.
+	// Set by Enqueue; observability only.
+	EnqueuePosition int
+	DepthAtEnqueue  int
+	// DrainTrigger is the bounded DrainTrigger* value naming the event whose
+	// drain recorded this request's routing decision (reserved it, or failed it
+	// terminally). Empty until a drain handles the request.
+	DrainTrigger string
+	DoneCh       chan struct{} // closed when the waiter is no longer interested
+	doneOnce     sync.Once
 
 	assignmentMu sync.Mutex
 	assignment   *queuedProviderAssignment
@@ -265,6 +301,8 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 	}
 
 	req.EnqueuedAt = time.Now()
+	req.EnqueuePosition = len(queue)
+	req.DepthAtEnqueue = len(queue)
 	q.queues[req.Model] = append(queue, req)
 	return nil
 }
@@ -382,6 +420,60 @@ func (q *RequestQueue) QueueSize(model string) int {
 	return len(q.queues[model])
 }
 
+// CompetingQueueDepth counts the queued waiters for a model whose routing
+// constraints could overlap the capacity available to pr — the hedge
+// governor's "queued consumers outrank insurance" input. A raw QueueSize
+// over-suppresses: a waiter that structurally CANNOT drain onto the pool a
+// hedge for pr would consume is not a competing consumer, and counting it
+// starves every public request of hedges for the waiter's whole queue stay
+// (codex P2). Excluded:
+//
+//   - exclusive self-route waiters (Pending.SelfRouteOnly): they drain only
+//     onto their owner's machines and never fall back to the public fleet,
+//     so public capacity spent on a hedge takes nothing from them;
+//   - serial-pinned waiters (Pending.AllowedProviderSerials) whose allowlist
+//     does not intersect pr's own: they can only consume their pinned
+//     providers. When pr is itself pinned to an overlapping set the two
+//     demonstrably compete for the same pool and the waiter counts.
+//
+// A waiter with a nil Pending has an unconstrained shape and counts
+// conservatively. pr == nil means "no constraint context": only the
+// structural self-route/serial-pinned exclusions apply.
+func (q *RequestQueue) CompetingQueueDepth(model string, pr *PendingRequest) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	depth := 0
+	for _, req := range q.queues[model] {
+		w := req.Pending
+		if w == nil {
+			depth++
+			continue
+		}
+		if w.SelfRouteOnly {
+			continue
+		}
+		if len(w.AllowedProviderSerials) > 0 &&
+			(pr == nil || !serialSetsIntersect(w.AllowedProviderSerials, pr.AllowedProviderSerials)) {
+			continue
+		}
+		depth++
+	}
+	return depth
+}
+
+// serialSetsIntersect reports whether two attested-serial allowlists share a
+// serial. Sized for the tiny per-request lists routing carries; no map.
+func serialSetsIntersect(a, b []string) bool {
+	for _, s := range a {
+		for _, t := range b {
+			if s == t && s != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (q *RequestQueue) QueueStats(model string) (depth int, oldestAge time.Duration) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -401,6 +493,28 @@ func (q *RequestQueue) QueueStats(model string) (depth int, oldestAge time.Durat
 		oldestAge = now.Sub(oldest)
 	}
 	return depth, oldestAge
+}
+
+// QueueDepths returns the total number of queued requests and the per-model
+// counts (nil when nothing is queued). READ-ONLY: unlike QueuedModels it does
+// NOT sweep stale entries or signal any waiter, so an observability caller
+// (the fleet sampler) can never change a client outcome. Stale-but-unswept
+// waiters are counted — they still occupy the queue until a mutating path
+// (Enqueue / QueuedModels / PopNextFresh / the waiter's own timer) removes them.
+func (q *RequestQueue) QueueDepths() (total int, byModel map[string]int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for model, queue := range q.queues {
+		if len(queue) == 0 {
+			continue
+		}
+		if byModel == nil {
+			byModel = make(map[string]int, len(q.queues))
+		}
+		byModel[model] = len(queue)
+		total += len(queue)
+	}
+	return total, byModel
 }
 
 // TotalSize returns the total number of queued requests across all models.

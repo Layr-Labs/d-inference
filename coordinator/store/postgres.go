@@ -987,32 +987,59 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			version TEXT NOT NULL DEFAULT '',
 			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			apns_token TEXT NOT NULL DEFAULT '',
-			node_public_key TEXT NOT NULL DEFAULT ''
+			node_public_key TEXT NOT NULL DEFAULT '',
+			binary_hash TEXT NOT NULL DEFAULT ''
 		)`,
 		// Token-binding column for reuse (Codex #7): additive for DBs whose
 		// code_attestations table predates it (the CREATE above is a no-op there).
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS node_public_key TEXT NOT NULL DEFAULT ''`,
+		// Attested binary identity (Codex 05:55Z P1): additive; a pre-existing
+		// row's empty hash marks a legacy identity-less proof, which never
+		// authorizes a release-transition resume (real APNs challenge instead).
+		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS binary_hash TEXT NOT NULL DEFAULT ''`,
+		// Durable APNs admission state is deliberately separate from successful
+		// attestation evidence. Spending a push budget never creates trust.
+		`CREATE TABLE IF NOT EXISTS code_attest_push_budgets (
+			se_pubkey TEXT NOT NULL,
+			token_hash TEXT NOT NULL DEFAULT '',
+			next_push_at TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (se_pubkey, token_hash)
+		)`,
+		`DO $$
+		DECLARE key_columns TEXT[];
+		BEGIN
+			SELECT array_agg(a.attname::TEXT ORDER BY k.ordinality)
+			  INTO key_columns
+			  FROM pg_constraint c
+			  CROSS JOIN LATERAL unnest(c.conkey)
+			    WITH ORDINALITY AS k(attnum, ordinality)
+			  JOIN pg_attribute a
+			    ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+			 WHERE c.conrelid = 'code_attest_push_budgets'::regclass
+			   AND c.contype = 'p';
+			IF key_columns IS DISTINCT FROM
+			   ARRAY['se_pubkey', 'token_hash']::TEXT[] THEN
+				ALTER TABLE code_attest_push_budgets
+					DROP CONSTRAINT IF EXISTS code_attest_push_budgets_pkey;
+				ALTER TABLE code_attest_push_budgets
+					ADD CONSTRAINT code_attest_push_budgets_pkey
+					PRIMARY KEY (se_pubkey, token_hash);
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_code_attest_push_budgets_due
+			ON code_attest_push_budgets(next_push_at)`,
+		// Durable rotation-clear cooldown (Codex 06:36Z P1): the sentinel row
+		// records the last honored floor clear so restart/blue-green peers
+		// share one anti-abuse clear budget. NULL = never cleared (legacy rows
+		// and fresh sentinels clear immediately, preserving genuine-rotation UX).
+		`ALTER TABLE code_attest_push_budgets
+			ADD COLUMN IF NOT EXISTS last_clear_at TIMESTAMPTZ`,
 
-		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
-		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
-		// does not wipe it and provoke a fleet-wide live MDM SecurityInfo + APNs
-		// re-verification herd. One row per device (keyed by Secure Enclave public
-		// key). The row records that the device completed a FULL live MDM
-		// verification at verified_at (proven serial, binary hash, SIP, Secure
-		// Boot). The identity + binary + fresh-posture + freshness gate is applied
-		// on READ (in the coordinator, behind a live SE challenge), so a
-		// stale/wrong-binary/expired row never extends trust — it only lets the
-		// coordinator skip a redundant live MDM round-trip.
-		//
-		// SECURITY-SENSITIVE (Threat-Model #5): a row here grants a hardware
-		// fast-skip, so write access must be guarded like the payment ledger — only
-		// the coordinator writes it, and only after a verified live MDM pass.
-		// SeedTrustReuseCache TRUSTS this table's contents on restart; that trust is
-		// bounded by the always-run live SE challenge on read (re-proving posture +
-		// binary + identity) plus future-date rejection, so a tampered/stale row
-		// still falls through to a full live MDM verification rather than silently
-		// granting hardware.
+		// Durable provider device evidence. The legacy binary_hash/verified_at
+		// columns remain accepted during migration, but application proof is never
+		// fabricated from them.
 		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
 			se_pubkey TEXT PRIMARY KEY,
 			serial TEXT NOT NULL DEFAULT '',
@@ -1021,8 +1048,63 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			sip_enabled BOOL NOT NULL DEFAULT FALSE,
 			secure_boot_full BOOL NOT NULL DEFAULT FALSE,
 			mda_udid TEXT NOT NULL DEFAULT '',
-			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_verified_binary_hash TEXT NOT NULL DEFAULT '',
+			hardware_proof_verified_at TIMESTAMPTZ,
+			application_proof_verified_at TIMESTAMPTZ,
+			evidence_generation BIGINT NOT NULL DEFAULT 1,
+			revocation_generation BIGINT NOT NULL DEFAULT 0,
+			revocation_event_id TEXT NOT NULL DEFAULT '',
+			revoked_at TIMESTAMPTZ
 		)`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS last_verified_binary_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS hardware_proof_verified_at TIMESTAMPTZ`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS application_proof_verified_at TIMESTAMPTZ`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS evidence_generation BIGINT NOT NULL DEFAULT 1`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_generation BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revocation_event_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+		// Coordinator-measured continuous-liveness watermark (connection
+		// continuity trust reuse). Written only by the coordinator; NULL for
+		// pre-migration rows means "no continuity evidence" (fail-safe).
+		`ALTER TABLE provider_trust_reuse ADD COLUMN IF NOT EXISTS continuous_coverage_until TIMESTAMPTZ`,
+		`UPDATE provider_trust_reuse
+		 SET hardware_proof_verified_at = verified_at
+		 WHERE hardware_proof_verified_at IS NULL`,
+		`UPDATE provider_trust_reuse
+		 SET last_verified_binary_hash = binary_hash
+		 WHERE last_verified_binary_hash = '' AND binary_hash <> ''`,
+		`ALTER TABLE provider_trust_reuse ALTER COLUMN hardware_proof_verified_at SET DEFAULT NOW()`,
+		`ALTER TABLE provider_trust_reuse ALTER COLUMN hardware_proof_verified_at SET NOT NULL`,
+
+		// Durable bounded verification scheduler. This table contains retry and
+		// short claim metadata only; provider/session IDs are intentionally absent
+		// and a row is never trust authority.
+		`CREATE TABLE IF NOT EXISTS provider_verification_jobs (
+			se_pubkey TEXT NOT NULL,
+			serial TEXT NOT NULL DEFAULT '',
+			udid TEXT NOT NULL DEFAULT '',
+			task_kind TEXT NOT NULL,
+			task_state TEXT NOT NULL,
+			priority SMALLINT NOT NULL,
+			retry_stage INTEGER NOT NULL DEFAULT 0,
+			previous_delay_ns BIGINT NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMPTZ,
+			last_outcome TEXT NOT NULL DEFAULT 'none',
+			reopen_pending BOOLEAN NOT NULL DEFAULT FALSE,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			claim_owner TEXT NOT NULL DEFAULT '',
+			claim_expires_at TIMESTAMPTZ,
+			PRIMARY KEY (se_pubkey, task_kind)
+		)`,
+		`ALTER TABLE provider_verification_jobs
+		 ADD COLUMN IF NOT EXISTS reopen_pending BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_verification_jobs_due
+		 ON provider_verification_jobs(priority, next_attempt_at)
+		 WHERE task_state IN ('pending', 'backoff')`,
+		`CREATE INDEX IF NOT EXISTS idx_provider_verification_jobs_claim
+		 ON provider_verification_jobs(claim_expires_at)
+		 WHERE claim_owner <> ''`,
 
 		// Base-rewards per-job settlement idempotency relies on a partial UNIQUE
 		// index on provider_earnings(job_id). DAR-349: that index is built AFTER
@@ -1054,6 +1136,37 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
+
+		// System profiler (docs/reports request-profiler plan §2.1/§2.4): two NEW
+		// append-only telemetry tables, no ALTER on any existing table. The DDL
+		// text lives in the request/fleet constants below so tests can pin the Go
+		// column lists to it. Both tables are created empty on first boot, so the
+		// plain CREATE INDEX statements never lock a populated table; any FUTURE
+		// index on these tables must be built CONCURRENTLY outside this loop
+		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
+		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		requestProfilesTableDDL,
+		requestProfilesCreatedIndexDDL,
+		requestProfilesCoordIndexDDL,
+		requestProfilesProviderIndexDDL,
+		fleetSnapshotsTableDDL,
+		fleetSnapshotsSampledIndexDDL,
+		// request_profiles / fleet_snapshots are profiler-only and cold (never
+		// hot-path locked), so idempotent ADD COLUMN IF NOT EXISTS is safe here;
+		// it upgrades a database that first booted at 02832be21 (before the
+		// request-shape columns) or before the fleet capability columns. Only
+		// duplicate_column (two coordinators racing the same ALTER) is swallowed;
+		// any other failure aborts boot so a half-migrated schema is never served.
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS estimated_prompt_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requested_max_tokens INT NOT NULL DEFAULT 0; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS requires_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE request_profiles ADD COLUMN IF NOT EXISTS has_tools BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
+		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS model_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
+		fleetSnapshotsProviderIndexDDL,
 	}
 
 	for _, m := range migrations {
@@ -3809,6 +3922,11 @@ func (s *PostgresStore) SetRelease(release *Release) error {
 }
 
 func (s *PostgresStore) ListReleases() []Release {
+	releases, _ := s.ListReleasesWithError()
+	return releases
+}
+
+func (s *PostgresStore) ListReleasesWithError() ([]Release, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3819,7 +3937,7 @@ func (s *PostgresStore) ListReleases() []Release {
 		 FROM releases ORDER BY created_at DESC`,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: list releases: %w", err)
 	}
 	defer rows.Close()
 
@@ -3829,11 +3947,14 @@ func (s *PostgresStore) ListReleases() []Release {
 		if err := rows.Scan(&r.Version, &r.Platform, &r.Backend, &r.BinaryHash, &r.BundleHash, &r.MetallibHash,
 			&r.PythonHash, &r.RuntimeHash, &r.TemplateHashes,
 			&r.URL, &r.Changelog, &r.Active, &r.CreatedAt); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan release: %w", err)
 		}
 		releases = append(releases, r)
 	}
-	return releases
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate releases: %w", err)
+	}
+	return releases, nil
 }
 
 func (s *PostgresStore) GetLatestRelease(platform string) *Release {
@@ -5015,7 +5136,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key FROM code_attestations`)
+		`SELECT se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash FROM code_attestations`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list code attestations: %w", err)
 	}
@@ -5026,7 +5147,7 @@ func (s *PostgresStore) ListCodeAttestations(ctx context.Context) ([]CodeAttesta
 		var rec CodeAttestation
 		if err := rows.Scan(
 			&rec.SEPubKey, &rec.Version, &rec.AttestedAt,
-			&rec.APNsToken, &rec.NodePublicKey,
+			&rec.APNsToken, &rec.NodePublicKey, &rec.BinaryHash,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan code attestation: %w", err)
 		}
@@ -5047,13 +5168,13 @@ func (s *PostgresStore) UpsertCodeAttestation(ctx context.Context, rec CodeAttes
 
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO code_attestations (
-			se_pubkey, version, attested_at, apns_token, node_public_key
-		 ) VALUES ($1, $2, $3, $4, $5)
+			se_pubkey, version, attested_at, apns_token, node_public_key, binary_hash
+		 ) VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
 			version = $2, attested_at = $3,
-			apns_token = $4, node_public_key = $5`,
+			apns_token = $4, node_public_key = $5, binary_hash = $6`,
 		rec.SEPubKey, rec.Version, rec.AttestedAt,
-		rec.APNsToken, rec.NodePublicKey,
+		rec.APNsToken, rec.NodePublicKey, rec.BinaryHash,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert code attestation: %w", err)
@@ -5074,14 +5195,240 @@ func (s *PostgresStore) DeleteCodeAttestation(ctx context.Context, seKey string)
 	return nil
 }
 
-// --- Provider trust-reuse cache (DAR-326 Phase 0) ---
+func (s *PostgresStore) ListCodeAttestPushBudgets(ctx context.Context) ([]CodeAttestPushBudget, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx,
+		`SELECT se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
+		   FROM code_attest_push_budgets`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list code attest push budgets: %w", err)
+	}
+	defer rows.Close()
+	var out []CodeAttestPushBudget
+	for rows.Next() {
+		var rec CodeAttestPushBudget
+		var lastClear *time.Time
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.TokenHash, &rec.NextPushAt, &rec.UpdatedAt,
+			&lastClear,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan code attest push budget: %w", err)
+		}
+		if lastClear != nil {
+			rec.LastClearAt = *lastClear
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate code attest push budgets: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) UpsertCodeAttestPushBudget(ctx context.Context, rec CodeAttestPushBudget) error {
+	if rec.SEPubKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO code_attest_push_budgets (
+			se_pubkey, token_hash, next_push_at, updated_at
+		 ) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+			next_push_at = GREATEST(
+				code_attest_push_budgets.next_push_at,
+				EXCLUDED.next_push_at
+			),
+			updated_at = EXCLUDED.updated_at`,
+		rec.SEPubKey, rec.TokenHash, rec.NextPushAt, rec.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert code attest push budget: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteCodeAttestPushBudget(ctx context.Context, seKey string) error {
+	if seKey == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM code_attest_push_budgets WHERE se_pubkey = $1`, seKey,
+	); err != nil {
+		return fmt.Errorf("store: delete code attest push budget: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ReserveCodeAttestPushBudget(
+	ctx context.Context,
+	seKey, tokenHash string,
+	now, nextPushAt time.Time,
+) (bool, error) {
+	if seKey == "" || tokenHash == "" || !nextPushAt.After(now) {
+		return false, errors.New("store: invalid code attest push reservation")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// Token row = per-token cooldown (A-B-A retention). Sentinel row
+	// (token_hash = '') = per-SE-key admission floor: a NOVEL token (no row) is
+	// only admitted once the floor has elapsed, so fabricated fresh tokens
+	// cannot mint fresh budgets (Codex P1).
+	//
+	// Novel-token admission is serialized on the sentinel row itself: the floor
+	// is created-or-advanced FIRST, and only the statement whose ON CONFLICT
+	// guard passes against the row's latest committed version proceeds to
+	// insert the token row. Two blue-green coordinators racing distinct novel
+	// tokens for one SE key therefore cannot both admit — the loser re-checks
+	// the winner's freshly raised floor and returns floor-blocked, even when
+	// neither snapshot saw a sentinel (or a floor block) at statement start.
+	var admitted bool
+	err := s.pool.QueryRow(ctx,
+		`WITH known AS (
+			SELECT 1 FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = $2
+		),
+		floor_acquired AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3
+			 WHERE NOT EXISTS (SELECT 1 FROM known)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at
+			WHERE code_attest_push_budgets.next_push_at <= $3
+			RETURNING 1
+		),
+		admitted AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, $2, $4, $3
+			 WHERE EXISTS (SELECT 1 FROM known)
+			    OR EXISTS (SELECT 1 FROM floor_acquired)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at
+			WHERE code_attest_push_budgets.next_push_at <= $3
+			RETURNING 1
+		),
+		floor_raised AS (
+			-- Known-token admissions raise the floor too; novel admissions
+			-- already set it in floor_acquired. The two paths are mutually
+			-- exclusive, so the sentinel row is written at most once here.
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at
+			)
+			SELECT $1, '', $4, $3
+			  FROM admitted
+			 WHERE EXISTS (SELECT 1 FROM known)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = GREATEST(
+					code_attest_push_budgets.next_push_at,
+					EXCLUDED.next_push_at
+				),
+				updated_at = EXCLUDED.updated_at
+		)
+		SELECT EXISTS (SELECT 1 FROM admitted)`,
+		seKey, tokenHash, now, nextPushAt,
+	).Scan(&admitted)
+	if err != nil {
+		return false, fmt.Errorf("store: reserve code attest push budget: %w", err)
+	}
+	if admitted {
+		// Bound rows per SE key: keep the newest token rows plus the floor
+		// sentinel. Best-effort — a failure only delays GC to the next push.
+		if _, err := s.pool.Exec(ctx,
+			`DELETE FROM code_attest_push_budgets
+			  WHERE se_pubkey = $1 AND token_hash <> ''
+			    AND token_hash NOT IN (
+				SELECT token_hash FROM code_attest_push_budgets
+				 WHERE se_pubkey = $1 AND token_hash <> ''
+				 ORDER BY updated_at DESC, token_hash DESC
+				 LIMIT $2
+			    )`,
+			seKey, CodeAttestPushBudgetMaxTokenRows,
+		); err != nil {
+			return true, nil
+		}
+	}
+	return admitted, nil
+}
+
+// ClearCodeAttestPushFloor drops the per-SE-key novel-token admission floor so
+// a genuinely rotated token can be challenged promptly. Per-token cooldown rows
+// are untouched (A-B-A retention). The clear is compare-and-set on the
+// sentinel's durable last_clear_at: it is honored only when the previous
+// durable clear is at least cooldown old (NULL = never cleared → honored), so
+// the anti-abuse spacing between rotation clears holds across coordinator
+// restarts and blue-green peers — not just within one process. The sentinel row
+// is kept (next_push_at=now lifts the floor; last_clear_at=now starts the next
+// cooldown). Returns the durable last-clear instant (now when honored, the
+// pre-statement one when throttled) and whether the clear was honored.
+func (s *PostgresStore) ClearCodeAttestPushFloor(
+	ctx context.Context, seKey string, now time.Time, cooldown time.Duration,
+) (time.Time, bool, error) {
+	if seKey == "" {
+		return time.Time{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var (
+		cleared   bool
+		lastClear time.Time
+	)
+	// The outer SELECT sees the pre-statement snapshot (data-modifying CTE
+	// semantics); when the CAS wins the caller's last-clear is `now`, so the
+	// snapshot value is only reported on the throttled path. COALESCE covers
+	// the no-sentinel / never-cleared cases conservatively with `now`.
+	err := s.pool.QueryRow(ctx,
+		`WITH cleared AS (
+			INSERT INTO code_attest_push_budgets (
+				se_pubkey, token_hash, next_push_at, updated_at, last_clear_at
+			) VALUES ($1, '', $2, $2, $2)
+			ON CONFLICT (se_pubkey, token_hash) DO UPDATE SET
+				next_push_at = EXCLUDED.next_push_at,
+				updated_at = EXCLUDED.updated_at,
+				last_clear_at = EXCLUDED.last_clear_at
+			WHERE code_attest_push_budgets.last_clear_at IS NULL
+			   OR code_attest_push_budgets.last_clear_at <= $3
+			RETURNING 1
+		)
+		SELECT EXISTS (SELECT 1 FROM cleared),
+		       COALESCE((
+			SELECT last_clear_at FROM code_attest_push_budgets
+			 WHERE se_pubkey = $1 AND token_hash = ''
+		       ), $2)`,
+		seKey, now, now.Add(-cooldown),
+	).Scan(&cleared, &lastClear)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("store: clear code attest push floor: %w", err)
+	}
+	if cleared {
+		lastClear = now
+	}
+	return lastClear, cleared, nil
+}
+
+// --- Durable provider device evidence ---
 
 func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderTrustReuse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+		`SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		        sip_enabled, secure_boot_full, mda_udid,
+		        hardware_proof_verified_at, application_proof_verified_at,
+		        continuous_coverage_until,
+		        evidence_generation, revocation_generation,
+		        revocation_event_id, revoked_at
+		   FROM provider_trust_reuse`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
 	}
@@ -5090,7 +5437,15 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	var out []ProviderTrustReuse
 	for rows.Next() {
 		var rec ProviderTrustReuse
-		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey, &rec.Serial, &rec.TrustLevel,
+			&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
+			&rec.SecureBootFull, &rec.MDAUDID,
+			&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+			&rec.ContinuousCoverageUntil,
+			&rec.EvidenceGeneration, &rec.RevocationGeneration,
+			&rec.RevocationEventID, &rec.RevokedAt,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
 		}
 		out = append(out, rec)
@@ -5101,35 +5456,439 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	return out, nil
 }
 
-func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse) error {
+func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
 	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var result ProviderTrustReuseWriteResult
+	err := s.pool.QueryRow(ctx,
+		`WITH written AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, serial, trust_level, binary_hash,
+				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
+				verified_at, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				serial = EXCLUDED.serial,
+				trust_level = EXCLUDED.trust_level,
+				binary_hash = EXCLUDED.binary_hash,
+				last_verified_binary_hash = EXCLUDED.last_verified_binary_hash,
+				sip_enabled = EXCLUDED.sip_enabled,
+				secure_boot_full = EXCLUDED.secure_boot_full,
+				mda_udid = EXCLUDED.mda_udid,
+				verified_at = EXCLUDED.verified_at,
+				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
+				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
+				evidence_generation = provider_trust_reuse.evidence_generation + 1
+			 WHERE provider_trust_reuse.revoked_at IS NULL
+			   AND provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
+			 RETURNING evidence_generation, revocation_generation
+		)
+		SELECT TRUE, evidence_generation, revocation_generation FROM written
+		UNION ALL
+		SELECT FALSE, evidence_generation, revocation_generation
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM written)
+		LIMIT 1`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel,
+		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
+		rec.MDAUDID, rec.HardwareProofVerifiedAt,
+		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
+	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
+	if err != nil {
+		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: upsert provider trust reuse: %w", err)
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) RecoverProviderTrustReuse(ctx context.Context, rec ProviderTrustReuse, expectedRevocationGeneration uint64) (ProviderTrustReuseWriteResult, error) {
+	if rec.SEPubKey == "" {
+		return ProviderTrustReuseWriteResult{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var result ProviderTrustReuseWriteResult
+	err := s.pool.QueryRow(ctx,
+		`WITH written AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, serial, trust_level, binary_hash,
+				last_verified_binary_hash, sip_enabled, secure_boot_full, mda_udid,
+				verified_at, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at)
+			 VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$8,$9,$12,1,$10,$11,NULL)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				serial = EXCLUDED.serial,
+				trust_level = EXCLUDED.trust_level,
+				binary_hash = EXCLUDED.binary_hash,
+				last_verified_binary_hash = EXCLUDED.last_verified_binary_hash,
+				sip_enabled = EXCLUDED.sip_enabled,
+				secure_boot_full = EXCLUDED.secure_boot_full,
+				mda_udid = EXCLUDED.mda_udid,
+				verified_at = EXCLUDED.verified_at,
+				hardware_proof_verified_at = EXCLUDED.hardware_proof_verified_at,
+				application_proof_verified_at = EXCLUDED.application_proof_verified_at,
+				continuous_coverage_until = GREATEST(
+					provider_trust_reuse.continuous_coverage_until,
+					EXCLUDED.continuous_coverage_until),
+				evidence_generation = provider_trust_reuse.evidence_generation + 1,
+				revoked_at = NULL
+			 WHERE provider_trust_reuse.revocation_generation = EXCLUDED.revocation_generation
+			 RETURNING evidence_generation, revocation_generation
+		)
+		SELECT TRUE, evidence_generation, revocation_generation FROM written
+		UNION ALL
+		SELECT FALSE, evidence_generation, revocation_generation
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM written)
+		LIMIT 1`,
+		rec.SEPubKey, rec.Serial, rec.TrustLevel,
+		rec.LastVerifiedBinaryHash, rec.SIPEnabled, rec.SecureBootFull,
+		rec.MDAUDID, rec.HardwareProofVerifiedAt,
+		rec.ApplicationProofVerifiedAt, expectedRevocationGeneration,
+		rec.RevocationEventID, rec.ContinuousCoverageUntil,
+	).Scan(&result.Applied, &result.EvidenceGeneration, &result.RevocationGeneration)
+	if err != nil {
+		return ProviderTrustReuseWriteResult{}, fmt.Errorf("store: recover provider trust reuse: %w", err)
+	}
+	return result, nil
+}
+
+func (s *PostgresStore) RevokeProviderTrustReuse(ctx context.Context, seKey, revocationEventID string) (ProviderTrustReuse, error) {
+	if seKey == "" || revocationEventID == "" {
+		return ProviderTrustReuse{}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var rec ProviderTrustReuse
+	err := s.pool.QueryRow(ctx,
+		`WITH revoked AS (
+			INSERT INTO provider_trust_reuse (
+				se_pubkey, trust_level, revoked_at, revocation_generation,
+				revocation_event_id)
+			 VALUES ($1, '', NOW(), 1, $2)
+			 ON CONFLICT (se_pubkey) DO UPDATE SET
+				trust_level = '',
+				revoked_at = NOW(),
+				continuous_coverage_until = NULL,
+				revocation_generation = provider_trust_reuse.revocation_generation + 1,
+				revocation_event_id = EXCLUDED.revocation_event_id
+			 WHERE provider_trust_reuse.revocation_event_id
+			       IS DISTINCT FROM EXCLUDED.revocation_event_id
+			 RETURNING se_pubkey, serial, trust_level,
+				last_verified_binary_hash, sip_enabled, secure_boot_full,
+				mda_udid, hardware_proof_verified_at,
+				application_proof_verified_at, continuous_coverage_until,
+				evidence_generation,
+				revocation_generation, revocation_event_id, revoked_at
+		)
+		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		       sip_enabled, secure_boot_full, mda_udid,
+		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
+		       evidence_generation, revocation_generation,
+		       revocation_event_id, revoked_at
+		  FROM revoked
+		UNION ALL
+		SELECT se_pubkey, serial, trust_level, last_verified_binary_hash,
+		       sip_enabled, secure_boot_full, mda_udid,
+		       hardware_proof_verified_at, application_proof_verified_at,
+		       continuous_coverage_until,
+		       evidence_generation, revocation_generation,
+		       revocation_event_id, revoked_at
+		  FROM provider_trust_reuse
+		 WHERE se_pubkey = $1 AND NOT EXISTS (SELECT 1 FROM revoked)
+		LIMIT 1`,
+		seKey, revocationEventID,
+	).Scan(
+		&rec.SEPubKey, &rec.Serial, &rec.TrustLevel,
+		&rec.LastVerifiedBinaryHash, &rec.SIPEnabled,
+		&rec.SecureBootFull, &rec.MDAUDID,
+		&rec.HardwareProofVerifiedAt, &rec.ApplicationProofVerifiedAt,
+		&rec.ContinuousCoverageUntil,
+		&rec.EvidenceGeneration, &rec.RevocationGeneration,
+		&rec.RevocationEventID, &rec.RevokedAt,
+	)
+	if err != nil {
+		return ProviderTrustReuse{}, fmt.Errorf("store: revoke provider trust reuse: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) AdvanceProviderTrustReuseCoverage(ctx context.Context, seKeys []string, until time.Time) error {
+	if len(seKeys) == 0 || until.IsZero() {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	// One batched pass; GREATEST keeps the watermark monotonic and a
+	// tombstoned/non-hardware row is never touched (revocation wins).
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
-		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
-	)
+		`UPDATE provider_trust_reuse
+		    SET continuous_coverage_until = GREATEST(continuous_coverage_until, $2::timestamptz)
+		  WHERE se_pubkey = ANY($1)
+		    AND revoked_at IS NULL
+		    AND trust_level = 'hardware'`,
+		seKeys, until)
 	if err != nil {
-		return fmt.Errorf("store: upsert provider trust reuse: %w", err)
+		return fmt.Errorf("store: advance provider trust reuse coverage: %w", err)
 	}
 	return nil
 }
 
-func (s *PostgresStore) DeleteProviderTrustReuse(ctx context.Context, seKey string) error {
-	if seKey == "" {
-		return nil
+// --- Bounded durable MDM/MDA verification scheduler ---
+
+const verificationJobColumns = `se_pubkey, serial, udid, task_kind, task_state,
+	priority, retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
+	reopen_pending, updated_at, claim_owner, claim_expires_at`
+
+type verificationJobScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanVerificationJob(row verificationJobScanner) (VerificationJob, error) {
+	var rec VerificationJob
+	var previousDelayNS int64
+	var nextAttemptAt *time.Time
+	if err := row.Scan(
+		&rec.SEPubKey, &rec.Serial, &rec.UDID, &rec.Kind, &rec.State,
+		&rec.Priority, &rec.RetryStage, &previousDelayNS, &nextAttemptAt,
+		&rec.LastOutcome, &rec.ReopenPending, &rec.UpdatedAt,
+		&rec.ClaimOwner, &rec.ClaimExpiresAt,
+	); err != nil {
+		return VerificationJob{}, err
+	}
+	rec.PreviousDelay = time.Duration(previousDelayNS)
+	if nextAttemptAt != nil {
+		rec.NextAttemptAt = *nextAttemptAt
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) UpsertVerificationJob(ctx context.Context, rec VerificationJob) (VerificationJob, error) {
+	if rec.SEPubKey == "" || rec.Kind == "" {
+		return VerificationJob{}, errors.New("store: verification job requires SE key and kind")
+	}
+	if rec.LastOutcome == "" {
+		rec.LastOutcome = VerificationOutcomeNone
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO provider_verification_jobs (
+			se_pubkey, serial, udid, task_kind, task_state, priority,
+			retry_stage, previous_delay_ns, next_attempt_at, last_outcome,
+			updated_at, claim_owner, claim_expires_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'',NULL)
+		 ON CONFLICT (se_pubkey, task_kind) DO UPDATE SET
+			serial = EXCLUDED.serial,
+			udid = CASE WHEN EXCLUDED.udid <> '' THEN EXCLUDED.udid ELSE provider_verification_jobs.udid END,
+			task_state = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN EXCLUDED.task_state
+				WHEN provider_verification_jobs.task_state = 'waiting_challenge'
+				 AND EXCLUDED.task_state = 'pending' THEN 'pending'
+				ELSE provider_verification_jobs.task_state END,
+			priority = CASE
+				WHEN provider_verification_jobs.task_state = 'completed'
+					THEN EXCLUDED.priority
+				ELSE LEAST(provider_verification_jobs.priority, EXCLUDED.priority) END,
+			retry_stage = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.retry_stage ELSE provider_verification_jobs.retry_stage END,
+			previous_delay_ns = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.previous_delay_ns ELSE provider_verification_jobs.previous_delay_ns END,
+			next_attempt_at = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN EXCLUDED.next_attempt_at
+				WHEN provider_verification_jobs.task_state IN ('waiting_challenge', 'running')
+				 AND EXCLUDED.task_state = 'pending' THEN EXCLUDED.next_attempt_at
+				ELSE provider_verification_jobs.next_attempt_at END,
+			last_outcome = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN EXCLUDED.last_outcome ELSE provider_verification_jobs.last_outcome END,
+			reopen_pending = CASE
+				WHEN provider_verification_jobs.task_state = 'completed' THEN FALSE
+				WHEN provider_verification_jobs.task_state = 'running'
+				 AND EXCLUDED.task_state = 'pending' THEN TRUE
+				ELSE provider_verification_jobs.reopen_pending END,
+			updated_at = EXCLUDED.updated_at,
+			claim_owner = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN '' ELSE provider_verification_jobs.claim_owner END,
+			claim_expires_at = CASE WHEN provider_verification_jobs.task_state = 'completed'
+				THEN NULL ELSE provider_verification_jobs.claim_expires_at END
+		 RETURNING `+verificationJobColumns,
+		rec.SEPubKey, rec.Serial, rec.UDID, rec.Kind, rec.State, rec.Priority,
+		rec.RetryStage, int64(rec.PreviousDelay), nullableVerificationTime(rec.NextAttemptAt),
+		rec.LastOutcome, rec.UpdatedAt,
+	)
+	out, err := scanVerificationJob(row)
+	if err != nil {
+		return VerificationJob{}, fmt.Errorf("store: upsert verification job: %w", err)
+	}
+	return out, nil
+}
 
-	if _, err := s.pool.Exec(ctx, `DELETE FROM provider_trust_reuse WHERE se_pubkey = $1`, seKey); err != nil {
-		return fmt.Errorf("store: delete provider trust reuse: %w", err)
+func nullableVerificationTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func (s *PostgresStore) GetVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind) (*VerificationJob, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rec, err := scanVerificationJob(s.pool.QueryRow(ctx,
+		`SELECT `+verificationJobColumns+`
+		   FROM provider_verification_jobs
+		  WHERE se_pubkey = $1 AND task_kind = $2`, seKey, kind))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get verification job: %w", err)
+	}
+	return &rec, nil
+}
+
+func (s *PostgresStore) ListDueVerificationJobs(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+) ([]VerificationJob, error) {
+	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
+}
+
+func (s *PostgresStore) ListDueVerificationJobsPage(
+	ctx context.Context,
+	now time.Time,
+	limit, offset int,
+) ([]VerificationJob, error) {
+	if limit <= 0 || offset < 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+verificationJobColumns+`
+		   FROM provider_verification_jobs
+		  WHERE (task_state IN ('pending','backoff')
+		         OR (task_state = 'running' AND claim_expires_at IS NOT NULL
+		             AND claim_expires_at <= $1))
+		    AND next_attempt_at <= $1
+		    AND (claim_owner = '' OR claim_expires_at IS NULL OR claim_expires_at <= $1)
+		  ORDER BY priority, next_attempt_at, se_pubkey, task_kind
+		  LIMIT $2 OFFSET $3`, now, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("store: list due verification jobs: %w", err)
+	}
+	defer rows.Close()
+	out := make([]VerificationJob, 0, limit)
+	for rows.Next() {
+		rec, scanErr := scanVerificationJob(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan due verification job: %w", scanErr)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate due verification jobs: %w", err)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) ClaimVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now, expiresAt time.Time) (VerificationJob, bool, error) {
+	if owner == "" || !expiresAt.After(now) {
+		return VerificationJob{}, false, errors.New("store: invalid verification claim")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rec, err := scanVerificationJob(s.pool.QueryRow(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = 'running', reopen_pending = FALSE, claim_owner = $3,
+		        claim_expires_at = $5, updated_at = $4
+		  WHERE se_pubkey = $1 AND task_kind = $2
+		    AND (task_state IN ('pending','backoff')
+		         OR (task_state = 'running' AND claim_expires_at IS NOT NULL
+		             AND claim_expires_at <= $4))
+		    AND next_attempt_at <= $4
+		    AND (claim_owner = '' OR claim_expires_at IS NULL OR claim_expires_at <= $4)
+		  RETURNING `+verificationJobColumns,
+		seKey, kind, owner, now, expiresAt))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return VerificationJob{}, false, nil
+	}
+	if err != nil {
+		return VerificationJob{}, false, fmt.Errorf("store: claim verification job: %w", err)
+	}
+	return rec, true, nil
+}
+
+func (s *PostgresStore) ReleaseVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = 'pending', reopen_pending = FALSE,
+		        claim_owner = '', claim_expires_at = NULL, updated_at = $4
+		  WHERE se_pubkey = $1 AND task_kind = $2 AND claim_owner = $3`,
+		seKey, kind, owner, now)
+	if err != nil {
+		return fmt.Errorf("store: release verification job: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) CompleteVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = CASE WHEN reopen_pending THEN 'pending' ELSE 'completed' END,
+		        retry_stage = CASE WHEN reopen_pending THEN retry_stage ELSE 0 END,
+		        previous_delay_ns = CASE WHEN reopen_pending THEN previous_delay_ns ELSE 0 END,
+		        next_attempt_at = CASE WHEN reopen_pending THEN next_attempt_at ELSE NULL END,
+		        last_outcome = CASE WHEN reopen_pending THEN last_outcome ELSE $4 END,
+		        reopen_pending = FALSE, updated_at = $5,
+		        claim_owner = '', claim_expires_at = NULL
+		  WHERE se_pubkey = $1 AND task_kind = $2
+		    AND (claim_owner = '' OR claim_owner = $3)`,
+		seKey, kind, owner, outcome, now)
+	if err != nil {
+		return fmt.Errorf("store: complete verification job: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) RescheduleVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.pool.Exec(ctx,
+		`UPDATE provider_verification_jobs
+		    SET task_state = CASE WHEN reopen_pending THEN 'pending' ELSE 'backoff' END,
+		        priority = CASE WHEN reopen_pending THEN priority ELSE $4 END,
+		        retry_stage = CASE WHEN reopen_pending THEN retry_stage ELSE $5 END,
+		        previous_delay_ns = CASE WHEN reopen_pending THEN previous_delay_ns ELSE $6 END,
+		        next_attempt_at = CASE WHEN reopen_pending THEN next_attempt_at ELSE $7 END,
+		        last_outcome = CASE WHEN reopen_pending THEN last_outcome ELSE $8 END,
+		        reopen_pending = FALSE, updated_at = $9,
+		        claim_owner = '', claim_expires_at = NULL
+		  WHERE se_pubkey = $1 AND task_kind = $2 AND claim_owner = $3`,
+		seKey, kind, owner, priority, retryStage, int64(previousDelay),
+		nextAttemptAt, outcome, now)
+	if err != nil {
+		return fmt.Errorf("store: reschedule verification job: %w", err)
 	}
 	return nil
 }
@@ -5250,3 +6009,239 @@ func (s *PostgresStore) CloseOpenProviderSessions(ctx context.Context, staleBefo
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// System profiler DDL (boot slice). Column names are the snake_case of the
+// RequestProfileRecord / FleetSnapshotRow field names; nullability mirrors Go
+// pointer-ness (pointer and json.RawMessage fields are nullable, everything
+// else is NOT NULL with a zero default so zero values — 0, empty string,
+// false — round-trip as themselves).
+// Per-table autovacuum thresholds are tightened because both tables are
+// insert-heavy with a rolling retention DELETE.
+const (
+	requestProfilesTableDDL = `CREATE TABLE IF NOT EXISTS request_profiles (
+			id BIGSERIAL PRIMARY KEY,
+			coord_request_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			attempt INT NOT NULL,
+			backup_of TEXT NOT NULL DEFAULT '',
+			winning BOOL NOT NULL DEFAULT FALSE,
+			endpoint TEXT NOT NULL DEFAULT '',
+			stream BOOL NOT NULL DEFAULT FALSE,
+			model TEXT NOT NULL DEFAULT '',
+			public_model TEXT NOT NULL DEFAULT '',
+			provider_id TEXT NOT NULL DEFAULT '',
+			provider_version TEXT NOT NULL DEFAULT '',
+			chip_family TEXT NOT NULL DEFAULT '',
+			kv_backend TEXT NOT NULL DEFAULT '',
+			final_status TEXT NOT NULL DEFAULT '',
+			error_reason TEXT NOT NULL DEFAULT '',
+			terminal_cause TEXT NOT NULL DEFAULT '',
+			client_outcome TEXT NOT NULL DEFAULT '',
+			provider_outcome TEXT NOT NULL DEFAULT '',
+			client_gone_phase TEXT NOT NULL DEFAULT '',
+			first_content_budget_ms INT NOT NULL DEFAULT 0,
+			admission_mode TEXT NOT NULL DEFAULT '',
+			estimated_prompt_tokens INT NOT NULL DEFAULT 0,
+			requested_max_tokens INT NOT NULL DEFAULT 0,
+			requires_vision BOOL NOT NULL DEFAULT FALSE,
+			has_tools BOOL NOT NULL DEFAULT FALSE,
+			received_at TIMESTAMPTZ NOT NULL,
+
+			auth_done_us BIGINT,
+			ratelimit_done_us BIGINT,
+			sealed_open_us BIGINT,
+			handler_entry_us BIGINT,
+			parsed_us BIGINT,
+			reserved_us BIGINT,
+			media_fetched_us BIGINT,
+			preflight_done_us BIGINT,
+			plan_done_us BIGINT,
+			attempt_start_us BIGINT,
+			reserve_lock_acquired_us BIGINT,
+			reserve_done_us BIGINT,
+			queued_us BIGINT,
+			dequeued_us BIGINT,
+			topup_done_us BIGINT,
+			encrypted_us BIGINT,
+			write_submitted_us BIGINT,
+			write_dequeued_us BIGINT,
+			write_done_us BIGINT,
+			accepted_us BIGINT,
+			first_chunk_ingress_us BIGINT,
+			first_chunk_dequeued_us BIGINT,
+			first_content_ingress_us BIGINT,
+			first_content_us BIGINT,
+			headers_written_us BIGINT,
+			first_flush_us BIGINT,
+			last_flush_us BIGINT,
+			client_gone_us BIGINT,
+			cancel_sent_us BIGINT,
+			complete_ingress_us BIGINT,
+			done_flushed_us BIGINT,
+			finalized_us BIGINT,
+			settle_db_us BIGINT,
+			db_us BIGINT,
+			db_calls INT NOT NULL DEFAULT 0,
+
+			body_bytes INT NOT NULL DEFAULT 0,
+			sealed_body_bytes INT NOT NULL DEFAULT 0,
+			auth_kind TEXT NOT NULL DEFAULT '',
+			auth_db_read BOOL NOT NULL DEFAULT FALSE,
+			reserve_mode TEXT NOT NULL DEFAULT '',
+			media_items INT NOT NULL DEFAULT 0,
+			media_bytes BIGINT NOT NULL DEFAULT 0,
+			preflight_outcome TEXT NOT NULL DEFAULT '',
+			plan_outcome TEXT NOT NULL DEFAULT '',
+			chunks_in INT NOT NULL DEFAULT 0,
+			chunks_out INT NOT NULL DEFAULT 0,
+			bytes_out BIGINT NOT NULL DEFAULT 0,
+			decrypt_us_total BIGINT NOT NULL DEFAULT 0,
+			max_chunk_gap_us BIGINT NOT NULL DEFAULT 0,
+			held_preamble_chunks INT NOT NULL DEFAULT 0,
+			client_write_err BOOL NOT NULL DEFAULT FALSE,
+			attempts_total INT NOT NULL DEFAULT 0,
+			failed_attempts INT NOT NULL DEFAULT 0,
+			failed_attempts_us BIGINT NOT NULL DEFAULT 0,
+			backup_launched BOOL NOT NULL DEFAULT FALSE,
+			backup_won BOOL NOT NULL DEFAULT FALSE,
+			transport_est_us BIGINT,
+			slept_us BIGINT,
+			timing_anomaly BOOL NOT NULL DEFAULT FALSE,
+
+			candidate_set_size INT NOT NULL DEFAULT 0,
+			scanned INT NOT NULL DEFAULT 0,
+			gate_rejections JSONB,
+			runner_up_provider_id TEXT NOT NULL DEFAULT '',
+			runner_up_cost_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			near_tie_pool_size INT NOT NULL DEFAULT 0,
+			selection_path TEXT NOT NULL DEFAULT '',
+			best_idle_provider_id TEXT NOT NULL DEFAULT '',
+			best_idle_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			predicted_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			raw_ttft_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			predicted_decode_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			snapshot_age_ms INT NOT NULL DEFAULT 0,
+			pending_for_model INT NOT NULL DEFAULT 0,
+			total_pending INT NOT NULL DEFAULT 0,
+			capacity_rate_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			cache_discount_ms DOUBLE PRECISION NOT NULL DEFAULT 0,
+			shadow_would_shed BOOL,
+			shadow_idle_alternative BOOL,
+			lock_wait_us BIGINT NOT NULL DEFAULT 0,
+			scan_us BIGINT NOT NULL DEFAULT 0,
+			admit_us BIGINT NOT NULL DEFAULT 0,
+			preflight_us BIGINT NOT NULL DEFAULT 0,
+			ttft_calibration_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+			prefill_decode_ratio DOUBLE PRECISION NOT NULL DEFAULT 0,
+			queue_position_at_enqueue INT NOT NULL DEFAULT 0,
+			queue_depth_at_enqueue INT NOT NULL DEFAULT 0,
+			drain_trigger TEXT NOT NULL DEFAULT '',
+			candidates JSONB,
+
+			prov_total_us BIGINT,
+			prov_first_delta_us BIGINT,
+			prov_engine_submit_us BIGINT,
+			prov_engine_admitted_us BIGINT,
+			prov_prompt_prep_us BIGINT,
+			prov_load_wait_us BIGINT,
+			prov_load_cold BOOL,
+			prov_running_at_admit INT,
+			prov_waiting_at_admit INT,
+			prov_kv_bytes_in_use_at_admit BIGINT,
+			prov_cancel_stage TEXT NOT NULL DEFAULT '',
+			eng_queue_wait_ns BIGINT,
+			eng_first_token_ns BIGINT,
+			eng_prompt_computed_ns BIGINT,
+			eng_prefill_chunks INT,
+			eng_decode_steps INT,
+			eng_mtp_accepted INT,
+			eng_finish_reason TEXT NOT NULL DEFAULT '',
+			provider_profile JSONB,
+			provider_profile_valid BOOL NOT NULL DEFAULT FALSE,
+			provider_profile_invalid_reason TEXT NOT NULL DEFAULT '',
+			provider_profile_consistent BOOL,
+
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (request_id, attempt)
+		) WITH (autovacuum_vacuum_scale_factor=0.02, autovacuum_analyze_scale_factor=0.01)`
+	requestProfilesCreatedIndexDDL  = `CREATE INDEX IF NOT EXISTS idx_request_profiles_created ON request_profiles(created_at DESC)`
+	requestProfilesCoordIndexDDL    = `CREATE INDEX IF NOT EXISTS idx_request_profiles_coord ON request_profiles(coord_request_id)`
+	requestProfilesProviderIndexDDL = `CREATE INDEX IF NOT EXISTS idx_request_profiles_provider ON request_profiles(provider_id, created_at DESC)`
+
+	fleetSnapshotsTableDDL = `CREATE TABLE IF NOT EXISTS fleet_snapshots (
+			id BIGSERIAL PRIMARY KEY,
+			sampled_at TIMESTAMPTZ NOT NULL,
+			provider_id TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			eligibility_reason TEXT NOT NULL DEFAULT '',
+			slot_state TEXT NOT NULL DEFAULT '',
+			num_running INT NOT NULL DEFAULT 0,
+			num_waiting INT NOT NULL DEFAULT 0,
+			queued_prefill_tokens INT NOT NULL DEFAULT 0,
+			partial_prefill_rows INT NOT NULL DEFAULT 0,
+			active_token_budget_used BIGINT NOT NULL DEFAULT 0,
+			active_token_budget_max BIGINT NOT NULL DEFAULT 0,
+			kv_bytes_in_use BIGINT NOT NULL DEFAULT 0,
+			kv_bytes_capacity BIGINT NOT NULL DEFAULT 0,
+			observed_decode_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			observed_prefill_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			isolated_prefill_tps DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ewma_initialized BOOL,
+			max_concurrency INT NOT NULL DEFAULT 0,
+			pending_count INT NOT NULL DEFAULT 0,
+			effective_cap INT NOT NULL DEFAULT 0,
+			cooldown_active BOOL NOT NULL DEFAULT FALSE,
+			breaker_open BOOL NOT NULL DEFAULT FALSE,
+			clamp_active BOOL NOT NULL DEFAULT FALSE,
+			ejected BOOL NOT NULL DEFAULT FALSE,
+			gpu_memory_active_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			gpu_memory_peak_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+			free_for_load_gb DOUBLE PRECISION,
+			memory_pressure DOUBLE PRECISION NOT NULL DEFAULT 0,
+			cpu_usage DOUBLE PRECISION NOT NULL DEFAULT 0,
+			thermal_state TEXT NOT NULL DEFAULT '',
+			low_power_mode BOOL,
+			memory_pressure_level TEXT NOT NULL DEFAULT '',
+			steps_executed BIGINT NOT NULL DEFAULT 0,
+			step_wall_ns_total BIGINT NOT NULL DEFAULT 0,
+			decode_rows_total BIGINT NOT NULL DEFAULT 0,
+			prefill_tokens_total BIGINT NOT NULL DEFAULT 0,
+			mtp_rounds_total BIGINT NOT NULL DEFAULT 0,
+			mtp_proposed_total BIGINT NOT NULL DEFAULT 0,
+			mtp_accepted_total BIGINT NOT NULL DEFAULT 0,
+			heartbeat_age_ms INT NOT NULL DEFAULT 0,
+			wedge_suspected BOOL NOT NULL DEFAULT FALSE,
+			eval_in_flight_ms BIGINT NOT NULL DEFAULT 0,
+			requests_served BIGINT NOT NULL DEFAULT 0,
+			tokens_generated BIGINT NOT NULL DEFAULT 0,
+			cancellations_received BIGINT NOT NULL DEFAULT 0,
+			cancellations_before_output BIGINT NOT NULL DEFAULT 0,
+			cancellations_partial_complete BIGINT NOT NULL DEFAULT 0,
+			generation_errors_after_output BIGINT NOT NULL DEFAULT 0,
+			chunk_encryption_errors BIGINT NOT NULL DEFAULT 0,
+			stream_closed_without_terminal BIGINT NOT NULL DEFAULT 0,
+			cancel_during_model_load BIGINT NOT NULL DEFAULT 0,
+			usage_gaps BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_pre_accept_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_pre_engine_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_prefill_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_decode_total BIGINT NOT NULL DEFAULT 0,
+			cancel_stage_post_terminal_total BIGINT NOT NULL DEFAULT 0,
+			tokens_after_cancel_total BIGINT NOT NULL DEFAULT 0,
+			cancel_abort_ns_sum BIGINT NOT NULL DEFAULT 0,
+			queue_depth_total INT NOT NULL DEFAULT 0,
+			queue_depth_by_model JSONB,
+			inflight_requests INT NOT NULL DEFAULT 0,
+			reserve_lock_wait_p95_us BIGINT NOT NULL DEFAULT 0,
+			profile_sink_depth INT NOT NULL DEFAULT 0,
+			profile_sink_dropped_total BIGINT NOT NULL DEFAULT 0,
+			route_sink_dropped_total BIGINT NOT NULL DEFAULT 0,
+			unknown_request_frames_total BIGINT NOT NULL DEFAULT 0,
+			goroutines INT NOT NULL DEFAULT 0,
+			provider_version TEXT NOT NULL DEFAULT '',
+			model_vision BOOL NOT NULL DEFAULT FALSE,
+			template_render_ok BOOL
+		) WITH (autovacuum_vacuum_scale_factor=0.02, autovacuum_analyze_scale_factor=0.01)`
+	fleetSnapshotsSampledIndexDDL  = `CREATE INDEX IF NOT EXISTS idx_fleet_snapshots_sampled ON fleet_snapshots(sampled_at DESC)`
+	fleetSnapshotsProviderIndexDDL = `CREATE INDEX IF NOT EXISTS idx_fleet_snapshots_provider ON fleet_snapshots(provider_id, sampled_at DESC)`
+)

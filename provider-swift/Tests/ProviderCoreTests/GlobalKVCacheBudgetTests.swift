@@ -374,3 +374,60 @@ private func makeAuditBudget(
 
     #expect(log.operations().isEmpty, "audit fired despite interleaved successful commits")
 }
+
+@Test func globalKVCacheBudgetHonorsAReplacedActivationReserve() async {
+    // The serving set changes at runtime (prefetch advertises a build, a
+    // retired slot unloads) and ProviderLoop re-pushes the resolved reserve
+    // via setActivationReserveBytes — admission must follow the CURRENT
+    // value, not the construction-time one.
+    //
+    // 8 GiB box, capFraction 1.0 → hardCap = 8 − 2 (OS floor) = 6 GiB.
+    // With the flat 5.5 GiB reserve, headroom = 0.5 GiB → a 1 GiB
+    // reservation rejects. After the reserve relaxes to the measured
+    // 3.5 GiB floor, headroom = 2.5 GiB → the same reservation admits;
+    // raising it back to 5.5 rejects again.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 11 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    await budget.setActivationReserveBytes(7 * gib / 2)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+}
+
+@Test func globalKVCacheBudgetDiscardsStaleEpochReservePushes() async {
+    // Cross-actor pushes from concurrent set mutations are not FIFO: a
+    // stale relax computed before a raise can be DELIVERED after it. The
+    // owner stamps every push with a monotonic epoch (incremented under
+    // its own actor isolation = true mutation order); the budget must
+    // discard a push whose epoch is not newer than the last applied.
+    //
+    // Same 8 GiB box as above: 5.5 GiB reserve rejects a 1 GiB
+    // reservation, 3.5 GiB admits it.
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 7 * gib / 2) {
+        GlobalKVCacheBudget.MemorySnapshot(total: 8 * gib, active: 0, cache: 0, systemAvailable: .max)
+    }
+    // Newer epoch applies: raise to 5.5 at epoch 2 → reject.
+    await budget.setActivationReserveBytes(11 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Stale epoch 1 (the relax computed BEFORE the raise, delivered after)
+    // is discarded — the raise stands.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 1)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // Equal epoch is likewise discarded (not-newer).
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // A genuinely newer relax applies.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 3)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+    await budget.release(requestID: "a")
+    // nil-epoch (test/simple callers) stays unconditional and does not
+    // disturb the recorded epoch: apply 5.5 unconditionally…
+    await budget.setActivationReserveBytes(11 * gib / 2)
+    #expect(!(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1)))
+    // …and epoch 4 still applies afterwards.
+    await budget.setActivationReserveBytes(7 * gib / 2, epoch: 4)
+    #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
+}

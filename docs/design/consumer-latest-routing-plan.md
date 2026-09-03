@@ -1,5 +1,9 @@
 # Consumer-Latest Routing Plan
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Superseded by** [`routing-v2.md`](routing-v2.md) (2026-09-03 — Tracks C, D and F landed as routing-v2 W4, W3 and W7; Track E's caller-keyed `prompt_cache_key` affinity was rejected in favour of provider-confirmed exact prefix routing, [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md); as-built facts: [`../architecture/routing.md`](../architecture/routing.md), [`../architecture/scheduling.md`](../architecture/scheduling.md)).
+
 Date: 2026-06-14
 
 Worktree: `.worktrees/consumer-latest-routing`

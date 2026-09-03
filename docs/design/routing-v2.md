@@ -1,6 +1,8 @@
 # Routing v2 — admit by measurement, serve all the compute, never ship bad streams
 
-Status: **in progress** (this branch: `routing-v2`). Tracks the redesign of the
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Implemented** (master `5d400cf75`, 2026-09-03 — W0–W5, W7, W8 shipped and default-on; W6 investigated only; as-built facts live in [`../architecture/routing.md`](../architecture/routing.md) and [`../architecture/scheduling.md`](../architecture/scheduling.md); remaining flags in [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md)). Tracks the redesign of the
 coordinator's admission/routing/autoscaling so we (a) stop rejecting requests the
 fleet can serve, (b) use all eligible compute, and (c) never hand users degraded
 (low-tok/s) streams.

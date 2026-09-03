@@ -1,5 +1,7 @@
 # Darkbloom Documentation
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
 This directory contains the public technical documentation for Darkbloom, a
 decentralized private-inference network for Apple Silicon Macs.
 
@@ -28,10 +30,11 @@ model.
 | Coordinator | [`architecture/components/coordinator.md`](./architecture/components/coordinator.md) |
 | Provider CLI | [`architecture/components/provider.md`](./architecture/components/provider.md) |
 | Console UI | [`architecture/components/console-ui.md`](./architecture/components/console-ui.md) |
+| Admin UI (internal, read-only) | [`architecture/components/admin-ui.md`](./architecture/components/admin-ui.md) |
 | MLX-Swift integration | [`architecture/components/mlx-swift.md`](./architecture/components/mlx-swift.md) |
 | Consumer HTTP surface | [`architecture/components/consumer.md`](./architecture/components/consumer.md) |
-| Routing | [`architecture/operations/routing.md`](./architecture/routing.md) |
-| Scheduling | [`architecture/operations/scheduling.md`](./architecture/scheduling.md) |
+| Routing | [`architecture/routing.md`](./architecture/routing.md) |
+| Scheduling | [`architecture/scheduling.md`](./architecture/scheduling.md) |
 | Billing & pricing | [`architecture/operations/billing.md`](./architecture/billing.md) |
 | Model registry | [`architecture/operations/model-registry.md`](./architecture/model-registry.md) |
 | Telemetry | [`architecture/operations/telemetry.md`](./architecture/telemetry.md) |
@@ -94,7 +97,6 @@ model.
 | Model migration | [`operations/model-migration.md`](./operations/model-migration.md) |
 | State export (`DAR-70`) | [`operations/state-export.md`](./operations/state-export.md) |
 | EigenCloud → GCP migration | [`operations/eigencloud-to-gcp-migration.md`](./reports/2026-07-17-eigencloud-to-gcp-migration.md) |
-| Archived pre-v0.7.5 SSD soak | [`operations/m5-stress-runbook.md`](./operations/m5-stress-runbook.md) |
 
 ### Reference
 

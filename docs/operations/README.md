@@ -14,7 +14,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
-| [`routing-v2-rollout.md`](routing-v2-rollout.md) | Staged rollout of the routing-v2 admission and routing flags |
+| [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
 | [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
 | [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md) | Record of the EigenCloud → GCP move (frozen report, not a live runbook) |

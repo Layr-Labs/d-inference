@@ -1,5 +1,9 @@
 # W5 — Code-attestation churn: root cause & fix plan
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Implemented** (master `5d400cf75`, 2026-09-03 — Fix 4 landed as `challengeFreshnessMaxAge = 16 * time.Minute` in `coordinator/registry/scheduler.go`; Fix 1/5 as `CodeAttestResponseTimeout = 300 * time.Second` (`coordinator/api/provider.go`) and `challengeExpirySeconds = 300` (`coordinator/apns/attestor.go`); Fix 0 `APNS_MODE=alert` remains an operator config choice, default `background`; the `6m` figures below are historical — see [`../architecture/routing.md`](../architecture/routing.md#challenge-freshness)).
+
 Goal: grow the routable pool (≈67/176 today) by making attestation resilient,
 without weakening the fail-closed code-identity property. There are **two
 independent challenge systems**, both gate `providerSupportsPrivateTextLocked`:

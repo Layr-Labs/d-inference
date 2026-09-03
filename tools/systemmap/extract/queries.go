@@ -382,9 +382,12 @@ type fragment struct {
 	owner cteKey // the statement this text was assembled into; see textScopeFor
 }
 
-// settleFragments decides the buffered fragment names once the whole body has
-// been walked, so the verdict does not depend on whether the WITH clause was
-// written above the FROM or hoisted into a local declared before it.
+// settleFragments decides the buffered fragment names once the whole body has been
+// walked, so a fragment read before the WITH clause that covers it — a tail collected
+// above the base query, a conditional clause appended before the literal below it is
+// reached — is still settled against that clause. What it cannot do is reach across
+// scopes: a WITH clause hoisted into a *different* variable is a different query as far
+// as this check is concerned, and the fragment is reported.
 //
 // Every non-CTE name is recorded, because a declaration is held to each table the
 // text names; only the report stops at one finding per literal, which is all a

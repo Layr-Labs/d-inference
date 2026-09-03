@@ -365,13 +365,20 @@ this dies of:
   CTE definitions) and that is the same query still being assembled. This holds
   whether the pieces arrive in one assignment or several: `q := "WITH usage AS (…)"`
   then `q += "SELECT … FROM models"` then `q += "UNION SELECT id FROM usage"` is one
-  query, and its own CTE still shadows the `usage` table in the tail.
+  query, and its own CTE still shadows the `usage` table in the tail. It is the
+  binding *statement* that draws the line and not the text it carries, so `q = ""`
+  starts a query as much as `q = "SELECT …"` does — deciding it from the text let
+  `q = ""; q += "WITH usage AS (…) …"` land in the previous query's scope and shadow a
+  real read there. The one exception is a binding that reads the local back:
+  `q = "WITH usage AS (…) …" + q` is a query assembled tail first, so it continues the
+  scope rather than starting one.
 
   Four consequences worth knowing. A CTE in one query does not silence a same-named
-  real table in another, and the unit a query is scoped to is small enough for that to
-  mean something: an element of a slice literal and an argument to a call each stand
-  for their own query, so the hundred statements in `migrations := []string{…}` do not
-  pool their `WITH` names. A query assembled through anything but a bare string
+  real table in another *as long as the two are separate Go expressions* — see the
+  limits below for the two shapes where they are not — and the unit a query is scoped
+  to is small enough for that to mean something: an element of a slice literal, an
+  argument to a call, and the condition of an `if` each stand for their own query, so
+  the hundred statements in `migrations := []string{…}` do not pool their `WITH` names. A query assembled through anything but a bare string
   variable — `qs[0] += tail`, `s.q += tail`, `*p += tail` — is reported even though
   the SQL is legal, because `qs[0]` and `qs[1]` are one variable and `a.q` and `b.q`
   are one field: resolving through to them would let a CTE in one element or one
@@ -397,17 +404,24 @@ this dies of:
   when the end of the text, a `;`/`,`/`)`, or `OF`/`NOWAIT`/`SKIP`/`SET` comes next.
   An identifier there means the word was `UPDATE` heading a statement after all;
   blanking it once dropped a real write of `usage` from the map with every count still
-  balanced. What is left over is the upper-case blind spot in the other direction:
-  `-- QUEUED FOR` above an `UPDATE ` + `table` is read as a lock and its splice goes
-  unreported.
+  balanced. A comment is on that list of things that may follow, because
+  `… FOR UPDATE -- lock the row` is as legal as `… FOR UPDATE NOWAIT` and refusing to
+  mask it read `--` as the spliced table. What is left over is the upper-case blind
+  spot in the other direction: `-- QUEUED FOR` above an `UPDATE ` + `table` is read as
+  a lock by both readers, and if the body's other literals already account for its
+  driver calls the write leaves the map with nothing reported at all — not a degraded
+  message, a silence. Nothing in the tree spells a comment that way.
 
-  Two more limits, both in shapes no store query has. The scan reads a body in source
-  order rather than following control flow, so a `goto` that jumps over the assignment
-  a `WITH` clause is in settles the fragment below it against names the running program
-  would not have — the one remaining way a CTE can mute a table without a finding. And
-  a `q` shadowed in an inner block is a different variable, so a fragment there is
-  reported rather than settled against the outer query's CTE names; that costs a
-  finding with a remedy, not a silence.
+  Three more limits, all in shapes no store query has. Two whole statements in one
+  literal — `"WITH usage AS (…) SELECT … FROM usage; SELECT … FROM usage WHERE …"` —
+  are one text to `Tables`, which strips a CTE name from all of it, so the second
+  statement's read of the real table is dropped. The scan reads a body in source order
+  rather than following control flow, so a `goto` that jumps over the assignment a
+  `WITH` clause is in settles the fragment below it against names the running program
+  would not have. Those two are the remaining ways a CTE can mute a table without a
+  finding. And a `q` shadowed in an inner block is a different variable, so a fragment
+  there is reported rather than settled against the outer query's CTE names; that costs
+  a finding with a remedy, not a silence.
 
   A query that genuinely cannot be one expression — the earnings CTE chains, where
   a conditional `WHERE` is spliced into the middle — names its tables in
@@ -415,7 +429,10 @@ this dies of:
   rather than a mute: the map draws its tables, the names are checked against the
   schema, every table the text names but the entry omits is still reported, an entry
   is reported once the function no longer needs it or is no longer reachable from a
-  route, and an entry declaring no tables is rejected outright.
+  route, and an entry declaring no tables is rejected outright. What it cannot do is
+  repair a mute — it stands a *finding* down and adds the tables it names, so it is no
+  answer to a table that went missing with nothing reported. Those cases are the limits
+  above, and they are closed in the extractor or not at all.
 
 ## Scope
 

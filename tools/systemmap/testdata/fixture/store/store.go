@@ -233,7 +233,8 @@ func (p *Postgres) RankAndList(ctx context.Context, all bool) error {
 // ListModelsLogged carries a phrase that reads like a WITH clause in the very text
 // whose table name is at stake, which is the only place it can be to pin anything:
 // prose in a different statement is in a different scope and cannot shadow this
-// fragment however it is spelled. A CTE name written in lower case must not
+// fragment however it is spelled — ListModelsCondProse is that half. A CTE name
+// written in lower case must not
 // register — text able to switch the fragment check off would be the easiest way in
 // the language to drop a table from the map.
 //
@@ -447,11 +448,12 @@ func (p *Postgres) ListModelsJoinedFrag(ctx context.Context, other string) error
 	return err
 }
 
-// RankBatch splits one query across a slice element, which the scan does not follow:
-// `qs[0]` and `qs[1]` are the same variable, so a scope resolved through the index
-// would let a CTE in one element shadow a real table read in another. The fragment
-// is reported instead — an answerable finding, where the shadowed read would be
-// silent.
+// RankBatch splits one query across a slice element. Only a bare identifier holding
+// text can be a scope, so `qs[0] +=` has none and its text belongs to the statement:
+// `qs` is a `[]string`, which carries no statement text of its own, and resolving the
+// index to it would be wrong anyway, since `qs[0]` and `qs[1]` are one variable and a
+// CTE in one element would shadow a real table read in another. The fragment is
+// reported instead — an answerable finding, where the shadowed read would be silent.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) RankBatch(ctx context.Context, all bool) error {
@@ -463,10 +465,11 @@ func (p *Postgres) RankBatch(ctx context.Context, all bool) error {
 	return err
 }
 
-// RankSliceElements is why RankBatch is reported rather than resolved. Two
-// statements share one slice, and the CTE belongs to the element the fragment is not
-// appended to — so following the index would settle a real read of `usage` against
-// the other element's WITH clause and publish the route without it.
+// RankSliceElements is why resolving the index in RankBatch would be the wrong repair
+// even where the types allowed it. Two statements share one slice, and the CTE belongs
+// to the element the fragment is not appended to — so following the index would settle
+// a real read of `usage` against the other element's WITH clause and publish the route
+// without it.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) RankSliceElements(ctx context.Context, all bool) error {
@@ -485,9 +488,9 @@ func (p *Postgres) RankSliceElements(ctx context.Context, all bool) error {
 	return nil
 }
 
-// queryBuf is a struct a query could be assembled through. `b.q` resolves to the
-// field, which every value of the type shares, so RankFields is reported for the
-// same reason RankBatch is.
+// queryBuf is a struct a query could be assembled through. `b.q` is not a bare
+// identifier, so RankFields has no scope variable for the same reason RankBatch has
+// none — and the field it would resolve to is shared by every value of the type.
 type queryBuf struct{ q string }
 
 // RankFields assembles through a field. Two receivers in one body would share one

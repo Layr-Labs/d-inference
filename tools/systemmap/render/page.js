@@ -108,11 +108,25 @@ const nodeNamespaces = {};
 for (const e of DATA.stateAccess) {
   (nodeNamespaces[e.dependency] = nodeNamespaces[e.dependency] || new Set()).add(e.namespace);
 }
-// endpoint -> per-dependency mode, taken from its namespace's associations.
+// namespace -> dependency association, which is the aggregate over every endpoint
+// in that namespace.
 const edgeIndex = {};
 for (const e of DATA.stateAccess) edgeIndex[e.namespace + '\0' + e.dependency] = e;
 const edgeOf = (ns, dep) => edgeIndex[ns + '\0' + dep] || null;
-const epMode = (ep, dep) => (edgeOf(ep.namespace, dep) || {}).mode || '?';
+// One endpoint's own derived mode for one dependency. The route carries it, and it
+// is not its namespace's: `GET /v1/keys` reads `pg.api_keys` in a namespace that
+// also writes it, so the aggregate is RW and the endpoint is R. Reading the
+// aggregate here published the wrong verb in the endpoint table's chips and let
+// "Writes only" select endpoints that only read — while the same page drew the edge
+// itself in the right colour, because the graph took the route's own mode. The
+// association is the fallback for a route the extractor gave no mode.
+//
+// That fallback is, as of the coordinator map, dead: all 840 route-dependency pairs
+// carry their own mode, so neither the aggregate branch nor the '?' is reached, and
+// the DOM suite cannot cover them. It stays because `depModes` is derived per route
+// and a route the extractor cannot resolve a mode for is a shape the IR permits —
+// but do not read it as tested.
+const epMode = (ep, dep) => (ep.depModes || {})[dep] || (edgeOf(ep.namespace, dep) || {}).mode || '?';
 const nodeDoc = id => {
   const d = DATA.depDocs && DATA.depDocs[id];
   return d && typeof d === 'object' ? d : null;
@@ -327,7 +341,7 @@ for (const ep of DATA.routes) {
   for (const dep of ep.dependencies) {
     const t = gById['dep:' + dep];
     if (!t) continue;
-    const link = { s, t, dep, ep, mode: (ep.depModes || {})[dep] || epMode(ep, dep) };
+    const link = { s, t, dep, ep, mode: epMode(ep, dep) };
     GLINKS.push(link);
     s.links.push(link);
     t.links.push(link);
@@ -705,10 +719,38 @@ function positionGraph() {
 // label never sits on top of the name of the ring it is inside.
 // ---------------------------------------------------------------------------
 const LABEL_BUDGET = 44;
+// A group ring narrower than this many screen pixels has no room for its own name.
+const GROUP_LABEL_MIN = 46;
+// 101 endpoint labels at once is noise; an endpoint earns one at this scale, or when
+// a focus or a hover has already narrowed the picture to a handful.
+const EP_LABEL_ZOOM = 1.5;
+// The glyph size each kind of label is drawn at, and the height its box reserves.
+const LABEL_PX = { ep: 10, dep: 11 };
+const GROUP_LABEL_PX = 10, GROUP_LABEL_H = 11;
+const CLUSTER_LABEL_PX = 12.5, CLUSTER_SUB_PX = 10;
+// The ladder a cluster name climbs when its ideal position is taken: the ideal
+// position first, then up — above the ring is where a boundary name belongs — then
+// down, each rung one box clear of the last, and the ideal position again as the last
+// resort, because an anchor that is missing is worse than one that is crowded.
+//
+// The rungs are screen pixels and are not scaled by the zoom, deliberately: they are
+// sized against the label boxes they have to clear, which are also unscaled. The cost
+// is that when the map is zoomed far out a high rung can carry a name most of a ring
+// away from the ring itself, or off the top of the frame — which is why the on-screen
+// claim in the DOM suite exempts cluster names, and why the last rung comes home.
+const CLUSTER_RUNGS = [0, -29, 29, -58, 58, -87, 87, -116, 116, 0];
+// How many dependencies a pinned detail panel lists before it summarises the rest.
+const PANEL_CAP = 20;
 // Widths are estimated, not measured: getBBox() on two hundred texts every frame
 // is what makes panning stutter, and an estimate 6% generous only ever drops a
 // label that would have just fit.
 const textW = (s, px) => s.length * px * 0.56 + 8;
+// The two rectangles the label pass reserves, as functions of where a label ended
+// up. They are declared here rather than inside placeLabels so that the geometry a
+// test scores collisions with is the page's own and not a copy of it.
+const labelBox = (cx, cy, w, h) => ({ x0: cx - w / 2, x1: cx + w / 2, y0: cy - h, y1: cy + 3 });
+// A cluster's title and its subtitle are one box; the subtitle rides 13px under.
+const clusterBox = (cx, cy, w) => ({ x0: cx - w / 2, x1: cx + w / 2, y0: cy - 12, y1: cy + 16 });
 const sx = x => x * view.k + view.x;
 const sy = y => y * view.k + view.y;
 // L is what styleGraph decided; placeLabels only lays it out, so a node drag can
@@ -725,7 +767,7 @@ function placeLabels() {
     return true;
   };
   const place = (node, cx, cy, w, h) => {
-    const b = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - h, y1: cy + 3 };
+    const b = labelBox(cx, cy, w, h);
     if (!fits(b)) return false;
     taken.push(b);
     node.setAttribute('x', cx.toFixed(1));
@@ -735,24 +777,37 @@ function placeLabels() {
   };
   const hide = node => { node.style.display = 'none'; };
 
-  // Cluster names anchor the reader, so they are placed unconditionally and the
-  // rest of the pass works around them.
+  // Cluster names anchor the reader, so they are never dropped — but zoomed far
+  // out the rings crowd together and two names would print on top of each other,
+  // which reads as one unparseable name rather than as two boundaries. So each is
+  // offset until it clears the ones already placed: the ladder tries the ideal
+  // position, then rungs above and below it in turn, nearest first, and settles for
+  // the ideal position if every rung is taken — an anchor that is missing is worse
+  // than one that is crowded. Below is a real position, not a fallback: a name 29px
+  // under the top of its own ring is inside the ring, which still reads as that
+  // boundary's name. Far out on a crowded map a name can end up ~90px from ideal,
+  // which is the price of never dropping one.
   for (const id of clusterIds) {
     const t = hullLabels[id], sub = hullSubs[id];
     const cx = sx(center[id].x), cy = sy(center[id].y - radius[id]) - 2;
-    const w = Math.max(textW(t.textContent, 12.5), textW(sub.textContent, 10));
+    const w = Math.max(textW(t.textContent, CLUSTER_LABEL_PX), textW(sub.textContent, CLUSTER_SUB_PX));
+    let y = cy;
+    for (const rung of CLUSTER_RUNGS) {
+      y = cy + rung;
+      if (fits(clusterBox(cx, y, w))) break;
+    }
     t.setAttribute('x', cx.toFixed(1));
-    t.setAttribute('y', cy.toFixed(1));
+    t.setAttribute('y', y.toFixed(1));
     sub.setAttribute('x', cx.toFixed(1));
-    sub.setAttribute('y', (cy + 13).toFixed(1));
+    sub.setAttribute('y', (y + 13).toFixed(1));
     t.style.display = sub.style.display = '';
-    taken.push({ x0: cx - w / 2, x1: cx + w / 2, y0: cy - 12, y1: cy + 16 });
+    taken.push(clusterBox(cx, y, w));
   }
-  // A group ring smaller than 46 screen pixels has no room for its own name.
   for (const gid in groupLabels) {
     const grp = GROUPS[gid], t = groupLabels[gid];
-    if (grp.r * view.k < 46) { hide(t); continue; }
-    place(t, sx(grp.cx), sy(grp.cy - grp.r) - 1, textW(t.textContent, 10), 11) || hide(t);
+    if (grp.r * view.k < GROUP_LABEL_MIN) { hide(t); continue; }
+    place(t, sx(grp.cx), sy(grp.cy - grp.r) - 1,
+      textW(t.textContent, GROUP_LABEL_PX), GROUP_LABEL_H) || hide(t);
   }
 
   // Candidates, in the order they earn their place. `pick` is what the reader
@@ -763,15 +818,13 @@ function placeLabels() {
   for (const n of GNODES) if (eligible(n) && (L.sel.has(n.id) || n.id === state.focus)) add(pick, n);
   for (const n of GNODES) if (eligible(n) && L.near.has(n.id)) add(pick, n);
   for (const n of depsByDegree) if (eligible(n)) add(rest, n);
-  // 101 endpoint labels at once is noise; they earn one when zoomed in, or when a
-  // focus or a hover has already narrowed the picture to a handful.
-  if (view.k >= 1.5 || L.focused || L.near.size) {
+  if (view.k >= EP_LABEL_ZOOM || L.focused || L.near.size) {
     for (const n of epsByDegree) if (eligible(n)) add(rest, n);
   }
   for (const n of GNODES) if (!chosen.has(n.id)) hide(n.text);
 
   const draw1 = (n, priority) => {
-    const size = n.kind === 'ep' ? 10 : 11;
+    const size = LABEL_PX[n.kind];
     const w = textW(n.text.textContent, size), h = size + 2;
     n.text.classList.toggle('pri', priority);
     const cx = sx(n.x);
@@ -974,9 +1027,9 @@ function drawEpInfo(host, n, meta, pinned) {
   }
   section(host, plural(ep.dependencies.length, 'dependency', 'dependencies') + ' reached');
   const ul = el('ul');
-  const cap = pinned ? 20 : 8;
+  const cap = pinned ? PANEL_CAP : 8;
   for (const d of ep.dependencies.slice(0, cap)) {
-    const li = el('li', null, ((ep.depModes || {})[d] || '?') + ' · ');
+    const li = el('li', null, epMode(ep, d) + ' · ');
     const link = el('span', 'lk', showProse() ? label(d) : d);
     link.onclick = () => { state.focus = 'dep:' + d; selectDep(d); };
     li.append(showProse() ? pp(link, true) : link);
@@ -1453,6 +1506,13 @@ function drawEdges() {
   for (const e of DATA.stateAccess) {
     if (state.ns && e.namespace !== state.ns) continue;
     if (state.dep && e.dependency !== state.dep) continue;
+    // The access-mode control means two different things in the two tables, and it is
+    // supposed to. A row here *is* a namespace-scoped association, so its mode is the
+    // aggregate and filtering on `e.mode` is filtering on the row's own subject. A row
+    // in the endpoint table is one route, so that table filters on `epMode`. Selecting
+    // "Writes only" can therefore show an association the endpoint table has no row
+    // for — the namespace writes the table, this endpoint only reads it — which is the
+    // distinction the two tables exist to show rather than a disagreement.
     if (state.mode && e.mode !== state.mode) continue;
     if (!ontOK(e.dependency)) continue;
     if (state.q && !(e.namespace + ' ' + e.dependency + ' ' +

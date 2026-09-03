@@ -64,10 +64,20 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: tools/systemmap/render/webtest/package-lock.json
+      - name: Install the explorer test harness
+        # jsdom, so the generated page can be executed rather than pattern-matched.
+        run: make -C tools/systemmap webdeps
       - name: Extractor tests
         # systemmap is its own Go module, so the coordinator's `go test ./...`
-        # does not reach it.
-        run: make -C tools/systemmap test
+        # does not reach it. SYSTEMMAP_WEBTEST turns the DOM suite's own "node is
+        # not installed" skip into a failure: it is installed here, so a skip
+        # would mean the harness silently stopped running.
+        run: SYSTEMMAP_WEBTEST=1 make -C tools/systemmap test
       - name: Build the map
         # The map is generated, never committed, so there is nothing to diff
         # against: this fails when a route, a piece of coordinator state, a table
@@ -77,6 +87,35 @@ jobs:
         run: |
           make -C tools/systemmap \
             ARGS="-revision ${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Drive the real map
+        # The Go driver already ran this suite over the five-route fixture. This
+        # runs the same files over the artifact a reader will actually open: a
+        # hundred routes, six clusters, twenty groups and eight hundred forty
+        # associations, which is what really crowds the label pass. Two claims are
+        # out of the fixture's reach altogether and are only tested here — that the
+        # label budget is ever the binding constraint, and that a cluster name ever
+        # has to climb its rung ladder to get clear of another label. The fixture
+        # gets as close as a deliberately small viewport in graph.test.mjs can.
+        #
+        # The tally is checked as well as the exit code: a suite whose tests all
+        # stopped being collected exits zero, and a green run that executed
+        # nothing is the one failure this step exists to prevent. node's status is
+        # kept rather than swallowed by the pipe, but the tally is reported first —
+        # "passed 30 of 33" is a more useful line than a bare non-zero exit.
+        run: |
+          set -o pipefail
+          cd tools/systemmap/render/webtest
+          # Globbed, not listed: a new *.test.mjs has to raise the floor here, or it
+          # would run without ever being required to.
+          declared=$(grep -hc '^test(' *.test.mjs | awk '{n += $1} END {print n}')
+          status=0
+          SYSTEMMAP_PAGE="$GITHUB_WORKSPACE/docs/reference/api-map/system-map.html" \
+            node --test --test-reporter=tap *.test.mjs | tee /tmp/webtest.tap || status=$?
+          passed=$(sed -n 's/^# pass \([0-9]*\)$/\1/p' /tmp/webtest.tap)
+          echo "the explorer suite passed ${passed:-0} of $declared tests against the real map"
+          test "${passed:-0}" -ge "$declared"
+          grep -qx '# fail 0' /tmp/webtest.tap
+          test "$status" -eq 0
       - name: Upload the map
         # Downloadable from the job summary: system-map.html is self-contained, so
         # a reviewer can open it locally without building anything. Uploaded even

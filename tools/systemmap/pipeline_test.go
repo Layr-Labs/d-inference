@@ -1160,25 +1160,11 @@ func TestPageProvenanceViews(t *testing.T) {
 			t.Errorf("page is missing the provenance control's %q", want)
 		}
 	}
-	// The subtraction has to run through one predicate, or "code only" becomes a
-	// list of places someone remembered. say() withholds a sentence, label() falls
-	// back to the node id, and both answer to showProse().
-	for _, want := range []string{
-		"const showProse = () => state.view !== 'code'",
-		"const say = s => (showProse() ? (s || '') : '')",
-		"showProse() ? (DATA.labels && DATA.labels[id]) || id : id",
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("code view is missing its withholding primitive %q", want)
-		}
-	}
-	// Every layer a person is responsible for is actually marked somewhere: the
-	// scaffolding existing without call sites would render a lens that marks nothing.
-	for _, fn := range []string{"pc(el(", "pp(el(", "px(el("} {
-		if !strings.Contains(html, fn) {
-			t.Errorf("no render site calls %s — a mark with no use marks nothing", fn)
-		}
-	}
+	// What the views actually do to the page — that `code` withholds every
+	// description and curated label and falls back to node ids, that `overlay` marks
+	// each of the three layers in place, and that the marks have real call sites —
+	// is asserted by executing the page (render/webtest/explorer.test.mjs), where a
+	// missed withholding site fails instead of a missing source string.
 	reset := slice(t, html, "getElementById('reset').onclick", "};")
 	for _, leak := range []string{"view", "prov"} {
 		if strings.Contains(reset, leak) {
@@ -1204,7 +1190,6 @@ func TestPageTopologyFingerprint(t *testing.T) {
 		"'data-topo': nodeTopo(n)",
 		"'data-topo': linkTopo(l)",
 		"gsvg.querySelectorAll(sel)", // read back from what was drawn, not from DATA
-		"topoFingerprint()",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("page is missing the topology fingerprint's %q", want)
@@ -1221,12 +1206,15 @@ func TestPageTopologyFingerprint(t *testing.T) {
 	}
 }
 
-// TestPageExplorerAffordances pins the parts of the page that answer "what does
-// this thing touch, and what is it" rather than "what exists": labels that keep one
-// size at every zoom and are dropped when they would collide, a click that shadows
-// everything off the clicked node's edges, a table drawer that can hold a 79-column
-// definition, the identity filter, and the prose fields the pinned panel exists to
-// show.
+// TestPageExplorerAffordances pins the parts of the explorer that only the emitted
+// artifact can answer for: the layer the labels live in, the stylesheet rules that
+// make a shadow and a wide drawer visible at all, and the two places where the page
+// reads the overlay by field name — `DOC_FIELDS` and `ontPicks` — where a missing
+// name renders an empty card instead of failing.
+//
+// Everything the reader can *drive* is asserted by executing the page instead
+// (render/webtest). A string check cannot tell a working control from one on a page
+// that throws before installing its handler.
 func TestPageExplorerAffordances(t *testing.T) {
 	html := renderFixturePage(t)
 
@@ -1245,25 +1233,19 @@ func TestPageExplorerAffordances(t *testing.T) {
 			"labels would scale with the zoom", strings.Count(between, "<g "), strings.Count(between, "</g>"))
 	}
 
+	// Only the rules a stylesheet carries are checked as text. What the controls
+	// *do* — the budget, the shadow, Escape, the drawer, the identity axis — is
+	// driven in render/webtest rather than matched here, because a page that emits
+	// every one of these strings and throws on line one passes this test.
 	for _, want := range []string{
-		"const LABEL_BUDGET",   // a bounded number of names on screen at once
-		"function placeLabels", // …placed per frame in screen space
-		"const sx = x =>", "const sy = y =>",
 		".glabel.pri",    // the focused neighbourhood outranks degree
 		".gnode.shade {", // click-to-shadow, the interaction that was missing
 		".glink.shade {", // including the edges, or the shadow reads as a hairball
-		"function focusNode", "function clearFocus",
-		"body.focused .gfocus", `id="gfocusclear"`,
-		"'Escape'",      // Esc clears it
-		".gschema.wide", // the drawer widens instead of only scrolling
-		".ginfo.pinned", // a click pins a panel wide enough for the prose
-		`id="ont"`,      // the ontological axis
-		`value="source"`, `value="literal"`, `value="symbol"`, `value="unreached"`,
-		"const ontOK = dep =>",
-		"function identTier",
+		".gschema.wide",  // the drawer widens instead of only scrolling
+		".ginfo.pinned",  // a click pins a panel wide enough for the prose
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("page is missing the explorer affordance %q", want)
+			t.Errorf("page is missing the stylesheet rule %q", want)
 		}
 	}
 

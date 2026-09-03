@@ -692,8 +692,9 @@ private final class StandaloneHashRecorder: @unchecked Sendable {
 }
 
 private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let cacheDir = ModelScanner.defaultCacheDirectory()
+        ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
     let modelDir = cacheDir.appendingPathComponent(
         "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
     let snapshot = modelDir

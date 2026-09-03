@@ -8,7 +8,10 @@
 ///
 /// Downloads pull from R2 directly (the coordinator never fronts model
 /// weights). The model lives in the standard HuggingFace cache layout
-/// at `~/.cache/huggingface/hub/models--{org}--{name}/snapshots/{hash}/`,
+/// at `{hf-cache}/models--{org}--{name}/snapshots/{hash}/` (the cache is
+/// `$HF_HUB_CACHE`, else `$HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`,
+/// else `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub` --
+/// see `ModelScanner.cacheDirectory`),
 /// matching what `ModelScanner` already discovers.
 
 import Foundation

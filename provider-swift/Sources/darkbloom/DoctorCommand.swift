@@ -259,20 +259,10 @@ func buildDoctorChecks(
         detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
     ))
 
-    if let cacheDir = ModelScanner.defaultCacheDirectory(),
-       FileManager.default.fileExists(atPath: cacheDir.path) {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .pass,
-            detail: cacheDir.path
-        ))
-    } else {
-        checks.append(.init(
-            name: "huggingface cache",
-            status: .warn,
-            detail: "not found"
-        ))
-    }
+    // Name the source when an env var redirects the cache: "not found" against
+    // an unexpected path is otherwise a confusing diagnosis for an operator who
+    // has weights on an external volume.
+    checks.append(hfCacheCheck(environment: ProcessInfo.processInfo.environment))
 
     checks.append(.init(
         name: "local mlx models",
@@ -465,4 +455,62 @@ func describeMDMEnrollment(_ state: MDMEnrollmentState) -> String {
     case .notEnrolled: return "no"
     case .checkFailed: return "unknown (profiles tool failed)"
     }
+}
+
+/// `" (via $HF_HUB_CACHE)"` when an environment variable selected the cache
+/// directory, empty for the default `~/.cache/huggingface/hub`.
+///
+/// Derived from the resolution itself rather than re-deriving the precedence,
+/// so the reported source can never disagree with the directory actually used.
+func hfCacheSourceSuffix(environment: [String: String]) -> String {
+    sourceSuffix(ModelScanner.resolveCache(environment: environment))
+}
+
+private func sourceSuffix(_ resolved: ModelScanner.ResolvedCache) -> String {
+    resolved.environmentKey.map { " (via $\($0))" } ?? ""
+}
+
+/// The `huggingface cache` doctor check.
+///
+/// Pure in its inputs so every branch is unit-testable. Three failure shapes an
+/// operator can actually hit once the location is environment-controlled:
+///   - the path does not exist, or is a regular FILE rather than a directory
+///     (a plain `fileExists` check called that healthy while the scanner found
+///     nothing);
+///   - the path is fine but EMPTY while the default cache still holds models,
+///     i.e. an `HF_HOME` exported for other tooling silently moved the
+///     provider off its own weights.
+func hfCacheCheck(
+    environment: [String: String],
+    homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+) -> DoctorCheck {
+    let resolved = ModelScanner.resolveCache(
+        environment: environment, homeDirectory: homeDirectory)
+    let cacheDir = resolved.url
+    let source = sourceSuffix(resolved)
+
+    guard ModelScanner.isUsableCacheDirectory(cacheDir) else {
+        let reason = FileManager.default.fileExists(atPath: cacheDir.path)
+            ? "not a directory"
+            : "not found"
+        return .init(
+            name: "huggingface cache",
+            status: .warn,
+            detail: "\(reason): \(cacheDir.path)\(source)"
+        )
+    }
+
+    let homeDefault = ModelScanner.homeCacheDirectory(homeDirectory: homeDirectory)
+    if resolved.environmentKey != nil,
+       cacheDir.path != homeDefault.path,
+       !ModelScanner.hasCachedModels(in: cacheDir),
+       ModelScanner.hasCachedModels(in: homeDefault) {
+        return .init(
+            name: "huggingface cache",
+            status: .warn,
+            detail: "empty: \(cacheDir.path)\(source); models are in \(homeDefault.path)"
+        )
+    }
+
+    return .init(name: "huggingface cache", status: .pass, detail: cacheDir.path + source)
 }

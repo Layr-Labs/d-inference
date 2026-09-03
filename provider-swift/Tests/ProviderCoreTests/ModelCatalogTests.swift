@@ -83,7 +83,31 @@ struct ModelCatalogTests {
     @Test("cacheModelDirectory mirrors the HuggingFace cache layout")
     func cacheModelDirectoryShape() {
         let url = ModelDownloader.cacheModelDirectory(for: "mlx-community/Foo-Bar")
-        #expect(url.path.hasSuffix(".cache/huggingface/hub/models--mlx-community--Foo-Bar"))
+        #expect(url.lastPathComponent == "models--mlx-community--Foo-Bar")
+    }
+
+    /// The DOWNLOAD destination must follow `$HF_HOME`, not the home
+    /// directory. Exercised through `ModelDownloader` (not `ModelScanner`) so
+    /// re-hardcoding the path inside the downloader fails this test -- under
+    /// the ambient CI environment a comparison against `defaultCacheDirectory`
+    /// would pass either way.
+    @Test("the download destination follows an HF_HOME override")
+    func cacheModelDirectoryFollowsOverride() throws {
+        let base = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent("dl-override-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let dir = ModelDownloader.cacheModelDirectory(
+            for: "mlx-community/Foo-Bar",
+            environment: [ModelScanner.hfHomeEnvKey: base.path],
+            homeDirectory: URL(fileURLWithPath: "/Users/op", isDirectory: true)
+        )
+
+        #expect(dir.path == base.appendingPathComponent(
+            "hub/models--mlx-community--Foo-Bar").path)
+        #expect(!dir.path.contains("/Users/op"))
     }
 
     @Test("parseShardNames returns sorted unique values from weight_map")

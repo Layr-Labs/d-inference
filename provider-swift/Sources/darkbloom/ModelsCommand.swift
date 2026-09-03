@@ -9,7 +9,10 @@ struct Models: AsyncParsableCommand {
         Subcommands:
           catalog   Show available models with download status (default).
           list      Show local models only.
-          download  Download a catalog model into ~/.cache/huggingface/hub.
+          download  Download a catalog model into the HuggingFace cache
+                    ($HF_HUB_CACHE, else $HUGGINGFACE_HUB_CACHE, else
+                    $HF_HOME/hub, else $XDG_CACHE_HOME/huggingface/hub,
+                    else ~/.cache/huggingface/hub).
           remove    Delete a downloaded model.
 
         With no subcommand, shows the full catalog.

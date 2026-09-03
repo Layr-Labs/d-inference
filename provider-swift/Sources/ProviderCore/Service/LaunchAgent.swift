@@ -8,6 +8,7 @@
 /// provider the user explicitly stopped; `start` re-enables it.
 
 import Foundation
+import ProviderCoreFoundation
 
 public enum LaunchAgent: Sendable {
 
@@ -296,7 +297,17 @@ public enum LaunchAgent: Sendable {
         PrefillDeadlineMode.environmentKey,
     ]
 
-    static let passthroughEnvKeys = [
+    /// The HuggingFace cache-location variables (`ModelScanner.cacheEnvKeys`:
+    /// `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE`, `HF_HOME`, `XDG_CACHE_HOME`).
+    /// launchd does not inherit the installing shell, so without persisting
+    /// these the foreground CLI (`darkbloom models`, `doctor`) would scan the
+    /// operator's external volume while the daemon scanned `~/.cache` and
+    /// advertised no models.
+    ///
+    /// All of them must be forwarded together: dropping the lower-priority
+    /// ones would have the daemon fall through to a DIFFERENT rung of the
+    /// ladder than the shell resolved.
+    static let passthroughEnvKeys = ModelScanner.cacheEnvKeys + [
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
@@ -316,11 +327,28 @@ public enum LaunchAgent: Sendable {
     /// would collapse a drain export back to `trust`. Config-backed `0` /
     /// `trust` remain excluded — `provider.toml` stays authoritative for
     /// whether the route runs, and `trust` is the default whenever it does.
-    static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
+    /// Cache-location keys whose value is a PATH: launchd runs the job with
+    /// working directory `/`, so a relative value forwarded verbatim would
+    /// resolve to a different directory in the daemon than in the installing
+    /// shell -- reintroducing the CLI/daemon split this passthrough exists to
+    /// close. `workingDirectory` is injected so the conversion is testable.
+    static let pathValuedEnvKeys: Set<String> = Set(ModelScanner.cacheEnvKeys)
+
+    static func passthroughEnvironment(
+        from environment: [String: String],
+        workingDirectory: URL = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    ) -> [String: String] {
         var out = GemmaOptimizationEnvironment.daemonDrainPassthrough(
             from: environment)
         for key in passthroughEnvKeys {
-            if let value = environment[key], !value.isEmpty {
+            guard let value = environment[key], !value.isEmpty else { continue }
+            if pathValuedEnvKeys.contains(key) {
+                if let absolute = ModelScanner.absoluteCachePathValue(
+                    value, relativeTo: workingDirectory) {
+                    out[key] = absolute
+                }
+            } else {
                 out[key] = value
             }
         }

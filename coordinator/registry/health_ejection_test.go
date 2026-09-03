@@ -221,9 +221,12 @@ func TestHealthEjection_FailOpenWhenAllEjected(t *testing.T) {
 	if !reg.HealthEjectionOpen("serial:SOLO") {
 		t.Fatal("precondition: must be ejected")
 	}
-	if got := reserveOne(reg, "m", 100); got == nil {
+	selected := reserveSchedulerScenario(reg, "m", 100)
+	if selected == nil {
 		t.Fatal("fail-open: the only provider for a model must still be reservable when ejected")
 	}
+	selected.RemovePending("scheduler-scenario-request")
+	reg.SetProviderIdle(selected.ID)
 }
 
 // A box mid-way through a long generation that sheds concurrent dispatches

@@ -6,7 +6,7 @@ import (
 
 func BenchmarkCalculateCost(b *testing.B) {
 	b.ReportAllocs()
-	// Known model with explicit pricing
+	// Representative request using the package-wide fallback pricing.
 	model := "mlx-community/Qwen3.5-122B-A10B-8bit"
 	promptTokens := 1500
 	completionTokens := 800

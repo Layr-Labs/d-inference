@@ -20,12 +20,20 @@ const defaultTerminalSettleGrace = 30 * time.Second
 // terminal within the grace → refund. Claim is single-winner (terminal handler
 // vs. grace timer); FinalizeReservation independently guards double-counting.
 type settlementHolder struct {
-	mu      sync.Mutex
-	pending map[string]*registry.PendingRequest
+	mu        sync.Mutex
+	pending   map[string]*registry.PendingRequest
+	afterFunc func(time.Duration, func()) *time.Timer
 }
 
 func newSettlementHolder() *settlementHolder {
-	return &settlementHolder{pending: make(map[string]*registry.PendingRequest)}
+	return newSettlementHolderWithTimer(time.AfterFunc)
+}
+
+func newSettlementHolderWithTimer(afterFunc func(time.Duration, func()) *time.Timer) *settlementHolder {
+	return &settlementHolder{
+		pending:   make(map[string]*registry.PendingRequest),
+		afterFunc: afterFunc,
+	}
 }
 
 // hold stores pr under its request id and schedules onExpiry(pr) after grace if
@@ -38,7 +46,11 @@ func (h *settlementHolder) hold(pr *registry.PendingRequest, grace time.Duration
 	h.pending[pr.RequestID] = pr
 	h.mu.Unlock()
 
-	time.AfterFunc(grace, func() {
+	afterFunc := h.afterFunc
+	if afterFunc == nil {
+		afterFunc = time.AfterFunc
+	}
+	afterFunc(grace, func() {
 		if expired := h.claim(pr.RequestID); expired != nil {
 			onExpiry(expired)
 		}

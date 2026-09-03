@@ -412,9 +412,6 @@ type Server struct {
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
 
-	// telemetryLimiter throttles telemetry ingestion per submitter.
-	telemetryLimiter *telemetryLimiter
-
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
@@ -812,7 +809,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mux:                      http.NewServeMux(),
 		knownRuntimeManifest:     &RuntimeManifest{},
 		metrics:                  NewMetrics(),
-		telemetryLimiter:         newTelemetryLimiter(),
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),

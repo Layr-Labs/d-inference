@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "go_to_provider_hello",
+      "recipient_private_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sender_public_key_base64": "rUOL+uMfbAk9YdQzklXqeYCSyfrdB7l4J/Swrp3ufBw=",
+      "ciphertext_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXZGqVtM7CzvUzjuv8z5nMD2Sk+g7RhuEOvfk2Xns=",
+      "plaintext_utf8": "hello from Go"
+    },
+    {
+      "name": "go_to_provider_json",
+      "recipient_private_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sender_public_key_base64": "rUOL+uMfbAk9YdQzklXqeYCSyfrdB7l4J/Swrp3ufBw=",
+      "ciphertext_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXBEh64PeX5/KPPTPaFAFkJHfj+w3aw+te6LZifGcJdS8d1/aSifvDne+pw2W4tRO2Hz6Nz8AbtNRurlE6LxNKPV+I/OEjMotRwpxKHQ==",
+      "plaintext_utf8": "{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+    },
+    {
+      "name": "go_to_provider_empty",
+      "recipient_private_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sender_public_key_base64": "rUOL+uMfbAk9YdQzklXqeYCSyfrdB7l4J/Swrp3ufBw=",
+      "ciphertext_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGd5WgKY2kgufhPrGUBWGig==",
+      "plaintext_utf8": ""
+    },
+    {
+      "name": "go_to_provider_unicode",
+      "recipient_private_key_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sender_public_key_base64": "rUOL+uMfbAk9YdQzklXqeYCSyfrdB7l4J/Swrp3ufBw=",
+      "ciphertext_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXsrGyAb1PhMJKM/jWGp9d2O9ABYE8NWT9eXeXuPf8+OeHLHR0drpUZxAG",
+      "plaintext_utf8": "こんにちは世界 🌍"
+    },
+    {
+      "name": "provider_to_go_response",
+      "recipient_private_key_hex": "a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0",
+      "sender_public_key_base64": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=",
+      "ciphertext_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXnPRmM91+Fsv168WzsGr0SH6k5RLRyPQZ8vJkdnldJ3FQzPqFn+g=",
+      "plaintext_utf8": "response from provider"
+    }
+  ]
+}

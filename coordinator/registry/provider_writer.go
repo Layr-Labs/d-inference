@@ -79,13 +79,15 @@ type providerWriteRequest struct {
 // Per-frame write deadlines are enforced by a single watchdog goroutine per
 // connection (see watchWrites) rather than a goroutine+timer per frame.
 type providerWriter struct {
-	conn     *websocket.Conn
-	queue    chan *providerWriteRequest
-	control  chan *providerWriteRequest
-	stop     chan struct{}
-	done     chan struct{}
-	acceptMu sync.Mutex
-	dead     atomic.Bool
+	conn      *websocket.Conn
+	writeConn func(context.Context, websocket.MessageType, []byte) error
+	closeConn func() error
+	queue     chan *providerWriteRequest
+	control   chan *providerWriteRequest
+	stop      chan struct{}
+	done      chan struct{}
+	acceptMu  sync.Mutex
+	dead      atomic.Bool
 
 	// writeDeadline is the UnixNano deadline of the in-flight conn.Write
 	// (0 = no write in progress). Published by writeFrame, enforced by
@@ -96,9 +98,11 @@ type providerWriter struct {
 	// the generic connection-closed error.
 	writeTimedOut atomic.Bool
 
-	// timeoutFor overrides the per-frame write timeout in tests. Nil means
-	// the default providerWriteTimeout schedule.
-	timeoutFor func(frameBytes int) time.Duration
+	// timeoutFor and watchdogTicks/watchdogNow are deterministic test hooks.
+	// Nil values use the production timeout schedule, ticker, and clock.
+	timeoutFor    func(frameBytes int) time.Duration
+	watchdogTicks <-chan time.Time
+	watchdogNow   func() time.Time
 	// writeFrameForTest replaces the socket handoff in deterministic unit tests.
 	writeFrameForTest func([]byte) error
 	// afterWriteCompleteForTest pauses after the 4→5 ownership transition and
@@ -111,11 +115,13 @@ func newProviderWriter(conn *websocket.Conn) *providerWriter {
 		return nil
 	}
 	w := &providerWriter{
-		conn:    conn,
-		queue:   make(chan *providerWriteRequest, providerWriteQueueSize),
-		control: make(chan *providerWriteRequest, providerControlQueueSize),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		conn:      conn,
+		writeConn: conn.Write,
+		closeConn: conn.CloseNow,
+		queue:     make(chan *providerWriteRequest, providerWriteQueueSize),
+		control:   make(chan *providerWriteRequest, providerControlQueueSize),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	go w.run()
 	return w
@@ -355,10 +361,18 @@ func (w *providerWriter) closeNow() {
 		return
 	}
 	close(w.stop)
+	w.closeTransport()
+	w.acceptMu.Unlock()
+}
+
+func (w *providerWriter) closeTransport() {
+	if w.closeConn != nil {
+		_ = w.closeConn()
+		return
+	}
 	if w.conn != nil {
 		_ = w.conn.CloseNow()
 	}
-	w.acceptMu.Unlock()
 }
 
 func (w *providerWriter) run() {
@@ -526,21 +540,33 @@ func (w *providerWriter) drainLane(lane chan *providerWriteRequest, err error) {
 // error. Granularity is providerWriteWatchdogInterval, acceptable slack on a
 // >=5s timeout floor.
 func (w *providerWriter) watchWrites(stop <-chan struct{}) {
+	if w.watchdogTicks != nil {
+		now := w.watchdogNow
+		if now == nil {
+			now = time.Now
+		}
+		w.watchWritesWithClock(stop, w.watchdogTicks, now)
+		return
+	}
 	ticker := time.NewTicker(providerWriteWatchdogInterval)
 	defer ticker.Stop()
+	w.watchWritesWithClock(stop, ticker.C, time.Now)
+}
+
+// watchWritesWithClock accepts explicit ticks and time so watchdog behavior can
+// be synchronized without depending on scheduler or socket-buffer timing.
+func (w *providerWriter) watchWritesWithClock(stop <-chan struct{}, ticks <-chan time.Time, now func() time.Time) {
 	for {
 		select {
 		case <-stop:
 			return
 		case <-w.stop:
 			return
-		case <-ticker.C:
+		case <-ticks:
 			d := w.writeDeadline.Load()
-			if d != 0 && time.Now().UnixNano() > d {
+			if d != 0 && now().UnixNano() > d {
 				w.writeTimedOut.Store(true)
-				if w.conn != nil {
-					_ = w.conn.CloseNow()
-				}
+				w.closeTransport()
 				return
 			}
 		}
@@ -557,7 +583,15 @@ func (w *providerWriter) writeFrame(data []byte) error {
 		timeout = w.timeoutFor(len(data))
 	}
 	w.writeDeadline.Store(time.Now().Add(timeout).UnixNano())
-	err := w.conn.Write(context.Background(), websocket.MessageText, data)
+	writeConn := w.writeConn
+	if writeConn == nil && w.conn != nil {
+		writeConn = w.conn.Write
+	}
+	if writeConn == nil {
+		w.writeDeadline.Store(0)
+		return errProviderWriterStopped
+	}
+	err := writeConn(context.Background(), websocket.MessageText, data)
 	w.writeDeadline.Store(0)
 	if err != nil && w.writeTimedOut.Load() {
 		return errProviderWriteTimeout

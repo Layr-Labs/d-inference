@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "register_legacy_optional_snapshots_omitted",
+      "families": ["register_heartbeat"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "register",
+        "hardware": {
+          "machine_model": "Mac16,5",
+          "chip_name": "Apple M4 Max",
+          "chip_family": "M4",
+          "chip_tier": "Max",
+          "memory_gb": 128,
+          "memory_available_gb": 120,
+          "cpu_cores": {"total": 16, "performance": 12, "efficiency": 4},
+          "gpu_cores": 40,
+          "memory_bandwidth_gbs": 546
+        },
+        "models": [],
+        "backend": "mlx-swift"
+      },
+      "absent_paths": [
+        "/prefix_cache_v2_models",
+        "/prefix_cache_statuses",
+        "/prefix_cache_donation_outcomes",
+        "/tool_constraint_protocol",
+        "/tool_constraint_models"
+      ]
+    },
+    {
+      "id": "register_authoritative_empty_snapshots",
+      "families": ["register_heartbeat", "prefix_cache_v2"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "register",
+        "hardware": {
+          "machine_model": "Mac16,5",
+          "chip_name": "Apple M4 Max",
+          "chip_family": "M4",
+          "chip_tier": "Max",
+          "memory_gb": 128,
+          "memory_available_gb": 120,
+          "cpu_cores": {"total": 16, "performance": 12, "efficiency": 4},
+          "gpu_cores": 40,
+          "memory_bandwidth_gbs": 546
+        },
+        "models": [],
+        "backend": "mlx-swift",
+        "prefix_cache_protocol": 2,
+        "prefix_cache_v2_models": [
+          {
+            "model_id": "org/model",
+            "model_aggregate_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "prompt_contract_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "block_hash_version": "dbk3",
+            "block_size": 256,
+            "cache_epoch": "11111111-1111-1111-1111-111111111111",
+            "enabled": true,
+            "ready": true
+          }
+        ],
+        "prefix_cache_statuses": [],
+        "prefix_cache_donation_outcomes": []
+      }
+    },
+    {
+      "id": "heartbeat_legacy_optional_snapshots_omitted",
+      "families": ["register_heartbeat"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "heartbeat",
+        "status": "serving",
+        "active_model": "org/model",
+        "stats": {"requests_served": 7, "tokens_generated": 99},
+        "system_metrics": {"memory_pressure": 0.25, "cpu_usage": 0.5, "thermal_state": "nominal"}
+      },
+      "absent_paths": [
+        "/prefix_cache_v2_models",
+        "/prefix_cache_statuses",
+        "/prefix_cache_donation_outcomes"
+      ]
+    },
+    {
+      "id": "heartbeat_authoritative_empty_snapshots",
+      "families": ["register_heartbeat"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "heartbeat",
+        "status": "idle",
+        "active_model": "org/model",
+        "stats": {"requests_served": 0, "tokens_generated": 0},
+        "system_metrics": {"memory_pressure": 0, "cpu_usage": 0, "thermal_state": "nominal"},
+        "prefix_cache_protocol": 2,
+        "prefix_cache_v2_models": [],
+        "prefix_cache_statuses": [],
+        "prefix_cache_donation_outcomes": []
+      }
+    },
+    {
+      "id": "backend_slot_kv_kind_and_fallback",
+      "families": ["backend_slot_kv"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "heartbeat",
+        "status": "serving",
+        "active_model": "org/paged",
+        "stats": {"requests_served": 3, "tokens_generated": 144},
+        "system_metrics": {"memory_pressure": 0.4, "cpu_usage": 0.6, "thermal_state": "fair"},
+        "backend_capacity": {
+          "slots": [
+            {"model": "org/legacy", "state": "running", "num_running": 1, "num_waiting": 0, "active_tokens": 256, "max_tokens_potential": 512},
+            {"model": "org/paged", "state": "running", "num_running": 1, "num_waiting": 1, "active_tokens": 512, "max_tokens_potential": 1024, "kv_backend": "paged"},
+            {"model": "org/fallback", "state": "running", "num_running": 0, "num_waiting": 0, "active_tokens": 0, "max_tokens_potential": 0, "kv_backend": "contiguous", "kv_backend_fallback_reason": "kernel_preflight: unsupported device"},
+            {"model": "org/explicit-empty", "state": "running", "num_running": 0, "num_waiting": 0, "active_tokens": 0, "max_tokens_potential": 0, "kv_backend": ""}
+          ],
+          "gpu_memory_active_gb": 24,
+          "gpu_memory_peak_gb": 28,
+          "gpu_memory_cache_gb": 4,
+          "total_memory_gb": 64,
+          "free_for_load_gb": 16
+        }
+      },
+      "absent_paths": [
+        "/backend_capacity/slots/0/kv_backend",
+        "/backend_capacity/slots/0/kv_backend_fallback_reason",
+        "/backend_capacity/slots/1/kv_backend_fallback_reason"
+      ]
+    },
+    {
+      "id": "inference_request_plaintext_cache_and_tool_protocols",
+      "families": ["inference", "tool_constraints"],
+      "direction": "coordinator_to_provider",
+      "message": {
+        "type": "inference_request",
+        "request_id": "req-contract-1",
+        "body": {
+          "model": "org/model",
+          "messages": [{"role": "user", "content": "contract fixture"}],
+          "stream": true,
+          "max_tokens": 64,
+          "temperature": 0.25,
+          "endpoint": "/v1/chat/completions"
+        },
+        "cache_receipt_nonce": "nonce-1",
+        "cache_scope": "owner:fixture",
+        "prefix_cache_protocol": 2,
+        "tool_schema_metadata_protocol": 1
+      }
+    },
+    {
+      "id": "inference_error_legacy_terminal_fields_omitted",
+      "families": ["inference"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "inference_error",
+        "request_id": "req-contract-legacy",
+        "error": "Inference generation failed.",
+        "status_code": 500,
+        "failure_code": "generation_failure"
+      },
+      "absent_paths": ["/terminal_cause", "/attempt_usage"]
+    },
+    {
+      "id": "inference_error_typed_terminal_with_attempt_usage",
+      "families": ["inference"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "inference_error",
+        "request_id": "req-contract-typed",
+        "error": "Inference generation failed.",
+        "status_code": 504,
+        "failure_code": "generation_failure",
+        "error_reason": "capacity_timeout",
+        "terminal_cause": "decode_stall",
+        "attempt_usage": {
+          "prompt_tokens": 128,
+          "completion_tokens": 17,
+          "reasoning_tokens": 5
+        }
+      }
+    },
+    {
+      "id": "attestation_challenge",
+      "families": ["attestation"],
+      "direction": "coordinator_to_provider",
+      "message": {
+        "type": "attestation_challenge",
+        "nonce": "bm9uY2UtY29udHJhY3Q=",
+        "timestamp": "2026-08-22T12:34:56Z"
+      }
+    },
+    {
+      "id": "attestation_response_signed_status",
+      "families": ["attestation"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "attestation_response",
+        "nonce": "bm9uY2UtY29udHJhY3Q=",
+        "signature": "c2lnbmF0dXJl",
+        "status_signature": "c3RhdHVzLXNpZw==",
+        "public_key": "cHVibGljLWtleQ==",
+        "rdma_disabled": true,
+        "sip_enabled": true,
+        "secure_boot_enabled": false,
+        "binary_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "active_model_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "python_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "runtime_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "template_hashes": {"chat": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+        "model_hashes": {"org/model": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+      }
+    },
+    {
+      "id": "load_model_request",
+      "families": ["model_lifecycle"],
+      "direction": "coordinator_to_provider",
+      "message": {"type": "load_model", "model_id": "org/model"}
+    },
+    {
+      "id": "load_model_failed_status",
+      "families": ["model_lifecycle"],
+      "direction": "provider_to_coordinator",
+      "message": {"type": "load_model_status", "model_id": "org/model", "status": "failed", "error": "provider draining for update"}
+    },
+    {
+      "id": "prefetch_model_priority_request",
+      "families": ["model_lifecycle"],
+      "direction": "coordinator_to_provider",
+      "message": {"type": "prefetch_model", "model_id": "org/model-v2", "priority": 5}
+    },
+    {
+      "id": "prefetch_model_progress_status",
+      "families": ["model_lifecycle"],
+      "direction": "provider_to_coordinator",
+      "message": {"type": "prefetch_model_status", "model_id": "org/model-v2", "status": "downloading", "bytes_done": 1048576, "bytes_total": 8388608}
+    },
+    {
+      "id": "desired_models_previous_build_optional",
+      "families": ["model_lifecycle"],
+      "direction": "coordinator_to_provider",
+      "message": {
+        "type": "desired_models",
+        "models": [
+          {"model_name": "model", "desired_build": "org/model-v2", "previous_build": "org/model-v1"},
+          {"model_name": "other", "desired_build": "org/other-v3"}
+        ]
+      },
+      "absent_paths": ["/models/1/previous_build"]
+    },
+    {
+      "id": "models_update_template_tri_state_and_tool_constraints",
+      "families": ["model_lifecycle", "tool_constraints"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "models_update",
+        "models": [
+          {"id": "org/legacy", "size_bytes": 1, "estimated_memory_gb": 1, "model_type": "chat", "quantization": "4bit"},
+          {"id": "org/broken", "size_bytes": 2, "estimated_memory_gb": 2, "model_type": "chat", "quantization": "4bit", "template_render_ok": false},
+          {"id": "org/ready", "size_bytes": 3, "estimated_memory_gb": 3, "model_type": "chat", "quantization": "4bit", "template_render_ok": true, "tool_constraint_template_hash": "abababababababababababababababababababababababababababababababab"}
+        ],
+        "tool_constraint_protocol": 1,
+        "tool_constraint_models": ["org/ready"]
+      },
+      "non_shared_paths": [
+        "/models/0/estimated_memory_gb",
+        "/models/1/estimated_memory_gb",
+        "/models/2/estimated_memory_gb"
+      ],
+      "absent_paths": ["/models/0/template_render_ok"]
+    },
+    {
+      "id": "prefix_cache_v2_lookup",
+      "families": ["prefix_cache_v2"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "prefix_cache_lookup_v2",
+        "request_id": "req-cache-v2",
+        "cache_receipt_nonce": "nonce-cache-v2",
+        "model_id": "org/model",
+        "model_aggregate_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "prompt_contract_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cache_epoch": "11111111-1111-1111-1111-111111111111",
+        "cache_seq": 41,
+        "prompt_anchor": {"chain_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "token_count": 512},
+        "matched_anchor": {"chain_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "token_count": 256},
+        "outcome": "hit",
+        "tier": "ssd",
+        "required_recompute_tokens": 256,
+        "expected_prefill_tokens_saved": 256,
+        "stage_ms": 1.5
+      }
+    },
+    {
+      "id": "prefix_cache_v2_ready",
+      "families": ["prefix_cache_v2"],
+      "direction": "provider_to_coordinator",
+      "message": {
+        "type": "prefix_cache_ready_v2",
+        "request_id": "req-cache-v2",
+        "cache_receipt_nonce": "nonce-cache-v2",
+        "model_id": "org/model",
+        "model_aggregate_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "prompt_contract_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cache_epoch": "11111111-1111-1111-1111-111111111111",
+        "cache_seq": 42,
+        "outcome": "ready",
+        "tier": "ssd",
+        "ready_anchors": [
+          {"chain_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "token_count": 512},
+          {"chain_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "token_count": 768}
+        ],
+        "required_recompute_tokens": 256,
+        "expected_prefill_tokens_saved": 512,
+        "stage_ms": 2.25
+      }
+    }
+  ]
+}

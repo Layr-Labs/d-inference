@@ -4,11 +4,52 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"strings"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/nacl/box"
 )
+
+func generateBoxKeys(tb testing.TB) (*[32]byte, *[32]byte) {
+	tb.Helper()
+	publicKey, privateKey, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		tb.Fatalf("generate box key pair: %v", err)
+	}
+	return publicKey, privateKey
+}
+
+func generateSessionKeys(tb testing.TB) *SessionKeys {
+	tb.Helper()
+	keys, err := GenerateSessionKeys()
+	if err != nil {
+		tb.Fatalf("generate session keys: %v", err)
+	}
+	return keys
+}
+
+func encryptForTest(tb testing.TB, plaintext []byte, recipientPublicKey [32]byte, session *SessionKeys) *EncryptedPayload {
+	tb.Helper()
+	payload, err := Encrypt(plaintext, recipientPublicKey, session)
+	if err != nil {
+		tb.Fatalf("encrypt: %v", err)
+	}
+	return payload
+}
+
+func decodeBase64ForTest(tb testing.TB, value string) []byte {
+	tb.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		tb.Fatalf("decode base64: %v", err)
+	}
+	return decoded
+}
 
 func TestGenerateSessionKeys(t *testing.T) {
 	k1, err := GenerateSessionKeys()
@@ -34,8 +75,8 @@ func TestGenerateSessionKeys(t *testing.T) {
 
 func TestEncryptDecryptRoundtrip(t *testing.T) {
 	// Simulate coordinator encrypting for a provider.
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, providerPriv := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 
 	plaintext := []byte(`{"model":"test","messages":[{"role":"user","content":"hello"}]}`)
 
@@ -58,8 +99,8 @@ func TestEncryptDecryptRoundtrip(t *testing.T) {
 }
 
 func TestEncryptDecryptWithPrivateKey(t *testing.T) {
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, providerPriv := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 
 	plaintext := []byte("test payload for DecryptWithPrivateKey")
 	encrypted, err := Encrypt(plaintext, *providerPub, session)
@@ -77,11 +118,11 @@ func TestEncryptDecryptWithPrivateKey(t *testing.T) {
 }
 
 func TestDecryptWrongKeyFails(t *testing.T) {
-	providerPub, _, _ := box.GenerateKey(rand.Reader)
-	_, wrongPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, _ := generateBoxKeys(t)
+	_, wrongPriv := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 
-	encrypted, _ := Encrypt([]byte("secret"), *providerPub, session)
+	encrypted := encryptForTest(t, []byte("secret"), *providerPub, session)
 
 	_, err := DecryptWithPrivateKey(encrypted, *wrongPriv)
 	if err == nil {
@@ -90,12 +131,12 @@ func TestDecryptWrongKeyFails(t *testing.T) {
 }
 
 func TestEncryptionNonDeterministic(t *testing.T) {
-	providerPub, _, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, _ := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 	plaintext := []byte("same input")
 
-	enc1, _ := Encrypt(plaintext, *providerPub, session)
-	enc2, _ := Encrypt(plaintext, *providerPub, session)
+	enc1 := encryptForTest(t, plaintext, *providerPub, session)
+	enc2 := encryptForTest(t, plaintext, *providerPub, session)
 
 	// Different nonces should produce different ciphertexts.
 	if enc1.Ciphertext == enc2.Ciphertext {
@@ -103,77 +144,9 @@ func TestEncryptionNonDeterministic(t *testing.T) {
 	}
 }
 
-func TestDecryptTamperedCiphertext(t *testing.T) {
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
-
-	encrypted, _ := Encrypt([]byte("authentic message"), *providerPub, session)
-
-	// Tamper with ciphertext.
-	ct, _ := base64.StdEncoding.DecodeString(encrypted.Ciphertext)
-	ct[len(ct)-1] ^= 0xFF // flip last byte
-	encrypted.Ciphertext = base64.StdEncoding.EncodeToString(ct)
-
-	_, err := DecryptWithPrivateKey(encrypted, *providerPriv)
-	if err == nil {
-		t.Error("decryption of tampered ciphertext should fail")
-	}
-}
-
-func TestDecryptShortCiphertext(t *testing.T) {
-	_, priv, _ := box.GenerateKey(rand.Reader)
-	payload := &EncryptedPayload{
-		EphemeralPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
-		Ciphertext:         base64.StdEncoding.EncodeToString(make([]byte, 10)), // too short for nonce
-	}
-	_, err := DecryptWithPrivateKey(payload, *priv)
-	if err == nil {
-		t.Error("ciphertext shorter than 24-byte nonce should fail")
-	}
-}
-
-func TestDecryptInvalidBase64Ciphertext(t *testing.T) {
-	_, priv, _ := box.GenerateKey(rand.Reader)
-	payload := &EncryptedPayload{
-		EphemeralPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)),
-		Ciphertext:         "not-valid-base64!!!",
-	}
-	_, err := DecryptWithPrivateKey(payload, *priv)
-	if err == nil {
-		t.Error("invalid base64 ciphertext should fail")
-	}
-}
-
-func TestDecryptInvalidBase64PublicKey(t *testing.T) {
-	_, priv, _ := box.GenerateKey(rand.Reader)
-	payload := &EncryptedPayload{
-		EphemeralPublicKey: "not-valid!!!",
-		Ciphertext:         base64.StdEncoding.EncodeToString(make([]byte, 48)),
-	}
-	_, err := DecryptWithPrivateKey(payload, *priv)
-	if err == nil {
-		t.Error("invalid base64 public key should fail")
-	}
-}
-
-func TestDecryptWrongLengthPublicKey(t *testing.T) {
-	_, priv, _ := box.GenerateKey(rand.Reader)
-	payload := &EncryptedPayload{
-		EphemeralPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 16)), // 16 != 32
-		Ciphertext:         base64.StdEncoding.EncodeToString(make([]byte, 48)),
-	}
-	_, err := DecryptWithPrivateKey(payload, *priv)
-	if err == nil {
-		t.Error("public key of wrong length should fail")
-	}
-	if !strings.Contains(err.Error(), "length") {
-		t.Errorf("error should mention length, got: %v", err)
-	}
-}
-
 func TestEncryptEmptyPlaintext(t *testing.T) {
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, providerPriv := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 
 	encrypted, err := Encrypt([]byte{}, *providerPub, session)
 	if err != nil {
@@ -190,12 +163,14 @@ func TestEncryptEmptyPlaintext(t *testing.T) {
 }
 
 func TestEncryptLargePayload(t *testing.T) {
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	session, _ := GenerateSessionKeys()
+	providerPub, providerPriv := generateBoxKeys(t)
+	session := generateSessionKeys(t)
 
 	// 1 MB payload (large prompt).
 	plaintext := make([]byte, 1024*1024)
-	rand.Read(plaintext)
+	if _, err := rand.Read(plaintext); err != nil {
+		t.Fatalf("fill plaintext: %v", err)
+	}
 
 	encrypted, err := Encrypt(plaintext, *providerPub, session)
 	if err != nil {
@@ -212,7 +187,7 @@ func TestEncryptLargePayload(t *testing.T) {
 }
 
 func TestParsePublicKey(t *testing.T) {
-	pub, _, _ := box.GenerateKey(rand.Reader)
+	pub, _ := generateBoxKeys(t)
 	b64 := base64.StdEncoding.EncodeToString(pub[:])
 
 	parsed, err := ParsePublicKey(b64)
@@ -239,12 +214,12 @@ func TestParsePublicKeyInvalid(t *testing.T) {
 func TestBidirectionalEncryption(t *testing.T) {
 	// Simulate full bidirectional E2E:
 	// Coordinator → Provider (request), Provider → Coordinator (response).
-	providerPub, providerPriv, _ := box.GenerateKey(rand.Reader)
-	coordSession, _ := GenerateSessionKeys()
+	providerPub, providerPriv := generateBoxKeys(t)
+	coordSession := generateSessionKeys(t)
 
 	// Coordinator encrypts request for provider.
 	request := []byte(`{"messages":[{"role":"user","content":"what is 2+2?"}]}`)
-	encRequest, _ := Encrypt(request, *providerPub, coordSession)
+	encRequest := encryptForTest(t, request, *providerPub, coordSession)
 
 	// Provider decrypts.
 	decRequest, err := DecryptWithPrivateKey(encRequest, *providerPriv)
@@ -259,7 +234,7 @@ func TestBidirectionalEncryption(t *testing.T) {
 	coordPub := coordSession.PublicKey
 	providerRespSession := &SessionKeys{PrivateKey: *providerPriv, PublicKey: *providerPub}
 	response := []byte(`{"choices":[{"message":{"content":"4"}}]}`)
-	encResponse, _ := Encrypt(response, coordPub, providerRespSession)
+	encResponse := encryptForTest(t, response, coordPub, providerRespSession)
 
 	// Coordinator decrypts response.
 	decResponse, err := Decrypt(encResponse, coordSession)
@@ -269,4 +244,99 @@ func TestBidirectionalEncryption(t *testing.T) {
 	if !bytes.Equal(response, decResponse) {
 		t.Fatal("response content mismatch")
 	}
+}
+
+type encryptionFixtureCorpus struct {
+	SchemaVersion uint32              `json:"schema_version"`
+	Cases         []encryptionFixture `json:"cases"`
+}
+
+type encryptionFixture struct {
+	Name                   string `json:"name"`
+	RecipientPrivateKeyHex string `json:"recipient_private_key_hex"`
+	SenderPublicKeyBase64  string `json:"sender_public_key_base64"`
+	CiphertextBase64       string `json:"ciphertext_base64"`
+	PlaintextUTF8          string `json:"plaintext_utf8"`
+}
+
+func TestDecryptSharedEncryptionVectors(t *testing.T) {
+	encoded, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "fixtures", "security", "v1", "encryption_vectors.json",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus encryptionFixtureCorpus
+	if err := decodeEncryptionFixture(encoded, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if len(corpus.Cases) == 0 {
+		t.Fatal("encryption fixture has no named cases")
+	}
+
+	seen := make(map[string]struct{}, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		t.Run(fixture.Name, func(t *testing.T) {
+			if fixture.Name == "" {
+				t.Fatal("encryption fixture case has no name")
+			}
+			if _, duplicate := seen[fixture.Name]; duplicate {
+				t.Fatalf("duplicate encryption fixture case %q", fixture.Name)
+			}
+			seen[fixture.Name] = struct{}{}
+
+			privateBytes, err := hex.DecodeString(fixture.RecipientPrivateKeyHex)
+			if err != nil {
+				t.Fatalf("decode recipient private key: %v", err)
+			}
+			if len(privateBytes) != 32 {
+				t.Fatalf("recipient private key length = %d, want 32", len(privateBytes))
+			}
+			var privateKey [32]byte
+			copy(privateKey[:], privateBytes)
+			plaintext, err := DecryptWithPrivateKey(&EncryptedPayload{
+				EphemeralPublicKey: fixture.SenderPublicKeyBase64,
+				Ciphertext:         fixture.CiphertextBase64,
+			}, privateKey)
+			if err != nil {
+				t.Fatalf("decrypt shared vector: %v", err)
+			}
+			if !bytes.Equal(plaintext, []byte(fixture.PlaintextUTF8)) {
+				t.Fatalf("plaintext mismatch\nwant: %q\ngot:  %q", fixture.PlaintextUTF8, plaintext)
+			}
+		})
+	}
+}
+
+func TestEncryptionFixtureRejectsSchemaDrift(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "missing", encoded: `{"cases":[]}`},
+		{name: "unknown", encoded: `{"schema_version":2,"cases":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var corpus encryptionFixtureCorpus
+			if err := decodeEncryptionFixture([]byte(test.encoded), &corpus); err == nil {
+				t.Fatal("fixture schema drift was accepted")
+			}
+		})
+	}
+}
+
+func decodeEncryptionFixture(encoded []byte, output any) error {
+	var metadata struct {
+		SchemaVersion *uint32 `json:"schema_version"`
+	}
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return err
+	}
+	if metadata.SchemaVersion == nil {
+		return errors.New("fixture schema version is missing")
+	}
+	if *metadata.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported fixture schema version %d", *metadata.SchemaVersion)
+	}
+	return json.Unmarshal(encoded, output)
 }

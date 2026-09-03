@@ -63,7 +63,7 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv.SyncModelCatalog()
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model}}, publicKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{{ID: model}}, publicKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -127,7 +127,7 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 				return
 			}
 
-			writeEncryptedTestChunk(t, ctx, conn, request, publicKey,
+			writeEncryptedTestChunk(t, ctx, conn.Conn, request, publicKey,
 				`data: {"id":"chatcmpl-endpoint","object":"chat.completion.chunk","created":1700000000,"model":"endpoint-lowering-model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 			complete, _ := json.Marshal(protocol.InferenceCompleteMessage{
 				Type:         protocol.TypeInferenceComplete,

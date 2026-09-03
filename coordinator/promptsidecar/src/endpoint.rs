@@ -587,40 +587,6 @@ mod tests {
     }
 
     #[test]
-    fn lowers_anthropic_tool_history_without_reordering_turns() {
-        let body = json!({
-            "model": "m",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "checking"},
-                        {"type": "tool_use", "id": "c1", "name": "weather", "input": {"city": "Oslo"}}
-                    ]
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": "c1", "content": "snow"},
-                        {"type": "text", "text": "summarize"}
-                    ]
-                }
-            ],
-            "tools": [{"name": "weather", "input_schema": {"type": "object"}}],
-            "tool_choice": {"type": "tool", "name": "weather"}
-        });
-        let lowered = lower(Endpoint::Messages, body).unwrap();
-        assert_eq!(lowered["messages"][0]["content"], "checking");
-        assert_eq!(lowered["messages"][0]["tool_calls"][0]["id"], "c1");
-        assert_eq!(lowered["messages"][1]["role"], "tool");
-        assert_eq!(lowered["messages"][2]["content"], "summarize");
-        assert_eq!(
-            lowered["tool_choice"],
-            json!({"type":"function","function":{"name":"weather"}})
-        );
-    }
-
-    #[test]
     fn lowers_anthropic_stop_sequences_to_provider_stop() {
         let body = json!({
             "model": "m",

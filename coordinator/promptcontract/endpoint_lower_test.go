@@ -92,7 +92,7 @@ func TestLowerProviderBodyRejectsMediaForCachePlanning(t *testing.T) {
 	}
 }
 
-func TestLowerProviderBodyMatchesRustEdgeSemantics(t *testing.T) {
+func TestLowerProviderBodyEdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		endpoint Endpoint

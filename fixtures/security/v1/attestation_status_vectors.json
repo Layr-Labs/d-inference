@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "current_full_hypervisor_omitted",
+      "input": {
+        "nonce": "test-nonce",
+        "timestamp": "2026-04-16T12:00:00Z",
+        "rdma_disabled": true,
+        "sip_enabled": true,
+        "secure_boot_enabled": true,
+        "binary_hash": "binhash",
+        "active_model_hash": "activemodel",
+        "python_hash": "pyhash",
+        "runtime_hash": "rthash",
+        "template_hashes": {"chatml": "tmplhash1", "gemma": "tmplhash2"},
+        "model_hashes": {"qwen": "modelhash1", "trinity": "modelhash2"}
+      },
+      "expected_signature_input_base64": "eyJhY3RpdmVfbW9kZWxfaGFzaCI6ImFjdGl2ZW1vZGVsIiwiYmluYXJ5X2hhc2giOiJiaW5oYXNoIiwibW9kZWxfaGFzaGVzIjp7InF3ZW4iOiJtb2RlbGhhc2gxIiwidHJpbml0eSI6Im1vZGVsaGFzaDIifSwibm9uY2UiOiJ0ZXN0LW5vbmNlIiwicHl0aG9uX2hhc2giOiJweWhhc2giLCJyZG1hX2Rpc2FibGVkIjp0cnVlLCJydW50aW1lX2hhc2giOiJydGhhc2giLCJzZWN1cmVfYm9vdF9lbmFibGVkIjp0cnVlLCJzaXBfZW5hYmxlZCI6dHJ1ZSwidGVtcGxhdGVfaGFzaGVzIjp7ImNoYXRtbCI6InRtcGxoYXNoMSIsImdlbW1hIjoidG1wbGhhc2gyIn0sInRpbWVzdGFtcCI6IjIwMjYtMDQtMTZUMTI6MDA6MDBaIn0="
+    },
+    {
+      "name": "legacy_hypervisor_true",
+      "input": {
+        "nonce": "test-nonce",
+        "timestamp": "2026-04-16T12:00:00Z",
+        "hypervisor_active": true,
+        "rdma_disabled": true,
+        "sip_enabled": true,
+        "secure_boot_enabled": true,
+        "binary_hash": "binhash",
+        "active_model_hash": "activemodel",
+        "python_hash": "pyhash",
+        "runtime_hash": "rthash",
+        "template_hashes": {"chatml": "tmplhash1", "gemma": "tmplhash2"},
+        "model_hashes": {"qwen": "modelhash1", "trinity": "modelhash2"}
+      },
+      "expected_signature_input_base64": "eyJhY3RpdmVfbW9kZWxfaGFzaCI6ImFjdGl2ZW1vZGVsIiwiYmluYXJ5X2hhc2giOiJiaW5oYXNoIiwiaHlwZXJ2aXNvcl9hY3RpdmUiOnRydWUsIm1vZGVsX2hhc2hlcyI6eyJxd2VuIjoibW9kZWxoYXNoMSIsInRyaW5pdHkiOiJtb2RlbGhhc2gyIn0sIm5vbmNlIjoidGVzdC1ub25jZSIsInB5dGhvbl9oYXNoIjoicHloYXNoIiwicmRtYV9kaXNhYmxlZCI6dHJ1ZSwicnVudGltZV9oYXNoIjoicnRoYXNoIiwic2VjdXJlX2Jvb3RfZW5hYmxlZCI6dHJ1ZSwic2lwX2VuYWJsZWQiOnRydWUsInRlbXBsYXRlX2hhc2hlcyI6eyJjaGF0bWwiOiJ0bXBsaGFzaDEiLCJnZW1tYSI6InRtcGxoYXNoMiJ9LCJ0aW1lc3RhbXAiOiIyMDI2LTA0LTE2VDEyOjAwOjAwWiJ9"
+    },
+    {
+      "name": "legacy_hypervisor_false",
+      "input": {
+        "nonce": "test-nonce",
+        "timestamp": "2026-04-16T12:00:00Z",
+        "hypervisor_active": false,
+        "rdma_disabled": true,
+        "sip_enabled": true,
+        "secure_boot_enabled": true,
+        "binary_hash": "binhash",
+        "active_model_hash": "activemodel",
+        "python_hash": "pyhash",
+        "runtime_hash": "rthash",
+        "template_hashes": {"chatml": "tmplhash1", "gemma": "tmplhash2"},
+        "model_hashes": {"qwen": "modelhash1", "trinity": "modelhash2"}
+      },
+      "expected_signature_input_base64": "eyJhY3RpdmVfbW9kZWxfaGFzaCI6ImFjdGl2ZW1vZGVsIiwiYmluYXJ5X2hhc2giOiJiaW5oYXNoIiwiaHlwZXJ2aXNvcl9hY3RpdmUiOmZhbHNlLCJtb2RlbF9oYXNoZXMiOnsicXdlbiI6Im1vZGVsaGFzaDEiLCJ0cmluaXR5IjoibW9kZWxoYXNoMiJ9LCJub25jZSI6InRlc3Qtbm9uY2UiLCJweXRob25faGFzaCI6InB5aGFzaCIsInJkbWFfZGlzYWJsZWQiOnRydWUsInJ1bnRpbWVfaGFzaCI6InJ0aGFzaCIsInNlY3VyZV9ib290X2VuYWJsZWQiOnRydWUsInNpcF9lbmFibGVkIjp0cnVlLCJ0ZW1wbGF0ZV9oYXNoZXMiOnsiY2hhdG1sIjoidG1wbGhhc2gxIiwiZ2VtbWEiOiJ0bXBsaGFzaDIifSwidGltZXN0YW1wIjoiMjAyNi0wNC0xNlQxMjowMDowMFoifQ=="
+    },
+    {
+      "name": "current_minimal_hypervisor_omitted",
+      "input": {"nonce": "n", "timestamp": "t"},
+      "expected_signature_input_base64": "eyJub25jZSI6Im4iLCJ0aW1lc3RhbXAiOiJ0In0="
+    },
+    {
+      "name": "current_explicit_false",
+      "input": {"nonce": "n", "timestamp": "t", "sip_enabled": false},
+      "expected_signature_input_base64": "eyJub25jZSI6Im4iLCJzaXBfZW5hYmxlZCI6ZmFsc2UsInRpbWVzdGFtcCI6InQifQ=="
+    },
+    {
+      "name": "unicode_nonce",
+      "input": {"nonce": "ñön¢é-π", "timestamp": "t"},
+      "expected_signature_input_base64": "eyJub25jZSI6IsOxw7ZuwqLDqS3PgCIsInRpbWVzdGFtcCI6InQifQ=="
+    },
+    {
+      "name": "html_characters_unescaped",
+      "input": {
+        "nonce": "a<b>c&d",
+        "timestamp": "t",
+        "binary_hash": "x&y",
+        "active_model_hash": "p<q>r"
+      },
+      "expected_signature_input_base64": "eyJhY3RpdmVfbW9kZWxfaGFzaCI6InA8cT5yIiwiYmluYXJ5X2hhc2giOiJ4JnkiLCJub25jZSI6ImE8Yj5jJmQiLCJ0aW1lc3RhbXAiOiJ0In0="
+    }
+  ]
+}

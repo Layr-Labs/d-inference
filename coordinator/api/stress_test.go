@@ -143,7 +143,7 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 
 	// NOW connect a provider — queued requests should drain to it
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	for _, id := range reg.ProviderIDs() {
@@ -152,7 +152,7 @@ func TestStress_QueueDrainsWhenProviderAppears(t *testing.T) {
 	}
 
 	// Provider handles messages
-	go runProviderLoop(ctx, t, conn, pubKey, "drained-response")
+	go runProviderLoop(ctx, t, conn.Conn, pubKey, "drained-response")
 
 	wg.Wait()
 
@@ -191,7 +191,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -218,8 +218,7 @@ func TestStress_ProviderCrashDuringMultipleInFlightRequests(t *testing.T) {
 				// Send one partial chunk then crash
 				var req protocol.InferenceRequestMessage
 				json.Unmarshal(data, &req)
-				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
-					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial..."},"finish_reason":null}]}`+"\n\n")
+				writeEncryptedTestChunk(t, ctx, conn.Conn, req, pubKey, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial..."},"finish_reason":null}]}`+"\n\n")
 				time.Sleep(100 * time.Millisecond)
 				// Crash!
 				conn.Close(websocket.StatusAbnormalClosure, "simulated crash")
@@ -283,7 +282,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	for _, id := range reg.ProviderIDs() {
@@ -317,8 +316,7 @@ func TestStress_ConsumerDisconnectSendsCancelToProvider(t *testing.T) {
 				json.Unmarshal(data, &req)
 
 				// Send first chunk (simulating slow generation)
-				writeEncryptedTestChunk(t, ctx, conn, req, pubKey,
-					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"slow..."},"finish_reason":null}]}`+"\n\n")
+				writeEncryptedTestChunk(t, ctx, conn.Conn, req, pubKey, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"slow..."},"finish_reason":null}]}`+"\n\n")
 				// Don't block the read loop — keep reading for cancel
 
 			case protocol.TypeCancel:
@@ -387,7 +385,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	for _, id := range reg.ProviderIDs() {
@@ -395,7 +393,7 @@ func TestStress_BillingBalanceExhaustion(t *testing.T) {
 		reg.RecordChallengeSuccess(id)
 	}
 
-	go runProviderLoop(ctx, t, conn, pubKey, "billing-response")
+	go runProviderLoop(ctx, t, conn.Conn, pubKey, "billing-response")
 
 	// Send requests until balance runs out
 	var succeeded, rejected int
@@ -486,7 +484,7 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 
 	// Phase 1: Connect with model-A
 	modelsA := []protocol.ModelInfo{{ID: "model-A", ModelType: "chat", Quantization: "4bit"}}
-	conn1 := connectProvider(t, ctx, ts.URL, modelsA, pubKey)
+	conn1 := connectProvider(t, ctx, ts.URL, reg, modelsA, pubKey)
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
@@ -506,22 +504,19 @@ func TestStress_ProviderReRegistersWithDifferentModels(t *testing.T) {
 
 	// Phase 2: Disconnect and reconnect with model-B instead
 	conn1.Close(websocket.StatusNormalClosure, "switching models")
-	time.Sleep(300 * time.Millisecond)
 
 	if reg.ProviderCount() != 0 {
 		t.Fatalf("provider should be gone after disconnect, count=%d", reg.ProviderCount())
 	}
 
 	modelsB := []protocol.ModelInfo{{ID: "model-B", ModelType: "chat", Quantization: "8bit"}}
-	conn2 := connectProvider(t, ctx, ts.URL, modelsB, pubKey)
+	conn2 := connectProvider(t, ctx, ts.URL, reg, modelsB, pubKey)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
 	for _, id := range reg.ProviderIDs() {
 		reg.SetTrustLevel(id, registry.TrustHardware)
 		reg.RecordChallengeSuccess(id)
 	}
-
-	time.Sleep(200 * time.Millisecond)
 
 	// model-A should no longer be available
 	pA2 := findRoutableProvider(reg, "model-A")
@@ -559,7 +554,7 @@ func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 	pubKey := testPublicKeyB64()
 	models := []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}
 
-	conn := connectProvider(t, ctx, ts.URL, models, pubKey)
+	conn := connectProvider(t, ctx, ts.URL, reg, models, pubKey)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	for _, id := range reg.ProviderIDs() {
@@ -567,7 +562,7 @@ func TestStress_ProviderBecomesIdleAfterRequest(t *testing.T) {
 		reg.RecordChallengeSuccess(id)
 	}
 
-	go runProviderLoop(ctx, t, conn, pubKey, "idle-response")
+	go runProviderLoop(ctx, t, conn.Conn, pubKey, "idle-response")
 
 	// Resolve the provider so we can observe its status transition after the
 	// real inference request below drives it serving → idle.

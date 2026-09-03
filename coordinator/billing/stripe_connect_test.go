@@ -23,6 +23,33 @@ func silentLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+func readTestBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Errorf("read request body: %v", err)
+		return nil
+	}
+	return body
+}
+
+func parseTestForm(t *testing.T, body []byte) url.Values {
+	t.Helper()
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		t.Errorf("parse request form: %v", err)
+		return nil
+	}
+	return values
+}
+
+func writeTestResponse(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("write test response: %v", err)
+	}
+}
+
 // signWebhook produces a Stripe-Signature header for the given payload using
 // the processor's webhook secret. Mirrors Stripe's reference implementation:
 // "t=<unix>,v1=<HMAC-SHA256(t + . + payload)>".
@@ -75,15 +102,14 @@ func TestFeeForMethodMicroUSD(t *testing.T) {
 	}
 }
 
-// withTestStripe spins up an httptest server, points stripeAPIBase at it for
-// the duration of the test, and returns the server + a client targeting it.
+// withTestStripe spins up an httptest server, points the Stripe client at it
+// through the supported test hook, and restores the prior endpoint afterward.
 func withTestStripe(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *StripeConnect) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	prev := stripeAPIBase
-	stripeAPIBase = srv.URL
-	t.Cleanup(func() { stripeAPIBase = prev })
+	prev := SetStripeAPIBaseForTest(srv.URL)
+	t.Cleanup(func() { SetStripeAPIBaseForTest(prev) })
 	return srv, NewStripeConnect("sk_test_fake", "whsec_fake", "US", false, silentLogger())
 }
 
@@ -92,17 +118,17 @@ func TestCreateExpressAccountSuccess(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		captured = r
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
+		writeTestResponse(t, w, `{
 			"id": "acct_test_123",
 			"email": "alice@example.com",
 			"charges_enabled": false,
 			"payouts_enabled": false,
 			"details_submitted": false
-		}`))
+		}`)
 	})
 
 	acct, err := client.CreateExpressAccount(CreateExpressAccountParams{
@@ -135,7 +161,7 @@ func TestCreateExpressAccountStripeError(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"message":"country is invalid","type":"invalid_request_error"}}`))
+		writeTestResponse(t, w, `{"error":{"message":"country is invalid","type":"invalid_request_error"}}`)
 	})
 	_, err := client.CreateExpressAccount(CreateExpressAccountParams{Email: "a@b.com"})
 	if err == nil {
@@ -149,9 +175,9 @@ func TestCreateExpressAccountStripeError(t *testing.T) {
 func TestCreateAccountLinkSuccess(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
-		_, _ = w.Write([]byte(`{"url":"https://connect.stripe.com/setup/abc123"}`))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
+		writeTestResponse(t, w, `{"url":"https://connect.stripe.com/setup/abc123"}`)
 	})
 	link, err := client.CreateAccountLink("acct_test_123", "https://app/return", "https://app/refresh")
 	if err != nil {
@@ -185,7 +211,7 @@ func TestCreateLoginLinkSuccess(t *testing.T) {
 	var gotMethod, gotPath string
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath = r.Method, r.URL.Path
-		_, _ = w.Write([]byte(`{"object":"login_link","url":"https://connect.stripe.com/express/acct_test_123/tok"}`))
+		writeTestResponse(t, w, `{"object":"login_link","url":"https://connect.stripe.com/express/acct_test_123/tok"}`)
 	})
 	link, err := client.CreateLoginLink("acct_test_123")
 	if err != nil {
@@ -223,7 +249,7 @@ func TestCreateLoginLinkRejectsMalformedAccountID(t *testing.T) {
 // A 2xx with no url would otherwise hand the UI an empty redirect target.
 func TestCreateLoginLinkRejectsEmptyURL(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":"login_link"}`))
+		writeTestResponse(t, w, `{"object":"login_link"}`)
 	})
 	if _, err := client.CreateLoginLink("acct_test_123"); err == nil {
 		t.Fatal("expected error for response without url")
@@ -233,7 +259,7 @@ func TestCreateLoginLinkRejectsEmptyURL(t *testing.T) {
 func TestCreateLoginLinkPropagatesStripeError(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"code":"account_invalid","message":"No such account: acct_test_123"}}`))
+		writeTestResponse(t, w, `{"error":{"code":"account_invalid","message":"No such account: acct_test_123"}}`)
 	})
 	_, err := client.CreateLoginLink("acct_test_123")
 	if err == nil {
@@ -257,7 +283,7 @@ func TestCreateLoginLinkMockMode(t *testing.T) {
 
 func TestGetAccountParsesDestinationAndInstantEligibility(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
+		writeTestResponse(t, w, `{
 			"id": "acct_x",
 			"charges_enabled": true,
 			"payouts_enabled": true,
@@ -266,7 +292,7 @@ func TestGetAccountParsesDestinationAndInstantEligibility(t *testing.T) {
 			"external_accounts": {"data": [
 				{"object":"card","last4":"4242","brand":"visa","funding":"debit","default_for_currency":true}
 			]}
-		}`))
+		}`)
 	})
 	acct, err := client.GetAccount("acct_x")
 	if err != nil {
@@ -288,15 +314,18 @@ func TestGetAccountParsesDestinationAndInstantEligibility(t *testing.T) {
 
 func TestGetAccountCreditCardNotInstantEligible(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
+		writeTestResponse(t, w, `{
 			"id": "acct_x",
 			"payouts_enabled": true,
 			"external_accounts": {"data": [
 				{"object":"card","last4":"4242","brand":"visa","funding":"credit","default_for_currency":true}
 			]}
-		}`))
+		}`)
 	})
-	acct, _ := client.GetAccount("acct_x")
+	acct, err := client.GetAccount("acct_x")
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
 	if acct.InstantEligible {
 		t.Error("credit card destinations should NOT be instant-eligible")
 	}
@@ -304,15 +333,18 @@ func TestGetAccountCreditCardNotInstantEligible(t *testing.T) {
 
 func TestGetAccountBankDestination(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{
+		writeTestResponse(t, w, `{
 			"id": "acct_x",
 			"payouts_enabled": true,
 			"external_accounts": {"data": [
 				{"object":"bank_account","last4":"6789","default_for_currency":true}
 			]}
-		}`))
+		}`)
 	})
-	acct, _ := client.GetAccount("acct_x")
+	acct, err := client.GetAccount("acct_x")
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
 	if acct.DestinationType != "bank" {
 		t.Errorf("destination_type=%q, want bank", acct.DestinationType)
 	}
@@ -326,9 +358,9 @@ func TestCreateTransferSendsIdempotencyKey(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		idemKey = r.Header.Get("Idempotency-Key")
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
-		_, _ = w.Write([]byte(`{"id":"tr_123","amount":1000,"destination":"acct_x","created":1700000000}`))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
+		writeTestResponse(t, w, `{"id":"tr_123","amount":1000,"destination":"acct_x","created":1700000000}`)
 	})
 	tr, err := client.CreateTransfer(CreateTransferParams{
 		DestinationAccountID: "acct_x",
@@ -368,9 +400,9 @@ func TestCreatePayoutSetsStripeAccountHeader(t *testing.T) {
 	var capturedBody url.Values
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		stripeAcct = r.Header.Get("Stripe-Account")
-		body, _ := io.ReadAll(r.Body)
-		capturedBody, _ = url.ParseQuery(string(body))
-		_, _ = w.Write([]byte(`{"id":"po_1","amount":900,"method":"instant","status":"in_transit","arrival_date":1700000300}`))
+		body := readTestBody(t, r)
+		capturedBody = parseTestForm(t, body)
+		writeTestResponse(t, w, `{"id":"po_1","amount":900,"method":"instant","status":"in_transit","arrival_date":1700000300}`)
 	})
 	po, err := client.CreatePayout(CreatePayoutParams{
 		OnBehalfOfAccountID: "acct_user",
@@ -540,7 +572,9 @@ func TestPayoutFromEventCapturesFailureFields(t *testing.T) {
 		}}
 	}`)
 	var event WebhookEvent
-	_ = json.Unmarshal(body, &event)
+	if err := json.Unmarshal(body, &event); err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
 	pe, err := c.PayoutFromEvent(&event, "acct_x")
 	if err != nil {
 		t.Fatalf("parse: %v", err)

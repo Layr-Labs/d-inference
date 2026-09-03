@@ -22,10 +22,6 @@ extension ProviderLoop {
     /// Test seam: whether a model id is currently advertised.
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
 
-    func advertisedModelWeightHashForTesting(_ id: String) -> String? {
-        advertisedModels[id]?.weightHash
-    }
-
     func loadedModelHashesSnapshotForTesting() -> [String: String] {
         loadedModelHashesSnapshot()
     }
@@ -79,6 +75,12 @@ extension ProviderLoop {
     /// (the production default waits tens of seconds between attempts).
     func setDesiredPrefetchRetryDelaysForTesting(_ delays: [Duration]) {
         desiredPrefetchRetryDelays = delays
+    }
+
+    func setDesiredPrefetchSleepForTesting(
+        _ sleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
+        desiredPrefetchSleep = sleep
     }
 
     /// Test seam: number of scheduled (not yet fired) desired-prefetch retries.

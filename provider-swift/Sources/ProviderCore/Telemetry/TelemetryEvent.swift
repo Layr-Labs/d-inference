@@ -137,7 +137,7 @@ public struct TelemetryEvent: Codable, Sendable {
 
     /// ISO 8601 formatter is not Sendable, but we only access it through this
     /// function which creates a fresh instance each call. The cost is negligible
-    /// compared to the network flush path.
+    /// for the retained compatibility event construction path.
     static func isoNow() -> String {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -147,7 +147,7 @@ public struct TelemetryEvent: Codable, Sendable {
 
 // MARK: - Batch
 
-/// Wire shape for batch ingestion: `POST /v1/telemetry/events`.
+/// Retained historical batch wire shape; client ingestion is disabled.
 public struct TelemetryBatch: Codable, Sendable {
     public var events: [TelemetryEvent]
 
@@ -158,8 +158,8 @@ public struct TelemetryBatch: Codable, Sendable {
 
 // MARK: - Session ID
 
-/// Per-process UUID. Events from the same boot share this ID so the admin UI
-/// can group a crash report with the log lines leading up to it.
+/// Retained per-process compatibility identifier. Client events are not
+/// transmitted to or grouped by an admin UI.
 public enum TelemetrySession {
     public static let id: String = UUID().uuidString.lowercased()
 }

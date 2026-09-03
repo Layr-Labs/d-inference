@@ -41,8 +41,26 @@ func TestProviderLogReportSerialPrivacyMigrationPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire isolated migration connection: %v", err)
 	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SET search_path TO "+schema); err != nil {
+	var originalSearchPath string
+	if err := conn.QueryRow(ctx, "SELECT current_setting('search_path')").Scan(&originalSearchPath); err != nil {
+		conn.Release()
+		t.Fatalf("read original search_path: %v", err)
+	}
+	// Restore the pooled connection's search_path before release: a poisoned
+	// search_path pointing at the dropped throwaway schema would make the
+	// harness's shared-table reset fail on whichever test draws this
+	// connection next.
+	defer func() {
+		if _, resetErr := conn.Exec(
+			context.Background(),
+			"SELECT set_config('search_path', $1, false)",
+			originalSearchPath,
+		); resetErr != nil {
+			t.Errorf("restore isolated search_path: %v", resetErr)
+		}
+		conn.Release()
+	}()
+	if _, err := conn.Exec(ctx, "SELECT set_config('search_path', $1, false)", schema); err != nil {
 		t.Fatalf("set isolated search_path: %v", err)
 	}
 

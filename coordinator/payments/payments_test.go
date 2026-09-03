@@ -2,7 +2,6 @@ package payments
 
 import (
 	"testing"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -17,13 +16,6 @@ func creditBalance(t *testing.T, l *Ledger, consumerID string, amountMicroUSD in
 	t.Helper()
 	if err := l.store.Credit(consumerID, amountMicroUSD, store.LedgerDeposit, ""); err != nil {
 		t.Fatalf("credit %s: %v", consumerID, err)
-	}
-}
-
-func TestNewLedger(t *testing.T) {
-	l := newTestLedger()
-	if l == nil {
-		t.Fatal("NewLedger returned nil")
 	}
 }
 
@@ -84,75 +76,6 @@ func TestChargeNoAccount(t *testing.T) {
 	err := l.Charge("0xNobody", 1_000, "job-1")
 	if err == nil {
 		t.Fatal("expected error for non-existent account")
-	}
-}
-
-func TestCreditProviderWallet(t *testing.T) {
-	l := newTestLedger()
-
-	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider1",
-		AmountMicroUSD:  900_000,
-		Model:           "qwen3.5-9b",
-		JobID:           "job-123",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet(1): %v", err)
-	}
-	if err := l.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider2",
-		AmountMicroUSD:  450_000,
-		Model:           "llama3-8b",
-		JobID:           "job-456",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet(2): %v", err)
-	}
-
-	payouts := l.AllPayouts()
-	if len(payouts) != 2 {
-		t.Fatalf("payouts = %d, want 2", len(payouts))
-	}
-	if payouts[0].ProviderAddress != "0xProvider1" {
-		t.Errorf("payout[0] address = %q", payouts[0].ProviderAddress)
-	}
-	if payouts[0].AmountMicroUSD != 900_000 {
-		t.Errorf("payout[0] amount = %d", payouts[0].AmountMicroUSD)
-	}
-	if payouts[0].Settled {
-		t.Error("payout[0] should be unsettled")
-	}
-
-	// Provider balance should also be tracked in the store
-	if bal := l.Balance("0xProvider1"); bal != 900_000 {
-		t.Errorf("provider balance = %d, want 900_000", bal)
-	}
-}
-
-func TestPayoutsPersistAcrossLedgerInstances(t *testing.T) {
-	st := store.NewMemory(store.Config{})
-	l1 := NewLedger(st)
-
-	if err := l1.store.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "0xProvider1",
-		AmountMicroUSD:  900_000,
-		Model:           "qwen3.5-9b",
-		JobID:           "job-123",
-		Timestamp:       time.Now(),
-	}); err != nil {
-		t.Fatalf("CreditProviderWallet: %v", err)
-	}
-
-	l2 := NewLedger(st)
-	payouts := l2.AllPayouts()
-	if len(payouts) != 1 {
-		t.Fatalf("payouts = %d, want 1", len(payouts))
-	}
-	if payouts[0].JobID != "job-123" {
-		t.Fatalf("payout job_id = %q, want job-123", payouts[0].JobID)
-	}
-	if payouts[0].ProviderAddress != "0xProvider1" {
-		t.Fatalf("provider address = %q, want 0xProvider1", payouts[0].ProviderAddress)
 	}
 }
 

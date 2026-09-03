@@ -16,7 +16,7 @@ func TestInstrumentRequestLifecycle(t *testing.T) {
 	inst.RequestStart(rid)
 
 	timer := inst.StartSegment(rid, SegmentTotalE2E)
-	time.Sleep(1 * time.Millisecond)
+	timer.start = timer.start.Add(-time.Millisecond)
 	timer.Stop()
 
 	inst.RequestEnd(rid, 10*time.Millisecond)
@@ -36,7 +36,7 @@ func TestInstrumentRequestHelper(t *testing.T) {
 
 	ri := inst.NewRequest()
 	timer := ri.StartSegment(SegmentTTFT)
-	time.Sleep(1 * time.Millisecond)
+	timer.start = timer.start.Add(-time.Millisecond)
 	timer.Stop()
 	ri.StreamChunk(0)
 	ri.StreamChunk(1)

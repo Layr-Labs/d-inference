@@ -1,28 +1,21 @@
-/// Integration tests for the Swift provider that drive the entire local stack
-/// against a `MockCoordinator` (Hummingbird-hosted) on a system-assigned
-/// loopback port. These exercise the real WebSocket transport, the real
-/// libsodium NaCl box, and the real HTTP clients used by `EnrollmentService`,
-/// `ModelCatalogClient`, `TelemetryClient`, and `UpdateBanner`. The only thing
-/// faked here is the inference engine output -- inside the WebSocket handler
-/// loop we yield canned chunks instead of going through the inference engine,
-/// since that path requires MLX + a real model on disk.
+/// Hermetic integration tests for the Swift provider against a
+/// Hummingbird-hosted `MockCoordinator` on a system-assigned loopback port.
+/// They exercise the real WebSocket transport, libsodium NaCl box,
+/// `EnrollmentService`, `ModelCatalogClient`, and `UpdateBanner` clients, plus
+/// the privacy-disabled `TelemetryClient` no-network boundary. Inference output
+/// is canned inside the WebSocket handler; these tests require neither MLX nor
+/// a model on disk.
 ///
-/// Skipped in CI release builds (see `.github/workflows/release-swift.yml`):
-///     swift test --skip CoordinatorIntegrationTests
-///
-/// They run locally with `swift test --filter CoordinatorIntegrationTests`.
+/// This suite is part of the default provider test lane:
+///     swift test --filter CoordinatorIntegrationTests
 
 import Foundation
 import Testing
 @testable import ProviderCore
 
 // MARK: - Suite
-//
-// The suite name is the contract: `--skip CoordinatorIntegrationTests` (already
-// wired into `.github/workflows/release-swift.yml`) drops every test below
-// from CI. The suite is `.serialized` because the telemetry test exercises
-// `TelemetryClient.shared` (a process-wide singleton) and other tests would
-// otherwise race against its configure/shutdown cycle.
+// The suite stays serialized so each loopback mock lifecycle and the
+// process-wide compatibility telemetry facade are isolated from its siblings.
 
 @Suite("CoordinatorIntegrationTests", .serialized)
 struct CoordinatorIntegrationTests {

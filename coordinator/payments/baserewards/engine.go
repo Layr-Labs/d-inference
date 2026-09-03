@@ -56,10 +56,24 @@ func DefaultConfig() Config {
 	}
 }
 
+type settlementStore interface {
+	ListProviderSessionsOverlapping(context.Context, time.Time, time.Time, time.Duration) ([]store.ProviderSession, error)
+	SumProviderEarningsByKey(context.Context, string, time.Time, time.Time) (int64, error)
+	WithEpochSettlementLock(context.Context, string, func() error) error
+	ListFloorDrawsForEpoch(context.Context, string) ([]store.ProviderFloorDraw, error)
+	SumFloorDrawsForEpoch(context.Context, string) (int64, error)
+	SettleProviderFloorDraw(context.Context, *store.ProviderFloorDraw) (bool, error)
+}
+
+type providerRegistry interface {
+	ListProviders() []registry.ProviderSnapshot
+	TrustMeetsMinimum(registry.TrustLevel) bool
+}
+
 // Engine settles prorated base rewards for closed settlement periods.
 type Engine struct {
-	store  store.Store
-	reg    *registry.Registry
+	store  settlementStore
+	reg    providerRegistry
 	cfg    Config
 	logger *slog.Logger
 	now    func() time.Time // injectable clock for tests
@@ -68,6 +82,10 @@ type Engine struct {
 // NewEngine constructs an Engine. The store is the durable money source of
 // truth; the registry supplies live trust/health/hardware at settlement time.
 func NewEngine(s store.Store, reg *registry.Registry, cfg Config, logger *slog.Logger) *Engine {
+	return newEngine(s, reg, cfg, logger)
+}
+
+func newEngine(s settlementStore, reg providerRegistry, cfg Config, logger *slog.Logger) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}

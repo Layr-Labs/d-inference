@@ -30,7 +30,8 @@ extension EngineV2Bridge {
     /// dependency on when the child task first gets scheduled.
     func configureMTPStatus(
         _ status: MTPActivationStatus,
-        metricsInterval: Duration = .seconds(60)
+        metricsInterval: Duration = .seconds(60),
+        sleep: @escaping @Sendable (Duration) async throws -> Void = taskSleep
     ) {
         mtpActivationStatus = status
         slotPostureTask?.cancel()
@@ -40,7 +41,7 @@ extension EngineV2Bridge {
         let bridge = self
         slotPostureTask = Task { [weak bridge] in
             while !Task.isCancelled {
-                try? await taskSleep(metricsInterval)
+                try? await sleep(metricsInterval)
                 if Task.isCancelled { return }
                 guard let bridge else { return }
                 await bridge.sampleSlotPosture()

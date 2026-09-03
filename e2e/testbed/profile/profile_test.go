@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,26 +10,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func recordProfileRequest(
+	buffer *testbed.EventBuffer,
+	requestID string,
+	at time.Time,
+	segments map[testbed.Segment]time.Duration,
+) {
+	buffer.Consume(testbed.Event{
+		Kind:      testbed.EventRequestStart,
+		RequestID: requestID,
+		Timestamp: at,
+	})
+	for segment, duration := range segments {
+		buffer.Consume(testbed.Event{
+			Kind:      testbed.EventSegmentEnd,
+			RequestID: requestID,
+			Segment:   segment,
+			Timestamp: at.Add(duration),
+			Duration:  duration,
+		})
+	}
+	buffer.Consume(testbed.Event{
+		Kind:      testbed.EventRequestEnd,
+		RequestID: requestID,
+		Timestamp: at.Add(time.Second),
+	})
+}
+
 func TestProfilerBuildProfile(t *testing.T) {
 	cfg := testbed.DefaultTestConfig()
 	buf := testbed.NewEventBuffer()
 	p := NewProfiler(cfg, buf)
 
-	inst := testbed.NewInstrument(buf)
-
-	for i := 0; i < 5; i++ {
-		rid := inst.NewRequestID()
-		inst.RequestStart(rid)
-
-		timer := inst.StartSegment(rid, testbed.SegmentTTFT)
-		time.Sleep(2 * time.Millisecond)
-		timer.Stop()
-
-		timer2 := inst.StartSegment(rid, testbed.SegmentTotalE2E)
-		time.Sleep(1 * time.Millisecond)
-		timer2.Stop()
-
-		inst.RequestEnd(rid, 0)
+	base := time.Unix(1_700_000_000, 0)
+	for i := range 5 {
+		recordProfileRequest(buf, fmt.Sprintf("request-%d", i), base.Add(time.Duration(i)*time.Second), map[testbed.Segment]time.Duration{
+			testbed.SegmentTTFT:     2 * time.Millisecond,
+			testbed.SegmentTotalE2E: 3 * time.Millisecond,
+		})
 	}
 
 	run := p.BuildProfile()
@@ -52,25 +71,17 @@ func TestProfilerDiff(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	p := NewProfiler(cfg, buf)
 
-	inst := testbed.NewInstrument(buf)
-
-	rid := inst.NewRequestID()
-	inst.RequestStart(rid)
-	timer := inst.StartSegment(rid, testbed.SegmentTTFT)
-	time.Sleep(1 * time.Millisecond)
-	timer.Stop()
-	inst.RequestEnd(rid, 0)
+	base := time.Unix(1_700_000_000, 0)
+	recordProfileRequest(buf, "previous", base, map[testbed.Segment]time.Duration{
+		testbed.SegmentTTFT: time.Millisecond,
+	})
 
 	previous := p.BuildProfile()
 
 	buf.Reset()
-
-	rid2 := inst.NewRequestID()
-	inst.RequestStart(rid2)
-	timer2 := inst.StartSegment(rid2, testbed.SegmentTTFT)
-	time.Sleep(5 * time.Millisecond)
-	timer2.Stop()
-	inst.RequestEnd(rid2, 0)
+	recordProfileRequest(buf, "current", base.Add(time.Second), map[testbed.Segment]time.Duration{
+		testbed.SegmentTTFT: 5 * time.Millisecond,
+	})
 
 	diff := p.Diff(previous)
 
@@ -86,12 +97,9 @@ func TestProfileRunSummaryTable(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	p := NewProfiler(cfg, buf)
 
-	inst := testbed.NewInstrument(buf)
-	rid := inst.NewRequestID()
-	inst.RequestStart(rid)
-	timer := inst.StartSegment(rid, testbed.SegmentTTFT)
-	timer.Stop()
-	inst.RequestEnd(rid, 0)
+	recordProfileRequest(buf, "summary", time.Unix(1_700_000_000, 0), map[testbed.Segment]time.Duration{
+		testbed.SegmentTTFT: time.Millisecond,
+	})
 
 	run := p.BuildProfile()
 	assert.NotEmpty(t, run.SummaryTable())
@@ -102,12 +110,9 @@ func TestProfileRunToJSON(t *testing.T) {
 	buf := testbed.NewEventBuffer()
 	p := NewProfiler(cfg, buf)
 
-	inst := testbed.NewInstrument(buf)
-	rid := inst.NewRequestID()
-	inst.RequestStart(rid)
-	timer := inst.StartSegment(rid, testbed.SegmentTTFT)
-	timer.Stop()
-	inst.RequestEnd(rid, 0)
+	recordProfileRequest(buf, "json", time.Unix(1_700_000_000, 0), map[testbed.Segment]time.Duration{
+		testbed.SegmentTTFT: time.Millisecond,
+	})
 
 	run := p.BuildProfile()
 	b, err := run.ToJSON()

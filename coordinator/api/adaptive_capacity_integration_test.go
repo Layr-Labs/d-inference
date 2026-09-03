@@ -110,14 +110,14 @@ func TestAdaptiveCapacityIntegrationHeartbeatMaxConcurrencyDrivesMultiModelRouti
 
 	modelA := "adaptive-heartbeat-a"
 	modelB := "adaptive-heartbeat-b"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: modelA, ModelType: "chat", Quantization: "4bit"},
 		{ID: modelB, ModelType: "chat", Quantization: "4bit"},
 	}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, modelA, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, modelA, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{
 			{Model: modelA, State: "running", MaxConcurrency: 1, ActiveTokenBudgetMax: 32_768},
@@ -157,14 +157,14 @@ func TestAdaptiveCapacityIntegrationQueueDrainUsesHeartbeatSlotCaps(t *testing.T
 
 	modelA := "adaptive-queue-a"
 	modelB := "adaptive-queue-b"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{
 		{ID: modelA, ModelType: "chat", Quantization: "4bit"},
 		{ID: modelB, ModelType: "chat", Quantization: "4bit"},
 	}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, modelA, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, modelA, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{
 			{Model: modelA, State: "running", MaxConcurrency: 1, ActiveTokenBudgetMax: 32_768},
@@ -241,11 +241,11 @@ func TestAdaptiveCapacityIntegrationHTTP429WhenTokenBudgetExhausted(t *testing.T
 	defer cancel()
 
 	model := "adaptive-budget-http"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, model, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, model, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                 model,
@@ -297,11 +297,11 @@ func TestAdaptiveCapacityIntegrationQueueBeforeShedQueuesInsteadOf429(t *testing
 	defer cancel()
 
 	model := "adaptive-queue-before-shed"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, model, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, model, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots: []protocol.BackendSlotCapacity{{
 			Model:                 model,
@@ -358,11 +358,11 @@ func TestAdaptiveCapacityIntegrationOmittedMaxConcurrencyUsesLegacyFallback(t *t
 	defer cancel()
 
 	model := "adaptive-legacy-fallback"
-	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
+	conn := connectProvider(t, ctx, ts.URL, reg, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, testPublicKeyB64())
 	defer conn.Close(websocket.StatusNormalClosure, "done")
 	p := markOnlyProviderRoutable(t, reg)
 
-	writeAdaptiveHeartbeat(t, ctx, conn, model, &protocol.BackendCapacity{
+	writeAdaptiveHeartbeat(t, ctx, conn.Conn, model, &protocol.BackendCapacity{
 		TotalMemoryGB: 64,
 		Slots:         []protocol.BackendSlotCapacity{{Model: model, State: "running"}},
 	})

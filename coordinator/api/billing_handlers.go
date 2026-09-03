@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -677,6 +678,25 @@ func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
 	writeCachedJSON(w, body)
 }
 
+func parsePositiveUSDToMicro(amount string) (int64, bool) {
+	value, err := strconv.ParseFloat(amount, 64)
+	if err != nil || value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+
+	scaled := value * 1_000_000
+	const int64UpperBoundExclusive = float64(1 << 63)
+	if scaled < 1 || scaled >= int64UpperBoundExclusive {
+		return 0, false
+	}
+
+	amountMicroUSD := int64(scaled)
+	if amountMicroUSD <= 0 {
+		return 0, false
+	}
+	return amountMicroUSD, true
+}
+
 // handleAdminCredit handles POST /v1/admin/credit.
 // Credits a user's non-withdrawable balance by email.
 func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
@@ -697,12 +717,11 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "email is required"))
 		return
 	}
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
+	amountMicroUSD, ok := parsePositiveUSDToMicro(req.AmountUSD)
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
 		return
 	}
-	amountMicroUSD := int64(amountFloat * 1_000_000)
 
 	user, err := s.store.GetUserByEmail(req.Email)
 	if err != nil {
@@ -730,7 +749,7 @@ func (s *Server) handleAdminCredit(w http.ResponseWriter, r *http.Request) {
 		"ok":            true,
 		"account_id":    user.AccountID,
 		"email":         user.Email,
-		"credited_usd":  amountFloat,
+		"credited_usd":  float64(amountMicroUSD) / 1_000_000,
 		"withdrawable":  false,
 		"balance_after": float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
 	})
@@ -756,12 +775,11 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "email is required"))
 		return
 	}
-	amountFloat, err := strconv.ParseFloat(req.AmountUSD, 64)
-	if err != nil || amountFloat <= 0 {
+	amountMicroUSD, ok := parsePositiveUSDToMicro(req.AmountUSD)
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "amount_usd must be a positive number"))
 		return
 	}
-	amountMicroUSD := int64(amountFloat * 1_000_000)
 
 	user, err := s.store.GetUserByEmail(req.Email)
 	if err != nil {
@@ -789,7 +807,7 @@ func (s *Server) handleAdminReward(w http.ResponseWriter, r *http.Request) {
 		"ok":                 true,
 		"account_id":         user.AccountID,
 		"email":              user.Email,
-		"rewarded_usd":       amountFloat,
+		"rewarded_usd":       float64(amountMicroUSD) / 1_000_000,
 		"withdrawable":       true,
 		"balance_after":      float64(s.store.GetBalance(user.AccountID)) / 1_000_000,
 		"withdrawable_after": float64(s.store.GetWithdrawableBalance(user.AccountID)) / 1_000_000,

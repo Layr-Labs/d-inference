@@ -197,14 +197,17 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 ## Important Sync Points
 
 - Protocol changes must be mirrored in both `provider-swift/Sources/ProviderCore/Protocol/` and `coordinator/protocol/messages.go`.
-- Telemetry wire types live in three places and MUST stay aligned:
-  - `coordinator/protocol/telemetry.go` (canonical),
-  - `provider-swift/Sources/ProviderCore/Telemetry/` (Swift mirror),
-  - `console-ui/src/lib/telemetry-types.ts` (TS mirror).
-  Symmetry tests in each language pin enum casing and optional-field omission.
-  Field allowlist additions need parallel updates in
-  `coordinator/api/telemetry_handlers.go`,
-  `provider-swift/Sources/ProviderCore/Telemetry/`, and the TS set above.
+- Retired client-telemetry event types have Go, Swift, and TypeScript protocol
+  mirrors in `coordinator/protocol/telemetry.go`,
+  `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`, and
+  `console-ui/src/lib/telemetry-types.ts`. Their shared corpus is
+  `fixtures/telemetry/v1/events.json`; changes to the event vocabulary or wire
+  shape must update all three mirrors and the fixture. Each language's symmetry
+  test consumes that corpus.
+- Client telemetry ingestion remains disabled. The coordinator route returns a
+  fixed `410` before body access and has no parser, sanitizer, or field
+  allowlist. Swift and TypeScript retain separate local compatibility filters;
+  those filters are not a three-language protocol sync point.
 - If you change provider bundle semantics, keep the bundle steps in `.github/workflows/release-swift.yml`, `scripts/install.sh`, and `LatestProviderVersion` in sync.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.

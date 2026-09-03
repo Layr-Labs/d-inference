@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
-        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
+        prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-probe prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
@@ -36,6 +36,11 @@ prompt-sidecar-check: ## Check and lint all Rust sidecar targets
 
 prompt-sidecar-test: ## Run Rust sidecar tests
 	cd coordinator/promptsidecar && cargo test --locked --all-targets
+
+prompt-sidecar-probe: ## Run explicit Rust sidecar workstation probes
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture measure_fixture_planning_latency -- --exact --ignored --nocapture
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture measure_fixture_unix_http_latency -- --exact --ignored --nocapture
+	cd coordinator/promptsidecar && cargo test --locked --test planner_fixture health_remains_fast_while_planner_is_busy_and_overloaded -- --exact --ignored --nocapture
 
 prompt-sidecar-build: ## Build the Rust sidecar for the host platform
 	cd coordinator/promptsidecar && cargo build --locked --release --bin promptsidecar
@@ -98,13 +103,15 @@ ui-test: ## vitest for console-ui
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
 
 # ---- E2E integration tests -------------------------------------------------
-# Requires Postgres + Swift provider binary + MLX model downloaded.
+# The harness starts ephemeral Postgres, builds/stages the provider unless
+# DARKBLOOM_PROVIDER_BINARY is supplied, and never downloads model weights.
+# Full-network and benchmark lanes require both production checkpoints.
 
-e2e-integration: ## go test ./e2e/... -run TestIntegration
-	go test ./e2e/... -run TestIntegration -v
+e2e-integration: ## Run local TestIntegration tests (local model prerequisites)
+	go test ./e2e/... -count=1 -v -timeout 25m -p=1 -run '^TestIntegration'
 
-e2e-benchmark: ## go test ./e2e/... -run TestBenchmark (load benchmarks)
-	go test ./e2e/... -run TestBenchmark -v
+e2e-benchmark: ## Run local TestBenchmark tests (local two-model prerequisites)
+	go test ./e2e/... -count=1 -v -timeout 25m -p=1 -run '^TestBenchmark_'
 
 e2e: e2e-integration ## Run the integration suite
 

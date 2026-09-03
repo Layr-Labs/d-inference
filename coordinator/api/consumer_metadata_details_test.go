@@ -28,10 +28,7 @@ func TestNonStreamingChatMetadataDetails(t *testing.T) {
 	go serveOneChatCompletion(t, ctx, conn, pubKey, providerDone, false)
 
 	chatBody := `{"model":"meta-model","messages":[{"role":"user","content":"hi"}],"stream":false,"metadata_details":true}`
-	httpReq, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
-	if err != nil {
-		t.Fatal(err)
-	}
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)
@@ -72,10 +69,7 @@ func TestNonStreamingChatMetadataDetailsHeader(t *testing.T) {
 	go serveOneChatCompletion(t, ctx, conn, pubKey, providerDone, false)
 
 	chatBody := `{"model":"meta-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
-	httpReq, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
-	if err != nil {
-		t.Fatal(err)
-	}
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	httpReq.Header.Set(metadataDetailsHeader, "true")
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {
@@ -113,10 +107,7 @@ func TestNonStreamingChatOmitsMetadataByDefault(t *testing.T) {
 	go serveOneChatCompletion(t, ctx, conn, pubKey, providerDone, false)
 
 	chatBody := `{"model":"meta-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
-	httpReq, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
-	if err != nil {
-		t.Fatal(err)
-	}
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)
@@ -150,10 +141,7 @@ func TestStreamingChatMetadataDetailsOnTerminalChunk(t *testing.T) {
 	go serveOneChatCompletion(t, ctx, conn, pubKey, providerDone, true)
 
 	chatBody := `{"model":"meta-model","messages":[{"role":"user","content":"hi"}],"stream":true,"metadata_details":true}`
-	httpReq, err := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
-	if err != nil {
-		t.Fatal(err)
-	}
+	httpReq := newAuthRequest(t, ctx, ts.URL+"/v1/chat/completions", chatBody, "test-key")
 	resp, err := ts.Client().Do(httpReq)
 	if err != nil {
 		t.Fatalf("http request: %v", err)

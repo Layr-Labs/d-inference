@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "vocabularies": {
+    "sources": {
+      "coordinator": true,
+      "provider": true,
+      "app": true,
+      "console": true,
+      "bridge": true
+    },
+    "severities": {
+      "debug": true,
+      "info": true,
+      "warn": true,
+      "error": true,
+      "fatal": true
+    },
+    "kinds": {
+      "panic": true,
+      "http_error": true,
+      "protocol_error": true,
+      "backend_crash": true,
+      "attestation_failure": true,
+      "inference_error": true,
+      "runtime_mismatch": true,
+      "connectivity": true,
+      "oom": true,
+      "engine_health": true,
+      "log": true,
+      "custom": true
+    }
+  },
+  "required_event_fields": {
+    "id": true,
+    "timestamp": true,
+    "source": true,
+    "severity": true,
+    "kind": true,
+    "message": true
+  },
+  "optional_event_fields": {
+    "version": true,
+    "machine_id": true,
+    "account_id": true,
+    "request_id": true,
+    "session_id": true,
+    "fields": true,
+    "stack": true
+  },
+  "cases": [
+    {
+      "name": "minimal_optional_omission",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "timestamp": "2026-04-16T00:00:00Z",
+        "source": "provider",
+        "severity": "error",
+        "kind": "backend_crash",
+        "message": "hi"
+      },
+      "omitted_keys": [
+        "version",
+        "machine_id",
+        "account_id",
+        "request_id",
+        "session_id",
+        "fields",
+        "stack"
+      ]
+    },
+    {
+      "name": "all_optional_fields",
+      "event": {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "timestamp": "2026-04-16T00:00:01Z",
+        "source": "coordinator",
+        "severity": "warn",
+        "kind": "protocol_error",
+        "version": "0.3.10",
+        "machine_id": "machine-1",
+        "account_id": "account-1",
+        "request_id": "request-1",
+        "session_id": "session-1",
+        "message": "complete",
+        "fields": {
+          "attempt": 2,
+          "recoverable": true,
+          "stage": "decode"
+        },
+        "stack": "frame-1\nframe-2"
+      },
+      "omitted_keys": []
+    }
+  ]
+}

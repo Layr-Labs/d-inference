@@ -13,26 +13,20 @@ import (
 // anywhere in production. Generated for these tests via `bx mnemonic new`.
 const testMnemonic = "praise warfare warrior rebuild raven garlic kite blast crew impulse pencil hidden"
 
-func TestDeriveCoordinatorKey_Deterministic(t *testing.T) {
-	a, err := DeriveCoordinatorKey(testMnemonic)
+func TestDeriveCoordinatorKey_Golden(t *testing.T) {
+	const (
+		wantKID       = "db174b1a34ab9e26"
+		wantPublicKey = "iESmUb2Yp6z3cECwkIJsh0S7rzmWEOuiCJpXdw892BE="
+	)
+	key, err := DeriveCoordinatorKey(testMnemonic)
 	if err != nil {
-		t.Fatalf("derive a: %v", err)
+		t.Fatalf("derive: %v", err)
 	}
-	b, err := DeriveCoordinatorKey(testMnemonic)
-	if err != nil {
-		t.Fatalf("derive b: %v", err)
+	if key.KID != wantKID {
+		t.Fatalf("kid = %q, want %q", key.KID, wantKID)
 	}
-	if a.PrivateKey != b.PrivateKey {
-		t.Fatal("derivation is not deterministic — same mnemonic produced different private keys")
-	}
-	if a.PublicKey != b.PublicKey {
-		t.Fatal("derivation is not deterministic — same mnemonic produced different public keys")
-	}
-	if a.KID != b.KID {
-		t.Fatalf("kid mismatch: %s != %s", a.KID, b.KID)
-	}
-	if len(a.KID) != 16 {
-		t.Fatalf("kid expected 16 hex chars, got %d", len(a.KID))
+	if got := base64.StdEncoding.EncodeToString(key.PublicKey[:]); got != wantPublicKey {
+		t.Fatalf("public key = %q, want %q", got, wantPublicKey)
 	}
 }
 
@@ -101,18 +95,4 @@ func TestCoordinatorKey_RoundTrip(t *testing.T) {
 		t.Fatalf("plaintext mismatch:\n got: %s\nwant: %s", got, plaintext)
 	}
 
-	// And confirm the kid doesn't change across runs (regression: rotation
-	// must be intentional).
-	want := coord.KID
-	again, _ := DeriveCoordinatorKey(testMnemonic)
-	if again.KID != want {
-		t.Fatalf("kid drifted: %s != %s", again.KID, want)
-	}
-
-	// Sanity: pubkey is exactly 32 bytes when decoded.
-	enc := base64.StdEncoding.EncodeToString(coord.PublicKey[:])
-	dec, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil || len(dec) != 32 {
-		t.Fatalf("pubkey serialization broken: %v len=%d", err, len(dec))
-	}
 }

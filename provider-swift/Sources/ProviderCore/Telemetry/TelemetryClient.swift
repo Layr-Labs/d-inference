@@ -84,8 +84,9 @@ public final class TelemetryClient: @unchecked Sendable {
 
     public func shutdownSync() {}
 
-    /// Kept for compatibility tests and callers that display the historical
-    /// endpoint. No production code sends to the returned URL.
+    /// Returns the historical client-ingestion URL for source compatibility.
+    /// This helper performs string normalization only; no production code sends
+    /// to the returned endpoint.
     public static func ingestEndpoint(from coordinatorURL: String) -> String {
         var base = coordinatorURL
         while base.hasSuffix("/") {
@@ -100,6 +101,7 @@ public final class TelemetryClient: @unchecked Sendable {
         }
         return base + "/v1/telemetry/events"
     }
+
 }
 
 #if !canImport(os)

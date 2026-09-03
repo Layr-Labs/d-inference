@@ -267,6 +267,63 @@ public struct SelfUpdater: Sendable {
             : processVersion
     }
 
+    private enum LatestReleaseDecodeError: LocalizedError {
+        case invalidJSON
+        case missingRequiredFields
+        case unsupportedPlatform(String)
+        case missingHash
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidJSON:
+                return "invalid JSON response"
+            case .missingRequiredFields:
+                return "missing required fields in release response"
+            case .unsupportedPlatform(let platform):
+                return "coordinator returned unsupported release platform \(platform)"
+            case .missingHash:
+                return "missing release hash field"
+            }
+        }
+    }
+
+    internal static func decodeLatestReleaseResponse(_ data: Data) throws -> ReleaseInfo {
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw LatestReleaseDecodeError.invalidJSON
+        }
+        guard let json = object as? [String: Any] else {
+            throw LatestReleaseDecodeError.invalidJSON
+        }
+
+        guard let version = json["version"] as? String,
+              let platform = json["platform"] as? String,
+              let downloadURL = json["url"] as? String
+        else {
+            throw LatestReleaseDecodeError.missingRequiredFields
+        }
+        guard platform == "macos-arm64" else {
+            throw LatestReleaseDecodeError.unsupportedPlatform(platform)
+        }
+        guard let bundleHash = (json["bundle_hash"] as? String)
+                ?? (json["sha256"] as? String)
+                ?? (json["binary_hash"] as? String)
+        else {
+            throw LatestReleaseDecodeError.missingHash
+        }
+
+        return ReleaseInfo(
+            version: version,
+            platform: platform,
+            url: downloadURL,
+            bundleHash: bundleHash,
+            binaryHash: json["binary_hash"] as? String,
+            metallibHash: json["metallib_hash"] as? String
+        )
+    }
+
     private enum LatestReleaseFetch {
         case release(ReleaseInfo)
         case failed(String)
@@ -290,34 +347,11 @@ public struct SelfUpdater: Sendable {
                 return .failed("coordinator returned HTTP \(httpResponse.statusCode)")
             }
 
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .failed("invalid JSON response")
+            do {
+                return .release(try Self.decodeLatestReleaseResponse(data))
+            } catch {
+                return .failed(error.localizedDescription)
             }
-
-            guard let version = json["version"] as? String,
-                  let platform = json["platform"] as? String,
-                  let downloadURL = json["url"] as? String
-            else {
-                return .failed("missing required fields in release response")
-            }
-            guard platform == "macos-arm64" else {
-                return .failed("coordinator returned unsupported release platform \(platform)")
-            }
-            guard let bundleHash = (json["bundle_hash"] as? String)
-                    ?? (json["sha256"] as? String)
-                    ?? (json["binary_hash"] as? String)
-            else {
-                return .failed("missing release hash field")
-            }
-
-            return .release(ReleaseInfo(
-                version: version,
-                platform: platform,
-                url: downloadURL,
-                bundleHash: bundleHash,
-                binaryHash: json["binary_hash"] as? String,
-                metallibHash: json["metallib_hash"] as? String
-            ))
         } catch {
             return .failed(error.localizedDescription)
         }

@@ -1,7 +1,5 @@
-// Shared ws(s):// -> http(s):// scheme normalization for deriving HTTP
-// endpoints from the coordinator's WebSocket URL. Used by SelfUpdater
-// (release checks) and TelemetryClient (event ingest); previously duplicated
-// verbatim in both.
+// ws(s):// -> http(s):// normalization used by SelfUpdater when deriving the
+// coordinator's HTTP release endpoint from its WebSocket URL.
 
 /// Namespace for coordinator URL scheme normalization helpers.
 enum WebSocketURLScheme {

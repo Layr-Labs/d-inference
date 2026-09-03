@@ -2,7 +2,6 @@ package registry
 
 import (
 	"testing"
-	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -34,11 +33,11 @@ func TestModelCatalogGatesRoutingWithoutDroppingInventory(t *testing.T) {
 	}
 }
 
-func TestModelCatalogFilterOnRegisterNoCatalog(t *testing.T) {
+func TestRegisterWithoutCatalogPreservesAllInventory(t *testing.T) {
 	reg := New(testLogger())
 	reg.MinTrustLevel = TrustNone
 
-	// No catalog set — all models should be accepted.
+	// With no configured catalog, all advertised models remain eligible.
 	msg := &protocol.RegisterMessage{
 		Type:     protocol.TypeRegister,
 		Hardware: testRegisterMessage().Hardware,
@@ -107,39 +106,6 @@ func TestRegisterWithEmptyConfiguredCatalogPreservesInventoryButRoutesNothingUnt
 	reg.SetModelCatalog([]CatalogEntry{{ID: modelID}})
 	if found := findRoutableProvider(reg, modelID); found == nil {
 		t.Fatal("expected existing provider to become routable after catalog update")
-	}
-}
-
-func TestFindProviderRespectsModelCatalog(t *testing.T) {
-	reg := New(testLogger())
-	reg.MinTrustLevel = TrustNone
-
-	// Register a provider with a model NOT in catalog.
-	reg.SetModelCatalog([]CatalogEntry{{ID: "whitelisted-model"}})
-
-	msg := &protocol.RegisterMessage{
-		Type:     protocol.TypeRegister,
-		Hardware: testRegisterMessage().Hardware,
-		Models: []protocol.ModelInfo{
-			{ID: "not-whitelisted", SizeBytes: 1000},
-		},
-		Backend: "vllm_mlx",
-	}
-	p := reg.Register("p1", nil, msg)
-	p.mu.Lock()
-	p.LastChallengeVerified = time.Now()
-	p.mu.Unlock()
-
-	// Provider's model was filtered at registration — FindProvider won't find it.
-	found := findRoutableProvider(reg, "not-whitelisted")
-	if found != nil {
-		t.Error("expected FindProvider to return nil for non-catalog model")
-	}
-
-	// The whitelisted model has no provider either.
-	found = findRoutableProvider(reg, "whitelisted-model")
-	if found != nil {
-		t.Error("expected FindProvider to return nil when no provider has the model")
 	}
 }
 

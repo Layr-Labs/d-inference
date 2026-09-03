@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "nested_allowlisted_snapshot",
+      "source_directory": "source",
+      "expected_manifest": {
+        "schema_version": 1,
+        "model_id": "fixture/model-manifest",
+        "version": "v1",
+        "r2_prefix": "v2/fixture-model-manifest--248dc420cf51/v1",
+        "aggregate_sha256": "dda1cab89aee493642f32b9c80175bbad7049682acf30926c100a4f48aad53d9",
+        "total_size_bytes": 116,
+        "file_count": 5,
+        "files": [
+          {
+            "path": "config.json",
+            "size_bytes": 41,
+            "sha256": "19b7f47fa4616f446bf88908d7bd5f2f96836bc4a8d9784b3c1caaf7186da55c",
+            "role": "config"
+          },
+          {
+            "path": "nested/empty/processor_config.json",
+            "size_bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "role": "preprocessor"
+          },
+          {
+            "path": "nested/templates/chat_template.jinja",
+            "size_bytes": 15,
+            "sha256": "7f3de14b4a359865a98f84be7a9314754b7e14e8e23524e2553e4effaa9d18e1",
+            "role": "template"
+          },
+          {
+            "path": "nested/tokenizer/tokenizer.json",
+            "size_bytes": 41,
+            "sha256": "f3ff9474f89dd7156313297f9b49dadabeb0bf8263aae9da65239d1f05b7ca0a",
+            "role": "tokenizer"
+          },
+          {
+            "path": "weights/shards/model-00001-of-00001.safetensors",
+            "size_bytes": 19,
+            "sha256": "8a2011e47cb79ec7f37863c66353ad1219e0e1690dbb0d7ab6829ee4c1aa903a",
+            "role": "weight"
+          }
+        ],
+        "created_at": "2026-01-01T00:00:00Z"
+      }
+    }
+  ]
+}

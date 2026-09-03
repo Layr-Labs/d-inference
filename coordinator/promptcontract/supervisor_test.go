@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	promptSidecarHelperReadyTimeout  = 10 * time.Second
+	promptSidecarHelperHealthTimeout = 500 * time.Millisecond
+)
+
 func TestPrepareSocketDirectoryRejectsSymlinkedAncestor(t *testing.T) {
 	base, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
@@ -73,17 +78,23 @@ func realPromptTempDir(t *testing.T, pattern string) string {
 	return directory
 }
 
-func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
+func promptSidecarHelperScript(t *testing.T, directory string) string {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	temp := realPromptTempDir(t, "prompt-supervisor-")
-	script := filepath.Join(temp, "sidecar-helper")
+	script := filepath.Join(directory, "sidecar-helper")
 	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
 	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	return script
+}
+
+func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
+	temp := realPromptTempDir(t, "prompt-supervisor-")
+	script := promptSidecarHelperScript(t, temp)
 	socket := filepath.Join(temp, "sidecar.sock")
 	marker := filepath.Join(temp, "first-start")
 	t.Setenv("PROMPT_SIDECAR_HELPER", "1")
@@ -95,8 +106,8 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 		SocketPath:             socket,
 		ArtifactRoot:           temp,
 		RequestTimeout:         50 * time.Millisecond,
-		HealthTimeout:          50 * time.Millisecond,
-		StartupTimeout:         time.Second,
+		HealthTimeout:          promptSidecarHelperHealthTimeout,
+		StartupTimeout:         promptSidecarHelperReadyTimeout,
 		HealthInterval:         10 * time.Millisecond,
 		HealthFailureThreshold: 3,
 		ShutdownTimeout:        500 * time.Millisecond,
@@ -105,28 +116,17 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		status := supervisor.Status()
-		if status.Ready && status.Restarts >= 1 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("supervisor never became ready after restart: %+v", supervisor.Status())
+	waitForSupervisorWithin(t, supervisor, 2*promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Ready &&
+			status.Restarts >= 1 &&
+			status.ChildGeneration >= 2 &&
+			status.RestartReason == "child_exit"
+	})
 }
 
 func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	temp := realPromptTempDir(t, "prompt-supervisor-health-")
-	script := filepath.Join(temp, "sidecar-helper")
-	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
-	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	script := promptSidecarHelperScript(t, temp)
 	marker := filepath.Join(temp, "first-start")
 	if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
 		t.Fatal(err)
@@ -141,8 +141,8 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 		SocketPath:             filepath.Join(temp, "sidecar.sock"),
 		ArtifactRoot:           temp,
 		RequestTimeout:         30 * time.Millisecond,
-		HealthTimeout:          30 * time.Millisecond,
-		StartupTimeout:         time.Second,
+		HealthTimeout:          promptSidecarHelperHealthTimeout,
+		StartupTimeout:         promptSidecarHelperReadyTimeout,
 		HealthInterval:         10 * time.Millisecond,
 		HealthFailureThreshold: 3,
 		ShutdownTimeout:        100 * time.Millisecond,
@@ -151,18 +151,27 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.Ready })
+	waitForSupervisorWithin(t, supervisor, promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Ready
+	})
+	initial := supervisor.Status()
 	if err := os.WriteFile(unhealthy, []byte("hang"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
-		return status.Restarts >= 1 && !status.Ready
+	waitForSupervisorWithin(t, supervisor, 2*promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Restarts > initial.Restarts &&
+			status.ChildGeneration > initial.ChildGeneration &&
+			status.RestartReason == "health_failure_threshold" &&
+			!status.Ready
 	})
 	if err := os.Remove(unhealthy); err != nil {
 		t.Fatal(err)
 	}
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
-		return status.Restarts >= 1 && status.Ready
+	waitForSupervisorWithin(t, supervisor, promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Restarts > initial.Restarts &&
+			status.ChildGeneration > initial.ChildGeneration &&
+			status.RestartReason == "health_failure_threshold" &&
+			status.Ready
 	})
 }
 
@@ -219,16 +228,8 @@ func TestSupervisorReadinessDegradationDoesNotRestart(t *testing.T) {
 }
 
 func TestSupervisorRestartCircuitAndBoundedStderr(t *testing.T) {
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	temp := realPromptTempDir(t, "prompt-supervisor-circuit-")
-	script := filepath.Join(temp, "sidecar-helper")
-	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
-	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	script := promptSidecarHelperScript(t, temp)
 	t.Setenv("PROMPT_SIDECAR_HELPER", "1")
 	t.Setenv("PROMPT_SIDECAR_HELPER_ALWAYS_EXIT", "1")
 	t.Setenv("PROMPT_SIDECAR_HELPER_STDERR", strings.Repeat("diagnostic-", 512))
@@ -316,16 +317,8 @@ func TestSupervisorHelperProcess(t *testing.T) {
 
 func startSupervisorHelper(t *testing.T) (*Supervisor, string) {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	temp := realPromptTempDir(t, "prompt-supervisor-transient-")
-	script := filepath.Join(temp, "sidecar-helper")
-	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
-	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	script := promptSidecarHelperScript(t, temp)
 	marker := filepath.Join(temp, "first-start")
 	if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
 		t.Fatal(err)
@@ -350,14 +343,24 @@ func startSupervisorHelper(t *testing.T) (*Supervisor, string) {
 
 func waitForSupervisor(t *testing.T, supervisor *Supervisor, predicate func(SupervisorStatus) bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	waitForSupervisorWithin(t, supervisor, 3*time.Second, predicate)
+}
+
+func waitForSupervisorWithin(
+	t *testing.T,
+	supervisor *Supervisor,
+	timeout time.Duration,
+	predicate func(SupervisorStatus) bool,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if predicate(supervisor.Status()) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("supervisor state did not converge: %+v", supervisor.Status())
+	t.Fatalf("supervisor state did not converge within %s: %+v", timeout, supervisor.Status())
 }
 
 func argumentValue(arguments []string, name string) string {

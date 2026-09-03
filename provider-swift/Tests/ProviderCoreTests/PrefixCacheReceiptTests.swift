@@ -495,4 +495,94 @@ struct PrefixCacheReceiptTests {
         }
     }
 
+    private final class Recorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var messages: [OutboundMessage] = []
+
+        func append(_ message: OutboundMessage) {
+            lock.withLock { messages.append(message) }
+        }
+
+        var lookups: [(outcome: PrefixCacheLookupOutcome, tier: PrefixCacheTier?)] {
+            lock.withLock {
+                messages.compactMap {
+                    guard case .prefixCacheLookup(
+                        _, _, let outcome, let tier, _, _, _
+                    ) = $0 else { return nil }
+                    return (outcome, tier)
+                }
+            }
+        }
+
+        var kinds: [String] {
+            lock.withLock {
+                messages.compactMap {
+                    switch $0 {
+                    case .prefixCacheLookup: return "lookup"
+                    case .inferenceError: return "error"
+                    case .inferenceComplete: return "complete"
+                    default: return nil
+                    }
+                }
+            }
+        }
+
+    }
+
+    private func makeLoop() throws -> ProviderLoop {
+        let config = ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5",
+                chipName: "Apple M4 Max",
+                chipFamily: .m4,
+                chipTier: .max,
+                memoryGb: 128,
+                memoryAvailableGb: 124,
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            models: [],
+            config: ProviderConfig(
+                provider: ProviderSettings(name: "outer-receipt-test", memoryReserveGB: 1),
+                backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
+        return try ProviderLoop(
+            config: config,
+            purgeLegacyFiles: false,
+            attestationSigner: nil)
+    }
+
+    @Test("pre-decrypt policy failure emits exactly one lookup receipt")
+    func malformedResponseKeyFinalizesPolicy() async throws {
+        let loop = try makeLoop()
+        let recorder = Recorder()
+        await loop.handleInferenceRequest(
+            requestId: "outer-policy",
+            ciphertext: Data(),
+            senderPublicKey: nil,
+            cacheReceiptNonce: "nonce-policy",
+            authenticatedCacheScope: "scope-policy",
+            send: SendHandle(recorder.append))
+        #expect(recorder.lookups.count == 1)
+        #expect(recorder.lookups.first?.outcome == .skippedPolicy)
+        #expect(recorder.kinds == ["lookup", "error"])
+    }
+
+    @Test("pre-decrypt shutdown admission emits exactly one capacity receipt")
+    func shutdownFinalizesCapacity() async throws {
+        let loop = try makeLoop()
+        await loop.beginShutdownForTesting()
+        let recorder = Recorder()
+        await loop.handleInferenceRequest(
+            requestId: "outer-capacity",
+            ciphertext: Data(),
+            senderPublicKey: nil,
+            cacheReceiptNonce: "nonce-capacity",
+            authenticatedCacheScope: "scope-capacity",
+            send: SendHandle(recorder.append))
+        #expect(recorder.lookups.count == 1)
+        #expect(recorder.lookups.first?.outcome == .skippedCapacity)
+        #expect(recorder.kinds == ["lookup", "error"])
+    }
 }

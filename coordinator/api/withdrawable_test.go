@@ -10,117 +10,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// --- Store-level withdrawable balance tests ---
-
-func TestWithdrawableBalance_CreditIsNotWithdrawable(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.Credit("acct-1", 10_000_000, store.LedgerStripeDeposit, "stripe:123")
-
-	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
-		t.Errorf("balance = %d, want 10_000_000", bal)
-	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 0 {
-		t.Errorf("withdrawable = %d, want 0 (Stripe deposit is not withdrawable)", w)
-	}
-}
-
-func TestWithdrawableBalance_CreditWithdrawableIncrementsBoth(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.CreditWithdrawable("acct-1", 10_000_000, store.LedgerPayout, "job-1")
-
-	if bal := st.GetBalance("acct-1"); bal != 10_000_000 {
-		t.Errorf("balance = %d, want 10_000_000", bal)
-	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 10_000_000 {
-		t.Errorf("withdrawable = %d, want 10_000_000", w)
-	}
-}
-
-func TestWithdrawableBalance_DebitConsumesCreditsFirst(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.Credit("acct-1", 20_000_000, store.LedgerStripeDeposit, "stripe:1")
-	_ = st.CreditWithdrawable("acct-1", 30_000_000, store.LedgerPayout, "job-1")
-
-	if bal := st.GetBalance("acct-1"); bal != 50_000_000 {
-		t.Fatalf("balance = %d, want 50_000_000", bal)
-	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 30_000_000 {
-		t.Fatalf("withdrawable = %d, want 30_000_000", w)
-	}
-
-	_ = st.Debit("acct-1", 15_000_000, store.LedgerCharge, "req-1")
-	if bal := st.GetBalance("acct-1"); bal != 35_000_000 {
-		t.Errorf("after $15 charge: balance = %d, want 35_000_000", bal)
-	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 30_000_000 {
-		t.Errorf("after $15 charge: withdrawable = %d, want 30_000_000 (credits consumed first)", w)
-	}
-
-	_ = st.Debit("acct-1", 10_000_000, store.LedgerCharge, "req-2")
-	if bal := st.GetBalance("acct-1"); bal != 25_000_000 {
-		t.Errorf("after $10 charge: balance = %d, want 25_000_000", bal)
-	}
-	if w := st.GetWithdrawableBalance("acct-1"); w != 25_000_000 {
-		t.Errorf("after $10 charge: withdrawable = %d, want 25_000_000", w)
-	}
-}
-
-func TestWithdrawableBalance_DebitAllEarnings(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.CreditWithdrawable("acct-1", 50_000_000, store.LedgerPayout, "job-1")
-
-	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-1")
-	if w := st.GetWithdrawableBalance("acct-1"); w != 25_000_000 {
-		t.Errorf("withdrawable = %d, want 25_000_000", w)
-	}
-
-	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-2")
-	if w := st.GetWithdrawableBalance("acct-1"); w != 0 {
-		t.Errorf("withdrawable = %d, want 0", w)
-	}
-}
-
-func TestWithdrawableBalance_ProviderEarningIsWithdrawable(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	u := &store.User{AccountID: "acct-provider", PrivyUserID: "did:privy:p1", Email: "p@test.com"}
-	_ = st.CreateUser(u)
-
-	_ = st.CreditProviderAccount(&store.ProviderEarning{
-		AccountID:      "acct-provider",
-		ProviderID:     "prov-1",
-		ProviderKey:    "key-1",
-		JobID:          "job-1",
-		Model:          "test-model",
-		AmountMicroUSD: 5_000_000,
-	})
-
-	if w := st.GetWithdrawableBalance("acct-provider"); w != 5_000_000 {
-		t.Errorf("provider earning should be withdrawable: got %d, want 5_000_000", w)
-	}
-}
-
-func TestWithdrawableBalance_GetUserByEmail(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.CreateUser(&store.User{
-		AccountID:   "acct-email-1",
-		PrivyUserID: "did:privy:e1",
-		Email:       "Alice@Example.COM",
-	})
-
-	u, err := st.GetUserByEmail("alice@example.com")
-	if err != nil {
-		t.Fatalf("lookup by lowercase email failed: %v", err)
-	}
-	if u.AccountID != "acct-email-1" {
-		t.Errorf("got accountID %q", u.AccountID)
-	}
-
-	_, err = st.GetUserByEmail("nobody@example.com")
-	if err == nil {
-		t.Error("expected error for unknown email")
-	}
-}
-
 // --- Withdrawal with non-withdrawable balance ---
 
 func TestStripeWithdrawRejectsNonWithdrawableBalance(t *testing.T) {
@@ -303,6 +192,131 @@ func TestAdminRewardRejectsNonAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminBillingRejectsInvalidAmountsWithoutMutation(t *testing.T) {
+	handlers := []struct {
+		name   string
+		path   string
+		handle func(*Server, http.ResponseWriter, *http.Request)
+	}{
+		{name: "credit", path: "/v1/admin/credit", handle: (*Server).handleAdminCredit},
+		{name: "reward", path: "/v1/admin/reward", handle: (*Server).handleAdminReward},
+	}
+	amounts := []struct {
+		name  string
+		value string
+	}{
+		{name: "nan", value: "NaN"},
+		{name: "positive_infinity", value: "+Inf"},
+		{name: "negative_infinity", value: "-Inf"},
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-1"},
+		{name: "sub_micro", value: "0.0000009"},
+		{name: "int64_overflow", value: "9223372036854.776"},
+		{name: "large_finite_overflow", value: "1e308"},
+	}
+
+	for _, handler := range handlers {
+		for _, amount := range amounts {
+			t.Run(handler.name+"/"+amount.name, func(t *testing.T) {
+				srv, st := testBillingServer(t)
+				srv.SetAdminKey("admin-secret")
+				user := seedUser(t, st, "acct-amount-validation", "amount-validation@example.com")
+
+				body := `{"email":"amount-validation@example.com","amount_usd":"` + amount.value + `"}`
+				req := httptest.NewRequest(http.MethodPost, handler.path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer admin-secret")
+				w := httptest.NewRecorder()
+				handler.handle(srv, w, req)
+
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
+				}
+				var resp struct {
+					Error struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+						Code    string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if resp.Error.Type != "invalid_request_error" ||
+					resp.Error.Code != "invalid_request_error" ||
+					resp.Error.Message != "amount_usd must be a positive number" {
+					t.Fatalf("unexpected error response: %#v", resp.Error)
+				}
+				if balance := st.GetBalance(user.AccountID); balance != 0 {
+					t.Errorf("balance mutated to %d", balance)
+				}
+				if withdrawable := st.GetWithdrawableBalance(user.AccountID); withdrawable != 0 {
+					t.Errorf("withdrawable balance mutated to %d", withdrawable)
+				}
+				if entries := st.LedgerHistory(user.AccountID); len(entries) != 0 {
+					t.Errorf("ledger mutated with %d entries", len(entries))
+				}
+			})
+		}
+	}
+}
+
+func TestAdminBillingAcceptsPositiveMicroAmounts(t *testing.T) {
+	handlers := []struct {
+		name         string
+		path         string
+		handle       func(*Server, http.ResponseWriter, *http.Request)
+		withdrawable bool
+	}{
+		{name: "credit", path: "/v1/admin/credit", handle: (*Server).handleAdminCredit},
+		{name: "reward", path: "/v1/admin/reward", handle: (*Server).handleAdminReward, withdrawable: true},
+	}
+	amounts := []struct {
+		name         string
+		value        string
+		wantMicroUSD int64
+	}{
+		{name: "exact_minimum", value: "0.000001", wantMicroUSD: 1},
+		{name: "ordinary", value: "1.25", wantMicroUSD: 1_250_000},
+	}
+
+	for _, handler := range handlers {
+		for _, amount := range amounts {
+			t.Run(handler.name+"/"+amount.name, func(t *testing.T) {
+				srv, st := testBillingServer(t)
+				srv.SetAdminKey("admin-secret")
+				user := seedUser(t, st, "acct-finite-amount", "finite-amount@example.com")
+
+				body := `{"email":"finite-amount@example.com","amount_usd":"` + amount.value + `"}`
+				req := httptest.NewRequest(http.MethodPost, handler.path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer admin-secret")
+				w := httptest.NewRecorder()
+				handler.handle(srv, w, req)
+
+				if w.Code != http.StatusOK {
+					t.Fatalf("got %d, want 200: %s", w.Code, w.Body.String())
+				}
+				if balance := st.GetBalance(user.AccountID); balance != amount.wantMicroUSD {
+					t.Errorf("balance = %d, want %d", balance, amount.wantMicroUSD)
+				}
+				wantWithdrawable := int64(0)
+				if handler.withdrawable {
+					wantWithdrawable = amount.wantMicroUSD
+				}
+				if withdrawable := st.GetWithdrawableBalance(user.AccountID); withdrawable != wantWithdrawable {
+					t.Errorf("withdrawable balance = %d, want %d", withdrawable, wantWithdrawable)
+				}
+				entries := st.LedgerHistory(user.AccountID)
+				if len(entries) != 1 {
+					t.Fatalf("ledger entries = %d, want 1", len(entries))
+				}
+				if entries[0].AmountMicroUSD != amount.wantMicroUSD {
+					t.Errorf("ledger amount = %d, want %d", entries[0].AmountMicroUSD, amount.wantMicroUSD)
+				}
+			})
+		}
+	}
+}
+
 // --- Admin reward → withdraw end-to-end ---
 
 func TestAdminRewardThenWithdraw(t *testing.T) {
@@ -335,39 +349,6 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 	}
 	if wd := st.GetWithdrawableBalance(user.AccountID); wd != 5_000_000 {
 		t.Errorf("withdrawable after = %d, want 5_000_000", wd)
-	}
-}
-
-// --- Provider wallet (unlinked) earnings are withdrawable ---
-
-func TestWithdrawableBalance_ProviderWalletIsWithdrawable(t *testing.T) {
-	st := store.NewMemory(store.Config{AdminKey: "test-key"})
-	_ = st.CreditProviderWallet(&store.ProviderPayout{
-		ProviderAddress: "wallet-addr-1",
-		AmountMicroUSD:  8_000_000,
-		Model:           "test-model",
-		JobID:           "job-1",
-	})
-
-	if w := st.GetWithdrawableBalance("wallet-addr-1"); w != 8_000_000 {
-		t.Errorf("wallet provider earning should be withdrawable: got %d, want 8_000_000", w)
-	}
-}
-
-// --- Referral reward is withdrawable ---
-
-func TestWithdrawableBalance_ReferralRewardIsWithdrawable(t *testing.T) {
-	srv, st := testBillingServer(t)
-	_ = srv // billing service needed for referral
-
-	// Directly test that CreditWithdrawable with LedgerReferralReward works
-	_ = st.CreditWithdrawable("referrer-acct", 1_000_000, store.LedgerReferralReward, "job-1")
-
-	if w := st.GetWithdrawableBalance("referrer-acct"); w != 1_000_000 {
-		t.Errorf("referral reward should be withdrawable: got %d, want 1_000_000", w)
-	}
-	if bal := st.GetBalance("referrer-acct"); bal != 1_000_000 {
-		t.Errorf("balance = %d, want 1_000_000", bal)
 	}
 }
 

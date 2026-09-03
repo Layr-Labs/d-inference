@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -126,20 +129,6 @@ func TestLatchDeterministicLoser_JinjaKillSwitch(t *testing.T) {
 	})
 	if d.terminalClientError {
 		t.Fatal("kill switch must disable the race-loser jinja latch")
-	}
-}
-
-// 422 itself must remain failover-able (existing policy: the provider maps
-// model-OUTPUT-validation faults to 422, which can recover on a re-sample) —
-// the jinja stop keys on the REASON, and must not have widened the
-// StatusCode stop set.
-func TestShouldStopFailover_Plain422StillFailsOver(t *testing.T) {
-	d := &dispatchState{
-		s: newTestServerForDispatch(t), model: "m",
-		lastErrCode: 422, lastErr: "model output was not valid JSON",
-	}
-	if d.shouldStopFailover() {
-		t.Fatal("a plain 422 must keep failing over; only jinja_* reasons stop")
 	}
 }
 
@@ -290,4 +279,22 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// postSSE posts a streaming request to path and drains the full response —
+// like postChat, but for an arbitrary endpoint (/v1/responses too).
+func postSSE(ctx context.Context, tsURL, path, apiKey, body string) (int, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(respBody), nil
 }

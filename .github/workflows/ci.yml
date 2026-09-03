@@ -39,14 +39,43 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
-      - name: Run tests
+      - name: Run fast E2E testbed tests with race detector
+        run: go test -race ./e2e/testbed/...
+      - name: Run hermetic root-e2e policy tests with race detector
+        run: |
+          # The root e2e package is excluded from the race gate below (its
+          # integration tests need real providers), but these policy tests are
+          # pure logic and must not depend on the approval-gated benchmark and
+          # integration workflows for their only execution. Exact selector +
+          # executed-count tripwires, matching the other explicit lanes.
+          expected_tests=(
+            TestBenchmarkSuiteConfigPrewarmsResolvedBackend
+            TestBenchmarkSuiteConfigPreservesExpectedBackendEnvironment
+            TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture
+            TestBenchmarkCapacitySaturationPolicy
+            TestQwen38GatePolicy
+            TestQwen38ExpectedBuiltKVBackend
+          )
+          selector="^($(IFS='|'; echo "${expected_tests[*]}"))$"
+          policy_log=$(mktemp)
+          trap 'rm -f "$policy_log"' EXIT
+          go test -race ./e2e/ -count=1 -v -run "$selector" 2>&1 | tee "$policy_log"
+          for test_name in "${expected_tests[@]}"; do
+            run_count=$(grep -c "^=== RUN   ${test_name}$" "$policy_log" || true)
+            if [ "$run_count" -lt 1 ]; then
+              echo "::error::hermetic root-e2e policy lane did not execute ${test_name}"
+              exit 1
+            fi
+          done
+      - name: Run coordinator tests with race detector
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
         run: |
-          # Word splitting is the point here: one argument per package path,
-          # and Go package paths contain no spaces.
+          # Exclude only the system E2E package; its helper subpackages and
+          # coordinator/internal/e2e remain part of the race-enabled gate.
+          # Word splitting is intentional: Go package paths contain no spaces.
           # shellcheck disable=SC2046
-          go test -race $(go list ./... | grep -v /e2e)
+          go test -race $(go list ./... | grep -vxF 'github.com/eigeninference/d-inference/e2e')
       - name: Check formatting
         run: |
           UNFORMATTED=$(gofmt -l .)
@@ -112,6 +141,8 @@ jobs:
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
           go-version-file: go.mod
+      - name: Run Gemma benchmark wrapper unit tests
+        run: make benchmark-wrapper-test
       - name: Restore SwiftPM cache
         uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -119,13 +150,14 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+          for root in provider-swift/.build libs/mlx-swift/.build libs/mlx-swift-lm/.build; do
             [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
           done
       - name: Install pinned Rust toolchain for production prompt parity
@@ -142,6 +174,7 @@ jobs:
           # not guaranteed to be linked merely because the test bundle builds.
           swift build --product darkbloom-fan-helper
       - name: Build and stage source-matched mlx.metallib
+        id: build-source-metallib
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
@@ -171,20 +204,54 @@ jobs:
         run: swift test
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
+      - name: Compile relocated mlx-swift QMV tests
+        id: build-mlx-swift-tests
+        if: ${{ !cancelled() }}
+        working-directory: libs/mlx-swift
+        # The QMV regression now belongs to the package that owns the Metal
+        # implementation. Build its XCTest bundle before placing the exact
+        # metallib produced from this checkout beside the runner.
+        timeout-minutes: 35
+        run: swift build --build-tests
+      - name: Place metallib for relocated mlx-swift test bundle
+        id: place-mlx-swift-metallib
+        if: ${{ !cancelled() && steps.build-source-metallib.outcome == 'success' && steps.build-mlx-swift-tests.outcome == 'success' }}
+        working-directory: libs/mlx-swift
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
+          bundle_count=0
+          for bundle in .build/debug/*PackageTests.xctest; do
+            macos="$bundle/Contents/MacOS"
+            if [ -d "$macos" ]; then
+              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
+              bundle_count=$((bundle_count + 1))
+            fi
+          done
+          test "$bundle_count" -gt 0 || {
+            echo "::error::mlx-swift test bundle was not produced"
+            exit 1
+          }
+      - name: Run relocated mlx-swift QMV wide Metal tests
+        if: ${{ !cancelled() && steps.place-mlx-swift-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift
+        # The shared runner makes a zero-test selector or any skip fail the
+        # lane rather than silently turning this GPU regression compile-only.
+        timeout-minutes: 15
+        run: ../../scripts/run-swift-suite.sh QMVWideMetalTests --skip-build
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
-      # under `if: ${{ !cancelled() && ... }}`. Before this, the nested paged
+      # under `if: ${{ !cancelled() && ... }}`. Before this, the nested filtered
       # suites ran with the default `success()` condition, so ANY earlier step
       # failure — including a known-flaky unit test in `Run Swift tests` —
-      # SKIPPED all six paged correctness gates. On the v0.8.0 PR head that is
-      # exactly what happened: the unit step failed on unrelated flakes and
-      # the paged gates reported `skipped`, i.e. the release's central
-      # correctness signal was silenced by an unrelated flake. `!cancelled()`
-      # keeps the gates running after an earlier failure; each nested RUN step
-      # still requires its own build/metallib prerequisites to have succeeded
-      # so a red build produces one attributable failure, not six cascading
-      # ones. A nested-step failure fails the job as usual (no
+      # SKIPPED all six original paged correctness gates. On the v0.8.0 PR
+      # head, an unrelated unit-test flake made every paged gate report
+      # `skipped`, silencing the release's central correctness signal.
+      # `!cancelled()` keeps gates running after earlier failures; each nested
+      # RUN step still requires its own build/metallib prerequisites to succeed,
+      # so a red build produces one attributable failure, not a cascade.
+      # A nested-step failure fails the job as usual (no
       # continue-on-error anywhere in this chain).
-      - name: Build nested mlx-swift-lm tests
+      - name: Compile nested mlx-swift-lm tests (compile-only)
         id: build-nested-tests
         if: ${{ !cancelled() }}
         working-directory: libs/mlx-swift-lm
@@ -200,7 +267,7 @@ jobs:
           swift build --build-tests
       - name: Place metallib for nested test bundles
         id: place-nested-metallib
-        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build-source-metallib.outcome == 'success' && steps.build-nested-tests.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         run: |
           set -euo pipefail
@@ -233,8 +300,8 @@ jobs:
       # attributable straight from the job summary. They reuse the metallib
       # placed by the step above.
       #
-      # The bodies are ONE script (scripts/run-nested-suite.sh), which is what
-      # carries the executed-count and zero-skip tripwires. ALL six suites go
+      # The bodies are ONE script (scripts/run-swift-suite.sh), which carries
+      # the executed-count and zero-skip tripwires. ALL filtered suites go
       # through it — a bare `swift test --filter` here would bypass the
       # tripwire and reintroduce the dark-gate hole the script closes (the
       # safety and prompt-hash suites below used to run bare for exactly that
@@ -245,26 +312,56 @@ jobs:
         working-directory: libs/mlx-swift-lm
         # Runtime smoke over the JIT-compiled paged Metal kernels.
         timeout-minutes: 10
-        run: ../../scripts/run-nested-suite.sh CBv2PagedSafetyTests
+        run: ../../scripts/run-swift-suite.sh CBv2PagedSafetyTests --skip-build
       - name: Run nested prompt-hash tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Prefix-cache prompt-hash identity; pure Swift.
         timeout-minutes: 10
-        run: ../../scripts/run-nested-suite.sh CBv2PrefixCacheHasherTests
+        run: ../../scripts/run-swift-suite.sh CBv2PrefixCacheHasherTests --skip-build
+      - name: Run nested prefix-cache donate/lookup tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic Darkbloom prefix-cache donation and lookup contracts.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh CBv2PrefixCacheTests --skip-build
+      - name: Run nested prefix-cache eviction tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic eviction and pinning contracts.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh CBv2PrefixCacheEvictionTests --skip-build
+      - name: Run nested prefix-cache windowed-policy tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic windowed prefix-cache recompute policy.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh CBv2PrefixCacheWindowedPolicyTests --skip-build
+      - name: Run nested prefix-cache request-salt isolation tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic request-salt cache isolation.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh CBv2PrefixCacheRequestSaltTests --skip-build
       - name: Run nested paged eligibility tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Pure Swift threadgroup-budget arithmetic; no GPU dispatch.
         timeout-minutes: 5
-        run: ../../scripts/run-nested-suite.sh CBv2PagedEligibilityTests
+        run: ../../scripts/run-swift-suite.sh CBv2PagedEligibilityTests --skip-build
       - name: Run nested paged backend tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         # Pool bookkeeping, per-sequence page tables, windowed rings,
         # reservation admission, backend lifecycle. Small MLX arrays only.
         timeout-minutes: 10
-        run: ../../scripts/run-nested-suite.sh CBv2PagedBackendTests
+        run: ../../scripts/run-swift-suite.sh CBv2PagedBackendTests --skip-build
+      - name: Run nested paged speculative-row tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic paged speculative-round row contracts.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh CBv2PagedSpeculativeRowTests --skip-build
       - name: Run nested paged kernel parity tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
@@ -273,7 +370,7 @@ jobs:
         # Dispatches the JIT-compiled Metal kernels, exactly as
         # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
         timeout-minutes: 20
-        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
+        run: ../../scripts/run-swift-suite.sh CBv2PagedKernelTests --skip-build
       - name: Run nested KV-sharing contiguous/paged parity tests
         if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
@@ -283,7 +380,61 @@ jobs:
         # the gate runner" is precisely the condition this lane must not be
         # green under.
         timeout-minutes: 10
-        run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+        run: ../../scripts/run-swift-suite.sh CBv2KVSharingParityTests --skip-build
+      - name: Run nested sequence state-machine tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic multi-token stop detection in the package that owns it.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh SequenceStateMachineTests --skip-build
+      # The v0.8.16 submodule pin added four upstream-ported regression files
+      # (M-RoPE interleave, Qwen3VL sRGB tone curve, vision fused-SDPA parity,
+      # streaming-detokenizer common-prefix delta). They are hermetic —
+      # synthetic arrays and stub tokenizers, no checkpoints, no skips — but
+      # were compile-only until listed here. One step per suite class, through
+      # the same tripwire wrapper, so a dark or slow suite is attributable.
+      - name: Run nested Qwen3.5 M-RoPE interleave tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Interleaved M-RoPE takeAlong path vs the replaced slice-loop
+        # reference (VLM text tower). Small synthetic MLX arrays.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen35MRoPETests --skip-build
+      - name: Run nested Qwen3VL M-RoPE interleave tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Same interleave-vs-reference contract for the Qwen3VL rotary
+        # embedding, default and custom mrope sections.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLMRoPETests --skip-build
+      - name: Run nested Qwen3.5 LLM M-RoPE parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Full apply(queries:keys:) output parity for the production
+        # text-extraction path against the replaced per-frequency loop.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen35LLMMRoPEParityTests --skip-build
+      - name: Run nested Qwen3VL tone-curve tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # sRGB tone curve on the Qwen3VL image path (dark-content contrast);
+        # CoreImage over synthetic bitmaps, no model weights.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLToneCurveTests --skip-build
+      - name: Run nested Qwen3VL vision-attention parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Block-diagonal fused-SDPA vs dense joint-mask reference, incl. the
+        # pad-to-80 head-dim exactness contract. Dispatches Metal kernels.
+        timeout-minutes: 10
+        run: ../../scripts/run-swift-suite.sh Qwen3VLVisionAttentionTests --skip-build
+      - name: Run nested streaming-detokenizer tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Common-prefix incremental delta vs character-count (SentencePiece
+        # whitespace collapse). Pure Swift, stub tokenizers.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh StreamingDetokenizerTests --skip-build
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
@@ -303,13 +454,14 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+          for root in provider-swift/.build libs/mlx-swift/.build libs/mlx-swift-lm/.build; do
             [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
           done
       - name: Build provider-swift
@@ -317,11 +469,17 @@ jobs:
         run: |
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-fan-helper
-      - name: Build nested mlx-swift-lm tests (warms nested cache)
+      - name: Compile relocated mlx-swift tests (compile-only cache warmup)
+        working-directory: libs/mlx-swift
+        # The test-provider job runs QMVWideMetalTests from this .build after
+        # staging the source-matched metallib.
+        timeout-minutes: 35
+        run: swift build --build-tests
+      - name: Compile nested mlx-swift-lm tests (compile-only cache warmup)
         working-directory: libs/mlx-swift-lm
-        # The test-provider job runs the CBv2 paged suites (safety, kernel
-        # parity, backend, eligibility, KV-sharing parity) from this nested
-        # .build; saving it here keeps that lane warm across PRs.
+        # The test-provider job executes its individually attributed,
+        # non-skipping nested suites from this .build; saving the compile-only
+        # output here keeps those lanes warm across PRs.
         timeout-minutes: 35
         run: |
           # Keep the warmed nested workspace on the same local MLX source used
@@ -336,6 +494,7 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 

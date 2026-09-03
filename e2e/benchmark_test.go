@@ -24,6 +24,8 @@ var (
 	benchmarkControls   = make(map[benchmarkControlKey]struct{})
 )
 
+const benchmarkMinimumSuccessPercent = 90
+
 const benchmarkControlFirstContentDeadlineBase = 30 * time.Second
 
 type benchmarkControlKey struct {
@@ -265,8 +267,14 @@ func requireBenchmarkControls(
 			control.TotalRequests = 1
 			control.Concurrency = 1
 			control.MaxTokens = 1
+			control.ExpectedSuccesses = 1
+			control.MinimumSuccesses = 1
 
-			result := testbed.NewLoadGenerator(controlSuite, control).Run()
+			result, err := testbed.NewLoadGenerator(controlSuite, control).Run()
+			require.NotNil(t, result, "control load generator must return its measurements")
+			require.NoError(t, err,
+				"isolated prewarmed model %s must serve before saturation is measurable",
+				modelID)
 			require.Equal(t, 1, result.SuccessCount,
 				"isolated prewarmed model %s must serve before saturation is measurable",
 				modelID)
@@ -282,97 +290,117 @@ func requireBenchmarkControls(
 // measured topology still uses the production first-content deadline; the
 // blocking integration suite owns broader functional and SLO guarantees. A
 // zero-success measured cell is valid only when every request received the
-// canonical 429 — transport errors and 5xx responses still fail the run.
+// canonical 429 — transport errors and 5xx responses still fail the run —
+// and a cell with any successes must still clear the benchmark success floor
+// (MinimumSuccesses).
 func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCfg testbed.RequestConfig) {
 	t.Helper()
 
-	ctx := context.Background()
-	suiteCfg = benchmarkSuiteConfig(suiteCfg)
-	requireBenchmarkControls(t, ctx, suiteCfg)
+	reqCfg.ExpectedSuccesses = reqCfg.TotalRequests
+	reqCfg.MinimumSuccesses = minimumBenchmarkSuccesses(reqCfg.TotalRequests)
 
-	s := testbed.NewSuite(suiteCfg)
-	require.NoError(t, s.Start(ctx), "suite startup failed")
-	t.Cleanup(s.Stop)
+	suiteCfg = benchmarkSuiteConfig(suiteCfg)
+	requireBenchmarkControls(t, context.Background(), suiteCfg)
+
+	s := testbed.StartSuite(t, suiteCfg)
 
 	t.Logf("[%s] %d providers (%v), %d users, models=%v, requests=%d, concurrency=%d, streaming=%v, first_content_deadline_base=%s",
 		name, suiteCfg.TotalProviders(), suiteCfg.ModelSpecs, suiteCfg.NumUsers, suiteCfg.AllModelIDs(),
 		reqCfg.TotalRequests, reqCfg.Concurrency, reqCfg.Streaming, s.Config.FirstContentDeadlineBase)
 
-	lg := testbed.NewLoadGenerator(s, reqCfg)
-	result := lg.Run()
-
+	result, loadErr := testbed.NewLoadGenerator(s, reqCfg).Run()
+	require.NotNil(t, result, "load generator must return its measurements")
 	t.Logf("\n%s", result.SummaryTable())
-
-	t.Logf("\nPer-model breakdown:")
-	modelStats := make(map[string]*modelResult)
-	for _, rr := range result.RequestResults {
-		st, ok := modelStats[rr.ModelID]
-		if !ok {
-			st = &modelResult{modelID: rr.ModelID}
-			modelStats[rr.ModelID] = st
-		}
-		st.count++
-		if rr.StatusCode == 200 {
-			st.success++
-			st.totalDuration += rr.Duration
-			if st.minDuration == 0 || rr.Duration < st.minDuration {
-				st.minDuration = rr.Duration
-			}
-			if rr.Duration > st.maxDuration {
-				st.maxDuration = rr.Duration
-			}
-		} else {
-			st.errors++
+	for i, failure := range result.Failures {
+		require.Errorf(t, failure.Err, "failed request %d must retain its exact error", failure.Index)
+		if i < 5 {
+			t.Logf("request failure: %s", failure.Error())
 		}
 	}
-	for _, st := range modelStats {
-		var avg time.Duration
-		if st.success > 0 {
-			avg = st.totalDuration / time.Duration(st.success)
+
+	saturated := result.SuccessCount == 0 && canonicalFullCapacityRejection(result)
+	if saturated {
+		t.Log("all requests were rejected with the canonical 429; recording the capacity boundary")
+	} else {
+		require.NoError(t, loadErr, "benchmark workload failed its overall success threshold")
+	}
+
+	require.Equal(t, reqCfg.TotalRequests, result.TotalRequests,
+		"load result must preserve the configured workload size")
+	require.Len(t, result.RequestResults, reqCfg.TotalRequests,
+		"load generator must account for every request")
+	require.Equal(t, result.TotalRequests, result.SuccessCount+result.ErrorCount,
+		"success and error counts must account for the full workload")
+	require.Len(t, result.Failures, result.ErrorCount,
+		"every failed request must retain its exact error")
+	require.Equal(t, reqCfg.ExpectedSuccesses, result.ExpectedSuccesses)
+	require.Equal(t, reqCfg.MinimumSuccesses, result.MinimumSuccesses)
+	if !saturated {
+		requireSuccessRatio(t, "overall workload", result.SuccessCount, result.TotalRequests)
+	}
+
+	t.Logf("\nPer-model breakdown:")
+	for _, modelID := range suiteCfg.AllModelIDs() {
+		stats, ok := result.ModelCohorts[modelID]
+		require.Truef(t, ok, "configured model %q received no requests", modelID)
+		t.Logf("  %-45s total=%d success=%d errors=%d",
+			modelID, stats.TotalRequests, stats.SuccessCount, stats.ErrorCount)
+		require.Equal(t, stats.TotalRequests, stats.SuccessCount+stats.ErrorCount,
+			"model cohort %q has incomplete accounting", modelID)
+		require.Len(t, stats.Failures, stats.ErrorCount,
+			"model cohort %q must retain every error", modelID)
+		if !saturated {
+			requireSuccessRatio(t, "model "+modelID, stats.SuccessCount, stats.TotalRequests)
 		}
-		t.Logf("  %-45s total=%d success=%d errors=%d avg=%s min=%s max=%s",
-			st.modelID, st.count, st.success, st.errors,
-			avg.Round(time.Millisecond),
-			st.minDuration.Round(time.Millisecond),
-			st.maxDuration.Round(time.Millisecond))
 	}
 
 	t.Logf("\nPer-user breakdown:")
-	userStats := make(map[int]*userResult)
-	for _, rr := range result.RequestResults {
-		st, ok := userStats[rr.UserIndex]
-		if !ok {
-			st = &userResult{userIndex: rr.UserIndex}
-			userStats[rr.UserIndex] = st
+	for userIndex := range suiteCfg.NumUsers {
+		stats, ok := result.UserCohorts[userIndex]
+		require.Truef(t, ok, "configured user-%d received no requests", userIndex)
+		t.Logf("  user-%d: total=%d success=%d errors=%d",
+			userIndex, stats.TotalRequests, stats.SuccessCount, stats.ErrorCount)
+		require.Equal(t, stats.TotalRequests, stats.SuccessCount+stats.ErrorCount,
+			"user-%d cohort has incomplete accounting", userIndex)
+		require.Len(t, stats.Failures, stats.ErrorCount,
+			"user-%d cohort must retain every error", userIndex)
+		if !saturated {
+			requireSuccessRatio(t, fmt.Sprintf("user-%d", userIndex), stats.SuccessCount, stats.TotalRequests)
 		}
-		st.count++
-		if rr.StatusCode == 200 {
-			st.success++
-		} else {
-			st.errors++
-		}
-	}
-	for i := 0; i < suiteCfg.NumUsers; i++ {
-		st := userStats[i]
-		if st == nil {
-			t.Logf("  user-%d: no requests", i)
-			continue
-		}
-		t.Logf("  user-%d: total=%d success=%d errors=%d", i, st.count, st.success, st.errors)
 	}
 
-	if result.SuccessCount == 0 {
-		require.True(t, canonicalFullCapacityRejection(result),
-			"zero-throughput benchmark cells must contain only canonical capacity rejections")
-		t.Log("all requests were rejected with 429; recording the capacity boundary")
+	if reqCfg.Streaming {
+		require.NotNil(t, result.ProfileRun, "streaming workload must report TTFT metrics")
+		require.Len(t, result.ProfileRun.TTFTs, result.SuccessCount,
+			"every successful streaming request must report TTFT")
+		for i, ttft := range result.ProfileRun.TTFTs {
+			require.Positivef(t, ttft, "TTFT sample %d must be positive", i)
+		}
+		for _, request := range result.RequestResults {
+			if request.Error == nil && request.StatusCode == 200 {
+				require.Positivef(t, request.TTFT,
+					"successful streaming request %d must record TTFT", request.Index)
+			}
+		}
 	}
 
-	assertReport := tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
-	t.Logf("\n%s", assertReport.SummaryTable())
-	for _, r := range assertReport.Results {
-		if !r.Passed {
-			t.Logf("WARNING: %s — %s", r.Name, r.Message)
+	var assertReport *tbassert.AssertionReport
+	if saturated {
+		// An accepted capacity boundary has zero 200s, so aggregate holds no
+		// parse/reserve/encrypt/dispatch samples; evaluating the overhead
+		// thresholds would fail every segment as missing rather than measure
+		// anything. The isolated control request already proved the
+		// coordinator serves this posture.
+		t.Logf("skipping coordinator overhead thresholds: cell accepted as saturated (no successful-request timing samples)")
+	} else {
+		assertReport = tbassert.NewAsserter(tbassert.CoordinatorOverheadThresholds()).Evaluate(result.SegmentStatsMap())
+		t.Logf("\n%s", assertReport.SummaryTable())
+		for _, assertion := range assertReport.Results {
+			if !assertion.Passed {
+				t.Logf("FAILED: %s — %s", assertion.Name, assertion.Message)
+			}
 		}
+		require.True(t, assertReport.Passed, "coordinator overhead thresholds failed")
 	}
 
 	benchmarkMarkdownMu.Lock()
@@ -392,7 +420,11 @@ func runBenchmark(t *testing.T, name string, suiteCfg testbed.SuiteConfig, reqCf
 	benchmarkMarkdown.WriteString("\n")
 	benchmarkMarkdown.WriteString(result.SummaryMarkdown())
 	benchmarkMarkdown.WriteString("\n")
-	benchmarkMarkdown.WriteString(assertReport.SummaryMarkdown())
+	if assertReport != nil {
+		benchmarkMarkdown.WriteString(assertReport.SummaryMarkdown())
+	} else {
+		benchmarkMarkdown.WriteString("_Coordinator overhead thresholds skipped: cell accepted as a saturated capacity boundary (no successful-request timing samples)._\n")
+	}
 	benchmarkMarkdown.WriteString("\n\n")
 	benchmarkMarkdownMu.Unlock()
 }
@@ -406,7 +438,10 @@ func TestMain(m *testing.M) {
 		benchmarkMarkdownMu.Unlock()
 
 		if outPath := os.Getenv("BENCHMARK_MD_PATH"); outPath != "" && md != "" {
-			_ = os.WriteFile(outPath, []byte(md), 0644)
+			if err := os.WriteFile(outPath, []byte(md), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "write benchmark results to %q: %v\n", outPath, err)
+				code = 1
+			}
 		}
 	}
 
@@ -498,8 +533,8 @@ func TestBenchmark_HighConcurrency(t *testing.T) {
 	)
 }
 
-func TestBenchmark_QueueSaturation(t *testing.T) {
-	runBenchmark(t, "1-provider-queue-saturation",
+func TestBenchmark_ProviderCapacityPressure(t *testing.T) {
+	runBenchmark(t, "1-provider-capacity-pressure",
 		testbed.SuiteConfig{
 			ModelSpecs:    []testbed.ModelSpec{{ModelID: testbed.DefaultTestModelID(), NumProviders: 1}},
 			NumUsers:      10,
@@ -579,19 +614,15 @@ func TestBenchmark_HeavyLoad_100Concurrent_10KB(t *testing.T) {
 	)
 }
 
-type modelResult struct {
-	modelID       string
-	count         int
-	success       int
-	errors        int
-	totalDuration time.Duration
-	minDuration   time.Duration
-	maxDuration   time.Duration
+func minimumBenchmarkSuccesses(requests int) int {
+	return (requests*benchmarkMinimumSuccessPercent + 99) / 100
 }
 
-type userResult struct {
-	userIndex int
-	count     int
-	success   int
-	errors    int
+func requireSuccessRatio(t *testing.T, cohort string, successes, requests int) {
+	t.Helper()
+	require.Positivef(t, requests, "%s received no requests", cohort)
+	require.GreaterOrEqualf(t, successes*100, requests*benchmarkMinimumSuccessPercent,
+		"%s success ratio %.1f%% is below %d%% (%d/%d)",
+		cohort, float64(successes)*100/float64(requests),
+		benchmarkMinimumSuccessPercent, successes, requests)
 }

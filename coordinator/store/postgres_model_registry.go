@@ -13,6 +13,13 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+func canonicalModelCapabilities(capabilities []string) []string {
+	if capabilities == nil {
+		return []string{}
+	}
+	return capabilities
+}
+
 func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -33,8 +40,8 @@ func (s *PostgresStore) UpsertModelRegistryEntry(entry *ModelRegistryEntry) erro
 		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, required_provider_capabilities = $10,
 		  description = $12, runtime_parameters = $13, metadata = $14, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
-		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, entry.Capabilities,
-		entry.RequiredProviderCapabilities, entry.Status, entry.Description, runtimeParameters, metadata, entry.CreatedAt)
+		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, canonicalModelCapabilities(entry.Capabilities),
+		canonicalModelCapabilities(entry.RequiredProviderCapabilities), entry.Status, entry.Description, runtimeParameters, metadata, entry.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: upsert model registry entry: %w", err)
 	}
@@ -67,8 +74,8 @@ func (s *PostgresStore) SetModelVersion(entry *ModelRegistryEntry, version *Mode
 		  max_output_length = $7, min_ram_gb = $8, capabilities = $9, required_provider_capabilities = $10,
 		  description = $12, runtime_parameters = $13, metadata = $14, updated_at = NOW()`,
 		entry.ID, entry.DisplayName, entry.Family, entry.Architecture, entry.Quantization,
-		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, entry.Capabilities,
-		entry.RequiredProviderCapabilities, entry.Status, entry.Description, entryRuntimeParameters, entryMetadata)
+		entry.MaxContextLength, entry.MaxOutputLength, entry.MinRAMGB, canonicalModelCapabilities(entry.Capabilities),
+		canonicalModelCapabilities(entry.RequiredProviderCapabilities), entry.Status, entry.Description, entryRuntimeParameters, entryMetadata)
 	if err != nil {
 		return fmt.Errorf("store: upsert model in version tx: %w", err)
 	}

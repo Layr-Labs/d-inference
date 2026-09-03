@@ -64,8 +64,9 @@ func TestIntegration_ConsumerBillingCharge(t *testing.T) {
 	}
 
 	<-providerDone
-	// Wait for handleComplete to process billing.
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "consumer billing settlement", func() bool {
+		return len(ledger.Usage(consumerID)) == 1
+	})
 
 	// Calculate expected cost using the pricing module.
 	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
@@ -238,7 +239,10 @@ func TestIntegration_ReservationRefundedOnCompletion(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "reservation finalization", func() bool {
+		expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+		return ledger.Balance(consumerID) == initialBalance-expectedCost
+	})
 
 	// Consumer should be charged exactly the actual cost, not the reservation.
 	expectedCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
@@ -281,7 +285,9 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 	resp.Body.Close()
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "provider-error reservation refund", func() bool {
+		return ledger.Balance(consumerID) == initialBalance
+	})
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want canonical generation-failure 500; body = %s", resp.StatusCode, body)
@@ -325,7 +331,10 @@ func TestIntegration_SuccessfulInferenceCreditsProviderAccount(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "provider payout settlement", func() bool {
+		expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+		return st.GetBalance(accountID) == expectedPayout
+	})
 
 	// Verify provider account was credited with 95% of the inference cost.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
@@ -375,7 +384,11 @@ func TestIntegration_ProviderCustomPricePaidWithoutReservationClamp(t *testing.T
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
+	waitFor(t, 2*time.Second, "custom-price settlement", func() bool {
+		expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
+		return st.GetBalance(accountID) == payments.ProviderPayout(expectedCost) &&
+			ledger.Balance(consumerID) == initialBalance-expectedCost
+	})
 
 	expectedCost := payments.CalculateCostWithOverrides(model, usage.PromptTokens, usage.CompletionTokens, customInputPrice, customOutputPrice, true)
 	expectedPayout := payments.ProviderPayout(expectedCost)

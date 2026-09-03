@@ -2,9 +2,9 @@
 
 Client-supplied telemetry is disabled. Provider and browser events are dropped
 locally, and both compatibility HTTP endpoints return `410 Gone` before reading
-a request body. The retained event types, allowlists, queue methods, and facade
-APIs are compatibility surfaces; they are not an active provider/browser data
-path.
+a request body. The retained protocol mirrors, client-side compatibility
+filters, queue methods, and facade APIs are source-compatibility surfaces; they
+are not an active provider/browser data path.
 
 Coordinator-generated operational telemetry is separate and remains active. It
 is created inside the coordinator, mirrored to the process logger and metrics,
@@ -15,26 +15,32 @@ payloads ([`coordinator/telemetry/emitter.go`, `Emitter.Emit`](../../../coordina
 
 ### Disabled client-ingestion path
 
-- Coordinator route wiring: [`coordinator/api/server.go`](../../../coordinator/api/server.go#L1919-L1922)
-- Coordinator `410` handler: [`handleTelemetryIngest`](../../../coordinator/api/telemetry_handlers.go#L261-L269)
-- Swift disabled client: [`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
-- Swift disabled compatibility queue: [`TelemetryOverflowQueue`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L11-L59)
-- Common locked startup cleanup: [`ProcessLifecycle.acquireMediaServingLock`](../../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104)
-- Swift crash hook: [`PanicHook`](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L19-L101)
-- TypeScript disabled facade: [`console-ui/src/lib/telemetry.ts`](../../../console-ui/src/lib/telemetry.ts#L1-L26)
-- TypeScript `410` route: [`console-ui/src/app/api/telemetry/route.ts`](../../../console-ui/src/app/api/telemetry/route.ts#L1-L17)
+- Coordinator route wiring: [`coordinator/api/server.go`](../../../coordinator/api/server.go)
+- Coordinator fixed `410` handler: [`handleTelemetryIngest`](../../../coordinator/api/telemetry_handlers.go)
+- Swift disabled client: [`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift)
+- Swift disabled compatibility queue: [`TelemetryOverflowQueue`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift)
+- Common locked startup cleanup: [`ProcessLifecycle.acquireMediaServingLock`](../../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift)
+- Swift crash hook: [`PanicHook`](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift)
+- TypeScript disabled facade: [`console-ui/src/lib/telemetry.ts`](../../../console-ui/src/lib/telemetry.ts)
+- TypeScript fixed `410` route: [`console-ui/src/app/api/telemetry/route.ts`](../../../console-ui/src/app/api/telemetry/route.ts)
 
 ### Retained compatibility schema
 
-- Canonical Go wire types: [`coordinator/protocol/telemetry.go`](../../../coordinator/protocol/telemetry.go#L15-L146)
-- Swift mirror: [`provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift#L14-L317)
-- TypeScript mirror: [`console-ui/src/lib/telemetry-types.ts`](../../../console-ui/src/lib/telemetry-types.ts#L1-L172)
-- Historical Go parser and field allowlist: [`coordinator/api/telemetry_handlers.go`](../../../coordinator/api/telemetry_handlers.go#L31-L190)
+- Go protocol mirror: [`coordinator/protocol/telemetry.go`](../../../coordinator/protocol/telemetry.go)
+- Swift protocol mirror: [`provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift)
+- TypeScript protocol mirror: [`console-ui/src/lib/telemetry-types.ts`](../../../console-ui/src/lib/telemetry-types.ts)
+- Shared wire fixture: [`fixtures/telemetry/v1/events.json`](../../../fixtures/telemetry/v1/events.json)
+- Fixture consumers: [Go](../../../coordinator/protocol/telemetry_symmetry_test.go),
+  [Swift](../../../provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift),
+  and [TypeScript](../../../console-ui/__tests__/telemetry.test.ts)
 
-The Go, Swift, and TypeScript event definitions remain aligned because old
-binaries and source call sites still compile against them. Their parity tests
-protect that compatibility contract. They do **not** imply that client event
-ingestion is enabled.
+The Go, Swift, and TypeScript event types remain aligned because old binaries
+and source call sites still compile against them. The shared fixture and its
+three consumers pin enum vocabularies, wire field names, required versus
+optional fields, and optional-field omission. They do **not** imply that client
+event ingestion is enabled. Field filtering is a separate, inactive
+Swift/TypeScript compatibility surface; the coordinator's fixed `410` handler
+has no parser, sanitizer, or field allowlist.
 
 ## Disabled flow
 
@@ -49,25 +55,27 @@ flowchart LR
 ```
 
 The coordinator registers `POST /v1/telemetry/events` directly to
-`handleTelemetryIngest` ([route wiring](../../../coordinator/api/server.go#L1919-L1922)).
-That handler writes only the fixed `telemetry_ingest_disabled` error response;
-it does not read, decode, store, log, or forward the body
-([handler](../../../coordinator/api/telemetry_handlers.go#L261-L269)).
+`handleTelemetryIngest` ([route wiring](../../../coordinator/api/server.go)).
+That handler writes only the fixed `telemetry_ingest_disabled` error response
+with status `410`; it does not read, decode, store, log, or forward the body
+([handler](../../../coordinator/api/telemetry_handlers.go)).
 
 The browser compatibility route behaves the same way. Its `POST` function does
 not access the `NextRequest`; it returns the fixed error with status 410
-([route](../../../console-ui/src/app/api/telemetry/route.ts#L5-L16)). The browser
+([route](../../../console-ui/src/app/api/telemetry/route.ts)). The browser
 facade's `emit`, global-handler installation, and test reset methods are no-ops,
 and its reported buffer size is always zero
-([facade](../../../console-ui/src/lib/telemetry.ts#L17-L26)).
+([facade](../../../console-ui/src/lib/telemetry.ts)).
 
 ## Swift client and legacy queue
 
 `TelemetryClient` retains configuration and emission signatures so existing
 call sites keep compiling, but both `emit` overloads discard their arguments.
 `setAuthToken`, `setMachineId`, and `setAccountId` also retain compatibility
-signatures without storing their values
-([`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L57-L82)).
+signatures without storing their values. `ingestEndpoint(from:)` preserves the
+historical string-only URL normalization helper for callers that display the
+retired endpoint; it performs no I/O and is not used to send events
+([`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift)).
 No event is encoded, buffered, written to disk, or sent over the network.
 
 Legacy cleanup is intentionally narrow and shared by both serving modes:
@@ -87,10 +95,6 @@ Legacy cleanup is intentionally narrow and shared by both serving modes:
   `.tmp` companion when each is a regular, non-symlink file. It does not create
   a directory, lock file, or replacement artifact when neither exists
   ([queue purge](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L38-L59)).
-
-`TelemetryClient.ingestEndpoint` remains only for compatibility tests and UI
-that displays the historical URL; production code does not send to the returned
-endpoint ([`ingestEndpoint`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L87-L102)).
 
 ## Panic hook
 
@@ -142,18 +146,16 @@ telemetry remains disabled
 ([route wiring](../../../coordinator/api/server.go#L1924-L1927),
 [upload and retrieval handlers](../../../coordinator/api/log_report_handlers.go#L16-L112)).
 
-## Historical schema and allowlists
+## Historical schema and client-side filters
 
-`TelemetryEvent`, `TelemetryBatch`, enum mirrors, parser caps, rate limiter, and
-field allowlists remain in source for compatibility. Because active endpoints
-return 410 before body access, those parser limits and filters are not an active
-confidentiality control. Phrases such as "accepted field," "server cap," or
-"coerced enum" in the schema reference describe how the retired parser would
-process an event if ingestion were deliberately re-enabled after a new privacy
-review.
+`TelemetryEvent`, `TelemetryBatch`, and their enum mirrors remain in Go, Swift,
+and TypeScript for compatibility. The Swift `TelemetryFieldFilter` and
+TypeScript `TELEMETRY_ALLOWED_FIELDS` set are also retained for their local
+callers. The coordinator has no corresponding field allowlist or sanitizer:
+the fixed route returns `410` before body access.
 
-The historical schema includes free-form `message` and `stack` fields plus
-arbitrary field values. A field-name allowlist cannot prove those values are
-safe. Re-enabling client ingestion requires closed, per-kind value schemas and a
-new confidentiality review; changing only the retained allowlists is
-insufficient.
+The retained schema includes free-form `message` and `stack` fields plus
+arbitrary field values. A field-name filter cannot prove those values are safe.
+Re-enabling client ingestion would require a new closed, per-kind value schema,
+new parsing and storage code, and a new confidentiality review. Changing the
+inactive Swift or TypeScript filters is insufficient.

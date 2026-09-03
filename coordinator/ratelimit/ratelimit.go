@@ -32,6 +32,7 @@ const (
 // Limiter holds a token bucket per account.
 type Limiter struct {
 	cfg Config
+	now func() time.Time
 
 	mu      sync.Mutex
 	buckets map[string]*entry
@@ -64,6 +65,7 @@ func New(cfg Config) *Limiter {
 	}
 	return &Limiter{
 		cfg:     cfg,
+		now:     time.Now,
 		buckets: make(map[string]*entry),
 	}
 }
@@ -96,7 +98,7 @@ func (l *Limiter) AllowN(accountID string, n int) (bool, time.Duration) {
 	if accountID == "" || n <= 0 {
 		return true, 0
 	}
-	now := time.Now()
+	now := l.now()
 	e := l.bucketFor(accountID, now)
 
 	if e.limiter.AllowN(now, n) {
@@ -122,7 +124,7 @@ func (l *Limiter) DebitN(accountID string, n int) {
 	if accountID == "" || n <= 0 {
 		return
 	}
-	now := time.Now()
+	now := l.now()
 	e := l.bucketFor(accountID, now)
 	for remaining := n; remaining > 0; {
 		chunk := remaining
@@ -144,7 +146,7 @@ func (l *Limiter) CanN(accountID string, n int) bool {
 	if accountID == "" || n <= 0 {
 		return true
 	}
-	now := time.Now()
+	now := l.now()
 	l.mu.Lock()
 	e, ok := l.buckets[accountID]
 	l.mu.Unlock()
@@ -206,7 +208,7 @@ func (l *Limiter) AllowNWithRate(key string, n int, rps float64, burst int) (boo
 	if n > burst {
 		n = burst
 	}
-	now := time.Now()
+	now := l.now()
 	e := l.bucketForWithRate(key, rps, burst, now)
 	if e.limiter.AllowN(now, n) {
 		return true, 0
@@ -229,7 +231,7 @@ func (l *Limiter) DebitNWithRate(key string, n int, rps float64, burst int) {
 	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
 		return
 	}
-	now := time.Now()
+	now := l.now()
 	e := l.bucketForWithRate(key, rps, burst, now)
 	for remaining := n; remaining > 0; {
 		chunk := remaining
@@ -253,7 +255,7 @@ func (l *Limiter) CanNWithRate(key string, n int, rps float64, burst int) bool {
 	if n > burst {
 		n = burst
 	}
-	now := time.Now()
+	now := l.now()
 	e := l.bucketForWithRate(key, rps, burst, now)
 	return e.limiter.TokensAt(now) >= float64(n)
 }
@@ -276,7 +278,7 @@ type Stat struct {
 
 // Stat returns the current limiter snapshot for an account without consuming.
 func (l *Limiter) Stat(accountID string) Stat {
-	now := time.Now()
+	now := l.now()
 	rem := float64(l.cfg.Burst)
 	if accountID != "" {
 		l.mu.Lock()
@@ -306,7 +308,7 @@ func (l *Limiter) Stat(accountID string) Stat {
 
 // Prune drops buckets that haven't been touched within IdleEvict.
 func (l *Limiter) Prune() int {
-	cutoff := time.Now().Add(-l.cfg.IdleEvict)
+	cutoff := l.now().Add(-l.cfg.IdleEvict)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	dropped := 0
@@ -320,10 +322,13 @@ func (l *Limiter) Prune() int {
 }
 
 // StartPruner launches a goroutine that calls Prune on PruneEvery cadence
-// until ctx is cancelled. The goroutine is panic-safe via the provided
-// recover function (typically saferun.Recover).
-func (l *Limiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverFn func()) {
+// until ctx is cancelled. The returned channel closes after the goroutine has
+// stopped. The goroutine is panic-safe via the provided recover function
+// (typically saferun.Recover).
+func (l *Limiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverFn func()) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if recoverFn != nil {
 			defer recoverFn()
 		}
@@ -340,6 +345,7 @@ func (l *Limiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverF
 			}
 		}
 	}()
+	return done
 }
 
 // Size returns the current number of tracked accounts. Intended for

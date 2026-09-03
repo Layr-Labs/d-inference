@@ -234,9 +234,8 @@ func TestArtifactCacheRejectsAncestorReplacementRaces(t *testing.T) {
 func TestArtifactCacheDownloadDeadline(t *testing.T) {
 	files := map[string][]byte{"tokenizer.json": []byte(`{"version":"1.0"}`)}
 	manifest := fixtureManifest(files)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write(files["tokenizer.json"])
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL + "/")

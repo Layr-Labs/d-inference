@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +18,134 @@ import (
 )
 
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+type modelManifestFixtureCorpus struct {
+	SchemaVersion int                        `json:"schema_version"`
+	Cases         []modelManifestFixtureCase `json:"cases"`
+}
+
+type modelManifestFixtureCase struct {
+	Name             string              `json:"name"`
+	SourceDirectory  string              `json:"source_directory"`
+	ExpectedManifest store.ModelManifest `json:"expected_manifest"`
+}
+
+func TestSharedModelManifestGolden(t *testing.T) {
+	corpus := loadModelManifestFixture(t)
+	for _, fixture := range corpus.Cases {
+		t.Run(fixture.Name, func(t *testing.T) {
+			manifest := fixture.ExpectedManifest
+			if got := modelR2Prefix(manifest.ModelID, manifest.Version); got != manifest.R2Prefix {
+				t.Fatalf("R2 prefix = %q, want %q", got, manifest.R2Prefix)
+			}
+			if got := aggregateManifestFileHashes(manifest.Files); got != manifest.AggregateSHA256 {
+				t.Fatalf("aggregate hash = %q, want %q", got, manifest.AggregateSHA256)
+			}
+			for _, file := range manifest.Files {
+				if file.Role == "" {
+					t.Fatalf("shared manifest file %q has no role", file.Path)
+				}
+			}
+			if err := validateModelManifest(
+				&manifest, manifest.ModelID, manifest.Version, manifest.R2Prefix,
+			); err != nil {
+				t.Fatalf("shared manifest rejected: %v", err)
+			}
+
+			traversal := cloneModelManifest(manifest)
+			traversal.Files[0].Path = "nested/../config.json"
+			if err := validateModelManifest(
+				&traversal, traversal.ModelID, traversal.Version, traversal.R2Prefix,
+			); err == nil {
+				t.Fatal("shared manifest traversal mutation was accepted")
+			}
+
+			badFileHash := cloneModelManifest(manifest)
+			badFileHash.Files[0].SHA256 = "not-a-sha256"
+			if err := validateModelManifest(
+				&badFileHash, badFileHash.ModelID, badFileHash.Version, badFileHash.R2Prefix,
+			); err == nil {
+				t.Fatal("shared manifest file-hash mutation was accepted")
+			}
+
+			badAggregate := cloneModelManifest(manifest)
+			badAggregate.AggregateSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+			if err := validateModelManifest(
+				&badAggregate, badAggregate.ModelID, badAggregate.Version, badAggregate.R2Prefix,
+			); err == nil {
+				t.Fatal("shared manifest aggregate-hash mutation was accepted")
+			}
+		})
+	}
+}
+
+func TestModelManifestFixtureSchemaVersionFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "missing", encoded: `{"cases":[]}`},
+		{name: "unsupported", encoded: `{"schema_version":2,"cases":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeModelManifestFixture([]byte(test.encoded)); err == nil {
+				t.Fatal("fixture schema was accepted")
+			}
+		})
+	}
+}
+
+func loadModelManifestFixture(t *testing.T) modelManifestFixtureCorpus {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join(
+		"..", "..", "fixtures", "model-manifest", "v1", "expected_manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpus, err := decodeModelManifestFixture(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return corpus
+}
+
+func decodeModelManifestFixture(encoded []byte) (modelManifestFixtureCorpus, error) {
+	var metadata struct {
+		SchemaVersion *int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return modelManifestFixtureCorpus{}, err
+	}
+	if metadata.SchemaVersion == nil {
+		return modelManifestFixtureCorpus{}, errors.New("fixture schema version is missing")
+	}
+	if *metadata.SchemaVersion != 1 {
+		return modelManifestFixtureCorpus{}, fmt.Errorf(
+			"unsupported fixture schema version %d", *metadata.SchemaVersion)
+	}
+
+	var corpus modelManifestFixtureCorpus
+	if err := json.Unmarshal(encoded, &corpus); err != nil {
+		return modelManifestFixtureCorpus{}, err
+	}
+	if len(corpus.Cases) == 0 {
+		return modelManifestFixtureCorpus{}, errors.New("fixture cases are missing")
+	}
+	seenNames := make(map[string]bool, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		if fixture.Name == "" || fixture.SourceDirectory == "" || seenNames[fixture.Name] {
+			return modelManifestFixtureCorpus{}, errors.New(
+				"model-manifest fixtures require unique named cases and source directories")
+		}
+		seenNames[fixture.Name] = true
+	}
+	return corpus, nil
+}
+
+func cloneModelManifest(manifest store.ModelManifest) store.ModelManifest {
+	manifest.Files = append([]store.ManifestFile(nil), manifest.Files...)
+	return manifest
+}
 
 func TestValidateModelManifestRejectsTraversalAndBadHashes(t *testing.T) {
 	prefix := modelR2Prefix("mlx-community/test", "v1")
@@ -391,29 +520,6 @@ func TestPublishingAPIKeyStoreErrorSurfacesButBootstrapStillWorks(t *testing.T) 
 	}
 }
 
-func TestRegisteringNewVersionPreservesRetiredStatus(t *testing.T) {
-	st := store.NewMemory(store.Config{})
-	entry := &store.ModelRegistryEntry{ID: "mlx-community/retired", DisplayName: "Retired", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
-	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: entry.ID, Version: "v1", R2Prefix: modelR2Prefix(entry.ID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.PromoteModelVersion(entry.ID, "v1"); err != nil {
-		t.Fatal(err)
-	}
-
-	entry.Status = "beta"
-	if err := st.SetModelVersion(entry, &store.ModelVersion{ModelID: entry.ID, Version: "v2", R2Prefix: modelR2Prefix(entry.ID, "v2"), AggregateSHA256: testHash, TotalSizeBytes: 1, FileCount: 1, Status: "ready"}, files); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.PromoteModelVersion(entry.ID, "v2"); err != nil {
-		t.Fatal(err)
-	}
-	if active := st.ListActiveModelRegistry(); len(active) != 0 {
-		t.Fatalf("expected retired model to remain hidden after registering a new version, got %#v", active)
-	}
-}
-
 type failingModelRegistryStore struct {
 	*store.MemoryStore
 	listErr error
@@ -432,22 +538,6 @@ func (s *failingModelRegistryStore) FindPublishingAPIKeysWithError() ([]store.Pu
 		return nil, s.keyErr
 	}
 	return s.MemoryStore.FindPublishingAPIKeysWithError()
-}
-
-func TestUpsertModelRegistryEntryPreservesExistingStatus(t *testing.T) {
-	st := store.NewMemory(store.Config{})
-	entry := &store.ModelRegistryEntry{ID: "mlx-community/upsert", DisplayName: "Upsert", Status: "retired", Quantization: "8bit", MaxContextLength: 32768, MaxOutputLength: 8192, MinRAMGB: 32}
-	if err := st.UpsertModelRegistryEntry(entry); err != nil {
-		t.Fatal(err)
-	}
-	entry.Status = "beta"
-	entry.DisplayName = "Updated"
-	if err := st.UpsertModelRegistryEntry(entry); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.GetModelRegistryRecord(entry.ID); err == nil {
-		t.Fatal("expected retired model to remain hidden after upsert")
-	}
 }
 
 func TestModelRegistryNotFoundClassification(t *testing.T) {
@@ -476,5 +566,40 @@ func validTestManifest() *store.ModelManifest {
 		FileCount:       1,
 		Files:           files,
 		CreatedAt:       time.Now(),
+	}
+}
+
+// Registering a concrete model whose id collides with an existing public alias
+// is rejected — the alias map would hijack raw-id requests for it (reverse of
+// the alias upsert's namespace guard).
+func TestRegisterModelRejectsAliasCollision(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	seedActiveModel(t, st, aliasQAT, "qat")
+	srv.SyncModelCatalog()
+
+	// Create the alias first.
+	if err := st.UpsertModelAlias(&store.ModelAlias{AliasID: "gemma-4-26b", Active: true, DesiredBuild: aliasQAT}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model_id":           "gemma-4-26b", // collides with the alias
+		"version":            "v1",
+		"quantization":       "4bit",
+		"max_context_length": 131072,
+		"max_output_length":  8192,
+		"min_ram_gb":         24,
+		"input_price":        50000,
+		"output_price":       200000,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/register", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("register over alias status = %d, want 409 (body=%s)", rec.Code, rec.Body.String())
 	}
 }

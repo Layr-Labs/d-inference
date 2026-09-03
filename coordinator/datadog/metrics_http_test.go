@@ -61,8 +61,15 @@ func TestFlushSeriesWireContract(t *testing.T) {
 	var apiKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiKey = r.Header.Get("Dd-Api-Key")
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &got)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Errorf("decode request body: %v", err)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()

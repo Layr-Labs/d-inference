@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -37,58 +37,82 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		t.Skip("requires the real Swift provider and local MLX checkpoint")
 	}
 	model := exactCacheRoutingTestModelID()
-	suite := testbed.NewSuite(testbed.SuiteConfig{
+	cfg := testbed.SuiteConfig{
 		ModelSpecs:                 []testbed.ModelSpec{{ModelID: model, NumProviders: 2}},
 		NumUsers:                   2,
 		EnableEphemeralPrefixCache: true,
-	})
-	require.NoError(t, suite.Start(context.Background()))
-	t.Cleanup(suite.Stop)
+	}
+
+	// Resolve and validate every local input before Suite.Start can allocate a
+	// Postgres container or launch a provider. In particular, hashing the exact
+	// pinned snapshot here makes a stale/missing HF checkout fail at the
+	// prerequisite that caused it rather than after two model loads.
+	sidecarBinary := exactCacheSidecarBinary(t)
+	snapshot := exactCacheModelSnapshot(t, model)
+	fixture := loadExactCacheArtifacts(t, snapshot, model)
+	providerBinary, err := testbed.BuildProvider(t.Context(), slog.Default())
+	require.NoError(t, err, "exact-cache provider/backend preflight")
+	t.Setenv("DARKBLOOM_PROVIDER_BINARY", providerBinary)
+
+	suite := testbed.StartSuite(t, cfg)
 
 	providers := liveProviders(suite.Coordinator.Registry)
 	require.Len(t, providers, 2)
-	// Warm the non-owner first, then the owner last. Debug providers use
-	// process-ephemeral cache keys, so the final owner must establish the shared
-	// test host's on-disk binding before it donates.
-	providers[0].Mu().Lock()
-	providers[0].Status = registry.StatusUntrusted
-	providers[0].Mu().Unlock()
-	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(providers[1].ID, model))
-	secondModel := waitForLoadedModel(t, providers[1], model, 3*time.Minute)
-	providers[1].Mu().Lock()
-	providers[1].Status = registry.StatusUntrusted
-	providers[1].Mu().Unlock()
-	providers[0].Mu().Lock()
-	providers[0].Status = registry.StatusOnline
-	providers[0].Mu().Unlock()
-	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(providers[0].ID, model))
-	firstModel := waitForLoadedModel(t, providers[0], model, 3*time.Minute)
-	require.Equal(t, firstModel.WeightHash, secondModel.WeightHash)
-	require.Eventually(t, func() bool {
-		for _, provider := range providers {
-			provider.Mu().Lock()
-			_, advertised := provider.PrefixCacheV2Models[model]
-			provider.Mu().Unlock()
-			if !advertised {
-				return false
-			}
-		}
-		return true
-	}, 30*time.Second, 100*time.Millisecond,
-		"contiguous frozen-full hybrid slots did not advertise after SSD scan readiness")
 
-	fixture := loadExactCacheArtifacts(t, model, firstModel.WeightHash)
+	// Exercise the real protocol-v1 cold fallback before either isolated
+	// provider has built a cache-capable slot. The request itself warms the
+	// non-owner first; loading the other provider below then establishes the
+	// shared test host's final on-disk binding before exact-cache donation.
+	for _, provider := range providers {
+		provider.Mu().Lock()
+		protocolVersion := provider.PrefixCacheProtocol
+		provider.Mu().Unlock()
+		require.Equal(t, 1, protocolVersion,
+			"fresh provider %s unexpectedly advertised exact-cache capability", provider.ID)
+	}
+	v1LifecycleBefore := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
+	v1Fallback := postExactCacheChat(
+		t, suite, suite.Users[0].APIKey, model,
+		"Serve this request through the protocol-v1 cold fallback path.")
+	require.NotEmpty(t, v1Fallback.content)
+	require.Zero(t, v1Fallback.cachedTokens)
+	require.NotEmpty(t, v1Fallback.providerID)
+	require.Equal(t, v1LifecycleBefore,
+		suite.Coordinator.Registry.CacheRoutingLifecycleStatus(),
+		"protocol-v1 cold fallback unexpectedly entered the exact-cache lifecycle")
+
+	var nonOwner, owner *registry.Provider
+	for _, provider := range providers {
+		if provider.ID == v1Fallback.providerID {
+			nonOwner = provider
+		} else {
+			owner = provider
+		}
+	}
+	require.NotNil(t, nonOwner, "v1 fallback returned an unknown provider")
+	require.NotNil(t, owner)
+	nonOwnerModel := waitForLoadedModel(t, nonOwner, model, 3*time.Minute)
+	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(owner.ID, model))
+	ownerModel := waitForLoadedModel(t, owner, model, 3*time.Minute)
+	require.Equal(t, ownerModel.WeightHash, nonOwnerModel.WeightHash)
+	require.Equal(t, fixture.manifest.AggregateSHA256, ownerModel.WeightHash,
+		"Go manifest and Swift provider aggregate hashes diverged")
+
+	capabilities := make(map[string]protocol.PrefixCacheV2Capability, len(providers))
+	for _, provider := range providers {
+		capabilities[provider.ID] = waitForExactCacheReady(
+			t, provider, model, 30*time.Second)
+	}
+
 	contractArtifacts, err := promptcontract.PromptArtifacts(fixture.manifest.Files)
 	require.NoError(t, err)
 	contractID, err := promptcontract.ContractID(
 		contractArtifacts, promptcontract.CurrentVersions())
 	require.NoError(t, err)
 	for _, provider := range providers {
-		provider.Mu().Lock()
-		capability := provider.PrefixCacheV2Models[model]
-		provider.Mu().Unlock()
+		capability := capabilities[provider.ID]
 		require.Equal(t, contractID, capability.PromptContractID)
-		require.Equal(t, firstModel.WeightHash, capability.ModelAggregateHash)
+		require.Equal(t, ownerModel.WeightHash, capability.ModelAggregateHash)
 	}
 
 	artifactServer := httptest.NewServer(http.HandlerFunc(func(
@@ -126,7 +150,6 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	require.NoError(t, provisioner.Reconcile([]promptcontract.Manifest{fixture.manifest}))
 	waitForProvisionedContract(t, provisioner, model, contractID)
 
-	sidecarBinary := exactCacheSidecarBinary(t)
 	supervisorConfig := promptcontract.SupervisorConfig{
 		Enabled:            true,
 		BinaryPath:         sidecarBinary,
@@ -164,7 +187,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	suite.Coordinator.Server.SetPromptPreloadController(preloader)
 	waitForPreloadedContract(t, preloader, contractID, 30*time.Second)
 	suite.Coordinator.Registry.SetModelCatalog([]registry.CatalogEntry{{
-		ID: model, WeightHash: firstModel.WeightHash,
+		ID: model, WeightHash: ownerModel.WeightHash,
 	}})
 	require.NoError(t, suite.Coordinator.Registry.ConfigureCacheRouting(
 		registry.CacheRoutingConfig{
@@ -199,50 +222,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	}, 2*time.Minute, 250*time.Millisecond,
 		"miss and donation lifecycle telemetry did not advance")
 
-	// The lifecycle struct is filled from two transports with very different
-	// latencies, and the wait above only synchronises one of them.
-	// SSDLookups / SSDMisses / SSDDonations come from the immediate
-	// `prefix_cache_ready_v2` push, so they are current the instant the
-	// donation settles. DonationOutcomes rides the periodic provider
-	// heartbeat instead, so the donation just counted still has its outcome
-	// in flight here. Left undrained it lands inside the exact-equality
-	// window below and reads as the protocol-v1 provider entering the
-	// exact-cache lifecycle, when it is really late telemetry for the v2
-	// owner's donation. Drain it BEFORE the downgrade below rather than
-	// after: that downgrade is a direct write onto the registry copy, and
-	// the next heartbeat from that provider re-asserts its real v2
-	// capabilities over it, so the window between downgrade and assertion
-	// must stay shorter than one heartbeat.
-	settleCacheRoutingTelemetry(t, suite.Coordinator.Registry)
-
-	// Bring the second provider into the candidate set as a protocol-v1 peer.
-	// Force one real request through it to prove a mixed v1/v2 fleet keeps the
-	// v1 provider available for ordinary cold inference without cache hints.
-	stabilizeExactCacheRoutingCosts(providers, model)
-	providers[1].Mu().Lock()
-	providers[1].PrefixCacheProtocol = 1
-	providers[1].PrefixCacheV2Models = nil
-	providers[1].Status = registry.StatusOnline
-	providers[1].Mu().Unlock()
-	providers[0].Mu().Lock()
-	providers[0].Status = registry.StatusUntrusted
-	providers[0].Mu().Unlock()
-	mixedLifecycleBefore := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
-	mixedV1 := postExactCacheChat(
-		t, suite, suite.Users[0].APIKey, model,
-		"Serve this request through the protocol-v1 cold fallback provider.")
-	require.NotEmpty(t, mixedV1.content)
-	require.Zero(t, mixedV1.cachedTokens)
-	require.Equal(t, providers[1].ID, mixedV1.providerID,
-		"forced mixed-fleet request did not use the protocol-v1 provider")
-	require.Equal(t, mixedLifecycleBefore,
-		suite.Coordinator.Registry.CacheRoutingLifecycleStatus(),
-		"protocol-v1 cold fallback unexpectedly entered the exact-cache lifecycle")
-	providers[0].Mu().Lock()
-	providers[0].Status = registry.StatusOnline
-	providers[0].Mu().Unlock()
-
-	// Provider-confirmed evidence must keep the repeated request on the v2 owner
+	// Provider-confirmed evidence must keep the repeated request on the donor
 	// and preserve exact deterministic output through frozen-full adoption.
 	second := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Positive(t, second.cachedTokens)
@@ -284,8 +264,9 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	restored := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Positive(t, restored.cachedTokens, "exact-cache routing did not reopen after re-preload")
 
-	// A live disconnect still leaves ordinary cold serving available.
-	suite.Coordinator.Registry.Disconnect(providers[0].ID)
+	// A live holder disconnect still leaves ordinary cold serving available.
+	require.NotEmpty(t, second.providerID, "cache hit did not identify its provider")
+	suite.Coordinator.Registry.Disconnect(second.providerID)
 	require.Eventually(t, func() bool {
 		return len(liveProviders(suite.Coordinator.Registry)) >= 2
 	}, 20*time.Second, 100*time.Millisecond,
@@ -365,81 +346,10 @@ func liveProviders(r *registry.Registry) []*registry.Provider {
 	r.ForEachProvider(func(provider *registry.Provider) {
 		providers = append(providers, provider)
 	})
+	sort.Slice(providers, func(i, j int) bool {
+		return providers[i].ID < providers[j].ID
+	})
 	return providers
-}
-
-func stabilizeExactCacheRoutingCosts(providers []*registry.Provider, model string) {
-	for _, provider := range providers {
-		provider.Mu().Lock()
-		provider.PrefillTPS = 1_000
-		provider.DecodeTPS = 100
-		provider.SystemMetrics = protocol.SystemMetrics{ThermalState: "nominal"}
-		if capacity := provider.BackendCapacity; capacity != nil {
-			capacity.GPUMemoryActiveGB = 0
-			capacity.GPUMemoryCacheGB = 0
-			capacity.GPUMemoryPeakGB = 0
-			for index := range capacity.Slots {
-				slot := &capacity.Slots[index]
-				if slot.Model != model {
-					continue
-				}
-				slot.NumRunning = 0
-				slot.NumWaiting = 0
-				slot.ActiveTokens = 0
-				slot.MaxTokensPotential = 0
-				slot.ActiveTokenBudgetUsed = 0
-				slot.QueuedTokenBudget = 0
-				slot.ObservedPrefillTPS = 1_000
-				slot.ObservedDecodeTPS = 100
-			}
-		}
-		provider.Mu().Unlock()
-	}
-}
-
-// cacheTelemetryHeartbeat is the provider's default heartbeat period
-// (`CoordinatorConfig.heartbeatIntervalSecs`, 5s), which is the transport for
-// every counter the coordinator cannot observe inline.
-const cacheTelemetryHeartbeat = 5 * time.Second
-
-// settleCacheRoutingTelemetry blocks until nothing the coordinator has already
-// counted still has telemetry in flight, so a caller may compare two lifecycle
-// snapshots for exact equality and read the difference as caused by whatever
-// it did in between.
-//
-// Two conditions, because the struct has two clocks. First, every donation
-// receipt the coordinator accepted (SSDDonations, delivered immediately by
-// `prefix_cache_ready_v2`) must have its matching outcome reported: the
-// provider settles exactly one outcome per donation job, but that count only
-// reaches the coordinator on the heartbeat, so outcomes lag receipts by up to
-// one heartbeat and can never be fewer. Second, the whole snapshot must then
-// hold still for a full heartbeat, which retires any straggler with no
-// corresponding receipt.
-func settleCacheRoutingTelemetry(t *testing.T, r *registry.Registry) {
-	t.Helper()
-	const poll = 100 * time.Millisecond
-	settled := cacheTelemetryHeartbeat + time.Second
-	deadline := time.Now().Add(2 * time.Minute)
-	previous := r.CacheRoutingLifecycleStatus()
-	unchangedSince := time.Now()
-	for {
-		time.Sleep(poll)
-		current := r.CacheRoutingLifecycleStatus()
-		if !reflect.DeepEqual(current, previous) {
-			previous, unchangedSince = current, time.Now()
-		}
-		var reported uint64
-		for _, count := range current.DonationOutcomes {
-			reported += count
-		}
-		if reported >= current.SSDDonations &&
-			time.Since(unchangedSince) >= settled {
-			return
-		}
-		require.False(t, time.Now().After(deadline),
-			"cache-routing lifecycle telemetry never settled: %d donation receipts, "+
-				"%d outcomes reported", current.SSDDonations, reported)
-	}
 }
 
 func waitForLoadedModel(
@@ -472,6 +382,33 @@ func waitForLoadedModel(
 		return false
 	}, timeout, 500*time.Millisecond)
 	return modelInfo
+}
+
+func waitForExactCacheReady(
+	t *testing.T,
+	provider *registry.Provider,
+	model string,
+	timeout time.Duration,
+) protocol.PrefixCacheV2Capability {
+	t.Helper()
+	var (
+		capability protocol.PrefixCacheV2Capability
+		status     protocol.PrefixCacheModelStatus
+		reported   bool
+	)
+	require.Eventually(t, func() bool {
+		provider.Mu().Lock()
+		defer provider.Mu().Unlock()
+		capability, reported = provider.PrefixCacheV2Models[model]
+		if !reported || !provider.PrefixCacheStatusReported {
+			return false
+		}
+		status, reported = provider.PrefixCacheStatuses[model]
+		return reported && status.State == "ready"
+	}, timeout, 100*time.Millisecond,
+		"provider %s did not heartbeat cache-ready status for %s",
+		provider.ID, model)
+	return capability
 }
 
 func waitForProvisionedContract(
@@ -519,9 +456,14 @@ func waitForPreloadedContract(
 func exactCacheSidecarBinary(t *testing.T) string {
 	t.Helper()
 	if configured := os.Getenv("DARKBLOOM_PROMPT_SIDECAR_BINARY"); configured != "" {
-		if info, err := os.Stat(configured); err == nil && !info.IsDir() {
-			return configured
-		}
+		info, err := os.Stat(configured)
+		require.NoError(t, err,
+			"configured promptsidecar binary %q is unavailable", configured)
+		require.False(t, info.IsDir(),
+			"configured promptsidecar binary %q is a directory", configured)
+		require.NotZero(t, info.Mode()&0o111,
+			"configured promptsidecar binary %q is not executable", configured)
+		return configured
 	}
 	root := os.Getenv("DARKBLOOM_REPO_ROOT")
 	if root == "" {
@@ -532,12 +474,54 @@ func exactCacheSidecarBinary(t *testing.T) string {
 	for _, profile := range []string{"release", "debug"} {
 		candidate := filepath.Join(
 			root, "coordinator", "promptsidecar", "target", profile, "promptsidecar")
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		if info, err := os.Stat(candidate); err == nil &&
+			!info.IsDir() && info.Mode()&0o111 != 0 {
 			return candidate
 		}
 	}
-	t.Skip("promptsidecar binary unavailable; build coordinator/promptsidecar first")
+	t.Skipf("exact-cache prerequisite missing: executable promptsidecar not found under %s; "+
+		"build coordinator/promptsidecar first", root)
 	return ""
+}
+
+func exactCacheModelSnapshot(t *testing.T, model string) string {
+	t.Helper()
+	hub := os.Getenv("HF_HUB_CACHE")
+	if hub == "" {
+		hub = os.Getenv("HUGGINGFACE_HUB_CACHE")
+	}
+	if hub == "" {
+		if hfHome := os.Getenv("HF_HOME"); hfHome != "" {
+			hub = filepath.Join(hfHome, "hub")
+		} else {
+			home, err := os.UserHomeDir()
+			require.NoError(t, err)
+			hub = filepath.Join(home, ".cache", "huggingface", "hub")
+		}
+	}
+	modelRoot := filepath.Join(
+		hub, "models--"+strings.ReplaceAll(model, "/", "--"))
+	refPath := filepath.Join(modelRoot, "refs", "main")
+	ref, err := os.ReadFile(refPath)
+	if err != nil {
+		t.Skipf("exact-cache prerequisite missing: pinned Hugging Face ref %s: %v",
+			refPath, err)
+	}
+	revision := strings.TrimSpace(string(ref))
+	digest, decodeErr := hex.DecodeString(revision)
+	require.NoError(t, decodeErr,
+		"exact-cache Hugging Face ref %s is not a commit hash: %q", refPath, revision)
+	require.Contains(t, []int{20, 32}, len(digest),
+		"exact-cache Hugging Face ref %s has unexpected hash length: %q", refPath, revision)
+	snapshot := filepath.Join(modelRoot, "snapshots", revision)
+	info, err := os.Stat(snapshot)
+	if err != nil {
+		t.Skipf("exact-cache prerequisite missing: snapshot pinned by %s (%s): %v",
+			refPath, snapshot, err)
+	}
+	require.True(t, info.IsDir(),
+		"snapshot pinned by %s is not a directory: %s", refPath, snapshot)
+	return snapshot
 }
 
 func exactCacheTempRoot(t *testing.T) string {
@@ -567,34 +551,14 @@ func exactCacheTempRoot(t *testing.T) string {
 
 func loadExactCacheArtifacts(
 	t *testing.T,
-	model, aggregateHash string,
+	snapshot, model string,
 ) exactCacheArtifactFixture {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-	modelDir := "models--" + strings.ReplaceAll(model, "/", "--")
-	snapshots := filepath.Join(home, ".cache", "huggingface", "hub", modelDir, "snapshots")
-	entries, err := os.ReadDir(snapshots)
-	require.NoError(t, err)
-	var snapshot string
-	var newest time.Time
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		info, infoErr := entry.Info()
-		require.NoError(t, infoErr)
-		if snapshot == "" || info.ModTime().After(newest) {
-			snapshot = filepath.Join(snapshots, entry.Name())
-			newest = info.ModTime()
-		}
-	}
-	require.NotEmpty(t, snapshot)
 
 	files := make(map[string][]byte)
 	var artifacts []promptcontract.Artifact
 	var modelType string
-	err = filepath.Walk(snapshot, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.Walk(snapshot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -611,6 +575,9 @@ func loadExactCacheArtifacts(
 			return relativeErr
 		}
 		relative = filepath.ToSlash(relative)
+		if stat.Size() == 0 {
+			return fmt.Errorf("exact-cache artifact %s is empty", relative)
+		}
 		file, openErr := os.Open(path)
 		if openErr != nil {
 			return openErr
@@ -648,6 +615,16 @@ func loadExactCacheArtifacts(
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, modelType)
+	require.NotEmpty(t, artifacts, "pinned snapshot %s contains no recognized artifacts", snapshot)
+	hasWeights := false
+	for _, artifact := range artifacts {
+		if artifact.Role == "weight" {
+			hasWeights = true
+			break
+		}
+	}
+	require.True(t, hasWeights,
+		"pinned snapshot %s contains no supported model weight artifact", snapshot)
 	require.Contains(t, files, "config.json")
 	require.Contains(t, files, "tokenizer.json")
 	require.Contains(t, files, "chat_template.jinja")
@@ -664,8 +641,6 @@ func loadExactCacheArtifacts(
 		_, _ = aggregate.Write(digest)
 	}
 	computedAggregate := hex.EncodeToString(aggregate.Sum(nil))
-	require.Equal(t, aggregateHash, computedAggregate,
-		"Go manifest and Swift provider aggregate hashes diverged")
 	return exactCacheArtifactFixture{
 		manifest: promptcontract.Manifest{
 			ModelID: model, ModelType: modelType,

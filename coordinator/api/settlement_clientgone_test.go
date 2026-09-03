@@ -54,9 +54,7 @@ func findRouteRecord(st *store.MemoryStore, requestID string) *store.InferenceRo
 // job SUCCESS (never a failure), and record a partial_success route outcome.
 func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
-	// Long grace so handleComplete deterministically claims the parked record
-	// first; the timer fires well after the test and then no-ops.
-	srv.settleGrace = 5 * time.Second
+	installSettlementTestTimer(srv)
 
 	model := "client-gone-after-commit-model"
 	accountID := "client-gone-provider-account"
@@ -142,14 +140,11 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 
 	// (4) Route outcome = partial_success / client_gone_after_commit_provider_completed.
 	// The outcome write is best-effort async (telemetry sink), so poll for it.
-	deadline := time.Now().Add(2 * time.Second)
 	var rec *store.InferenceRouteRecord
-	for time.Now().Before(deadline) {
-		if rec = findRouteRecord(st, pr.RequestID); rec != nil && rec.FinalStatus != "" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitFor(t, 2*time.Second, "partial-success route terminal state", func() bool {
+		rec = findRouteRecord(st, pr.RequestID)
+		return rec != nil && rec.FinalStatus != ""
+	})
 	if rec == nil {
 		t.Fatal("route record not found")
 	}
@@ -174,7 +169,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 // deroute a provider for consumer-side disconnects.
 func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
-	srv.settleGrace = 5 * time.Second
+	installSettlementTestTimer(srv)
 
 	model := "client-gone-no-fault-model"
 	provider := srv.registry.Register("client-gone-no-fault-provider", nil, &protocol.RegisterMessage{
@@ -224,7 +219,7 @@ func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
 // set and the holder.
 func TestHandleCompleteAfterGraceExpiryIsNoOp(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
-	srv.settleGrace = 50 * time.Millisecond
+	timer := installSettlementTestTimer(srv)
 
 	model := "late-terminal-model"
 	accountID := "late-terminal-account"
@@ -251,14 +246,8 @@ func TestHandleCompleteAfterGraceExpiryIsNoOp(t *testing.T) {
 	}
 	parkConsumerGone(srv, provider, pr)
 
-	// Wait for the grace timer to refund the reservation.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if ledger.Balance(consumerID) == initialBalance {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Deterministically expire the parked request and refund its reservation.
+	timer.fireNext(t)
 	if got := ledger.Balance(consumerID); got != initialBalance {
 		t.Fatalf("balance after grace = %d, want %d (reservation refunded)", got, initialBalance)
 	}
@@ -345,7 +334,7 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 // "no partial_success" assertion cannot be contaminated by the positive case.
 func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
-	srv.settleGrace = 5 * time.Second
+	installSettlementTestTimer(srv)
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	consumerID := testConsumerID
@@ -434,7 +423,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 // the provider-error case.
 func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
-	srv.settleGrace = 5 * time.Second
+	installSettlementTestTimer(srv)
 
 	collector := newUDPCollector(t)
 	defer collector.Close()
@@ -490,8 +479,7 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 // after-commit client cancellation (routing.client_gone / partial_success).
 func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
 	srv, _, _ := billingTestServer(t)
-	// Long grace so nothing fires mid-test even if (incorrectly) parked.
-	srv.settleGrace = 10 * time.Second
+	timer := installSettlementTestTimer(srv)
 
 	pr := &registry.PendingRequest{
 		RequestID:        "finalized-not-parked",
@@ -510,7 +498,9 @@ func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
 	}
 
 	srv.holdForSettlement(pr)
-
+	if len(timer.callbacks) != 0 {
+		t.Fatalf("already-finalized request scheduled %d expiry callback(s), want none", len(timer.callbacks))
+	}
 	if got := srv.claimSettlement(pr.RequestID); got != nil {
 		t.Errorf("already-refunded request was parked for settlement; want skipped (nil), got %q", got.RequestID)
 	}
@@ -522,9 +512,7 @@ func TestHoldForSettlementSkipsAlreadyFinalizedReservation(t *testing.T) {
 // provider terminal can settle it and it is correctly counted as client-gone.
 func TestHoldForSettlementParksNonFinalizedReservation(t *testing.T) {
 	srv, _, _ := billingTestServer(t)
-	// Long grace so the expiry timer does not fire and consume the parked record
-	// before we assert it is present.
-	srv.settleGrace = 10 * time.Second
+	timer := installSettlementTestTimer(srv)
 
 	pr := &registry.PendingRequest{
 		RequestID:        "nonfinalized-parked",
@@ -537,10 +525,12 @@ func TestHoldForSettlementParksNonFinalizedReservation(t *testing.T) {
 	}
 
 	srv.holdForSettlement(pr)
-
+	if len(timer.callbacks) != 1 {
+		t.Fatalf("parked request scheduled %d expiry callbacks, want 1", len(timer.callbacks))
+	}
 	got := srv.claimSettlement(pr.RequestID)
 	if got == nil {
-		t.Fatal("genuine after-commit client-gone request was not parked; want parked (non-nil)")
+		t.Fatal("genuine after-commit client-gone request was not parked")
 	}
 	if got.RequestID != pr.RequestID {
 		t.Errorf("claimed wrong record: got %q, want %q", got.RequestID, pr.RequestID)

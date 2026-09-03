@@ -2,93 +2,242 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Swift mirror of `coordinator/protocol/telemetry_symmetry_test.go`.
-///
-/// Pins the telemetry wire shape (enum casing, snake_case keys, optional-field
-/// omission) and the `TelemetryKind` set/count so the Go canonical, this Swift
-/// mirror, and `console-ui/src/lib/telemetry-types.ts` cannot drift silently.
 @Suite("Telemetry wire symmetry")
 struct TelemetrySymmetryTests {
-
-    /// Mirror of Go `TestTelemetryJSONSymmetry`: the canonical event encodes the
-    /// exact enum strings and omits nil optionals (Go uses `omitempty`; Swift's
-    /// synthesized `Codable` uses `encodeIfPresent`).
     @Test func telemetryEventJSONSymmetry() throws {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .error,
-            kind: .backendCrash,
-            message: "hi"
-        )
-        // Match the Go fixture's deterministic, present fields.
-        event.id = "00000000-0000-0000-0000-000000000001"
-        event.timestamp = "2026-04-16T00:00:00Z"
-        event.version = "0.3.10"
-        event.sessionId = "abc"
-        // Leave these nil to assert omission (as the Go fixture does).
-        event.machineId = nil
-        event.accountId = nil
-        event.requestId = nil
-        event.stack = nil
-        event.fields = nil
+        let data = try telemetryFixtureData()
+        let corpus = try decodeTelemetryFixture(data)
+        let rawCases = try rawTelemetryCases(in: data)
+        #expect(!corpus.cases.isEmpty, "telemetry fixture has no named cases")
+        #expect(rawCases.count == corpus.cases.count)
+        guard let sampleEvent = corpus.cases.first?.event else {
+            throw TelemetryFixtureError.invalidShape
+        }
+        let eventFieldSets = telemetryEventFieldSets(sampleEvent)
+        #expect(eventFieldSets.required == Set(corpus.requiredEventFields.keys))
+        #expect(eventFieldSets.optional == Set(corpus.optionalEventFields.keys))
 
-        let json = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
-
-        // Enum serialization contract.
-        for want in [
-            #""source":"provider""#,
-            #""severity":"error""#,
-            #""kind":"backend_crash""#,
-        ] {
-            #expect(json.contains(want), "missing \(want) in \(json)")
+        var declaredFields = corpus.requiredEventFields
+        for (field, enabled) in corpus.requiredEventFields {
+            #expect(enabled, "required event field \(field) is disabled")
+        }
+        for (field, enabled) in corpus.optionalEventFields {
+            #expect(enabled, "optional event field \(field) is disabled")
+            #expect(declaredFields[field] == nil, "event field \(field) is both required and optional")
+            declaredFields[field] = enabled
         }
 
-        // snake_case key contract for a present optional.
-        #expect(json.contains(#""session_id":"abc""#), "missing snake_case session_id in \(json)")
+        var names = Set<String>()
+        var sawOmissionCase = false
+        var sawAllFieldsCase = false
+        for (index, fixture) in corpus.cases.enumerated() {
+            #expect(!fixture.name.isEmpty, "telemetry fixture name is empty")
+            #expect(names.insert(fixture.name).inserted, "duplicate telemetry fixture name \(fixture.name)")
 
-        // Optional-field omission contract (matches the Go omitempty mirror).
-        for forbidden in [
-            #""machine_id":"#,
-            #""account_id":"#,
-            #""request_id":"#,
-            #""stack":"#,
-            #""fields":"#,
+            let encoded = try JSONEncoder().encode(fixture.event)
+            guard let actual = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+                  index < rawCases.count,
+                  let expected = rawCases[index]["event"] as? [String: Any]
+            else {
+                throw TelemetryFixtureError.invalidShape
+            }
+            #expect(
+                NSDictionary(dictionary: actual).isEqual(to: expected),
+                "wire JSON mismatch for \(fixture.name)"
+            )
+
+            for field in corpus.requiredEventFields.keys {
+                #expect(actual[field] != nil, "required field \(field) is missing in \(fixture.name)")
+            }
+            for field in actual.keys {
+                #expect(declaredFields[field] != nil, "undeclared wire field \(field) in \(fixture.name)")
+            }
+            var omittedFields = Set<String>()
+            for field in fixture.omittedKeys {
+                #expect(
+                    corpus.optionalEventFields[field] != nil,
+                    "omitted field \(field) is not declared optional"
+                )
+                #expect(
+                    omittedFields.insert(field).inserted,
+                    "omitted field \(field) is duplicated"
+                )
+                #expect(actual[field] == nil, "optional field \(field) should be omitted in \(fixture.name)")
+            }
+            for field in corpus.optionalEventFields.keys {
+                #expect(
+                    (actual[field] == nil) == omittedFields.contains(field),
+                    "optional field \(field) omission is not declared by \(fixture.name)"
+                )
+            }
+
+            guard let source = actual["source"] as? String,
+                  let severity = actual["severity"] as? String,
+                  let kind = actual["kind"] as? String
+            else {
+                throw TelemetryFixtureError.invalidShape
+            }
+            #expect(corpus.vocabularies.sources[source] == true)
+            #expect(corpus.vocabularies.severities[severity] == true)
+            #expect(corpus.vocabularies.kinds[kind] == true)
+
+            sawOmissionCase = sawOmissionCase || !fixture.omittedKeys.isEmpty
+            sawAllFieldsCase =
+                sawAllFieldsCase || declaredFields.keys.allSatisfy { actual[$0] != nil }
+        }
+        #expect(sawOmissionCase, "telemetry fixture must cover optional omission")
+        #expect(sawAllFieldsCase, "telemetry fixture must cover every declared event field")
+    }
+
+    @Test func telemetryVocabulariesMatch() throws {
+        let corpus = try decodeTelemetryFixture(try telemetryFixtureData())
+        for (value, enabled) in corpus.vocabularies.sources {
+            #expect(enabled, "source vocabulary value \(value) is disabled")
+        }
+        for (value, enabled) in corpus.vocabularies.severities {
+            #expect(enabled, "severity vocabulary value \(value) is disabled")
+        }
+        for (value, enabled) in corpus.vocabularies.kinds {
+            #expect(enabled, "kind vocabulary value \(value) is disabled")
+        }
+
+        let sources = Set([
+            TelemetrySource.coordinator,
+            .provider,
+            .app,
+            .console,
+            .bridge,
+        ].map(\.rawValue))
+        #expect(sources == Set(corpus.vocabularies.sources.keys))
+
+        let severities = Set([
+            TelemetrySeverity.debug,
+            .info,
+            .warn,
+            .error,
+            .fatal,
+        ].map(\.rawValue))
+        #expect(severities == Set(corpus.vocabularies.severities.keys))
+
+        let kinds = Set(TelemetryKind.allCases.map(\.rawValue))
+        #expect(kinds == Set(corpus.vocabularies.kinds.keys))
+    }
+
+    @Test func telemetryFixtureSchemaVersionIsRequired() {
+        for encoded in [
+            #"{"cases":[]}"#,
+            #"{"schema_version":2,"cases":[]}"#,
         ] {
-            #expect(!json.contains(forbidden), "optional \(forbidden) should be omitted in \(json)")
+            var rejected = false
+            do {
+                _ = try decodeTelemetryFixture(Data(encoded.utf8))
+            } catch {
+                rejected = true
+            }
+            #expect(rejected, "missing or unsupported fixture schema was accepted")
         }
     }
+}
 
-    /// Mirror of Go `TestTelemetryKindsMatch`: guards the kind raw-value set and
-    /// count against accidental typos / additions across layers. `allCases` is
-    /// the Swift equivalent of Go's `KnownKinds()`.
-    @Test func telemetryKindsMatch() {
-        let want: Set<String> = [
-            "panic", "http_error", "protocol_error",
-            "backend_crash", "attestation_failure",
-            "inference_error", "runtime_mismatch",
-            "connectivity", "oom", "engine_health", "log", "custom",
-        ]
-        let got = Set(TelemetryKind.allCases.map(\.rawValue))
-        #expect(got == want, "kind raw-value set mismatch: got \(got)")
-        #expect(
-            TelemetryKind.allCases.count == want.count,
-            "kind count mismatch: got \(TelemetryKind.allCases.count) want \(want.count)"
-        )
+private struct TelemetryFixtureCorpus: Decodable {
+    let schemaVersion: Int
+    let vocabularies: TelemetryVocabularies
+    let requiredEventFields: [String: Bool]
+    let optionalEventFields: [String: Bool]
+    let cases: [TelemetryFixtureCase]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case vocabularies
+        case requiredEventFields = "required_event_fields"
+        case optionalEventFields = "optional_event_fields"
+        case cases
     }
+}
 
-    /// Source and severity raw values are the exact lowercase strings the
-    /// coordinator expects (a mismatch coerces to "custom" server-side).
-    @Test func sourceAndSeverityRawValues() {
-        #expect(TelemetrySource.coordinator.rawValue == "coordinator")
-        #expect(TelemetrySource.provider.rawValue == "provider")
-        #expect(TelemetrySource.app.rawValue == "app")
-        #expect(TelemetrySource.console.rawValue == "console")
-        #expect(TelemetrySource.bridge.rawValue == "bridge")
+private struct TelemetryVocabularies: Decodable {
+    let sources: [String: Bool]
+    let severities: [String: Bool]
+    let kinds: [String: Bool]
+}
 
-        #expect(TelemetrySeverity.debug.rawValue == "debug")
-        #expect(TelemetrySeverity.info.rawValue == "info")
-        #expect(TelemetrySeverity.warn.rawValue == "warn")
-        #expect(TelemetrySeverity.error.rawValue == "error")
-        #expect(TelemetrySeverity.fatal.rawValue == "fatal")
+private struct TelemetryFixtureCase: Decodable {
+    let name: String
+    let event: TelemetryEvent
+    let omittedKeys: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case name, event
+        case omittedKeys = "omitted_keys"
     }
+}
+
+private enum TelemetryFixtureError: Error {
+    case invalidShape
+    case missingSchemaVersion
+    case unsupportedSchemaVersion(Int)
+}
+
+private func decodeTelemetryFixture(_ data: Data) throws -> TelemetryFixtureCorpus {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw TelemetryFixtureError.invalidShape
+    }
+    guard let schemaVersion = object["schema_version"] as? Int else {
+        throw TelemetryFixtureError.missingSchemaVersion
+    }
+    guard schemaVersion == 1 else {
+        throw TelemetryFixtureError.unsupportedSchemaVersion(schemaVersion)
+    }
+    return try JSONDecoder().decode(TelemetryFixtureCorpus.self, from: data)
+}
+
+private func rawTelemetryCases(in data: Data) throws -> [[String: Any]] {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let cases = object["cases"] as? [[String: Any]]
+    else {
+        throw TelemetryFixtureError.invalidShape
+    }
+    return cases
+}
+
+private func telemetryEventFieldSets(
+    _ event: TelemetryEvent
+) -> (required: Set<String>, optional: Set<String>) {
+    var required = Set<String>()
+    var optional = Set<String>()
+    for property in Mirror(reflecting: event).children {
+        guard let label = property.label else { continue }
+        let field = telemetryWireFieldName(label)
+        if Mirror(reflecting: property.value).displayStyle == .optional {
+            optional.insert(field)
+        } else {
+            required.insert(field)
+        }
+    }
+    return (required, optional)
+}
+
+private func telemetryWireFieldName(_ propertyName: String) -> String {
+    var fieldName = ""
+    for character in propertyName {
+        if character.isUppercase {
+            fieldName.append("_")
+            fieldName.append(contentsOf: String(character).lowercased())
+        } else {
+            fieldName.append(character)
+        }
+    }
+    return fieldName
+}
+
+private func telemetryFixtureData() throws -> Data {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    return try Data(
+        contentsOf: repositoryRoot
+            .appendingPathComponent("fixtures/telemetry/v1/events.json")
+    )
 }

@@ -44,8 +44,15 @@ struct BetaFeaturesTests {
         let config = freshConfig()
         let feature = BetaFeatures.feature(id: "mtp")!
         #expect(config.backend.mtpMode == .auto)
+        #expect(feature.configAddress?.section == "backend")
+        #expect(feature.configAddress?.key == "mtp_mode")
         #expect(feature.isEnabled(in: config) == true)
         #expect(feature.state(in: config) == .auto)
+        // Automatic has no honest global boolean value: on for eligible
+        // models, off for others — so neither polarity is pinned.
+        #expect(feature.state(in: config).enabled == nil)
+        #expect(!feature.isPinned(true, in: config))
+        #expect(!feature.isPinned(false, in: config))
         #expect(feature.state(in: config).displayValue == "auto (model-aware)")
         #expect(feature.requiresRestart == true)
     }
@@ -88,11 +95,19 @@ struct BetaFeaturesTests {
         #expect(config.backend.mtpMode == .on)
         #expect(feature.isEnabled(in: config) == true)
         #expect(feature.state(in: config) == .on)
+        #expect(feature.isPinned(true, in: config))
+        #expect(BetaFeatures.enabledIDs(in: config) == [
+            "gemma-prefill-layer18", "gemma-weighted-r1", "mtp",
+        ])
 
         feature.apply(false, to: &config)
         #expect(config.backend.mtpMode == .off)
         #expect(feature.isEnabled(in: config) == false)
         #expect(feature.state(in: config) == .off)
+        #expect(feature.isPinned(false, in: config))
+        #expect(BetaFeatures.enabledIDs(in: config) == [
+            "gemma-prefill-layer18", "gemma-weighted-r1",
+        ])
 
         // Retired ids resolve to nothing rather than a stale toggle.
         #expect(BetaFeatures.feature(id: "adaptive-prefill") == nil)
@@ -159,4 +174,51 @@ struct BetaFeaturesTests {
         #expect(!decoded.gemmaOptimizations.weightedR1)
     }
 
+}
+
+// MARK: - Closed Gemma target namespace
+
+@Suite("EngineV2 supported set: closed Gemma target namespace")
+struct MTPSupportedModelsTests {
+
+    @Test("assistant namespace variants are never servable chat models")
+    func assistantVariantsExcluded() {
+        for type in [
+            "gemma4_assistant", " GEMMA4_ASSISTANT ",
+            "gemma4_assistant_v2", "gemma4_text_assistant",
+            "gemma4_mtp", "gemma4-drafter",
+        ] {
+            #expect(!EngineV2SupportedModels.isSupported(modelType: type), "type=\(type)")
+            #expect(!EngineV2SupportedModels.isGemma4Target(modelType: type), "type=\(type)")
+        }
+    }
+
+    @Test("only official Gemma target config types are supported")
+    func officialGemmaTargetsSupported() {
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4") == true)
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4_text") == true)
+        #expect(EngineV2SupportedModels.isGemma4Target(modelType: " GEMMA4_TEXT "))
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gpt_oss") == true)
+        // Non-CBv2 families still fail closed.
+        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma3") == false)
+        #expect(EngineV2SupportedModels.isSupported(modelType: nil) == false)
+    }
+
+    @Test("partition drops the drafter, keeps its targets")
+    func partitionExcludesDrafter() {
+        let models = [
+            ModelInfo(
+                id: "gemma-4-26b-qat-4bit", modelType: "gemma4",
+                sizeBytes: 1 << 30, estimatedMemoryGb: 1.2),
+            ModelInfo(
+                id: "gemma-4-26b-assistant-4bit", modelType: "gemma4_assistant",
+                sizeBytes: 236_124_704, estimatedMemoryGb: 0.3),
+            ModelInfo(
+                id: "gemma-4-26b-text", modelType: "gemma4_text",
+                sizeBytes: 1 << 30, estimatedMemoryGb: 1.2),
+        ]
+        let split = EngineV2SupportedModels.partition(models)
+        #expect(split.supported.map(\.id) == ["gemma-4-26b-qat-4bit", "gemma-4-26b-text"])
+        #expect(split.unsupported.map(\.id) == ["gemma-4-26b-assistant-4bit"])
+    }
 }

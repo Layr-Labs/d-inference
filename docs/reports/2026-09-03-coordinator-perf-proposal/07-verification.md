@@ -39,6 +39,34 @@ Blind outputs (not committed): scratchpad `verify/V1-process-lock-latency.md`,
 | B8 | Traffic | chat 46/s; me/providers 5/s; me/summary 5/s; account-earnings 3/s; stats 0.7/s; routing decisions selected ≈52/s, `routing_saturated` ≈5/s; dispatch success ≈31/s, retry ≈19/s (00) | 22:14–23:14 UTC: chat 35.4/s (127,509/h); me/providers 18,716; me/summary 18,214; account-earnings 10,246; stats 2,615; network/totals 1,746. Routing: selected 199,125/h, `routing_saturated` 11,524/h. Dispatches: success 102,044, retry 90,611, failure 11,281, timeout 4,992 | agrees (load ≈25 % lower in this hour, post-release) |
 | B9 | Cloud SQL | primary `d-inference-prod-pg17` db-c4a-highmem-32 REGIONAL, CPU 34.5 % mean / 40 % max over 6 h; replica 5 %; orphan `d-inference-prod` PG 16 running (00 addendum) | `d-inference-prod-pg17` db-c4a-highmem-32 REGIONAL: CPU 6 h mean 34.6 %, max 44.9 %; backends mean 31, max 51; replica db-c4a-highmem-16 4.8 % mean; orphan PG 16 instance not measured | **agrees** |
 
-## C. Discrepancies and what changed in the proposal
+## C. Post-release re-measurement (V3, fresh data, 22:45–23:20 UTC)
 
-_pending_
+Timeline reconstructed from container state, the coordinator log (VM slice + GCS archive) and Datadog:
+
+| UTC | Event | Effect |
+|---|---|---|
+| 21:11:56 → 21:13:11 | SIGTERM to the old container, then **SIGKILL (exit 137)** after dockerd's 75 s limit — the coordinator's own drain grace is 10 min, so `drain complete` never logs; 21 of 23 retained fallback containers since 08-13 also exited 137 | dispatches fell to 81/min during the drain while requests kept arriving at ≈4,600/min |
+| 21:13:12 → 21:14:10 | new container started; `coordinator starting` only after a 45 s DB wait + **10 s loading 358,265 stored provider records** | ≈58 s with no listener; 1,244 provider registrations in the next minute |
+| 21:10–21:20 | deploy dip: one 5-min Datadog bucket (success 18/s, online 1,155) | back in the pre-deploy band by ≈21:20 |
+| **21:55–22:30** | **provider version wave 0.8.15 → 0.8.16** (not forced; `MIN_PROVIDER_VERSION` still 0.7.5) | success down to 2.3/s, retries 140/s, ws disconnects 5×, ≈90 K `capacity/503` errors in one quarter-hour, Cloud SQL CPU 42 % |
+| **22:45** | recovery point: chat 42.7/s, success 28.5/s, saturated 9/s, online 1,179 — inside the 20:00–21:05 band | 34–36 stragglers still on 0.8.15; no restarts or config changes since |
+
+Fresh measurements on the post-recovery window (W2 = 22:50–23:20 UTC, ≈27.5 req/s ≈ 60 % of the pre-deploy load):
+
+| # | Claim | Post-recovery value | Verdict |
+|---|---|---|---|
+| C1 | Coordinator CPU / GC / scan | 3.27 cores at 60 % load; GC 1.05 (32 %); `scanCandidatesLocked` **0.27 cores** (was 1.2–1.4 at full load); heap 192 MB; 5 goroutines on the write lock, 0 on the semaphore at the profile instant | agrees; scan CPU is **superlinear in load** (convoy-driven rescans), which is the headroom argument for Tier 3 |
+| C2 | Stage waterfall, attempt 0, p50 (ms) | preflight 494 (p99 pinned at the 1.01 s cap); attempt start → last iteration 2,105 (p90 8,719); scan+admit 299; provider TTFT 2,146; relay 313; settle 1,343; **TTFB 6,515**; lock_wait 4.3, scan 3.8, `admit_us` 295 (was 196 in 21:xx) | **agrees** — coordinator-caused ≈3.2 s of 6.5 s even at 60 % load |
+| C3 | Served fraction per hour (success ÷ (attempt-0 + rejections)) | 19h 63 %, 20h 69 %, 21h 66 %, 22h 67 %, W2 72 %; ≈79 % if dispatch-stage rejections are de-duplicated (the join is not possible: rejections carry the short id, routes the UUID) | agrees with the 79 % baseline within the counting ambiguity; the mix shifted toward `first_chunk_timeout` ≥ `routing_saturated` after the wave |
+| C4 | DB | ≈80 % of active DB time is still the two `request_location` aggregates after the release; Cloud SQL CPU 30–36 % baseline before and after (42 % only during the wave); `request_profiles` ≈550 MB/h incl. indexes (1.2 GB since 21:14) | **agrees** |
+| C5 | Env | GOGC / GOMEMLIMIT / PROFILE_SAMPLE_RATE unset; `ROUTING_CONCURRENCY=96`; `TTFT_ADMISSION_MODE=shadow`; `QUEUE_BEFORE_SHED=true`; `MIN_PROVIDER_VERSION=0.7.5` | **agrees** |
+
+Caveats the verifier raised: `request_profiles` records ≈51 % of attempt-0 requests with every failed/slow attempt always recorded, so its percentiles are **failure-enriched**; the unbiased check is `inference_routes.route_ms` (all attempts, unsampled), p50 2.0–2.4 s across 19:00–23:00 UTC. `reserve_lock_acquired_us` has no `Mark` site — it is back-filled (A9).
+
+## D. What changed in the proposal because of verification
+
+1. §2.1/§2.2: "no rescans" withdrawn; the derived-stamp finding (A9) makes ≈10–14 rescan iterations per reservation the best-supported mechanism, pending the Tier 1.8 counter.
+2. §2.4: third correctness bug (`NetworkTotals` discards its error → zeros cached) added; stats stampede stated as a range (1,200–1,950 runs/h).
+3. §1/§2.1: the coordinator-caused share of TTFB stated as 2.4–2.6 s with the failure-enriched caveat; the unbiased `route_ms` p50 is the headline.
+4. §2.3: fresh-process GC stated as a range (0.8–1.3 cores), leak cost 0.45–1.0 core.
+5. §3 Tier 0 / §7: three ops findings from the release: drain grace mismatch (coordinator 10 min vs dockerd 75 s → SIGKILL on every swap), a ≈58 s no-listener startup (45 s DB wait + 10 s loading 358 K stored provider rows), and an unstaged provider version wave that cost 35 minutes of near-total failure.

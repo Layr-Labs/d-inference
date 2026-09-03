@@ -18,7 +18,7 @@ Sections: [00 baseline](00-prod-baseline.md) · [01 registry lock](01-registry-l
 |---|---:|---:|---|
 | Coordinator CPU at today's load (≈46 chat/s, 1,250 providers) | 4.4 cores (3.4 fresh-process) | **≈1.4–1.8 cores** (−60…−70 %) | C for each step; the largest step (perf branch) is already benchmarked |
 | Primary database busy CPU | ≈11 of 32 vCPU | **≈1.5 vCPU** (−85 %) | C: ≈90 % of busy samples are five analytics statements |
-| Client time-to-first-byte, median (attempt 0) | 6.5 s, of which **2.6 s is coordinator queueing** (measured in the post-redeploy window; the pre-deploy steady state shows the routing stage alone at 2.4 s p50) | **≈3.9 s** (coordinator share → ≈0.1 s) | M for the decomposition; C for the removal |
+| Client time-to-first-byte, median (attempt 0) | 6.5 s, of which **2.4–2.6 s is coordinator queueing** (unbiased `route_ms` p50 2.0–2.4 s across 19:00–23:00 UTC; the per-stage waterfall is from a failure-enriched sample — 07 C) | **≈3.9 s** (coordinator share → ≈0.1 s) | M for the decomposition; C for the removal |
 | Client requests served | 79 % (23 % rejected/failed at the coordinator) | **≈90 %** after the lock restructure, ≈93 % with the provider-side fixes | C from the 09-02 research, netted for overlap |
 
 Headroom moves from "the convoy re-forms at ≈3× today's load" to ">5× with CPU the only limiter"
@@ -133,6 +133,7 @@ or database mutations and are listed separately in §5.
 
 | # | Change | Gain | Grade |
 |---|---|---|---|
+| 0.0 | **Release mechanics** (from today's swap, 07 C): align the coordinator's drain grace with dockerd's stop timeout (today 10 min vs 75 s → every swap ends in SIGKILL and an unclean drain); make startup listen before/while loading the 358 K stored provider rows (≈58 s with no listener today); stage provider version waves (the unforced 0.8.15 → 0.8.16 wave at 21:55 UTC cost ≈35 min of near-total failure) | removes the two outage shapes seen today | M (07 C) |
 | 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` 0.7.5 → 0.8.12 → 0.8.15 (4 % of fleet, a large share of `first_chunk_timeout`) | +19–39 K served/day | C (06 k) |
 | 0.2 | Evict the wedged gpt-oss session identified in the research (28.6 % of first dispatches, 0 served) | +5–20 K/day | E (06 i) |
 | 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES=qwen3-vl-30b-a3b-instruct=off` — #787's 4 s cutoff is still hardcoded; ≈0 today, prevents a repeat of 08-31 if qwen3-vl is listed | risk removal | M (06 f) |
@@ -264,8 +265,10 @@ inherit E-grade assumptions from the served-rate research.
 ## 7. Coordination notes
 
 - Prod was redeployed to master `5d400cf75` at 21:13 UTC during this analysis (previous
-  container kept as `coordinator_fallback_20260903-211156`). All Tier 1+ numbers are against
-  master; the 4ce5c0409 profile is retained for the before/after GC comparison.
+  container kept as `coordinator_fallback_20260903-211156`). The deploy itself cost one 5-minute
+  bucket; the **provider version wave at 21:55–22:30 UTC** was the real outage, and steady state
+  returned at 22:45 UTC (07 C). All Tier 1+ numbers are against master and were re-confirmed on
+  the post-recovery window; the 4ce5c0409 profile is retained for the before/after GC comparison.
 - `.claude/worktrees/sysopt-0903` (`feat/system-optimization-2026-09-03`) is the active
   concurrent session: 0 commits, one untracked report, intends to port the same six branches.
   `.claude/worktrees/refactor` (`refactor/coordinator-modularization`) is from May 30, 301

@@ -329,23 +329,38 @@ this dies of:
   be readable and the text around it has to be a statement, so `q += " UNION
   SELECT id FROM usage"` and `fmt.Sprintf("... FROM %s", t)` are drift too — those
   leave the count balanced and a table missing. Every such keyword in a literal is
-  examined, not just the first: `fmt.Sprintf("... FROM models m JOIN %s u ...")`
-  hides its second table behind a readable first one. Constants count as one
-  statement: `"SELECT " + userColumns + " FROM users"` is folded by `go/types`,
-  which is why the column-list splice the store uses throughout stays readable.
-  Three things the scan deliberately says nothing about, because it reads SQL
-  rather than parsing it: a lower-case keyword (the tree writes SQL in upper case,
-  and `deps.strict` prose is full of "update … from …"), a clause that ends at a
-  keyword (`q += " FOR UPDATE"` names no table), and a name with no `CREATE TABLE`
-  — usually a CTE the same body declared, since `WITH providers AS (…)` then `JOIN
-  providers p` is the CTE and not the `providers` table. A query that genuinely
-  cannot be one expression — the earnings CTE chains, where a conditional `WHERE`
-  is spliced into the middle — names its tables in `deps.sqlDriver.assembled`
-  instead. That entry is held to being an explanation rather than a mute: the map
-  draws its tables, the names are checked against the schema, a table the text
-  names but the entry omits is still reported, an entry is reported once the
-  function no longer needs it or no longer exists, and an entry declaring no tables
-  is rejected outright.
+  examined, not just the first, and every table it names is remembered:
+  `fmt.Sprintf("... FROM models m JOIN %s u ...")` hides its second table behind a
+  readable first one, and `q += " FROM models m JOIN usage u"` hides a second table
+  behind a declared one. Text that *ends* at a keyword is drift as well
+  (`q += " JOIN " + other`), while a clause that ends **on** one is not
+  (`q += " FOR UPDATE"` names no table) — the difference is the trailing space,
+  which is a name that never reaches the extractor. `ONLY` and `LATERAL` are read
+  through, since they prefix a table name rather than replace it. Constants count
+  as one statement: `"SELECT " + userColumns + " FROM users"` is folded by
+  `go/types`, which is why the column-list splice the store uses throughout stays
+  readable.
+
+  A `WITH` clause shadows a table of the same name — the earnings queries define
+  `WITH providers AS (…)` and then `JOIN providers p`, which is the CTE and not the
+  `providers` table, and no schema check can tell them apart because `providers` is
+  also real. Those names are scoped to the **variable the query is assembled into**,
+  which is the nearest thing to "which statement is this" in a body that builds
+  statements at run time. Two consequences worth knowing: a CTE in one query does
+  not silence a same-named table in another query of the same function, and a
+  fragment hoisted into a *different* variable than the one carrying its `WITH`
+  clause is reported even though the SQL is legal — inline it, or assemble it into
+  the same variable. The scan reads SQL rather than parsing it, so it also says
+  nothing about a lower-case keyword; the tree writes SQL in upper case, and prose
+  is full of "update … from …".
+
+  A query that genuinely cannot be one expression — the earnings CTE chains, where
+  a conditional `WHERE` is spliced into the middle — names its tables in
+  `deps.sqlDriver.assembled` instead. That entry is held to being an explanation
+  rather than a mute: the map draws its tables, the names are checked against the
+  schema, every table the text names but the entry omits is still reported, an entry
+  is reported once the function no longer needs it or is no longer reachable from a
+  route, and an entry declaring no tables is rejected outright.
 
 ## Scope
 

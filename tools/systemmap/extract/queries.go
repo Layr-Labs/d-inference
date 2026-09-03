@@ -58,6 +58,7 @@ func (f *fnWalk) isQueryCall(sel *ast.SelectorExpr) bool {
 // driven through one `Exec` in a loop, and a helper may declare the statement its
 // caller runs.
 func (f *fnWalk) auditQueries() {
+	f.settleFragments()
 	if declared, ok := f.declared(); ok {
 		f.settleDeclared(declared)
 		return
@@ -128,7 +129,13 @@ func (f *fnWalk) settleDeclared(tables map[string]string) {
 //
 // This runs once per service, after every route has been walked, so "claimed"
 // means the walk actually reached the function — a declaration on code no
-// endpoint can reach explains nothing about the map either.
+// endpoint can reach explains nothing about the map either, which is why the
+// finding names both possibilities rather than sending the reader after a rename
+// that never happened.
+//
+// The claimed set is per walker while the declarations are per overlay, so a
+// second service extractor would have to scope this by package before it reports
+// the first service's entries as unmatched.
 func (w *Walker) AuditAssembled() {
 	for key := range w.Cfg.AssembledDeclarations() {
 		if w.claimed[key] {
@@ -139,7 +146,7 @@ func (w *Walker) AuditAssembled() {
 			pkg, fn = key[:i], key[i+1:]
 		}
 		w.Rep.OpaqueQuery(pkg, fn, key,
-			"the overlay declares assembled tables under this name, but no function the walk reached has it — delete the entry or correct the name", "")
+			"the overlay declares assembled tables under this name, but no function reachable from a route has it — correct the name, or delete the entry if the query moved off the route table", "")
 	}
 }
 
@@ -158,12 +165,22 @@ func (f *fnWalk) declSite() string {
 // from several literals has its WITH clause in an earlier one than its FROM, so
 // unlike `Tables` — which reads one whole statement and can see both — the scan
 // here has to carry the names across the body.
+//
+// The names are scoped to the variable the text was assigned to, not to the whole
+// body. A body-wide set was both too coarse and order-dependent: a CTE in one
+// query silenced a same-named real table in another, and hoisting a fragment into
+// a local above the base statement flipped a clean function into a finding. The
+// variable a query is assembled into is the nearest thing to "which statement is
+// this", and it does not depend on which literal the walk reached first.
 func (f *fnWalk) noteCTEs(s string) {
-	for _, m := range reCTE.FindAllStringSubmatch(normalizeSQL(s), -1) {
+	for _, m := range reCTEName.FindAllStringSubmatch(s, -1) {
 		if f.ctes == nil {
-			f.ctes = map[string]bool{}
+			f.ctes = map[types.Object]map[string]bool{}
 		}
-		f.ctes[m[1]] = true
+		if f.ctes[f.textVar] == nil {
+			f.ctes[f.textVar] = map[string]bool{}
+		}
+		f.ctes[f.textVar][strings.ToLower(m[1])] = true
 	}
 }
 
@@ -199,7 +216,28 @@ func sortedKeys(m map[string]string) []string {
 // empty nor a parenthesis, because neither of those names a table: `FOR UPDATE`
 // ends a perfectly readable statement, and `FROM (SELECT ...)` opens a subquery
 // whose own FROM is matched on its own. Accepting them made legal SQL a finding.
-var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+([^\s,;()]+)`)
+//
+// ONLY and LATERAL are stepped over rather than treated as the token, because
+// they prefix a table name instead of replacing it — `Tables` reads through ONLY
+// the same way, and a scan that stopped at the keyword would let `FROM ONLY %s`
+// splice a table in unseen. The keywords that genuinely end the search (SELECT
+// opening a subquery, UNNEST opening a function) are `sqlNoise` below.
+var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+(?:(?:ONLY|LATERAL)[ \t\n\r]+)*([^\s,;()]+)`)
+
+// reTrailingKeyword is the other half of demanding a token after the keyword.
+// Requiring one is what stops `q += " FOR UPDATE"` from being a finding, but it
+// also made `q += " JOIN " + other` — the same splice, concatenated instead of
+// formatted — match nothing at all. The difference between the two is the
+// whitespace: a clause that ends *at* a keyword ends there, while a clause that
+// ends after it is waiting for a name the extractor will never see.
+var reTrailingKeyword = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+$`)
+
+// reCTEName finds a WITH clause's name. Unlike `reCTE`, which reads a whole
+// normalized statement, this runs over text as written and so demands upper-case
+// keywords for the same reason `reTableName` does: every string in the body is
+// scanned, and prose ("cannot rank with usage as (metric) unset") would
+// otherwise register a CTE and switch the fragment check off.
+var reCTEName = regexp.MustCompile(`(?:\bWITH|,)[ \t\n\r]+(?:RECURSIVE[ \t\n\r]+)?([A-Za-z_][A-Za-z0-9_$]*)[ \t\n\r]+AS[ \t\n\r]*\(`)
 
 // reBareIdent is a table name the extractor can read: an identifier, optionally
 // schema-qualified and optionally quoted. `Tables` accepts exactly this shape.
@@ -209,38 +247,82 @@ var reBareIdent = regexp.MustCompile(`^(?i:"?[a-z_][a-z0-9_$]*"?)(\.("?[a-z_][a-
 // thing the map needs from it: that a table it names can be read. `statement`
 // says whether the text as a whole parsed as a statement, which is what
 // separates a complete query from a fragment of one.
+//
+// A splice is decided here, because nothing later in the body can make `%s` into
+// a name. A readable name in a fragment is only buffered, because whether it is
+// a table or a CTE this body declares depends on text the walk may not have
+// reached yet — `settleFragments` decides it once the body is done.
 func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	// `EXTRACT(EPOCH FROM now() - created_at)` spells FROM without naming a table,
 	// which is why `Tables` masks these calls; the same mask is what keeps them
 	// from being read here as a table spliced in at run time.
 	masked := string(maskKeywordCalls([]byte(s)))
 	f.noteCTEs(masked)
+	if m := reTrailingKeyword.FindStringSubmatch(masked); m != nil {
+		f.opaque(pos, fmt.Sprintf("the text ends at `%s`, so the table that follows it is spliced in at run time (`%s`)",
+			m[1], ellipsis(s)))
+		return
+	}
+	var names []string
 	for _, m := range reTableName.FindAllStringSubmatch(masked, -1) {
 		keyword, name := m[1], m[2]
 		table := cleanIdent(strings.ToLower(name))
 		switch {
 		case sqlNoise[table]:
-			continue // a keyword that may legally follow, e.g. `FROM ONLY t`
+			// A keyword that ends the search rather than naming a table: `FROM
+			// (SELECT ...)`, `FROM UNNEST($1)`.
 		case !reBareIdent.MatchString(name):
 			f.opaque(pos, fmt.Sprintf("the table after `%s` is spliced in at run time (`%s`)",
 				keyword, ellipsis(keyword+" "+name)))
-		case !statement && f.w.tables[table] && !f.ctes[table]:
-			f.opaqueTable(table, pos)
-			f.opaque(pos, fmt.Sprintf("`%s` names a table but is only a fragment of a statement",
-				ellipsis(s)))
+			return // one finding per literal is enough to act on
+		case !statement:
+			names = append(names, table)
 		default:
-			// Two ways a readable name is not a missing table edge. In a statement,
-			// `Tables` already drew it. In a fragment, it names no table the schema
-			// declares, or one this body shadowed with a CTE of the same name — the
-			// earnings queries define `WITH providers AS (...)` and then `JOIN
-			// providers p`, which is the CTE and not the providers table.
-			//
-			// Either way the scan has to keep going, because the table that is
-			// missing may be the second one: stopping at the first readable name is
-			// what let `fmt.Sprintf("... FROM models m JOIN %s ...")` publish clean.
+			// A readable name in a statement is not a missing edge: `Tables` drew it.
+		}
+		// The scan keeps going either way, because the table that is missing may be
+		// the second one — stopping at the first name it could read is what let
+		// `fmt.Sprintf("... FROM models m JOIN %s ...")` publish clean.
+	}
+	for _, table := range names {
+		f.frags = append(f.frags, fragment{table: table, text: s, pos: pos, owner: f.textVar})
+	}
+}
+
+// fragment is a table name read out of text that was not a whole statement,
+// held until the CTE names of the statement it belongs to are all known.
+type fragment struct {
+	table string
+	text  string
+	pos   token.Pos
+	owner types.Object // the variable this text was assembled into
+}
+
+// settleFragments decides the buffered fragment names once the whole body has
+// been walked, so the verdict does not depend on whether the WITH clause was
+// written above the FROM or hoisted into a local declared before it.
+//
+// Every non-CTE name is recorded, because a declaration is held to each table the
+// text names; only the report stops at one finding per literal, which is all a
+// reader needs to go and look.
+func (f *fnWalk) settleFragments() {
+	reported := map[token.Pos]bool{}
+	for _, fr := range f.frags {
+		// A CTE of the same name shadows the table: the earnings queries define
+		// `WITH providers AS (...)` and then `JOIN providers p`, which is the CTE and
+		// not the providers table — and `providers` is a real table, so the schema
+		// cannot settle this on its own.
+		if f.ctes[fr.owner][fr.table] {
 			continue
 		}
-		return // one finding per literal is enough to act on
+		f.opaqueTable(fr.table, fr.pos)
+		if reported[fr.pos] {
+			f.opaqueSeen = true
+			continue
+		}
+		reported[fr.pos] = true
+		f.opaque(fr.pos, fmt.Sprintf("`%s` names a table but is only a fragment of a statement",
+			ellipsis(fr.text)))
 	}
 }
 

@@ -155,11 +155,13 @@ type fnWalk struct {
 	// recoverable here against how much the driver was handed. See queries.go.
 	sqlSeen      int
 	dbSites      []string
-	dbPos        token.Pos         // the first driver call, for citing a declared table
-	declPos      token.Pos         // this function's own declaration
-	opaqueSeen   bool              // unreadable text was found, reported or declared
-	opaqueTables map[string]string // tables named in unreadable text, and where
-	ctes         map[string]bool   // WITH clauses this body declares, which shadow tables
+	dbPos        token.Pos                        // the first driver call, for citing a declared table
+	declPos      token.Pos                        // this function's own declaration
+	opaqueSeen   bool                             // unreadable text was found, reported or declared
+	opaqueTables map[string]string                // tables named in unreadable text, and where
+	textVar      types.Object                     // the variable the text being walked is assigned to
+	ctes         map[types.Object]map[string]bool // WITH clauses declared per assembled statement
+	frags        []fragment                       // table names read out of fragments, settled at body end
 
 	out []ir.Access
 }
@@ -195,9 +197,16 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 	case *ast.ExprStmt:
 		f.visit(x.X, ModeRead)
 	case *ast.AssignStmt:
+		// The variable being assigned scopes the statement text on the right: a
+		// query assembled out of fragments is assembled into one local, so that
+		// local is the closest thing the extractor has to "the statement this
+		// belongs to". See noteCTEs in queries.go.
+		prev := f.textVar
+		f.textVar = f.assignTarget(x.Lhs)
 		for _, rhs := range x.Rhs {
 			f.visit(rhs, ModeRead)
 		}
+		f.textVar = prev
 		f.bindVars(x)
 		if x.Tok == token.DEFINE {
 			return // the left side declares new locals; nothing is mutated
@@ -214,9 +223,12 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 				if !ok {
 					continue
 				}
+				prev := f.textVar
+				f.textVar = f.assignTarget(identExprs(vs.Names))
 				for _, v := range vs.Values {
 					f.visit(v, ModeRead)
 				}
+				f.textVar = prev
 				f.bindSpec(vs)
 			}
 		}
@@ -284,6 +296,28 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 
 // bindVars propagates node attribution through `x := s.registry` so later uses
 // of the local are still attributed to the state it aliases.
+// assignTarget names the single variable an assignment writes, which is what
+// scopes the statement text on its right. A multi-value assignment has no single
+// target, so its text falls back to the body-wide scope.
+func (f *fnWalk) assignTarget(lhs []ast.Expr) types.Object {
+	if len(lhs) != 1 {
+		return nil
+	}
+	ident, ok := lhs[0].(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	return f.objOf(ident)
+}
+
+func identExprs(names []*ast.Ident) []ast.Expr {
+	out := make([]ast.Expr, len(names))
+	for i, name := range names {
+		out[i] = name
+	}
+	return out
+}
+
 func (f *fnWalk) bindVars(a *ast.AssignStmt) {
 	if len(a.Lhs) != len(a.Rhs) {
 		return

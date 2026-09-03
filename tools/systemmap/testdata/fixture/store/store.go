@@ -181,6 +181,100 @@ func (p *Postgres) InsertModel(ctx context.Context, id, name string) error {
 	return err
 }
 
+// ListModelsPaired names both of its tables in one fragment. A declaration for
+// this body has to answer for each of them: a scan that recorded only the first
+// name it read would let a `JOIN` added beside an already-declared table be
+// absorbed by an entry that says nothing about it.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) ListModelsPaired(ctx context.Context, all bool) error {
+	q := `SELECT m.id`
+	if all {
+		q += ` FROM models m JOIN usage u ON u.id = m.id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankModels shadows a real table with a CTE of the same name. `usage` has a
+// CREATE TABLE, so the schema cannot settle whether the appended `JOIN usage`
+// reads it — only the WITH clause assembled into the same variable can, which is
+// the shape the coordinator's earnings queries have.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankModels(ctx context.Context, all bool) error {
+	q := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if all {
+		q += ` JOIN usage u ON u.id = usage.id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankAndList runs two statements, one of which declares a CTE named after the
+// table the other one reads. A CTE set kept per function body rather than per
+// assembled statement would let the first query silence the second, dropping a
+// real read of `usage` with nothing to report it.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankAndList(ctx context.Context, all bool) error {
+	ranked := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if _, err := p.db.ExecContext(ctx, ranked); err != nil {
+		return err
+	}
+	q := `SELECT m.id FROM models m WHERE m.id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = m.id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// ListModelsLogged carries a sentence that reads like a WITH clause, in a body
+// whose fragment is handed straight to the driver rather than assembled into a
+// variable — so the prose and the fragment share the one scope the extractor has
+// left. Prose spelling a CTE in lower case must not register there: a log message
+// able to switch the fragment check off would be the easiest way in the language
+// to drop a table from the map.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) ListModelsLogged(ctx context.Context, base string) error {
+	fmt.Println("retrying with usage as (the fallback source) unavailable")
+	_, err := p.db.ExecContext(ctx,
+		base+` UNION SELECT model FROM usage`)
+	return err
+}
+
+// JoinSpliced ends its fragment at the keyword and concatenates the table name
+// after it. `q += " FOR UPDATE"` looks the same to a scan that only asks whether
+// a token follows the keyword — the difference is the trailing space, which is a
+// name the extractor will never see.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) JoinSpliced(ctx context.Context, other string) error {
+	q := `SELECT m.id FROM models m`
+	q += ` JOIN ` + other + ` u ON u.id = m.id`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// CountOnly hides its spliced table behind a keyword that may legally precede a
+// table name. `Tables` reads through ONLY, so a scan that stopped at it would
+// call a run-time table name readable.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) CountOnly(ctx context.Context, table string) error {
+	_, err := p.db.ExecContext(ctx, fmt.Sprintf(`SELECT count(*) FROM ONLY %s WHERE id = $1`, table))
+	return err
+}
+
+// ModelLabel makes no database call, so a declaration naming it explains nothing
+// and has no call site to cite. It exists to pin the one finding that is about the
+// absence of a query rather than about a query.
+func (p *Postgres) ModelLabel(id string) string {
+	return "model:" + id
+}
+
 // Memory is the dev fallback. It implements Store too, so a walker that ignored
 // preferImpl would attribute the endpoints here and find no SQL.
 type Memory struct {

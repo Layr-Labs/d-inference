@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestIsSQLStatements pins the statement shapes the coordinator actually issues.
@@ -114,5 +115,30 @@ func TestMaskKeywordCallsStaysAligned(t *testing.T) {
 	}
 	if !strings.Contains(got, "FROM models") {
 		t.Errorf("mask blanked text outside the call: %q", got)
+	}
+}
+
+// TestEllipsisKeepsRunes covers the quoting a finding does. Cutting a long
+// statement at a fixed byte offset can land in the middle of a rune, which would
+// put a replacement character in the report — the one place a reader looks to
+// find out which text the extractor could not read.
+func TestEllipsisKeepsRunes(t *testing.T) {
+	// The em dash is three bytes and is placed so that the 57-byte cut lands on its
+	// second byte, which is the only offset that can produce a broken rune.
+	long := "SELECT id FROM models WHERE note = 'wide need— wider — widest'"
+	// An edit to that literal must not move the cut back onto a boundary, which
+	// would leave the test passing while proving nothing.
+	if utf8.RuneStart(long[57]) {
+		t.Fatal("byte 57 of the fixture text is a rune start, so this test cannot fail")
+	}
+	got := ellipsis(long)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("long text was not shortened: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("shortened text is not valid UTF-8: %q", got)
+	}
+	if short := "SELECT id FROM models"; ellipsis(short) != short {
+		t.Errorf("ellipsis(%q) = %q, want it unchanged", short, ellipsis(short))
 	}
 }

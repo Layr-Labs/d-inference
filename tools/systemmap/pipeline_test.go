@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -292,6 +293,7 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 	}{
 		{"ListModelsFiltered", []string{
 			"1 database call(s) but only 0 readable statement(s) in the body",
+			"the text ends at `FROM`, so the table that follows it is spliced in at run time (`SELECT id FROM`)",
 		}},
 		{"ListModelsWithUsage", []string{
 			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
@@ -301,6 +303,30 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		}},
 		{"ListModelsJoined", []string{
 			"the table after `JOIN` is spliced in at run time (`JOIN %s`)",
+		}},
+		// The same splice concatenated instead of formatted. Demanding a token after
+		// the keyword is what keeps `q += " FOR UPDATE"` clean, and it is exactly what
+		// makes this shape match nothing: the table is in the next expression.
+		{"JoinSpliced", []string{
+			"the text ends at `JOIN`, so the table that follows it is spliced in at run time (`JOIN`)",
+		}},
+		// A keyword that may legally precede a table name, so a scan that treated it
+		// as the end of the search would call a run-time table name readable.
+		{"CountOnly", []string{
+			"the table after `FROM` is spliced in at run time (`FROM %s`)",
+		}},
+		// Two statements, the first declaring a CTE named after the table the second
+		// reads. CTE names have to be scoped to the statement being assembled, or one
+		// query silences the other and a real read is dropped.
+		{"RankAndList", []string{
+			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
+		}},
+		// Prose that reads like a WITH clause, sharing its scope with the fragment.
+		// Every string in the body is scanned for CTE names, so a log message must not
+		// be able to shadow a table.
+		{"ListModelsLogged", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
 		}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
@@ -327,6 +353,10 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		{"LockModel", []string{"pg.models R"}},
 		// A column list opening where a table name's next character would be.
 		{"InsertModel", []string{"pg.models W"}},
+		// A CTE shadowing a table that really exists. The schema cannot settle this
+		// one — `usage` has a CREATE TABLE — so only the WITH clause assembled into
+		// the same variable says the appended JOIN is not a read of it.
+		{"RankModels", []string{"pg.models R"}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			accesses, rep := walkFixtureMethod(t, tc.method)
@@ -401,6 +431,37 @@ func TestFixtureAssembledDeclaration(t *testing.T) {
 		}
 	})
 
+	// The completeness check has to look past the first table in a literal for the
+	// same reason the scan does. `FROM models m JOIN usage u` is one fragment, so an
+	// entry declaring `models` would absorb the whole line — and the coordinator's
+	// declared earnings queries are exactly this shape, a JOIN sitting beside a table
+	// the entry already names.
+	t.Run("second table in the same fragment", func(t *testing.T) {
+		want := []string{"the overlay declares the tables this function assembles, but text here names `usage`, which the declaration does not — add it"}
+		got := opaqueDetails(t, "ListModelsPaired",
+			declare("ListModelsPaired", map[string]string{"models": "R"}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("findings for a second table beside a declared one:\n got %q\nwant %q", got, want)
+		}
+	})
+
+	// A declaration on a function that runs no query explains nothing, and it is the
+	// one finding with no call site to cite — it has to fall back to the function's
+	// own declaration rather than indexing an empty list of call sites.
+	t.Run("no database call", func(t *testing.T) {
+		_, rep := walkFixtureMethod(t, "ModelLabel",
+			declare("ModelLabel", map[string]string{"models": "R"}))
+		want := "store/store.go:" + fixtureLine(t, "func (p *Postgres) ModelLabel")
+		q := rep.OpaqueQueries[want]
+		if q == nil {
+			t.Fatalf("a declaration on a query-free function was not cited at %s: %s\n\n%s",
+				want, rep.Counts(), rep.Markdown())
+		}
+		if !strings.Contains(q.Detail, "makes no database call") {
+			t.Errorf("detail = %q, want it to say the function runs no query", q.Detail)
+		}
+	})
+
 	// A name that matches no function draws nothing, so an entry that outlives a
 	// rename is the same silence the declaration was meant to break.
 	t.Run("names no function", func(t *testing.T) {
@@ -409,7 +470,7 @@ func TestFixtureAssembledDeclaration(t *testing.T) {
 		if q == nil {
 			t.Fatalf("a declaration matching no function went unreported: %s", rep.Counts())
 		}
-		if !strings.Contains(q.Detail, "no function the walk reached has it") {
+		if !strings.Contains(q.Detail, "no function reachable from a route has it") {
 			t.Errorf("detail = %q, want it to say the name matches nothing", q.Detail)
 		}
 	})
@@ -448,6 +509,43 @@ func TestOverlayRejectsMuteDeclaration(t *testing.T) {
 				t.Errorf("error = %v, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// fixtureLine finds the line a fixture declaration is on, so a test can assert
+// which position a finding cites without hard-coding a number that every edit to
+// the fixture would invalidate.
+func fixtureLine(t *testing.T, substring string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "fixture", "store", "store.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, substring) {
+			return strconv.Itoa(i + 1)
+		}
+	}
+	t.Fatalf("fixture store.go contains no line with %q", substring)
+	return ""
+}
+
+// TestOpaqueRemedyFitsTheFinding covers what the report tells the reader to do.
+// Unreadable text has a remedy — keep the statement in one expression, or declare
+// it — while a declaration finding already says what to do about itself, and
+// attaching the same remedy there would tell the reader to declare tables in an
+// entry the same line is asking them to delete.
+func TestOpaqueRemedyFitsTheFinding(t *testing.T) {
+	const remedy = "declare its tables in `deps.sqlDriver.assembled`"
+
+	_, rep := walkFixtureMethod(t, "CountRows")
+	if !strings.Contains(rep.Markdown(), remedy) {
+		t.Errorf("unreadable text was reported without saying what to do about it:\n\n%s", rep.Markdown())
+	}
+
+	_, stale := walkFixtureMethod(t, "GetModel", declare("GetModel", map[string]string{"models": "R"}))
+	if md := stale.Markdown(); strings.Contains(md, remedy) {
+		t.Errorf("a stale declaration was told to declare tables it should delete:\n\n%s", md)
 	}
 }
 

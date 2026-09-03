@@ -18,7 +18,7 @@ Sections: [00 baseline](00-prod-baseline.md) · [01 registry lock](01-registry-l
 |---|---:|---:|---|
 | Coordinator CPU at today's load (≈46 chat/s, 1,250 providers) | 4.4 cores (3.4 fresh-process) | **≈1.4–1.8 cores** (−60…−70 %) | C for each step; the largest step (perf branch) is already benchmarked |
 | Primary database busy CPU | ≈11 of 32 vCPU | **≈1.5 vCPU** (−85 %) | C: ≈90 % of busy samples are five analytics statements |
-| Client time-to-first-byte, median (attempt 0) | 6.5 s, of which **2.6 s is coordinator queueing** | **≈3.9 s** (coordinator share → ≈0.1 s) | M for the decomposition; C for the removal |
+| Client time-to-first-byte, median (attempt 0) | 6.5 s, of which **2.6 s is coordinator queueing** (measured in the post-redeploy window; the pre-deploy steady state shows the routing stage alone at 2.4 s p50) | **≈3.9 s** (coordinator share → ≈0.1 s) | M for the decomposition; C for the removal |
 | Client requests served | 79 % (23 % rejected/failed at the coordinator) | **≈90 %** after the lock restructure, ≈93 % with the provider-side fixes | C from the 09-02 research, netted for overlap |
 
 Headroom moves from "the convoy re-forms at ≈3× today's load" to ">5× with CPU the only limiter"
@@ -48,10 +48,10 @@ cheap (0.007 core of CPU under the write lock, M) — the **wait** is the cost:
 | Attempt start → first scan lock acquired (permit wait at dispatch) | **1,714 ms** | 7,303 ms | 11,898 ms |
 | Commit phase (`admit_us`: write-lock wait + re-check) | **189 ms** | 231 ms | 274 ms |
 | Provider first content → client first byte (relay incl. the capacity-accept write lock) | **201 ms** | 243 ms | 302 ms |
-| Completion → finalized (four more write-lock acquisitions + drain) | 909 ms | 10,404 ms | 36,220 ms |
+| Completion → finalized (includes four more write-lock acquisitions; the p90/p99 tail is unexplained — §8) | 909 ms | 10,404 ms | 36,220 ms |
 | Client time-to-first-byte, this attempt | 6,487 ms | 9,686 ms | 15,594 ms |
 
-The commit wait is remarkably flat at ≈190 ms ≈ (≈90 queued writers) × (≈2 ms reader batch):
+The commit wait is remarkably flat at ≈190 ms ≈ (≈90 queued writers) × (≈2 ms reader batch) — there is no timer, sleep or backoff anywhere in the reserve/commit path (checked), so the band is a queue bounded by the permit count, not a fixed delay:
 the #799 semaphore (`EIGENINFERENCE_ROUTING_CONCURRENCY=96`) caps how many writers can queue, so
 it bounds the *wait per commit* while turning the overflow into `routing_saturated` 429s
 (5.3/s now, 22,045/h earlier today) and a 1.7 s median permit wait at dispatch. At the profile
@@ -222,7 +222,7 @@ settlement transaction (changes failure semantics; the perf branch already rejec
 | + Tier 4 | ≈1.5 | **≈1.5** | ≈3.8 s | ≈90 % | +5 d |
 | + Tier 5 + provider train | ≈1.4 | ≈1.5 | ≈3.5 s | ≈93 % | +4 d + release |
 
-The cores column is C: each step's arithmetic is in its section (03 §Estimated, 01 §Estimated,
+The cores column is C and rounded conservatively upward between rows (the per-section deltas sum to slightly less than shown); each step's arithmetic is in its section (03 §Estimated, 01 §Estimated,
 04 §Estimated). The first three rows are the ones with M-grade inputs at every step; rows 4–6
 inherit E-grade assumptions from the served-rate research.
 
@@ -237,7 +237,7 @@ inherit E-grade assumptions from the served-rate research.
 | `provider_earnings_daily` backfill | one off-peak 38 GB scan, chunked by month | Tier 4.1 |
 | Env knobs | `MIN_PROVIDER_VERSION`, `MODEL_FIRST_CONTENT_BASES`, `PROFILE_SAMPLE_RATE`, `ROUTING_CONCURRENCY` re-size after Tier 3 | Tier 0 |
 | Orphan Cloud SQL instance | `d-inference-prod` (PG 16) | confirm unused, then stop/delete |
-| Docker log rotation | `LogConfig: {}` today; 4.6 MB/min; six concurrent `docker logs --since 2h` readers cost dockerd 1.8 cores + journalctl 1 core on the host | `max-size`/`max-file` in the run command; point log readers at the archived files |
+| Docker log rotation | no Docker-level rotation (`LogConfig: {}`); 4.6 MB/min; six concurrent `docker logs --since 2h` readers cost dockerd 1.8 cores + journalctl 1 core on the host | verify the hourly host archival truncates the json-file log; add `max-size`/`max-file`; point log readers at the archived files |
 
 ## 6. Validation plan
 
@@ -276,3 +276,6 @@ inherit E-grade assumptions from the served-rate research.
    not a queue-depth bound.
 3. `#809` sample rate: is ≈53 % of successes intended?
 4. `/v1/me/summary` truncation: fix in Tier 1.5 or as a hotfix?
+5. Completion → finalized has a 10 s p90 / 35 s p99 tail; the four post-stream write-lock acquisitions
+   explain the ≈0.9 s median but not the tail (client drain? backup cancellation?) — attribute with the
+   #809 stamps before touching it.

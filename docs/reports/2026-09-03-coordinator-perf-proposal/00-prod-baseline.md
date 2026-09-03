@@ -197,7 +197,7 @@ are not emitted by 4ce5c0409); `inference_routes` is the only source for the sta
 The container restarted 11 minutes before the second profile, so the live heap is the
 fresh-process baseline (leak reset). Same offered load (≈62 attempts/s).
 
-| Metric | Build 4ce5c0409 (78-day-old process, heap 1.12 GB) | Build 5d400cf75 (11 min old, heap 0.16 GB) |
+| Metric | Build 4ce5c0409 (48-hour-old process, heap 1.12 GB; VM up 78 days) | Build 5d400cf75 (11 min old, heap 0.16 GB) |
 |---|---:|---:|
 | Coordinator CPU (30 s profile) | 4.46 cores | **3.43 cores** |
 | GC (`gcBgMarkWorker` cum) | 1.74 cores (38.8 %) | **0.75 cores (21.8 %)** |

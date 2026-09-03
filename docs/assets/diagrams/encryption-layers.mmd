@@ -1,26 +1,23 @@
-flowchart TB
-    subgraph consumer["Consumer"]
-        C[Prompt plaintext]
-    end
+%% Encryption hops as built at 5d400cf75. Source of truth for encryption-layers.svg;
+%% re-render after editing: mmdc -i encryption-layers.mmd -o encryption-layers.svg
+sequenceDiagram
+    participant C as Consumer
+    participant K as Coordinator
+    participant P as Provider
 
-    subgraph coord["Coordinator — Confidential VM"]
-        CK[Long-lived X25519 key]
-        CE[Ephemeral X25519 key]
-        CVM["Plaintext in CVM memory<br/>(routing/billing only;<br/>not logged or retained)"]
-    end
+    Note over C,K: Hop 1 (optional) — sender sealing
+    C->>K: GET /v1/encryption-key
+    K-->>C: {public_key, kid, algorithm: x25519-xsalsa20-poly1305}
+    C->>K: POST /v1/chat/completions<br/>Content-Type: application/vnd.eigen.sealed+json<br/>{kid, sender_public_key, nonce, ciphertext}
+    Note over K: NaCl Box open with coordinator X25519 key<br/>(HKDF of mnemonic, info "eigeninference-coordinator-e2e-v1")<br/>plaintext lives in memory only
 
-    subgraph provider["Provider Mac"]
-        PK[Ephemeral X25519 key]
-        SE[Secure Enclave]
-        PT[Prompt plaintext]
-    end
+    Note over K,P: Hop 2 (mandatory) — coordinator → provider
+    K->>P: inference_request<br/>encrypted_body = Box(sessionPriv, providerPub K)<br/>session_public_key, nonce
+    Note over P: X25519 K decrypts — plaintext exists only inside the provider process
 
-    C -->|"TLS (default)"| CK
-    C -.->|"Optional NaCl Box"| CK
-    CK --> CVM
-    CVM -->|"Mandatory NaCl Box"| PK
-    PK --> PT
-    SE -.->|"binds"| PK
+    Note over P,K: Hop 3 (mandatory) — provider → coordinator
+    P->>K: inference_response_chunk<br/>encrypted_data = Box(K, sessionPub)<br/>sender_public_key must equal K
+    Note over K: precomputed shared key per (SessionPrivKey, K)<br/>chunkKeyCacheMax = 256
 
-    style CVM fill:#fff9c4
-    style PT fill:#fff9c4
+    Note over K,C: Response returns on hop 1
+    K-->>C: X-Eigen-Sealed: 1, X-Eigen-Sealed-Kid,<br/>X-Provider-*, X-Attestation-Se-Public-Key<br/>(sealed to the caller's sender key when hop 1 was used)

@@ -1,20 +1,28 @@
+%% Provider trust stack as built at 5d400cf75. Source of truth for attestation-layers.svg;
+%% re-render after editing: mmdc -i attestation-layers.mmd -o attestation-layers.svg
+%% MDA and code identity are flags carried alongside the level, not levels themselves.
 flowchart TB
-    subgraph layers["Provider trust stack"]
-        direction TB
-        L5["Layer 5: APNs code identity<br/>Genuine Darkbloom binary proof<br/>enforced by AppleMobileFileIntegrity.kext"]
-        L4["Layer 4: Challenge-response<br/>Fresh SIP / SecureBoot / RDMA every 5 min"]
-        L3["Layer 3: MDA-over-MDM<br/>Apple-signed hardware certificate"]
-        L2["Layer 2: MDM SecurityInfo<br/>Independent SIP/SecureBoot/ARV"]
-        L1["Layer 1: SE P-256 blob<br/>Hardware-bound identity + X25519 binding"]
+    subgraph L0["Level: untrusted (TrustNone)"]
+        A0["No valid SE attestation, or MarkUntrusted<br/>(3 hard challenge failures, runtime claim mismatch)"]
     end
-
-    L1 --> L2
-    L2 --> L3
-    L3 --> L4
-    L4 --> L5
-
-    Gate["Routing gate:<br/>providerSupportsPrivateTextLocked"]
-    L5 --> Gate
-
-    style L5 fill:#e8f5e9
-    style Gate fill:#fff3e0
+    subgraph L1["Level: self_signed (TrustSelfSigned)"]
+        A1["Registration blob signed by SE P-256 key<br/>verifyProviderAttestation → SetAttested(true)"]
+        A2["Periodic challenge every DefaultChallengeInterval = 5 min<br/>30 s reply timeout · fresh reply ≤ 16 min for routing"]
+    end
+    subgraph L2["Level: hardware (TrustHardware)"]
+        A3["MDM SecurityInfo cross-check (per connection)<br/>sip=true · secure_boot=full · serial matches SE blob<br/>GrantHardwareEvidenceAtEpochIfNotUntrusted"]
+    end
+    subgraph F["Flags carried alongside the level"]
+        B1["mda_verified — Apple DevicePropertiesAttestation<br/>SetMDAProofIfHardwareBound (needs hardware first)"]
+        B2["code_attested — APNs code-identity challenge<br/>GrantProcessCodeAttested (needs same K + APNs token)"]
+    end
+    A0 -->|"SE blob verifies"| A1
+    A1 --> A2
+    A2 -->|"SecurityInfo passes"| A3
+    A3 --> B1
+    A3 --> B2
+    A2 -->|"3 hard failures"| A0
+    A3 -->|"posture mismatch / SE key change"| A1
+    G["Routing private text requires: hardware ∧ fresh challenge ∧ code_attested (when enforced)<br/>providerLivenessGateReasonLocked → providerSupportsPrivateTextLocked"]
+    A3 --> G
+    B2 --> G

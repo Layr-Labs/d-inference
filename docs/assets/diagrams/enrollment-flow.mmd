@@ -1,20 +1,23 @@
+%% MDM enrollment as built at 5d400cf75. Source of truth for enrollment-flow.svg;
+%% re-render after editing: mmdc -i enrollment-flow.mmd -o enrollment-flow.svg
 sequenceDiagram
-    participant P as Provider Mac
-    participant S as install.sh
-    participant API as Coordinator
-    participant MDM as MicroMDM + SCEP
-    participant A as Apple MDA
+    participant O as Operator (darkbloom enroll)
+    participant K as Coordinator
+    participant M as MicroMDM
+    participant D as Device (mdmclient)
 
-    S->>API: POST /v1/enroll {}
-    API-->>S: .mobileconfig (SCEP + MDM)
-    S->>P: Install profile
-    P->>MDM: Enroll via SCEP identity
-    MDM-->>P: MDM check-in complete
-    API->>MDM: SecurityInfo + DeviceInformation(nonce)
-    MDM->>P: Send commands
-    P->>A: Request MDA cert chain
-    A-->>P: Apple-signed certificate
-    P->>P: Generate SE P-256 key
-    P->>API: Register {attestation blob, X25519 pub}
-    API->>API: Verify SE sig, check MDA chain,<br/>cross-check SecurityInfo
-    API-->>P: Trust level: hardware
+    O->>K: GET /v1/enroll (no auth)
+    K->>M: fetch SCEP CA + MDM enrollment settings
+    K-->>O: application/x-apple-aspen-config<br/>SCEP payload + MDM payload<br/>PayloadIdentifier io.darkbloom.enroll<br/>CMS-signed when PROFILE_SIGNING_P12_* is set
+    O->>D: open profile, operator approves in System Settings
+    D->>M: SCEP: device key + certificate request
+    M-->>D: device certificate
+    D->>M: MDM check-in (Authenticate, TokenUpdate)
+    Note over D,M: device now reachable via APNs (MDM topic)
+
+    Note over K,M: later, on each provider WebSocket connection
+    K->>M: SecurityInfo (and DevicePropertiesAttestation) commands by UDID
+    M->>D: APNs wake
+    D->>M: command results
+    M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token = EIGENINFERENCE_MDM_WEBHOOK_SECRET<br/>body ≤ 1 MiB
+    K-->>K: match CommandUUID → hardware grant / MDA flag

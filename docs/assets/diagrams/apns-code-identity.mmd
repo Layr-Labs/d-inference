@@ -1,40 +1,23 @@
-flowchart TB
-    subgraph macOS["macOS launch-time enforcement"]
-        AMFI["AppleMobileFileIntegrity.kext<br/>+ amfid"]
-        CS["Code signature: our Developer ID"]
-        APP["App ID: io.darkbloom.provider"]
-        ENT["Entitlement: aps-environment"]
-        PROV["Apple-signed provisioning profile"]
+%% APNs code-identity attestation as built at 5d400cf75. Source of truth for
+%% apns-code-identity.svg and .png; re-render after editing:
+%%   mmdc -i apns-code-identity.mmd -o apns-code-identity.svg
+%%   mmdc -i apns-code-identity.mmd -o apns-code-identity.png -s 2
+sequenceDiagram
+    participant P as Provider (signed app, GUI session)
+    participant K as Coordinator
+    participant A as Apple APNs
+
+    P->>K: register {apns_device_token, apns_environment, public_key K}
+    Note over K: codeAttestLoop: cached proof within reuseWindow (2h)<br/>for the same device → resume challenge instead of a push
+    alt push budget available
+        K->>K: budget check (maxAttempts=3, retrySpacing 5 min ± 20 s jitter,<br/>backgroundPushCooldown 48 min, alertPushCooldown 5h)
+        K->>A: push {nonce Box-sealed to K, provider_id, coordinator_id}<br/>apns-push-type background · apns-priority 5 · JWT ES256 (50 min)
+        A->>P: delivery to the App Store / Developer ID signed bundle
+        P->>K: code_attestation_response {code_challenge, signature}<br/>signed by the Secure Enclave key
+    else resume challenge (cached proof)
+        K->>P: code_attestation_resume_challenge {code_challenge, nonce}
+        P->>K: code_attestation_response (resumeTimeout 30 s)
     end
-
-    subgraph flow["APNs code-identity challenge"]
-        P["Provider genuine binary"]
-        A["Apple APNs"]
-        C["Coordinator"]
-    end
-
-    subgraph caveat["What APNs does NOT prove"]
-        MDM["MDM + MDA still required for:<br/>SIP, Secure Boot, hardware genuineness"]
-    end
-
-    CS --> AMFI
-    APP --> AMFI
-    ENT --> AMFI
-    PROV --> AMFI
-    AMFI --> P
-
-    P --> C
-    C --> C2["Encrypt nonce n to provider X25519 K"]
-    C2 --> A
-    A --> P
-    P --> P2["Decrypt n, sign with SE P-256"]
-    P2 --> C
-    C --> V["CodeAttested = true"]
-
-    V --> G["Gates private text routing"]
-    V --> MDM
-
-    style AMFI fill:#ffcccc
-    style P fill:#ccffcc
-    style V fill:#ccffcc
-    style MDM fill:#fff9c4
+    Note over K: handleCodeAttestationResponse → GrantProcessCodeAttested<br/>requires same K and same APNs token as at challenge time
+    K->>P: trust_status {code_attested: true}
+    Note over K: challengeValidity 30 min · budgetClearCooldown 45 min<br/>enforcement: EIGENINFERENCE_CODE_ATTESTATION_ENFORCE_AFTER or provider version ≥ 0.8.15

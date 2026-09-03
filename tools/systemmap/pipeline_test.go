@@ -432,6 +432,13 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"RankTailAfterAlias", []string{
 			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
 		}},
+		// The tail-first exception across a loop back edge: the tail is collected outside
+		// a loop that dispatches, the base prepended inside it. The rebinding is walked
+		// once and runs every iteration, so after the first one the local holds a query
+		// that has already gone to the database and its CTE cannot cover the text below.
+		{"RankTailInLoop", []string{
+			"`UNION SELECT id FROM usage` names a table but is only a fragment of a statement",
+		}},
 		// A local reset to text that is not a statement, then appended to. Neither line
 		// is a boundary if the text decides, so the second query's CTE reached back and
 		// shadowed the first query's real read of `usage` — a table dropped from the map
@@ -497,6 +504,18 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// A query split across a `var` declaration, which has to be scoped the way an
 		// assignment is or the WITH clause and the fragment land apart.
 		{"RankDeclaredVar", []string{"pg.models R"}},
+		// Two queries bound by one statement, and the same pair returned by one return.
+		// Neither has a single target, so both used to pool their CTE names in the
+		// statement they share and the first query's `WITH usage` dropped the second
+		// query's real read of `usage` — a table missing with every count balanced.
+		{"RankPairAssign", []string{"pg.models R", "pg.usage R"}},
+		{"RankDeclPair", []string{"pg.models R", "pg.usage R"}},
+		{"RankReturnPair", []string{"pg.models R", "pg.usage R"}},
+		// A query declared, assembled tail first and run inside one iteration. The loop
+		// rule that ends the tail-first exception must not reach a local that never
+		// outlives the body — and the declaration has to open a generation for it, or
+		// the tail is read in one nothing opened and the rule takes it.
+		{"RankDeclInLoop", []string{"pg.models R"}},
 		// The same query in a `~string` type parameter. A type parameter's underlying
 		// type is its constraint interface, so the question "can this hold text" has to
 		// be put to the type set instead.

@@ -231,14 +231,93 @@ func (f *fnWalk) cteKey() cteKey {
 //     closes that one, which is why this is called before the text is walked at all.
 //
 // The exception is a binding that reads the scope back — see `readsScope` — and it
-// lasts only until the query is dispatched, which is what `callsAtOpen` records here.
+// lasts only until the query is dispatched. Which loop the generation was opened
+// inside is recorded here for the other half of that expiry: see `queryIsOver`.
 func (f *fnWalk) openStatement() {
 	if f.gens == nil {
 		f.gens = map[any]int{}
-		f.callsAtOpen = map[any]int{}
+		f.openLoop = map[any]int{}
 	}
 	f.gens[f.textScope]++
-	f.callsAtOpen[f.textScope] = len(f.dbSites)
+	f.openLoop[f.textScope] = f.loopID
+}
+
+// noteSent marks the query a driver call is dispatching, so a rebinding after it is
+// read as a new query rather than as the same one assembled tail first.
+//
+// Every local the call names is marked, at the generation it is holding now: the text
+// may have been concatenated into the argument (`Exec(ctx, q+" LIMIT 1")`) or handed
+// over through a helper, and marking one variable too many only ends an exception
+// early — a finding with a remedy, never a silent mute.
+func (f *fnWalk) noteSent(args []ast.Expr) {
+	for _, arg := range args {
+		ast.Inspect(arg, func(n ast.Node) bool {
+			ident, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if obj := f.objOf(ident); obj != nil && obj.Type() != nil && carriesText(obj.Type()) {
+				f.markSent(cteKey{scope: obj, gen: f.gens[obj]})
+			}
+			return true
+		})
+	}
+}
+
+// markSent marks one query and every query it was copied out of. `r := q` puts the
+// same text under two names, and `Exec(ctx, r)` dispatches `q`'s query as much as it
+// does `r`'s — without following the copy, a rebinding of `q` afterwards would inherit
+// a generation the database has already seen and its `WITH` clause would shadow a table
+// that query really read.
+func (f *fnWalk) markSent(key cteKey) {
+	if f.sent == nil {
+		f.sent = map[cteKey]bool{}
+	}
+	// A copy chain is finite and acyclic by construction — each link is recorded at
+	// the generation in force when it was written, and a generation is never reopened
+	// — but the loop is bounded anyway rather than trusting that.
+	for range len(f.alias) + 1 {
+		if f.sent[key] {
+			return
+		}
+		f.sent[key] = true
+		next, ok := f.alias[key]
+		if !ok {
+			return
+		}
+		key = next
+	}
+}
+
+// noteTextAlias records that one query local was copied out of another, which is what
+// lets a dispatch under the copy's name settle the original. Only a bare identifier on
+// each side counts, for the reason `assignTarget` gives: `qs[0]` and `s.q` stand for
+// several queries at once, and following them would mark queries that never ran.
+//
+// A binding that reads itself — `q = "WITH …" + q` — records nothing: it is the same
+// query still being assembled, not a copy of another one.
+func (f *fnWalk) noteTextAlias(lhs, rhs []ast.Expr) {
+	target := f.assignTarget(lhs)
+	if target == nil {
+		return
+	}
+	for _, r := range rhs {
+		ast.Inspect(r, func(n ast.Node) bool {
+			ident, ok := n.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			obj := f.objOf(ident)
+			if obj == nil || obj == target || obj.Type() == nil || !carriesText(obj.Type()) {
+				return true
+			}
+			if f.alias == nil {
+				f.alias = map[cteKey]cteKey{}
+			}
+			f.alias[cteKey{scope: target, gen: f.gens[target]}] = cteKey{scope: obj, gen: f.gens[obj]}
+			return false
+		})
+	}
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the

@@ -820,6 +820,86 @@ func (p *Postgres) RankDeclaredVar(ctx context.Context, all bool) error {
 	return err
 }
 
+// RankPairAssign binds two queries in one statement. Two names on the left means no
+// single target, so both values used to fall back to the statement they share — and
+// the first query's `WITH usage AS (…)` shadowed the second query's real read of the
+// `usage` table. Every count balanced, nothing reported, one table missing from the
+// map: the exact silence the scoping rules exist to break, in the shape a helper that
+// returns a base and a tail is written in.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankPairAssign(ctx context.Context) error {
+	base, tail := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		`SELECT id FROM usage WHERE id = $1`
+	if _, err := p.db.ExecContext(ctx, base); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, tail)
+	return err
+}
+
+// RankDeclPair is RankPairAssign as a declaration. A `var` naming two variables has no
+// single target either, and the fallback is the same statement for both.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankDeclPair(ctx context.Context) error {
+	var base, tail = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		`SELECT id FROM usage WHERE id = $1`
+	if _, err := p.db.ExecContext(ctx, base); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, tail)
+	return err
+}
+
+// RankReturnPair hands two statements back from one return, which is how a helper
+// supplies a base and a variant to the caller that runs them. The results shared the
+// return statement's scope, so the first one's CTE muted the second one's read.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankReturnPair() (string, string) {
+	return `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+		`SELECT id FROM usage WHERE id = $1`
+}
+
+// RankDeclInLoop declares its query with `var` inside a loop that dispatches, and
+// assembles it tail first. It must stay clean: the local is bound and run within one
+// iteration, so the WITH clause covers the tail exactly as it does outside a loop.
+//
+// This is what makes the declaration's own `openStatement` load-bearing — without it
+// the generation the tail is read in is one nothing opened, the loop rule refuses the
+// tail-first exception to it, and the query's own CTE is reported.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankDeclInLoop(ctx context.Context, ids []string) error {
+	for _, id := range ids {
+		var q = ` UNION SELECT id FROM usage`
+		q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+		if _, err := p.db.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RankTailInLoop prepends the base inside a loop to a tail collected outside it. The
+// walk sees the rebinding once; the program runs it once per iteration, so from the
+// second pass on the local already holds a query that went to the database and the
+// prepend is not a tail-first assembly of it. Granting the exception here would let
+// the CTE shadow the `usage` the earlier text really reads.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailInLoop(ctx context.Context, ids []string) error {
+	q := ` UNION SELECT id FROM usage`
+	for _, id := range ids {
+		q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+		if _, err := p.db.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // UsageWindow appends a fragment whose FROM belongs to a keyword call. The mask
 // that keeps `EXTRACT(EPOCH FROM ...)` from naming a table has to run over
 // fragments too — without it the map would gain a table called `created_at`, which

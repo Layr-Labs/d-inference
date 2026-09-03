@@ -160,13 +160,17 @@ type fnWalk struct {
 	opaqueSeen   bool                       // unreadable text was found, reported or declared
 	opaqueTables map[string]string          // tables named in unreadable text, and where
 	textScope    any                        // what the text being walked belongs to; see textScopeFor
-	textStmt     ast.Stmt                   // the statement that text is being assembled in
 	textFresh    bool                       // this statement binds the scope rather than appending to it
 	gens         map[any]int                // how many queries a scope has been bound to
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
 	stmtTables   []statementTable           // tables named by whole statements, drawn at body end
-	callsAtOpen  map[any]int                // database calls the body had made when a scope's query began
+	sent         map[cteKey]bool            // queries this body has handed to the driver
+	alias        map[cteKey]cteKey          // a query copied into a second local: `r := q`
+	openLoop     map[any]int                // the loop a scope's current query was opened inside
+	loopSeq      int                        // loops entered, so each one has a name
+	loopID       int                        // the innermost loop being walked, 0 outside any
+	loopDispatch int                        // enclosing loops whose body calls the driver
 
 	out []ir.Access
 }
@@ -195,20 +199,20 @@ func (f *fnWalk) merge(res *Result) {
 // assembles into, so the SQL inside it is read as belonging to one query rather
 // than to the body at large. See textScopeFor.
 func (f *fnWalk) stmt(s ast.Stmt) {
-	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
+	prevScope, prevFresh := f.textScope, f.textFresh
 	if scope := f.textScopeFor(s); scope != nil {
-		f.textScope, f.textStmt, f.textFresh = scope, s, bindsScope(s)
-		if f.textFresh && (f.ranSinceOpen(scope) || !f.readsScope(s)) {
+		f.textScope, f.textFresh = scope, bindsScope(s)
+		if f.textFresh && (f.queryIsOver(scope) || !f.readsScope(s)) {
 			f.openStatement()
 		}
 	}
 	f.walkStmt(s)
-	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
+	f.textScope, f.textFresh = prevScope, prevFresh
 }
 
 // textElem walks an expression that stands for a query of its own — an element of a
-// composite literal, an argument to a call — with the text scope set to the
-// expression itself.
+// composite literal, an argument to a call, one of several values a statement binds
+// or returns — with the text scope set to the expression itself.
 //
 // Without this, a statement holding several queries pooled their CTE names, and one
 // query's `WITH usage AS (…)` muted a real read of the `usage` table in the next.
@@ -221,10 +225,10 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 // A query genuinely assembled across two elements is the cost, and it is a finding
 // with a remedy (inline the `WITH`, or declare the tables) rather than a wrong edge.
 func (f *fnWalk) textElem(e ast.Expr, mode string) {
-	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
-	f.textScope, f.textStmt, f.textFresh = e, nil, true
+	prevScope, prevFresh := f.textScope, f.textFresh
+	f.textScope, f.textFresh = e, true
 	f.visit(e, mode)
-	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
+	f.textScope, f.textFresh = prevScope, prevFresh
 }
 
 // bindsScope reports whether a statement gives its text scope a new value rather
@@ -254,7 +258,7 @@ func bindsScope(s ast.Stmt) bool {
 // the base and its `WITH` clause prepended — would put the tail and the WITH clause
 // that covers it in different generations and report the query's own CTE as a table.
 //
-// It is only asked while the query is still unsent: see ranSinceOpen. Text handed to
+// It is only asked while the query is still unsent: see queryIsOver. Text handed to
 // the database is a query that is over, and prepending a `WITH` clause to what is left
 // of the local cannot reach back and shadow a table that query read.
 func (f *fnWalk) readsScope(s ast.Stmt) bool {
@@ -278,19 +282,67 @@ func (f *fnWalk) readsScope(s ast.Stmt) bool {
 	return found
 }
 
-// ranSinceOpen reports whether the body has made a database call since this scope's
-// current query began. If it has, that query has gone to the database and is over,
-// and a rebinding that quotes the local is a second query reusing what is left of it
-// rather than the same one assembled tail first — so its `WITH` clause must not reach
-// back and shadow a table the finished query really read.
+// queryIsOver reports whether the query this scope currently holds has already gone
+// to the database. If it has, a rebinding that quotes the local is a second query
+// reusing what is left of the first rather than the same one assembled tail first —
+// so its `WITH` clause must not reach back and shadow a table the finished query
+// really read. That is the whole of the tail-first exception's expiry; see readsScope.
 //
-// Counting the body's calls rather than marking the scopes a call names is what makes
-// this hard to evade: `r := q; Exec(ctx, r)` dispatches the query without ever naming
-// `q`, and a mark keyed by the local would have missed it. The count is per scope and
-// per generation, so a call belonging to some *other* query does not cut this one —
-// `q1 := …; Exec(q1); q2 := tail; q2 = "WITH …" + q2` is still assembled tail first.
-func (f *fnWalk) ranSinceOpen(scope any) bool {
-	return len(f.dbSites) != f.callsAtOpen[scope]
+// Two things end a query. It was handed to the driver: marked at the call site from
+// the locals that call names, and through `r := q` copies, so a dispatch under another
+// name counts (`noteSent`). Or the rebinding is inside a loop that calls the driver
+// while the query was opened outside that loop: the walk sees the body once and the
+// program runs it many times, so on the second pass the local already holds a query
+// that ran.
+//
+// Attributing a call to the query it dispatched is what keeps this from cutting an
+// unrelated one. Counting the body's calls instead let `Exec(ctx, "SELECT …")` on some
+// other statement end the exception for a query that had not run — which reported a
+// legal assembly *and* drew the table that query's own CTE was shadowing.
+func (f *fnWalk) queryIsOver(scope any) bool {
+	if f.sent[cteKey{scope: scope, gen: f.gens[scope]}] {
+		return true
+	}
+	return f.loopDispatch > 0 && f.openLoop[scope] != f.loopID
+}
+
+// loopBody walks a loop's body as a loop. Nothing else about the walk depends on how
+// often a statement runs; the tail-first exception does, because it is an argument
+// about what a local held a moment ago. See queryIsOver.
+func (f *fnWalk) loopBody(body *ast.BlockStmt) {
+	prevID, prevDispatch := f.loopID, f.loopDispatch
+	f.loopSeq++
+	f.loopID = f.loopSeq
+	if f.hasQueryCall(body) {
+		f.loopDispatch++
+	}
+	f.stmt(body)
+	f.loopID, f.loopDispatch = prevID, prevDispatch
+}
+
+// hasQueryCall reports whether a driver call appears inside a node.
+//
+// Only a direct call counts. A dispatch through a helper is invisible here exactly as
+// it is to the statement count — this body's `dbSites` never sees the callee's Exec —
+// so the exception survives it, which is the same answer this check gave before loops
+// were tracked at all.
+func (f *fnWalk) hasQueryCall(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := unparen(call.Fun).(*ast.SelectorExpr); ok && f.isQueryCall(sel) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // textScopeFor names what the statement text inside s belongs to.
@@ -331,9 +383,21 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 	case *ast.ExprStmt:
 		f.visit(x.X, ModeRead)
 	case *ast.AssignStmt:
-		for _, rhs := range x.Rhs {
-			f.visit(rhs, ModeRead)
+		// Several values bound in one statement are several queries. `base, tail :=
+		// q1, q2` has no single target, so both values used to fall back to the
+		// statement — where one query's `WITH usage AS (…)` shadowed the other's real
+		// read of `usage`, the mute textElem exists to break. A lone value is already
+		// alone in its scope, and scoping it to itself would only lose the local.
+		if len(x.Rhs) > 1 {
+			for _, rhs := range x.Rhs {
+				f.textElem(rhs, ModeRead)
+			}
+		} else {
+			for _, rhs := range x.Rhs {
+				f.visit(rhs, ModeRead)
+			}
 		}
+		f.noteTextAlias(x.Lhs, x.Rhs)
 		f.bindVars(x)
 		if x.Tok == token.DEFINE {
 			return // the left side declares new locals; nothing is mutated
@@ -350,22 +414,40 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 				if !ok {
 					continue
 				}
-				// `var q = ...` scopes its text the same way an assignment does. A
-				// declaration naming several variables has no single target, and falls
-				// back to the declaration statement like any other statement.
+				// `var q = ...` scopes its text the same way an assignment does, and
+				// `var a, b = q1, q2` scopes each value to itself for the same reason a
+				// multi-value assignment does.
 				prevScope, prevFresh := f.textScope, f.textFresh
-				if obj := f.assignTarget(identExprs(vs.Names)); obj != nil {
+				switch obj := f.assignTarget(identExprs(vs.Names)); {
+				case obj != nil:
 					f.textScope, f.textFresh = obj, true
 					f.openStatement() // the declaration binds q, so it starts a query; see stmt
-				}
-				for _, v := range vs.Values {
-					f.visit(v, ModeRead)
+					for _, v := range vs.Values {
+						f.visit(v, ModeRead)
+					}
+				case len(vs.Values) > 1:
+					for _, v := range vs.Values {
+						f.textElem(v, ModeRead)
+					}
+				default:
+					for _, v := range vs.Values {
+						f.visit(v, ModeRead)
+					}
 				}
 				f.textScope, f.textFresh = prevScope, prevFresh
+				f.noteTextAlias(identExprs(vs.Names), vs.Values)
 				f.bindSpec(vs)
 			}
 		}
 	case *ast.ReturnStmt:
+		// A helper handing two statements back — `return base, tail` — is two queries
+		// in one statement, with the same mute in it as a multi-value binding.
+		if len(x.Results) > 1 {
+			for _, r := range x.Results {
+				f.textElem(r, ModeRead)
+			}
+			return
+		}
 		for _, r := range x.Results {
 			f.visit(r, ModeRead)
 		}
@@ -382,11 +464,11 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 		f.visit(x.Cond, ModeRead)
 		f.compare--
 		f.stmt(x.Post)
-		f.stmt(x.Body)
+		f.loopBody(x.Body)
 	case *ast.RangeStmt:
 		f.visit(x.X, ModeRead)
 		f.bindRange(x)
-		f.stmt(x.Body)
+		f.loopBody(x.Body)
 	case *ast.SwitchStmt:
 		f.stmt(x.Init)
 		f.compare++
@@ -747,6 +829,7 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 				f.dbPos = x.Pos()
 			}
 			f.dbSites = append(f.dbSites, f.w.P.PosRef(x.Pos()))
+			f.noteSent(x.Args)
 		}
 		if selection := f.info.Selections[sel]; selection != nil && selection.Kind() != types.FieldVal {
 			recvType := selection.Recv()

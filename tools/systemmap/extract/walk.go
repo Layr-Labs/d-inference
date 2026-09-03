@@ -161,6 +161,7 @@ type fnWalk struct {
 	opaqueTables map[string]string          // tables named in unreadable text, and where
 	textScope    any                        // what the text being walked belongs to; see textScopeFor
 	textStmt     ast.Stmt                   // the statement that text is being assembled in
+	textFresh    bool                       // this statement binds the scope rather than appending to it
 	gens         map[any]generation         // how many statements a scope has held, and by whom
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
@@ -192,12 +193,30 @@ func (f *fnWalk) merge(res *Result) {
 // assembles into, so the SQL inside it is read as belonging to one query rather
 // than to the body at large. See textScopeFor.
 func (f *fnWalk) stmt(s ast.Stmt) {
-	prevScope, prevStmt := f.textScope, f.textStmt
+	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
 	if scope := f.textScopeFor(s); scope != nil {
-		f.textScope, f.textStmt = scope, s
+		f.textScope, f.textStmt, f.textFresh = scope, s, bindsScope(s)
 	}
 	f.walkStmt(s)
-	f.textScope, f.textStmt = prevScope, prevStmt
+	f.textScope, f.textStmt, f.textFresh = prevScope, prevStmt, prevFresh
+}
+
+// bindsScope reports whether a statement gives its text scope a new value rather
+// than adding to the value already there. `q := ...` and `q = ...` start a query;
+// `q += ...` continues the one already in q. Every other statement kind that owns a
+// scope owns a fresh one, because the scope is the statement itself.
+//
+// This is what decides where one query ends and the next begins — see
+// `openStatement`. Deciding it from the text instead was wrong in a way no test
+// caught until a query was assembled in three steps: the middle `+=` of
+// `q := WITH ... ; q += SELECT ... FROM models ; q += UNION ... FROM usage` parses
+// as a statement on its own, so it opened a generation the WITH clause above it was
+// not in, and the query's own CTE was reported as an undeclared table.
+func bindsScope(s ast.Stmt) bool {
+	if a, ok := s.(*ast.AssignStmt); ok {
+		return a.Tok == token.ASSIGN || a.Tok == token.DEFINE
+	}
+	return true
 }
 
 // textScopeFor names what the statement text inside s belongs to.
@@ -257,14 +276,14 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 				// `var q = ...` scopes its text the same way an assignment does. A
 				// declaration naming several variables has no single target, and falls
 				// back to the declaration statement like any other statement.
-				prevScope := f.textScope
+				prevScope, prevFresh := f.textScope, f.textFresh
 				if obj := f.assignTarget(identExprs(vs.Names)); obj != nil {
-					f.textScope = obj
+					f.textScope, f.textFresh = obj, true
 				}
 				for _, v := range vs.Values {
 					f.visit(v, ModeRead)
 				}
-				f.textScope = prevScope
+				f.textScope, f.textFresh = prevScope, prevFresh
 				f.bindSpec(vs)
 			}
 		}

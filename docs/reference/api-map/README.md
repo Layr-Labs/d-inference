@@ -355,10 +355,14 @@ this dies of:
   variable holding several queries in turn holds one set of names per query, and a
   fragment is settled against the set in force where the fragment was read, so
   reusing one `q` neither carries a CTE name forward to the next query nor takes it
-  away from the last. The boundary is the **assignment**, not the literal, because a
+  away from the last. The boundary is the **binding** — `q :=` or `q =` starts a
+  query, `q +=` continues the one already there — and never the literal, because a
   long query spliced from several literals routinely has a middle one that parses on
   its own (`SELECT DISTINCT account_id FROM provider_earnings WHERE …` between two
-  CTE definitions) and that is the same query still being assembled.
+  CTE definitions) and that is the same query still being assembled. This holds
+  whether the pieces arrive in one assignment or several: `q := "WITH usage AS (…)"`
+  then `q += "SELECT … FROM models"` then `q += "UNION SELECT id FROM usage"` is one
+  query, and its own CTE still shadows the `usage` table in the tail.
 
   Three consequences worth knowing. A CTE in one query does not silence a same-named
   real table in another. A query assembled through anything but a bare string

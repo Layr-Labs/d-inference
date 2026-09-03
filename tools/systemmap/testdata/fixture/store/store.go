@@ -523,6 +523,22 @@ func (p *Postgres) RankSplitCTE(ctx context.Context, modelWhere, order string) e
 	return err
 }
 
+// RankSplitAppend is one query bound once and extended twice, where the middle
+// append is a complete statement on its own. It is the same trap as RankSplitCTE from
+// the other side: the generation boundary cannot be statement-shaped text, because
+// text like this appears mid-query. It has to be the binding — the `q :=` that starts
+// a query as against the `q +=` that continues one — or the WITH clause in the first
+// append is orphaned and the tail's join onto it names a table the query never reads.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankSplitAppend(ctx context.Context, all bool) error {
+	q := `WITH usage AS (SELECT id FROM models)`
+	q += ` SELECT m.id FROM models m WHERE m.id = $1`
+	q += ` UNION SELECT id FROM usage`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
 // RankResetAfter is the same reuse with the halves the right way round, and it must
 // stay clean: the fragment joins the CTE its own statement declared, and a later
 // statement recycling the local says nothing about it. Deleting a scope's names when

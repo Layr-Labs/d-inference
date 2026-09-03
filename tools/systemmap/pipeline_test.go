@@ -448,6 +448,11 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// query in the tree has. The CTE above it is still in force below it — the
 		// coordinator's network-totals query is one line break away from this.
 		{"RankSplitCTE", []string{"pg.models R"}},
+		// The same query bound once and appended to twice, where the middle append is
+		// itself a statement. Only the binding may end a query's CTE scope; text that
+		// looks like a statement is text a long query is full of. Two reads because two
+		// of its three literals parse on their own, which is exactly the point.
+		{"RankSplitAppend", []string{"pg.models R", "pg.models R"}},
 		// Fragments whose FROM belongs to a keyword call and to a set-returning
 		// function. Neither names a table, and the fragment scan has to know that as
 		// well as `Tables` does.

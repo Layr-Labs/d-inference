@@ -221,15 +221,23 @@ func (f *fnWalk) cteKey() cteKey {
 // openStatement starts a new generation of CTE names for the current scope, unless
 // the statement being walked opened the current one already.
 //
-// The boundary is the assignment, not the literal. A scope handed a second statement
-// is a scope whose first statement's WITH clauses have stopped applying — but a long
-// query spliced together from several literals routinely has a middle one that parses
-// on its own (`SELECT DISTINCT account_id FROM provider_earnings WHERE ...` between
-// two CTE definitions), and that is the same statement still being assembled. Bumping
-// there orphaned every CTE name declared above it: reformatting the coordinator's
-// network-totals query — moving a line break, changing no SQL — reported its own
-// `providers` CTE as an undeclared table, and following the remedy would have drawn a
-// read edge to a table the query never touches.
+// The boundary is a binding, not a literal. A scope *rebound* is a scope whose
+// previous statement's WITH clauses have stopped applying; a scope appended to is the
+// same query still being assembled. Two shapes force that reading, and drawing the
+// boundary at statement-shaped text broke both — silently, since orphaning a CTE name
+// invents a table rather than losing one:
+//
+//   - one assignment, several literals: a long query spliced together routinely has a
+//     middle literal that parses on its own (`SELECT DISTINCT account_id FROM
+//     provider_earnings WHERE ...` between two CTE definitions). Reformatting the
+//     coordinator's network-totals query — moving a line break, changing no SQL —
+//     reported its own `providers` CTE as an undeclared table. Hence the opener check
+//     here.
+//   - several assignments, one query: `q := WITH usage AS (...)` then `q += SELECT ...
+//     FROM models` then `q += UNION SELECT id FROM usage`, where the middle append is
+//     also a statement on its own. Hence the caller's `textFresh` gate, which is what
+//     distinguishes the append that continues a query from the assignment that starts
+//     the next one.
 func (f *fnWalk) openStatement() {
 	if f.gens == nil {
 		f.gens = map[any]generation{}
@@ -332,7 +340,7 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 	// UPDATE` spell UPDATE without heading a statement. Neither may be read here as
 	// a table spliced in at run time.
 	masked := string(maskLockingClauses(maskKeywordCalls([]byte(s))))
-	if statement {
+	if statement && f.textFresh {
 		f.openStatement()
 	}
 	f.noteCTEs(masked)

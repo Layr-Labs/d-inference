@@ -173,16 +173,72 @@ func (f *fnWalk) declSite() string {
 // `textScopeFor` picks that scope — the variable a query is assembled into, or
 // failing that the statement the text appears in, which is what keeps two queries
 // handed straight to the driver from sharing one CTE set.
+//
+// One scope holds more than one set, because store code reuses a local: each whole
+// statement seen in a scope opens a new generation, and a fragment is settled
+// against the generation that was current where the fragment was read. A single set
+// per scope was still order-dependent in a way that could not be seen from the
+// source — it was mutated during the walk and consulted after it, so whichever
+// statement came last decided every fragment in the scope, silencing a real read in
+// one order and reporting a legal query in the other.
 func (f *fnWalk) noteCTEs(s string) {
 	for _, m := range reCTEName.FindAllStringSubmatch(s, -1) {
 		if f.ctes == nil {
-			f.ctes = map[any]map[string]bool{}
+			f.ctes = map[cteKey]map[string]bool{}
 		}
-		if f.ctes[f.textScope] == nil {
-			f.ctes[f.textScope] = map[string]bool{}
+		key := f.cteKey()
+		if f.ctes[key] == nil {
+			f.ctes[key] = map[string]bool{}
 		}
-		f.ctes[f.textScope][strings.ToLower(m[1])] = true
+		f.ctes[key][strings.ToLower(m[1])] = true
 	}
+}
+
+// cteKey names the set of CTE names in force for the text being walked.
+type cteKey struct {
+	scope any
+	gen   int
+}
+
+// generation is one query's worth of CTE names in a scope, and the statement that
+// opened it.
+type generation struct {
+	n      int
+	opener any
+}
+
+// cteKey is generation 1 until a second statement opens generation 2, so a fragment
+// read before the statement it belongs to — a tail assembled above the base query —
+// still finds that statement's CTE names.
+func (f *fnWalk) cteKey() cteKey {
+	gen := f.gens[f.textScope].n
+	if gen == 0 {
+		gen = 1
+	}
+	return cteKey{scope: f.textScope, gen: gen}
+}
+
+// openStatement starts a new generation of CTE names for the current scope, unless
+// the statement being walked opened the current one already.
+//
+// The boundary is the assignment, not the literal. A scope handed a second statement
+// is a scope whose first statement's WITH clauses have stopped applying — but a long
+// query spliced together from several literals routinely has a middle one that parses
+// on its own (`SELECT DISTINCT account_id FROM provider_earnings WHERE ...` between
+// two CTE definitions), and that is the same statement still being assembled. Bumping
+// there orphaned every CTE name declared above it: reformatting the coordinator's
+// network-totals query — moving a line break, changing no SQL — reported its own
+// `providers` CTE as an undeclared table, and following the remedy would have drawn a
+// read edge to a table the query never touches.
+func (f *fnWalk) openStatement() {
+	if f.gens == nil {
+		f.gens = map[any]generation{}
+	}
+	cur := f.gens[f.textScope]
+	if cur.n > 0 && cur.opener == f.textStmt {
+		return
+	}
+	f.gens[f.textScope] = generation{n: cur.n + 1, opener: f.textStmt}
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the
@@ -226,10 +282,10 @@ func sortedKeys(m map[string]string) []string {
 // ONLY and LATERAL for `Tables`' benefit — this pattern steps over them before they
 // are ever looked up there.
 //
-// FOR and DO are captured ahead of the keyword so `lockingUpdate` can drop the
-// match: in `FOR UPDATE` and `ON CONFLICT ... DO UPDATE` the word introduces a
-// lock or a conflict action, never a table.
-var reTableName = regexp.MustCompile(`\b(?:(FOR|DO)[ \t\n\r]+)?(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+(?:(?:ONLY|LATERAL)[ \t\n\r]+)*([^\s,;()]+)`)
+// UPDATE reaches this pattern only where it heads an update statement, because
+// `maskLockingClauses` has already blanked the clauses where it does not — see
+// `auditText`.
+var reTableName = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+(?:(?:ONLY|LATERAL)[ \t\n\r]+)*([^\s,;()]+)`)
 
 // reTrailingKeyword is the other half of demanding a token after the keyword.
 // Requiring one is what stops `q += " FOR UPDATE"` from being a finding, but it
@@ -237,19 +293,11 @@ var reTableName = regexp.MustCompile(`\b(?:(FOR|DO)[ \t\n\r]+)?(FROM|JOIN|INTO|U
 // formatted — match nothing at all. A clause that ends *at* a table-introducing
 // keyword is waiting for a name the extractor will never see.
 //
-// `UPDATE` reaches this rule from two directions, which is why the FOR/DO prefix
-// is captured here too: a single literal ending `... WHERE id = $1 FOR UPDATE\n`
-// is a complete, readable statement, and reporting it would red-light a correct
-// map with no remedy that keeps the statement correct.
-var reTrailingKeyword = regexp.MustCompile(`\b(?:(FOR|DO)[ \t\n\r]+)?(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+$`)
-
-// lockingUpdate reports whether an UPDATE keyword is the tail of `FOR UPDATE` or
-// `DO UPDATE` rather than the head of an update statement. Dropping those costs
-// no coverage: a real `UPDATE ` + table splice leaves no readable statement in
-// the body at all, so the call count still reports it.
-func lockingUpdate(prefix, keyword string) bool {
-	return keyword == "UPDATE" && (prefix == "FOR" || prefix == "DO")
-}
+// A literal ending `... WHERE id = $1 FOR UPDATE\n` is a complete, readable
+// statement, and reporting it would red-light a correct map with no remedy that
+// keeps the statement correct. That case does not reach here either: the mask has
+// taken the words away before the search.
+var reTrailingKeyword = regexp.MustCompile(`\b(FROM|JOIN|INTO|UPDATE)[ \t\n\r]+$`)
 
 // reCTEName finds a WITH clause's name. Unlike `reCTE`, which reads a whole
 // normalized statement, this runs over text as written and so demands upper-case
@@ -278,25 +326,20 @@ var reBareIdent = regexp.MustCompile(`^(?i:"?[a-z_][a-z0-9_$]*"?)(\.("?[a-z_][a-
 // declaration check is held to every name the text gives up, not to the names in
 // front of the first thing that went dark.
 func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
-	// `EXTRACT(EPOCH FROM now() - created_at)` spells FROM without naming a table,
-	// which is why `Tables` masks these calls; the same mask is what keeps them
-	// from being read here as a table spliced in at run time.
-	masked := string(maskKeywordCalls([]byte(s)))
-	if statement && f.textFresh {
-		// A whole statement bound into this scope replaces whatever was there, so the
-		// CTE names of the previous query stop applying. Store code reuses one `q` for
-		// several statements; without this, a WITH clause in the first would go on
-		// shadowing a real table read by the last.
-		delete(f.ctes, f.textScope)
+	// Two masks, both shared with `Tables` so the two readers agree on what a
+	// keyword means. `EXTRACT(EPOCH FROM now() - created_at)` spells FROM without
+	// naming a table; `FOR UPDATE`, `FOR NO KEY UPDATE` and `ON CONFLICT ... DO
+	// UPDATE` spell UPDATE without heading a statement. Neither may be read here as
+	// a table spliced in at run time.
+	masked := string(maskLockingClauses(maskKeywordCalls([]byte(s))))
+	if statement {
+		f.openStatement()
 	}
 	f.noteCTEs(masked)
 	var names []string
 	spliced := ""
 	for _, m := range reTableName.FindAllStringSubmatch(masked, -1) {
-		prefix, keyword, name := m[1], m[2], m[3]
-		if lockingUpdate(prefix, keyword) {
-			continue
-		}
+		keyword, name := m[1], m[2]
 		table := cleanIdent(strings.ToLower(name))
 		switch {
 		case sqlNoise[table]:
@@ -317,7 +360,7 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 		// `fmt.Sprintf("... FROM models m JOIN %s ...")` publish clean.
 	}
 	for _, table := range names {
-		f.frags = append(f.frags, fragment{table: table, text: s, pos: pos, owner: f.textScope})
+		f.frags = append(f.frags, fragment{table: table, text: s, pos: pos, owner: f.cteKey()})
 	}
 	// One literal can trip several rules — a name it gives up, a keyword it ends at —
 	// and the report keys findings by site, first one wins, so a reader is sent to the
@@ -326,9 +369,9 @@ func (f *fnWalk) auditText(s string, pos token.Pos, statement bool) {
 		f.opaque(pos, spliced)
 		return
 	}
-	if m := reTrailingKeyword.FindStringSubmatch(masked); m != nil && !lockingUpdate(m[1], m[2]) {
+	if m := reTrailingKeyword.FindStringSubmatch(masked); m != nil {
 		f.opaque(pos, fmt.Sprintf("the text ends at `%s`, so the table that follows it is spliced in at run time (`%s`)",
-			m[2], ellipsis(s)))
+			m[1], ellipsis(s)))
 	}
 }
 
@@ -338,7 +381,7 @@ type fragment struct {
 	table string
 	text  string
 	pos   token.Pos
-	owner any // the scope this text was assembled in; see textScopeFor
+	owner cteKey // the statement this text was assembled into; see textScopeFor
 }
 
 // settleFragments decides the buffered fragment names once the whole body has

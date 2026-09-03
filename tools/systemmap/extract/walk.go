@@ -155,14 +155,15 @@ type fnWalk struct {
 	// recoverable here against how much the driver was handed. See queries.go.
 	sqlSeen      int
 	dbSites      []string
-	dbPos        token.Pos               // the first driver call, for citing a declared table
-	declPos      token.Pos               // this function's own declaration
-	opaqueSeen   bool                    // unreadable text was found, reported or declared
-	opaqueTables map[string]string       // tables named in unreadable text, and where
-	textScope    any                     // what the text being walked belongs to; see textScopeFor
-	textFresh    bool                    // the current scope is being bound, not appended to
-	ctes         map[any]map[string]bool // WITH clauses declared per assembled statement
-	frags        []fragment              // table names read out of fragments, settled at body end
+	dbPos        token.Pos                  // the first driver call, for citing a declared table
+	declPos      token.Pos                  // this function's own declaration
+	opaqueSeen   bool                       // unreadable text was found, reported or declared
+	opaqueTables map[string]string          // tables named in unreadable text, and where
+	textScope    any                        // what the text being walked belongs to; see textScopeFor
+	textStmt     ast.Stmt                   // the statement that text is being assembled in
+	gens         map[any]generation         // how many statements a scope has held, and by whom
+	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
+	frags        []fragment                 // table names read out of fragments, settled at body end
 
 	out []ir.Access
 }
@@ -191,44 +192,36 @@ func (f *fnWalk) merge(res *Result) {
 // assembles into, so the SQL inside it is read as belonging to one query rather
 // than to the body at large. See textScopeFor.
 func (f *fnWalk) stmt(s ast.Stmt) {
-	prevScope, prevFresh := f.textScope, f.textFresh
-	if scope, fresh := f.textScopeFor(s); scope != nil {
-		f.textScope, f.textFresh = scope, fresh
+	prevScope, prevStmt := f.textScope, f.textStmt
+	if scope := f.textScopeFor(s); scope != nil {
+		f.textScope, f.textStmt = scope, s
 	}
 	f.walkStmt(s)
-	f.textScope, f.textFresh = prevScope, prevFresh
+	f.textScope, f.textStmt = prevScope, prevStmt
 }
 
-// textScopeFor names the statement text inside s belongs to, and says whether s
-// binds that name afresh rather than appending to it.
+// textScopeFor names what the statement text inside s belongs to.
 //
-// An assignment is the strongest answer: a query built up over several lines is
-// built into one variable, and `qs[0] += tail` or `s.q += tail` resolve to that
-// variable too, so splitting a query across an index or a field does not split its
-// scope. Failing that the statement itself is the scope, which is what keeps two
-// statements handed straight to the driver — `Exec(ctx, a)` then `Exec(ctx, b)` —
-// from sharing one CTE set. Composite statements return nil so that the statements
-// nested inside them each answer for themselves.
-//
-// The second result is what makes a recycled variable safe: `q = <a whole
-// statement>` means q now holds a different query, so whatever CTE names the last
-// one declared no longer apply. `q += tail` says nothing of the kind.
-func (f *fnWalk) textScopeFor(s ast.Stmt) (any, bool) {
+// An assignment to a single string variable is the strongest answer: a query built
+// up over several lines is built into one local. Failing that the statement itself
+// is the scope, which is what keeps two statements handed straight to the driver —
+// `Exec(ctx, a)` then `Exec(ctx, b)` — from sharing one CTE set. Composite
+// statements return nil so that the statements nested inside them each answer for
+// themselves.
+func (f *fnWalk) textScopeFor(s ast.Stmt) any {
 	switch x := s.(type) {
 	case nil:
-		return nil, false
+		return nil
 	case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt,
 		*ast.TypeSwitchStmt, *ast.CaseClause, *ast.SelectStmt, *ast.CommClause,
 		*ast.LabeledStmt:
-		return nil, false
+		return nil
 	case *ast.AssignStmt:
-		fresh := x.Tok == token.ASSIGN || x.Tok == token.DEFINE
-		if obj := f.assignTarget(x.Lhs); obj != nil {
-			return obj, fresh
+		if target := f.assignTarget(x.Lhs); target != nil {
+			return target
 		}
-		return s, fresh
 	}
-	return s, false
+	return s
 }
 
 func (f *fnWalk) walkStmt(s ast.Stmt) {
@@ -261,17 +254,17 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 				if !ok {
 					continue
 				}
-				// `var q = ...` scopes its text the same way an assignment does,
-				// per spec rather than per declaration, and binds it afresh.
-				prevScope, prevFresh := f.textScope, f.textFresh
-				f.textScope, f.textFresh = vs, true
+				// `var q = ...` scopes its text the same way an assignment does. A
+				// declaration naming several variables has no single target, and falls
+				// back to the declaration statement like any other statement.
+				prevScope := f.textScope
 				if obj := f.assignTarget(identExprs(vs.Names)); obj != nil {
 					f.textScope = obj
 				}
 				for _, v := range vs.Values {
 					f.visit(v, ModeRead)
 				}
-				f.textScope, f.textFresh = prevScope, prevFresh
+				f.textScope = prevScope
 				f.bindSpec(vs)
 			}
 		}
@@ -338,37 +331,42 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 }
 
 // assignTarget names the single variable an assignment writes, which is what
-// scopes the statement text on its right. An assignment with several targets has
-// no single one — `_, err := db.Exec(ctx, q)` writes err, not the query — and its
-// text is scoped by the statement instead.
+// scopes the statement text on its right.
+//
+// Three things disqualify a target, and all three mean the same thing: the text
+// cannot be attributed to one query, so the statement it appears in is used
+// instead. Several targets has no single one — `_, err := db.Exec(ctx, q)` writes
+// err, not the query. A target that cannot hold text is not the query either:
+// scoping by `err` in `err = QueryRow(...).Scan(&x)` would pool every query in the
+// body under one name, and one CTE would shadow them all.
+//
+// Anything that is not a bare identifier — `qs[0]`, `s.q`, `*p` — is left to the
+// statement fallback rather than resolved to the variable underneath it. Digging
+// through to that variable looks helpful and is not: `qs[0]` and `qs[1]` resolve to
+// the same slice and `a.q` and `b.q` to the same field object, so a CTE in one
+// element or one receiver would shadow a real table read in another — the silence
+// this check exists to break. Falling back reports a query assembled that way
+// instead, which the remedy (inline the WITH clause, or declare the tables) can
+// answer. No store query in the tree is assembled through an index or a field.
 func (f *fnWalk) assignTarget(lhs []ast.Expr) types.Object {
 	if len(lhs) != 1 {
 		return nil
 	}
-	return f.objOf(baseIdent(lhs[0]))
+	ident, ok := lhs[0].(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	obj := f.objOf(ident)
+	if obj == nil || obj.Type() == nil || !carriesText(obj.Type()) {
+		return nil
+	}
+	return obj
 }
 
-// baseIdent digs out the variable an assignment target is reaching into, so that
-// `qs[0]`, `s.q` and `*p` scope their text to the same place a bare `q` would.
-// Without it a query whose base statement lands in a slice and whose tail lands in
-// `qs[0]` would be read as two unrelated statements.
-func baseIdent(e ast.Expr) *ast.Ident {
-	for {
-		switch x := e.(type) {
-		case *ast.Ident:
-			return x
-		case *ast.ParenExpr:
-			e = x.X
-		case *ast.StarExpr:
-			e = x.X
-		case *ast.IndexExpr:
-			e = x.X
-		case *ast.SelectorExpr:
-			return x.Sel
-		default:
-			return nil
-		}
-	}
+// carriesText reports whether a value of this type can hold statement text.
+func carriesText(t types.Type) bool {
+	basic, ok := t.Underlying().(*types.Basic)
+	return ok && basic.Info()&types.IsString != 0
 }
 
 // bindVars propagates node attribution through `x := s.registry` so later uses

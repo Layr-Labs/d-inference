@@ -104,7 +104,7 @@ func Tables(sql string) []TableAccess {
 			modes[name] = "RW"
 		}
 	}
-	base := string(maskKeywordCalls([]byte(norm)))
+	base := string(maskLockingClauses(maskKeywordCalls([]byte(norm))))
 	masked := []byte(base)
 	for _, re := range writeMatchers {
 		for _, loc := range re.FindAllStringSubmatchIndex(base, -1) {
@@ -181,6 +181,29 @@ func maskKeywordCalls(b []byte) []byte {
 					lower[k] = ' '
 				}
 			}
+		}
+	}
+	return b
+}
+
+// reLockingClause matches the clauses in which UPDATE is not the head of an update
+// statement: the row locks a SELECT can end with, and the action of an upsert's ON
+// CONFLICT. In every one of them the word is followed by something that is not a
+// table — `FOR UPDATE SKIP LOCKED` read as `UPDATE skip` put a table called `skip`
+// in the map, and `DO UPDATE SET` was only saved by `set` being in sqlNoise.
+//
+// Matching is case-insensitive so both readers can share it: `Tables` works on
+// normalized lower-case text, while `auditText` keeps the original case to tell SQL
+// from the same words in prose. Folding here costs nothing there, because the only
+// extra matches are lower-case ones — text this scan is already blind to.
+var reLockingClause = regexp.MustCompile(`(?i)\b(?:for[ \t\n\r]+(?:no[ \t\n\r]+key[ \t\n\r]+)?update|do[ \t\n\r]+update)\b`)
+
+// maskLockingClauses blanks those clauses, keeping the text the same length so
+// offsets into it stay valid.
+func maskLockingClauses(b []byte) []byte {
+	for _, loc := range reLockingClause.FindAllIndex(b, -1) {
+		for i := loc[0]; i < loc[1]; i++ {
+			b[i] = ' '
 		}
 	}
 	return b

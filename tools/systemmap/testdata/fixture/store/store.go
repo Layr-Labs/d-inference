@@ -230,18 +230,17 @@ func (p *Postgres) RankAndList(ctx context.Context, all bool) error {
 	return err
 }
 
-// ListModelsLogged carries a sentence that reads like a WITH clause, in a body
-// whose fragment is handed straight to the driver rather than assembled into a
-// variable — so the prose and the fragment share the one scope the extractor has
-// left. Prose spelling a CTE in lower case must not register there: a log message
-// able to switch the fragment check off would be the easiest way in the language
-// to drop a table from the map.
+// ListModelsLogged carries a phrase that reads like a WITH clause in the very text
+// whose table name is at stake, which is the only place it can be to pin anything:
+// prose in a different statement is in a different scope and cannot shadow this
+// fragment however it is spelled. A CTE name written in lower case must not
+// register — text able to switch the fragment check off would be the easiest way in
+// the language to drop a table from the map.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) ListModelsLogged(ctx context.Context, base string) error {
-	fmt.Println("retrying with usage as (the fallback source) unavailable")
 	_, err := p.db.ExecContext(ctx,
-		base+` UNION SELECT model FROM usage`)
+		base+` /* with usage as (fb) */ UNION SELECT model FROM usage`)
 	return err
 }
 
@@ -296,6 +295,33 @@ func (p *Postgres) LockModelSkip(ctx context.Context, all bool) error {
 		q += ` FOR UPDATE SKIP LOCKED`
 	}
 	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// LockModelNoKey spells the same lock the other legal way. `FOR UPDATE` is a family
+// of clauses, not one phrase, so a carve-out written for the shortest spelling
+// reports a complete statement it read correctly — with no remedy, because the
+// statement is already in one literal.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) LockModelNoKey(ctx context.Context, id string) error {
+	_, err := p.db.ExecContext(ctx, `
+		SELECT id, name FROM models
+		WHERE id = $1
+		FOR NO KEY UPDATE
+	`, id)
+	return err
+}
+
+// LockModelSkipInline is LockModelSkip in a single literal, which is the form the
+// remedy text tells a reader to prefer. `Tables` has to step over the clause too:
+// reading `UPDATE SKIP` as an update statement put a table called `skip` in the map,
+// which is drift invented by the map rather than found by it.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) LockModelSkipInline(ctx context.Context, id string) error {
+	_, err := p.db.ExecContext(ctx,
+		`SELECT id, name FROM models WHERE id = $1 FOR UPDATE SKIP LOCKED`, id)
 	return err
 }
 
@@ -360,10 +386,24 @@ func (p *Postgres) ListModelsTrailing(ctx context.Context, other string) error {
 	return err
 }
 
-// RankBatch splits one query across a slice element. `qs[0] += tail` is an
-// assignment to `qs`, so the fragment belongs to the same statement the WITH clause
-// was written into — a scope that only understood bare identifiers would read the
-// two halves as unrelated and report a query that is entirely correct.
+// ListModelsJoinedFrag names a table and splices the next one in the same fragment.
+// The report needs one finding, but the name it did read has to be recorded before
+// that finding is raised: see TestFixtureAssembledDeclaration, where a declaration
+// naming only `usage` must still be held to `models`.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) ListModelsJoinedFrag(ctx context.Context, other string) error {
+	q := `SELECT m.id`
+	q += fmt.Sprintf(` FROM models m JOIN %s u ON u.id = m.id`, other)
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankBatch splits one query across a slice element, which the scan does not follow:
+// `qs[0]` and `qs[1]` are the same variable, so a scope resolved through the index
+// would let a CTE in one element shadow a real table read in another. The fragment
+// is reported instead — an answerable finding, where the shadowed read would be
+// silent.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) RankBatch(ctx context.Context, all bool) error {
@@ -372,6 +412,134 @@ func (p *Postgres) RankBatch(ctx context.Context, all bool) error {
 		qs[0] += ` JOIN usage u ON u.id = usage.id`
 	}
 	_, err := p.db.ExecContext(ctx, qs[0])
+	return err
+}
+
+// RankSliceElements is why RankBatch is reported rather than resolved. Two
+// statements share one slice, and the CTE belongs to the element the fragment is not
+// appended to — so following the index would settle a real read of `usage` against
+// the other element's WITH clause and publish the route without it.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankSliceElements(ctx context.Context, all bool) error {
+	qs := []string{
+		`SELECT m.id FROM models m WHERE m.id = $1`,
+		`WITH usage AS (SELECT id FROM models) SELECT id FROM usage`,
+	}
+	if all {
+		qs[0] += ` JOIN usage u ON u.id = m.id`
+	}
+	for _, q := range qs {
+		if _, err := p.db.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// queryBuf is a struct a query could be assembled through. `b.q` resolves to the
+// field, which every value of the type shares, so RankFields is reported for the
+// same reason RankBatch is.
+type queryBuf struct{ q string }
+
+// RankFields assembles through a field. Two receivers in one body would share one
+// field object, so a scope resolved through the selector would let `a.q`'s CTE
+// shadow a table `b.q` really reads.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankFields(ctx context.Context, all bool) error {
+	var b queryBuf
+	b.q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if all {
+		b.q += ` JOIN usage u ON u.id = usage.id`
+	}
+	_, err := p.db.ExecContext(ctx, b.q)
+	return err
+}
+
+// RankBare hands both statements to the driver as bare calls, so neither is an
+// assignment of any kind. The scope has to fall back to the statement even then, or
+// the first query's CTE would shadow the real read of `usage` spliced onto the
+// second.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankBare(ctx context.Context, base string) {
+	p.db.ExecContext(ctx, `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`)
+	p.db.ExecContext(ctx, base+` JOIN usage u ON u.id = base.id`)
+}
+
+// RankErrShared is two unrelated queries whose only shared name is `err`. A scope
+// taken from any single-target assignment would pool them under it, and the CTE in
+// the first would shadow the real read of `usage` in the second — so the target has
+// to be able to hold the text before it can stand for the query.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankErrShared(ctx context.Context, base string) error {
+	var n int64
+	err := p.db.QueryRowContext(ctx,
+		`WITH usage AS (SELECT id FROM models) SELECT count(*) FROM usage`).Scan(&n)
+	if err != nil {
+		return err
+	}
+	err = p.db.QueryRowContext(ctx, base+` JOIN usage u ON u.id = base.id`).Scan(&n)
+	return err
+}
+
+// RankReversed reuses one local the other way round from RankRecycled: the fragment
+// is appended to the first statement, and the CTE arrives with the second. The
+// verdict has to come from the generation the fragment was read in — a single set
+// per variable is mutated during the walk and consulted after it, so the last
+// statement would decide for both and this real read of `usage` would go missing.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankReversed(ctx context.Context, all bool) error {
+	q := `SELECT m.id FROM models m WHERE m.id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = m.id`
+	}
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankSplitCTE is one query whose middle literal parses on its own, which is how
+// every long query in the tree is formatted: a CTE definition, a splice point, and a
+// clause that happens to be a complete statement between two more. The generation has
+// to belong to the assignment rather than to the literal — counting the middle
+// statement as a new query orphans the CTE names declared above it, and the tail that
+// joins them is reported as reading tables it does not read.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankSplitCTE(ctx context.Context, modelWhere, order string) error {
+	q := `WITH usage AS (` + modelWhere + `
+	          SELECT id FROM models
+	      )
+	      SELECT id FROM models m WHERE m.id = $1` + order + `
+	      UNION SELECT id FROM usage`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankResetAfter is the same reuse with the halves the right way round, and it must
+// stay clean: the fragment joins the CTE its own statement declared, and a later
+// statement recycling the local says nothing about it. Deleting a scope's names when
+// the variable is rebound would retroactively unshadow this fragment and red-light a
+// query that is entirely correct.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankResetAfter(ctx context.Context, all bool) error {
+	q := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if all {
+		q += ` JOIN usage u ON u.id = usage.id`
+	}
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = `SELECT id FROM models WHERE id = $1`
+	_, err := p.db.ExecContext(ctx, q)
 	return err
 }
 

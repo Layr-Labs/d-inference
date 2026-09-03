@@ -321,12 +321,12 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"RankAndList", []string{
 			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
 		}},
-		// Prose that reads like a WITH clause, sharing its scope with the fragment.
-		// Every string in the body is scanned for CTE names, so a log message must not
-		// be able to shadow a table.
+		// A phrase that reads like a WITH clause in the same text as the table name.
+		// Every string in the body is scanned for CTE names, so prose must not be able
+		// to shadow a table — here it would shadow the one beside it.
 		{"ListModelsLogged", []string{
 			"1 database call(s) but only 0 readable statement(s) in the body",
-			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
+			"`/* with usage as (fb) */ UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
 		}},
 		// Two statements handed straight to the driver, neither of which has a variable
 		// to be scoped by. Falling back to the body would let the first one's CTE shadow
@@ -352,6 +352,46 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"ListModelsPaired", []string{
 			"1 database call(s) but only 0 readable statement(s) in the body",
 			"`FROM models m JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
+		}},
+		// A table named beside a spliced one. Both findings are about the same literal,
+		// which the report shows once; the name it read is recorded either way, and
+		// TestFixtureAssembledDeclaration is where that shows.
+		{"ListModelsJoinedFrag", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+			"the table after `JOIN` is spliced in at run time (`JOIN %s`)",
+		}},
+		// A query assembled through a slice element, and one assembled through a field.
+		// Neither is followed to the variable underneath, because two elements and two
+		// receivers share it — a shadowed read there would be silent, and this finding
+		// is not.
+		{"RankBatch", []string{
+			"`JOIN usage u ON u.id = usage.id` names a table but is only a fragment of a statement",
+		}},
+		{"RankFields", []string{
+			"`JOIN usage u ON u.id = usage.id` names a table but is only a fragment of a statement",
+		}},
+		// What following the index would cost: the CTE is in the element the fragment
+		// was not appended to, so resolving both to `qs` drops a real read of `usage`.
+		{"RankSliceElements", []string{
+			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
+		}},
+		// Two bare calls, so neither statement is an assignment of any kind and the
+		// scope has nothing to fall back to but the statement.
+		{"RankBare", []string{
+			"2 database call(s) but only 1 readable statement(s) in the body",
+			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
+		}},
+		// Two queries whose only shared name is `err`. A target that cannot hold the
+		// text does not stand for the query, or one CTE would shadow the whole body.
+		{"RankErrShared", []string{
+			"2 database call(s) but only 1 readable statement(s) in the body",
+			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
+		}},
+		// The reuse in RankRecycled with the halves reversed. A fragment is settled
+		// against the CTE names in force where it was read, not against whichever
+		// statement the variable held last.
+		{"RankReversed", []string{
+			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
 		}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
@@ -389,13 +429,25 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// The other one: `ON CONFLICT ... DO UPDATE ` split before its SET clause.
 		{"UpsertModel", []string{"pg.models W"}},
 		// A locking clause that carries on past the keyword, where the readable word
-		// after `UPDATE` is `SKIP` and not a table.
+		// after `UPDATE` is `SKIP` and not a table — as a fragment, and in the single
+		// literal the remedy text tells a reader to prefer. The second one is where a
+		// table called `skip` would come from.
 		{"LockModelSkip", []string{"pg.models R"}},
-		// A query split across a slice element, and one split across a `var`
-		// declaration. Both halves have to land in the same scope as the WITH clause
-		// they belong to.
-		{"RankBatch", []string{"pg.models R"}},
+		{"LockModelSkipInline", []string{"pg.models R"}},
+		// The other spelling of the same lock. `FOR UPDATE` is a family of clauses, and
+		// a statement already in one literal has no remedy left if one of them is read
+		// as a splice.
+		{"LockModelNoKey", []string{"pg.models R"}},
+		// A query split across a `var` declaration, which has to be scoped the way an
+		// assignment is or the WITH clause and the fragment land apart.
 		{"RankDeclaredVar", []string{"pg.models R"}},
+		// One local, two statements, the fragment belonging to the first. Its CTE names
+		// are still in force where it was read, however the local is reused afterwards.
+		{"RankResetAfter", []string{"pg.models R", "pg.models R"}},
+		// One statement whose middle literal parses on its own, the shape every long
+		// query in the tree has. The CTE above it is still in force below it — the
+		// coordinator's network-totals query is one line break away from this.
+		{"RankSplitCTE", []string{"pg.models R"}},
 		// Fragments whose FROM belongs to a keyword call and to a set-returning
 		// function. Neither names a table, and the fragment scan has to know that as
 		// well as `Tables` does.
@@ -499,6 +551,19 @@ func TestFixtureAssembledDeclaration(t *testing.T) {
 			declare("ListModelsTrailing", map[string]string{"usage": "R"}))
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("findings for a name read before a trailing keyword:\n got %q\nwant %q", got, want)
+		}
+	})
+
+	// And for a literal that gave up a name and then spliced the next one in. The
+	// splice is decided on the spot, so the name has to be recorded before that
+	// finding is raised — reporting and returning first left `models` out of the
+	// account, and an entry naming only `usage` absorbed it.
+	t.Run("table named beside a spliced one", func(t *testing.T) {
+		want := []string{"the overlay declares the tables this function assembles, but text here names `models`, which the declaration does not — add it"}
+		got := opaqueDetails(t, "ListModelsJoinedFrag",
+			declare("ListModelsJoinedFrag", map[string]string{"usage": "R"}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("findings for a name read beside a splice:\n got %q\nwant %q", got, want)
 		}
 	})
 

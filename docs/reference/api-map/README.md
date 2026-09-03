@@ -334,10 +334,12 @@ this dies of:
   readable first one, and `q += " FROM models m JOIN usage u"` hides a second table
   behind a declared one. Text that *ends* at a keyword is drift as well
   (`q += " JOIN " + other`): the name it is waiting for never reaches the
-  extractor. `UPDATE` is the exception, in both positions — in `FOR UPDATE` and
-  `ON CONFLICT … DO UPDATE` the word introduces a lock or a conflict action and is
-  never followed by a table, so neither `q += " FOR UPDATE"` nor a statement whose
-  literal closes on the line after `FOR UPDATE` is drift. `ONLY` and `LATERAL` are
+  extractor. `UPDATE` is the exception, in both positions — in `FOR UPDATE`,
+  `FOR NO KEY UPDATE` and `ON CONFLICT … DO UPDATE` the word introduces a lock or a
+  conflict action and is never followed by a table, so those clauses are blanked
+  before either reader sees them: neither `q += " FOR UPDATE"`, nor a statement whose
+  literal closes on the line after `FOR UPDATE`, nor `FOR UPDATE SKIP LOCKED` (which
+  once put a table called `skip` in the map) is drift. `ONLY` and `LATERAL` are
   read through, since they prefix a table name rather than replace it. Constants count
   as one statement: `"SELECT " + userColumns + " FROM users"` is folded by
   `go/types`, which is why the column-list splice the store uses throughout stays
@@ -346,17 +348,29 @@ this dies of:
   A `WITH` clause shadows a table of the same name — the earnings queries define
   `WITH providers AS (…)` and then `JOIN providers p`, which is the CTE and not the
   `providers` table, and no schema check can tell them apart because `providers` is
-  also real. Those names are scoped to the **variable the query is assembled into**
-  — `qs[0] += tail` and `s.q += tail` count as that variable — or, for text with no
-  such variable, to the **statement it appears in**, so two literals handed straight
-  to `Exec` do not pool their CTE names. Assigning a whole statement to a variable
-  starts its CTE names over, because store code reuses one `q` for several queries.
-  Three consequences worth knowing: a CTE in one query does not silence a same-named
-  real table in another; a fragment whose `WITH` clause was assigned to a *different*
-  variable is reported even though the SQL is legal (inline the `WITH` literal into
-  the same assignment as the fragment — putting it in a variable that is then
-  concatenated does not help); and a variable that accumulates several whole
-  statements, a migration slice, still shares one set of names across them. The
+  also real. Those names are scoped to the **string variable the query is assembled
+  into** — a bare `q`, including `var q = …`. Anything else scopes to the
+  **statement the text appears in**: two literals handed straight to `Exec` do not
+  pool their CTE names, and neither do two queries that share only an `err`. A
+  variable holding several queries in turn holds one set of names per query, and a
+  fragment is settled against the set in force where the fragment was read, so
+  reusing one `q` neither carries a CTE name forward to the next query nor takes it
+  away from the last. The boundary is the **assignment**, not the literal, because a
+  long query spliced from several literals routinely has a middle one that parses on
+  its own (`SELECT DISTINCT account_id FROM provider_earnings WHERE …` between two
+  CTE definitions) and that is the same query still being assembled.
+
+  Three consequences worth knowing. A CTE in one query does not silence a same-named
+  real table in another. A query assembled through anything but a bare string
+  variable — `qs[0] += tail`, `s.q += tail`, `*p += tail` — is reported even though
+  the SQL is legal, because `qs[0]` and `qs[1]` are one variable and `a.q` and `b.q`
+  are one field: resolving through to them would let a CTE in one element or one
+  receiver shadow a real table read in another, which is the silence this check
+  exists to break. And two whole statements concatenated into one expression
+  (`stmtA + "; " + base + " JOIN usage u"`) share a scope, so the fragment is settled
+  against both. In each of those cases the remedy is the same as for a fragment whose
+  `WITH` clause was assigned to a *different* variable: inline the `WITH` literal into
+  the same assignment as the fragment, or declare the tables. The
   scan reads SQL rather than parsing it, so it also says
   nothing about a lower-case keyword; the tree writes SQL in upper case, and prose
   is full of "update … from …". The converse costs a false finding rather than a

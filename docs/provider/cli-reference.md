@@ -63,15 +63,20 @@ darkbloom start --local-endpoint --bind 100.x.y.z
 
 ## `darkbloom stop`
 
-Stop the launchd service.
+Stop the launchd service. By default the command waits for in-flight inference
+to finish before booting the daemon out, polling the daemon state file once a
+second for an idle moment. The coordinator may keep routing new requests while
+it waits, so a busy provider can reach the timeout; re-run with `--force` then.
 
 ```bash
-darkbloom stop [--uninstall]
+darkbloom stop [--uninstall] [--force] [--timeout <seconds>]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--uninstall` | Also remove the launchd plist |
+| `--force` | Stop immediately without waiting for in-flight requests |
+| `--timeout <seconds>` | Maximum seconds to wait for in-flight requests (default 60; `0` refuses to stop while requests are active unless `--force`) |
 
 `--uninstall` disarms the crash-recovery watchdog before removing the agent
 (`provider-swift/Sources/darkbloom/StopCommand.swift`).

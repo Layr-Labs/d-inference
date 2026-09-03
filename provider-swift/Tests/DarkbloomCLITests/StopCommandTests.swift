@@ -55,15 +55,28 @@ struct StopCommandFlagTests {
     }
 
     @Test("stop --timeout negative fails validation")
-    func stopNegativeTimeoutFailsValidation() {
-        // ValidationError from validate() — not a parse-time type error.
-        #expect(throws: ValidationError.self) {
-            var cmd = try Stop.parse(["--timeout", "-5"])
-            try cmd.validate()
+    func stopNegativeTimeoutFailsValidation() throws {
+        // `parse` runs `validate()` itself and wraps the ValidationError in
+        // a CommandError, so check the rendered message end-to-end. The
+        // attached `=` form is required: a bare `-5` after `--timeout` is
+        // tokenised as the short option `-5` and never reaches validate().
+        for argv in [["--timeout=-5"], ["--timeout=-1"]] {
+            do {
+                _ = try Stop.parse(argv)
+                Issue.record("expected \(argv) to fail validation")
+            } catch {
+                #expect(Stop.message(for: error).contains("--timeout must be >= 0"))
+            }
         }
-        #expect(throws: ValidationError.self) {
-            var cmd = try Stop.parse(["--timeout", "-1"])
+
+        // validate() on its own surfaces the ValidationError directly.
+        var cmd = try Stop.parse(["--timeout", "0"])
+        cmd.timeout = -5
+        do {
             try cmd.validate()
+            Issue.record("expected validate() to reject a negative timeout")
+        } catch let error as ValidationError {
+            #expect(error.message == "--timeout must be >= 0")
         }
     }
 

@@ -9,6 +9,10 @@ struct Stop: AsyncParsableCommand {
         By default waits for any in-flight inference to finish before stopping, \
         so active requests are not cut off mid-generation. Use --force to stop \
         immediately without waiting, or --timeout to customize how long to wait.
+
+        The wait polls the daemon's state file for an idle moment; the \
+        coordinator may keep routing new requests meanwhile, so a busy provider \
+        can reach the timeout. Re-run with --force in that case.
         """
     )
 

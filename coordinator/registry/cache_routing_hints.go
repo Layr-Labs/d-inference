@@ -8,11 +8,13 @@ func (r *Registry) prefixCacheV2CapabilitiesForModel(
 	model string,
 ) map[string]cacheRoutingCapability {
 	r.mu.RLock()
-	providers := make([]*Provider, 0, len(r.providers))
+	// Per-model index: a v2 capability is keyed by the model the provider
+	// advertises, and the discount only ever applies to a candidate that
+	// passed the advertisement gate, so a capability for a model the provider
+	// does not advertise could never influence selection — pruning the walk to
+	// advertisers changes no hint that matters (model_index.go).
+	providers := r.providersForModelLocked(model)
 	tracker := r.cacheRouting
-	for _, provider := range r.providers {
-		providers = append(providers, provider)
-	}
 	r.mu.RUnlock()
 	out := make(map[string]cacheRoutingCapability)
 	for _, provider := range providers {

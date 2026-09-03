@@ -524,17 +524,9 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		})
 	}
 
-	s.submitTelemetry("recordInferenceRoute", func() {
-		if err := s.store.RecordInferenceRoute(record); err != nil && s.logger != nil {
-			s.logger.Error("inference_routes record write failed",
-				"request_id", record.RequestID,
-				"attempt", record.Attempt,
-				"provider_id", record.ProviderID,
-				"model", record.Model,
-				"error", err,
-			)
-		}
-	})
+	// Off the request path: the batching sink coalesces this snapshot with its
+	// neighbours into one multi-row write (route_telemetry_submit.go).
+	s.submitRouteRecord(record)
 }
 
 // timingMsBetween returns the elapsed milliseconds between two request-lifecycle

@@ -467,7 +467,7 @@ func (t *codeAttestThrottle) reservePush(
 	}
 	reservationCooldown := max(cooldown, time.Nanosecond)
 	next := now.Add(reservationCooldown)
-	st, hasDurableBudget := t.store.(codeAttestPushBudgetStore)
+	st, hasDurableBudget := store.As[codeAttestPushBudgetStore](t.store)
 	t.mu.Unlock()
 
 	if hasDurableBudget {
@@ -571,7 +571,7 @@ func (t *codeAttestThrottle) clearPushBudgetReservationHeld(
 		t.mu.Unlock()
 		return false
 	}
-	st, hasDurable := t.store.(codeAttestPushBudgetStore)
+	st, hasDurable := store.As[codeAttestPushBudgetStore](t.store)
 	cooldown := t.budgetClearCooldown
 	t.mu.Unlock()
 
@@ -880,7 +880,7 @@ func (s *Server) SeedCodeAttestCache(ctx context.Context) {
 	} else if n := s.codeAttestThrottle.seed(rows); n > 0 {
 		s.logger.Info("code-attest: seeded reuse cache from persisted records (survives deploys)", "records", n)
 	}
-	if st, ok := s.store.(codeAttestPushBudgetStore); ok {
+	if st, ok := store.As[codeAttestPushBudgetStore](s.store); ok {
 		budgets, err := st.ListCodeAttestPushBudgets(ctx)
 		if err != nil {
 			s.logger.Warn("code-attest: failed to seed durable push budgets", "error", err)

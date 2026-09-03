@@ -1341,6 +1341,12 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
 		return rawBody // fixed provider — pass penalties through
 	}
+	// A body carrying none of the penalty fields at its top level is returned
+	// unchanged without decoding it — the same outcome the decode path reaches
+	// through changed=false, minus a full-body parse per sizing probe.
+	if has, ok := topLevelObjectHasAnyKey(rawBody, visionPenaltyFields); ok && !has {
+		return rawBody
+	}
 	parsed, err := decodeInferenceJSONObject(rawBody)
 	if err != nil {
 		return rawBody
@@ -1392,17 +1398,9 @@ func legacyCacheBustBodyBytes(
 	if provider == nil {
 		return 0, nil
 	}
-	sizingPR := &registry.PendingRequest{
-		LegacyCacheBustKey: strings.Repeat("x", registry.LegacyCacheBustKeyLength),
-	}
-	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
-	if err == nil {
-		return 0, nil
-	}
-	if errors.Is(err, errProviderBodyTooLarge) {
-		return oversizedProviderBodyBytes(err), err
-	}
-	return 0, err
+	return cacheAttemptSizeError(
+		bodyForProvider(rawBody, requiresVision, provider),
+		strings.Repeat("x", registry.LegacyCacheBustKeyLength))
 }
 
 func providerBodySizeError(
@@ -1413,22 +1411,15 @@ func providerBodySizeError(
 	if provider == nil {
 		return 0, nil
 	}
-	sizingPR := &registry.PendingRequest{}
 	provider.Mu().Lock()
 	usesLegacyCacheBust := provider.PrefixCacheProtocol < 1
 	provider.Mu().Unlock()
+	legacyKey := ""
 	if usesLegacyCacheBust {
-		sizingPR.LegacyCacheBustKey = strings.Repeat(
-			"x", registry.LegacyCacheBustKeyLength)
+		legacyKey = strings.Repeat("x", registry.LegacyCacheBustKeyLength)
 	}
-	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
-	if err == nil {
-		return 0, nil
-	}
-	if errors.Is(err, errProviderBodyTooLarge) {
-		return oversizedProviderBodyBytes(err), err
-	}
-	return 0, err
+	return cacheAttemptSizeError(
+		bodyForProvider(rawBody, requiresVision, provider), legacyKey)
 }
 
 func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
@@ -1465,6 +1456,10 @@ func exhaustedProviderPreparationError(
 	return providerBodyOverflowErr
 }
 
+// bodyForCacheAttempt returns the body to seal for one dispatch attempt: the
+// provider-specific body (bodyForProvider) with the protocol-0 cache-bust key
+// added as prompt_cache_key when the attempt carries one, size-checked
+// against the sealed-frame cap.
 func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
 	body := bodyForProvider(rawBody, requiresVision, provider)
 	if pr == nil || pr.LegacyCacheBustKey == "" {
@@ -1473,18 +1468,15 @@ func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry
 		}
 		return body, nil
 	}
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, err
-	}
 	keyJSON, err := json.Marshal(pr.LegacyCacheBustKey)
 	if err != nil {
 		return nil, err
 	}
-	parsed["prompt_cache_key"] = keyJSON
-	sealed, err := marshalForwardBody(parsed)
-	if err != nil {
-		return nil, err
+	sealed, ok := spliceTopLevelMember(body, legacyCacheBustField, keyJSON)
+	if !ok {
+		if sealed, err = sealLegacyCacheBust(body, keyJSON); err != nil {
+			return nil, err
+		}
 	}
 	if len(sealed) > maxInferenceBodyBytes {
 		return nil, &providerBodyTooLargeError{size: len(sealed)}
@@ -1772,7 +1764,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rawBody := prelude.rawBody
+	// body is the provider-bound request: every rewrite below mutates
+	// body.parsed (== parsed) and marks it dirty; the bytes are serialized ONCE,
+	// at the single serialization point ahead of the first consumer of the
+	// provider body. originalRawBody stays the caller's untouched input.
+	body := &prelude.body
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
@@ -1818,12 +1814,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var allowedProviderSerials []string
-	stripped := stripProviderRoutingFields(parsed)
-	if applyMetadataDetailsRequest(r, parsed) {
-		stripped = true
+	if stripProviderRoutingFields(parsed) {
+		body.markDirty()
 	}
-	if stripped {
-		rawBody, _ = marshalForwardBody(parsed)
+	if applyMetadataDetailsRequest(r, parsed) {
+		body.markDirty()
 	}
 
 	// "Use my own machine, for free" opt-in. The signal is the
@@ -1833,13 +1828,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// coordinator-stamped provider AccountID, so nothing here is forgeable.
 	policy := s.resolveSelfRoutePolicy(r)
 
-	// Derive request-shape traits before alias resolution. During a
-	// mixed-version rollout Desired may have ordinary providers while Previous
-	// has the only provider capable of enforcing this exact tool policy.
-	requiresVision := detectMediaRequirement(parsed)
-	hasTools := requestHasTools(parsed)
 	isResponsesAPI := input != nil && len(messages) == 0
-	constraintBody := originalRawBody
+	// Tool-constraint validation must judge the PRE-normalization tools (a
+	// normalization marker in the caller's body is forged). On the chat surface
+	// that is the parsed map with the caller's original tools restored; the
+	// Responses surface needs the input→chat lowering, which works on bytes, so
+	// the untouched input is lowered and parsed once.
+	var validatedPolicy validatedToolConstraintPolicy
+	var validationErr error
 	if isResponsesAPI {
 		loweredConstraintBody, err := promptcontract.LowerProviderBody(
 			promptcontract.EndpointResponses, originalRawBody)
@@ -1848,14 +1844,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				"invalid_request_error", err.Error()))
 			return
 		}
-		constraintBody = loweredConstraintBody
+		validatedPolicy, validationErr = validateToolConstraintPolicy(loweredConstraintBody)
+	} else {
+		validatedPolicy, validationErr = validateParsedToolConstraintPolicy(
+			constraintView(parsed, prelude.originalTools))
 	}
-	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
 	if validationErr != nil {
 		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
 		writeToolConstraintValidationError(w, validationErr)
 		return
 	}
+	// Derive request-shape traits before alias resolution. During a
+	// mixed-version rollout Desired may have ordinary providers while Previous
+	// has the only provider capable of enforcing this exact tool policy. One
+	// walk of the message tree yields the media count, the tools flag, and the
+	// routing/billing token estimates (consumed below, after the rewrites). It
+	// runs after constraint validation so a rejected tool policy on a large
+	// body never pays the walk.
+	shape := introspectRequest(parsed)
+	requiresVision := shape.requiresVision()
+	hasTools := shape.hasTools
 	validatedMode := validatedPolicy.mode
 	toolChoiceName := validatedPolicy.name
 	parallelToolCalls := validatedPolicy.parallel
@@ -1881,8 +1889,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// the pick only considers builds the constrained provider set can actually
 	// serve. From here on `model` is the build (routing/billing/serving) while
 	// `publicModel` is echoed back so the consumer never sees the quant.
-	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
-		parsed, rawBody, model, allowedProviderSerials, policy, aliasTraits)
+	buildModel, publicModel, modelRewritten, ok := s.resolveRequestedBuild(
+		parsed, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
 			r:               r,
@@ -1898,18 +1906,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("model %q has no available build right now", model), withParam("model")))
 		return
 	}
-	model, rawBody = buildModel, resolvedBody
+	model = buildModel
+	if modelRewritten {
+		body.markDirty()
+	}
 	user := auth.UserFromContext(r.Context())
 	serviceChatConsumer := r.URL.Path == "/v1/chat/completions" &&
 		user != nil && user.Role == store.RoleService
-	preparedBody, _, err := applyResolvedModelReasoningPolicy(
-		parsed, rawBody, model, serviceChatConsumer, reasoningProvided)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse(
-			"server_error", "failed to prepare inference request"))
-		return
+	if applyResolvedModelReasoningPolicy(parsed, model, serviceChatConsumer, reasoningProvided) {
+		body.markDirty()
 	}
-	rawBody = preparedBody
 
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
@@ -1943,7 +1949,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		profileDBCall(rp, registryReadStart)
 		resolvedRuntimeParameters = rec.RuntimeParameters
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
-			rawBody, _ = marshalForwardBody(parsed)
+			body.markDirty()
 		}
 		// Use the registry's max_output_length as the default max_tokens
 		// bound instead of the hardcoded 8192. This lets models like
@@ -1970,12 +1976,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
 	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
-		rawBody, _ = marshalForwardBody(parsed)
+		body.markDirty()
 	}
 
 	stream, _ := parsed["stream"].(bool)
-	estimatedPromptTokens := estimatePromptTokens(parsed)
-	billingPromptTokens := estimateBillingPromptTokens(parsed)
+	estimatedPromptTokens := shape.routingPromptTokens(parsed)
+	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
@@ -1984,6 +1990,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Single serialization point: every rewrite above (stop, stripped fields,
+	// alias, reasoning policy, runtime defaults, max_tokens) landed in parsed;
+	// serialize once here — or hand the caller's exact bytes through when
+	// nothing changed.
+	rawBody, err := body.current()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse(
+			"server_error", "failed to prepare inference request"))
+		return
+	}
 	providerBody := rawBody
 	if isResponsesAPI {
 		loweredProviderBody, err := promptcontract.LowerProviderBody(promptcontract.EndpointResponses, rawBody)
@@ -2009,57 +2025,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		providerBody = loweredProviderBody
 	}
-	providerBodyForModel := func(candidateModel string) ([]byte, error) {
-		candidateParsed := make(map[string]any, len(parsed))
-		for key, value := range parsed {
-			candidateParsed[key] = value
-		}
-		candidateParsed["model"] = candidateModel
-		candidateDefaults := runtimeDefaults
-		if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
-			candidateDefaults.apply(candidateParsed, rec.RuntimeParameters)
-		} else {
-			candidateDefaults.apply(candidateParsed, nil)
-		}
-		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
-		if marshalErr == nil {
-			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
-				candidateParsed, candidateBody, candidateModel, serviceChatConsumer, reasoningProvided)
-		}
-		if marshalErr == nil && isResponsesAPI {
-			candidateBody, marshalErr = promptcontract.LowerProviderBody(
-				promptcontract.EndpointResponses, candidateBody)
-		}
-		return candidateBody, marshalErr
+	// Candidate provider bodies (the resolved build, the alias fallback build
+	// the preflight probes) and the routing verdicts derived from them are
+	// memoized per request: traits, the protocol-0 size verdict, and dispatch
+	// all reuse one serialization per candidate. When the body above is the
+	// coordinator's own serialization, the resolved build is seeded with it —
+	// parsed is fully reconciled for that build, so a rebuild would produce the
+	// same bytes. A verbatim caller body is NOT a substitute (its whitespace,
+	// key order and escapes differ from the serialized form the size verdicts
+	// have always measured), so that rare case builds its candidate as before.
+	bodies := newProviderBodyMemo(func(candidateModel string) ([]byte, error) {
+		return s.candidateProviderBody(parsed, runtimeDefaults, candidateModel,
+			serviceChatConsumer, reasoningProvided, isResponsesAPI)
+	}, hasTools, requiresVision)
+	if body.serialized {
+		bodies.seed(model, providerBody)
 	}
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return registry.RequestTraits{
-				HasTools:               hasTools,
-				RequiresToolConstraint: requiresToolConstraint,
-				ToolChoiceMode:         string(validatedMode),
-				ToolChoiceName:         toolChoiceName,
-				ParallelToolCalls:      parallelToolCalls,
-			}
+		traits, ok := bodies.traits(candidateModel)
+		if !ok {
+			traits = registry.RequestTraits{HasTools: hasTools}
 		}
-		traits, _ := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
 		traits.RequiresToolConstraint = requiresToolConstraint
 		traits.ToolChoiceMode = string(validatedMode)
 		traits.ToolChoiceName = toolChoiceName
 		traits.ParallelToolCalls = parallelToolCalls
 		return traits
 	}
-	providerBodyErrorForModel := func(candidateModel string) error {
-		candidateBody, bodyErr := providerBodyForModel(candidateModel)
-		if bodyErr != nil {
-			return nil
-		}
-		_, sizeErr := routingTraitsForProviderBody(
-			hasTools, candidateBody, requiresVision)
-		return sizeErr
-	}
+	providerBodyErrorForModel := bodies.sizeError
 	routingTraits := routingTraitsForModel(model)
 
 	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
@@ -2156,14 +2149,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// refreshForwardBody re-derives every view of the provider-bound request from
 	// a freshly marshaled `parsed`: the threaded rawBody, the body actually
 	// forwarded to the provider (re-lowered input→chat on the Responses surface,
-	// which can itself fail with a 400), and the routing traits computed from it.
-	// Any in-place mutation of `parsed` MUST go through it — an alias fallback
-	// rewriting the model, or remote media being inlined as data: URIs. Returns
-	// false after writing a terminal response.
-	refreshForwardBody := func(body []byte, forModel string) bool {
-		rawBody = body
+	// which can itself fail with a 400), the memoized candidate bodies (every
+	// earlier candidate described a parsed that no longer exists), and the
+	// routing traits computed from it. Any in-place mutation of `parsed` MUST go
+	// through it — an alias fallback rewriting the model, or remote media being
+	// inlined as data: URIs. Returns false after writing a terminal response.
+	refreshForwardBody := func(forwardBytes []byte, forModel string) bool {
+		rawBody = forwardBytes
+		body.replace(forwardBytes)
+		bodies.reset()
 		if !isResponsesAPI {
 			providerBody = rawBody
+			bodies.seed(forModel, providerBody)
 			routingTraits = routingTraitsForModel(forModel)
 			return true
 		}
@@ -2190,6 +2187,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return false
 		}
+		bodies.seed(forModel, providerBody)
 		routingTraits = routingTraitsForModel(forModel)
 		return true
 	}
@@ -2249,10 +2247,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			refundReservation()
 			return false
 		}
-		body, _ := marshalForwardBody(parsed)
-		body, _, _ = applyResolvedModelReasoningPolicy(
-			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
-		return refreshForwardBody(body, newModel)
+		applyResolvedModelReasoningPolicy(parsed, newModel, serviceChatConsumer, reasoningProvided)
+		// maybeFallbackAlias rewrote parsed["model"]; the defaults and reasoning
+		// policy above may have moved more. One serialization covers all of it.
+		body.markDirty()
+		forwardBytes, err := body.current()
+		if err != nil {
+			refundReservation()
+			writeJSON(w, http.StatusInternalServerError, errorResponse(
+				"server_error", "failed to prepare inference request"))
+			return false
+		}
+		return refreshForwardBody(forwardBytes, newModel)
 	}
 	var preflightHandled bool
 	preflightStart := time.Now()
@@ -2345,7 +2351,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		estimatedPromptTokens:  estimatedPromptTokens,
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
-		visionImageCount:       countMediaParts(parsed),
+		visionImageCount:       shape.mediaParts,
 		hasTools:               hasTools,
 		requiresToolConstraint: requiresToolConstraint,
 		toolChoiceMode:         string(validatedMode),
@@ -2405,60 +2411,21 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	flusher.Flush()
 	rs := newRelayStamps(pr.Profile.Parent())
 
-	// Detect Responses API format to skip appending chat-completions-style
-	// termination events (SE signature chunk + [DONE]).
-	sawResponsesAPI := false
-
-	// The terminal include_usage chunk lacks the reasoning breakdown; we hold its
-	// parsed object and re-emit it at stream end with the provider's authoritative
-	// reasoning count (CompleteCh) spliced in — matching the non-streaming/Responses
-	// paths. Held as a parsed map so it is decoded exactly once. Declared before the
-	// first-chunk write because a zero-delta completion (empty/filtered output) can
-	// make the include_usage frame the very first chunk.
-	var pendingUsage map[string]any
-
-	// The chunk carrying the terminal finish_reason is held the same way: the
-	// provider engine reports "stop" even when generation hit the max-tokens
-	// bound, so the coordinator re-derives "length" from the authoritative
-	// token counts (CompleteCh) before forwarding it.
-	var pendingFinish map[string]any
+	// Per-request relay state: the Responses-format latch, the held terminal
+	// usage/finish frames, and the batch buffer. Every chunk — the ones already
+	// consumed during dispatch and the ones relayed below — goes through the
+	// same relay.handleChunk pipeline (see chat_stream_relay.go).
+	relay := newChatStreamRelay(pr)
 
 	// Write the chunks that were already consumed during dispatch (held
-	// preamble first, then the committing content chunk), each through the
-	// same per-chunk special-casing the relay loop below applies.
+	// preamble first, then the committing content chunk).
 	for _, firstChunk := range firstChunks {
 		if firstChunk == "" {
 			continue
 		}
-		if isResponsesAPIEventChunk(firstChunk) {
-			sawResponsesAPI = true
-		}
-		if !sawResponsesAPI {
-			firstChunk, _ = stripSSEDoneEvents(firstChunk)
-			if strings.TrimSpace(firstChunk) == "" {
-				continue
-			}
-		}
-		firstChunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(firstChunk))
-		// A usage-only first chunk (no content/reasoning deltas streamed before it)
-		// is still terminal usage — hold it so the reasoning breakdown is spliced in
-		// at stream end instead of being emitted raw without reasoning_tokens.
-		if obj, isUsage := parseUsageOnlyStreamChunk(firstChunk); !sawResponsesAPI && isUsage {
-			pendingUsage = obj
-		} else {
-			if !sawResponsesAPI {
-				firstChunk = normalizeSSEChunk(firstChunk)
-			}
-			if obj, isFinish := parseFinishStreamChunk(firstChunk); !sawResponsesAPI && isFinish {
-				pendingFinish = obj
-			} else {
-				firstChunk = rewriteChunkModel(firstChunk, pr)
-				n, werr := fmt.Fprintf(w, "%s\n\n", firstChunk)
-				flusher.Flush()
-				rs.wrote(n, werr)
-			}
-		}
+		relay.handleChunk(firstChunk)
 	}
+	rs.wrote(relay.flush(w, flusher))
 	if initialError != nil {
 		s.writeChatStreamProviderError(w, flusher, pr, *initialError)
 		return
@@ -2469,156 +2436,131 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
 
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed): surface a trailing provider error, refund an incomplete stream,
+	// or emit the held finish/usage frames and the single [DONE].
+	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				s.writeChatStreamProviderError(w, flusher, pr, errMsg)
+				return
+			}
+		default:
+		}
+		if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			s.writeChatStreamTerminalError(
+				w, flusher, pr, "provider_error", "provider ended without completion")
+			return
+		}
+		// Channel closed — inference complete.
+		s.noteInferenceSuccess(pr)
+		// For Responses API streams, the provider already sent
+		// "response.completed" as the terminal event. Adding
+		// extra chunks would break SDK parsers.
+		if relay.sawResponsesAPI {
+			return
+		}
+		// Emit the held finish/usage chunks with the authoritative token
+		// counts (CompleteCh) spliced in: the finish chunk gets its
+		// finish_reason corrected to "length" when generation hit the
+		// max-tokens bound, and the usage chunk gets the reasoning
+		// breakdown. This select runs once, at stream end: the provider's
+		// inferenceComplete (which populates CompleteCh) is what ends the
+		// stream, so it is effectively already buffered — the timeout is a
+		// fallback, not a hot-path wait.
+		var usage protocol.UsageInfo
+		if relay.pendingUsage != nil || relay.pendingFinish != nil {
+			select {
+			case u, uok := <-pr.CompleteCh:
+				if uok {
+					usage = u
+				}
+			case <-time.After(2 * time.Second):
+			case <-r.Context().Done():
+			}
+		}
+		if relay.pendingFinish != nil {
+			if out := finalizeFinishChunk(relay.pendingFinish, usage, pr); out != "" {
+				relay.writeFrame(out)
+			}
+		}
+		if relay.pendingUsage != nil {
+			// Ride the SE signature on the held usage chunk (a complete,
+			// well-formed chat.completion.chunk) instead of emitting a
+			// separate bare event that strict SDK parsers reject.
+			if pr.SESignature != "" {
+				relay.pendingUsage["se_signature"] = pr.SESignature
+				relay.pendingUsage["response_hash"] = pr.ResponseHash
+			}
+			attachChatCompletionMetadata(relay.pendingUsage, pr)
+			if out := finalizeUsageChunk(relay.pendingUsage, usage, pr); out != "" {
+				relay.writeFrame(out)
+			}
+		} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
+			// No held usage chunk to ride on: emit the signature and/or
+			// opt-in metadata as a fully-shaped chat.completion.chunk
+			// (id/object/created/model/choices) so strict decoders parse
+			// it; the extra fields are additive. It precedes the single
+			// [DONE] below.
+			event := newChatCompletionExtrasEvent(pr)
+			if pr.SESignature != "" {
+				event["se_signature"] = pr.SESignature
+				event["response_hash"] = pr.ResponseHash
+			}
+			attachChatCompletionMetadata(event, pr)
+			sigEvent, _ := json.Marshal(event)
+			relay.writeFrame("data: " + string(sigEvent))
+		}
+		// Exactly one terminator, after every coordinator-appended event. The
+		// terminal frames reach the wire together in one flush.
+		relay.writeFrame("data: [DONE]")
+		rs.wrote(relay.flush(w, flusher))
+		rs.done()
+	}
+
+	// relayChunk forwards one provider chunk. Every chunk is a liveness
+	// signal — re-arm the idle timeout up front, before deciding whether to
+	// forward or hold it, so holding the terminal usage chunk still resets
+	// the window that bounds the wait for the provider's inference_complete
+	// (which closes ChunkCh after billing).
+	relayChunk := func(chunk registry.ProviderChunk) {
+		resetIdleTimer(timer, inferenceTimeout)
+		relay.handleChunk(chunk.Data)
+	}
+
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				select {
-				case errMsg, ok := <-pr.ErrorCh:
-					if ok && errMsg.Error != "" {
-						s.writeChatStreamProviderError(w, flusher, pr, errMsg)
-						return
-					}
-				default:
-				}
-				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					s.writeChatStreamTerminalError(
-						w, flusher, pr, "provider_error", "provider ended without completion")
-					return
-				}
-				// Channel closed — inference complete.
-				s.noteInferenceSuccess(pr)
-				// For Responses API streams, the provider already sent
-				// "response.completed" as the terminal event. Adding
-				// extra chunks would break SDK parsers.
-				if !sawResponsesAPI {
-					// Emit the held finish/usage chunks with the authoritative token
-					// counts (CompleteCh) spliced in: the finish chunk gets its
-					// finish_reason corrected to "length" when generation hit the
-					// max-tokens bound, and the usage chunk gets the reasoning
-					// breakdown. This select runs once, at stream end: the provider's
-					// inferenceComplete (which populates CompleteCh) is what ends the
-					// stream, so it is effectively already buffered — the timeout is a
-					// fallback, not a hot-path wait.
-					var usage protocol.UsageInfo
-					if pendingUsage != nil || pendingFinish != nil {
-						select {
-						case u, uok := <-pr.CompleteCh:
-							if uok {
-								usage = u
-							}
-						case <-time.After(2 * time.Second):
-						case <-r.Context().Done():
-						}
-					}
-					if pendingFinish != nil {
-						if out := finalizeFinishChunk(pendingFinish, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
-							flusher.Flush()
-						}
-					}
-					if pendingUsage != nil {
-						// Ride the SE signature on the held usage chunk (a complete,
-						// well-formed chat.completion.chunk) instead of emitting a
-						// separate bare event that strict SDK parsers reject.
-						if pr.SESignature != "" {
-							pendingUsage["se_signature"] = pr.SESignature
-							pendingUsage["response_hash"] = pr.ResponseHash
-						}
-						attachChatCompletionMetadata(pendingUsage, pr)
-						if out := finalizeUsageChunk(pendingUsage, usage, pr); out != "" {
-							fmt.Fprintf(w, "%s\n\n", out)
-							flusher.Flush()
-						}
-					} else if pr.SESignature != "" || hasChatCompletionMetadata(pr) {
-						// No held usage chunk to ride on: emit the signature and/or
-						// opt-in metadata as a fully-shaped chat.completion.chunk
-						// (id/object/created/model/choices) so strict decoders parse
-						// it; the extra fields are additive. It precedes the single
-						// [DONE] below.
-						event := newChatCompletionExtrasEvent(pr)
-						if pr.SESignature != "" {
-							event["se_signature"] = pr.SESignature
-							event["response_hash"] = pr.ResponseHash
-						}
-						attachChatCompletionMetadata(event, pr)
-						sigEvent, _ := json.Marshal(event)
-						n, werr := fmt.Fprintf(w, "data: %s\n\n", sigEvent)
-						flusher.Flush()
-						rs.wrote(n, werr)
-					}
-					// Exactly one terminator, after every coordinator-appended event.
-					n, werr := fmt.Fprint(w, "data: [DONE]\n\n")
-					flusher.Flush()
-					rs.wrote(n, werr)
-					rs.done()
-				}
+				finishStream()
 				return
 			}
-			chunk := providerChunk.Data
-			// Every chunk is a liveness signal — re-arm the idle timeout up front,
-			// before deciding whether to forward or hold it, so holding the terminal
-			// usage chunk still resets the window that bounds the wait for the
-			// provider's inference_complete (which closes ChunkCh after billing).
-			// One reset covers both the forward and hold paths.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			rs.wrote(relay.flush(w, flusher))
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
-
-			if !sawResponsesAPI {
-				if isResponsesAPIEventChunk(chunk) {
-					sawResponsesAPI = true
-				}
-			}
-			// Swallow provider-owned [DONE] events, including SSE groups decorated
-			// with event/id/comment fields, while retaining any sibling event. The
-			// coordinator appends terminal events of its own (held usage with
-			// the reasoning breakdown, SE signature) and then emits exactly ONE
-			// [DONE] — forwarding the provider's produced a stream shaped
-			// `...usage, [DONE], signature, [DONE]`, and third-party SDKs treat
-			// the first [DONE] as final (MacPaw/OpenAI then chokes parsing the
-			// signature event).
-			if !sawResponsesAPI {
-				chunk, _ = stripSSEDoneEvents(chunk)
-				if strings.TrimSpace(chunk) == "" {
-					continue
-				}
-			}
-			chunk = stripProviderChatMetadata(sanitizeStreamCacheDetails(chunk))
-			// Hold the terminal usage chunk (chat completions only) so we can splice
-			// in the reasoning breakdown at stream end; forwarding it inline would
-			// emit it without reasoning_tokens.
-			if !sawResponsesAPI {
-				if obj, isUsage := parseUsageOnlyStreamChunk(chunk); isUsage {
-					pendingUsage = obj
-					continue
-				}
-			}
-			if !sawResponsesAPI {
-				chunk = normalizeSSEChunk(chunk)
-				// Hold the chunk carrying the terminal finish_reason so it can be
-				// corrected to "length" against the authoritative token counts at
-				// stream end (the provider engine always reports "stop").
-				if obj, isFinish := parseFinishStreamChunk(chunk); isFinish {
-					pendingFinish = obj
-					continue
-				}
-			}
-			chunk = rewriteChunkModel(chunk, pr)
-			n, werr := fmt.Fprintf(w, "%s\n\n", chunk)
-			flusher.Flush()
-			rs.wrote(n, werr)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
 				continue
 			}
+			// The provider error is delivered before ChunkCh is closed, so
+			// chunks that arrived ahead of it may still be queued: forward them
+			// (never waiting) before the terminal error so a late failure never
+			// truncates content the provider already produced.
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			rs.wrote(relay.flush(w, flusher))
 			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
 			return
 
@@ -2665,9 +2607,15 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 
 	writeSSEResponseHeader(w, pr.RequestID)
 
+	// The emitter flushes after every event; defer those flushes so a burst of
+	// already-queued provider chunks reaches the wire in one Flush. Every
+	// return path performs the owed flush.
+	deferred := newDeferredFlusher(flusher)
+	defer deferred.flushNow()
+
 	responseID := "resp_" + strings.ReplaceAll(pr.RequestID, "-", "")
 	createdAt := time.Now().Unix()
-	emitter := newResponsesStreamEmitter(w, flusher, pr, responseID, createdAt)
+	emitter := newResponsesStreamEmitter(w, deferred, pr, responseID, createdAt)
 	emitter.start()
 
 	for _, firstChunk := range firstChunks {
@@ -2683,53 +2631,89 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
 		return
 	}
+	// The preamble (lifecycle events + dispatch-time chunks) goes on the wire
+	// before blocking on the provider.
+	deferred.flushNow()
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
+
+	// emitProviderError settles and reports an in-band provider error.
+	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+	}
+
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed). A provider error is delivered on ErrorCh just before the
+	// channels close, so it is checked first: a close must never turn a real
+	// provider error into "incomplete" (or, with nothing reserved, success).
+	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				emitProviderError(errMsg)
+				return
+			}
+		default:
+		}
+		var usage protocol.UsageInfo
+		completed := false
+		select {
+		case u, ok := <-pr.CompleteCh:
+			if ok {
+				usage = u
+				completed = true
+			}
+		case <-time.After(2 * time.Second):
+		}
+		if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			emitter.emitError("provider_error", "provider ended without completion")
+			return
+		}
+		s.noteInferenceSuccess(pr)
+		emitter.finish(usage)
+	}
+
+	relayChunk := func(chunk registry.ProviderChunk) {
+		emitter.handleChunk(sanitizeStreamCacheDetails(chunk.Data))
+		resetIdleTimer(timer, inferenceTimeout)
+	}
 
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				var usage protocol.UsageInfo
-				completed := false
-				select {
-				case u, ok := <-pr.CompleteCh:
-					if ok {
-						usage = u
-						completed = true
-					}
-				case <-time.After(2 * time.Second):
-				}
-				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
-					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					emitter.emitError("provider_error", "provider ended without completion")
-					return
-				}
-				s.noteInferenceSuccess(pr)
-				emitter.finish(usage)
+				finishStream()
 				return
 			}
-			chunk := providerChunk.Data
-			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			deferred.flushNow()
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+			// Forward chunks queued ahead of the error before the terminal
+			// event (see the chat relay for the rationale).
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			deferred.flushNow()
+			emitProviderError(errMsg)
 			return
 
 		case <-timer.C:
@@ -3130,21 +3114,22 @@ func stripThinkBlocks(text string) (string, string) {
 func normalizeSSEChunk(chunk string) string {
 	line := strings.TrimPrefix(chunk, "data: ")
 	// Only trigger the expensive JSON parse for fields we actually fix.
-	// "finish_reason":null appears on every chunk but we don't touch it,
-	// so checking for generic ":null" causes unnecessary JSON round-trips.
-	needsNullFix := strings.Contains(line, `"content":null`) ||
-		strings.Contains(line, `"tool_calls":null`) ||
-		strings.Contains(line, `"usage":null`) ||
-		strings.Contains(line, `"reasoning":null`) ||
-		strings.Contains(line, `"reasoning_content":null`) ||
-		strings.Contains(line, `"refusal":null`) ||
-		strings.Contains(line, `"system_fingerprint":null`)
-	needsReasoningNormalization := strings.Contains(line, `"reasoning"`) ||
-		strings.Contains(line, `"reasoning_content"`)
-	if !needsNullFix && !needsReasoningNormalization {
+	// "finish_reason":null appears on every chunk but we don't touch it, so
+	// the gates scan for the fixable `"<key>":null` shapes and the reasoning
+	// aliases in a pass each (sse_normalize_gate.go) instead of one
+	// strings.Contains per field.
+	if !sseChunkNeedsNullFix(line) && !sseChunkHasReasoningField(line) {
 		return chunk
 	}
+	return rewriteSSEChunkFields(chunk, line)
+}
 
+// rewriteSSEChunkFields is normalizeSSEChunk's slow path: the JSON round-trip
+// that rewrites null delta fields, drops null top-level fields, mirrors the
+// reasoning aliases and synthesises reasoning_details. line is chunk without
+// its "data: " prefix. Returns chunk unchanged when nothing needed fixing or
+// the payload is not a JSON object.
+func rewriteSSEChunkFields(chunk, line string) string {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return chunk
@@ -4338,7 +4323,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	rawBody := prelude.rawBody
+	// This handler rebuilds its provider body from `parsed` (inferenceBody
+	// below); the prelude's forward bytes are only threaded into
+	// resolveRequestedModel, which never uses them here.
+	rawBody := prelude.originalRawBody
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model

@@ -939,7 +939,16 @@ func (s *Server) Close() {
 		s.promptArtifacts.Close()
 	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.close()
+		// Bounded flush: buffered route rows are written before main's deferred
+		// store Close (registered earlier, so it runs after this) tears down the
+		// pool. A stuck store cannot hold shutdown past the deadline; whatever
+		// is still unwritten then is counted as dropped by the sink.
+		if !s.routeTelemetry.closeAndWait(telemetrySinkShutdownFlush) && s.logger != nil {
+			s.logger.Warn("routing telemetry sink did not finish flushing before the shutdown deadline",
+				"deadline", telemetrySinkShutdownFlush,
+				"dropped_total", s.routeTelemetry.dropped.Load(),
+			)
+		}
 	}
 	s.trustAuthorityMu.Lock()
 	if s.trustAuthority != nil {
@@ -1271,6 +1280,15 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
+	// /v1/models entry memo + list bodies (both include_builds values) and the
+	// OpenRouter feed are derived from the same catalog; drop them too so an
+	// admin alias/registry change is visible on the next request instead of
+	// after their 2s/5s TTLs (which remain the bound for out-of-band DB edits).
+	for _, includeBuilds := range []bool{false, true} {
+		s.readCache.Invalidate(modelEntriesCacheKey(includeBuilds))
+		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
+	}
+	s.readCache.Invalidate(openRouterFeedCacheKey)
 	s.readCache.Invalidate("stats:v1")
 }
 
@@ -2953,6 +2971,7 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				s.ddGauge("request_queue.depth", float64(q.TotalSize()), nil)
 			}
 			s.emitExactCacheDDGauges()
+			s.emitStoreCacheGauges()
 			// Network utilization — demand/capacity across the warm-serving and
 			// token-budget axes, plus a per-model breakdown.
 			util := s.registry.NetworkUtilizationSnapshot()

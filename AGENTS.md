@@ -245,6 +245,8 @@ When adding code that mutates provider state or sends commands (`load_model`, et
 3. Check concurrent access — heartbeats arrive per-provider on separate goroutines; `TriggerModelSwaps` can race with `drainQueuedRequestsForModels`.
 4. Check the cleanup path — `Disconnect()` must clear any per-provider state you add.
 5. Verify pre-existing invariants: `maxModelSlots`, heartbeat field omission semantics (`nil` vs empty), and the `UnifiedMemoryCap` load gate on the provider side.
+6. **Per-model provider index** (`registry/model_index.go`): every site that assigns or mutates `p.Models` (today: `Register`, the models-update merge/hard-swap paths, the weight-hash refresh) and every provider removal path (`Disconnect`) must resync the index under `p.mu`. The routing scan, capacity preflight, servability prediction, cache-capability lookup, alias probes and the swap planner iterate the index instead of `r.providers`; a writer that forgets the resync makes a provider invisible to routing (or leaves a stale pointer) with no error. `TestModelIndexMatchesBruteForce*` pins the invariant — extend it when you add a writer.
+7. **Store read-through cache** (`store/cached.go`): `CachedStore` serves `GetUserByAccountID`/`GetUserByPrivyID` and `GetModelRegistryRecord`/`GetModelManifest` from memory and invalidates on the store mutators it overrides. Any NEW `store.Store` method that writes the `users` table or the model-registry tables must be overridden in `CachedStore` to invalidate its domain, or callers read stale data for up to the TTL. Backend-only capabilities discovered by type assertion must go through `store.As` (the decorator implements `Unwrap`).
 
 ## Code Structure & Modularity
 

@@ -331,8 +331,8 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	reg.RecordInferenceError("sess-1", model, 500, "base")
 	reg.RecordDispatchLoadFailure("sess-1", model)
 	reg.mu.Lock()
-	reg.pendingModelLoads["sess-1:"+model] = time.Now().Add(time.Minute)
-	reg.pendingModelLoadStarted["sess-1:"+model] = time.Now()
+	reg.pendingModelLoads[modelLoadKey{ProviderID: "sess-1", ModelID: model}] = time.Now().Add(time.Minute)
+	reg.pendingModelLoadStarted[modelLoadKey{ProviderID: "sess-1", ModelID: model}] = time.Now()
 	reg.mu.Unlock()
 
 	reg.Disconnect("sess-1")
@@ -342,8 +342,8 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	_, hasWin := reg.providerOutcomes[stableKey]
 	_, hasOpen := reg.providerBreakerOpenUntil[stableKey]
 	_, hasStrikes := reg.inferenceErrorStrikes[inferenceErrorKey{ProviderID: stableKey, ModelID: model, Shape: "base"}]
-	_, hasDLC := reg.dispatchLoadCooldowns[stableKey+":"+model]
-	_, hasPending := reg.pendingModelLoads["sess-1:"+model]
+	_, hasDLC := reg.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: stableKey, ModelID: model}]
+	_, hasPending := reg.pendingModelLoads[modelLoadKey{ProviderID: "sess-1", ModelID: model}]
 	_, hasBinding := reg.faultKeyBySession["sess-1"]
 	reg.mu.RUnlock()
 	if !hasWin || !hasOpen || !hasStrikes || !hasDLC {
@@ -366,7 +366,7 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	reg.mu.RLock()
 	_, anonWin := reg.providerOutcomes["sess-anon"]
 	_, anonStrikes := reg.inferenceErrorStrikes[inferenceErrorKey{ProviderID: "sess-anon", ModelID: model, Shape: "base"}]
-	_, anonDLC := reg.dispatchLoadCooldowns["sess-anon:"+model]
+	_, anonDLC := reg.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: "sess-anon", ModelID: model}]
 	reg.mu.RUnlock()
 	if anonWin || anonStrikes || anonDLC {
 		t.Fatalf("session-keyed residue of an identity-less provider must be dropped: win=%v strikes=%v dlc=%v",

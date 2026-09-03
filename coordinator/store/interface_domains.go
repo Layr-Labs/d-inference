@@ -167,9 +167,23 @@ type TelemetryStore interface {
 	// request attempt. Best-effort; failures must not block inference.
 	RecordInferenceRoute(record *InferenceRouteRecord) error
 
+	// RecordInferenceRoutes persists a batch of routing decision snapshots with
+	// exactly the per-row semantics of RecordInferenceRoute (upsert on
+	// request_id/attempt, zero CreatedAt/UpdatedAt defaulted to now), issued as
+	// one multi-row statement per chunk instead of one round trip per record.
+	// Records are applied in slice order; a duplicate (request_id, attempt) key
+	// within the slice starts a new statement so the later record refreshes the
+	// earlier one exactly as sequential calls would. Nil records are skipped.
+	RecordInferenceRoutes(records []*InferenceRouteRecord) error
+
 	// UpdateInferenceRouteOutcome updates the attempt with final outcome data
 	// (tokens, timing, error). Best-effort; failures must not block inference.
 	UpdateInferenceRouteOutcome(requestID string, attempt int, outcome *InferenceRouteOutcome) error
+
+	// UpdateInferenceRouteOutcomes applies a batch of outcome updates in slice
+	// order with exactly the per-row semantics of UpdateInferenceRouteOutcome,
+	// pipelined as one round trip. Updates with a nil Outcome are skipped.
+	UpdateInferenceRouteOutcomes(updates []InferenceRouteOutcomeUpdate) error
 
 	// InferenceRouteRecordsSince returns routing records created at or after the
 	// given time. Zero since returns all records.

@@ -213,7 +213,9 @@ func (s *PostgresStore) GetModelRegistryRecord(modelID string) (*ModelRegistryRe
 	rec, err := scanModelRegistryRecord(s.pool.QueryRow(ctx, activeModelRegistryQuery+` AND mr.id = $1`, modelID))
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, fmt.Errorf("model %q not found", modelID)
+			// ErrNotFound renders as "not found", so the message is unchanged;
+			// the sentinel lets errors.Is callers recognize a true miss.
+			return nil, fmt.Errorf("model %q %w", modelID, ErrNotFound)
 		}
 		return nil, fmt.Errorf("store: get model registry record: %w", err)
 	}

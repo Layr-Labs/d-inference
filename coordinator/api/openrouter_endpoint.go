@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -20,12 +21,44 @@ import (
 // must not make the model vanish from the marketplace. Live provider data is
 // used only as supplemental signal (datacenters, and excluding a model whose
 // providers report a non-text aggregate type).
+//
+// The feed is the same for every caller and is polled by OpenRouter, so the
+// serialized response is served from the read cache for openRouterFeedCacheTTL.
 func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Request) {
-	catalogByID, registryByID, err := s.activeCatalogLookups()
+	if body, ok := s.readCacheGet(openRouterFeedCacheKey); ok {
+		writeCachedJSON(w, body)
+		return
+	}
+	data, err := s.openRouterFeedEntries()
 	if err != nil {
 		s.logger.Error("openrouter models: failed to list active models", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list models"))
 		return
+	}
+	body, err := encodeCachedJSON(types.OpenRouterModelsResponse{Data: data})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode models"))
+		return
+	}
+	s.readCacheSet(openRouterFeedCacheKey, body, openRouterFeedCacheTTL)
+	writeCachedJSON(w, body)
+}
+
+// openRouterFeedCacheTTL bounds staleness of the marketplace feed. The feed is
+// catalog-driven (DB), with live providers contributing only datacenters and
+// non-text exclusions; admin alias/registry changes have no invalidation hook
+// into this key yet (SyncModelCatalog's invalidateCatalogCache in server.go
+// does not know it), so the window stays short.
+const openRouterFeedCacheTTL = 5 * time.Second
+
+const openRouterFeedCacheKey = "models:openrouter:v1"
+
+// openRouterFeedEntries assembles the feed: public aliases first, then the
+// active concrete catalog models not hidden behind an alias, in stable order.
+func (s *Server) openRouterFeedEntries() ([]types.OpenRouterModel, error) {
+	catalogByID, registryByID, err := s.activeCatalogLookups()
+	if err != nil {
+		return nil, err
 	}
 
 	// Provider-reported model types override the catalog's text fallback so
@@ -57,8 +90,7 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		}
 		data = append(data, entry)
 	}
-
-	writeJSON(w, http.StatusOK, types.OpenRouterModelsResponse{Data: data})
+	return data, nil
 }
 
 // openRouterAliasEntries builds the OpenRouter feed entries for public model

@@ -34,7 +34,7 @@
     },
     {
       "path": "ThirdParty/lume-patches/0008-bake-guest-agent.patch",
-      "sha256": "87e62a02ec66ec7e08573495d6e5cefb9d9df4d5fee88235a3a0cab102a9938b"
+      "sha256": "2e90fd88fe7c8a379e621162015b7fea249db4d4c560ddfb02fc86461308c011"
     }
   ],
   "license": "MIT",

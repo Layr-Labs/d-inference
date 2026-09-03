@@ -100,11 +100,22 @@ private func resolveHome() -> String {
     return fromAccount
 }
 
+// Set in the LaunchDaemon plist when the image was baked with
+// `lume create --guest-agent-allow-execution`. Parsed in the core so the rule
+// is testable; absent means refuse, so an image built before the flag existed
+// keeps refusing and the host keeps using SSH for it.
+let environment = ProcessInfo.processInfo.environment
+let executionEnabled = SandboxGuestAgentSession.Configuration
+    .executionEnabled(in: environment)
+log("execution \(executionEnabled ? "enabled" : "disabled") for this image")
+
 let session = SandboxGuestAgentSession(
     configuration: .init(
         agentVersion: AgentDefaults.agentVersion,
-        imageID: ProcessInfo.processInfo.environment["DARKBLOOM_GUEST_IMAGE_ID"] ?? "",
-        executionEnabled: false,
+        imageID: environment[
+            SandboxGuestAgentSession.Configuration.imageIDEnvironmentVariable
+        ] ?? "",
+        executionEnabled: executionEnabled,
         guestHome: resolveHome()
     ),
     log: log

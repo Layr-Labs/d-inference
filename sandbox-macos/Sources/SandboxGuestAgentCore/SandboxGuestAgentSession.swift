@@ -11,10 +11,32 @@ public struct SandboxGuestAgentSession: Sendable {
     public struct Configuration: Sendable {
         public let agentVersion: String
         public let imageID: String
-        /// Whether a well-formed command may actually be executed. Off until
-        /// randomized bootstrap credentials and an unprivileged sandbox user
-        /// are in place; a request is answered with a typed failure instead.
+        /// Whether a well-formed command may actually be executed. A property
+        /// of the image, set when it is baked; a request is answered with a
+        /// typed failure instead when it is off.
         public let executionEnabled: Bool
+
+        /// Environment variable the LaunchDaemon plist carries to say whether
+        /// this image was baked to run commands.
+        public static let executionEnvironmentVariable =
+            "DARKBLOOM_GUEST_ALLOW_EXECUTION"
+        /// Environment variable carrying the image id the host handshakes on.
+        public static let imageIDEnvironmentVariable =
+            "DARKBLOOM_GUEST_IMAGE_ID"
+
+        /// Reads the executor flag from a process environment.
+        ///
+        /// Only an exact `"1"` enables execution. A permissive parse -- any
+        /// non-empty value, or a `Bool` cast that reads "false" as absent --
+        /// would turn a typo in a plist into an executing image, and this is
+        /// the flag that decides whether a guest runs tenant code at all. An
+        /// image baked before the variable existed has no value here and
+        /// correctly reads as refusing.
+        public static func executionEnabled(
+            in environment: [String: String]
+        ) -> Bool {
+            environment[executionEnvironmentVariable] == "1"
+        }
         /// Home directory forced onto every command, overriding anything the
         /// caller supplies. Becomes the unprivileged sandbox user's home once
         /// that account exists.

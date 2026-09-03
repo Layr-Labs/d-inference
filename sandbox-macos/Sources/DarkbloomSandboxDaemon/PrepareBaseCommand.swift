@@ -40,7 +40,11 @@ enum PrepareBaseCommand {
             guestChannelPort: parsed.guestAgent == nil
                 ? nil
                 : LumeRuntimeConfiguration.defaultGuestChannelPort,
-            guestAgentExecutable: parsed.guestAgent
+            guestAgentExecutable: parsed.guestAgent,
+            // A base image exists to be cloned into tenant sandboxes, so the
+            // agent it carries has to be able to run their commands. The gates
+            // that decide whether any command reaches it are host-side.
+            bakeExecutableGuestAgent: true
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
             specification: specification

@@ -1,8 +1,8 @@
 diff --git a/libs/lume/src/Commands/Create.swift b/libs/lume/src/Commands/Create.swift
-index 7d22d8c..94d84c2 100644
+index 7d22d8c..93bd411 100644
 --- a/libs/lume/src/Commands/Create.swift
 +++ b/libs/lume/src/Commands/Create.swift
-@@ -66,6 +66,21 @@ struct Create: AsyncParsableCommand {
+@@ -66,6 +66,26 @@ struct Create: AsyncParsableCommand {
          help: "uid for --tenant-user. Must differ from the bootstrap account's.")
      var tenantUID: String = "502"
  
@@ -21,10 +21,15 @@ index 7d22d8c..94d84c2 100644
 +        help: "Value the baked agent reports as its image id, which the host checks during the handshake. Defaults to the VM name.")
 +    var guestAgentImageID: String?
 +
++    @Flag(
++        name: .customLong("guest-agent-allow-execution"),
++        help: "Bake the agent so it will run commands. Off by default: an image is made executable deliberately, and an agent without this refuses every command and tells the host so in its handshake.")
++    var guestAgentAllowExecution: Bool = false
++
      @Flag(
          name: .customLong("debug"),
          help: "Compatibility flag; ignored by offline setup.")
-@@ -158,7 +173,31 @@ struct Create: AsyncParsableCommand {
+@@ -158,7 +178,32 @@ struct Create: AsyncParsableCommand {
              noDisplay: unattendedConfig != nil ? true : noDisplay,  // Default to no-display for unattended
              vncPort: vncPort,
              networkMode: parsedNetworkMode,
@@ -53,7 +58,8 @@ index 7d22d8c..94d84c2 100644
 +            executableURL: URL(fileURLWithPath: guestAgent),
 +            runAsUsername: tenantUser,
 +            port: guestAgentPort,
-+            imageID: guestAgentImageID ?? name
++            imageID: guestAgentImageID ?? name,
++            executionEnabled: guestAgentAllowExecution
          )
      }
  
@@ -137,10 +143,10 @@ index 7b0c0b3..46aeaf5 100644
                  debug: debug,
 diff --git a/libs/lume/src/Unattended/GuestAgentInstall.swift b/libs/lume/src/Unattended/GuestAgentInstall.swift
 new file mode 100644
-index 0000000..186d2b8
+index 0000000..cc2a088
 --- /dev/null
 +++ b/libs/lume/src/Unattended/GuestAgentInstall.swift
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,209 @@
 +import Foundation
 +
 +/// A guest-side agent baked into the installed macOS data volume, plus the
@@ -220,6 +226,15 @@ index 0000000..186d2b8
 +    /// it identifies the image, not the sandbox.
 +    let imageID: String
 +
++    /// Whether the baked agent will run commands at all.
++    ///
++    /// Off unless asked for, so an image becomes executable deliberately. The
++    /// agent reports it in its handshake, which is how a host decides whether
++    /// to route commands over the channel or fall back to SSH -- so an image
++    /// baked before this existed keeps working, over SSH, with no version
++    /// negotiation anywhere.
++    let executionEnabled: Bool
++
 +    var installedAbsolutePath: String { "/" + installPath }
 +    var daemonPlistPath: String { "Library/LaunchDaemons/\(label).plist" }
 +    var logPath: String { "\(logDirectory)/\(label).log" }
@@ -254,7 +269,8 @@ index 0000000..186d2b8
 +        runAsUsername: String,
 +        logDirectory: String = GuestAgentInstall.defaultLogDirectory,
 +        port: UInt32,
-+        imageID: String
++        imageID: String,
++        executionEnabled: Bool = false
 +    ) throws {
 +        guard !installPath.isEmpty, !installPath.hasPrefix("/") else {
 +            throw ValidationError.absoluteInstallPath(installPath)
@@ -292,6 +308,7 @@ index 0000000..186d2b8
 +        self.logDirectory = logDirectory
 +        self.port = port
 +        self.imageID = imageID
++        self.executionEnabled = executionEnabled
 +    }
 +
 +    static let defaultInstallPath = "usr/local/libexec/darkbloom-guest-agent"
@@ -299,6 +316,9 @@ index 0000000..186d2b8
 +    /// Under `/var/db` rather than `/var/log`: see `logDirectory`.
 +    static let defaultLogDirectory = "/var/db/darkbloom"
 +    static let imageIDEnvironmentVariable = "DARKBLOOM_GUEST_IMAGE_ID"
++    /// The agent enables execution only on an exact "1", so a malformed value
++    /// leaves it refusing rather than running.
++    static let executionEnvironmentVariable = "DARKBLOOM_GUEST_ALLOW_EXECUTION"
 +
 +    /// A reverse-DNS-ish label, which is what `launchctl` addresses jobs by.
 +    static func isWellFormedLabel(_ label: String) -> Bool {
@@ -328,7 +348,8 @@ index 0000000..186d2b8
 +            "KeepAlive": true,
 +            "ThrottleInterval": 1,
 +            "EnvironmentVariables": [
-+                Self.imageIDEnvironmentVariable: imageID
++                Self.imageIDEnvironmentVariable: imageID,
++                Self.executionEnvironmentVariable: executionEnabled ? "1" : "0",
 +            ],
 +            "StandardOutPath": logPath,
 +            "StandardErrorPath": logPath,
@@ -553,10 +574,10 @@ index d4ec329..0002fce 100644
          let result = try await sshClient.execute(command: command, timeout: 60)
 diff --git a/libs/lume/tests/GuestAgentInstallTests.swift b/libs/lume/tests/GuestAgentInstallTests.swift
 new file mode 100644
-index 0000000..16c6303
+index 0000000..ee43d62
 --- /dev/null
 +++ b/libs/lume/tests/GuestAgentInstallTests.swift
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,236 @@
 +import Foundation
 +import Testing
 +
@@ -577,14 +598,16 @@ index 0000000..16c6303
 +    runAs: String = "sandbox",
 +    logDirectory: String = GuestAgentInstall.defaultLogDirectory,
 +    port: UInt32 = 8888,
-+    imageID: String = "base-image-1"
++    imageID: String = "base-image-1",
++    executionEnabled: Bool = false
 +) throws -> GuestAgentInstall {
 +    try GuestAgentInstall(
 +        executableURL: executable,
 +        runAsUsername: runAs,
 +        logDirectory: logDirectory,
 +        port: port,
-+        imageID: imageID
++        imageID: imageID,
++        executionEnabled: executionEnabled
 +    )
 +}
 +
@@ -602,6 +625,27 @@ index 0000000..16c6303
 +    let arguments = plist["ProgramArguments"] as? [String]
 +    #expect(arguments?.first == "/usr/local/libexec/darkbloom-guest-agent")
 +    #expect(arguments?.last == "8888")
++}
++
++@Test("an image is only made executable when asked")
++func executionIsOffUnlessRequested() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++
++    // Off is the default, so an image becomes executable deliberately rather
++    // than by forgetting an argument.
++    let refusing = try makeInstall(executable: binary).daemonPlist()
++    let refusingEnvironment = refusing["EnvironmentVariables"] as? [String: String]
++    #expect(refusingEnvironment?[GuestAgentInstall.executionEnvironmentVariable] == "0")
++
++    let serving = try makeInstall(executable: binary, executionEnabled: true)
++        .daemonPlist()
++    let servingEnvironment = serving["EnvironmentVariables"] as? [String: String]
++    #expect(servingEnvironment?[GuestAgentInstall.executionEnvironmentVariable] == "1")
++
++    // The image id keeps its own slot either way; the two are independent.
++    #expect(servingEnvironment?[GuestAgentInstall.imageIDEnvironmentVariable]
++        == "base-image-1")
 +}
 +
 +@Test("the daemon is restarted, because the agent fail-fasts on bind")
@@ -744,4 +788,29 @@ index 0000000..16c6303
 +        == "usr/local/libexec")
 +    // A directory merely starting with the same letters is not rewritten.
 +    #expect(GuestAgentInstall.volumeRelativePath("/variable") == "variable")
++}
++
++@MainActor
++@Test("the finalization script actually contains the agent commands")
++func finalizationScriptSplicesTheAgentBlock() throws {
++    let (root, binary) = try makeExecutable()
++    defer { try? FileManager.default.removeItem(at: root) }
++    let install = try makeInstall(executable: binary)
++
++    let script = UnattendedInstaller.guestFinalizationScript(
++        for: GuestIdentity.defaultBootstrap,
++        agent: install
++    )
++
++    // Every existing test checks the command builder in isolation or the
++    // script with no agent. Nothing checked that the two are joined, which is
++    // the only thing that makes the agent's ownership correct on a real guest.
++    #expect(script.contains("chown root:wheel /usr/local/libexec/darkbloom-guest-agent"))
++    #expect(script.contains("chown root:wheel /Library/LaunchDaemons/\(install.label).plist"))
++    #expect(script.contains("chown sandbox \(install.logDirectory)"))
++    #expect(script.contains("launchctl enable system/\(install.label)"))
++    // The marker stat has to stay last: the installer asserts on its output.
++    let marker = try #require(script.range(of: "MARKER_OWNER"))
++    let chown = try #require(script.range(of: "chown root:wheel /usr/local/libexec"))
++    #expect(chown.lowerBound < marker.lowerBound)
 +}

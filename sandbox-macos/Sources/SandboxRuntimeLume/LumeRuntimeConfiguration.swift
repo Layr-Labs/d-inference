@@ -4,11 +4,40 @@ import SandboxRuntime
 public enum LumeRuntimeTrustPolicy: Sendable {
     case production
     case developmentAdHoc
+
+    /// Whether the pinned Lume had its provenance verified, rather than being
+    /// accepted on an ad-hoc signature for local work.
+    public var isProvenanceVerified: Bool {
+        switch self {
+        case .production:
+            return true
+        case .developmentAdHoc:
+            return false
+        }
+    }
 }
 
 package enum LumeGuestCommandPolicy: Sendable {
     case disabled
     case baseImagePreparationAndDevelopment
+    /// Tenant workloads. Reachable only once the guest has a per-sandbox
+    /// identity and a verified agent, which is what the other two cases were
+    /// waiting for.
+    case tenantExecution
+
+    /// Whether this policy admits `execute` at all.
+    ///
+    /// A computed property rather than a `case` match at the call site, so
+    /// adding a fourth case is a compile error here instead of a silent
+    /// refusal there.
+    var permitsGuestCommands: Bool {
+        switch self {
+        case .disabled:
+            return false
+        case .baseImagePreparationAndDevelopment, .tenantExecution:
+            return true
+        }
+    }
 }
 
 public struct LumeRuntimeConfiguration: Sendable {
@@ -47,7 +76,7 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedGuestAgentPatchPath =
         "ThirdParty/lume-patches/0008-bake-guest-agent.patch"
     public static let pinnedGuestAgentPatchSHA256 =
-        "87e62a02ec66ec7e08573495d6e5cefb9d9df4d5fee88235a3a0cab102a9938b"
+        "2e90fd88fe7c8a379e621162015b7fea249db4d4c560ddfb02fc86461308c011"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -61,6 +90,12 @@ public struct LumeRuntimeConfiguration: Sendable {
 
     public let executable: URL
     public let storageDirectory: URL
+    /// Whether a baked agent is installed able to run commands.
+    ///
+    /// Stated at the call site rather than inferred from another flag: an image
+    /// is made executable deliberately, and the daemon that bakes it is the
+    /// only thing that knows whether it is building a tenant base image.
+    package let bakeExecutableGuestAgent: Bool
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
@@ -88,6 +123,12 @@ public struct LumeRuntimeConfiguration: Sendable {
     public static let guestChannelPortEnvironmentVariable =
         "DARKBLOOM_LUME_GUEST_CHANNEL_PORT"
 
+    /// The policy stays `.disabled` here, and that is not the hardcode it
+    /// looks like: `LumeGuestCommandPolicy` is `package`, so this initializer
+    /// is the one for callers outside the package, and refusing guest commands
+    /// is the only safe answer for a caller that cannot name a policy. Targets
+    /// inside the package — `ServeCommand`, `PrepareBaseCommand` — use the
+    /// `package` initializer below and say what they want.
     public init(
         executable: URL,
         storageDirectory: URL,
@@ -115,7 +156,8 @@ public struct LumeRuntimeConfiguration: Sendable {
         trustPolicy: LumeRuntimeTrustPolicy = .production,
         guestCommandPolicy: LumeGuestCommandPolicy,
         guestChannelPort: UInt32? = nil,
-        guestAgentExecutable: URL? = nil
+        guestAgentExecutable: URL? = nil,
+        bakeExecutableGuestAgent: Bool = false
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -146,5 +188,6 @@ public struct LumeRuntimeConfiguration: Sendable {
         self.guestAgentExecutable = guestAgentExecutable?
             .standardizedFileURL
             .resolvingSymlinksInPath()
+        self.bakeExecutableGuestAgent = bakeExecutableGuestAgent
     }
 }

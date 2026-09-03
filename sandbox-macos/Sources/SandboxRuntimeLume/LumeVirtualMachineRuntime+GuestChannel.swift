@@ -31,6 +31,13 @@ extension LumeVirtualMachineRuntime {
     /// well before the login window. This budget is generous against that and
     /// still far short of the readiness timeout, so a guest without a working
     /// agent falls back rather than stalling the start.
+    ///
+    /// 🛑 The serve path now attaches a channel port, so an image with **no**
+    /// baked agent pays this budget in full on every start: no descriptor ever
+    /// arrives and the loop below runs to its deadline. Every image the daemon
+    /// runs is built by `prepare-base` and carries an agent, so in practice
+    /// this is the nine seconds above. An agentless template costs 45 seconds
+    /// per start and still works, over SSH.
     static let guestChannelAdoptionBudget: Duration = .seconds(45)
     static let guestChannelPollInterval: Duration = .milliseconds(50)
 

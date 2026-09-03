@@ -83,6 +83,27 @@ func mismatchedImageIsRejected() throws {
     }
 }
 
+@Test("an image only executes when its plist says so, exactly")
+func executionFlagIsReadStrictly() {
+    typealias Configuration = SandboxGuestAgentSession.Configuration
+    let key = Configuration.executionEnvironmentVariable
+
+    #expect(Configuration.executionEnabled(in: [key: "1"]))
+
+    // Everything else refuses. A permissive parse would turn a typo in a
+    // LaunchDaemon plist into an executing image, and this flag is what decides
+    // whether a guest runs tenant code at all.
+    for value in ["0", "", "true", "TRUE", "yes", "1 ", " 1", "01", "2"] {
+        #expect(!Configuration.executionEnabled(in: [key: value]),
+                "\(value) must not enable execution")
+    }
+
+    // An image baked before the variable existed has no value here, which is
+    // how it keeps working over SSH instead of being sent commands.
+    #expect(!Configuration.executionEnabled(in: [:]))
+    #expect(!Configuration.executionEnabled(in: ["SOMETHING_ELSE": "1"]))
+}
+
 @Test("a well-formed command is refused while execution is disabled")
 func commandRefusedWhileExecutionDisabled() throws {
     let client = try #require(channelToAgent())

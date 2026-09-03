@@ -19,6 +19,7 @@ scope:
     - Admin → Coordinator admin API
     - Provider in-process MLX inference engine
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
+    - Provider host → tenant sandbox guest (macOS VM, AF_VSOCK guest-control channel)
     - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
   out_of_scope:
@@ -54,6 +55,16 @@ adversaries:
       An unauthenticated external party targeting the coordinator HTTP API, console UI,
       MDM webhook, or WebSocket endpoint. No prior access assumed. Goals include
       account takeover, SSRF, DoS, trust escalation, or payment manipulation.
+
+  - id: ADV-004
+    name: malicious_sandbox_tenant
+    description: >
+      A consumer whose code runs inside a provider-hosted macOS sandbox VM. Has full
+      control of the guest operating system, including root, and can rewrite anything
+      inside the guest. Goals include escaping to the provider host, reaching the
+      provider's LAN or other tenants, reading another tenant's workspace, and using
+      the guest-control channel to attack the host that supervises it. Unlike ADV-001
+      this adversary starts inside the isolation boundary rather than outside it.
 
 # ─────────────────────────────────────────────────────────────
 # ASSETS
@@ -167,6 +178,29 @@ assets:
     notes: >
       Dormant unless the operator explicitly runs sudo darkbloom fan enable.
       Misuse can reduce cooling or interfere with macOS thermal management.
+
+  - id: A-015
+    name: sandbox_tenant_workload
+    description: >
+      Source, build artefacts and command output belonging to one tenant inside a
+      sandbox VM, plus the workspace disk that holds them.
+    sensitivity: high
+    notes: >
+      Confined by the VM boundary and a per-sandbox disk image. A tenant is an
+      unprivileged guest account with no login credential; the guest's bootstrap
+      administrator is a separate per-sandbox account whose password never appears
+      in argv.
+
+  - id: A-016
+    name: sandbox_guest_control_channel
+    description: >
+      The AF_VSOCK channel between the provider host and the guest agent, which
+      carries every command a tenant sandbox executes and its results.
+    sensitivity: critical
+    notes: >
+      Host-to-guest only, on a virtio socket device attached at run time. Reachable
+      solely by the host process that spawned the VM; the descriptor is handed over
+      once per lume run via SCM_RIGHTS and never reconnects.
 
 # ─────────────────────────────────────────────────────────────
 # TRUST BOUNDARIES
@@ -757,6 +791,46 @@ trust_boundaries:
       - "The root-installed helper is not replaced by the unprivileged self-updater.
         Protocol mismatch intentionally leaves it dormant until the operator reruns
         sudo darkbloom fan enable."
+
+  - id: TB-011
+    name: provider_host_to_sandbox_guest
+    description: >
+      A provider host runs tenant code inside a macOS VM driven by a pinned Lume
+      through Apple's Virtualization.framework. The host is trusted; the guest and
+      everything a tenant puts in it are not. The boundary is crossed in exactly two
+      places: the AF_VSOCK guest-control channel, and the VM's virtual devices.
+    how_it_works: >
+      lume create bakes a guest agent and a system-domain LaunchDaemon into the base
+      image's data volume, running as an unprivileged per-sandbox tenant account that
+      is in neither the admin nor the staff group record and has no
+      AuthenticationAuthority. A separate per-sandbox bootstrap administrator exists
+      for SSH; its password is passed in the environment, never argv, because
+      arguments are visible to every process on the host through ps.
+
+      At run time the host attaches a VZVirtioSocketDeviceConfiguration and connects
+      to the guest's listening port, passing the connected descriptor back over an
+      inherited control socket with SCM_RIGHTS. The host adopts that descriptor and
+      requires a handshake carrying a magic value, protocol version, agent version
+      and image id before the channel carries anything; a handshake that does not
+      validate causes the channel to be dropped and its descriptor closed, and the
+      host falls back to SSH. The handshake also reports whether the agent will run
+      commands at all, so a host never routes work to an agent that refuses it.
+
+      Four independent gates stand between a request and tenant code running: the
+      runtime's guest command policy, the host adapter's isolation readiness, the
+      per-image agent executor flag, and the presence of a verified channel. Command
+      results are bounded at 1 MiB per stream with truncation flags, and a guest-side
+      deadline kills the process group and reports exit 124 on expiry.
+    assumptions:
+      - "Apple's Virtualization.framework provides the isolation boundary. A guest
+        kernel escape is out of scope, as is a hypervisor vulnerability."
+      - "A tenant has full control of its guest, including root. Nothing inside the
+        guest is trusted, including the agent's own reported values, which the host
+        validates rather than accepts."
+      - "vsock is host-to-guest only and reachable solely by the spawning host
+        process, so the channel has no network attack surface."
+      - "Egress confinement is NOT yet implemented. Until a packet gateway lands the
+        host reports isolation as unavailable and refuses every sandbox job."
 
 # ─────────────────────────────────────────────────────────────
 # THREATS
@@ -2663,3 +2737,192 @@ threats:
       MemoryBackedVideoAsset ownership, resource-loader ranges, reference
       restrictions, MIME support, cancellation, or startup cleanup require the
       focused provider and mlx-swift-lm media suites.
+
+  # ── TB-011: Provider host → sandbox guest ───────────────────
+
+  - id: T-051
+    trust_boundary: TB-011
+    stride: Elevation_of_Privilege
+    title: A tenant rewrites the control path that supervises its own commands
+    description: >
+      Guest commands are delivered as a launchd job written into an account's home.
+      If the agent and the command wrapper ran as an account the tenant controls, a
+      tenant could rewrite the job definition, the control root or the status file
+      and make the host observe results it did not produce, or run code as a more
+      privileged guest account.
+    adversaries: [ADV-004]
+    affected_assets: [A-015, A-016]
+    affected_files:
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeGuestCommandScript.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeGuestLaunchDefinition.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeGuestCredential.swift
+    mitigations:
+      - description: >
+          The guest has two accounts. The agent's LaunchDaemon runs as the
+          unprivileged tenant, never the bootstrap administrator, and lume create
+          refuses to bake an agent without a tenant account for exactly this reason.
+        status: implemented
+      - description: >
+          Every sandbox gets randomised credentials rather than a shared static
+          account, and execution is refused outright when a credential is the legacy
+          shared one, so an image predating per-sandbox identity cannot be driven.
+        status: implemented
+      - description: >
+          The command wrapper verifies its control root is a real directory, not a
+          symlink, and is owned by the running uid before writing into it.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Changes to which account the agent or the command wrapper runs as, to the
+      control root path, or to the legacy-credential refusal, must be reviewed
+      against this threat.
+
+  - id: T-052
+    trust_boundary: TB-011
+    stride: Spoofing
+    title: Something other than our agent answers on the guest channel
+    description: >
+      The host connects to a fixed vsock port inside the guest. A tenant controls the
+      guest completely and can bind that port with its own listener before or instead
+      of the agent, then answer commands, fabricate results, or report a different
+      image than the one the host provisioned.
+    adversaries: [ADV-004]
+    affected_assets: [A-016]
+    affected_files:
+      - sandbox-macos/Sources/SandboxGuestProtocol/SandboxGuestMessages.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeGuestChannelReadinessProbe.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeVirtualMachineRuntime+GuestChannel.swift
+    mitigations:
+      - description: >
+          A channel is not used until its peer completes a handshake carrying the
+          expected magic, protocol version, a non-empty agent version, and the image
+          id recorded in the VM's ownership record. A failed handshake drops the
+          channel and closes its descriptor rather than warning.
+        status: implemented
+      - description: >
+          Falling back to SSH on a failed handshake is safe rather than a bypass: the
+          SSH path authenticates as the per-sandbox bootstrap administrator and still
+          has to pass its own readiness check.
+        status: implemented
+      - description: >
+          The handshake proves the image, not the individual sandbox. A tenant that
+          replays a valid handshake from its own guest gains nothing, because the
+          channel it answers on is already its own VM's.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Any change to handshake validation, to what expectedImageID is compared
+      against, or to the conditions under which a channel is adopted or retained.
+
+  - id: T-053
+    trust_boundary: TB-011
+    stride: Information_Disclosure
+    title: A tenant reaches the provider LAN or another tenant over the network
+    description: >
+      A sandbox VM is attached to NAT networking with no egress policy, so tenant
+      code can reach the provider's local network, link-local and metadata addresses,
+      and any service the provider host can reach.
+    adversaries: [ADV-004]
+    affected_assets: [A-015, A-003, A-013]
+    affected_files:
+      - sandbox-macos/Sources/DarkbloomSandboxDaemon/SandboxHostProductionAdapter.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeVirtualMachineRuntime+Lifecycle.swift
+    mitigations:
+      - description: >
+          The host advertises isolation as unavailable while no network policy is
+          enforced. permitsJobs requires it, so the heartbeat reports draining rather
+          than sandbox-dedicated and both prepare and execute are refused at
+          admission. No tenant workload can be admitted at all.
+        status: implemented
+      - description: >
+          A signed packet-gateway helper behind VZFileHandleNetworkDeviceAttachment,
+          with per-packet destination filtering evaluated per packet so DNS rebinding
+          cannot bypass private-range blocks, default-deny until policy is installed,
+          and fail-closed on helper death.
+        status: planned
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Any change that sets networkPolicy true, that relaxes permitsJobs, or that
+      alters the VM's network mode away from the gateway once it exists. Setting
+      networkPolicy true without an enforcing gateway reopens this threat in full.
+
+  - id: T-054
+    trust_boundary: TB-011
+    stride: Denial_of_Service
+    title: A tenant exhausts host resources through the guest channel
+    description: >
+      A tenant controls what its guest sends. An agent, or something impersonating
+      one, can return unbounded output, never answer, or answer slowly, holding host
+      resources for every sandbox on the machine.
+    adversaries: [ADV-004]
+    affected_assets: [A-016]
+    affected_files:
+      - sandbox-macos/Sources/SandboxGuestProtocol/SandboxGuestMessages.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeGuestVsockTransport.swift
+      - sandbox-macos/Sources/SandboxGuestAgentCore/SandboxGuestAgentSession.swift
+    mitigations:
+      - description: >
+          Frames are length-prefixed with a payload ceiling, and command output is
+          bounded per stream with truncation flags, draining beyond the cap so a
+          child cannot block on a full pipe.
+        status: implemented
+      - description: >
+          Blocking channel work runs on a detached task rather than the runtime
+          actor, so a silent guest cannot stall every other operation on the host,
+          including stop.
+        status: implemented
+      - description: >
+          A guest-side deadline kills the process group and reports exit 124, and
+          the handshake probe is separately bounded, so a peer that connects and
+          then says nothing is dropped.
+        status: implemented
+      - description: >
+          Per-host sandbox counts and resource admission are enforced by the capacity
+          arbiter, and a VM's disk is a fixed-size image so a tenant cannot grow past
+          the workspace it was admitted for.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Changes to frame or stream size limits, to the guest-side deadline, or to
+      whether channel work is detached from the runtime actor.
+
+  - id: T-055
+    trust_boundary: TB-011
+    stride: Tampering
+    title: A base image is driven before it is fit to run tenant code
+    description: >
+      Sandboxes are APFS clones of a base image, so anything wrong in the template is
+      inherited by every tenant. An image built before per-sandbox identity, or one
+      whose agent was never verified, would otherwise be indistinguishable from a
+      current one at run time.
+    adversaries: [ADV-001, ADV-004]
+    affected_assets: [A-015, A-016]
+    affected_files:
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeVirtualMachineRuntime+GuestCommands.swift
+      - sandbox-macos/Sources/SandboxRuntimeLume/LumeRuntimeConfiguration.swift
+      - sandbox-macos/ThirdParty/lume.lock.json
+    mitigations:
+      - description: >
+          Execution is refused when the VM's recorded credential is the legacy shared
+          account, which is the cheapest available proof that an image predates
+          per-sandbox identity.
+        status: implemented
+      - description: >
+          An image is only made executable deliberately: the agent's executor is a
+          per-image property set by an explicit lume create flag, enabled on an exact
+          value only, and reported in the handshake so the host routes work away from
+          an agent that refuses it rather than collecting a refusal per command.
+        status: implemented
+      - description: >
+          The pinned Lume is verified against a recorded commit, version and per-patch
+          SHA-256 before it is used, and a host running a different build fails closed.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Changes to the legacy-credential refusal, to how the agent's executor flag is
+      set or read, or to the pinned Lume provenance list and its recorded hashes.

@@ -216,6 +216,9 @@ extension LumeVirtualMachineRuntime {
                     ),
                     "--guest-agent-image-id", specification.name,
                 ]
+                if configuration.bakeExecutableGuestAgent {
+                    createArguments.append("--guest-agent-allow-execution")
+                }
             }
             arguments = storageArguments(createArguments)
         case .localTemplate(let template):

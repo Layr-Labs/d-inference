@@ -162,6 +162,101 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(state, .running)
     }
 
+    /// The other side of the gate: `.tenantExecution` admits.
+    ///
+    /// Kept as a sibling of the refusal test above rather than replacing it,
+    /// because `.disabled` staying reachable and keeping its exact message is
+    /// the thing three other tests depend on.
+    func testTenantExecutionPolicyAdmitsGuestCommands() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "guest-command-success"
+        )
+        defer { try? fixture.remove() }
+        let runtime = LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 30,
+                createTimeoutSeconds: 30,
+                trustPolicy: .developmentAdHoc,
+                guestCommandPolicy: .tenantExecution
+            )
+        )
+
+        let result = try await runtime.execute(
+            name: fixture.virtualMachineName,
+            request: SandboxGuestCommandRequest(
+                idempotencyKey: UUID(),
+                executable: "/usr/bin/true",
+                workingDirectory: "/tmp",
+                timeoutSeconds: 30
+            )
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(fixture.guestCommandWasStarted)
+    }
+
+    /// An image that predates per-sandbox identities is refused outright.
+    ///
+    /// A marker with no recorded credential resolves to the shared `lume`
+    /// account, which is exactly what such an image has, and that account can
+    /// rewrite the launchd metadata supervising its own commands. The flag has
+    /// existed since patch 0006 and was read nowhere.
+    func testLegacySharedCredentialIsRefusedBeforeExecuting() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "guest-command-success"
+        )
+        defer { try? fixture.remove() }
+        let runtime = LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 30,
+                createTimeoutSeconds: 30,
+                trustPolicy: .developmentAdHoc,
+                guestCommandPolicy: .tenantExecution
+            )
+        )
+        func run() async throws -> SandboxGuestCommandResult {
+            try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    workingDirectory: "/tmp",
+                    timeoutSeconds: 30
+                )
+            )
+        }
+
+        // The same call succeeds against a current image, so the refusal below
+        // is the credential and not something else about this fixture.
+        _ = try await run()
+        XCTAssertTrue(fixture.guestCommandWasStarted)
+
+        try fixture.makeOwnershipLookLegacy()
+        fixture.forgetGuestCommandStart()
+        do {
+            _ = try await run()
+            XCTFail("a legacy shared credential must not execute")
+        } catch let error as SandboxRuntimeError {
+            guard case .unsupported(let message) = error else {
+                return XCTFail("expected unsupported, got \(error)")
+            }
+            XCTAssertTrue(
+                message.contains("per-sandbox credential"),
+                message
+            )
+        }
+        XCTAssertFalse(
+            fixture.guestCommandWasStarted,
+            "refused before anything reached the guest"
+        )
+    }
+
     func testLeaseFencedRuntimeRejectsStaleAndMismatchedMutations() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }

@@ -36,16 +36,26 @@ enum ServeCommand {
             policy: policy
         )
         let initial = try capacity.initialize()
-        let runtime = try LumeLeaseFencedVirtualMachineRuntime(
-            configuration: try LumeRuntimeConfiguration(
+        let runtimeConfiguration = try LumeRuntimeConfiguration(
                 executable: options.lumeExecutable,
                 storageDirectory: options.storageDirectory,
                 commandTimeoutSeconds: 120,
                 createTimeoutSeconds: 7_200,
                 trustPolicy: options.developmentAdHocLume
                     ? .developmentAdHoc
-                    : .production
-            ),
+                    : .production,
+                guestCommandPolicy: .tenantExecution,
+                // Attach the channel so a tenant VM's baked agent is adopted
+                // and its handshake verified. Without a port no device is
+                // attached and every command would fall back to SSH.
+                guestChannelPort: LumeRuntimeConfiguration
+                    .defaultGuestChannelPort
+        )
+        let isolationReadiness = SandboxHostIsolationReadiness.derived(
+            from: runtimeConfiguration
+        )
+        let runtime = try LumeLeaseFencedVirtualMachineRuntime(
+            configuration: runtimeConfiguration,
             capacityArbiter: capacity
         )
         let reconciliation = try await runtime.reconcileExpiredLeases()
@@ -67,8 +77,15 @@ enum ServeCommand {
         let adapter = SandboxHostProductionAdapter(
             capacity: capacity,
             runtime: runtime,
-            isolationReadiness: .unavailable
+            isolationReadiness: isolationReadiness
         )
+        if let reason = isolationReadiness.blockingReason {
+            // Say it once at startup rather than leaving an operator to work
+            // out why a healthy-looking host advertises itself as draining.
+            FileHandle.standardError.write(Data(
+                "darkbloom-sandboxd: refusing sandbox jobs: \(reason)\n".utf8
+            ))
+        }
         let capabilities = SandboxWireHostCapabilities(
             daemonVersion: "0.1.0",
             operatingSystem: "macos",

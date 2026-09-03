@@ -22,9 +22,7 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
-        guard case .baseImagePreparationAndDevelopment =
-            configuration.guestCommandPolicy
-        else {
+        guard configuration.guestCommandPolicy.permitsGuestCommands else {
             throw SandboxRuntimeError.unsupported(
                 "guest commands are disabled until the signed guest-control agent is available"
             )
@@ -54,6 +52,17 @@ extension LumeVirtualMachineRuntime {
                 owner: owner,
                 in: configuration.storageDirectory
             )
+        // An image built before patch 0006 still carries the shared lume/lume
+        // account, which can rewrite the launchd metadata supervising its own
+        // commands -- the exact weakness per-sandbox identities were introduced
+        // to close. The flag has existed since then and was read nowhere, so a
+        // stale template would have been executed against silently.
+        guard !ownership.guestCredential.isLegacyShared else {
+            throw SandboxRuntimeError.unsupported(
+                "guest commands require a per-sandbox credential; this image "
+                    + "predates them and still carries the shared account"
+            )
+        }
         let identity = ownership.identity
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
         var guestCommandMayBeRunning = false

@@ -2,6 +2,7 @@ import Foundation
 import SandboxCore
 import SandboxHostControl
 import SandboxRuntime
+import SandboxRuntimeLume
 @testable import DarkbloomSandboxDaemon
 import XCTest
 
@@ -121,6 +122,108 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         )
         let events = await fixture.runtime.events()
         XCTAssertTrue(events.isEmpty)
+    }
+
+    /// `admitExecute`'s isolation gate had no test at all, which mattered
+    /// because it is the last thing between a coordinator command and tenant
+    /// code running on a provider's machine.
+    func testExecuteFailsClosedWithoutIsolationGates() async throws {
+        let fixture = try Fixture(isolationReadiness: .unavailable)
+        defer { fixture.remove() }
+        let command = SandboxWireCommand(
+            commandID: UUID(),
+            idempotencyKey: UUID().uuidString.lowercased(),
+            scope: Fixture.scope(fencingToken: 7),
+            arguments: ["/usr/bin/printf", "hello"],
+            timeoutSeconds: 900
+        )
+
+        let response = try await fixture.adapter.handle(.command(
+            fixture.envelope(payload: command, type: .command)
+        ))
+
+        guard case .command(let status) = response else {
+            return XCTFail("expected a failed command response")
+        }
+        XCTAssertEqual(status.errorCode, "isolation_unavailable")
+        // Refused before anything reached the runtime, not after.
+        let events = await fixture.runtime.events()
+        XCTAssertTrue(events.isEmpty, "\(events)")
+    }
+
+    /// Pins the Stage 5 dependency rather than leaving it to memory.
+    ///
+    /// Two of the three flags are honestly true today. The host still refuses
+    /// every sandbox job, and it refuses for one specific reason: nothing
+    /// confines tenant egress yet. If someone sets `networkPolicy` true without
+    /// a packet gateway, this fails.
+    func testDerivedReadinessIsBlockedOnlyByNetworkPolicy() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let readiness = SandboxHostIsolationReadiness.derived(
+            from: try LumeRuntimeConfiguration(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                storageDirectory: storage,
+                trustPolicy: .production,
+                guestCommandPolicy: .tenantExecution,
+                guestChannelPort: LumeRuntimeConfiguration
+                    .defaultGuestChannelPort
+            )
+        )
+
+        XCTAssertTrue(readiness.signedGuestControl)
+        XCTAssertTrue(readiness.workspaceQuota)
+        XCTAssertFalse(readiness.networkPolicy)
+        XCTAssertFalse(readiness.permitsJobs)
+        XCTAssertEqual(
+            readiness.blockingReason,
+            "no enforced tenant network policy"
+        )
+
+        // And the reason is reachable: flipping only the missing flag permits
+        // jobs, so this asserts the gate rather than a constant.
+        let withGateway = SandboxHostIsolationReadiness(
+            signedGuestControl: readiness.signedGuestControl,
+            networkPolicy: true,
+            workspaceQuota: readiness.workspaceQuota
+        )
+        XCTAssertTrue(withGateway.permitsJobs)
+        XCTAssertNil(withGateway.blockingReason)
+    }
+
+    /// A development host has not verified the Lume it is driving, so it must
+    /// not claim a verified guest-control path either.
+    func testDevelopmentTrustDoesNotClaimSignedGuestControl() throws {
+        let storage = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let readiness = SandboxHostIsolationReadiness.derived(
+            from: try LumeRuntimeConfiguration(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                storageDirectory: storage,
+                trustPolicy: .developmentAdHoc,
+                guestCommandPolicy: .tenantExecution,
+                guestChannelPort: LumeRuntimeConfiguration
+                    .defaultGuestChannelPort
+            )
+        )
+        XCTAssertFalse(readiness.signedGuestControl)
+        XCTAssertEqual(
+            readiness.blockingReason,
+            "no verified guest-control agent"
+        )
+
+        // A production host with no channel cannot claim it either: without a
+        // port no device is attached and no handshake ever happens.
+        let noChannel = SandboxHostIsolationReadiness.derived(
+            from: try LumeRuntimeConfiguration(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                storageDirectory: storage,
+                trustPolicy: .production,
+                guestCommandPolicy: .tenantExecution,
+                guestChannelPort: nil
+            )
+        )
+        XCTAssertFalse(noChannel.signedGuestControl)
     }
 
     func testRenewReturnsNewFenceAndRoutesDeleteAndRelease() async throws {

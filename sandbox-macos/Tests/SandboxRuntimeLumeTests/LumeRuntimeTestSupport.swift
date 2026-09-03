@@ -478,6 +478,12 @@ struct FakeLumeFixture {
         FileManager.default.fileExists(atPath: guestCommandStarted.path)
     }
 
+    /// Clears the start marker so a second call in the same test can assert
+    /// that nothing reached the guest, rather than inheriting the first.
+    func forgetGuestCommandStart() {
+        try? FileManager.default.removeItem(at: guestCommandStarted)
+    }
+
     var guestCommandExecutionAttempts: Int {
         integer(in: paths.guestCommandExecutionAttempts)
     }
@@ -698,12 +704,22 @@ struct FakeLumeFixture {
         }
     }
 
+    /// The credential a fixture VM records.
+    ///
+    /// A marker with no credential resolves to `.legacy`
+    /// (`LumeVirtualMachineOwnership.swift:193`), which is correct production
+    /// semantics -- that is exactly what a pre-0006 image looks like -- and
+    /// execution now refuses it. A fixture must therefore model a current image
+    /// unless a test is deliberately asking for the old one.
+    static let fixtureGuestCredential = LumeGuestCredential.generate()
+
     private static func writeOwnershipMarker(
         to virtualMachineDirectory: URL,
         name: String,
         owner: LumeVirtualMachineOwnership.Owner = .baseTemplate,
         resources: SandboxResourceSpecification? = nil,
-        diskBytes: UInt64 = 100 * SandboxResourcePolicy.gibibyte
+        diskBytes: UInt64 = 100 * SandboxResourcePolicy.gibibyte,
+        guestCredential: LumeGuestCredential? = fixtureGuestCredential
     ) throws {
         let committedResources: SandboxResourceSpecification
         if let resources {
@@ -724,7 +740,19 @@ struct FakeLumeFixture {
             ),
             owner: owner,
             sourceInstallationID: UUID(),
+            guestCredential: guestCredential,
             to: virtualMachineDirectory
+        )
+    }
+
+    /// Rewrites this fixture's ownership marker to look like an image built
+    /// before per-sandbox identities existed: no recorded credential, which
+    /// resolves to the shared `lume` account.
+    func makeOwnershipLookLegacy() throws {
+        try Self.writeOwnershipMarker(
+            to: virtualMachineDirectory,
+            name: virtualMachineName,
+            guestCredential: nil
         )
     }
 

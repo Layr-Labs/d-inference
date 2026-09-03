@@ -1,23 +1,29 @@
-%% MDM enrollment as built at 5d400cf75. Source of truth for enrollment-flow.svg;
+%% MDM enrollment as built at c5c404fca. Source of truth for enrollment-flow.svg;
 %% re-render after editing: mmdc -i enrollment-flow.mmd -o enrollment-flow.svg
+%% Symbols: coordinator/api/enroll.go, coordinator/api/server.go (HandleMDMWebhook),
+%% coordinator/mdm/mdm.go, provider-swift/Sources/ProviderCore/Auth/Enrollment.swift.
 sequenceDiagram
     participant O as Operator (darkbloom enroll)
     participant K as Coordinator
-    participant M as MicroMDM
-    participant D as Device (mdmclient)
+    participant X as Caddy (/scep, /mdm/*)
+    participant M as MicroMDM (127.0.0.1:9002)
+    participant D as macOS (mdmclient)
 
-    O->>K: GET /v1/enroll (no auth)
-    K->>M: fetch SCEP CA + MDM enrollment settings
-    K-->>O: application/x-apple-aspen-config<br/>SCEP payload + MDM payload<br/>PayloadIdentifier io.darkbloom.enroll<br/>CMS-signed when PROFILE_SIGNING_P12_* is set
-    O->>D: open profile, operator approves in System Settings
-    D->>M: SCEP: device key + certificate request
-    M-->>D: device certificate
-    D->>M: MDM check-in (Authenticate, TokenUpdate)
-    Note over D,M: device now reachable via APNs (MDM topic)
+    O->>O: profiles status -type enrollment<br/>(already in Darkbloom MDM → stop, other MDM → refuse)
+    O->>K: POST /v1/enroll {} (no auth, body ≤ 64 KiB)
+    K-->>O: application/x-apple-aspen-config<br/>Darkbloom-Enroll.mobileconfig: SCEP + MDM payloads<br/>PayloadIdentifier io.darkbloom.enroll · AccessRights 1041<br/>CMS-signed when PROFILE_SIGNING_P12_* is set
+    O->>D: open the .mobileconfig → System Settings → Profiles → operator clicks Install
+    D->>X: SCEP GetCACert / PKIOperation (RSA 2048, challenge "micromdm")
+    X->>M: reverse proxy
+    M-->>D: device identity certificate
+    D->>X: MDM CheckIn (Authenticate, TokenUpdate) → /mdm/checkin
+    X->>M: reverse proxy
+    Note over D,M: device now reachable through MDM push (Topic com.apple.mgmt.External.…)
 
-    Note over K,M: later, on each provider WebSocket connection
-    K->>M: SecurityInfo (and DevicePropertiesAttestation) commands by UDID
-    M->>D: APNs wake
-    D->>M: command results
-    M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token = EIGENINFERENCE_MDM_WEBHOOK_SECRET<br/>body ≤ 1 MiB
-    K-->>K: match CommandUUID → hardware grant / MDA flag
+    Note over K,M: later, per provider WebSocket connection (verification scheduler)
+    K->>M: POST /v1/devices (lookup UDID by serial, Basic auth micromdm:{api key})
+    K->>M: POST /v1/commands {SecurityInfo} (MicroMDM pushes the device)
+    M->>D: APNs wake → device connects to /mdm/connect
+    D->>M: SecurityInfo result (CommandUUID)
+    M->>K: POST /v1/mdm/webhook<br/>X-Webhook-Token or ?token= EIGENINFERENCE_MDM_WEBHOOK_SECRET · body ≤ 1 MiB
+    K-->>K: HandleWebhook: Acknowledged + CommandUUID outstanding (30m TTL)<br/>→ verifyProviderViaMDM → hardware grant · DeviceInformation → MDA flag

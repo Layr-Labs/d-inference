@@ -1,5 +1,7 @@
-%% Encryption hops as built at 5d400cf75. Source of truth for encryption-layers.svg;
+%% Encryption hops as built at c5c404fca. Source of truth for encryption-layers.svg;
 %% re-render after editing: mmdc -i encryption-layers.mmd -o encryption-layers.svg
+%% Symbols: coordinator/api/sender_encryption.go, coordinator/internal/e2e/e2e.go,
+%% coordinator/api/chunk_key_cache.go, coordinator/api/response_metadata.go.
 sequenceDiagram
     participant C as Consumer
     participant K as Coordinator
@@ -7,17 +9,17 @@ sequenceDiagram
 
     Note over C,K: Hop 1 (optional) — sender sealing
     C->>K: GET /v1/encryption-key
-    K-->>C: {public_key, kid, algorithm: x25519-xsalsa20-poly1305}
-    C->>K: POST /v1/chat/completions<br/>Content-Type: application/vnd.eigen.sealed+json<br/>{kid, sender_public_key, nonce, ciphertext}
-    Note over K: NaCl Box open with coordinator X25519 key<br/>(HKDF of mnemonic, info "eigeninference-coordinator-e2e-v1")<br/>plaintext lives in memory only
+    K-->>C: {kid, public_key, algorithm: "x25519-nacl-box"}
+    C->>K: POST /v1/chat/completions<br/>Content-Type: application/eigeninference-sealed+json<br/>{kid, ephemeral_public_key, ciphertext = nonce || box}
+    Note over K: sealedTransport opens with the coordinator X25519 key<br/>(HKDF-SHA256 of the mnemonic, info "eigeninference-coordinator-e2e-v1")<br/>plaintext handed to the handler as application/json
 
     Note over K,P: Hop 2 (mandatory) — coordinator → provider
-    K->>P: inference_request<br/>encrypted_body = Box(sessionPriv, providerPub K)<br/>session_public_key, nonce
-    Note over P: X25519 K decrypts — plaintext exists only inside the provider process
+    K->>P: inference_request<br/>encrypted_body = {ephemeral_public_key: session pub, ciphertext = nonce || box}<br/>sealed to the provider's registered X25519 key K
+    Note over P: K opens it — plaintext exists only in the provider process
 
     Note over P,K: Hop 3 (mandatory) — provider → coordinator
-    P->>K: inference_response_chunk<br/>encrypted_data = Box(K, sessionPub)<br/>sender_public_key must equal K
-    Note over K: precomputed shared key per (SessionPrivKey, K)<br/>chunkKeyCacheMax = 256
+    P->>K: inference_response_chunk<br/>encrypted_data = {ephemeral_public_key: K (static), ciphertext}<br/>sealed to the request's session public key
+    Note over K: ephemeral_public_key must equal Provider.PublicKey<br/>shared key memoized per request (chunkKeyCache, chunkKeyCacheMax = 8192)
 
     Note over K,C: Response returns on hop 1
-    K-->>C: X-Eigen-Sealed: 1, X-Eigen-Sealed-Kid,<br/>X-Provider-*, X-Attestation-Se-Public-Key<br/>(sealed to the caller's sender key when hop 1 was used)
+    K-->>C: X-Eigen-Sealed: true · X-Eigen-Sealed-Kid<br/>X-Provider-* · X-Attestation-Se-Public-Key<br/>body / SSE events sealed to the sender's ephemeral key when hop 1 was used

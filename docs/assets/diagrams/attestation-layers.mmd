@@ -1,28 +1,32 @@
-%% Provider trust stack as built at 5d400cf75. Source of truth for attestation-layers.svg;
+%% Provider trust stack as built at c5c404fca. Source of truth for attestation-layers.svg;
 %% re-render after editing: mmdc -i attestation-layers.mmd -o attestation-layers.svg
 %% MDA and code identity are flags carried alongside the level, not levels themselves.
+%% Symbols: coordinator/registry/registry.go, coordinator/api/provider.go,
+%% coordinator/api/trust_reuse.go, coordinator/registry/routing_eligibility.go.
 flowchart TB
-    subgraph L0["Level: untrusted (TrustNone)"]
-        A0["No valid SE attestation, or MarkUntrusted<br/>(3 hard challenge failures, runtime claim mismatch)"]
+    subgraph L0["Level none (TrustNone)"]
+        A0["No attestation blob (Open Mode), or MarkUntrusted:<br/>invalid blob under a binary-hash policy, 3 hard challenge failures,<br/>SIP/Secure Boot off, hash drift, MDM posture mismatch, chunk violation"]
     end
-    subgraph L1["Level: self_signed (TrustSelfSigned)"]
-        A1["Registration blob signed by SE P-256 key<br/>verifyProviderAttestation → SetAttested(true)"]
-        A2["Periodic challenge every DefaultChallengeInterval = 5 min<br/>30 s reply timeout · fresh reply ≤ 16 min for routing"]
+    subgraph L1["Level self_signed (TrustSelfSigned)"]
+        A1["Registration blob signed by the SE P-256 key<br/>verifyProviderAttestation → SetAttested(true, TrustSelfSigned)"]
+        A2["challengeLoop every DefaultChallengeInterval = 5m<br/>ChallengeResponseTimeout = 30s · routable while LastChallengeVerified ≤ 16m old"]
     end
-    subgraph L2["Level: hardware (TrustHardware)"]
-        A3["MDM SecurityInfo cross-check (per connection)<br/>sip=true · secure_boot=full · serial matches SE blob<br/>GrantHardwareEvidenceAtEpochIfNotUntrusted"]
+    subgraph L2["Level hardware (TrustHardware)"]
+        A3["MDM SecurityInfo cross-check, scheduled per connection<br/>SIP on · SecureBootLevel == full · agrees with the SE blob<br/>recordTrustReuse → GrantHardwareEvidenceAtEpochIfNotUntrusted"]
     end
-    subgraph F["Flags carried alongside the level"]
-        B1["mda_verified — Apple DevicePropertiesAttestation<br/>SetMDAProofIfHardwareBound (needs hardware first)"]
-        B2["code_attested — APNs code-identity challenge<br/>GrantProcessCodeAttested (needs same K + APNs token)"]
+    subgraph F["Flags alongside the level"]
+        B1["mda_verified — Apple DevicePropertiesAttestation chain<br/>SetMDAProofIfHardwareBound (hardware first)"]
+        B2["code_attested — APNs / resume code-identity challenge<br/>GrantProcessCodeAttested (same K + same APNs token)"]
     end
     A0 -->|"SE blob verifies"| A1
     A1 --> A2
-    A2 -->|"SecurityInfo passes"| A3
+    A2 -->|"SecurityInfo passes, or trust-reuse fast-skip"| A3
     A3 --> B1
+    A1 --> B2
     A3 --> B2
-    A2 -->|"3 hard failures"| A0
-    A3 -->|"posture mismatch / SE key change"| A1
-    G["Routing private text requires: hardware ∧ fresh challenge ∧ code_attested (when enforced)<br/>providerLivenessGateReasonLocked → providerSupportsPrivateTextLocked"]
+    A2 -->|"3 hard failures, SIP/Secure Boot off"| A0
+    A3 -->|"posture mismatch (terminal)"| A0
+    A3 -.->|"reconnect: RestoreProviderState caps to self_signed"| A1
+    G["Routing: providerLivenessGateReasonLocked<br/>status · private-only · trust floor · RuntimeVerified ·<br/>providerSupportsPrivateTextLocked · challenge ≤ 16m"]
     A3 --> G
-    B2 --> G
+    B2 -->|"required once codeAttestationEnforcedLocked"| G

@@ -1,103 +1,96 @@
-# Privacy Expectations
+# Privacy expectations
 
-What Darkbloom's coordinator can and cannot see when you send an inference request.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## Threat Model Summary
+What Darkbloom's coordinator and the serving provider can and cannot see when
+you send an inference request. The mechanism — which key opens which hop, wire
+formats, error codes, and the code that enforces each guarantee — lives in
+[`../architecture/security/encryption.md`](../architecture/security/encryption.md);
+this page is the consumer-facing summary and does not restate it.
 
-- The **coordinator** runs in a Confidential VM (CVM) with hardware-encrypted memory.
-- The **provider** runs on a provider's Apple Silicon Mac, bound to a Secure Enclave identity and code-identity attestation.
-- The **provider** is the final decryption endpoint for prompts.
+## The statement
 
-This document describes the hop-by-hop privacy model. For the encryption implementation details, see:
+The provider is the decryption endpoint: the prompt and the completion are
+plaintext inside the provider process, because in-process inference at native
+speed requires it. The coordinator handles plaintext only in memory for the life
+of one request (parsed for routing, cache affinity, and billing) and never logs
+or stores it; the consumer → coordinator hop is TLS plus optional NaCl Box
+sealing, and the coordinator → provider and provider → coordinator hops are
+mandatory NaCl Box. The full per-party table is in
+[`../architecture/security/encryption.md`](../architecture/security/encryption.md#what-each-party-can-observe);
+code identity bounds *which* binary may act as the decryption endpoint.
 
-- Consumer → coordinator optional encryption: [`coordinator/api/sender_encryption.go`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/sender_encryption.go)
-- Coordinator → provider mandatory encryption: [`coordinator/internal/e2e/e2e.go`](https://github.com/eigeninference/d-inference/blob/master/coordinator/internal/e2e/e2e.go) and [`coordinator/api/consumer.go:448-510`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L448-L510)
-- Provider decryption and response encryption: [`provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`](https://github.com/eigeninference/d-inference/blob/master/provider-swift/Sources/ProviderCore/ProviderLoop.swift#L959-L1178)
+Darkbloom is therefore **not** "the coordinator never sees plaintext". The
+precise claim is that plaintext exists in the coordinator only in memory (the
+production coordinator runs in a hardware-encrypted Confidential VM), is never
+logged or retained, and is re-encrypted for the selected provider, which is
+bound to an attested Secure Enclave identity
+([`verification.md`](./verification.md)).
 
-## Hop-by-Hop Model
+## Hop by hop
 
-```text
-┌─────────────┐     TLS + optional NaCl Box      ┌─────────────────┐     mandatory NaCl Box      ┌─────────────────┐
-│   Consumer  │ ───────────────────────────────▶ │   Coordinator   │ ─────────────────────────▶ │    Provider     │
-│  (your code)│                                  │  (CVM memory)   │                            │ (Secure Enclave │
-└─────────────┘ ◀─────────────────────────────── └─────────────────┘ ◀────────────────────────── │  bound binary)  │
-       ▲                  TLS + optional NaCl Box         ▲                    NaCl Box         └─────────────────┘
-       │                                                   │
-       └───────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    C["Consumer"] -- "TLS + optional NaCl Box<br/>(Content-Type application/eigeninference-sealed+json)" --> K["Coordinator<br/>plaintext in memory only"]
+    K -- "mandatory NaCl Box<br/>sealed to the provider's registered X25519 key" --> P["Provider<br/>decryption endpoint"]
+    P -- "mandatory NaCl Box<br/>sealed to the request's session key" --> K
+    K -- "TLS; sealed to your ephemeral key<br/>when you sealed the request" --> C
 ```
 
-### Consumer → Coordinator
-
-- Transport is **TLS** by default.
-- Senders may additionally **NaCl Box-seal** the request body to the coordinator's long-lived X25519 public key, fetched from `GET /v1/encryption-key`.
-- Wire format: `{"kid":"...","ephemeral_public_key":"<b64>","ciphertext":"<b64>"}` with `Content-Type: application/eigeninference-sealed+json`.
-- Plaintext requests bypass sealing entirely.
-
-Endpoint and middleware: [`coordinator/api/sender_encryption.go:93-199`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/sender_encryption.go#L93-L199).
-
-### Inside the Coordinator
-
-- The coordinator decrypts the request in CVM memory for routing and billing.
-- It **does not log or retain prompt content**. The code path that parses the request only extracts `model`, `stream`, `messages`/`input`, and token-estimate fields needed for routing and billing ([`coordinator/api/inference_preprocess.go`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/inference_preprocess.go)).
-- The coordinator never re-transmits the plaintext prompt to any party except the selected provider, and only after re-encrypting it.
-
-### Coordinator → Provider
-
-- Before forwarding, the coordinator **mandatorily** re-encrypts the request body to the selected provider's attested X25519 public key using a fresh ephemeral key pair per request.
-- A provider without a public key is excluded from routing ([`coordinator/api/consumer.go:448-454`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L448-L454)).
-- Encryption uses NaCl Box (X25519 + XSalsa20-Poly1305) for forward secrecy and authentication ([`coordinator/internal/e2e/e2e.go:48-82`](https://github.com/eigeninference/d-inference/blob/master/coordinator/internal/e2e/e2e.go#L48-L82)).
-
-### Provider → Coordinator
-
-- The provider encrypts response SSE chunks back to the coordinator's ephemeral X25519 public key.
-- The coordinator decrypts responses in CVM memory and forwards them to the consumer.
-
-Provider-side decryption/response encryption: [`provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`](https://github.com/eigeninference/d-inference/blob/master/provider-swift/Sources/ProviderCore/ProviderLoop.swift#L959-L1178).
-
-## What the Coordinator Can See
-
-| Data | Can the coordinator see it? | Notes |
+| Hop | What protects it | What you control |
 |---|---|---|
-| Prompt content | Yes, in CVM memory | Needed for routing; not logged or retained |
-| Model ID | Yes | Required for routing |
-| Sampling parameters (`temperature`, `max_tokens`, etc.) | Yes | Passed through to provider |
-| Token counts | Yes | Used for billing |
-| Request/response metadata | Yes | Timestamps, request IDs, provider IDs |
-| Provider identity / attestation | Yes | Used for trust-based routing |
-| Account balance and usage | Yes | Ledger records |
+| Consumer → coordinator | TLS always. Optionally seal the body to the coordinator's X25519 key from `GET /v1/encryption-key` and send it as `Content-Type: application/eigeninference-sealed+json`; the response comes back sealed to your ephemeral key with `X-Eigen-Sealed: true` | Whether to seal. Plaintext JSON on the same routes is accepted; the console's toggle defaults to off |
+| Inside the coordinator | The body is opened in memory, parsed as JSON, re-marshalled and capped at 16 MiB, then sealed for exactly one provider. Nothing content-derived is logged or stored except keyed digests used for cache affinity; provider error text is reduced to a closed vocabulary; provider telemetry ingest is disabled (HTTP 410) | Nothing to configure |
+| Coordinator → provider | A fresh X25519 session key pair per request seals the body to the provider's registered key, which is bound to its Secure Enclave attestation. Providers without a key, or failing any privacy gate, are never selected | Nothing to configure |
+| Provider → coordinator | Every response chunk is sealed from the provider's static registered key to the request's session key; a plaintext or wrong-key chunk untrusts the provider and fails the request | Nothing to configure |
 
-## What the Coordinator Cannot See
+## What the coordinator can see
 
-| Data | Reason |
+| Data | Visible to the coordinator? | Notes |
+|---|---|---|
+| Prompt and attached media | Yes, in memory for one request | Parsed for routing, cache affinity, and billing; never logged or stored |
+| Completion text | Yes, in memory while relaying | Never logged or stored |
+| Model, sampling parameters, `stream`, `max_tokens` | Yes | Stored as non-content request parameters |
+| Token counts, latency, request and trace IDs, selected provider | Yes | Stored and logged; this is the billing and routing record |
+| Your identity: API key hash, Privy DID, balance | Yes | Ledger and auth records |
+| Provider identity and attestation state | Yes | Drives trust-based routing |
+
+## What the coordinator cannot see
+
+| Data | Why |
 |---|---|
-| Prompt content at rest | Not persisted |
-| Provider's private key | Stays in the provider's Secure Enclave |
-| Provider's plaintext response | Decrypted only in CVM memory and re-sealed to the consumer when sender encryption is used |
+| Prompt or completion at rest | Never persisted; the only content-derived artifacts are keyed digests for cache routing |
+| The provider's X25519 private key or Secure Enclave key | Live only in the provider process and the Secure Enclave |
+| Your plaintext response after it leaves | When you sealed the request, the response is sealed to your ephemeral key before it is written |
 
-## What the Provider Can See
+## What the provider can see
 
-The provider is the final decryption endpoint. By design it can see:
+By design the provider sees the plaintext prompt, the completion it generates,
+and the model and sampling parameters. It does not see your API key or Privy
+credentials, your balance, or any other consumer's prompts or responses. Which
+provider gets your request is decided by the coordinator's routing gate
+(`hardware` trust floor by default plus every privacy gate) — see
+[`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate).
 
-- The plaintext prompt.
-- The plaintext response it generates.
-- The sampling parameters and model configuration.
+## Sender encryption is optional
 
-It cannot see:
+`GET /v1/encryption-key` returns `503 encryption_unavailable` when the
+coordinator has no configured key; in that deployment the consumer → coordinator
+hop is TLS only. The coordinator → provider and provider → coordinator hops are
+always sealed, regardless of whether you sealed your request.
 
-- Your API key or Privy credentials.
-- Your account balance.
-- Other consumers' prompts or responses.
+## Logging policy
 
-## Attestation Binding
+- Prompt and completion content is never written to logs or the store.
+- Billing records hold token counts, model IDs, and costs, not text.
+- Request logs hold metadata: model, token counts, latency, request and trace
+  IDs, provider ID.
+- The itemised list of what is retained and what is explicitly avoided, with
+  the enforcing code, is in
+  [`../architecture/security/encryption.md`](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 
-Provider public keys are tied to Apple Secure Enclave identity and code-identity attestation. The coordinator verifies attestation before trusting a provider for routing ([`coordinator/attestation/attestation.go`](https://github.com/eigeninference/d-inference/blob/master/coordinator/attestation/attestation.go), [`coordinator/api/provider.go:2074`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/provider.go#L2074)). This means a prompt encrypted to a provider key is bound to a specific, attested binary instance.
+## Related
 
-## Sender Encryption Is Optional
-
-Sender encryption is disabled when the coordinator has no configured X25519 key. In that environment the consumer → coordinator hop is TLS only. The coordinator → provider hop is always encrypted regardless of whether the consumer used sender encryption.
-
-## Logging Policy
-
-- Prompt content is never written to logs.
-- Billing records contain token counts, model IDs, and costs, not prompt text.
-- Request logs contain metadata such as model, token counts, latency, request ID, and provider ID.
+- [`verification.md`](./verification.md) — reading the provider trust headers and the public attestation endpoint.
+- [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — canonical mechanism and privacy table.
+- [`../reference/api-contracts.md`](../reference/api-contracts.md) — HTTP contract for the inference routes.

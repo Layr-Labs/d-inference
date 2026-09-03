@@ -6,11 +6,11 @@ Get an API key from the console, list the models your key can use, and make your
 
 ## 1. Sign in to the console
 
-Open `https://console.darkbloom.dev` and sign in. Login is handled by Privy (`console-ui/src/components/providers/PrivyRealProvider.tsx`); the account it creates is what your API keys, balance and usage attach to.
+Open `https://console.darkbloom.dev` and sign in with your email address — email is the only login method (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`); there is no wallet or social login. The Privy account it creates is what your API keys, balance and usage attach to.
 
 ## 2. Create an API key
 
-Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx`) and create a key. The console calls `POST /v1/keys` with your Privy session (`handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The key looks like `sk-db-` followed by 64 hex characters (`KeyPrefix`, `coordinator/store/apikey.go`) and is shown once; copy it now. If you lose it, rotate or create another — the coordinator stores only a hash.
+Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx` — not Settings) and create a key. The console calls `POST /v1/keys` with your Privy session through its same-origin `/api/keys` relay (`console-ui/src/app/api/keys/route.ts`; `handleCreateAPIKey`, `coordinator/api/apikey_handlers.go`). The key looks like `sk-db-` followed by 64 hex characters (`KeyPrefix`, `coordinator/store/apikey.go`) and is shown once; copy it now. If you lose it, rotate or create another — the coordinator stores only a hash.
 
 Export it for the commands below:
 

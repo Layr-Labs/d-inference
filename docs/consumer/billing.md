@@ -51,6 +51,12 @@ within seconds. The credit lands as a `stripe_deposit` ledger entry on your
 spendable balance; deposits are never withdrawable
 (`coordinator/api/billing_handlers.go` `handleStripeWebhook`).
 
+In the console, **Buy Credits** on `/billing` reaches the same endpoint through
+the same-origin relay `/api/payments/stripe/checkout`, which forwards your Privy
+session (`Authorization` header or `privy-token` cookie) — not your API key,
+which the browser also sends and the relay ignores
+(`console-ui/src/app/api/payments/stripe/checkout/route.ts`).
+
 ### 2. Confirm the deposit
 
 ```bash

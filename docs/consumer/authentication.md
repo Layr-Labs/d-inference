@@ -21,7 +21,7 @@ Every coordinator request authenticates with one header, `Authorization: Bearer 
 
 ### Create a key
 
-1. Sign in at `https://console.darkbloom.dev` (Privy login, `console-ui/src/components/providers/PrivyRealProvider.tsx`).
+1. Sign in at `https://console.darkbloom.dev` with your email — the only Privy login method the console enables (`loginMethods: ["email"]`, `console-ui/src/components/providers/PrivyRealProvider.tsx`).
 2. Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx`) and create a key; optionally set a budget, rate limits, an allowed-model list, or an expiry.
 3. Copy the secret when it is shown. It is not retrievable later.
 
@@ -61,7 +61,7 @@ API keys work on every route marked `key` in the contracts page — inference, `
 
 ## Privy session JWT
 
-The console signs you in with Privy; the resulting JWT can be used directly as a bearer token. `requireAuth` verifies it (`privyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. Some routes require it:
+The console signs you in with Privy (email only, in an in-page modal — `/login` redirects to `/`, `console-ui/src/proxy.ts`); the resulting JWT can be used directly as a bearer token. `requireAuth` verifies it (`privyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. The console itself sends the JWT only on management routes — keys, fleet, earnings, device approval, Stripe Connect — through its `/api/*` relay (`managementHeaders`, `console-ui/src/lib/http/proxy-client.ts`); for chat, balance and usage it uses the `sk-db-…` console key it provisions on first login with `POST /v1/auth/keys` (`provisionConsoleKey`, `console-ui/src/hooks/useAuth.ts`). Some routes require the JWT:
 
 | Routes requiring a Privy JWT (`requirePrivyAuth`) | With an API key you get |
 |---|---|
@@ -77,7 +77,7 @@ A second group accepts `requireAuth` but then insists on a resolved account user
 `darkbloom login` links a machine to your account with an RFC 8628 device-code exchange ([`../provider/cli-reference.md`](../provider/cli-reference.md)). What the CLI does, so you can recognise it or drive it yourself:
 
 1. `POST /v1/device/code` (no auth) → `{device_code, user_code, verification_uri, expires_in: 900, interval: 5}` (`handleDeviceCode`, `coordinator/api/device_auth.go`). `verification_uri` is the console's `/link` page.
-2. You open `verification_uri` (`console-ui/src/app/link/page.tsx`), sign in with Privy, and enter `user_code`. The page calls `POST /v1/device/approve` with your JWT (`handleDeviceApprove`); the code is bound to your account. Errors: 404 `invalid_code`, 409 `already_used`, 410 `expired_code`.
+2. You open `verification_uri` (`console-ui/src/app/link/page.tsx`), sign in with Privy, and enter `user_code`. The page posts to the console's same-origin `/api/device/approve` relay, which forwards `POST /v1/device/approve` with your JWT (`console-ui/src/app/link/DeviceLinkForm.tsx`, `console-ui/src/app/api/device/approve/route.ts`; `handleDeviceApprove`); the code is bound to your account. Errors: 404 `invalid_code`, 409 `already_used`, 410 `expired_code`.
 3. The CLI polls `POST /v1/device/token` with `{"device_code"}` every `interval` seconds (`handleDeviceToken`). While unapproved it gets 200 `{"status": "authorization_pending"}`; after approval 200 `{"status": "authorized", "token": "eigeninference-pt-...", "account_id": "..."}`; after `DeviceCodeExpiry` (15 minutes) 410 `expired_token`; an unknown code is 404 `invalid_grant`.
 
 The `token` is a **provider token**, stored on the machine and labelled `device-<user_code>` in your account. It authorises that machine to earn for your account and to be targeted by self-route requests ([`../provider/self-route.md`](../provider/self-route.md)); it is not a consumer API key and does not authenticate inference requests.

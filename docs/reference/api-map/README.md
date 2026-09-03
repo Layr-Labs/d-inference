@@ -401,6 +401,14 @@ this dies of:
   `-- QUEUED FOR` above an `UPDATE ` + `table` is read as a lock and its splice goes
   unreported.
 
+  Two more limits, both in shapes no store query has. The scan reads a body in source
+  order rather than following control flow, so a `goto` that jumps over the assignment
+  a `WITH` clause is in settles the fragment below it against names the running program
+  would not have — the one remaining way a CTE can mute a table without a finding. And
+  a `q` shadowed in an inner block is a different variable, so a fragment there is
+  reported rather than settled against the outer query's CTE names; that costs a
+  finding with a remedy, not a silence.
+
   A query that genuinely cannot be one expression — the earnings CTE chains, where
   a conditional `WHERE` is spliced into the middle — names its tables in
   `deps.sqlDriver.assembled` instead. That entry is held to being an explanation

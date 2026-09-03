@@ -126,6 +126,18 @@ type walkOutcome struct {
 	aliasStruct bool
 	aliasBuild  bool
 	cacheCaps   []string
+
+	// System-profiler routing context (#809), copied by value onto
+	// RoutingDecision: the whole-registry Scanned / CandidateSetSize, the
+	// per-gate tallies, the deterministic top-4 by (cost, id) over the
+	// narrowed pool, and best-idle. The index prunes non-advertisers without
+	// visiting them, so a wrong re-thread of these tallies would leave routing
+	// correct and only ever show up here.
+	scanned      int
+	candidateSet int
+	gates        [GateReasonCount]uint16
+	top          [4]CandidateSummary
+	bestIdle     CandidateSummary
 }
 
 func runWalks(r *Registry, model string, pr *PendingRequest, traits RequestTraits, vision bool) walkOutcome {
@@ -142,6 +154,14 @@ func runWalks(r *Registry, model string, pr *PendingRequest, traits RequestTrait
 	sort.Strings(out.pool)
 	out.count, out.capacity, out.tooLarge = scan.candidateCount, scan.capacityRejections, scan.tooLargeRejections
 	out.vision, out.ttft, out.bestTTFT = scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs
+	out.scanned, out.candidateSet, out.gates = scan.scanned, scan.candidateSetSize, scan.gateRejections
+	out.top, out.bestIdle = scan.top, scan.bestIdle
+	// Heartbeat age is read off the wall clock at snapshot time and drifts
+	// between two walks; it is not what these comparisons pin.
+	for i := range out.top {
+		out.top[i].HBAgeMs = 0
+	}
+	out.bestIdle.HBAgeMs = 0
 	c, cap_, tl, ttft, has := r.QuickCapacityCheckWithTTFTForRequest(model, 600, 512, traits, vision)
 	out.quick, out.quickTTFT, out.quickHas = [3]int{c, cap_, tl}, int64(ttft), has
 	out.servable = r.PredictServable(model, 600, 600, 512, 128_000, traits, vision)
@@ -184,6 +204,22 @@ func TestRoutingWalksIdenticalWithAndWithoutModelIndex(t *testing.T) {
 			}
 			if model != "not-a-model" && withIndex.count == 0 && shape.name == "plain" {
 				t.Fatalf("%s: fixture produced no candidates", model)
+			}
+			// The profiler tallies are pinned in absolute terms as well: every
+			// provider counts as scanned either way, the non-advertisers the index
+			// never visits are tallied as GateNotServingModel, and the candidate
+			// set is exactly the advertisers.
+			advertisers := 0
+			for i := range f.ids {
+				if benchProviderAdvertises(f, i, model) {
+					advertisers++
+				}
+			}
+			if withIndex.scanned != benchFleetProviders || withIndex.candidateSet != advertisers ||
+				int(withIndex.gates[GateNotServingModel]) != benchFleetProviders-advertisers {
+				t.Fatalf("%s/%s: scanned=%d candidateSet=%d notServing=%d, want %d/%d/%d",
+					model, shape.name, withIndex.scanned, withIndex.candidateSet, withIndex.gates[GateNotServingModel],
+					benchFleetProviders, advertisers, benchFleetProviders-advertisers)
 			}
 		}
 	}
@@ -328,6 +364,64 @@ func TestRoutingWalksIdenticalWithFaultStateWithAndWithoutIndex(t *testing.T) {
 	}
 	if tallies(dIdx) != tallies(dBrute) {
 		t.Fatalf("RoutingDecision tallies differ\n index: %+v\n brute: %+v", dIdx, dBrute)
+	}
+	// The #809 profiler fields ride on the same decision. Scanned,
+	// CandidateSetSize, GateRejections and BestIdle are deterministic (only the
+	// heartbeat age read off the clock is masked). The breaker-open and
+	// ejected non-advertisers land on GateNotServingModel in BOTH walks — the
+	// dispatch gate checks advertisement before the breaker/ejection gates —
+	// which is exactly why the index's up-front tally of the providers it
+	// never visits agrees with the brute-force walk.
+	type profiled struct {
+		scanned, candidateSet int
+		gates                 [GateReasonCount]uint16
+		bestIdle              CandidateSummary
+	}
+	profile := func(d RoutingDecision) profiled {
+		p := profiled{d.Scanned, d.CandidateSetSize, d.GateRejections, d.BestIdle}
+		p.bestIdle.HBAgeMs = 0
+		return p
+	}
+	if pi, pb := profile(dIdx), profile(dBrute); pi != pb {
+		t.Fatalf("RoutingDecision profiler fields differ\n index: %+v\n brute: %+v", pi, pb)
+	}
+	if dIdx.Scanned != benchFleetProviders || dIdx.GateRejections[GateNotServingModel] == 0 ||
+		dIdx.GateRejections[GateCapacityCooldown] != 1 ||
+		dIdx.GateRejections[GateBreaker] != 0 || dIdx.GateRejections[GateEjection] != 0 {
+		t.Fatalf("profiler tallies off (want whole fleet scanned, non-advertisers on GateNotServingModel, one capacity-cooled advertiser): %+v", profile(dIdx))
+	}
+	// Top[0] is the near-tie randomized winner, so the arrays are compared
+	// modulo the winner: every other slot must come from the deterministic
+	// top-4 both walks agreed on above, and when both walks happened to pick
+	// the same winner the arrays must match outright.
+	natural := map[string]bool{}
+	for _, c := range scanIdx.top {
+		if c.Present {
+			natural[c.ProviderID] = true
+		}
+	}
+	for _, walk := range []struct {
+		name   string
+		d      RoutingDecision
+		winner *Provider
+	}{{"index", dIdx, pIdx}, {"brute", dBrute, pBrute}} {
+		if !walk.d.Top[0].Present || walk.d.Top[0].ProviderID != walk.winner.ID {
+			t.Fatalf("%s: Top[0] = %+v, want the winner %s", walk.name, walk.d.Top[0], walk.winner.ID)
+		}
+		for i := 1; i < len(walk.d.Top); i++ {
+			if walk.d.Top[i].Present && !natural[walk.d.Top[i].ProviderID] {
+				t.Fatalf("%s: Top[%d] = %s is not in the scan's top-4 %v", walk.name, i, walk.d.Top[i].ProviderID, natural)
+			}
+		}
+	}
+	if pIdx.ID == pBrute.ID {
+		ti, tb := dIdx.Top, dBrute.Top
+		for i := range ti {
+			ti[i].HBAgeMs, tb[i].HBAgeMs = 0, 0
+		}
+		if ti != tb {
+			t.Fatalf("same winner, Top differs\n index: %+v\n brute: %+v", ti, tb)
+		}
 	}
 	assertModelIndexConsistent(t, f.reg)
 }

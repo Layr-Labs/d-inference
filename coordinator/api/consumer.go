@@ -2425,7 +2425,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		}
 		relay.handleChunk(firstChunk)
 	}
-	rs.wrote(relay.flush(w, flusher))
+	rs.wroteFrames(relay.flush(w, flusher))
 	if initialError != nil {
 		s.writeChatStreamProviderError(w, flusher, pr, *initialError)
 		return
@@ -2518,7 +2518,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 		// Exactly one terminator, after every coordinator-appended event. The
 		// terminal frames reach the wire together in one flush.
 		relay.writeFrame("data: [DONE]")
-		rs.wrote(relay.flush(w, flusher))
+		rs.wroteFrames(relay.flush(w, flusher))
 		rs.done()
 	}
 
@@ -2545,7 +2545,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			// observed mid-drain is handled exactly like the blocking-receive
 			// close — after the drained chunks are on the wire.
 			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
-			rs.wrote(relay.flush(w, flusher))
+			rs.wroteFrames(relay.flush(w, flusher))
 			if closed {
 				finishStream()
 				return
@@ -2560,7 +2560,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			// (never waiting) before the terminal error so a late failure never
 			// truncates content the provider already produced.
 			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
-			rs.wrote(relay.flush(w, flusher))
+			rs.wroteFrames(relay.flush(w, flusher))
 			s.writeChatStreamProviderError(w, flusher, pr, errMsg)
 			return
 

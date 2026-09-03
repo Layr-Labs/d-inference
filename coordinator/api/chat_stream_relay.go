@@ -35,6 +35,9 @@ type chatStreamRelay struct {
 	// buf accumulates the frames of one batch (each already framed with its
 	// trailing blank line) until flush writes them in one call.
 	buf bytes.Buffer
+	// frames counts the SSE frames in buf, so flush can credit the profiler
+	// one chunk per frame rather than one per write.
+	frames int
 }
 
 func newChatStreamRelay(pr *registry.PendingRequest) *chatStreamRelay {
@@ -89,17 +92,23 @@ func (rl *chatStreamRelay) handleChunk(chunk string) {
 func (rl *chatStreamRelay) writeFrame(frame string) {
 	rl.buf.WriteString(frame)
 	rl.buf.WriteString("\n\n")
+	rl.frames++
 }
 
 // flush writes the batched frames, if any, in one call and flushes once. It
-// reports the write outcome so the caller can feed the system-profiler relay
-// stamps (bytes accepted, client_write_err) exactly as the per-chunk relay did.
-func (rl *chatStreamRelay) flush(w http.ResponseWriter, flusher http.Flusher) (int, error) {
+// reports the write outcome — bytes accepted, the number of SSE frames the
+// batch carried, and the write error — so the caller can feed the
+// system-profiler relay stamps (relayStamps.wroteFrames) exactly as the
+// per-chunk relay did: chunks_out is credited per frame, never per write or
+// flush, so coalescing is invisible to the profile.
+func (rl *chatStreamRelay) flush(w http.ResponseWriter, flusher http.Flusher) (n, frames int, err error) {
 	if rl.buf.Len() == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
-	n, err := w.Write(rl.buf.Bytes())
+	frames = rl.frames
+	n, err = w.Write(rl.buf.Bytes())
 	rl.buf.Reset()
+	rl.frames = 0
 	flusher.Flush()
-	return n, err
+	return n, frames, err
 }

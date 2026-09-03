@@ -201,9 +201,21 @@ func newRelayStamps(rp *registry.RequestProfile) *relayStamps {
 }
 
 // flushed records one chunk written + flushed to the client.
-func (r *relayStamps) flushed(bytes int) {
+func (r *relayStamps) flushed(bytes int) { r.flushedFrames(bytes, 1) }
+
+// flushedFrames records one client write that carried frames SSE frames: the
+// coalesced chat relay writes a whole batch per call, the generic emitters
+// one frame per call. chunks_out counts frames — one per client-visible SSE
+// event — never writes or flushes, so a coalesced relay and a per-chunk relay
+// report the same chunks_out for the same stream. max_chunk_gap_us is the
+// longest gap between successive client writes, the gap the client actually
+// observes (frames inside one batch have none).
+func (r *relayStamps) flushedFrames(bytes, frames int) {
 	if r == nil || r.rp == nil || bytes <= 0 {
 		return
+	}
+	if frames < 1 {
+		frames = 1
 	}
 	now := time.Now()
 	rp := r.rp
@@ -215,7 +227,7 @@ func (r *relayStamps) flushed(bytes int) {
 		}
 	}
 	r.lastFlush = now
-	rp.ChunksOut.Add(1)
+	rp.ChunksOut.Add(int64(frames))
 	rp.BytesOut.Add(int64(bytes))
 }
 
@@ -233,10 +245,18 @@ func (r *relayStamps) done() {
 	r.rp.Stamp(&r.rp.DoneFlushedUS)
 }
 
-// wrote records the outcome of one client write: only bytes the ResponseWriter
-// accepted count as flushed, and a failed or short write marks client_write_err
-// so the record never claims output the client did not receive.
-func (r *relayStamps) wrote(n int, err error) {
+// wrote records the outcome of one client write carrying a single frame: only
+// bytes the ResponseWriter accepted count as flushed, and a failed or short
+// write marks client_write_err so the record never claims output the client
+// did not receive.
+func (r *relayStamps) wrote(n int, err error) { r.wroteFrames(n, 1, err) }
+
+// wroteFrames is wrote for a write that carried frames SSE frames (the
+// coalesced chat relay). A write the client accepted at all (n > 0) credits
+// every frame of the batch — mirroring the per-chunk form, where a partially
+// accepted chunk still counted — and a failed write additionally marks
+// client_write_err, which is what flags the row's egress as unreliable.
+func (r *relayStamps) wroteFrames(n, frames int, err error) {
 	if r == nil || r.rp == nil {
 		return
 	}
@@ -244,7 +264,7 @@ func (r *relayStamps) wrote(n int, err error) {
 		r.writeErr()
 	}
 	if n > 0 {
-		r.flushed(n)
+		r.flushedFrames(n, frames)
 	}
 }
 

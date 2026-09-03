@@ -68,8 +68,13 @@ type RequestProfile struct {
 	DoneFlushedUS    atomic.Int64
 
 	// Accumulators.
-	DBUS           atomic.Int64 // synchronous store calls on the handler goroutine (µs)
-	DBCalls        atomic.Int64
+	DBUS    atomic.Int64 // synchronous store calls on the handler goroutine (µs)
+	DBCalls atomic.Int64
+	// ChunksOut counts SSE frames (client-visible events) written — one per
+	// frame, never per Write or Flush, so the coalesced chat relay (a batch of
+	// frames per write) and the per-frame emitters agree. BytesOut is the
+	// bytes the ResponseWriter accepted; MaxChunkGapUS is the longest gap
+	// between successive client writes (frames inside one batch have none).
 	ChunksOut      atomic.Int64
 	BytesOut       atomic.Int64
 	MaxChunkGapUS  atomic.Int64

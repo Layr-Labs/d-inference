@@ -174,6 +174,33 @@ the new desired builds via `desired_models` and prefetches them. If a build
 fails, check `darkbloom logs` for the mismatch and run `darkbloom models remove
 <id>` followed by `darkbloom models download <id>`.
 
+### `Provider capacity is temporarily unavailable` (503)
+
+This error means the provider's HTTP server is running, but the inference
+backend has not loaded the model into GPU memory yet. In `--local` mode, the
+model loads **lazily** — the first request triggers the load, which can take
+**3–4 minutes** for a 20 GB+ model like `qwen3.6-35b-a3b-vl-mtp-mxfp8`.
+
+Wait a few minutes and retry. The model stays warm for subsequent requests
+(until the idle timeout evicts it).
+
+**If the error persists after several minutes:**
+
+- The backend subprocess may have failed to start. Check the logs:
+  ```bash
+  darkbloom logs --last 1h | grep -i "backend\|error\|crash"
+  ```
+- Confirm the model is listed in `backend.preload_models` in provider.toml,
+  and that `startup_preload_timeout_secs` is long enough for your model size.
+  A 23.8 GB model may need 300 seconds or more:
+  ```toml
+  [backend]
+  startup_preload_timeout_secs = 300
+  ```
+- In daemon mode (`--local-endpoint`), the model won't warm until the
+  coordinator's MDM verification completes and trust reaches `hardware`.
+  Run `darkbloom status` and check the `Trust:` line.
+
 ## Performance issues
 
 ### Low throughput

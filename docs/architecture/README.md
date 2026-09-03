@@ -1,5 +1,7 @@
 # Architecture
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
 This directory is the source of truth for how Darkbloom works. The code in `coordinator/`, `provider-swift/`, `console-ui/`, and `e2e/` is canonical; these docs describe and cite it.
 
 ![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
@@ -36,7 +38,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 |---|---|
 | [operations/routing.md](routing.md) | Provider selection and cost-based scheduling |
 | [operations/scheduling.md](scheduling.md) | Queues, slot states, token budgets, and model swaps |
-| [operations/billing.md](billing.md) | Pricing, reservations, ledger, and payouts |
+| [operations/billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referral, base rewards |
 | [operations/model-registry.md](model-registry.md) | Model manifests, aliases, and provider downloads |
 | [operations/telemetry.md](telemetry.md) | Telemetry schema, symmetry, and ingestion |
 
@@ -51,7 +53,6 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 | [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation, query recipes |
 | [telemetry-inventory.md](../reference/telemetry-inventory.md) | Inventory of every telemetry datum collected today, its producer, sink, cadence, and gaps |
 | [storage.md](storage.md) | KV cache, prefix cache, and on-disk model storage |
-| [payments.md](payments.md) | Payments architecture (Stripe Connect, ledger, withdrawals) |
 | [hardware-support.md](hardware-support.md) | Supported Apple Silicon tiers and capability mapping |
 
 ## Design decisions (ADRs)

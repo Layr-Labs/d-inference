@@ -26,7 +26,11 @@ templating. `scripts/install.sh` is the sole editable source;
    the binaries from `Darkbloom.app/Contents/MacOS/` when the `.app` bundle is
    used.
 7. **Updates `PATH`** — appends `export PATH="$HOME/.darkbloom/bin:$PATH"` to
-   `~/.zshrc` (or `~/.bashrc`).
+   `~/.zshrc`, `~/.bashrc`, and the bash login file bash will actually read
+   (`~/.bash_profile`, else `~/.bash_login`, else `~/.profile`). `curl | bash`
+   cannot change the current terminal; the installer also tries `/usr/local/bin`
+   and Homebrew's bin for a symlink already on `PATH`
+   (`scripts/install.sh:340-424`).
 8. **Migrates legacy state** — copies tokens/keys from `~/.dginf` or
    `~/.eigeninference` if present.
 9. **Provisions Secure Enclave identity** — runs `darkbloom-enclave info`.
@@ -175,5 +179,5 @@ the profile.
 | `Error: Darkbloom requires macOS with Apple Silicon` | Wrong OS or architecture | Run on an Apple Silicon Mac |
 | `Bundle hash mismatch` | Corrupted download or tampered bundle | Re-run the installer; check `/v1/releases/latest` |
 | `Code signature could not be verified` | Binary unsigned or modified | Re-download from the coordinator |
-| `darkbloom: command not found` | `PATH` not updated | `source ~/.zshrc` or add `~/.darkbloom/bin` to `PATH` |
+| `darkbloom: command not found` | Current shell was not updated (`curl \| bash` cannot change it; `scripts/install.sh:319-424`) | `export PATH="$HOME/.darkbloom/bin:$PATH"` or open a new terminal |
 | `Coordinator unreachable` | Firewall / DNS / coordinator maintenance | Check `curl https://api.darkbloom.dev/health` |

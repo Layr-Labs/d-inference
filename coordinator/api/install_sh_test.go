@@ -148,6 +148,30 @@ func TestInstallScriptTemplating(t *testing.T) {
 		}
 	})
 
+	t.Run("install.sh updates bash and zsh PATH files", func(t *testing.T) {
+		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
+		defer srv.Close()
+
+		body := fetchInstallScript(t, srv.URL)
+		for _, required := range []string{
+			"setup_shell_path",
+			`ensure_path_in_file "$HOME/.zshrc"`,
+			`ensure_path_in_file "$HOME/.bashrc"`,
+			`ensure_path_in_file "$HOME/.bash_profile"`,
+			"--setup-path-test",
+			`export PATH="$HOME/.darkbloom/bin:$PATH"`,
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("install.sh is missing PATH setup %q", required)
+			}
+		}
+		// The previous "write only ~/.zshrc when it exists" gate left bash
+		// login shells with command-not-found after a successful install.
+		if strings.Contains(body, `[ ! -f "$HOME/.zshrc" ]`) {
+			t.Error("install.sh still prefers .zshrc exclusively over bash login files")
+		}
+	})
+
 	t.Run("fan helper is verified but never privileged-installed", func(t *testing.T) {
 		srv := newTestServerWithBaseURL(t, "https://api.dev.darkbloom.xyz")
 		defer srv.Close()

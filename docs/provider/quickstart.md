@@ -33,7 +33,10 @@ The installer (`scripts/install.sh`):
 3. Verifies the bundle SHA-256, the binary SHA-256, and the `mlx.metallib` SHA-256
    against the coordinator's release record.
 4. Verifies the Apple Developer ID code signature.
-5. Adds `~/.darkbloom/bin` to your `PATH`.
+5. Adds `~/.darkbloom/bin` to your `PATH` in zsh and bash startup files. If
+   this terminal still cannot find `darkbloom`, run
+   `export PATH="$HOME/.darkbloom/bin:$PATH"` — `curl | bash` cannot change the
+   parent shell (`scripts/install.sh:340-424`).
 6. Provisions the Secure Enclave identity helper (`darkbloom-enclave`).
 7. Offers to install the MDM enrollment profile for hardware-trust attestation.
 

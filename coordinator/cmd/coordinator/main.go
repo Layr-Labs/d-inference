@@ -862,6 +862,10 @@ func main() {
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
 
+	// Background goroutines own the /v1/stats and /v1/network/totals cache
+	// entries; handlers only read them.
+	srv.StartCacheRefreshers(ctx)
+
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
 	srv.StartThroughputAnomalyDetector(ctx)

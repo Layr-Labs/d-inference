@@ -829,7 +829,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 // rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
 // Ledger rewards are only counted for accounts that also have provider earnings
 // rows in the window, so consumer-only reward recipients do not inflate totals.
-func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+func (s *MemoryStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
@@ -862,7 +862,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	}
 	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
 	t.ActiveAccounts = int64(len(providers))
-	return t
+	return t, nil
 }
 
 // UsageByConsumer returns usage records for a specific consumer key.

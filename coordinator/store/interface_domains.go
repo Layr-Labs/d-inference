@@ -153,8 +153,10 @@ type UsageStore interface {
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
 
 	// NetworkTotals returns aggregated metrics across the network for the
-	// given window. Zero `since` means all-time.
-	NetworkTotals(since time.Time) NetworkTotalsRow
+	// given window. Zero `since` means all-time. It returns an error (never a
+	// zero row) when the aggregate could not be computed, so callers do not
+	// cache or display zeros for a statement that timed out.
+	NetworkTotals(since time.Time) (NetworkTotalsRow, error)
 
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord

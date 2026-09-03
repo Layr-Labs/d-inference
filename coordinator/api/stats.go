@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -80,16 +83,166 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
+const (
+	// statsCacheKey is the readCache entry for GET /v1/stats. One background
+	// goroutine (StartCacheRefreshers) owns it; handlers only read it.
+	statsCacheKey = "stats:v1"
+	// cacheRefreshInterval is how often a refresher recomputes its entries —
+	// the staleness contract the public pages have always had.
+	cacheRefreshInterval = time.Minute
+	// refreshedCacheTTL is the safety TTL on a good refreshed value. It is
+	// deliberately longer than the refresh interval so a slow or failed
+	// refresh serves the last good value instead of letting the entry expire
+	// and every request recompute it.
+	refreshedCacheTTL = 5 * time.Minute
+	// refreshedDegradedTTL is the TTL when the only value available is
+	// degraded (a usage analytics statement returned nothing, typically the
+	// 10 s store timeout). It is short so the next tick or miss retries, but
+	// longer than the refresh interval so the entry cannot expire between ticks.
+	refreshedDegradedTTL = 2 * time.Minute
+)
+
+// cacheRefresher coalesces computations of one readCache entry and remembers
+// whether the cached value is a good one. It exists because the statements
+// behind /v1/stats and /v1/network/totals each take seconds on the primary:
+// before it, every provider registration evicted stats:v1 (~1,400 times/hour
+// in production), every concurrent miss ran its own copy of the pipeline, and
+// a timed-out statement was cached as empty or all-zero data.
+type cacheRefresher struct {
+	mu sync.Mutex
+	// inflight is non-nil while a computation is running and is closed when it
+	// finishes; concurrent cold misses wait on it instead of computing again.
+	inflight chan struct{}
+	// haveGood records that the value currently cached (if any) was computed
+	// with every statement returning data.
+	haveGood bool
+}
+
+// refreshCachedEntry runs compute — coalescing concurrent callers onto one
+// run — and stores the result under key. compute returns the body, whether it
+// is degraded (see storeCachedEntry), and an error when there is nothing to
+// cache at all (a store error: the entry is left untouched so the previous
+// good value keeps serving until its safety TTL lapses). It returns the body
+// to serve and false when nothing could be produced.
+func (s *Server) refreshCachedEntry(entry *cacheRefresher, key string, compute func() ([]byte, bool, error)) ([]byte, bool) {
+	entry.mu.Lock()
+	if wait := entry.inflight; wait != nil {
+		entry.mu.Unlock()
+		<-wait
+		cached, ok := s.readCache.Get(key)
+		return cached, ok
+	}
+	done := make(chan struct{})
+	entry.inflight = done
+	entry.mu.Unlock()
+	defer func() {
+		entry.mu.Lock()
+		entry.inflight = nil
+		entry.mu.Unlock()
+		close(done)
+	}()
+
+	body, degraded, err := compute()
+	if err != nil {
+		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
+		s.ddIncr("cache.refresh_failed", []string{"key:" + key})
+		cached, ok := s.readCache.Get(key)
+		return cached, ok
+	}
+	return s.storeCachedEntry(entry, key, body, degraded), true
+}
+
+// storeCachedEntry caches a computed body and returns the body to serve. A
+// good value is cached with the safety TTL. A degraded value never replaces a
+// good value that is still cached; it is cached only when nothing better
+// exists, with a short TTL so it is retried soon.
+func (s *Server) storeCachedEntry(entry *cacheRefresher, key string, body []byte, degraded bool) []byte {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if degraded {
+		if previous, ok := s.readCache.Get(key); ok && entry.haveGood {
+			s.logger.Warn("cache refresh degraded; keeping previous value", "key", key)
+			s.ddIncr("cache.refresh_degraded", []string{"key:" + key, "action:kept_previous"})
+			return previous
+		}
+		s.ddIncr("cache.refresh_degraded", []string{"key:" + key, "action:cached"})
+		s.readCache.Set(key, body, refreshedDegradedTTL)
+		entry.haveGood = false
+		return body
+	}
+	s.readCache.Set(key, body, refreshedCacheTTL)
+	entry.haveGood = true
+	return body
+}
+
+// runCacheRefreshLoop computes once at start and then every interval until
+// ctx is cancelled.
+func (s *Server) runCacheRefreshLoop(ctx context.Context, interval time.Duration, refresh func()) {
+	if s.readCache == nil {
+		return
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
+}
+
+// StartCacheRefreshers starts the goroutines that own the refreshed read-cache
+// entries (stats:v1 and network_totals:*). Each loop is independent so a slow
+// statement in one never delays the other. Stops when ctx is cancelled.
+func (s *Server) StartCacheRefreshers(ctx context.Context) {
+	saferun.Go(s.logger, "api.statsRefresher", func() {
+		s.runStatsRefresher(ctx, cacheRefreshInterval)
+	})
+	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
+		s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)
+	})
+}
+
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
-// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
-// endpoint is hit by every dashboard refresh and the homepage live ticker.
+// The response is served from the stats:v1 read-cache entry, which the
+// refresher recomputes every cacheRefreshInterval. A handler only computes on
+// a cold start (no entry at all), and concurrent cold misses share one
+// computation.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "stats:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCache.Get(statsCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, ok := s.refreshStats()
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
+
+// runStatsRefresher owns the stats:v1 entry with an injectable interval.
+func (s *Server) runStatsRefresher(ctx context.Context, interval time.Duration) {
+	s.runCacheRefreshLoop(ctx, interval, func() { s.refreshStats() })
+}
+
+// refreshStats computes the stats body (coalesced) and stores it under
+// statsCacheKey. It returns the body to serve — the freshly computed one, or
+// the retained previous good value when the new one is degraded — and false
+// only when the response could not be encoded.
+func (s *Server) refreshStats() ([]byte, bool) {
+	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+}
+
+// computeStats builds the /v1/stats body. degraded reports that a usage
+// analytics statement (request locations or request flows) produced no rows,
+// which is indistinguishable at the store boundary from a timeout;
+// storeCachedEntry decides what to do with it.
+func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -292,13 +445,16 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 		"request_flows": requestFlows,
 	}
-	body, err := json.Marshal(resp)
+	body, err = json.Marshal(resp)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
+		return nil, false, err
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	// Both analytics statements ran against a window that, in production,
+	// always has located usage and located providers; nothing at all from
+	// either one means the statement did not complete.
+	noLocations := len(requestLocations) == 0 && len(requestRegions) == 0
+	degraded = noLocations || len(requestFlows) == 0
+	return body, degraded, nil
 }
 
 // aggregateProviderLocations builds privacy-floored city and region

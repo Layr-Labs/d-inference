@@ -419,6 +419,14 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
+	// statsRefresh owns the stats:v1 readCache entry (see stats.go);
+	// networkTotalsRefresh owns one network_totals:<window> entry per window
+	// (see leaderboard.go).
+	statsRefresh         cacheRefresher
+	networkTotalsRefresh struct {
+		mu      sync.Mutex
+		entries map[string]*cacheRefresher
+	}
 
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
@@ -1271,7 +1279,9 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
-	s.readCache.Invalidate("stats:v1")
+	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
+	// it every minute, and evicting it made every concurrent /v1/stats request
+	// rerun the multi-second usage analytics statements.
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.

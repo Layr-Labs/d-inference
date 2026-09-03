@@ -920,9 +920,10 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 	provider.Location = loc
 	provider.Mu().Unlock()
 	s.registry.PersistProvider(provider)
-	if s.readCache != nil {
-		s.readCache.Invalidate("stats:v1")
-	}
+	// The stats:v1 read-cache entry is owned by the stats refresher (stats.go)
+	// and is NOT evicted here. Evicting it on every registration (~1,400/hour
+	// in production) turned its 60 s TTL into ~2.6 s and made every /v1/stats
+	// request rerun the multi-second usage analytics statements.
 	s.logger.Info("provider location resolved",
 		"provider_id", providerID,
 		"city", loc.City,

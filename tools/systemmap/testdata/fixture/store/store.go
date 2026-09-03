@@ -268,6 +268,156 @@ func (p *Postgres) CountOnly(ctx context.Context, table string) error {
 	return err
 }
 
+// LockModelMultiline closes its literal on the line after the last keyword, the
+// way long queries are formatted. `FOR UPDATE` followed by a newline is a complete,
+// readable statement — the whitespace after the keyword must not turn it into a
+// splice, because there is no way to fix a finding on a statement that is already
+// in one literal.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) LockModelMultiline(ctx context.Context, id string) error {
+	_, err := p.db.ExecContext(ctx, `
+		SELECT id, name FROM models
+		WHERE id = $1
+		FOR UPDATE
+	`, id)
+	return err
+}
+
+// LockModelSkip appends a locking clause that continues past the keyword, so the
+// word after `UPDATE` is readable and is not a table. `FOR UPDATE` has to be
+// stepped over wherever it appears, not only at the end of the text — otherwise
+// the map gains a table called `skip`.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) LockModelSkip(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` FOR UPDATE SKIP LOCKED`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// UpsertModel splits an upsert after `DO UPDATE`, where the word introduces a
+// conflict action rather than a table. The tail is `SET name = $2`, so nothing
+// unreadable is in this body at all.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) UpsertModel(ctx context.Context, id, name string) error {
+	q := `INSERT INTO models (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE `
+	q += `SET name = $2`
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankInline hands both of its statements straight to the driver, so neither has a
+// variable to be named by. The scope has to fall back to the statement rather than
+// to the body: the CTE in the first call must not shadow the real read of `usage`
+// spliced onto the second, which is the shape a `strings.Builder` assembly and an
+// `Exec(ctx, literal)` in the same function both take.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankInline(ctx context.Context, base string) error {
+	if _, err := p.db.ExecContext(ctx,
+		`WITH usage AS (SELECT id FROM models) SELECT id FROM usage`); err != nil {
+		return err
+	}
+	_, err := p.db.ExecContext(ctx, base+` JOIN usage u ON u.id = base.id`)
+	return err
+}
+
+// RankRecycled reuses one local for two statements. The variable is only "which
+// statement is this" until it is assigned a different statement — after that, the
+// CTE names the first query declared say nothing about the fragment appended to the
+// second, and a scope that kept them would drop a real read of `usage`.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankRecycled(ctx context.Context, all bool) error {
+	q := `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if _, err := p.db.ExecContext(ctx, q); err != nil {
+		return err
+	}
+	q = `SELECT m.id FROM models m WHERE m.id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = m.id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// ListModelsTrailing names a table and then trails off at a keyword. Both facts
+// matter: the report only needs one finding per literal, but the declaration check
+// is held to `models` too — reporting the trailing keyword and stopping there would
+// let an entry naming only `usage` absorb a read of a table it never mentioned.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) ListModelsTrailing(ctx context.Context, other string) error {
+	q := `SELECT m.id`
+	q += ` FROM models m JOIN `
+	q += other
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankBatch splits one query across a slice element. `qs[0] += tail` is an
+// assignment to `qs`, so the fragment belongs to the same statement the WITH clause
+// was written into — a scope that only understood bare identifiers would read the
+// two halves as unrelated and report a query that is entirely correct.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankBatch(ctx context.Context, all bool) error {
+	qs := []string{`WITH usage AS (SELECT id FROM models) SELECT id FROM usage`}
+	if all {
+		qs[0] += ` JOIN usage u ON u.id = usage.id`
+	}
+	_, err := p.db.ExecContext(ctx, qs[0])
+	return err
+}
+
+// RankDeclaredVar assembles its query through a `var` declaration rather than an
+// assignment. Text in a declaration has to be scoped the same way, or the WITH
+// clause lands in one scope and the fragment appended to it in another.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankDeclaredVar(ctx context.Context, all bool) error {
+	var q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage`
+	if all {
+		q += ` JOIN usage u ON u.id = usage.id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// UsageWindow appends a fragment whose FROM belongs to a keyword call. The mask
+// that keeps `EXTRACT(EPOCH FROM ...)` from naming a table has to run over
+// fragments too — without it the map would gain a table called `created_at`, which
+// is not even in the schema.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) UsageWindow(ctx context.Context, all bool) error {
+	q := `SELECT id FROM usage WHERE id = $1`
+	if all {
+		q += ` ORDER BY EXTRACT(EPOCH FROM created_at) DESC`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// UsageUnnest appends a fragment whose FROM opens a function instead of naming a
+// table. `Tables` skips those keywords; the fragment scan has to skip the same ones
+// or `unnest` becomes a table in the report.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) UsageUnnest(ctx context.Context, all bool) error {
+	q := `SELECT id FROM usage WHERE id = $1`
+	if all {
+		q += ` UNION SELECT id FROM UNNEST($2::text[]) AS id`
+	}
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
 // ModelLabel makes no database call, so a declaration naming it explains nothing
 // and has no call site to cite. It exists to pin the one finding that is about the
 // absence of a query rather than about a query.

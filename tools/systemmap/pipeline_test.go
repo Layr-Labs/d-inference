@@ -328,6 +328,31 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 			"1 database call(s) but only 0 readable statement(s) in the body",
 			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
 		}},
+		// Two statements handed straight to the driver, neither of which has a variable
+		// to be scoped by. Falling back to the body would let the first one's CTE shadow
+		// the second one's real read of the same name.
+		{"RankInline", []string{
+			"2 database call(s) but only 1 readable statement(s) in the body",
+			"`JOIN usage u ON u.id = base.id` names a table but is only a fragment of a statement",
+		}},
+		// One local reused for two statements. A CTE name belongs to the query that
+		// declared it, not to the variable forever after.
+		{"RankRecycled", []string{
+			"`JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
+		}},
+		// A literal that names a table and then trails off at a keyword. One finding is
+		// all the report needs, but see TestFixtureAssembledDeclaration: the name it did
+		// give up is still held against a declaration.
+		{"ListModelsTrailing", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+			"the text ends at `JOIN`, so the table that follows it is spliced in at run time (`FROM models m JOIN`)",
+		}},
+		// Two tables in one fragment, one finding: a reader who goes and looks at the
+		// line sees both, and a per-name report would say the same thing twice.
+		{"ListModelsPaired", []string{
+			"1 database call(s) but only 0 readable statement(s) in the body",
+			"`FROM models m JOIN usage u ON u.id = m.id` names a table but is only a fragment of a statement",
+		}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			if got := opaqueDetails(t, tc.method); !reflect.DeepEqual(got, tc.want) {
@@ -357,6 +382,25 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// one — `usage` has a CREATE TABLE — so only the WITH clause assembled into
 		// the same variable says the appended JOIN is not a read of it.
 		{"RankModels", []string{"pg.models R"}},
+		// A complete statement whose literal closes on the line after `FOR UPDATE`.
+		// Every whitespace character after a table-introducing keyword is a possible
+		// splice, except after the two words that never introduce a table.
+		{"LockModelMultiline", []string{"pg.models R"}},
+		// The other one: `ON CONFLICT ... DO UPDATE ` split before its SET clause.
+		{"UpsertModel", []string{"pg.models W"}},
+		// A locking clause that carries on past the keyword, where the readable word
+		// after `UPDATE` is `SKIP` and not a table.
+		{"LockModelSkip", []string{"pg.models R"}},
+		// A query split across a slice element, and one split across a `var`
+		// declaration. Both halves have to land in the same scope as the WITH clause
+		// they belong to.
+		{"RankBatch", []string{"pg.models R"}},
+		{"RankDeclaredVar", []string{"pg.models R"}},
+		// Fragments whose FROM belongs to a keyword call and to a set-returning
+		// function. Neither names a table, and the fragment scan has to know that as
+		// well as `Tables` does.
+		{"UsageWindow", []string{"pg.usage R"}},
+		{"UsageUnnest", []string{"pg.usage R"}},
 	} {
 		t.Run(tc.method, func(t *testing.T) {
 			accesses, rep := walkFixtureMethod(t, tc.method)
@@ -442,6 +486,19 @@ func TestFixtureAssembledDeclaration(t *testing.T) {
 			declare("ListModelsPaired", map[string]string{"models": "R"}))
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("findings for a second table beside a declared one:\n got %q\nwant %q", got, want)
+		}
+	})
+
+	// The same completeness check, for a literal that gave up a name and then went
+	// dark in the same breath. Reporting the keyword it trails off at and stopping
+	// there dropped `models` from the account, so an entry naming only `usage` drew a
+	// table the text never mentioned and hid the one it did.
+	t.Run("table named before the text trails off", func(t *testing.T) {
+		want := []string{"the overlay declares the tables this function assembles, but text here names `models`, which the declaration does not — add it"}
+		got := opaqueDetails(t, "ListModelsTrailing",
+			declare("ListModelsTrailing", map[string]string{"usage": "R"}))
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("findings for a name read before a trailing keyword:\n got %q\nwant %q", got, want)
 		}
 	})
 

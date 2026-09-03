@@ -333,10 +333,12 @@ this dies of:
   `fmt.Sprintf("... FROM models m JOIN %s u ...")` hides its second table behind a
   readable first one, and `q += " FROM models m JOIN usage u"` hides a second table
   behind a declared one. Text that *ends* at a keyword is drift as well
-  (`q += " JOIN " + other`), while a clause that ends **on** one is not
-  (`q += " FOR UPDATE"` names no table) — the difference is the trailing space,
-  which is a name that never reaches the extractor. `ONLY` and `LATERAL` are read
-  through, since they prefix a table name rather than replace it. Constants count
+  (`q += " JOIN " + other`): the name it is waiting for never reaches the
+  extractor. `UPDATE` is the exception, in both positions — in `FOR UPDATE` and
+  `ON CONFLICT … DO UPDATE` the word introduces a lock or a conflict action and is
+  never followed by a table, so neither `q += " FOR UPDATE"` nor a statement whose
+  literal closes on the line after `FOR UPDATE` is drift. `ONLY` and `LATERAL` are
+  read through, since they prefix a table name rather than replace it. Constants count
   as one statement: `"SELECT " + userColumns + " FROM users"` is folded by
   `go/types`, which is why the column-list splice the store uses throughout stays
   readable.
@@ -344,15 +346,23 @@ this dies of:
   A `WITH` clause shadows a table of the same name — the earnings queries define
   `WITH providers AS (…)` and then `JOIN providers p`, which is the CTE and not the
   `providers` table, and no schema check can tell them apart because `providers` is
-  also real. Those names are scoped to the **variable the query is assembled into**,
-  which is the nearest thing to "which statement is this" in a body that builds
-  statements at run time. Two consequences worth knowing: a CTE in one query does
-  not silence a same-named table in another query of the same function, and a
-  fragment hoisted into a *different* variable than the one carrying its `WITH`
-  clause is reported even though the SQL is legal — inline it, or assemble it into
-  the same variable. The scan reads SQL rather than parsing it, so it also says
+  also real. Those names are scoped to the **variable the query is assembled into**
+  — `qs[0] += tail` and `s.q += tail` count as that variable — or, for text with no
+  such variable, to the **statement it appears in**, so two literals handed straight
+  to `Exec` do not pool their CTE names. Assigning a whole statement to a variable
+  starts its CTE names over, because store code reuses one `q` for several queries.
+  Three consequences worth knowing: a CTE in one query does not silence a same-named
+  real table in another; a fragment whose `WITH` clause was assigned to a *different*
+  variable is reported even though the SQL is legal (inline the `WITH` literal into
+  the same assignment as the fragment — putting it in a variable that is then
+  concatenated does not help); and a variable that accumulates several whole
+  statements, a migration slice, still shares one set of names across them. The
+  scan reads SQL rather than parsing it, so it also says
   nothing about a lower-case keyword; the tree writes SQL in upper case, and prose
-  is full of "update … from …".
+  is full of "update … from …". The converse costs a false finding rather than a
+  silence: an upper-case keyword in a message — `fmt.Errorf("could not UPDATE %s
+  rows", t)` — reads as a spliced table name, and writing that word in lower case
+  clears it.
 
   A query that genuinely cannot be one expression — the earnings CTE chains, where
   a conditional `WHERE` is spliced into the middle — names its tables in

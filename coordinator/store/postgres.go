@@ -5747,6 +5747,9 @@ func (s *PostgresStore) ListDueVerificationJobs(
 	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
 }
 
+// verificationDuePageHint caps the initial capacity of a due-rows page.
+const verificationDuePageHint = 256
+
 func (s *PostgresStore) ListDueVerificationJobsPage(
 	ctx context.Context,
 	now time.Time,
@@ -5771,7 +5774,11 @@ func (s *PostgresStore) ListDueVerificationJobsPage(
 		return nil, fmt.Errorf("store: list due verification jobs: %w", err)
 	}
 	defer rows.Close()
-	out := make([]VerificationJob, 0, limit)
+	// The page is sized for the common case, not the limit: the caller asks
+	// for its whole queue capacity (4,096) every poll while only a few dozen
+	// rows are usually due, and a 4,096-row pre-allocation per poll was 16 %
+	// of all bytes the coordinator allocated. append grows it when needed.
+	out := make([]VerificationJob, 0, min(limit, verificationDuePageHint))
 	for rows.Next() {
 		rec, scanErr := scanVerificationJob(rows)
 		if scanErr != nil {

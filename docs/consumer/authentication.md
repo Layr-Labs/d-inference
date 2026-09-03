@@ -1,122 +1,100 @@
 # Authentication
 
-Darkbloom consumer endpoints support two credential types. Choose the one that matches your use case.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-| Method | When to use | Accepted by |
+Every coordinator request authenticates with one header, `Authorization: Bearer <token>` (`extractBearerToken`, `coordinator/api/server.go`). The token is one of four things — an API key, a Privy session JWT, a device-flow provider token, or the admin key — and `requireAuth` decides which by shape: JWTs (starting `eyJ`) are verified with Privy, the admin key is compared in constant time, everything else is looked up as an API key. This page tells you how to obtain and manage each credential and which routes accept it. The per-route auth column is in [`../reference/api-contracts.md`](../reference/api-contracts.md).
+
+## API keys
+
+### Facts
+
+| Property | Value | Source |
 |---|---|---|
-| **API key** (`sk-db-...`) | Programmatic access, scripts, server-to-server calls | Inference, balance, usage, deposit-session creation |
-| **Privy JWT** (`eyJ...`) | Interactive console/web session; creating or rotating API keys | Console UI and account-management endpoints |
+| Format | `sk-db-` + 64 hex characters (32 random bytes) | `KeyPrefix`, `GenerateRawKey` (`coordinator/store/apikey.go`) |
+| Legacy format | Keys minted before the rename start with `eigeninference-` and remain valid; lookups are by hash, not prefix | `coordinator/store/apikey.go` |
+| Key id | `key_` + hex, used in `/v1/keys/{id}` | `GenerateKeyID` |
+| Display label | `sk-db-1a2b…c3d4` (prefix, four characters, last four) | `KeyLabel` |
+| Storage | Only a hash is stored; the secret is returned once, by create and rotate | `handleCreateAPIKey`, `handleRotateAPIKey` (`coordinator/api/apikey_handlers.go`) |
+| Cache | Key lookups are cached for `apiKeyCacheTTL` = 60 s, so revocation or a limit change takes up to a minute to apply everywhere | `coordinator/api/server.go` |
+| Per-key settings | `name`, `limit_usd` + `limit_reset` (spend budget), `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`, `disabled` | `APIKeyResponse` (`coordinator/api/types/types.go`), `handleUpdateAPIKey` |
+| Enforcement | `rpm_limit` → 429 before the account limiter (`applyKeyRPMLimit`); `allowed_models` → 403 `model_not_allowed` (`keyModelAllowed`); exhausted `limit_usd` → 402 (`reserveInferenceBalance`, `coordinator/api/inference_admission.go`) | `coordinator/api/server.go`, `coordinator/api/apikey_handlers.go` |
 
-The middleware is in [`coordinator/api/server.go:1776-1921`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/server.go#L1776-L1921).
+### Create a key
 
-## API Keys
+1. Sign in at `https://console.darkbloom.dev` (Privy login, `console-ui/src/components/providers/PrivyRealProvider.tsx`).
+2. Open the API console page (`/api-console`, `console-ui/src/app/api-console/page.tsx`) and create a key; optionally set a budget, rate limits, an allowed-model list, or an expiry.
+3. Copy the secret when it is shown. It is not retrievable later.
 
-API keys are the primary credential for programmatic access.
-
-### Creating an API Key
-
-You can create keys two ways:
-
-1. **Console**: sign in at [console.darkbloom.dev](https://console.darkbloom.dev), go to **Settings → API Keys**, and click **Create API Key**.
-2. **API**: `POST /v1/keys` authenticated with a **Privy JWT** (API keys cannot create other API keys).
+Equivalent API call with your Privy session token:
 
 ```bash
-curl -X POST https://api.darkbloom.dev/v1/keys \
-  -H "Authorization: Bearer YOUR_PRIVY_JWT" \
+curl -s -X POST https://api.darkbloom.dev/v1/keys \
+  -H "Authorization: Bearer $PRIVY_JWT" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Production API Key",
-    "limit_usd": 10.00,
-    "limit_reset": "monthly",
-    "rpm_limit": 60
-  }'
+  -d '{"name": "ci", "rpm_limit": 60, "allowed_models": ["<model id>"]}'
 ```
 
-The raw secret is returned exactly once in the `key` field. The handler is [`coordinator/api/consumer.go:3396-3443`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L3396-L3443).
+The response is `{"key": "sk-db-...", "data": {...APIKeyResponse}}` (`CreateAPIKeyResponse`).
 
-### Key Format
+### Manage keys
 
-Raw keys are prefixed `sk-db-` followed by 64 hex characters ([`coordinator/store/apikey.go:14`](https://github.com/eigeninference/d-inference/blob/master/coordinator/store/apikey.go#L14)). Example:
+All management routes require a Privy JWT (`requirePrivyAuth`); calling them with an API key returns 403 `forbidden`.
 
-```text
-sk-db-1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b
-```
+| Action | Call |
+|---|---|
+| List | `GET /v1/keys` → `{object: "list", data: [...]}` |
+| Inspect one | `GET /v1/keys/{id}` |
+| Change limits, name, models, expiry; disable | `PATCH /v1/keys/{id}` with any subset of the settings above |
+| Rotate secret, keep settings | `POST /v1/keys/{id}/rotate` → new `key` |
+| Revoke | `DELETE /v1/keys/{id}` |
+| Inspect the key you are calling with | `GET /v1/key` — this one accepts the API key itself (`handleGetCallingKey`) |
 
-### Using an API Key
+`POST /v1/auth/keys` and `DELETE /v1/auth/keys` are the older one-key-per-account endpoints (`handleCreateKey`, `handleRevokeKey`); they still work but the `/v1/keys` family is the managed surface.
+
+### Use a key
 
 ```bash
-curl -H "Authorization: Bearer sk-db-..." \
-     https://api.darkbloom.dev/v1/models
+curl -s https://api.darkbloom.dev/v1/models -H "Authorization: Bearer sk-db-..."
 ```
 
-```python
-from openai import OpenAI
+API keys work on every route marked `key` in the contracts page — inference, `/v1/models`, balance and usage, referral reads, invite redemption, Stripe checkout. The coordinator does not read `x-api-key`; SDKs that send only that header (the Anthropic SDK's `api_key` option) must be configured to send a bearer token instead — see [`quickstart.md`](quickstart.md).
 
-client = OpenAI(
-    base_url="https://api.darkbloom.dev/v1",
-    api_key="sk-db-...",
-)
-```
+## Privy session JWT
 
-### Per-Key Controls
+The console signs you in with Privy; the resulting JWT can be used directly as a bearer token. `requireAuth` verifies it (`privyAuth.VerifyToken`) and resolves or creates the account user, so a JWT is accepted everywhere an API key is. Some routes require it:
 
-API keys support spend caps, rate limits, model allow-lists, and expiry. The create request body is defined in [`coordinator/api/consumer.go:3259-3269`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L3259-L3269):
+| Routes requiring a Privy JWT (`requirePrivyAuth`) | With an API key you get |
+|---|---|
+| `POST`/`DELETE /v1/auth/keys`, all of `/v1/keys*` | 403 `forbidden` |
+| `GET /v1/me/summary`, `GET /v1/me/providers`, `GET /v1/me/self-route-models`, `DELETE /v1/me/providers/{id}` | 403 `forbidden` |
+| `POST /v1/device/approve` | 403 `forbidden` |
+| `POST /v1/billing/stripe/dashboard`, `DELETE /v1/billing/stripe/account` | 403 `forbidden` |
 
-| Field | Type | Description |
-|---|---|---|
-| `name` | string | Descriptive label |
-| `limit_usd` | number | Spend cap in USD for the reset window |
-| `limit_reset` | string | `none`, `daily`, `weekly`, `monthly` |
-| `rpm_limit` | integer | Requests per minute ceiling |
-| `itpm_limit` | integer | Input tokens per minute ceiling |
-| `otpm_limit` | integer | Output tokens per minute ceiling |
-| `allowed_models` | string[] | Models this key may call; empty = all |
-| `self_route_only` | boolean | If true, every request is forced to the caller's own provider machine |
-| `expires_at` | RFC 3339 | Optional key expiration |
+A second group accepts `requireAuth` but then insists on a resolved account user (`requirePrivyUser`, `coordinator/api/billing_handlers.go`): `PUT`/`DELETE /v1/pricing`, `POST /v1/referral/register`, `POST /v1/referral/apply`, `POST /v1/billing/stripe/onboard`, `GET /v1/billing/stripe/status`, `POST /v1/billing/withdraw/stripe`, `GET /v1/billing/stripe/withdrawals`. A Privy JWT or an API key that belongs to a Privy account passes; the admin key and unlinked legacy keys get 401 `auth_error`.
 
-A disabled or expired key fails authentication ([`coordinator/api/server.go:1857-1867`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/server.go#L1857-L1867)).
+## Device-code flow (provider CLI)
 
-### Key Rotation
+`darkbloom login` links a machine to your account with an RFC 8628 device-code exchange ([`../provider/cli-reference.md`](../provider/cli-reference.md)). What the CLI does, so you can recognise it or drive it yourself:
 
-Rotate a key with `POST /v1/keys/{id}/rotate`. The old secret stops working immediately and a new secret is returned exactly once ([`coordinator/api/consumer.go:3622-3645`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L3622-L3645)).
+1. `POST /v1/device/code` (no auth) → `{device_code, user_code, verification_uri, expires_in: 900, interval: 5}` (`handleDeviceCode`, `coordinator/api/device_auth.go`). `verification_uri` is the console's `/link` page.
+2. You open `verification_uri` (`console-ui/src/app/link/page.tsx`), sign in with Privy, and enter `user_code`. The page calls `POST /v1/device/approve` with your JWT (`handleDeviceApprove`); the code is bound to your account. Errors: 404 `invalid_code`, 409 `already_used`, 410 `expired_code`.
+3. The CLI polls `POST /v1/device/token` with `{"device_code"}` every `interval` seconds (`handleDeviceToken`). While unapproved it gets 200 `{"status": "authorization_pending"}`; after approval 200 `{"status": "authorized", "token": "eigeninference-pt-...", "account_id": "..."}`; after `DeviceCodeExpiry` (15 minutes) 410 `expired_token`; an unknown code is 404 `invalid_grant`.
 
-```bash
-curl -X POST https://api.darkbloom.dev/v1/keys/key_abc123/rotate \
-  -H "Authorization: Bearer YOUR_PRIVY_JWT"
-```
+The `token` is a **provider token**, stored on the machine and labelled `device-<user_code>` in your account. It authorises that machine to earn for your account and to be targeted by self-route requests ([`../provider/self-route.md`](../provider/self-route.md)); it is not a consumer API key and does not authenticate inference requests.
 
-### Revocation
+## Admin key
 
-Delete a key permanently with `DELETE /v1/keys/{id}` ([`coordinator/api/consumer.go:3605-3620`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/consumer.go#L3605-L3620)).
+`EIGENINFERENCE_ADMIN_KEY` (`AdminKey`, `coordinator/api/server_config.go`) is a single operator secret. Presented as a bearer it passes `requireAuth` as the synthetic account `admin`, bypasses the request-rate limiters, and satisfies the in-handler checks on `/v1/admin/*` (`isAdminAuthorized`, `coordinator/api/release_handlers.go`; `requireAdminKey`, `coordinator/api/invite_handlers.go`). Those routes cover pricing defaults, user roles and fee overrides, manual credits and rewards, invite codes, releases, drain, profiler exports, and the encrypted state export. A Privy user whose email is on the admin list can reach the subset of admin routes that are wrapped in `requireAuth`; the rest are admin-key only. Consumers never need it; where it lives and how it is rotated is an operations topic — see [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md).
 
-## Privy JWT (Interactive Sessions)
+## Failure reference
 
-The web console uses Privy for authentication. Privy tokens are accepted by `requireAuth`, but several sensitive endpoints require `requirePrivyAuth` and explicitly reject API keys:
-
-- `POST /v1/keys` and key mutation endpoints
-- `POST /v1/device/approve`
-- `POST /v1/billing/stripe/create-session` is rate-limited as a financial endpoint but accepts API keys for balance reads; deposit-session creation requires either auth path depending on caller.
-
-Do not embed a Privy JWT in long-running server code; mint an API key instead.
-
-## Account Identity
-
-- A Privy-linked account has a stable `account_id`.
-- An unlinked API key derives a non-secret legacy account identity from the key itself, so the raw secret is never stored as a balance identifier ([`coordinator/api/server.go:1874-1882`](https://github.com/eigeninference/d-inference/blob/master/coordinator/api/server.go#L1874-L1882)).
-
-## Security Best Practices
-
-- Never commit API keys to version control.
-- Use environment variables for key storage.
-- Rotate keys quarterly or on any suspected leak.
-- Apply the smallest `allowed_models` list and lowest `limit_usd` that fit the workload.
-- Use `self_route_only` for keys that should only hit your own provider hardware.
-
-## Troubleshooting
-
-| Issue | Likely Cause | Fix |
-|---|---|---|
-| `401 authentication_error` | Missing, revoked, or malformed token | Verify the key is active and the `Bearer` prefix is present |
-| `403 forbidden` | Endpoint requires Privy JWT but an API key was supplied | Use a Privy access token |
-| `402 insufficient_quota` | Per-key spend cap reached | Raise the key limit or use another key |
-| `402 insufficient_funds` | Account balance too low for the reserved worst-case cost | Deposit credits or lower `max_tokens` |
+| Response | Meaning |
+|---|---|
+| 401 `authentication_error` "missing credentials" | No `Authorization` header, or not `Bearer` |
+| 401 `authentication_error` "invalid Privy token" | JWT failed verification |
+| 401 `authentication_error` "invalid API key" | Unknown, disabled, expired or revoked API key |
+| 401 `auth_error` | Route needs an account user and the credential has none |
+| 403 `forbidden` | API key on a Privy-only route, or non-admin on an admin route |
+| 403 `model_not_allowed` | Model outside the key's `allowed_models` |
+| 402 `insufficient_funds` / `insufficient_quota` | Account balance or key budget exhausted |
+| 429 `rate_limit_exceeded` + `Retry-After` | Key `rpm_limit`, account limiter, or token limits |

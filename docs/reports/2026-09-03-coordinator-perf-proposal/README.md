@@ -45,7 +45,7 @@ cheap (0.007 core of CPU under the write lock, M) — the **wait** is the cost:
 | Measured on master `5d400cf75`, last 45 min, attempt 0 (M, #809 stamps) | p50 | p90 | p99 |
 |---|---:|---:|---:|
 | Preflight, incl. wait for a routing-scan permit (cap 1 s) | 518 ms | 895 ms | 1,004 ms |
-| Attempt start → first scan lock acquired (permit wait at dispatch) | **1,714 ms** | 7,303 ms | 11,898 ms |
+| Attempt start → last reservation iteration (permit wait **plus every earlier scan/commit iteration** — the stamp is derived from the last iteration, see below) | **1,714 ms** | 7,303 ms | 11,898 ms |
 | Commit phase (`admit_us`: write-lock wait + re-check) | **189 ms** | 231 ms | 274 ms |
 | Provider first content → client first byte (relay incl. the capacity-accept write lock) | **201 ms** | 243 ms | 302 ms |
 | Completion → finalized (includes four more write-lock acquisitions; the p90/p99 tail is unexplained — §8) | 909 ms | 10,404 ms | 36,220 ms |
@@ -66,8 +66,8 @@ The pre-deploy steady state says the same thing: `inference_routes.route_ms` (re
 routed, all attempts) for 20:00–21:00 UTC was **p50 2,393 ms / p90 9,384 ms** with 30,743
 `routing_saturated` rejections in that hour (M); a re-measure at 21:19–21:54 UTC gave p50
 2,900 ms / p90 10,179 ms and 23,115/h. The convoy is episodic — 0 goroutines were waiting on
-the lock or the semaphore at 21:54 UTC versus ≈150 + 66 at 21:07 — which is why the medians
-over a window are the right acceptance metric, not an instantaneous dump.
+the lock or the semaphore at 21:54 UTC versus ≈150 + 66 at 21:07 (and 127 + 79 again at 21:24) —
+which is why the medians over a window are the right acceptance metric, not an instantaneous dump.
 
 ### 2.2 Every attempt walks the whole fleet, allocating as it goes (01, 04)
 
@@ -77,10 +77,16 @@ median sorts, a token-budget map, semver parsing and a large struct copy per pro
 perf branch already fixes this (per-model index, TPS caches maintained on write, in-place
 snapshots): reserve 365 µs/815 allocs → 79 µs/21 allocs on this machine (01 E4, M).
 
-*Open measurement question:* the profile charges ≈22 ms of CPU per attempt to the scan while
-the #809 stamp records ≈1.8 ms wall per scan and no rescans (residual p99 = 0 ms). One of the
-two instruments is not measuring what its name says; the first change in Tier 1 adds a scan
-counter so the acceptance metric is unambiguous.
+*Resolved by the blind verification (07 A9):* the profile charges ≈24 ms of CPU per attempt to
+the scan while the #809 stamp records 2–4 ms of wall per scan. The stamp only covers the **last**
+iteration of `reserveProvider`'s loop: when a commit finds the fleet state changed under it
+(`reservationNeedsRescan`, `scheduler.go:700-709`) the whole fleet is walked again, and
+`reserve_lock_acquired_us` is derived as `reserve_done − scan_us − admit_us` of that last pass
+(`attempt_profile.go:108-112`). Little's law over the 96 permit holders (93 waiting at commit,
+1 scanning) gives ≈500 iterations/s ≈ **10–14 scans per reservation** (C; no counter exists yet).
+That is the 2.2 s "permit wait" row above: it is mostly rescan iterations, each paying the
+≈190 ms commit wait. Tier 1.8 adds the scan counter that turns this into M; Tier 3 removes the
+batch serialization that causes the rescans.
 
 ### 2.3 GC is 22–40 % of CPU, and a leak is doubling it (03)
 
@@ -270,8 +276,8 @@ inherit E-grade assumptions from the served-rate research.
 
 ## 8. Open questions
 
-1. Scan CPU (≈22 ms/attempt from the profile) vs scan wall (1.8 ms from the #809 stamp, no
-   rescans): resolve with the Tier 1.8 scan counter before treating either as the baseline.
+1. ~~Scan CPU vs scan wall~~ — resolved (07 A9): ≈10–14 rescan iterations per reservation under
+   the convoy; the Tier 1.8 scan counter makes it measured rather than derived.
 2. `ROUTING_CONCURRENCY=96` on a 30-vCPU host: after Tier 3 the right value is the CPU quota,
    not a queue-depth bound.
 3. `#809` sample rate: is ≈53 % of successes intended?

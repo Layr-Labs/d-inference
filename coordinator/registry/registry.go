@@ -882,6 +882,14 @@ type Provider struct {
 	// Live system metrics from heartbeats
 	SystemMetrics protocol.SystemMetrics
 
+	// IdleUnloadMins is the provider's reported idle-memory policy (heartbeat
+	// `idle_unload_mins`): 0 = models stay resident, N = unload after N idle
+	// minutes. nil until a heartbeat reports it (legacy providers never do).
+	// Sticky within a connection — the policy is provider config, so a
+	// reporting provider carries it in every heartbeat. Guarded by p.mu.
+	// Surfaced on /v1/me/providers; not a routing input.
+	IdleUnloadMins *int
+
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
@@ -3909,6 +3917,12 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
 	p.lastSessionStats = mergeHeartbeatSessionStats(p.lastSessionStats, msg.Stats)
 	p.SystemMetrics = systemMetrics
+	// Idle-memory policy: copy so the registry never aliases the decoded
+	// message; ignore nonsense (negative) values from an untrusted provider.
+	if msg.IdleUnloadMins != nil && *msg.IdleUnloadMins >= 0 {
+		v := *msg.IdleUnloadMins
+		p.IdleUnloadMins = &v
+	}
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity

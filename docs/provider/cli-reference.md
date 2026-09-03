@@ -29,7 +29,7 @@ darkbloom start [flags]
 | `--coordinator-url <url>` | Override the coordinator WebSocket URL |
 | `--model <id>` | Model to serve; repeatable (skips the interactive picker) |
 | `--all` | Serve all downloaded models |
-| `--idle-timeout <mins>` | Idle timeout before unloading a model |
+| `--idle-timeout <mins>` | Idle-memory policy, saved to `[backend] idle_timeout_mins` (0 = always ready); skips the memory prompt |
 | `--foreground` | Run in the foreground (used by launchd; normally implicit) |
 | `--local` | Run a local OpenAI server only; do not connect to the coordinator |
 | `--local-endpoint` | Serve a local OpenAI endpoint alongside the coordinator |
@@ -41,6 +41,24 @@ Preflight checks for boot security, debugger attachment, and memory run before
 the model picker (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:9-27`);
 the Metal requirement is enforced by `Start.prepareServeRuntime`
 (`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`).
+
+After the model picker, an interactive `darkbloom start` asks how the machine
+should treat its memory when nobody is sending requests:
+
+```
+Memory when idle
+  1) Always ready    Keep models loaded (~18 GB while idle). Instant responses,
+                     full base rewards.
+  2) Free when idle  Unload after 60 min without requests; reload on demand
+                     (~10-30 s cold start). Your Mac gets its memory back.
+  3) Custom          Choose the number of idle minutes.
+  Choice [2]:
+```
+
+Enter keeps the policy already in force (`Free when idle` on a fresh install).
+The answer is written to `[backend] idle_timeout_mins` and applies to every
+serve mode; `--model`/`--all`, `--idle-timeout`, non-interactive runs and the
+launchd relaunch never prompt. See [`darkbloom idle`](#darkbloom-idle).
 
 Examples:
 
@@ -60,6 +78,32 @@ darkbloom start --local --port 8080
 # Unified: public fleet + local endpoint
 darkbloom start --local-endpoint --bind 100.x.y.z
 ```
+
+## `darkbloom idle`
+
+Manage the idle-memory policy: whether a model stays loaded while the machine
+receives no requests, or is unloaded to give the memory back and reloaded on
+demand. The single source of truth is `[backend] idle_timeout_mins` in
+`provider.toml` (0 = always ready); `darkbloom start`'s memory prompt and
+`--idle-timeout` write the same key, and the launchd plist never carries it.
+
+```bash
+darkbloom idle status                 # current policy and where it is set (default)
+darkbloom idle keep-loaded            # always ready: models stay loaded
+darkbloom idle unload-after <minutes> # free when idle: unload after N idle minutes (1..10080)
+```
+
+| Policy | `idle_timeout_mins` | Effect |
+|--------|---------------------|--------|
+| Always ready | `0` | Models stay resident; instant responses; the machine stays eligible for base rewards the whole time |
+| Free when idle (default) | `60` | A model with no requests for 60 min is unloaded; the next request reloads it (~10-30 s cold start) |
+| Custom | `N` | Same as above with an `N`-minute window |
+
+Changes are saved with the same locked read-modify-write as `darkbloom beta`
+and take effect after `darkbloom restart`. The provider reports the policy in
+its heartbeat (`idle_unload_mins`) so the dashboard shows an empty slot as
+"sleeping, wakes on demand" rather than as a fault. `--json` prints the policy
+machine-readably.
 
 ## `darkbloom stop`
 
@@ -100,6 +144,9 @@ Output includes:
 - Detected hardware (chip, RAM, GPU cores).
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- `Memory when idle`: the idle-memory policy in force (`always ready` or
+  `free after N idle`), and any advertised models that are currently not
+  loaded, with the reason (unloaded when idle vs. loads on first request).
 - Per-slot posture: the KV backend each loaded model actually resolved to
   (`paged` / `contiguous`), the selection the config asked for, and whether
   MTP is enabled, active, or enabled-but-inert.

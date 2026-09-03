@@ -156,7 +156,8 @@ extension ProviderLoop {
             runtimeCapabilities: loopConfig.runtimeCapabilities,
             privateOnly: loopConfig.config.coordinator.privateOnly,
             apnsDeviceToken: apnsDeviceToken,
-            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil
+            apnsEnvironment: apnsDeviceToken != nil ? "production" : nil,
+            idleUnloadMins: loopConfig.config.backend.idleTimeoutMins
         )
 
         // 4. Create coordinator client and start connection

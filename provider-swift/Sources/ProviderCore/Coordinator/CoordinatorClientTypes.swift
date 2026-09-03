@@ -158,6 +158,10 @@ public struct CoordinatorClientConfig: Sendable {
     /// nil on headless/no-GUI boxes (no token) — those register un-attested.
     public let apnsDeviceToken: String?
     public let apnsEnvironment: String?
+    /// Idle-memory policy reported in every heartbeat (`idle_unload_mins`):
+    /// `[backend] idle_timeout_mins` — 0 keeps models resident, N unloads
+    /// after N idle minutes. nil omits the field (test/legacy clients).
+    public let idleUnloadMins: UInt64?
 
     public init(
         url: String,
@@ -176,7 +180,8 @@ public struct CoordinatorClientConfig: Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         privateOnly: Bool = false,
         apnsDeviceToken: String? = nil,
-        apnsEnvironment: String? = nil
+        apnsEnvironment: String? = nil,
+        idleUnloadMins: UInt64? = nil
     ) {
         self.url = url
         self.hardware = hardware
@@ -195,6 +200,7 @@ public struct CoordinatorClientConfig: Sendable {
         self.privateOnly = privateOnly
         self.apnsDeviceToken = apnsDeviceToken
         self.apnsEnvironment = apnsEnvironment
+        self.idleUnloadMins = idleUnloadMins
     }
 }
 

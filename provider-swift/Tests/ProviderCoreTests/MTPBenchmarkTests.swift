@@ -1421,25 +1421,121 @@ struct MTPBenchmarkTests {
         #endif
     }
 
-    @Test("synthetic long prompts are trimmed to an exact token count")
-    func syntheticPromptTrimsToExactLength() throws {
+    /// A stand-in tokenizer: the chat template contributes `head` tokens in
+    /// front and `tail` behind, the instruction is `instruction` tokens, and
+    /// one filler unit is `perUnit` tokens. No real tokenizer needed to pin
+    /// the arithmetic the builder depends on.
+    private func fakeTemplated(
+        head: Int, tail: Int, instruction: Int, perUnit: Int,
+        units: Int, includeInstruction: Bool = true
+    ) -> [Int] {
+        var tokens = Array(repeating: -1, count: head)
+        tokens += Array(repeating: 7, count: units * perUnit)
+        if includeInstruction { tokens += Array(repeating: 9, count: instruction) }
+        tokens += Array(repeating: -2, count: tail)
+        return tokens
+    }
+
+    @Test("the template's shape is measured from probes, never assumed")
+    func syntheticPromptMeasuresTheTemplate() {
+        for (head, tail, instruction, perUnit) in [
+            (5, 3, 60, 350), (1, 1, 1, 1), (40, 12, 7, 3), (0, 0, 25, 100),
+        ] {
+            let shape = MTPBenchmarkSyntheticPrompt.templateShape(
+                noInstruction: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 0, includeInstruction: false),
+                zeroUnits: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 0),
+                oneUnit: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 1))
+            #expect(shape.instructionTokens == instruction)
+            #expect(shape.tokensPerFillerUnit == perUnit)
+            // Head/tail may only ever be OVER-protected (a filler or
+            // instruction token that happens to equal a template token widens
+            // the protected region), never under-protected.
+            #expect(shape.templateHead >= head)
+            #expect(shape.templateTail >= tail)
+        }
+    }
+
+    @Test("an exact prompt is produced at every length, from the template minimum up")
+    func syntheticPromptIsExactAtEveryLength() throws {
+        let (head, tail, instruction, perUnit) = (5, 3, 60, 350)
+        let shape = MTPBenchmarkSyntheticPrompt.templateShape(
+            noInstruction: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0, includeInstruction: false),
+            zeroUnits: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0),
+            oneUnit: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 1))
+        // Three orders of magnitude plus both boundaries. Nothing in the
+        // builder is allowed to prefer one of these sizes.
+        for target in [shape.minimumTokens, 20, 70, 64, 512, 1024, 17408, 65536] {
+            var units = 0
+            var tokens = fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0)
+            var attempts = 0
+            while tokens.count < target, attempts < 64 {
+                units += MTPBenchmarkSyntheticPrompt.fillerUnits(
+                    forTarget: target, shape: shape, alreadyProduced: tokens.count)
+                tokens = fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: units)
+                attempts += 1
+            }
+            // One measured step is always enough.
+            #expect(attempts <= 1)
+            let prompt = try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens,
+                target: target,
+                removableInPriorityOrder: MTPBenchmarkSyntheticPrompt.removableRanges(
+                    promptTokens: tokens.count, shape: shape))
+            #expect(prompt.count == target)
+            // The chat template's own control tokens survive at EVERY length —
+            // that is what keeps a 20-token prompt a valid turn.
+            #expect(Array(prompt.prefix(head)) == Array(repeating: -1, count: head))
+            #expect(Array(prompt.suffix(tail)) == Array(repeating: -2, count: tail))
+            // Filler is spent before the instruction: any prompt with room for
+            // both keeps the whole instruction.
+            if target >= shape.minimumTokens + instruction {
+                #expect(prompt.filter { $0 == 9 }.count == instruction)
+            }
+        }
+    }
+
+    @Test("below the template minimum the builder refuses instead of inventing")
+    func syntheticPromptRefusesBelowTheTemplateMinimum() throws {
         let tokens = Array(0..<500)
-        let trimmed = try MTPBenchmarkSyntheticPrompt.trimmedToExactLength(
-            tokenIDs: tokens, target: 400)
+        let ranges = [10..<400]
+        #expect(try MTPBenchmarkSyntheticPrompt.trimmed(
+            tokenIDs: tokens, target: 500, removableInPriorityOrder: ranges) == tokens)
+        let trimmed = try MTPBenchmarkSyntheticPrompt.trimmed(
+            tokenIDs: tokens, target: 400, removableInPriorityOrder: ranges)
         #expect(trimmed.count == 400)
-        // The template prefix and the trailing instruction survive; only the
-        // middle is cut.
-        #expect(Array(trimmed.prefix(50)) == Array(tokens.prefix(50)))
-        #expect(Array(trimmed.suffix(50)) == Array(tokens.suffix(50)))
-        #expect(try MTPBenchmarkSyntheticPrompt.trimmedToExactLength(
-            tokenIDs: tokens, target: 500) == tokens)
+        #expect(Array(trimmed.prefix(10)) == Array(tokens.prefix(10)))
+        #expect(Array(trimmed.suffix(100)) == Array(tokens.suffix(100)))
+        // Asking for more than the prompt has, or for fewer tokens than the
+        // removable regions can absorb, is refused with both numbers named
+        // rather than silently cutting the template.
         #expect(throws: MTPBenchmarkError.self) {
-            try MTPBenchmarkSyntheticPrompt.trimmedToExactLength(
-                tokenIDs: tokens, target: 501)
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 501, removableInPriorityOrder: ranges)
         }
         #expect(throws: MTPBenchmarkError.self) {
-            try MTPBenchmarkSyntheticPrompt.trimmedToExactLength(
-                tokenIDs: tokens, target: 0)
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 5, removableInPriorityOrder: ranges)
+        }
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 400,
+                removableInPriorityOrder: [200..<300, 100..<150])
         }
     }
 

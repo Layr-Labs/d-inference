@@ -336,19 +336,26 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
+        /// Profiler per-attempt profile (slice 2). OBSERVABILITY ONLY — the
+        /// coordinator decodes it after the terminal has been fully processed
+        /// and it never influences routing, billing, or client bytes. Omitted
+        /// on the wire when nil (legacy providers).
+        public var profile: InferenceProfile?
 
         public init(
             requestId: String,
             usage: UsageInfo,
             stopSequence: String? = nil,
             seSignature: String? = nil,
-            responseHash: String? = nil
+            responseHash: String? = nil,
+            profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.usage = usage
             self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
+            self.profile = profile
         }
     }
 
@@ -398,10 +405,15 @@ public enum ProviderMessage: Sendable, Equatable {
         /// `capacity_seq` of the published snapshot this rejection was
         /// evaluated against, so the coordinator can order it with heartbeats.
         public let capacitySeq: UInt64?
+        /// Profiler per-attempt profile (slice 2), same contract as on
+        /// `InferenceComplete`. Closed numerics/enums only — never carries
+        /// the failure's text. Omitted on the wire when nil.
+        public let profile: InferenceProfile?
 
         public init(
             requestId: String,
-            failure: InferenceFailure
+            failure: InferenceFailure,
+            profile: InferenceProfile? = nil
         ) {
             self.requestId = requestId
             self.failureCode = failure.code
@@ -413,6 +425,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.availableTokenBudget = failure.availableTokenBudget
             self.feasibleAfterMs = failure.feasibleAfterMs
             self.capacitySeq = failure.capacitySeq
+            self.profile = profile
         }
 
         /// Decoder-only compatibility path. Discards the legacy free-form
@@ -428,7 +441,8 @@ public enum ProviderMessage: Sendable, Equatable {
             rejectionReason: CapacityRejectionReason?,
             availableTokenBudget: Int64?,
             feasibleAfterMs: Int64?,
-            capacitySeq: UInt64?
+            capacitySeq: UInt64?,
+            profile: InferenceProfile?
         ) {
             self.requestId = decodedRequestId
             self.failureCode = failureCode
@@ -440,6 +454,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.availableTokenBudget = availableTokenBudget
             self.feasibleAfterMs = feasibleAfterMs
             self.capacitySeq = capacitySeq
+            self.profile = profile
         }
     }
 
@@ -877,6 +892,8 @@ extension ProviderMessage: Codable {
         case ttftP90Ms = "ttft_p90_ms"
         case queueEstMs = "queue_est_ms"
         case confidence
+        // InferenceComplete + InferenceError (profiler slice 2)
+        case profile
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -995,6 +1012,10 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
+            // Saturated at the canonical wire boundary so EVERY producer path
+            // (builder, early rejects, tests) stays inside the coordinator's
+            // accepted ranges; idempotent over an already-saturated profile.
+            try container.encodeIfPresent(c.profile?.saturatedToWireRanges(), forKey: .profile)
 
         case .inferenceError(let e):
             try container.encode(TypeValue.inferenceError, forKey: .type)
@@ -1024,6 +1045,7 @@ extension ProviderMessage: Codable {
             if let seq = e.capacitySeq, seq != 0 {
                 try container.encode(seq, forKey: .capacitySeq)
             }
+            try container.encodeIfPresent(e.profile?.saturatedToWireRanges(), forKey: .profile)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1232,7 +1254,8 @@ extension ProviderMessage: Codable {
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
-                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash)
+                responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash),
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             ))
 
         case .inferenceError:
@@ -1264,7 +1287,8 @@ extension ProviderMessage: Codable {
                     Int64.self, forKey: .availableTokenBudget),
                 feasibleAfterMs: try container.decodeIfPresent(
                     Int64.self, forKey: .feasibleAfterMs),
-                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq)
+                capacitySeq: try container.decodeIfPresent(UInt64.self, forKey: .capacitySeq),
+                profile: try container.decodeIfPresent(InferenceProfile.self, forKey: .profile)
             ))
 
         case .attestationResponse:

@@ -44,10 +44,24 @@ Go: [`HeartbeatMessage`](../../coordinator/protocol/messages.go); Swift: `Provid
 | `type` | string | `"heartbeat"` |
 | `status` | string | Provider status string |
 | `active_model` | string / null | Currently loaded model id; `null` means none loaded |
-| `stats` | object | `requests_served`, `tokens_generated` |
+| `stats` | object | `requests_served`, `tokens_generated`, cancel/error counters, plus the [profiler counters](#profiler-counters-in-stats) below |
 | `warm_models` | array | Models currently resident in GPU memory |
 | `system_metrics` | object | `memory_pressure`, `cpu_usage`, `thermal_state` |
 | `backend_capacity` | object / null | [`BackendCapacity`](#backendcapacity); nil for legacy providers |
+
+#### Profiler counters in `stats`
+
+Go: `HeartbeatStats` in [`messages.go`](../../coordinator/protocol/messages.go). Cumulative per provider session and delta-merged like the counters above; omitted when zero and absent on providers that predate them. A non-monotonic value is flagged, never rejected.
+
+| Field | Type | Notes |
+|---|---|---|
+| `cancel_stage_pre_accept_total` | integer | Cancels received before the `inference_accepted` frame was sent |
+| `cancel_stage_pre_engine_total` | integer | Cancels received after accept, before engine submit |
+| `cancel_stage_prefill_total` | integer | Cancels received during prefill (no first token yet) |
+| `cancel_stage_decode_total` | integer | Cancels received during decode |
+| `cancel_stage_post_terminal_total` | integer | Cancels that arrived after the terminal frame |
+| `tokens_after_cancel_total` | integer | Tokens the engine still produced after a cancel was received |
+| `cancel_abort_ns_sum` | integer | Σ cancel-receipt → engine-abort latency, nanoseconds |
 
 ### `inference_accepted`
 
@@ -80,6 +94,7 @@ Go: [`InferenceCompleteMessage`](../../coordinator/protocol/messages.go); Swift:
 | `usage` | object | [`UsageInfo`](#usageinfo) |
 | `se_signature` | string | SE-signed response hash |
 | `response_hash` | string | SHA-256 of response data |
+| `profile` | object, optional | [`InferenceProfile`](#inferenceprofile), ≤ 4096 bytes, carried as raw JSON; see [System profiler objects](#system-profiler-objects) |
 
 ### `inference_error`
 
@@ -91,6 +106,7 @@ Go: [`InferenceErrorMessage`](../../coordinator/protocol/messages.go); Swift: `P
 | `request_id` | string |
 | `error` | string |
 | `status_code` | integer |
+| `profile` | object, optional: [`InferenceProfile`](#inferenceprofile) of the failed attempt; passes through the error sanitizer as an opaque byte copy |
 
 ### `attestation_response`
 
@@ -296,6 +312,7 @@ Go: [`BackendCapacity`](../../coordinator/protocol/messages.go); Swift: `Backend
 | `total_memory_gb` | number |
 | `free_for_load_gb` | number, optional |
 | `mlx_cache_reclaimer` | [`MLXCacheReclaimerTelemetry`](#mlxcachereclaimertelemetry), optional |
+| `telemetry` | [`CapacityTelemetry`](#capacitytelemetry), optional |
 
 ### `MLXCacheReclaimerTelemetry`
 
@@ -336,6 +353,7 @@ Go: [`BackendSlotCapacity`](../../coordinator/protocol/messages.go); Swift: `Bac
 | `active_token_budget_max` | integer | |
 | `queued_token_budget` | integer | |
 | `kv_bytes_per_token` | integer | Provider-side only |
+| `telemetry` | object, optional | [`SlotTelemetry`](#slottelemetry); presence marks a profiler-aware provider |
 
 `"idle"` means the model **is loaded**; treat it as warm for routing decisions.
 
@@ -382,3 +400,62 @@ Go: [`PrivacyCapabilities`](../../coordinator/protocol/messages.go); Swift: `Pri
 | `anti_debug_enabled` | bool |
 | `core_dumps_disabled` | bool |
 | `env_scrubbed` | bool |
+
+## System profiler objects
+
+Go: [`coordinator/protocol/profile.go`](../../coordinator/protocol/profile.go); Swift: [`provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`](../../provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift). Design and ingestion rules: [`docs/architecture/system-profiler.md`](../architecture/system-profiler.md) §6. All three objects are measurement only: nothing in them influences routing, health, billing, deadlines or client output.
+
+Mixed-fleet rule:
+
+- Every field is optional (`omitempty` / `encodeIfPresent`). An absent object means an older provider. Inside a present `profile`, an absent numeric means "did not happen" or unknown and is never read as `0`; inside a present `telemetry` object an absent numeric reads as `0`.
+- Every string field is a closed enum. The coordinator folds an unknown value to `other` (counted, never rejected); the Swift decoder does the same.
+- `profile` is carried as raw JSON (Go `json.RawMessage`), so its contents can never fail the envelope decode of a terminal frame. The WebSocket read loop only checks its length (> 4096 bytes drops the profile with reason `size`); decode, `schema`, range and order validation run later on the profile sink worker and can only mark the profile invalid (`decode`, `schema`, `range`, `order`). The terminal is processed identically either way.
+- Two-way sync: a key added to `profile.go` must be added to `InferenceProfile.swift` in the same change, and vice versa. The shared fixture [`coordinator/protocol/testdata/profiler_wire_fixture.json`](../../coordinator/protocol/testdata/profiler_wire_fixture.json) is written by Go and loaded by Swift; both sides assert the key sets. Unlike telemetry events there is no TypeScript mirror and no allowlist.
+
+### `InferenceProfile`
+
+`profile` on `inference_complete` / `inference_error`. Offsets are microseconds from `t0p` = WebSocket frame receipt on the provider's `SuspendingClock`; durations are microseconds; the `engine` sub-object is nanoseconds from engine enqueue (`DispatchTime`). Never subtract across the two domains. Accepted ranges: `_us` ∈ [0, 3.6e9], `_ns` ∈ [0, 3.6e12], counts ∈ [0, 1e9], bytes ∈ [0, 2^48], `wall_ms` within 24 h of receipt; anything outside is clamped and the profile is marked `range`.
+
+| Group | Keys |
+|---|---|
+| Header | `schema` (must be `1`), `wall_ms` (untrusted wall-clock anchor, Unix ms) |
+| Offsets (µs from `t0p`) | `dequeued_us`, `decrypted_us`, `parsed_us`, `admission_us`, `accepted_sent_us`, `load_wait_start_us`, `load_wait_end_us`, `task_spawned_us`, `prompt_prep_start_us`, `prompt_prep_end_us`, `engine_submit_us`, `engine_admitted_us`, `first_delta_us`, `first_frame_us`, `last_delta_us`, `terminal_built_us`, `terminal_sent_us`, `cancel_received_us`, `cancel_aborted_us`, `total_us` |
+| Durations (µs) | `tool_constraint_us`, `vision_prep_us`, `ssd_stage_us`, `kv_reserve_us`, `flush_us`, `se_sign_us`, `slept_us`, `projected_service_us`, `budget_remaining_at_admit_us` |
+| Counts | `prompt_tokens`, `frames_emitted`, `running_at_admit`, `waiting_at_admit`, `queued_prefill_tokens_at_admit`, `steps_at_submit`, `steps_at_finish`, `projected_prefill_tokens`, `projected_decode_tokens`, `partial_prefill_cap`, `tokens_after_cancel` |
+| Bytes | `bytes_emitted`, `kv_bytes_in_use_at_admit`, `kv_bytes_capacity`, `mlx_active_bytes_at_finish`, `mlx_peak_bytes` |
+| Flags (bool) | `usage_recovered`, `load_cold`, `load_parked`, `mtp_active`, `low_power_mode` |
+| Enums | `deadline_mode` ∈ {`none`, `projected`, `legacy`, `other`}; `thermal_state` ∈ {`nominal`, `fair`, `serious`, `critical`, `other`}; `cancel_stage` ∈ {`none`, `pre_accept`, `pre_engine`, `prefill`, `decode`, `post_terminal`, `other`} |
+| `engine` (object, optional) | Stamps (ns): `admitted_ns`, `kv_allocated_ns`, `prefill_first_launch_ns`, `prompt_computed_ns`, `first_token_ns`, `finished_ns`. Counts: `readmissions`, `preemptions`, `capacity_requeues`, `prefill_chunks`, `packed_prefill_chunks`, `vision_chunks`, `solo_stripe_chunks`, `prefill_chunk_tokens_max`, `decode_steps`, `chained_decode_steps`, `batch_rows_sum`, `batch_rows_min`, `batch_rows_max`, `mtp_rounds`, `mtp_proposed`, `mtp_accepted`, `pause_count`. Durations (ns): `step_latency_ns_sum`, `step_latency_ns_max`, `paused_ns`, `detok_delay_first_ns`, `prefix_lookup_ns`, `prefix_adoption_ns`. Enum: `finish_reason` ∈ {`stop`, `length`, `stop_sequence`, `cancelled`, `error`, `other`} |
+
+Order invariants over the stamps that are present (a violation marks the profile `order`): `dequeued ≤ decrypted ≤ parsed ≤ admission ≤ engine_submit ≤ engine_admitted ≤ first_delta ≤ last_delta ≤ terminal_built ≤ terminal_sent ≤ total`; `load_wait_start ≤ load_wait_end`; `prompt_prep_start ≤ prompt_prep_end`; `cancel_received ≤ cancel_aborted`; `steps_at_submit ≤ steps_at_finish`; engine `admitted ≤ kv_allocated ≤ prefill_first_launch ≤ prompt_computed ≤ first_token ≤ finished`, `mtp_accepted ≤ mtp_proposed`, `batch_rows_min ≤ batch_rows_max`, `step_latency_ns_max ≤ step_latency_ns_sum`.
+
+### `SlotTelemetry`
+
+`telemetry` on [`BackendSlotCapacity`](#backendslotcapacity). Sent on every heartbeat by profiler-aware providers, possibly sparse. Clamped silently in `registry.clampBackendCapacity` (negative → `0`; counts ≤ 1e12, bytes ≤ 2^48, `eval_in_flight_ms` ≤ 3.6e6, `step_wall_ns_total` ≤ 1e18, `isolated_prefill_tps` ≤ 20000 with NaN/Inf dropped as unreported).
+
+| Field | Type | Notes |
+|---|---|---|
+| `queued_prefill_tokens` | integer | Σ prompt tokens of requests whose engine submit has not returned |
+| `partial_prefill_rows` | integer | Admitted rows with no first token yet |
+| `prefill_tokens_total` | integer | Cumulative Σ(prompt − cached) tokens over finished requests |
+| `isolated_prefill_tps` | number | Isolated prefill throughput EWMA; `0` until `ewma_initialized` |
+| `ewma_initialized` | bool | Whether `isolated_prefill_tps` has a sample |
+| `pump_tasks` | integer | Live stream-pump tasks on the slot |
+| `mtp_rounds_total`, `mtp_proposed_total`, `mtp_accepted_total` | integer | Cumulative MTP rounds / proposed / accepted draft tokens |
+| `kv_bytes_in_use` | integer | `CBv2CapacitySnapshot.kvBytesInUse`, raw bytes |
+| `kv_bytes_capacity` | integer | `CBv2CapacitySnapshot.kvBytesCapacity` (admission ledger) bounded by `kvBytesBackendCapacity` when that is known, raw bytes |
+| `eval_in_flight_ms` | integer | Same `EvalProbe.currentEvalElapsedMs` read as the slot-level `eval_in_flight_ms`: ms the current blocking eval has run, process-global |
+| `step_wall_ns_total` | integer | Cumulative engine step wall time, ns |
+| `decode_rows_total` | integer | Cumulative decode rows stepped |
+
+### `CapacityTelemetry`
+
+`telemetry` on [`BackendCapacity`](#backendcapacity). Same presence and clamp rules as `SlotTelemetry` (counts ≤ 1e12; `memory_pressure_level` folded to `other`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `low_power_mode` | bool | `ProcessInfo.isLowPowerModeEnabled` at heartbeat time |
+| `memory_pressure_level` | string | `normal`, `warning`, `critical`, `other`: last kernel level seen by `MemoryPressureMonitor` |
+| `mlx_num_resources` | integer | `MLX.Memory.numResources` (live MLX buffers) |
+| `in_admission` | integer | Coordinator requests accepted but not yet finished |
+| `inflight_tasks` | integer | Detached inference tasks registered |

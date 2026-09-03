@@ -125,6 +125,7 @@ type responsesStreamEmitter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
 	pr      *registry.PendingRequest
+	stamps  *relayStamps
 
 	responseID string
 	createdAt  int64
@@ -165,6 +166,7 @@ func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 		w:               w,
 		flusher:         flusher,
 		pr:              pr,
+		stamps:          newRelayStamps(pr.Profile.Parent()),
 		responseID:      responseID,
 		createdAt:       createdAt,
 		model:           consumerModel(pr),
@@ -181,8 +183,9 @@ func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
 	if err != nil {
 		return
 	}
-	fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
+	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
 	e.flusher.Flush()
+	e.stamps.wrote(n, werr)
 }
 
 // start emits response.created and response.in_progress.
@@ -490,6 +493,7 @@ func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 		snap["response_hash"] = e.pr.ResponseHash
 	}
 	e.emit(eventType, map[string]any{"response": snap})
+	e.stamps.done()
 }
 
 // emitError emits a Responses-API error event.

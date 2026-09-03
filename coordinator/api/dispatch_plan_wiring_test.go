@@ -129,7 +129,7 @@ func TestPlanFirstRetryConsumesPlanBeforeRescanAndRefreshesOnce(t *testing.T) {
 		t.Fatal("fixture retained no alternates")
 	}
 	for i := range entries {
-		provider, pr, _, lastErr, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, nil)
+		provider, pr, _, lastErr, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, "", nil)
 		if !tried {
 			t.Fatalf("entry %d: machinery yielded nothing with %d entries remaining", i, d.plan.Remaining())
 		}
@@ -150,14 +150,14 @@ func TestPlanFirstRetryConsumesPlanBeforeRescanAndRefreshesOnce(t *testing.T) {
 	// Exhausted plan → the single refresh runs. Winner + every alternate is
 	// attempted across a 6-provider fleet, so the refresh scan (which carries
 	// those exclusions) finds nothing: tried=false, refresh latched.
-	if _, _, _, _, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, nil); tried {
+	if _, _, _, _, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, "", nil); tried {
 		t.Fatal("refresh over a fully-attempted fleet must yield nothing")
 	}
 	if !d.planRefreshUsed {
 		t.Fatal("exhausted plan must spend the request's one refresh")
 	}
 	// Once per logical request: the machinery never refreshes again.
-	if _, _, _, _, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, nil); tried {
+	if _, _, _, _, _, tried := d.dispatchFromPlanMachinery(d.timing, d.excludeProviders, "", nil); tried {
 		t.Fatal("second refresh must not run")
 	}
 }

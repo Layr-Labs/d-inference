@@ -2682,3 +2682,38 @@ threats:
       MemoryBackedVideoAsset ownership, resource-loader ranges, reference
       restrictions, MIME support, cancellation, or startup cleanup require the
       focused provider and mlx-swift-lm media suites.
+
+  - id: T-051
+    trust_boundary: TB-001
+    stride: Information_Disclosure
+    title: System profiler tables and admin exports leak identity or content
+    description: >
+      The system profiler persists one prompt-free row per dispatched attempt
+      (request_profiles) and one row per provider slot per minute (fleet_snapshots),
+      exported via admin-key-gated NDJSON endpoints. A provider could try to smuggle
+      free-form text through its profile object, a client could plant a
+      spreadsheet-formula or PII string via X-Request-ID, or a hardware serial /
+      stable identity could re-enter a bulk-export surface.
+    adversaries: [ADV-002, ADV-004]
+    affected_assets: [A-007, A-009]
+    affected_files:
+      - coordinator/api/profiler*.go
+      - coordinator/registry/request_profile.go
+      - coordinator/registry/fleet_sample.go
+      - coordinator/store/profile_records.go
+      - coordinator/store/postgres_profiles.go
+    mitigations:
+      - description: Provider profile rides the terminal message as raw JSON, is length-capped before any byte is read, decoded only after the terminal is fully processed, and persisted from a separate typed struct whose enums are closed and folded (no free-form string can reach a row).
+        status: implemented
+      - description: The persisted correlation id is always coordinator-minted; the client-supplied X-Request-ID never enters a row, and CSV writers prefix formula triggers.
+        status: implemented
+      - description: No serial, Secure Enclave key, account id, or stable hardware identity column exists in either table; only the session provider_id and catalog model id.
+        status: implemented
+      - description: Retention sweeps (14 d profiles, 30 d snapshots) bound the exposure window.
+        status: implemented
+    open_findings: []
+    severity: medium
+    detection_hint: >
+      Any new column on request_profiles/fleet_snapshots, any new field on the
+      provider profile wire object, or any new admin export must be reviewed
+      against the closed-enum / no-identity rules in docs/architecture/system-profiler.md.

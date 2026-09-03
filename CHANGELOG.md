@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased (2026-09-02) — system profiler
+
+- **Per-request profiler** — the coordinator records one prompt-free row per
+  dispatched attempt in `request_profiles` (joins `inference_routes` on
+  `(request_id, attempt)`): microsecond offsets from middleware entry for every
+  coordinator stage (auth, parse, reserve, media, preflight, plan, reserve lock
+  wait/scan/admit, queue, encrypt, writer submit/dequeue/wire, provider ack,
+  chunk ingress, first content, headers, flushes, `[DONE]`, client-gone,
+  cancel, completion ingress, settlement), the routing decision context
+  (gate rejections by closed reason, top-4 candidates, runner-up, best idle
+  alternative, near-tie size, selection path, heartbeat age at decision,
+  predicted vs raw TTFT, calibration ratio, queue position/drain trigger), and
+  a validated provider profile: the provider now sends an optional `profile`
+  object on `inference_complete`/`inference_error` (decrypt/parse/admission/
+  model-load wait/prompt prep/engine submit & admitted/first & last delta/
+  terminal build & send/cancel stage, plus the engine's own
+  `CBv2RequestTiming`: admission, KV allocation, prefill chunks, prompt
+  computed, first token, decode steps and batch rows, MTP accept counts,
+  pauses, detokenization delay, prefix-cache lookup/adoption). Numbers,
+  booleans and closed enums only; validated, folded and stored from a separate
+  closed struct; never routing-, billing- or health-affecting.
+- **Fleet snapshots** — `fleet_snapshots` samples every provider slot each
+  minute (running/waiting, budgets, KV bytes, EWMAs, MTP totals, eligibility
+  reason, cooldown/breaker/clamp flags, heartbeat age, cumulative cancel
+  counters, low-power/thermal posture) plus a coordinator row (queue depth by
+  model, in-flight, sink depth/drops, zombie-frame count). Heartbeats carry new
+  optional `telemetry` sub-objects; `eval_in_flight_ms` finally has a producer.
+- **Egress and attempt accounting** — non-streaming 200 bodies stamp the same
+  first/last flush and bytes-out fields as SSE relays; attempts that never reach
+  a provider close only their terminal half at the failure site so the record is
+  built after the handler returns; a speculative primary cancelled for the
+  first-content timeout keeps its timeout outcome even when the backup wins the
+  ingress race.
+- **Review hardening** — heartbeat-reported counts are clamped to the snapshot
+  column range so one bad heartbeat cannot abort a fleet sample batch; the
+  recorded TTFT calibration ratio is the one the candidate was scored with;
+  routing replays count `no_provider` / `model_too_large` explicitly; terminal
+  usage is recorded at ingress (outside billing) and each provider-profile
+  consistency check runs independently; a speculative loser's discarded empty
+  completion still closes its attempt row.
+- **Operations** — admin browse/NDJSON export for both tables
+  (`/v1/admin/profiles`, `/v1/admin/snapshots`), a manual `request_waterfall`
+  view, retention sweeps (14 d / 30 d), a dedicated batched profile sink with
+  `telemetry.sink_dropped{sink}` / `telemetry.sink_depth{sink}` metrics,
+  `inference.unknown_request_frames{kind}`, knobs `EIGENINFERENCE_PROFILER=off`
+  and `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (default 0.1; slow, failed, retried,
+  backup and client-gone requests are always recorded), routingsim NDJSON
+  loaders for profile and fleet exports, `request_rejections.request_id`
+  populated with a coordinator-minted id. `X-Timing` keeps its legacy keys
+  (clamped, `timing_anomaly` flag) and gains additive `pre_handler_us`,
+  `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`,
+  `socket_us`, `provider_ack_us`. Docs: `docs/architecture/system-profiler.md`,
+  `docs/architecture/telemetry-inventory.md`; threat model T-051.
+
 ## Release candidate v0.8.16 (not shipped; 2026-08-31)
 
 - **Per-model activation floors + measured resident weights** — the flat

@@ -237,6 +237,7 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
+	pr.Profile.Mark(registry.StampCancelSent)
 	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
 		s.refundProviderExtra(pr)
@@ -259,6 +260,7 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 	}
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	s.registry.SetProviderIdle(provider.ID)
+	pr.Profile.Mark(registry.StampCancelSent)
 	s.sendProviderCancel(provider, pr.RequestID)
 	s.refundProviderExtra(pr)
 	return true
@@ -901,6 +903,8 @@ func (s *Server) dispatchOneProvider(
 	cachePlan registry.CachePlan,
 	excludeProviders map[string]struct{},
 	attempt int,
+	rp *registry.RequestProfile,
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 	onDispatched func(),
 ) (
@@ -916,7 +920,7 @@ func (s *Server) dispatchOneProvider(
 		reservedMicroUSD, estimatedPromptTokens, requestDeadline,
 		requestedMaxTokens, tokenAdmission, requiresVision, traits,
 		allowedProviderSerials, isResponsesAPI, policy, timing,
-		serviceReservation, cachePlan, excludeProviders, attempt,
+		serviceReservation, cachePlan, excludeProviders, attempt, rp, backupOf,
 		recordRoute, onDispatched,
 		true, // ReserveProviderWithPlan is the O(fleet) full scan
 		func(pr *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
@@ -955,6 +959,8 @@ func (s *Server) dispatchWithReserver(
 	cachePlan registry.CachePlan,
 	excludeProviders map[string]struct{},
 	attempt int,
+	rp *registry.RequestProfile,
+	backupOf string,
 	recordRoute routeDecisionRecorder,
 	onDispatched func(),
 	fullScan bool,
@@ -974,8 +980,18 @@ func (s *Server) dispatchWithReserver(
 	}
 
 	requestID := uuid.New().String()
+	ap := rp.NewAttempt(requestID, attempt, backupOf)
+	ap.Mark(registry.StampAttemptStart)
+	// Any failure return closes the attempt as not dispatched (terminal half; the handler half lands in finalizeProfile);
+	// a dispatched attempt is left for the provider terminal / relay to close.
+	defer func() {
+		if provider == nil {
+			closeUndispatchedAttempt(ap, lastErr, lastErrCode)
+		}
+	}()
 	pr = &registry.PendingRequest{
 		RequestID: requestID,
+		Profile:   ap,
 		// Attempt is stamped at construction — BEFORE the request is encrypted
 		// and sent to the provider — so a fast provider that returns
 		// inference_complete immediately is correlated to the right route row.
@@ -1092,6 +1108,8 @@ func (s *Server) dispatchWithReserver(
 		}
 	}
 	provider, decision, plan = reserve(pr, excludeList())
+	ap.Mark(registry.StampReserveDone)
+	ap.SetDecision(decision)
 	if fullScan {
 		s.releaseRoutingScanSlot()
 	}
@@ -1122,6 +1140,14 @@ func (s *Server) dispatchWithReserver(
 		pr.Timing.RoutedAt = time.Now()
 	}
 	noteSelectionSample()
+	if ap != nil {
+		ap.ProviderID = provider.ID
+		provider.Mu().Lock()
+		ap.ProviderVersion = provider.Version
+		ap.ChipFamily = provider.Hardware.ChipFamily
+		provider.Mu().Unlock()
+		ap.KVBackend, _ = provider.SlotKVBackendTags(model)
+	}
 	if recordRoute != nil {
 		recordRoute(provider, pr, decision)
 	}
@@ -1158,6 +1184,7 @@ func (s *Server) dispatchWithReserver(
 			return nil, nil, decision, plan, "service temporarily unavailable — please retry", http.StatusServiceUnavailable
 		}
 	}
+	ap.Mark(registry.StampTopupDone)
 	// refundExtra credits back the provider-specific surcharge that
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
@@ -1225,6 +1252,7 @@ func (s *Server) dispatchWithReserver(
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
 	}
+	ap.Mark(registry.StampEncrypted)
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	// pr.ReservedMicroUSD was already set in the struct literal and may have
 	// been increased by reserveAdditionalForProvider above. Don't overwrite.
@@ -1234,6 +1262,7 @@ func (s *Server) dispatchWithReserver(
 	// the budget while the aggregator's cancel clock keeps running.
 	writeCtx, cancelWrite := firstTokenWriteContext(
 		r.Context(), receivedAt, requestDeadline)
+	ap.Mark(registry.StampWriteSubmitted)
 	_, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
 		provider,
@@ -1246,9 +1275,13 @@ func (s *Server) dispatchWithReserver(
 			if onDispatched != nil {
 				onDispatched()
 			}
+			ap.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
 		},
 	)
 	cancelWrite()
+	if writeErr == nil {
+		ap.Mark(registry.StampWriteDone)
+	}
 	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
@@ -1259,6 +1292,7 @@ func (s *Server) dispatchWithReserver(
 			// The writer either discarded the frame before handoff or aborted
 			// its connection during an in-flight write. Cancel defensively in
 			// case the provider decoded the final bytes before disconnect.
+			ap.Mark(registry.StampCancelSent)
 			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
@@ -1730,6 +1764,7 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int)
 // source for accounting and consumer-facing response conversion.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas, parse, require a model,
 	// enforce the per-key model allowlist. (See parseInferencePrelude.)
@@ -1902,8 +1937,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// servability gate. Lifted out of the record block so it is in scope at the
 	// preflight below.
 	modelMaxContext := 0
+	registryReadStart := time.Now()
 	var resolvedRuntimeParameters map[string]any
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
+		profileDBCall(rp, registryReadStart)
 		resolvedRuntimeParameters = rec.RuntimeParameters
 		if runtimeDefaults.apply(parsed, rec.RuntimeParameters) {
 			rawBody, _ = marshalForwardBody(parsed)
@@ -1942,6 +1979,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -2050,6 +2088,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timing.ReservedAt = time.Now()
+	rp.Mark(registry.StampReqReserved)
 
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
@@ -2216,6 +2255,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return refreshForwardBody(body, newModel)
 	}
 	var preflightHandled bool
+	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -2234,6 +2274,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		refundReservation:         refundReservation,
 		onModelFallback:           onModelFallback,
 	})
+	if rp != nil {
+		rp.PreflightUS = time.Since(preflightStart).Microseconds()
+		rp.Mark(registry.StampReqPreflightDone)
+		if preflightHandled {
+			rp.PreflightOutcome = "handled"
+		} else {
+			rp.PreflightOutcome = "passed"
+		}
+	}
 	if preflightHandled {
 		return
 	}
@@ -2262,11 +2311,24 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// the originally-resolved model's context. Overwrite only on a successful lookup
 	// (fallback builds of the same alias normally share a context window; a build
 	// absent from the store keeps the prior value, matching the initial read).
+	registryReadStart2 := time.Now()
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		modelMaxContext = rec.MaxContextLength
 	}
+	profileDBCall(rp, registryReadStart2)
 	cachePlan := s.planCacheRoute(
 		r.Context(), consumerKey, model, providerBody, requiresVision)
+	rp.Mark(registry.StampReqPlanDone)
+	if rp != nil {
+		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
+		rp.FirstContentBudgetMs = int(deadline.Milliseconds())
+		rp.EstimatedPromptTokens, rp.RequestedMaxTokens = estimatedPromptTokens, requestedMaxTokens
+		rp.RequiresVision, rp.HasTools = requiresVision, hasTools
+		rp.BodyBytes = len(rawBody)
+		if mediaInlined {
+			rp.Mark(registry.StampReqMediaFetched)
+		}
+	}
 
 	d := &dispatchState{
 		s:                      s,
@@ -2296,6 +2358,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
 		timing:                 timing,
+		profile:                rp,
 		deadline:               deadline,
 		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
 		modelMaxContext:        modelMaxContext,
@@ -2340,6 +2403,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 
 	writeSSEResponseHeader(w, pr.RequestID)
 	flusher.Flush()
+	rs := newRelayStamps(pr.Profile.Parent())
 
 	// Detect Responses API format to skip appending chat-completions-style
 	// termination events (SE signature chunk + [DONE]).
@@ -2389,8 +2453,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				pendingFinish = obj
 			} else {
 				firstChunk = rewriteChunkModel(firstChunk, pr)
-				fmt.Fprintf(w, "%s\n\n", firstChunk)
+				n, werr := fmt.Fprintf(w, "%s\n\n", firstChunk)
 				flusher.Flush()
+				rs.wrote(n, werr)
 			}
 		}
 	}
@@ -2480,12 +2545,15 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 						}
 						attachChatCompletionMetadata(event, pr)
 						sigEvent, _ := json.Marshal(event)
-						fmt.Fprintf(w, "data: %s\n\n", sigEvent)
+						n, werr := fmt.Fprintf(w, "data: %s\n\n", sigEvent)
 						flusher.Flush()
+						rs.wrote(n, werr)
 					}
 					// Exactly one terminator, after every coordinator-appended event.
-					fmt.Fprint(w, "data: [DONE]\n\n")
+					n, werr := fmt.Fprint(w, "data: [DONE]\n\n")
 					flusher.Flush()
+					rs.wrote(n, werr)
+					rs.done()
 				}
 				return
 			}
@@ -2543,8 +2611,9 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
-			fmt.Fprintf(w, "%s\n\n", chunk)
+			n, werr := fmt.Fprintf(w, "%s\n\n", chunk)
 			flusher.Flush()
+			rs.wrote(n, werr)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
@@ -2561,6 +2630,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 			return
 
 		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
 			return
 		}
 	}
@@ -2670,6 +2740,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 			return
 
 		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
 			return
 		}
 	}
@@ -2778,7 +2849,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									msg := extractMessage([]string{"data: " + string(encoded)})
 									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
 									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, resp)
+									writeNonStreamBody(w, pr.Profile.Parent(), resp)
 									return
 								}
 								if pr.IsResponsesAPI {
@@ -2798,7 +2869,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 										chatResp, consumerModel(pr), pr.SESignature,
 										pr.ResponseHash, pr.Traits)
 									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, respObj)
+									writeNonStreamBody(w, pr.Profile.Parent(), respObj)
 									return
 								}
 							} else {
@@ -2818,7 +2889,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 								attachChatCompletionMetadata(obj, pr)
 							}
 							s.noteInferenceSuccess(pr)
-							writeJSON(w, http.StatusOK, obj)
+							writeNonStreamBody(w, pr.Profile.Parent(), obj)
 							return
 						}
 					}
@@ -2854,7 +2925,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 						resp = chatResp
 					}
 					s.noteInferenceSuccess(pr)
-					writeJSON(w, http.StatusOK, resp)
+					writeNonStreamBody(w, pr.Profile.Parent(), resp)
 				case <-ctx.Done():
 					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
@@ -4257,6 +4328,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas (Anthropic /v1/messages
 	// bodies carry a top-level "tools" array too; the provider body is rebuilt
@@ -4397,6 +4469,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+	rp.Mark(registry.StampReqParsed)
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}
@@ -4435,6 +4508,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	timing.ReservedAt = time.Now()
+	rp.Mark(registry.StampReqReserved)
 
 	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
@@ -4508,6 +4582,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Shared routing/capacity admission preflight (self-route / prefer / public
 	// capacity+TTFT gate — see runInferenceAdmission).
 	var preflightHandled bool
+	preflightStart := time.Now()
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -4526,6 +4601,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundReservation:         refundReservation,
 		onModelFallback:           refreshGenericBody,
 	})
+	if rp != nil {
+		rp.PreflightUS = time.Since(preflightStart).Microseconds()
+		rp.Mark(registry.StampReqPreflightDone)
+		if preflightHandled {
+			rp.PreflightOutcome = "handled"
+		} else {
+			rp.PreflightOutcome = "passed"
+		}
+	}
 	if preflightHandled {
 		return
 	}
@@ -4546,8 +4630,18 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Generic endpoints use the same dispatch state machine as chat. This keeps
 	// queue deadlines, speculative failover, pre-content boilerplate handling,
 	// typed deadline refusals, and terminal 429 semantics identical.
+	genericRegistryReadStart := time.Now()
 	if rec, err := s.store.GetModelRegistryRecord(model); err == nil {
 		modelMaxContext = rec.MaxContextLength
+	}
+	profileDBCall(rp, genericRegistryReadStart)
+	rp.Mark(registry.StampReqPlanDone)
+	if rp != nil {
+		rp.Model, rp.PublicModel, rp.Stream = model, publicModel, stream
+		rp.FirstContentBudgetMs = int(genericDeadline.Milliseconds())
+		rp.EstimatedPromptTokens, rp.RequestedMaxTokens = estimatedPromptTokens, requestedMaxTokens
+		rp.RequiresVision, rp.HasTools = requiresVision, hasTools
+		rp.BodyBytes = len(rawBody)
 	}
 	d := &dispatchState{
 		s:                      s,
@@ -4578,6 +4672,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		allowedProviderSerials: allowedProviderSerials,
 		cachePlan:              cachePlan,
 		timing:                 timing,
+		profile:                rp,
 		deadline:               genericDeadline,
 		speculativeAt:          time.Duration(float64(genericDeadline) * speculativeTimerRatio),
 		modelMaxContext:        modelMaxContext,

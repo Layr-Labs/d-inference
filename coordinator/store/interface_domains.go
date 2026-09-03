@@ -183,6 +183,37 @@ type TelemetryStore interface {
 	// RejectionRecordsSince returns rejection records created at or after the
 	// given time. Zero since returns all records.
 	RejectionRecordsSince(since time.Time) []RejectionRecord
+
+	// RecordRequestProfiles writes one request_profiles row per record in a
+	// single multi-row INSERT ... ON CONFLICT (request_id, attempt) DO NOTHING
+	// (write-once; a duplicate attempt is silently skipped). nil/empty input is
+	// a no-op. Best-effort; failures must not block inference.
+	RecordRequestProfiles(records []*RequestProfileRecord) error
+
+	// RequestProfilesSince returns request profiles created at or after the
+	// given time, newest-first, capped at maxTelemetryReadRows. Zero since
+	// returns the newest rows across all time.
+	RequestProfilesSince(since time.Time) []RequestProfileRecord
+
+	// RequestProfilesSinceFiltered is RequestProfilesSince with the admin
+	// browse/export predicates applied BEFORE the read cap, so a matching row
+	// older than the newest maxTelemetryReadRows rows is still returned.
+	RequestProfilesSinceFiltered(since time.Time, filter RequestProfileFilter) []RequestProfileRecord
+
+	// RecordFleetSnapshots bulk-writes one sampler tick (one row per provider
+	// slot plus the coordinator row). nil/empty input is a no-op. Best-effort.
+	RecordFleetSnapshots(rows []FleetSnapshotRow) error
+
+	// FleetSnapshotsSince returns fleet snapshot rows sampled at or after the
+	// given time, newest-first, capped at maxTelemetryReadRows.
+	FleetSnapshotsSince(since time.Time) []FleetSnapshotRow
+
+	// PruneTelemetry deletes request_profiles rows created before
+	// profilesBefore and fleet_snapshots rows sampled before snapshotsBefore in
+	// primary-key batches of at most batch rows, each in its own short
+	// transaction, stopping at the first error or when ctx is done. It returns
+	// the number of rows deleted before stopping.
+	PruneTelemetry(ctx context.Context, profilesBefore, snapshotsBefore time.Time, batch int) (deleted int, err error)
 }
 
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).

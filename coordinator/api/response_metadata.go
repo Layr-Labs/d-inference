@@ -196,16 +196,6 @@ func requestTimingDetails(timing *registry.RequestTiming) *types.RequestTimingDe
 	return tj
 }
 
-func writeTimingHeader(w http.ResponseWriter, timing *registry.RequestTiming) {
-	tj := requestTimingDetails(timing)
-	if tj == nil {
-		return
-	}
-	if tjJSON, err := json.Marshal(tj); err == nil {
-		w.Header().Set("X-Timing", string(tjJSON))
-	}
-}
-
 func buildChatCompletionMetadata(info committedProviderInfo, jobID string, timing *types.RequestTimingDetails) *types.ChatCompletionMetadata {
 	return &types.ChatCompletionMetadata{
 		ProviderID:             info.ProviderID,

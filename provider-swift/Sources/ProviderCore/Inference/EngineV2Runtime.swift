@@ -147,10 +147,12 @@ public actor EngineV2Runtime {
     /// traffic on the hot submit/finish paths of every bridge — strictly
     /// more work overall than scanning ≤ 3 entries here.
     @discardableResult
-    public func cancel(requestId: String) async -> Bool {
+    public func cancel(
+        requestId: String, profile: RequestProfileBuilder? = nil
+    ) async -> Bool {
         consultCount += 1
         for bridge in bridges.values {
-            if await bridge.cancelIfOwned(requestId: requestId) {
+            if await bridge.cancelIfOwned(requestId: requestId, profile: profile) {
                 return true
             }
         }

@@ -143,20 +143,26 @@ public enum CoordinatorClientCodec {
             let usage,
             let stopSequence,
             let seSignature,
-            let responseHash
+            let responseHash,
+            let profile
         ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
                 stopSequence: stopSequence,
                 seSignature: seSignature,
-                responseHash: responseHash
+                responseHash: responseHash,
+                // Materialized HERE (encode time) so `terminal_sent_us` /
+                // `flush_us` stamped by SendHandle.send are included and
+                // `total_us` covers the outbound-queue wait.
+                profile: profile?.wireObject()
             ))
 
-        case .inferenceError(let requestId, let failure):
+        case .inferenceError(let requestId, let failure, let profile):
             return .inferenceError(ProviderMessage.InferenceError(
                 requestId: requestId,
-                failure: failure
+                failure: failure,
+                profile: profile?.wireObject()
             ))
 
         case .attestationResponse(let payload):

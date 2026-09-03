@@ -60,7 +60,7 @@ func TestRoutingScanSemaphore_BoundsConcurrentScans(t *testing.T) {
 				"test-key", nil, 0, 0, 5*time.Second, 64,
 				registry.TokenAdmission{}, false, registry.RequestTraits{},
 				nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
-				map[string]struct{}{}, 0, nil, nil, true, reserver)
+				map[string]struct{}{}, 0, nil, "", nil, nil, true, reserver)
 			errs[i] = lastErr
 			codes[i] = lastErrCode
 		}(i)
@@ -297,7 +297,7 @@ func TestRoutingScanSemaphore_PlanStepBypassesGate(t *testing.T) {
 		"test-key", nil, 0, 0, 200*time.Millisecond, 64,
 		registry.TokenAdmission{}, false, registry.RequestTraits{},
 		nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
-		map[string]struct{}{}, 1, nil, nil, false, reserver)
+		map[string]struct{}{}, 1, nil, "", nil, nil, false, reserver)
 	if !reserverRan {
 		t.Fatal("plan-step reserver never ran — the bypass is broken")
 	}
@@ -312,7 +312,7 @@ func TestRoutingScanSemaphore_PlanStepBypassesGate(t *testing.T) {
 		"test-key", nil, 0, 0, 100*time.Millisecond, 64,
 		registry.TokenAdmission{}, false, registry.RequestTraits{},
 		nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
-		map[string]struct{}{}, 1, nil, nil, true, reserver)
+		map[string]struct{}{}, 1, nil, "", nil, nil, true, reserver)
 	if reserverRan {
 		t.Fatal("gated reserver ran with every slot held")
 	}

@@ -308,10 +308,15 @@ func (c *ttftCalibrator) reset() {
 // ratio measures, and scaling it would collapse the deliberate cold-route bias
 // (e.g. 30s × 0.33 ≈ 10s would let a cold box pass gates it should not).
 func calibratedTTFTMs(snap routingSnapshot, rawMs float64) float64 {
+	return calibratedTTFTMsWithRatio(snap, rawMs, ttftCalibration.appliedRatio(snap.model, snap.chipFamily))
+}
+
+// calibratedTTFTMsWithRatio is calibratedTTFTMs with the ratio already read,
+// so the scheduler can record exactly the ratio it scored with.
+func calibratedTTFTMsWithRatio(snap routingSnapshot, rawMs float64, ratio float64) float64 {
 	if rawMs <= 0 {
 		return rawMs
 	}
-	ratio := ttftCalibration.appliedRatio(snap.model, snap.chipFamily)
 	if ratio == 1.0 {
 		return rawMs
 	}

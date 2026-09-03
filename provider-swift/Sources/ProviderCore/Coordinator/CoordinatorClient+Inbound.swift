@@ -17,7 +17,8 @@ extension CoordinatorClient {
 
     internal func handleIncomingFrame(
         _ data: Data,
-        receivedAt: ContinuousClock.Instant
+        receivedAt: ContinuousClock.Instant,
+        profileAnchor: SuspendingClock.Instant = .now
     ) async {
         let parsed: CoordinatorMessage
         do {
@@ -38,13 +39,20 @@ extension CoordinatorClient {
                     relativeBudgetMilliseconds: $0,
                     receivedAt: receivedAt)
             }
+            // Profiler accumulator, created UNCONDITIONALLY (a request without
+            // a first-content budget still gets a profile) and anchored on the
+            // suspending instant taken in the receive callback.
+            let profile = RequestProfileBuilder(
+                suspendingAnchor: profileAnchor,
+                continuousAnchor: receivedAt)
             logger.info("Received inference request: \(requestId)")
 
             guard let encrypted = request.encryptedBody else {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -58,7 +66,8 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -68,7 +77,8 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400),
+                    profile: profile.wireObject()
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -83,7 +93,8 @@ extension CoordinatorClient {
                 prefixCacheProtocol: request.prefixCacheProtocol,
                 toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol,
                 firstContentDeadline: firstContentDeadline,
-                receivedAt: receivedAt
+                receivedAt: receivedAt,
+                profile: profile
             ))
 
         case .cancel(let cancel):

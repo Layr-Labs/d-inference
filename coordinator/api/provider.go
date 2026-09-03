@@ -707,7 +707,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
-				s.registry.DrainQueuedRequestsForModel(statusMsg.ModelID)
+				s.registry.DrainQueuedRequestsForModelWithReason(statusMsg.ModelID, registry.DrainTriggerLoad)
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
@@ -1579,7 +1579,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			// the next heartbeat / 120s queue timeout. Off the challenge goroutine,
 			// mirroring the code-attest / MDM hardware-grant drain.
 			saferun.Go(s.logger, "trustReuseDrain", func() {
-				s.registry.DrainQueuedRequestsForProvider(provider)
+				s.registry.DrainQueuedRequestsForProviderWithReason(provider, registry.DrainTriggerChallenge)
 			})
 		} else {
 			// Fast-skip missed. The submit-time refresh classification (a
@@ -1759,6 +1759,8 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// Until it matches pending state, request_id is provider-controlled and
 		// therefore an arbitrary log-exfiltration channel.
 		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:chunk"})
+		s.unknownRequestFrames.Add(1)
 		// The provider is still generating into a stream we abandoned (consumer
 		// gone / already settled), burning its GPU and token-budget admission.
 		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
@@ -1775,6 +1777,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			pr.FinishProviderChunkIngress(receivedAt, false)
 		}
 	}()
+	decryptStart := time.Now()
 	chunkData, err := s.decryptTextResponseChunk(provider, pr, msg)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
@@ -1792,9 +1795,17 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		})
 		return
 	}
+	if ap := pr.Profile; ap != nil {
+		ap.ChunksIn.Add(1)
+		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
+		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
+	}
 	contentBearing := !isBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
 	ingressClassified = true
+	if firstContent {
+		pr.Profile.MarkAt(registry.StampFirstContentIngress, receivedAt)
+	}
 	deadlineExpiredWithoutContent := !pr.FirstContentDeadline.IsZero() &&
 		((firstContent && receivedAt.After(pr.FirstContentDeadline)) ||
 			(!contentBearing &&
@@ -1935,6 +1946,7 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 	if pr == nil {
 		return
 	}
+	pr.Profile.Mark(registry.StampAccepted)
 	// Non-blocking signal — the dispatch loop may have already committed.
 	select {
 	case pr.AcceptedCh <- struct{}{}:
@@ -1967,26 +1979,91 @@ func (s *Server) handleCompleteAt(
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
 	}
+	// terminalOwner is true only for the frame that claimed the attempt's
+	// terminal first: concurrent duplicate completions for one request all
+	// pass GetPending before one wins RemovePending, and only the owner may
+	// retain usage / the profile (the others are rejected as unknown below).
+	terminalOwner, terminalClaimed := false, false
+	// claimed is the attempt whose terminal this frame owns. Every return
+	// below must complete it: once claimed, neither the route-outcome funnel
+	// nor the no-terminal fallback will, so a pending request removed by a
+	// consumer-side cleanup between the claim and RemovePending would
+	// otherwise never finalize.
+	var claimed *registry.AttemptProfile
 	if pending := provider.GetPending(msg.RequestID); pending != nil {
 		pending.MarkCompletionIngress(receivedAt)
+		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+		// The claim is the single ownership token: only the frame that owns
+		// the terminal proceeds to the deadline / speculative branches and to
+		// RemovePending + settlement, so claim ownership and settlement
+		// ownership can never diverge. A second concurrent frame for the same
+		// pending request is a provider duplicate and is dropped here. Without
+		// a profile (profiler off) there is no token and the pre-existing
+		// RemovePending race decides, exactly as before.
+		terminalOwner, terminalClaimed = pending.Profile == nil || pending.Profile.ClaimTerminal(), true
+		if !terminalOwner {
+			s.logger.Warn("duplicate complete for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_complete"})
+			s.unknownRequestFrames.Add(1)
+			return
+		}
+		claimed = pending.Profile
+		// Usage and the provider profile are retained BEFORE any branch below
+		// can discard this completion (the deadline-late conversion to an error,
+		// the speculative-loser return), so a losing or late racer that sent a
+		// profile is not recorded as absent. msg.Profile is cleared so the
+		// claim site below no-ops for this pending (a second retain would count
+		// a false duplicate); it still retains for a PARKED record, which has
+		// no pending entry.
+		pending.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
 		if !pending.HasFirstContentIngress() &&
 			!pending.FirstContentDeadline.IsZero() &&
 			receivedAt.After(pending.FirstContentDeadline) {
 			// A clean terminal without content is a valid empty completion only
 			// while the first-content SLA is still live. Once the absolute deadline
 			// has passed it must not race the dispatch timer into an empty HTTP 200.
-			s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+			// owned: this frame already holds the claim, so the error path
+			// must neither re-claim nor drop the conversion as a duplicate.
+			s.handleInferenceErrorOwned(providerID, provider, &protocol.InferenceErrorMessage{
 				Type:        protocol.TypeInferenceError,
 				RequestID:   pending.RequestID,
 				Error:       "provider completed after the first-content deadline",
 				StatusCode:  http.StatusServiceUnavailable,
 				ErrorReason: errorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
-			})
+			}, true)
+			// handleInferenceError completes the terminal only when it still
+			// found the pending request; if a consumer-side cleanup removed it
+			// first, the provider still completed, so record that and close
+			// the claimed terminal here (both calls are first-write / idempotent).
+			claimed.SetOutcome("", "", "", "completed", "")
+			claimed.CompleteTerminal()
 			return
 		}
 		if !pending.HasFirstContentIngress() {
 			if accepted, waited := pending.AwaitSpeculativeEmptyCompletionDecision(); waited && !accepted {
+				// The losing racer's empty completion is discarded by the
+				// dispatch loop, which classifies the attempt through the
+				// route-outcome funnel (markSpeculativeLoser → cancelled /
+				// speculative_loser) and completes its terminal half there.
+				// Only the provider-side outcome is authoritative here — mirror
+				// handleInferenceError — and the idempotent CompleteTerminal
+				// covers the ordering where the funnel has not run yet.
+				//
+				// When the frame never reached the wire (releaseUnsentDispatch
+				// resolved the loser after a write failure), the dispatch side's
+				// closeUndispatchedAttempt records not_dispatched — the truthful
+				// provider outcome — so "completed" is written only for an
+				// attempt whose write completed. WriteDone is stamped before any
+				// race can be resolved and never on the write-failure path, so
+				// the check is deterministic; the close always lands because the
+				// attempt cannot finalize before the handler half (finalizeProfile).
+				if pending.Profile.Dispatched() {
+					pending.Profile.SetOutcome("", "", "", "completed", "")
+				}
+				pending.Profile.CompleteTerminal()
 				return
 			}
 		}
@@ -2002,8 +2079,47 @@ func (s *Server) handleCompleteAt(
 		// Until it matches pending state, request_id is provider-controlled and
 		// therefore an arbitrary log-exfiltration channel.
 		s.logger.Warn("complete for unknown request", "provider_id", providerID)
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
+		s.unknownRequestFrames.Add(1)
+		// A claimed terminal whose pending request a consumer-side cleanup
+		// removed in between: the provider completed, the coordinator lost
+		// ownership; close the record rather than leak the attempt.
+		claimed.SetOutcome("", "", "", "completed", "")
+		claimed.CompleteTerminal()
 		return
 	}
+	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
+	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
+		terminalOwner = pr.Profile == nil || pr.Profile.ClaimTerminal()
+	}
+	// Terminal usage is recorded at ingress, outside the billing gate, so a
+	// completion whose reservation was already finalized (a late terminal after
+	// a consumer-side refund, or any path that skips billing) still carries the
+	// provider's token counts for the profile consistency check. Only the
+	// terminal owner writes; msg.Profile is already nil when the pending block
+	// above retained it.
+	if terminalOwner {
+		pr.Profile.SetTerminalUsage(msg.Usage.PromptTokens, msg.Usage.CompletionTokens)
+		s.retainProviderProfile(pr.Profile, msg.Profile)
+		// The provider outcome is written here, OUTSIDE the billing gate: a
+		// consumer-side timeout can finalize (refund) the reservation after
+		// this frame claimed but before settlement, in which case the gate
+		// below is skipped and its own (idempotent) write never runs — the
+		// deferred CompleteTerminal would then close the record with an empty
+		// provider_outcome. Every branch that must not read "completed" (the
+		// deadline-late conversion, the losing racer) returned above.
+		pr.Profile.SetOutcome("", "", "", "completed", "")
+	}
+	msg.Profile = nil
+	// The terminal half completes when this handler returns, on every branch:
+	// after billing has settled and the settle_db_us stamp has landed, and after
+	// the consumer has been signalled. It completes regardless of billing state
+	// too — a reservation finalized earlier by a consumer-side path must not
+	// leave the record waiting on the (now suppressed) fallback. Deferred at the
+	// claim site (not inside the billing gate) so a PARKED completion, whose
+	// consumer is already gone, cannot enqueue its record before the settlement
+	// stamp is written.
+	defer pr.Profile.CompleteTerminal()
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
@@ -2094,6 +2210,7 @@ func (s *Server) handleCompleteAt(
 	// defaults. Service accounts run on a 0% fee.
 	var feePercent *int64
 	isServiceConsumer := false
+	settleStart := time.Now()
 	if u, err := s.store.GetUserByAccountID(pr.ConsumerKey); err == nil && u != nil {
 		feePercent = u.PlatformFeePercent
 		isServiceConsumer = u.Role == store.RoleService
@@ -2399,6 +2516,9 @@ func (s *Server) handleCompleteAt(
 			}
 		}
 		s.updateInferenceRouteOutcomeWithModel(msg.RequestID, pr.Attempt, pr.Model, outcome)
+		// Outcome only: the terminal half completes on return (deferred at the
+		// claim site), after the settlement stamps below.
+		pr.Profile.SetOutcome(outcome.FinalStatus, profileErrorReason(outcome), "", "completed", "")
 
 		s.ddIncr("inference.completions", []string{"model:" + pr.Model})
 		// Split the partial case out of the (intentionally unchanged) completions
@@ -2505,6 +2625,9 @@ func (s *Server) handleCompleteAt(
 		}
 
 		settlementWg.Wait()
+		if ap := pr.Profile; ap != nil {
+			ap.SettleDBUS.Add(time.Since(settleStart).Microseconds())
+		}
 	}
 
 	// Signal completion to the consumer response handler. This must happen
@@ -2531,7 +2654,19 @@ func (s *Server) handleCompleteAt(
 	)
 }
 
+// handleInferenceError handles a provider inference_error frame on the read
+// loop (and the coordinator-synthesized errors handleChunk raises there). The
+// frame holds no terminal claim; ownership is decided at the peek inside.
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
+	s.handleInferenceErrorOwned(providerID, provider, msg, false)
+}
+
+// handleInferenceErrorOwned is handleInferenceError with terminal ownership
+// threaded in: owned is true only when the caller already holds the attempt's
+// terminal claim (handleCompleteAt converting a deadline-late empty
+// completion), so this path must neither re-claim nor drop that frame as a
+// duplicate.
+func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned bool) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
@@ -2547,6 +2682,36 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		s.ddIncr(metricUnknownTerminalCause, nil)
 		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
 	}
+	// Ownership is decided BEFORE the pending request is removed. Completions
+	// settle on a worker goroutine while error frames run inline on the read
+	// loop, so an error frame for a request whose completion already claimed
+	// the terminal (parked on arbitration, or mid-settlement) used to remove
+	// the pending request, write the error outcome and settle — mixing the
+	// completion's usage/profile with this frame's outcome. The claim is the
+	// single ownership token across terminal TYPES: a frame that cannot claim
+	// is a duplicate of an in-flight owned terminal and is dropped here,
+	// leaving the pending request to its owner. Without a profile (profiler
+	// off) there is no token and the RemovePending race decides, as before.
+	// claimedHere is set only when THIS call took the claim: a pending request
+	// a consumer-side cleanup removes between the claim and RemovePending
+	// would otherwise never finalize (neither the funnel nor the fallback
+	// completes a claimed terminal).
+	var claimedHere *registry.AttemptProfile
+	if pending := provider.GetPending(msg.RequestID); pending != nil && pending.Profile != nil && !owned {
+		if !pending.Profile.ClaimTerminal() {
+			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
+			s.unknownRequestFrames.Add(1)
+			msg.Profile = nil
+			return
+		}
+		owned, claimedHere = true, pending.Profile
+		// Retain the profile now, while the owner still holds the pending
+		// request: the record closes at the unknown-request return below if a
+		// consumer-side cleanup removes it before RemovePending.
+		s.retainProviderProfile(pending.Profile, msg.Profile)
+		msg.Profile = nil
+	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream).
 	// Same object as a non-nil pr when the terminal raced the disconnect defer.
@@ -2559,10 +2724,44 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		// pending state. Do not log it: an attacker could use unknown IDs as an
 		// arbitrary log exfiltration channel.
 		s.logger.Warn("error for unknown request", "provider_id", providerID)
+		s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
+		s.unknownRequestFrames.Add(1)
+		// A terminal claimed here whose pending request a consumer-side cleanup
+		// removed in between: the provider errored, the coordinator lost
+		// ownership; close the record rather than leak the attempt. An owned
+		// claim passed in by handleCompleteAt is closed by that caller instead
+		// (as "completed"); both calls are nil-safe when nothing was claimed.
+		claimedHere.SetOutcome("", "", "", "error", "")
+		claimedHere.CompleteTerminal()
 		return
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
+	if ap := pr.Profile; ap != nil {
+		ap.Mark(registry.StampCompleteIngress)
+		// A pending entry was claimed at the peek above; a PARKED record (no
+		// pending entry) is claimed here. claimSettlement is single-winner, so
+		// retention is exactly-once; in the narrow parked race (an owned
+		// completion claims on its worker, a post-commit disconnect parks the
+		// record, and this error frame wins the parked settlement) the settler
+		// can differ from the claim owner — the completion then closes its own
+		// record as completed without billing while this frame settles, which
+		// is safe because this defer is unconditional. Only the owner retains
+		// the profile, once.
+		if owned || ap.ClaimTerminal() {
+			s.retainProviderProfile(ap, msg.Profile)
+		}
+		msg.Profile = nil
+		// Leave final_status/error_reason to the phase-aware classifier (the
+		// relay or dispatch loop writes partial_success / error / cancelled
+		// through the route-outcome funnel); only the terminal cause and the
+		// provider-side outcome are authoritative here.
+		ap.SetOutcome("", "", string(msg.TerminalCause), "error", "")
+		// The terminal half completes when this handler returns: after the
+		// parked (consumer-gone) branch has classified partial_success, and
+		// after the live branch has pushed the error to its channel reader.
+		defer ap.CompleteTerminal()
+	}
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil

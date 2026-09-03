@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -291,5 +294,252 @@ func TestCancelMarshal(t *testing.T) {
 
 	if decoded.RequestID != "req-cancel" {
 		t.Errorf("request_id = %q", decoded.RequestID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// System profiler: `profile` on inference_complete / inference_error.
+// Shared Go/Swift fixture: testdata/profiler_wire_fixture.json.
+// ---------------------------------------------------------------------------
+
+// loadProfilerFixture returns the fixture's top-level frames keyed by name.
+func loadProfilerFixture(t *testing.T) map[string]json.RawMessage {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "profiler_wire_fixture.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var frames map[string]json.RawMessage
+	if err := json.Unmarshal(data, &frames); err != nil {
+		t.Fatalf("fixture is not a JSON object: %v", err)
+	}
+	delete(frames, "_comment")
+	return frames
+}
+
+// jsonKeySet returns every key in raw, recursively, as "a.b.c" paths.
+func jsonKeySet(t *testing.T, raw []byte) map[string]bool {
+	t.Helper()
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("not an object: %v", err)
+	}
+	keys := map[string]bool{}
+	var walk func(prefix string, m map[string]json.RawMessage)
+	walk = func(prefix string, m map[string]json.RawMessage) {
+		for k, v := range m {
+			keys[prefix+k] = true
+			var nested map[string]json.RawMessage
+			if len(v) > 0 && v[0] == '{' && json.Unmarshal(v, &nested) == nil {
+				walk(prefix+k+".", nested)
+			}
+		}
+	}
+	walk("", obj)
+	return keys
+}
+
+func compactJSON(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestInferenceCompleteProfileRoundTrip(t *testing.T) {
+	profile := json.RawMessage(`{"schema":1,"total_us":3982400,"cancel_stage":"none","engine":{"finish_reason":"stop"}}`)
+	for _, tc := range []struct {
+		name string
+		msg  any
+		want reflect.Type
+	}{
+		{"inference_complete", InferenceCompleteMessage{
+			Type: TypeInferenceComplete, RequestID: "req-1",
+			Usage: UsageInfo{PromptTokens: 10, CompletionTokens: 5}, Profile: profile,
+		}, reflect.TypeOf(&InferenceCompleteMessage{})},
+		{"inference_error", InferenceErrorMessage{
+			Type: TypeInferenceError, RequestID: "req-2", Error: "x", StatusCode: 503,
+			FailureCode: FailureCodeCapacity, Profile: profile,
+		}, reflect.TypeOf(&InferenceErrorMessage{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if !bytes.Contains(data, []byte(`"profile":{"schema":1,"total_us":3982400`)) {
+				t.Fatalf("profile missing from wire: %s", data)
+			}
+			var pm ProviderMessage
+			if err := pm.UnmarshalJSON(data); err != nil {
+				t.Fatalf("UnmarshalJSON: %v", err)
+			}
+			if got := reflect.TypeOf(pm.Payload); got != tc.want {
+				t.Fatalf("payload type = %v, want %v", got, tc.want)
+			}
+			var raw json.RawMessage
+			switch p := pm.Payload.(type) {
+			case *InferenceCompleteMessage:
+				raw = p.Profile
+			case *InferenceErrorMessage:
+				raw = p.Profile
+			}
+			if !bytes.Equal(compactJSON(t, raw), compactJSON(t, profile)) {
+				t.Fatalf("profile bytes changed in transit: %s", raw)
+			}
+			// The raw bytes are the typed decode target's input.
+			var typed InferenceProfile
+			if err := json.Unmarshal(raw, &typed); err != nil {
+				t.Fatalf("typed decode: %v", err)
+			}
+			if typed.Schema == nil || *typed.Schema != 1 || typed.TotalUS == nil || *typed.TotalUS != 3982400 {
+				t.Fatalf("typed profile = %+v", typed)
+			}
+			if typed.CancelStage != CancelStageNone || typed.Engine == nil || typed.Engine.FinishReason != EngineFinishStop {
+				t.Fatalf("typed enums = %q / %+v", typed.CancelStage, typed.Engine)
+			}
+		})
+	}
+}
+
+func TestInferenceCompleteProfileOmittedCompatibility(t *testing.T) {
+	// Exactly the pre-profiler terminal shapes.
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"inference_complete", `{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":2}}`},
+		{"inference_error", `{"type":"inference_error","request_id":"r","error":"x","status_code":503}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var pm ProviderMessage
+			if err := pm.UnmarshalJSON([]byte(tc.in)); err != nil {
+				t.Fatalf("UnmarshalJSON: %v", err)
+			}
+			switch p := pm.Payload.(type) {
+			case *InferenceCompleteMessage:
+				if p.Profile != nil {
+					t.Fatalf("omitted profile decoded to %s, want nil", p.Profile)
+				}
+			case *InferenceErrorMessage:
+				if p.Profile != nil {
+					t.Fatalf("omitted profile decoded to %s, want nil", p.Profile)
+				}
+			default:
+				t.Fatalf("payload %T", pm.Payload)
+			}
+		})
+	}
+
+	// Reverse direction: a message that never sets it keeps the prior wire
+	// shape, so pre-profiler consumers see no new key.
+	for _, msg := range []any{
+		InferenceCompleteMessage{Type: TypeInferenceComplete, RequestID: "r"},
+		InferenceErrorMessage{Type: TypeInferenceError, RequestID: "r", StatusCode: 500},
+	} {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if bytes.Contains(data, []byte("profile")) {
+			t.Fatalf("nil Profile should be omitted, got %s", data)
+		}
+	}
+}
+
+// A malformed profile must never cost the terminal: the envelope decodes,
+// the terminal is processed, and only the later typed decode fails.
+func TestInferenceCompleteMalformedProfileKeepsEnvelopeAlive(t *testing.T) {
+	in := `{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":2},"profile":{"schema":1,"total_us":"x"}}`
+	var pm ProviderMessage
+	if err := pm.UnmarshalJSON([]byte(in)); err != nil {
+		t.Fatalf("envelope decode failed on a malformed profile: %v", err)
+	}
+	p, ok := pm.Payload.(*InferenceCompleteMessage)
+	if !ok {
+		t.Fatalf("payload %T", pm.Payload)
+	}
+	if p.Usage.CompletionTokens != 2 || string(p.Profile) != `{"schema":1,"total_us":"x"}` {
+		t.Fatalf("payload = %+v", p)
+	}
+	var typed InferenceProfile
+	if err := json.Unmarshal(p.Profile, &typed); err == nil {
+		t.Fatal("typed decode accepted a string total_us")
+	}
+}
+
+// The oversize gate lives at ingress (registry.AttemptProfile.SetProviderProfileRaw)
+// and in api.decodeInferenceProfile; the wire layer must still carry the frame
+// so the terminal is never lost to a chatty profile.
+func TestInferenceCompleteOversizeProfileStillDecodes(t *testing.T) {
+	pad := bytes.Repeat([]byte("p"), MaxInferenceProfileBytes)
+	in := `{"type":"inference_complete","request_id":"r","usage":{"prompt_tokens":1,"completion_tokens":2},"profile":{"schema":1,"padding":"` + string(pad) + `"}}`
+	var pm ProviderMessage
+	if err := pm.UnmarshalJSON([]byte(in)); err != nil {
+		t.Fatalf("envelope decode: %v", err)
+	}
+	p := pm.Payload.(*InferenceCompleteMessage)
+	if len(p.Profile) <= MaxInferenceProfileBytes {
+		t.Fatalf("test profile is not oversize: %d bytes", len(p.Profile))
+	}
+}
+
+// Every frame in the shared fixture decodes, the profiles fit the size cap,
+// and the typed wire struct covers every key the fixture carries (no silent
+// drops between the JSON contract and InferenceProfile).
+func TestProfilerWireFixtureProfiles(t *testing.T) {
+	frames := loadProfilerFixture(t)
+	for name, wantKeys := range map[string]bool{
+		"inference_complete_full":    true,
+		"inference_complete_omitted": false,
+		"inference_error_minimal":    true,
+		"inference_error_omitted":    false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame, ok := frames[name]
+			if !ok {
+				t.Fatalf("fixture frame %q missing", name)
+			}
+			var pm ProviderMessage
+			if err := pm.UnmarshalJSON(frame); err != nil {
+				t.Fatalf("UnmarshalJSON: %v", err)
+			}
+			var raw json.RawMessage
+			switch p := pm.Payload.(type) {
+			case *InferenceCompleteMessage:
+				raw = p.Profile
+			case *InferenceErrorMessage:
+				raw = p.Profile
+			default:
+				t.Fatalf("payload %T", pm.Payload)
+			}
+			if !wantKeys {
+				if raw != nil {
+					t.Fatalf("omitted variant carried a profile: %s", raw)
+				}
+				return
+			}
+			compact := compactJSON(t, raw)
+			if len(compact) > MaxInferenceProfileBytes {
+				t.Fatalf("fixture profile is %d bytes, cap %d", len(compact), MaxInferenceProfileBytes)
+			}
+			var typed InferenceProfile
+			if err := json.Unmarshal(compact, &typed); err != nil {
+				t.Fatalf("typed decode: %v", err)
+			}
+			re, err := json.Marshal(typed)
+			if err != nil {
+				t.Fatalf("re-marshal: %v", err)
+			}
+			got, want := jsonKeySet(t, re), jsonKeySet(t, compact)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("InferenceProfile key set differs from fixture:\n got %v\nwant %v", got, want)
+			}
+			if typed.Schema == nil || *typed.Schema != InferenceProfileSchema {
+				t.Fatalf("schema = %v", typed.Schema)
+			}
+		})
 	}
 }

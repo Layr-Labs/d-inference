@@ -245,7 +245,8 @@ extension ProviderLoop {
                     let requestId, let ciphertext, let senderPublicKey,
                     let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
                     let toolSchemaMetadataProtocol, let firstContentDeadline,
-                    let receivedAt
+                    let receivedAt,
+                    let profile
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -257,6 +258,7 @@ extension ProviderLoop {
                         toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         firstContentDeadline: firstContentDeadline,
                         receivedAt: receivedAt,
+                        profile: profile,
                         send: send
                     )
 

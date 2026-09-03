@@ -733,9 +733,9 @@ func (p *Postgres) RankTailFirstReuse(ctx context.Context, all bool) error {
 // RankTailAfterExec prepends a WITH clause to a local that has already been handed to
 // the driver. It reads the local back, exactly as RankTailFirstReuse does, and it is
 // the opposite case: the first query is over, so its real read of `usage` must not be
-// shadowed by a CTE the second query declares. What separates the two is whether a
-// driver call has taken the scope — the tail-first exception is only for text that has
-// not run yet.
+// shadowed by a CTE the second query declares. What separates the two is whether the
+// body has called the database since this query began — the tail-first exception is
+// only for text that has not run yet.
 //
 // Reached only by the direct-walk tests.
 func (p *Postgres) RankTailAfterExec(ctx context.Context, all bool) error {
@@ -745,6 +745,46 @@ func (p *Postgres) RankTailAfterExec(ctx context.Context, all bool) error {
 	}
 	if _, err := p.db.ExecContext(ctx, q); err != nil {
 		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankTailAfterAlias is RankTailAfterExec run through a copy: the query goes to the
+// driver under another name, so nothing ever hands `q` itself to the database. A mark
+// keyed by the local a call names would see an undispatched scope here and let the
+// second query's CTE shadow the first query's read of `usage`. Counting the body's
+// calls instead does not care which name the text went out under.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailAfterAlias(ctx context.Context, all bool) error {
+	q := `SELECT id FROM models WHERE id = $1`
+	if all {
+		q += ` JOIN usage u ON u.id = models.id`
+	}
+	r := q
+	if _, err := p.db.ExecContext(ctx, r); err != nil {
+		return err
+	}
+	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
+	_, err := p.db.ExecContext(ctx, q)
+	return err
+}
+
+// RankTailTwoQueries assembles a second, unrelated query tail-first after a first one
+// has already run. The body has called the database, but not since the second query
+// began, so the tail-first exception still applies to it: the count that ends the
+// exception is kept per scope and per query, not for the body at large.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) RankTailTwoQueries(ctx context.Context, all bool) error {
+	if _, err := p.db.ExecContext(ctx, `SELECT id FROM models WHERE id = $1`); err != nil {
+		return err
+	}
+	q := ` UNION SELECT id FROM usage`
+	if all {
+		q += ` LIMIT 10`
 	}
 	q = `WITH usage AS (SELECT id FROM models) SELECT id FROM usage` + q
 	_, err := p.db.ExecContext(ctx, q)

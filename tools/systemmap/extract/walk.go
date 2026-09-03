@@ -166,7 +166,7 @@ type fnWalk struct {
 	ctes         map[cteKey]map[string]bool // WITH clauses declared per assembled statement
 	frags        []fragment                 // table names read out of fragments, settled at body end
 	stmtTables   []statementTable           // tables named by whole statements, drawn at body end
-	dispatched   map[any]bool               // text scopes a driver call has already run
+	callsAtOpen  map[any]int                // database calls the body had made when a scope's query began
 
 	out []ir.Access
 }
@@ -198,7 +198,7 @@ func (f *fnWalk) stmt(s ast.Stmt) {
 	prevScope, prevStmt, prevFresh := f.textScope, f.textStmt, f.textFresh
 	if scope := f.textScopeFor(s); scope != nil {
 		f.textScope, f.textStmt, f.textFresh = scope, s, bindsScope(s)
-		if f.textFresh && (f.dispatched[scope] || !f.readsScope(s)) {
+		if f.textFresh && (f.ranSinceOpen(scope) || !f.readsScope(s)) {
 			f.openStatement()
 		}
 	}
@@ -254,9 +254,9 @@ func bindsScope(s ast.Stmt) bool {
 // the base and its `WITH` clause prepended — would put the tail and the WITH clause
 // that covers it in different generations and report the query's own CTE as a table.
 //
-// It is only asked of a scope no driver call has taken yet: see noteDispatch. Text
-// handed to the database is a query that is over, and prepending a `WITH` clause to
-// what is left of the local cannot reach back and shadow a table that query read.
+// It is only asked while the query is still unsent: see ranSinceOpen. Text handed to
+// the database is a query that is over, and prepending a `WITH` clause to what is left
+// of the local cannot reach back and shadow a table that query read.
 func (f *fnWalk) readsScope(s ast.Stmt) bool {
 	a, ok := s.(*ast.AssignStmt)
 	if !ok {
@@ -278,31 +278,19 @@ func (f *fnWalk) readsScope(s ast.Stmt) bool {
 	return found
 }
 
-// noteDispatch remembers that a driver call has run whatever the arguments name, so a
-// later rebinding of one of those locals starts a query even if it quotes the old
-// value. `q = "WITH usage AS (…) …" + q` after an `Exec(ctx, q)` is not a query being
-// assembled tail first; it is a second query reusing what is left of the local, and
-// letting its CTE into the first query's generation would shadow a table that query
-// really read. Every identifier in the argument counts, since `Exec(ctx, q+tail)`
-// dispatches q as much as `Exec(ctx, q)` does.
-func (f *fnWalk) noteDispatch(args []ast.Expr) {
-	for _, arg := range args {
-		ast.Inspect(arg, func(n ast.Node) bool {
-			id, ok := n.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			obj := f.objOf(id)
-			if obj == nil || obj.Type() == nil || !carriesText(obj.Type()) {
-				return true
-			}
-			if f.dispatched == nil {
-				f.dispatched = map[any]bool{}
-			}
-			f.dispatched[any(obj)] = true
-			return true
-		})
-	}
+// ranSinceOpen reports whether the body has made a database call since this scope's
+// current query began. If it has, that query has gone to the database and is over,
+// and a rebinding that quotes the local is a second query reusing what is left of it
+// rather than the same one assembled tail first — so its `WITH` clause must not reach
+// back and shadow a table the finished query really read.
+//
+// Counting the body's calls rather than marking the scopes a call names is what makes
+// this hard to evade: `r := q; Exec(ctx, r)` dispatches the query without ever naming
+// `q`, and a mark keyed by the local would have missed it. The count is per scope and
+// per generation, so a call belonging to some *other* query does not cut this one —
+// `q1 := …; Exec(q1); q2 := tail; q2 = "WITH …" + q2` is still assembled tail first.
+func (f *fnWalk) ranSinceOpen(scope any) bool {
+	return len(f.dbSites) != f.callsAtOpen[scope]
 }
 
 // textScopeFor names what the statement text inside s belongs to.
@@ -759,7 +747,6 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 				f.dbPos = x.Pos()
 			}
 			f.dbSites = append(f.dbSites, f.w.P.PosRef(x.Pos()))
-			f.noteDispatch(x.Args)
 		}
 		if selection := f.info.Selections[sel]; selection != nil && selection.Kind() != types.FieldVal {
 			recvType := selection.Recv()

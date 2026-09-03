@@ -370,11 +370,16 @@ this dies of:
   starts a query as much as `q = "SELECT …"` does — deciding it from the text let
   `q = ""; q += "WITH usage AS (…) …"` land in the previous query's scope and shadow a
   real read there. The one exception is a binding that reads the local back *before the
-  local has been run*: `q = "WITH usage AS (…) …" + q` is a query assembled tail first,
+  query has been sent*: `q = "WITH usage AS (…) …" + q` is a query assembled tail first,
   so it continues the scope rather than starting one — but the same line after an
   `Exec(ctx, q)` is a second query reusing the local, and starts one, because a query
   that has already gone to the database cannot have its tables shadowed by a `WITH`
-  clause written after it.
+  clause written after it. What ends the exception is the body making a database call,
+  counted per query, not the call naming that particular local: `r := q; Exec(ctx, r)`
+  sends the query without ever mentioning `q`, and a mark keyed by the local would have
+  let the next line's `WITH` clause reach back over it. Counting per query is what keeps
+  the exception available to a *second*, unrelated query assembled tail first after the
+  first one has run.
 
   Four consequences worth knowing. A CTE in one query does not silence a same-named
   real table in another *as long as the two are separate Go expressions* — see the
@@ -418,14 +423,18 @@ this dies of:
   driver calls the write leaves the map with nothing reported at all — not a degraded
   message, a silence. Nothing in the tree spells a comment that way.
 
-  Three more limits, all in shapes no store query has. Two whole statements in one
+  Four more limits, all in shapes no store query has. Two whole statements in one
   literal — `"WITH usage AS (…) SELECT … FROM usage; SELECT … FROM usage WHERE …"` —
   are one text to `Tables`, which strips a CTE name from all of it, so the second
   statement's read of the real table is dropped. The scan reads a body in source order
   rather than following control flow, so a `goto` that jumps over the assignment a
   `WITH` clause is in settles the fragment below it against names the running program
-  would not have. Those two are the remaining ways a CTE can mute a table without a
-  finding. And a `q` shadowed in an inner block is a different variable, so a fragment
+  would not have. A query sent by handing the text to a *helper* that calls the driver
+  leaves no call in this body to count, so a tail-first prepend after it still reads as
+  the same query and its `WITH` clause reaches back — but that helper takes its
+  statement as a parameter, which is the first rule's own failure, and the report says
+  so at the helper. Those two are the remaining ways a CTE can mute a table with
+  nothing reported anywhere. And a `q` shadowed in an inner block is a different variable, so a fragment
   there is reported rather than settled against the outer query's CTE names; that costs
   a finding with a remedy, not a silence.
 

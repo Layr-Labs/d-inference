@@ -418,6 +418,11 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 		{"RankTailAfterExec", []string{
 			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
 		}},
+		// The same shape with the call made under another name. Whether the query has
+		// run is a fact about the body, not about which local the driver was handed.
+		{"RankTailAfterAlias", []string{
+			"`JOIN usage u ON u.id = models.id` names a table but is only a fragment of a statement",
+		}},
 		// A local reset to text that is not a statement, then appended to. Neither line
 		// is a boundary if the text decides, so the second query's CTE reached back and
 		// shadowed the first query's real read of `usage` — a table dropped from the map
@@ -511,6 +516,9 @@ func TestFixtureReadableSQLIsNotDrift(t *testing.T) {
 		// The tail collected into a declared-but-unbound local before the base exists,
 		// so the fragment is read in a generation nothing has opened.
 		{"RankTailBeforeBase", []string{"pg.models R"}},
+		// A second query assembled tail first after a first one has run. The body has
+		// called the database, but not since this query began, so the exception holds.
+		{"RankTailTwoQueries", []string{"pg.models R", "pg.models R"}},
 		// Fragments whose FROM belongs to a keyword call and to a set-returning
 		// function. Neither names a table, and the fragment scan has to know that as
 		// well as `Tables` does.

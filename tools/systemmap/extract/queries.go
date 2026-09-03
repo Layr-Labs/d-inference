@@ -230,13 +230,15 @@ func (f *fnWalk) cteKey() cteKey {
 //     `usage` there. Binding on the statement kind rather than on its text is what
 //     closes that one, which is why this is called before the text is walked at all.
 //
-// The exception is a binding that reads the scope back — see `readsScope`.
+// The exception is a binding that reads the scope back — see `readsScope` — and it
+// lasts only until the query is dispatched, which is what `callsAtOpen` records here.
 func (f *fnWalk) openStatement() {
 	if f.gens == nil {
 		f.gens = map[any]int{}
+		f.callsAtOpen = map[any]int{}
 	}
 	f.gens[f.textScope]++
-	delete(f.dispatched, f.textScope) // the query that ran is the one that just ended
+	f.callsAtOpen[f.textScope] = len(f.dbSites)
 }
 
 // opaqueTable remembers a table whose name the extractor could read while the

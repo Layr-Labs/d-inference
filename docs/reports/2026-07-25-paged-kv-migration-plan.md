@@ -1,5 +1,7 @@
 # Migration Plan: Contiguous → Paged KV, and B=4 → B=8
 
+> Last updated: 2026-07-28 · commit `3eefaf1ed`
+
 Status: **proposed**, not started. Supersedes the "no" verdict in
 `2026-07-25-paged-attention-for-prefill-decision.md` (see §21 for what changed
 and which of that document's arguments were wrong).

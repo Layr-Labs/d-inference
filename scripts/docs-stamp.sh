@@ -77,7 +77,9 @@ stamp_one() {
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || { echo "docs-stamp: no such file: $f" >&2; exit 1; }
     if [ "$FROM_GIT" -eq 1 ]; then
-        meta=$(git log -1 --format='%as %h' -- "$f" || true)
+        # Follow renames and skip pure-rename commits (R) so a reorganisation
+        # does not masquerade as a content update.
+        meta=$(git log -1 --follow --diff-filter=AM --format='%as %h' -- "$f" || true)
         if [ -z "$meta" ]; then
             # Untracked file: fall back to today + HEAD.
             stamp_one "$f" "$TODAY" "$HEAD_SHA"

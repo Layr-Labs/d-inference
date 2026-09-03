@@ -1,5 +1,7 @@
 # Activation floor measurements — full catalog sweep (2026-08-30)
 
+> Last updated: 2026-09-03 · commit `dd63b83f1`
+
 **Goal:** measured B=8 activation peaks (peak-over-resident) on the *current* engine for
 every active catalog model, to (a) fill the unmeasured-model gaps in the per-model
 activation floor tables proposed by PR #683 (and PR #654), (b) re-baseline the two

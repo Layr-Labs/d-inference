@@ -1,5 +1,7 @@
 # Prefill and Fleet Performance — Findings, 2026-07-25
 
+> Last updated: 2026-07-28 · commit `3eefaf1ed`
+
 Working notes from the session that shipped provider **v0.7.15** (CBv2 prefill
 stack) and then measured the production system to decide what to do next.
 

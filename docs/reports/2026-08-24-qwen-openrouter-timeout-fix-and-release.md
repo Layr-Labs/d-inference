@@ -1,5 +1,7 @@
 # Qwen OpenRouter Timeout Fix and Release Record
 
+> Last updated: 2026-08-24 · commit `b41435f18`
+
 Date: 2026-08-24  
 Candidate branch: `fix/qwen-ttft-release`  
 Candidate HEAD inspected: `87fbe90c53de7fdf68849b11d4342fc880c400fa`  

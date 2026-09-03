@@ -1,3 +1,5 @@
+> Last updated: 2026-08-21 · commit `eba775987`
+
 ## Summary
 
 Rebases the retained Qwen prefill improvements onto current master after PRs

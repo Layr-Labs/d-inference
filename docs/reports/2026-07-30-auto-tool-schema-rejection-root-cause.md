@@ -1,5 +1,7 @@
 # Root cause: `tool_choice:"auto"` rejects standard JSON-Schema tool definitions for every model
 
+> Last updated: 2026-07-31 · commit `fde284903`
+
 Status: fixed. See the "Fix as shipped" section at the bottom.
 Regression tests: `coordinator/api/auto_toolschema_regression_test.go`,
 `provider-swift/Tests/ProviderCoreTests/GemmaToolConstraintTests.swift`,

@@ -1,5 +1,7 @@
 # BenchCBv2RealModel report
 
+> Last updated: 2026-09-03 · commit `dd63b83f1`
+
 | | |
 |---|---|
 | Model | ~/.cache/huggingface/hub/models--mlx-community--gpt-oss-20b-MXFP4-Q8/snapshots/773a7da77e569019bb0fd17a554b263738d669a3 |

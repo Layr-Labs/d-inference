@@ -1,5 +1,7 @@
 # Solo-Prefill Stripe Experiment — 2026-08-19
 
+> Last updated: 2026-08-20 · commit `b0af1a679`
+
 Feature branch: `perf/cbv2-stripe-major-prefill` (superproject) + `perf/cbv2-solo-prefill-stripe`
 (mlx-swift-lm). Opt-in scheduler feature + decision-grade A/B on the 2026-08-18 trace-report
 machine (M4 Max, Qwen3.6 35B-A3B, `--scheduler-prefill`, contiguous KV, cold prefills).

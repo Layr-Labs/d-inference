@@ -1,5 +1,7 @@
 # Cold-vs-adopted exactness on `gemma-4-26B-A4B-it-qat-4bit`
 
+> Last updated: 2026-07-28 · commit `3eefaf1ed`
+
 **Date:** 2026-07-26
 **Model:** `mlx-community/gemma-4-26B-A4B-it-qat-4bit` (the production flagship)
 **Question:** is prefix-cache ADOPTION byte-exact against a COLD prefill of the

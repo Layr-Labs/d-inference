@@ -1,5 +1,7 @@
 # EigenCloud → GCP Confidential VM Migration Runbook
 
+> Last updated: 2026-07-17 · commit `7c2aacd79`
+
 How to move the prod coordinator off EigenCloud onto a GCP Confidential VM with **no fleet disruption**, and how to handle the `darkbloom.dev → darkbloom.ai` domain change (separately).
 
 Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed state — see [`state-export.md`](../operations/state-export.md)) → `DAR-105` (security review) → `DAR-71` (cutover). `DAR-243` (`.ai`) is **decoupled**.

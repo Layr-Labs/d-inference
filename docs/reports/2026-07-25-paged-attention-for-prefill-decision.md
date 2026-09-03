@@ -1,5 +1,7 @@
 # Should we move to Paged Attention instead of optimizing AttentionV1?
 
+> Last updated: 2026-07-28 · commit `3eefaf1ed`
+
 **Decision: No — not for the prefill problem.** Paged attention is a
 decode-side KV-memory optimization. Its prefill path is the *same* composed
 fallback we already run, plus an extra materialized mask, and adopting it would

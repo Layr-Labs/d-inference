@@ -1,5 +1,7 @@
 # Provider Trust Reliability
 
+> Last updated: 2026-07-04 · commit `98a38f5b0`
+
 How a provider earns **hardware** trust, why ~11% of the fleet got stranded at
 `self_signed`/`untrusted`, what the per-connection MDM fix changed, and how to
 observe the trust pipeline.

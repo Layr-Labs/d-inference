@@ -191,3 +191,61 @@ Indexes with ≤ 25 scans in 10 days: `inference_routes_pkey` 3.8 GB (0), `idx_i
 
 Datadog on this build has no per-stage latency metrics (the #723 X-Timing histograms
 are not emitted by 4ce5c0409); `inference_routes` is the only source for the stage table above.
+
+## Addendum — prod redeployed to master `5d400cf75` (#809) at 21:13 UTC, re-measured 21:24 UTC
+
+The container restarted 11 minutes before the second profile, so the live heap is the
+fresh-process baseline (leak reset). Same offered load (≈62 attempts/s).
+
+| Metric | Build 4ce5c0409 (78-day-old process, heap 1.12 GB) | Build 5d400cf75 (11 min old, heap 0.16 GB) |
+|---|---:|---:|
+| Coordinator CPU (30 s profile) | 4.46 cores | **3.43 cores** |
+| GC (`gcBgMarkWorker` cum) | 1.74 cores (38.8 %) | **0.75 cores (21.8 %)** |
+| `scanCandidatesLocked` cum | 1.21 cores (26.9 %) | 1.39 cores (40.4 %) |
+| `handleChatCompletions` cum | 1.90 cores | 2.01 cores |
+| `providerReadLoop` cum | 0.23 cores | 0.22 cores |
+| streaming relay cum | 0.22 cores | 0.22 cores |
+| `Syscall6` flat | 0.24 cores | 0.23 cores |
+| goroutines | 7,080 | 7,714 |
+| Go MemStats (new build, 11 min): `TotalAlloc` 185.9 GB → **281 MB/s allocation rate**; `NumGC` 1,162 → 1.76 GC cycles/s; `HeapAlloc` 256 MB, `NextGC` 415 MB | | |
+
+The one-core difference in GC between the two processes is the cost of the retained
+heap (the `Ledger.RecordUsage` growth plus retained provider frames): same allocation
+rate, four to seven times more live bytes to mark per cycle. **M: ≈1.0 core.**
+
+#809 write rates, first 10 minutes after deploy (Postgres, read-only):
+
+| Table | Rows in 10 min | Rate | Growth |
+|---|---:|---:|---|
+| `request_profiles` | 39,327 | **65 rows/s** (one INSERT per dispatched attempt) | 65 MB / 10 min ≈ **9.4 GB/day** |
+| `fleet_snapshots` | 15,381 | 25 rows/s (one row per provider per 60 s) | 10 MB / 10 min ≈ 1.4 GB/day |
+| `inference_routes` (for scale) | 37,511 | 62 rows/s (+62 UPDATEs/s) | ≈ 12 GB/day |
+
+## Database instance (corrected: the coordinator talks to `d-inference-prod-pg17` via cloud-sql-proxy)
+
+| Instance | Tier | Role | CPU (6 h mean) | Backends | Disk writes | Tx/min |
+|---|---|---|---:|---:|---:|---:|
+| `d-inference-prod-pg17` | `db-c4a-highmem-32` (32 vCPU, 256 GB), REGIONAL, 600 GB | primary | **34.5 % ≈ 11 vCPU busy** (peak 40 %) | 25–56 | 55.8 K ops/min | 99.5 K (≈1,660 tx/s) |
+| `d-inference-prod-pg17-ro` | `db-c4a-highmem-16` | read replica (admin-ui) | 5 % | 3 | (replay) | 208 |
+| `d-inference-prod` | `db-custom-1-3840`, PG 16, 10 GB | **orphan, still RUNNABLE** | 9 % | 2 | 0 | — |
+
+Roughly 90 % of the primary's busy samples are the five analytics statements, i.e.
+≈10 of the 11 busy vCPUs on a 32-vCPU regional instance are spent recomputing the
+public stats page. The hot path itself (≈1,660 tx/s of short writes) is the other ≈1 vCPU.
+
+## Host CPU outside the coordinator process (`ps`, 21:24 UTC)
+
+| Process | CPU | Note |
+|---|---:|---|
+| coordinator | 206 % (instant; 343 % over the 30 s profile) | |
+| dockerd | **180 %** | json-file log driver + six concurrent `docker logs --since 2h --tail 50000`-style readers |
+| journalctl | **100 %** | operator/agent log tailing |
+| caddy | 45 % | TLS termination |
+| cloud-sql-proxy | 8 % | |
+
+Coordinator log volume: **18,955 lines / 4.6 MB per minute** (≈316 lines/s, ≈6.6 GB/day)
+through Docker's json-file driver with **no rotation configured** (`LogConfig: {}`); the
+container's log file was 85 MB twelve minutes after start. Per request the coordinator
+emits four to six INFO lines (`request`, `inference request dispatched`, `dispatch_pool`,
+`inference complete`/`inference error`, `speculative_dispatch_*`); "error for unknown
+request" (the post-cancel zombie frames) still logs 142 lines/min.

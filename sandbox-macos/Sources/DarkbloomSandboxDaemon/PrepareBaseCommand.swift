@@ -44,7 +44,14 @@ enum PrepareBaseCommand {
             // A base image exists to be cloned into tenant sandboxes, so the
             // agent it carries has to be able to run their commands. The gates
             // that decide whether any command reaches it are host-side.
-            bakeExecutableGuestAgent: true
+            bakeExecutableGuestAgent: true,
+            // Deliberately NOT isolated, unlike the serve path. Base-image
+            // preparation keeps host NAT so that if a bake ever fails, guest
+            // facts still fall back to SSH instead of the operator path dying
+            // outright. Verified live at `.isolated` too -- readiness and the
+            // facts both came over the channel -- so this is a choice about
+            // keeping the fallback, not a limitation.
+            tenantNetworkPolicy: .hostNAT
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
             specification: specification

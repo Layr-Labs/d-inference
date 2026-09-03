@@ -1,6 +1,37 @@
 import Foundation
 import SandboxRuntime
 
+/// What a tenant VM is allowed to reach.
+package enum LumeTenantNetworkPolicy: Sendable, Equatable {
+    /// No network device at all. Nothing to bring up, nothing to reach, and no
+    /// helper process whose death would open a hole.
+    case isolated
+    /// The guest shares the host's NAT. Correct for building base images, whose
+    /// unattended install needs SSH; wrong for tenant code, which would sit on
+    /// the provider's LAN.
+    case hostNAT
+
+    /// The value `lume run --network` takes.
+    package var lumeArgument: String {
+        switch self {
+        case .isolated:
+            return "none"
+        case .hostNAT:
+            return "nat"
+        }
+    }
+
+    /// Whether this confines tenant egress to something the host enforces.
+    package var confinesEgress: Bool {
+        switch self {
+        case .isolated:
+            return true
+        case .hostNAT:
+            return false
+        }
+    }
+}
+
 public enum LumeRuntimeTrustPolicy: Sendable {
     case production
     case developmentAdHoc
@@ -77,6 +108,10 @@ public struct LumeRuntimeConfiguration: Sendable {
         "ThirdParty/lume-patches/0008-bake-guest-agent.patch"
     public static let pinnedGuestAgentPatchSHA256 =
         "2e90fd88fe7c8a379e621162015b7fea249db4d4c560ddfb02fc86461308c011"
+    public static let pinnedIsolatedNetworkPatchPath =
+        "ThirdParty/lume-patches/0009-isolated-tenant-network.patch"
+    public static let pinnedIsolatedNetworkPatchSHA256 =
+        "bc0193fa661dd77c161124e4e3be2fce6f9055d5618dfac64f1c9bb99961e09e"
     public static let pinnedPatches = [
         pinnedPatchPath: pinnedPatchSHA256,
         pinnedLivenessPatchPath: pinnedLivenessPatchSHA256,
@@ -86,6 +121,7 @@ public struct LumeRuntimeConfiguration: Sendable {
         pinnedGuestIdentityPatchPath: pinnedGuestIdentityPatchSHA256,
         pinnedEmergencyStopPatchPath: pinnedEmergencyStopPatchSHA256,
         pinnedGuestAgentPatchPath: pinnedGuestAgentPatchSHA256,
+        pinnedIsolatedNetworkPatchPath: pinnedIsolatedNetworkPatchSHA256,
     ]
 
     public let executable: URL
@@ -96,6 +132,13 @@ public struct LumeRuntimeConfiguration: Sendable {
     /// is made executable deliberately, and the daemon that bakes it is the
     /// only thing that knows whether it is building a tenant base image.
     package let bakeExecutableGuestAgent: Bool
+
+    /// The network a started VM gets.
+    ///
+    /// Defaults to `.hostNAT` because that is what every path did before this
+    /// existed, and because base-image preparation genuinely needs it. The
+    /// serve path asks for `.isolated`.
+    package let tenantNetworkPolicy: LumeTenantNetworkPolicy
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
@@ -144,7 +187,9 @@ public struct LumeRuntimeConfiguration: Sendable {
             trustPolicy: trustPolicy,
             guestCommandPolicy: .disabled,
             guestChannelPort: nil,
-            guestAgentExecutable: nil
+            guestAgentExecutable: nil,
+            bakeExecutableGuestAgent: false,
+            tenantNetworkPolicy: .hostNAT
         )
     }
 
@@ -157,7 +202,8 @@ public struct LumeRuntimeConfiguration: Sendable {
         guestCommandPolicy: LumeGuestCommandPolicy,
         guestChannelPort: UInt32? = nil,
         guestAgentExecutable: URL? = nil,
-        bakeExecutableGuestAgent: Bool = false
+        bakeExecutableGuestAgent: Bool = false,
+        tenantNetworkPolicy: LumeTenantNetworkPolicy = .hostNAT
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -189,5 +235,6 @@ public struct LumeRuntimeConfiguration: Sendable {
             .standardizedFileURL
             .resolvingSymlinksInPath()
         self.bakeExecutableGuestAgent = bakeExecutableGuestAgent
+        self.tenantNetworkPolicy = tenantNetworkPolicy
     }
 }

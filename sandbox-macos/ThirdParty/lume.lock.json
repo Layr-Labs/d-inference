@@ -35,6 +35,10 @@
     {
       "path": "ThirdParty/lume-patches/0008-bake-guest-agent.patch",
       "sha256": "2e90fd88fe7c8a379e621162015b7fea249db4d4c560ddfb02fc86461308c011"
+    },
+    {
+      "path": "ThirdParty/lume-patches/0009-isolated-tenant-network.patch",
+      "sha256": "bc0193fa661dd77c161124e4e3be2fce6f9055d5618dfac64f1c9bb99961e09e"
     }
   ],
   "license": "MIT",

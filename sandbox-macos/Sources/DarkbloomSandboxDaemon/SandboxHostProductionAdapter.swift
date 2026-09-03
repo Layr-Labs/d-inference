@@ -99,11 +99,15 @@ struct SandboxHostIsolationReadiness: Equatable, Sendable {
     /// Derives readiness from what the daemon is actually configured to do,
     /// rather than asserting a constant.
     ///
-    /// 🛑 `networkPolicy` is hard-wired false and that is deliberate, not an
-    /// oversight: nothing confines tenant egress yet. The packet gateway is a
-    /// separate stage, and until it lands this host must keep refusing jobs
-    /// even though the other two flags are honestly true. Flipping this without
-    /// the gateway would put tenant code on the provider's LAN.
+    /// `networkPolicy` reads the runtime's tenant network policy. It is true
+    /// for `.isolated`, which attaches no network device at all: egress is
+    /// confined to nothing, by a decision the host makes at spawn and a guest
+    /// cannot undo. It stays false for `.hostNAT`, which would put tenant code
+    /// on the provider's LAN.
+    ///
+    /// 🛑 A packet gateway granting *filtered* egress is a later stage. When it
+    /// lands it adds a third policy case; it must not simply flip this flag for
+    /// `.hostNAT`.
     static func derived(
         from configuration: LumeRuntimeConfiguration
     ) -> SandboxHostIsolationReadiness {
@@ -115,7 +119,7 @@ struct SandboxHostIsolationReadiness: Equatable, Sendable {
             // per-VM proof is the handshake itself.
             signedGuestControl: configuration.trustPolicy.isProvenanceVerified
                 && configuration.guestChannelPort != nil,
-            networkPolicy: false,
+            networkPolicy: configuration.tenantNetworkPolicy.confinesEgress,
             // Enforced by construction: the guest's disk is a fixed-size image
             // sized at create and validated against SandboxResourcePolicy, and
             // a template whose disk differs from the request is refused. A

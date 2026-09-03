@@ -162,6 +162,49 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(state, .running)
     }
 
+    /// A tenant VM is started with no network device.
+    ///
+    /// The mode is chosen per run rather than baked into the image, which is
+    /// what lets one base image be built over NAT -- the unattended install
+    /// needs SSH -- and then run isolated once it carries tenant code.
+    func testTenantVirtualMachinesStartWithNoNetworkDevice() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "stopped",
+            behavior: "credentialed-readiness-start-intent"
+        )
+        defer { try? fixture.remove() }
+        let runtime = LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 4,
+                createTimeoutSeconds: 4,
+                trustPolicy: .developmentAdHoc,
+                guestCommandPolicy: .tenantExecution,
+                tenantNetworkPolicy: .isolated
+            ),
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        try await runtime.start(name: fixture.virtualMachineName)
+
+        let arguments = try String(
+            contentsOf: fixture.runArguments, encoding: .utf8
+        )
+        XCTAssertTrue(arguments.contains("--network"), arguments)
+        XCTAssertTrue(
+            arguments.contains("none"),
+            "a tenant VM must be started with no network device: \(arguments)"
+        )
+        XCTAssertFalse(
+            arguments.contains("nat"),
+            "isolated must not fall back to host NAT: \(arguments)"
+        )
+    }
+
     /// The other side of the gate: `.tenantExecution` admits.
     ///
     /// Kept as a sibling of the refusal test above rather than replacing it,

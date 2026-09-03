@@ -444,6 +444,10 @@ extension LumeVirtualMachineRuntime {
                     name,
                     "--display", "none",
                     "--vnc", "disabled",
+                    // Chosen per run, not per image: base images are built over
+                    // NAT because the unattended install needs SSH, and the
+                    // same image runs isolated once it is carrying tenant code.
+                    "--network", configuration.tenantNetworkPolicy.lumeArgument,
                 ]),
                 environment: workspace.environment,
                 cooperativeControl: LumeLifecycleControl.processControl,

@@ -151,44 +151,45 @@ final class SandboxHostProductionAdapterTests: XCTestCase {
         XCTAssertTrue(events.isEmpty, "\(events)")
     }
 
-    /// Pins the Stage 5 dependency rather than leaving it to memory.
+    /// Egress confinement is what `networkPolicy` means, and it is read rather
+    /// than assumed.
     ///
-    /// Two of the three flags are honestly true today. The host still refuses
-    /// every sandbox job, and it refuses for one specific reason: nothing
-    /// confines tenant egress yet. If someone sets `networkPolicy` true without
-    /// a packet gateway, this fails.
-    func testDerivedReadinessIsBlockedOnlyByNetworkPolicy() throws {
-        let storage = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let readiness = SandboxHostIsolationReadiness.derived(
-            from: try LumeRuntimeConfiguration(
-                executable: URL(fileURLWithPath: "/usr/bin/true"),
-                storageDirectory: storage,
-                trustPolicy: .production,
-                guestCommandPolicy: .tenantExecution,
-                guestChannelPort: LumeRuntimeConfiguration
-                    .defaultGuestChannelPort
+    /// A tenant VM with no network device is confined by construction: there is
+    /// no interface to bring up and none a guest can add. A VM sharing the
+    /// host's NAT is not confined at all, and the host must keep refusing jobs
+    /// while that is the policy — which is the case this test exists to pin.
+    func testDerivedReadinessFollowsTheTenantNetworkPolicy() throws {
+        func readiness(
+            _ policy: LumeTenantNetworkPolicy
+        ) throws -> SandboxHostIsolationReadiness {
+            let storage = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            return SandboxHostIsolationReadiness.derived(
+                from: try LumeRuntimeConfiguration(
+                    executable: URL(fileURLWithPath: "/usr/bin/true"),
+                    storageDirectory: storage,
+                    trustPolicy: .production,
+                    guestCommandPolicy: .tenantExecution,
+                    guestChannelPort: LumeRuntimeConfiguration
+                        .defaultGuestChannelPort,
+                    tenantNetworkPolicy: policy
+                )
             )
-        )
+        }
 
-        XCTAssertTrue(readiness.signedGuestControl)
-        XCTAssertTrue(readiness.workspaceQuota)
-        XCTAssertFalse(readiness.networkPolicy)
-        XCTAssertFalse(readiness.permitsJobs)
-        XCTAssertEqual(
-            readiness.blockingReason,
-            "no enforced tenant network policy"
-        )
+        let isolated = try readiness(.isolated)
+        XCTAssertTrue(isolated.signedGuestControl)
+        XCTAssertTrue(isolated.workspaceQuota)
+        XCTAssertTrue(isolated.networkPolicy)
+        XCTAssertTrue(isolated.permitsJobs)
+        XCTAssertNil(isolated.blockingReason)
 
-        // And the reason is reachable: flipping only the missing flag permits
-        // jobs, so this asserts the gate rather than a constant.
-        let withGateway = SandboxHostIsolationReadiness(
-            signedGuestControl: readiness.signedGuestControl,
-            networkPolicy: true,
-            workspaceQuota: readiness.workspaceQuota
-        )
-        XCTAssertTrue(withGateway.permitsJobs)
-        XCTAssertNil(withGateway.blockingReason)
+        // Sharing the host's NAT would put tenant code on the provider's LAN,
+        // so it is not a confinement and the host stays shut.
+        let nat = try readiness(.hostNAT)
+        XCTAssertFalse(nat.networkPolicy)
+        XCTAssertFalse(nat.permitsJobs)
+        XCTAssertEqual(nat.blockingReason, "no enforced tenant network policy")
     }
 
     /// A development host has not verified the Lume it is driving, so it must

@@ -49,7 +49,11 @@ enum ServeCommand {
                 // and its handshake verified. Without a port no device is
                 // attached and every command would fall back to SSH.
                 guestChannelPort: LumeRuntimeConfiguration
-                    .defaultGuestChannelPort
+                    .defaultGuestChannelPort,
+                // Tenant VMs get no network device. Readiness no longer needs
+                // one: a VM whose agent serves commands is proven ready over
+                // the channel, so nothing here waits on guest IP discovery.
+                tenantNetworkPolicy: .isolated
         )
         let isolationReadiness = SandboxHostIsolationReadiness.derived(
             from: runtimeConfiguration

@@ -23,6 +23,9 @@ struct FakeLumeFixture {
     var behavior: URL { paths.behavior }
     var createStarted: URL { paths.createStarted }
     var createArguments: URL { paths.createArguments }
+    /// What the runtime actually asked `lume run` for. The network mode is
+    /// chosen per run, so nothing else here can observe it.
+    var runArguments: URL { paths.runArguments }
     var listStarted: URL { paths.listStarted }
     var listContinue: URL { paths.listContinue }
     var guestCommandStarted: URL { paths.guestCommandStarted }
@@ -847,6 +850,10 @@ struct FakeLumeFixture {
         fi
         ;;
       run)
+        # Recorded so a test can assert what the runtime actually asked lume
+        # for -- the network mode is chosen per run, and nothing else here can
+        # observe it.
+        printf '%s\\n' "$@" > "$root/run-arguments"
         if [ "$behavior" = "credentialed-readiness-uncooperative" ]; then
           trap '' HUP INT TERM
         else
@@ -1163,6 +1170,7 @@ private struct FakeLumeFixturePaths {
     let observedDiskBytes: URL
     let createStarted: URL
     let createArguments: URL
+    let runArguments: URL
     let listStarted: URL
     let listContinue: URL
     let guestCommandStarted: URL
@@ -1208,6 +1216,7 @@ private struct FakeLumeFixturePaths {
         )
         createStarted = directory.appendingPathComponent("create-started")
         createArguments = directory.appendingPathComponent("create-arguments")
+        runArguments = directory.appendingPathComponent("run-arguments")
         listStarted = directory.appendingPathComponent("list-started")
         listContinue = directory.appendingPathComponent("list-continue")
         guestCommandStarted = directory.appendingPathComponent(

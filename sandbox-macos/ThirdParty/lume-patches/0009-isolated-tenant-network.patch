@@ -1,0 +1,187 @@
+diff --git a/libs/lume/src/Commands/Run.swift b/libs/lume/src/Commands/Run.swift
+index 7a21596..68f7a86 100644
+--- a/libs/lume/src/Commands/Run.swift
++++ b/libs/lume/src/Commands/Run.swift
+@@ -103,7 +103,7 @@ struct Run: AsyncParsableCommand {
+ 
+     @Option(
+         name: .customLong("network"),
+-        help: "Optional network override: 'nat', 'bridged', or 'bridged:<interface>' (e.g. 'bridged:en0'). Defaults to the VM's configured mode.")
++        help: "Optional network override: 'nat', 'none', 'bridged', or 'bridged:<interface>' (e.g. 'bridged:en0'). 'none' attaches no network device at all. Defaults to the VM's configured mode.")
+     var network: String?
+ 
+     @Flag(
+@@ -119,7 +119,7 @@ struct Run: AsyncParsableCommand {
+             }
+             guard let mode = NetworkMode.parse(network) else {
+                 throw ValidationError(
+-                    "Invalid network mode '\(network)'. Expected 'nat', 'bridged', or 'bridged:<interface>'."
++                    "Invalid network mode '\(network)'. Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
+                 )
+             }
+             return mode
+diff --git a/libs/lume/src/Server/Requests.swift b/libs/lume/src/Server/Requests.swift
+index 2bb3b0d..e9d333e 100644
+--- a/libs/lume/src/Server/Requests.swift
++++ b/libs/lume/src/Server/Requests.swift
+@@ -5,7 +5,7 @@ import Virtualization
+ private func parseNetworkModeString(_ value: String) throws -> NetworkMode {
+     guard let mode = NetworkMode.parse(value) else {
+         throw ValidationError(
+-            "Invalid network mode '\(value)'. Expected 'nat', 'bridged', or 'bridged:<interface>'."
++            "Invalid network mode '\(value)'. Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
+         )
+     }
+     return mode
+diff --git a/libs/lume/src/VM/NetworkMode.swift b/libs/lume/src/VM/NetworkMode.swift
+index 7ecb5c2..76121e3 100644
+--- a/libs/lume/src/VM/NetworkMode.swift
++++ b/libs/lume/src/VM/NetworkMode.swift
+@@ -13,11 +13,20 @@ import Foundation
+ enum NetworkMode: Equatable, CustomStringConvertible {
+     case nat
+     case bridged(interface: String?)
++    /// No network device at all.
++    ///
++    /// Not "a device that drops packets" -- there is nothing for a guest to
++    /// configure, bring up, or reach, which is the strongest confinement
++    /// available and needs no helper process to hold it. Used for tenant
++    /// sandboxes; base images are still built over NAT, because the unattended
++    /// installer's health check and first-boot finalization both run over SSH.
++    case isolated
+ 
+     /// Parse a network mode string.
+     ///
+     /// Accepted formats:
+     ///   - `"nat"` → NAT mode (default)
++    ///   - `"none"` → no network device at all
+     ///   - `"bridged"` → Bridged mode with auto-detected interface
+     ///   - `"bridged:<interface>"` → Bridged mode on a specific interface (e.g. `"bridged:en0"`)
+     ///
+@@ -30,6 +39,10 @@ enum NetworkMode: Equatable, CustomStringConvertible {
+             return .nat
+         }
+ 
++        if lowercased == "none" {
++            return .isolated
++        }
++
+         if lowercased == "bridged" {
+             return .bridged(interface: nil)
+         }
+@@ -54,6 +67,8 @@ enum NetworkMode: Equatable, CustomStringConvertible {
+                 return "bridged:\(interface)"
+             }
+             return "bridged"
++        case .isolated:
++            return "none"
+         }
+     }
+ 
+@@ -72,7 +87,7 @@ extension NetworkMode: Codable {
+         guard let mode = NetworkMode.parse(string) else {
+             throw DecodingError.dataCorruptedError(
+                 in: container,
+-                debugDescription: "Invalid network mode: \(string). Expected 'nat', 'bridged', or 'bridged:<interface>'."
++                debugDescription: "Invalid network mode: \(string). Expected 'nat', 'none', 'bridged', or 'bridged:<interface>'."
+             )
+         }
+         self = mode
+diff --git a/libs/lume/src/Virtualization/VMVirtualizationService.swift b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+index 80909b3..f6c4fff 100644
+--- a/libs/lume/src/Virtualization/VMVirtualizationService.swift
++++ b/libs/lume/src/Virtualization/VMVirtualizationService.swift
+@@ -284,16 +284,26 @@ class BaseVirtualizationService: VMVirtualizationService {
+         }
+     }
+ 
++    /// The guest's network device, or `nil` when it should have none.
++    ///
++    /// Optional rather than a device with a dead attachment: a guest with no
++    /// `VZNetworkDeviceConfiguration` has no interface to bring up at all, so
++    /// there is nothing to misconfigure and nothing to hold open.
+     static func createNetworkDeviceConfiguration(
+         macAddress: String,
+         networkMode: NetworkMode = .nat
+-    ) throws -> VZNetworkDeviceConfiguration {
++    ) throws -> VZNetworkDeviceConfiguration? {
++        if case .isolated = networkMode {
++            return nil
++        }
+         let network = VZVirtioNetworkDeviceConfiguration()
+         guard let vzMacAddress = VZMACAddress(string: macAddress) else {
+             throw VMConfigError.invalidMachineIdentifier
+         }
+ 
+         switch networkMode {
++        case .isolated:
++            return nil
+         case .nat:
+             network.attachment = VZNATNetworkDeviceAttachment()
+         case .bridged(let interfaceName):
+@@ -451,12 +461,11 @@ final class DarwinVirtualizationService: BaseVirtualizationService {
+             }
+         }
+         vzConfig.storageDevices = storageDevices
+-        vzConfig.networkDevices = [
+-            try createNetworkDeviceConfiguration(
+-                macAddress: config.macAddress,
+-                networkMode: config.networkMode
+-            )
+-        ]
++        // Empty for an isolated guest: no interface to bring up at all.
++        vzConfig.networkDevices = try createNetworkDeviceConfiguration(
++            macAddress: config.macAddress,
++            networkMode: config.networkMode
++        ).map { [$0] } ?? []
+         vzConfig.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
+         vzConfig.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+         
+@@ -680,12 +689,11 @@ final class LinuxVirtualizationService: BaseVirtualizationService {
+             }
+         }
+         vzConfig.storageDevices = storageDevices
+-        vzConfig.networkDevices = [
+-            try createNetworkDeviceConfiguration(
+-                macAddress: config.macAddress,
+-                networkMode: config.networkMode
+-            )
+-        ]
++        // Empty for an isolated guest: no interface to bring up at all.
++        vzConfig.networkDevices = try createNetworkDeviceConfiguration(
++            macAddress: config.macAddress,
++            networkMode: config.networkMode
++        ).map { [$0] } ?? []
+         vzConfig.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
+         vzConfig.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+ 
+diff --git a/libs/lume/tests/GuestAgentInstallTests.swift b/libs/lume/tests/GuestAgentInstallTests.swift
+index ee43d62..f6c55f3 100644
+--- a/libs/lume/tests/GuestAgentInstallTests.swift
++++ b/libs/lume/tests/GuestAgentInstallTests.swift
+@@ -234,3 +234,25 @@ func finalizationScriptSplicesTheAgentBlock() throws {
+     let chown = try #require(script.range(of: "chown root:wheel /usr/local/libexec"))
+     #expect(chown.lowerBound < marker.lowerBound)
+ }
++
++@MainActor
++@Test("an isolated guest gets no network device at all")
++func isolatedNetworkModeAttachesNothing() throws {
++    // Round-trips through the same string the config persists, so a VM stored
++    // as isolated comes back isolated.
++    #expect(NetworkMode.parse("none") == NetworkMode.isolated)
++    #expect(NetworkMode.isolated.description == "none")
++    #expect(NetworkMode.isolated.configString == "none")
++
++    // The existing modes are untouched.
++    #expect(NetworkMode.parse("nat") == NetworkMode.nat)
++    #expect(NetworkMode.parse("bridged") == NetworkMode.bridged(interface: nil))
++    #expect(NetworkMode.parse("nonsense") == nil)
++
++    // No device, rather than a device with a dead attachment: there is nothing
++    // for a guest to bring up.
++    #expect(try BaseVirtualizationService.createNetworkDeviceConfiguration(
++        macAddress: "aa:bb:cc:dd:ee:ff", networkMode: .isolated) == nil)
++    #expect(try BaseVirtualizationService.createNetworkDeviceConfiguration(
++        macAddress: "aa:bb:cc:dd:ee:ff", networkMode: .nat) != nil)
++}

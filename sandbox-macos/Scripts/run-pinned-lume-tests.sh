@@ -64,6 +64,7 @@ REQUIRED_PATCHED_LUME_TESTS=(
     logDirectoryMapsOntoTheDataVolume
     executionIsOffUnlessRequested
     finalizationScriptSplicesTheAgentBlock
+    isolatedNetworkModeAttachesNothing
 )
 for test_name in "${REQUIRED_PATCHED_LUME_TESTS[@]}"; do
     (

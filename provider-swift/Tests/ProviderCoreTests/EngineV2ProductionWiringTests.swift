@@ -326,6 +326,43 @@ struct EngineV2SlotBuildTests {
         #expect(MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens == 4)
     }
 
+    @Test("the depth policy is a function of drafter capability and environment only")
+    func depthPolicyIsShapeIndependent() {
+        // Nothing about a prompt reaches this policy, so there is nothing it
+        // could key on. The guard is that the ONLY inputs are the drafter's
+        // capability and the environment: fix both and the answer is fixed,
+        // for a 64-token prompt and a full-context one alike. A future
+        // length-keyed branch would have to change this signature to compile,
+        // which is the point.
+        for environment in [
+            [:],
+            [MTPAutomaticVerificationPolicy.draftTokensEnvironmentKey: "6"],
+            [MTPAutomaticVerificationPolicy.draftTokensEnvironmentKey: "adaptive"],
+        ] as [[String: String]] {
+            let stateless = MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: false, environment: environment)
+            let stateful = MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: true, environment: environment)
+            for _ in 0..<4 {
+                #expect(
+                    MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                        usesRequestStatefulDrafter: false, environment: environment) == stateless)
+                #expect(
+                    MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                        usesRequestStatefulDrafter: true, environment: environment) == stateful)
+            }
+        }
+        // The rectangular width budget is the other half of the contract, and
+        // it is keyed on the CHIP, never on a prompt: the same chip returns
+        // the same budget whatever is being served.
+        for chip in ["Apple M1 Max", "Apple M3 Pro", "Apple M5 Max", "Unknown"] {
+            let budget = MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: chip)
+            #expect(
+                MTPAutomaticVerificationPolicy.maxRectangularTokens(
+                    environment: [:], chipName: chip) == budget)
+        }
+    }
+
     @Test("the stateless fixed depth is an operator knob, clamped to the envelope")
     func statelessDepthIsOverridable() {
         func depth(_ raw: String) -> Int? {

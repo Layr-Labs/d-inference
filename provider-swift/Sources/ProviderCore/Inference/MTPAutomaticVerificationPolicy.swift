@@ -28,6 +28,28 @@ public enum MTPAutomaticVerificationPolicy {
     /// the curve peaks where the falling acceptance stops paying for the extra
     /// verify column. The adaptive controller barely engages at B=1 and loses
     /// to target-only, which is why a stateless drafter gets a fixed pin at all.
+    ///
+    /// SHAPE INDEPENDENCE. This is a constant, not a table: the same depth is
+    /// requested for a 64-token prompt and for a full-context one, and nothing
+    /// in this type reads a prompt length, a context size, a KV window, or a
+    /// prefill chunk size. That is deliberate. A depth that switched on prompt
+    /// length would make every measurement a measurement of the switch, and
+    /// would silently mis-serve every length nobody tuned.
+    ///
+    /// It is also why the depth is only ever a REQUEST. The engine bounds each
+    /// round by the rectangular width budget, the step token budget, and KV
+    /// headroom, all of which are computed per plan from live state — so a
+    /// request that does not fit at some shape is clamped there and nowhere
+    /// else. Degradation across shapes is the engine's job, done with facts it
+    /// has; picking a number per shape here would be doing it with facts this
+    /// type does not have.
+    ///
+    /// The measurement above is a 64-token, three-short-prompt one, and the
+    /// cost model says the optimum should move DEEPER as context grows (the
+    /// target step gets more expensive with KV length while the drafter and
+    /// the extra verify column barely do). Re-derive it at length; if the
+    /// answer differs, change this one constant or set the knob — do not add a
+    /// length-keyed branch.
     public static let defaultStatelessDraftTokens = 4
 
     /// Retained name for the historical pin. It is no longer the default; it

@@ -244,6 +244,26 @@ func (p *Postgres) ListModelsLogged(ctx context.Context, base string) error {
 	return err
 }
 
+// ListModelsCondProse puts text in the expressions of two composite statements: a
+// switch tag that reads like a WITH clause, and an if condition holding a fragment
+// that names a real table. Neither statement is a query, but both used to fall
+// through to the body-wide zero scope, and pooling them there let the prose above
+// shadow the name below — the same mute per-element scoping closed one level up, in
+// the one place a scope was still shared by everything in the function.
+//
+// Reached only by the direct-walk tests.
+func (p *Postgres) ListModelsCondProse(ctx context.Context, mode, note string) error {
+	switch mode {
+	case `cannot rank WITH usage AS (window) unset`:
+		return nil
+	}
+	if note == ` UNION SELECT model FROM usage` {
+		return nil
+	}
+	_, err := p.db.ExecContext(ctx, `SELECT id FROM models WHERE id = $1`)
+	return err
+}
+
 // JoinSpliced ends its fragment at the keyword and concatenates the table name
 // after it. `q += " FOR UPDATE"` looks the same to a scan that only asks whether
 // a token follows the keyword — the difference is the trailing space, which is a

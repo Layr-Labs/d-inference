@@ -277,16 +277,19 @@ func (f *fnWalk) readsScope(s ast.Stmt) bool {
 // An assignment to a single string variable is the strongest answer: a query built
 // up over several lines is built into one local. Failing that the statement itself
 // is the scope, which is what keeps two statements handed straight to the driver —
-// `Exec(ctx, a)` then `Exec(ctx, b)` — from sharing one CTE set. Composite
-// statements return nil so that the statements nested inside them each answer for
-// themselves.
+// `Exec(ctx, a)` then `Exec(ctx, b)` — from sharing one CTE set.
+//
+// Every statement kind answers, including the composite ones. Those used to return
+// nil, on the reasoning that the statements nested inside them answer for themselves
+// — which they do, but the text in the composite statement's *own* expressions does
+// not: an `if` condition, a `switch` tag, a `range` expression and a `case` value all
+// fell through to the body-wide zero scope, where a string shaped like `WITH usage AS
+// (` in one condition could shadow a real read of `usage` appended in another. Owning
+// a scope only ever narrows one, so a composite statement owning its own can turn a
+// silence into a finding and never the reverse.
 func (f *fnWalk) textScopeFor(s ast.Stmt) any {
 	switch x := s.(type) {
 	case nil:
-		return nil
-	case *ast.BlockStmt, *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt,
-		*ast.TypeSwitchStmt, *ast.CaseClause, *ast.SelectStmt, *ast.CommClause,
-		*ast.LabeledStmt:
 		return nil
 	case *ast.AssignStmt:
 		if target := f.assignTarget(x.Lhs); target != nil {

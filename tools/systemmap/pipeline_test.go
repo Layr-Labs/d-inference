@@ -328,6 +328,14 @@ func TestFixtureOpaqueQuery(t *testing.T) {
 			"1 database call(s) but only 0 readable statement(s) in the body",
 			"`/* with usage as (fb) */ UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
 		}},
+		// The same shadowing attempted across two statements rather than inside one
+		// literal: CTE-shaped prose in a switch tag, the table name in an if condition.
+		// Text in a composite statement's own expressions used to have no scope but the
+		// body's, which is the one place where prose in one line could still silence a
+		// name in another.
+		{"ListModelsCondProse", []string{
+			"`UNION SELECT model FROM usage` names a table but is only a fragment of a statement",
+		}},
 		// Two statements handed straight to the driver, neither of which has a variable
 		// to be scoped by. Falling back to the body would let the first one's CTE shadow
 		// the second one's real read of the same name.

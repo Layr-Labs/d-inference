@@ -102,14 +102,17 @@ cost ≈3× the marking work of the rest of the heap. Natural experiment, same h
 `/v1/stats` runs two 7–8 s statements (`UsageLocationBuckets`, `UsageFlowBuckets`: sort ≈2.9 M
 rows at `work_mem=4 MB`, spilling 1.4 GB + 1 GB of temp per run) behind a 60 s cache — but
 `attachProviderLocation` **invalidates that cache on every provider registration**, 1,378
-times an hour (M), and there is no singleflight. Result: ≈1,950 pipelines/h instead of 60,
-≈7 concurrent copies at every instant, **795 TB of temp I/O** since the stats reset and ≈75 %
-of the primary's CPU (C). `NetworkTotals`/`Leaderboard` add three full scans of the 38 GB
+times an hour (M; 698/h in a later, quieter hour — 07 B2), and there is no singleflight. Result:
+≈1,200–1,950 pipelines/h instead of 60, ≈5–7 concurrent copies at every instant, **795 TB of
+temp I/O** since the stats reset (growing 1.1 GB/s) and ≈75 % of the primary's CPU (C). `NetworkTotals`/`Leaderboard` add three full scans of the 38 GB
 `provider_earnings` table per execution (no `created_at` index) for another ≈15 %.
 
-Two correctness side effects found on the way: `/v1/me/summary` sums the last 24 h/7 d from a
-5,000-row page and **is wrong for 669 of 958 weekly-active accounts** (02 E1/M6); on the 10 s
-timeout, `/v1/stats` caches an empty `request_locations` for a minute.
+Three correctness side effects found on the way: `/v1/me/summary` sums the last 24 h/7 d from a
+5,000-row page and **is wrong for 590–669 of ≈960 weekly-active accounts** (02 E1/M6, 07 B4); on
+the 10 s timeout, `/v1/stats` caches an empty `request_locations` for a minute; and
+`NetworkTotals` (`postgres.go:2596-2597`) discards its `Scan` error, so when its three
+full-table scans hit the 10 s timeout — **every execution did, in the verifier's window** —
+`/v1/network/totals` returns all zeros and caches them for 60 s (07 B2).
 
 ### 2.5 Chatty persistence and a spinning poller (02, 04)
 

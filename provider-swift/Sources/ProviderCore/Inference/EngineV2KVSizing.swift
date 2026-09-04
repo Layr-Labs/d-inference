@@ -9,8 +9,42 @@
 // heartbeat/shared-budget publication.
 
 import Foundation
+import MLXLMCommon
 
 enum EngineV2KVSizing {
+    /// Bytes the CONTIGUOUS backend allocates up front for every request's
+    /// sliding-window rings — one whole `window × kvHeads × headDim ×
+    /// kvDTypeSize × 2 (K+V)` ring per non-KV-shared sliding layer, allocated
+    /// at the layer's first write (`CBv2WindowedSequenceKV.allocateIfNeeded`)
+    /// and charged identically by `CBv2ContiguousKVBackend.rowEstimates` and
+    /// `AdmissionV2.allocatedBytes`. The per-token rate
+    /// (`SlotSizingSnapshot.fp16KVBytesPerToken`) counts FULL layers only, so
+    /// without this term the bridge's `fixedRequestBytes` — which feeds both
+    /// the shared-gate reservation (`requestReservationBytes`) and the
+    /// heartbeat's prospective-row overhead (`maximumRequestOverheadBytes`) —
+    /// under-charges every gemma-4-26b request by 200 MiB (25 sliding layers
+    /// × 8 MiB on the served artifacts: window 1024 × 8 KV heads × head_dim
+    /// 256 × 2 B × 2). gpt-oss-20b rings are 3 MiB (12 × 128 × 8 × 64 × 2 ×
+    /// 2); qwen3.6 has none. Paged rows never commit a ring
+    /// (`PagedKVPool.pageDemand` charges pages), so the paged bridge keeps a
+    /// zero term. `kvDTypeSize` is the backend's ACTUAL element width
+    /// (`CBv2ContiguousBackendConfig.kvDType.size`), never an assumed 2.
+    /// Pure; saturates instead of trapping on absurd geometry.
+    static func contiguousRingBytes(layerKinds: [CBv2LayerKind], kvDTypeSize: Int) -> Int {
+        guard kvDTypeSize > 0 else { return 0 }
+        var total = 0
+        for kind in layerKinds where kind.sharesKVWithLayer == nil {
+            guard case .slidingWindow(let window) = kind.attention, window > 0 else { continue }
+            let ring = [window, kind.kvHeads, kind.headDim, kvDTypeSize, 2].reduce(1) { acc, term in
+                let (product, overflow) = acc.multipliedReportingOverflow(by: max(0, term))
+                return overflow ? Int.max : product
+            }
+            let (sum, overflow) = total.addingReportingOverflow(ring)
+            total = overflow ? Int.max : sum
+        }
+        return total
+    }
+
     /// Conservative residual KV capacity for one engine, sized against the
     /// whole process. New engines receive runtime-resizable grants from
     /// `resliceGrants`; this helper remains the heartbeat safety clamp and a

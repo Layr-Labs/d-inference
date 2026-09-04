@@ -1146,9 +1146,24 @@ extension EngineV2Factory {
                 useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig)
+        // Contiguous sliding-window rings (T3-02): the engine's own fixed term
+        // is recurrent state only (`resolvedFixedBytesPerRequest`), yet the
+        // contiguous backend allocates every windowed layer's whole ring at
+        // first write and charges it in its admission ledger. The bridge's
+        // shared-gate reservation and heartbeat overhead must carry the same
+        // bytes or gemma-4 under-reserves 200 MiB per request and advertises
+        // 200 MiB × free rows too many tokens. Sized from the CONSTRUCTED
+        // backend's element width; a paged pool charges pages, not rings.
+        let ringBytes = (backend as? CBv2ContiguousKVBackend).map {
+            EngineV2KVSizing.contiguousRingBytes(
+                layerKinds: preparedBackend.layerKinds,
+                kvDTypeSize: $0.config.kvDType.size)
+        } ?? 0
+        let (fixedRequestBytes, fixedOverflow) = engine.resolvedFixedBytesPerRequest
+            .addingReportingOverflow(ringBytes)
         return ProductionBuild(
             engine: engine,
-            fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
+            fixedRequestBytes: fixedOverflow ? Int.max : fixedRequestBytes,
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType)

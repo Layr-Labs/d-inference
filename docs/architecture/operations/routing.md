@@ -96,7 +96,7 @@ Each term maps to a field in `RoutingDecision`:
 | Total pending | `PendingMs` | `totalPending × totalPendingPenaltyMs` (`750` ms) |
 | Backlog time | `BacklogMs` | Tokens ahead / effective decode TPS × 1000 |
 | This request | `ThisReqMs` | `promptTokens/prefillTPS + maxTokens/effectiveTPS` |
-| Health | `HealthMs` | Memory pressure, CPU usage, thermal state, GPU utilization |
+| Health | `HealthMs` | Memory pressure, CPU usage, thermal state (the GPU active-memory term is retained but priced at 0) |
 
 Penalty constants are defined at `scheduler.go:16-36`.
 

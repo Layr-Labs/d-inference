@@ -3698,10 +3698,14 @@ func clampNonNeg(v, max float64) (float64, bool) {
 }
 
 // clampBackendCapacity applies sanity caps to provider-reported backend
-// capacity fields that feed the routing scorer. A provider reporting
-// TotalMemoryGB=1e9 would make gpuUtil ~= 0 and dodge health penalties, so
-// we cap it at maxMemoryGBFloat. Same for MaxTokensPotential which directly
-// controls backlog cost. NaN/negative become 0.
+// capacity fields that feed the routing scorer. TotalMemoryGB is capped at
+// maxMemoryGBFloat because it is the denominator of the free-memory
+// admission gate (free = total - GPUMemoryActiveGB, freeMemoryAdmits in
+// scheduler.go) and the bound modelFitsHardware checks: an absurd total
+// would admit any model onto any box. (It also feeds the GPU active-memory
+// health term, which is priced at 0 today; see healthPenaltyMs.) Same for
+// MaxTokensPotential which directly controls backlog cost. NaN/negative
+// become 0.
 func clampBackendCapacity(logger *slog.Logger, providerID string, bc *protocol.BackendCapacity) {
 	if bc == nil {
 		return

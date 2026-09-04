@@ -45,7 +45,7 @@ The production primary dispatch path calls `Registry.ReserveProviderWithPlan` (`
 | `PendingMs` | `totalPending × totalPendingPenaltyMs` (0.75 s) |
 | `BacklogMs` | Tokens already committed / effective decode TPS |
 | `ThisReqMs` | `promptTokens/prefillTPS + maxTokens/effectiveTPS` |
-| `HealthMs` | Memory pressure, CPU, thermal, GPU utilization |
+| `HealthMs` | Memory pressure, CPU, thermal (the GPU active-memory term is retained but priced at 0) |
 
 Selection is deterministic lowest-cost, with queue-depth and random tie-breaks for near-ties (`coordinator/registry/scheduler.go:421-459`).
 

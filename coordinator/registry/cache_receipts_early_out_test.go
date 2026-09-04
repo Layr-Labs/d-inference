@@ -104,3 +104,50 @@ func TestCacheRoutingActiveTracksConfiguredMode(t *testing.T) {
 		t.Fatal("mode=off did not disarm cache routing")
 	}
 }
+
+// TestCacheAttemptTerminalShortensNonceBearingAttemptTTL pins the other half
+// of MarkCacheAttemptTerminal's nonce guard: an attempt that DOES carry a
+// receipt nonce (a protocol-v2 attempt while cache routing is on) still
+// reaches the tracker and has its expiry shortened from the in-flight TTL
+// (cacheRoutingInFlightAttemptTTL) to cacheRoutingAttemptTTL. An inverted
+// guard (`!= ""`) would skip every real attempt and let it linger for the
+// full in-flight TTL — nothing else in the tree calls
+// MarkCacheAttemptTerminal with a nonce, so nothing else would notice.
+func TestCacheAttemptTerminalShortensNonceBearingAttemptTTL(t *testing.T) {
+	r, provider, _ := exactTestRegistry(t)
+	pr := &PendingRequest{RequestID: "terminal-request", Model: "model",
+		CachePlan: exactTestPlan(exactTestAnchor(1, "b"), exactTestAnchor(2, "c"))}
+	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	nonce := pr.CacheReceiptNonce
+	if nonce == "" {
+		t.Fatal("protocol-v2 attempt was not activated")
+	}
+	tracker := r.cacheRouting
+	expiresAt := func() time.Time {
+		t.Helper()
+		tracker.mu.Lock()
+		defer tracker.mu.Unlock()
+		attempt, ok := tracker.attempts[nonce]
+		if !ok {
+			t.Fatal("attempt missing from the tracker")
+		}
+		return attempt.ExpiresAt
+	}
+	before := expiresAt()
+	if before.Before(time.Now().Add(cacheRoutingAttemptTTL + time.Minute)) {
+		t.Fatalf("fresh attempt expires at %v; the in-flight TTL must exceed the terminal TTL for this test to discriminate", before)
+	}
+
+	r.MarkCacheAttemptTerminal(pr)
+
+	after := expiresAt()
+	want := time.Now().Add(cacheRoutingAttemptTTL)
+	if d := after.Sub(want); d < -10*time.Second || d > 10*time.Second {
+		t.Fatalf("terminal attempt expires at %v, want ~%v (now + cacheRoutingAttemptTTL); off by %v", after, want, d)
+	}
+	if !after.Before(before) {
+		t.Fatalf("MarkCacheAttemptTerminal did not shorten the expiry: before=%v after=%v", before, after)
+	}
+}

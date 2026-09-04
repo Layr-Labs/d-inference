@@ -322,7 +322,7 @@ type RoutingDecision struct {
 	PendingMs  float64 // totalPending × totalPendingPenaltyMs
 	BacklogMs  float64 // tokens-ahead / decodeTPS contribution
 	ThisReqMs  float64 // this request's prefill+decode contribution
-	HealthMs   float64 // memory/CPU/thermal/GPU-util contribution
+	HealthMs   float64 // memory/CPU/thermal contribution (GPU active-memory term priced at 0; see healthPenaltyMs)
 	// CapacityRateMs is the gray-box capacity-503 rate penalty added to the
 	// winner's cost (capacity_rate.go); 0 for healthy pairs. In-memory
 	// observability only — not persisted (inference_routes has no column and

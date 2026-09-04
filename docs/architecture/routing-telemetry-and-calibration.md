@@ -19,7 +19,10 @@ the code:
 - `queueDepthPenaltyMs = 3000`, `totalPendingPenaltyMs = 750`
 - `effectiveTPSLoadFactor = 0.27` (per-request TPS decay under batch)
 - `kvCacheBytesPerToken = 400000` (KV footprint for the admission gate)
-- health penalties: `memoryPressure×4000 + cpuUsage×1500 + gpuUtil×5000 + thermal(fair 2000 / serious 8000)`
+- health penalties: `memoryPressure×4000 + cpuUsage×1500 + gpuUtil×0 + thermal(fair 2000 / serious 8000)`
+  — the `gpuUtil` term (`gpuActiveGB/totalMemGB`, the resident-weights fraction, a size
+  ratio rather than a latency signal) is retained but priced at **0** since T13-01; see
+  the `healthPenaltyMs` doc comment in `registry/scheduler.go`
 - cold-load penalty `slotStatePenaltyUnknown = 30000`, `idle_shutdown = 20000`
 - decode-TPS fallback chain `observed EWMA → fleet median → sqrt(memBandwidth)`
 - prefill-TPS fallback `decodeTPS × 4.0`
@@ -61,7 +64,7 @@ cost = statePenalty       // slot warmth: running/idle=0, idle_shutdown=20000, c
      + pendingMs          // totalPending × 750
      + backlogMs          // tokensAhead / effectiveTPS × 1000
      + thisReqMs          // prompt/prefillTPS×1000 + maxTokens/effectiveTPS×1000
-     + healthMs           // memPressure×4000 + cpu×1500 + gpuUtil×5000 + thermal
+     + healthMs           // memPressure×4000 + cpu×1500 + gpuUtil×0 (retained, priced at zero) + thermal
 ```
 
 with:
@@ -184,7 +187,7 @@ All already in `inference_routes`. These are the **inputs** the cost used.
 | `provider_status`, `provider_trust_level`, `provider_version` | Does trust/version correlate with failures? Per-version regression detection. |
 | `hardware_chip`, `hardware_chip_family`, `hardware_tier`, `memory_gb`, `gpu_cores`, `cpu_cores` | **The grouping key for all calibration.** TPS, load-factor `k`, and headroom must become per-tier, not global. |
 | `system_memory_pressure`, `system_cpu_usage`, `system_thermal_state` | Validate the health penalties (`×4000`, `×1500`, thermal) — do they actually predict slowdown? |
-| `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | Validate the `gpuUtil×5000` penalty and the memory-admission gate. |
+| `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | Validate the memory-admission gate (`free = total − active`, `freeMemoryAdmits` in `registry/scheduler.go`). The `gpuUtil` health term is priced at 0 since T13-01 (the fraction is resident weights, not load), so there is no penalty to validate against these columns until it is re-priced. |
 | `slot_state` | Validate `statePenalty` (cold-load 30000 / idle_shutdown 20000). |
 | `backend_running`, `backend_waiting` | Batch size at decision time → the x-axis for the TPS-decay curve. |
 | `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | Validate `backlogMs`; calibrate token-budget admission. |

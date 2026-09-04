@@ -508,13 +508,15 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
     private func makeBridge(
         engine: PrefillScriptEngine,
         mode: PrefillDeadlineMode,
-        budget: GlobalKVCacheBudget? = nil
+        budget: GlobalKVCacheBudget? = nil,
+        maxConcurrentRequests: Int = 4
     ) -> EngineV2Bridge {
         EngineV2Bridge(
             engine: engine,
             modelId: "gpt-oss-20b",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()),
             eosTokenIds: [],
+            maxConcurrentRequests: maxConcurrentRequests,
             prefillDeadlineMode: mode,
             kvBytesPerToken: budget == nil ? 0 : 4_000,
             kvBudget: budget)
@@ -554,33 +556,88 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             })
     }
 
-    @discardableResult
-    private func measureColdPrefillRate(
+    /// Number of isolated cold samples the bridge needs before it enforces
+    /// deadline projection (the cold-start wedge floor).
+    private let sampleFloor = EngineV2Bridge.isolatedPrefillSampleFloor
+
+    /// Record one isolated cold prefill sample: submit while idle, backdate
+    /// the submission by `prefillMilliseconds`, deliver a first token and a
+    /// cold `.stop` terminal.
+    private func recordIsolatedColdSample(
         bridge: EngineV2Bridge,
-        engine: PrefillScriptEngine
-    ) async throws -> Double {
+        engine: PrefillScriptEngine,
+        requestId: String,
+        prefillMilliseconds: Int64 = 1_000,
+        completionTokens: Int = 1
+    ) async throws {
         let stream = await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
-            requestId: "measure-cold-prefill")
+            requestId: requestId)
         let consumer = Task { for await _ in stream {} }
         await bridge.backdateSubmissionForTesting(
-            requestId: "measure-cold-prefill",
-            byMilliseconds: 1_000)
+            requestId: requestId,
+            byMilliseconds: prefillMilliseconds)
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
         continuation.yield(.finished(
             reason: .stop,
             usage: CBv2Usage(
                 promptTokens: promptTokens.count,
-                completionTokens: 1)))
+                completionTokens: completionTokens)))
         continuation.finish()
         _ = await consumer.value
+    }
+
+    /// Seed the bridge past the enforcement floor with `sampleFloor`
+    /// identical isolated cold samples (identical rates keep both prefill
+    /// EWMAs equal to the measured value), so the next deadline-bearing
+    /// submission is projected atomically.
+    @discardableResult
+    private func measureColdPrefillRate(
+        bridge: EngineV2Bridge,
+        engine: PrefillScriptEngine
+    ) async throws -> Double {
+        for index in 0 ..< sampleFloor {
+            try await recordIsolatedColdSample(
+                bridge: bridge,
+                engine: engine,
+                requestId: "measure-cold-prefill-\(index)")
+        }
 
         let measured = await bridge.observedPrefillTpsEwma
         #expect(measured > 0)
         #expect(await bridge._testIsolatedPrefillTps() == measured)
+        #expect(await bridge._testIsolatedPrefillSampleCount() == sampleFloor)
         return measured
+    }
+
+    /// Hold one ordinary (deadline-free) row open so the bridge has an
+    /// active request; the caller finishes it via the returned handle.
+    private func holdOpenRow(
+        bridge: EngineV2Bridge,
+        engine: PrefillScriptEngine,
+        requestId: String,
+        multimodal: CBv2MultimodalInput? = nil
+    ) async -> (consumer: Task<Void, Never>, continuation: AsyncStream<CBv2Event>.Continuation) {
+        let stream = await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: requestId,
+            multimodal: multimodal)
+        let consumer = Task { for await _ in stream {} }
+        let continuation = engine.continuations.last!
+        return (consumer, continuation)
+    }
+
+    private func finishHeldRow(
+        _ row: (consumer: Task<Void, Never>, continuation: AsyncStream<CBv2Event>.Continuation)
+    ) async {
+        row.continuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: promptTokens.count, completionTokens: 0)))
+        row.continuation.finish()
+        _ = await row.consumer.value
     }
 
     private func finishLatestSubmission(
@@ -655,7 +712,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(
             await bridge._testSubmissionInstant(requestId: "atomic-admit")
                 == committedAt)
-        #expect(engine.ordinarySubmissionCount == 1)
+        #expect(engine.ordinarySubmissionCount == sampleFloor)
         #expect(await bridge._testLivePumpCount() == 1)
         try await finishLatestSubmission(stream, engine: engine)
     }
@@ -681,7 +738,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             requestId: "cap-zero-serving-rollback",
             firstContentDeadline: liveDeadline)
         #expect(engine.deadlineAdmissions.isEmpty)
-        #expect(engine.ordinarySubmissionCount == 2)
+        #expect(engine.ordinarySubmissionCount == sampleFloor + 1)
         try await finishLatestSubmission(stream, engine: engine)
 
         let expired = deadline(budgetMilliseconds: 0, elapsedMilliseconds: 1)
@@ -693,7 +750,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 firstContentDeadline: expired)
         }
         #expect(engine.deadlineAdmissions.isEmpty)
-        #expect(engine.ordinarySubmissionCount == 2)
+        #expect(engine.ordinarySubmissionCount == sampleFloor + 1)
     }
 
     @Test("deadline policy supplies independently observed decode rate")
@@ -758,11 +815,12 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         }
 
         #expect(engine.deadlineAdmissions.count == 1)
-        #expect(engine.continuations.count == 1)
+        #expect(engine.continuations.count == sampleFloor)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 0)
         #expect(await bridge._testLivePumpCount() == 0)
         #expect(await bridge._testCounters().active == 0)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 1)
     }
 
     @Test("live off, missing deadline, unmeasured rate, and multimodal requests fail open")
@@ -784,7 +842,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             requestId: "mode-off",
             firstContentDeadline: deadline())
         #expect(offEngine.deadlineAdmissions.isEmpty)
-        #expect(offEngine.ordinarySubmissionCount == 2)
+        #expect(offEngine.ordinarySubmissionCount == sampleFloor + 1)
         try await finishLatestSubmission(offStream, engine: offEngine)
 
         let missingEngine = PrefillScriptEngine()
@@ -799,7 +857,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             requestId: "missing-deadline",
             firstContentDeadline: nil)
         #expect(missingEngine.deadlineAdmissions.isEmpty)
-        #expect(missingEngine.ordinarySubmissionCount == 2)
+        #expect(missingEngine.ordinarySubmissionCount == sampleFloor + 1)
         try await finishLatestSubmission(missingStream, engine: missingEngine)
 
         let unmeasuredEngine = PrefillScriptEngine()
@@ -833,13 +891,463 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 embeddings: { [] }),
             firstContentDeadline: deadline())
         #expect(mediaEngine.deadlineAdmissions.isEmpty)
-        #expect(mediaEngine.ordinarySubmissionCount == 2)
+        #expect(mediaEngine.ordinarySubmissionCount == sampleFloor + 1)
         try await finishLatestSubmission(mediaStream, engine: mediaEngine)
+    }
+
+    // MARK: - Cold-start wedge (sample floor, refusal-driven probe, .unbounded postures)
+
+    @Test("below the isolated-sample floor, deadline-bearing requests use ordinary submission")
+    func belowSampleFloorUsesOrdinarySubmission() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        engine.setDeadlineBehavior(.reject)
+
+        // One pathological seed — the post-load JIT/page-in request — must
+        // not arm projection on its own. Keep recording until the floor.
+        for index in 0 ..< sampleFloor - 1 {
+            try await recordIsolatedColdSample(
+                bridge: bridge,
+                engine: engine,
+                requestId: "seed-\(index)",
+                prefillMilliseconds: 1_000_000)
+            #expect(await bridge._testIsolatedPrefillTps() > 0)
+            let ordinaryBefore = engine.ordinarySubmissionCount
+            let stream = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "under-floor-\(index)",
+                firstContentDeadline: deadline())
+            #expect(engine.deadlineAdmissions.isEmpty)
+            #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+            try await finishLatestSubmission(stream, engine: engine)
+        }
+        #expect(await bridge._testIsolatedPrefillSampleCount() < sampleFloor)
+
+        // The floor sample arms projection; the engine's refusal now reaches
+        // the caller.
+        try await recordIsolatedColdSample(
+            bridge: bridge,
+            engine: engine,
+            requestId: "seed-floor",
+            prefillMilliseconds: 1_000_000)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "at-floor",
+                firstContentDeadline: deadline())
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+    }
+
+    @Test("a pathological seed cannot wedge the slot: the request after three refusals is admitted as an isolated probe")
+    func refusalDrivenProbeHealsSlowSeed() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        // Seed the isolated rate with absurdly slow cold prefills
+        // (200 tokens over 1,000 s ≈ 0.2 tok/s).
+        for index in 0 ..< sampleFloor {
+            try await recordIsolatedColdSample(
+                bridge: bridge,
+                engine: engine,
+                requestId: "slow-seed-\(index)",
+                prefillMilliseconds: 1_000_000)
+        }
+        let seededRate = await bridge._testIsolatedPrefillTps()
+        #expect(seededRate > 0 && seededRate < 1)
+        engine.setDeadlineBehavior(.reject)
+
+        // K refusals: each is `deadline_unreachable`, records no sample, and
+        // leaves nothing active — the wedge shape.
+        let threshold = EngineV2Bridge.deadlineRefusalProbeThreshold
+        for index in 0 ..< threshold {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    request: request,
+                    requestId: "refused-\(index)",
+                    firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+            }
+            #expect(await bridge._testActiveRequestIds().isEmpty)
+            #expect(await bridge._testConsecutiveDeadlineRefusals() == index + 1)
+        }
+        #expect(engine.deadlineAdmissions.count == threshold)
+        #expect(await bridge._testIsolatedPrefillTps() == seededRate)
+        let ordinaryBeforeProbe = engine.ordinarySubmissionCount
+
+        // Request K+1 arrives while idle: ordinary submission (the probe),
+        // NOT another atomic refusal, and the counter resets.
+        let probe = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "probe",
+            firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        #expect(engine.deadlineAdmissions.count == threshold)
+        #expect(engine.ordinarySubmissionCount == ordinaryBeforeProbe + 1)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
+
+        // The probe finishes with a realistic window and re-samples the
+        // isolated rate (α = 0.3 moves it ≥ 30 % of the gap toward truth).
+        let consumer = Task { for await _ in probe {} }
+        await bridge.backdateSubmissionForTesting(
+            requestId: "probe", byMilliseconds: 100)
+        let continuation = try #require(engine.continuations.last)
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: promptTokens.count, completionTokens: 1)))
+        continuation.finish()
+        _ = await consumer.value
+
+        let healedRate = await bridge._testIsolatedPrefillTps()
+        // The probe's window is the 100 ms backdate plus whatever the test
+        // scheduler added; bound the expected jump by a 1 s window so the
+        // assertion is deterministic under load (α = 0.3 of the gap).
+        let worstCaseTruth = Double(promptTokens.count) / 1.0
+        #expect(healedRate - seededRate >= 0.3 * (worstCaseTruth - seededRate))
+        #expect(await bridge._testIsolatedPrefillSampleCount() == sampleFloor + 1)
+
+        // A probe is still a hard-expiry subject: an expired request never
+        // fails open through the probe branch.
+        for index in 0 ..< threshold {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    request: request,
+                    requestId: "refused-again-\(index)",
+                    firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+            }
+        }
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "probe-expired",
+                firstContentDeadline: deadline(budgetMilliseconds: 0, elapsedMilliseconds: 1))
+        }
+        #expect(engine.ordinarySubmissionCount == ordinaryBeforeProbe + 1)
+    }
+
+    @Test("the probe never fires at a non-isolated boundary: with a row running, refusals keep projecting")
+    func probeRequiresIsolatedBoundary() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        // A decode rate exists, so a running row does not trip the
+        // decode-nil fail-open; only the probe branch is under test.
+        try await recordDecodeRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+
+        // A row is running for the whole refusal run (held open BEFORE the
+        // refusals: any submission — including this ordinary one — resets
+        // the counter by design, so it must precede them).
+        let row = await holdOpenRow(bridge: bridge, engine: engine, requestId: "running-row")
+        #expect(await bridge._testCounters().active == 1)
+        let threshold = EngineV2Bridge.deadlineRefusalProbeThreshold
+        for index in 0 ..< threshold {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    request: request,
+                    requestId: "refused-\(index)",
+                    firstContentDeadline: deadline())
+            }
+        }
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
+
+        // The K+1th arrival is NOT isolated (the row is still running), so it
+        // is still projected (and refused) rather than probed.
+        let admissionsBefore = engine.deadlineAdmissions.count
+        let ordinaryBefore = engine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "not-a-probe",
+                firstContentDeadline: deadline())
+        }
+        #expect(engine.deadlineAdmissions.count == admissionsBefore + 1)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold + 1)
+        await finishHeldRow(row)
+
+        // Idle again: the probe fires now.
+        let probe = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "probe",
+            firstContentDeadline: deadline())
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
+        try await finishLatestSubmission(probe, engine: engine)
+    }
+
+    @Test("an admitted projection resets the refusal counter")
+    func admissionResetsRefusalCounter() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "refused",
+                firstContentDeadline: deadline())
+        }
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 1)
+
+        engine.setDeadlineBehavior(.admit)
+        let admitted = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "admitted",
+            firstContentDeadline: deadline())
+        #expect(engine.deadlineAdmissions.count == 2)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
+        try await finishLatestSubmission(admitted, engine: engine)
+    }
+
+    @Test("an unmeasured decode rate with rows running fails open instead of closed")
+    func decodeRateNilWithRunningRowsFailsOpen() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        // Every seed emits exactly one token: the isolated prefill rate is
+        // armed but the decode EWMA never initializes (no tokens after the
+        // first emission).
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        #expect(await bridge.observedDecodeTpsEwma == 0)
+        engine.setDeadlineBehavior(.reject)
+
+        // With the engine idle the projection is bounded by prefill alone:
+        // atomic admission still applies (and here refuses).
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "idle-refused",
+                firstContentDeadline: deadline())
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+
+        // A row is now running; its decode phase cannot be priced, so the
+        // engine would return `.unbounded` and refuse every arrival. Fail
+        // open: ordinary submission, no atomic call.
+        let row = await holdOpenRow(bridge: bridge, engine: engine, requestId: "running-row")
+        #expect(await bridge._testCounters().active == 1)
+        let ordinaryBefore = engine.ordinarySubmissionCount
+
+        let arrival = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "arrival-while-running",
+            firstContentDeadline: deadline())
+        #expect(engine.deadlineAdmissions.count == 1)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
+
+        try await finishLatestSubmission(arrival, engine: engine)
+        await finishHeldRow(row)
+    }
+
+    @Test("a running multimodal peer row fails the text arrival open (the engine cannot price its steps)")
+    func multimodalPeerFailsOpen() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        try await recordDecodeRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+
+        // Image request A is active (its own submission fails open — media).
+        let image = await holdOpenRow(
+            bridge: bridge, engine: engine, requestId: "image-request",
+            multimodal: CBv2MultimodalInput(spans: [], embeddings: { [] }))
+        #expect(await bridge._testCounters().active == 1)
+        let ordinaryBefore = engine.ordinarySubmissionCount
+
+        // Text request B with a 9 s deadline: submitted ordinarily, not
+        // refused within ~50 ms on an `.unbounded` verdict.
+        let text = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "text-behind-image",
+            firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        #expect(engine.deadlineAdmissions.isEmpty)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        try await finishLatestSubmission(text, engine: engine)
+        await finishHeldRow(image)
+
+        // Once the media row is gone, projection resumes.
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "text-alone",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+    }
+
+    @Test("a full batch fails open: the request waits under the engine's admission lease instead of a projected refusal")
+    func fullBatchFailsOpen() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce, maxConcurrentRequests: 1)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        try await recordDecodeRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+
+        let row = await holdOpenRow(bridge: bridge, engine: engine, requestId: "occupant")
+        #expect(await bridge._testCounters().active == 1)
+        let ordinaryBefore = engine.ordinarySubmissionCount
+        let queued = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "queued-behind-full-batch",
+            firstContentDeadline: deadline())
+        #expect(engine.deadlineAdmissions.isEmpty)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        try await finishLatestSubmission(queued, engine: engine)
+        await finishHeldRow(row)
+
+        // Batch has room again: projection resumes.
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "room-again",
+                firstContentDeadline: deadline())
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+    }
+
+    /// Record one decode-rate sample (three tokens across a 20 ms window)
+    /// so the decode EWMA is initialized and the decode-nil fail-open cannot
+    /// mask the posture under test.
+    private func recordDecodeRate(
+        bridge: EngineV2Bridge,
+        engine: PrefillScriptEngine
+    ) async throws {
+        let decodeRequest = ChatCompletionRequest(
+            model: "gpt-oss-20b",
+            messages: [ChatMessage(role: "user", content: "hi")],
+            max_tokens: 3)
+        let stream = await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: decodeRequest,
+            requestId: "measure-decode-\(UUID().uuidString.prefix(6))")
+        let consumer = Task { for await _ in stream {} }
+        let continuation = try #require(engine.continuations.last)
+        continuation.yield(.delta(text: "a", tokens: [11], logprobs: nil))
+        try await Task.sleep(for: .milliseconds(20))
+        continuation.yield(.delta(text: "bc", tokens: [12, 13], logprobs: nil))
+        continuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: promptTokens.count, completionTokens: 3)))
+        continuation.finish()
+        _ = await consumer.value
+        #expect(await bridge.observedDecodeTpsEwma > 0)
     }
 
     @Test("expired requests never ordinary-submit through fail-open branches")
     func expiredRequestsNeverFailOpen() async throws {
         let expired = deadline(budgetMilliseconds: 0, elapsedMilliseconds: 1)
+
+        // One explicit case per fail-open branch of
+        // `firstTokenDeadlineAdmission`: the absolute expiry is enforced by
+        // the caller before projection policy is even consulted.
+
+        // Below the isolated-sample floor.
+        let floorEngine = PrefillScriptEngine()
+        let floorBridge = makeBridge(engine: floorEngine, mode: .enforce)
+        try await recordIsolatedColdSample(
+            bridge: floorBridge, engine: floorEngine, requestId: "one-seed")
+        #expect(await floorBridge._testIsolatedPrefillSampleCount() < sampleFloor)
+        let ordinaryBeforeFloor = floorEngine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await floorBridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "expired-below-floor",
+                firstContentDeadline: expired)
+        }
+        #expect(floorEngine.ordinarySubmissionCount == ordinaryBeforeFloor)
+
+        // Probe due (three refusals at an isolated boundary).
+        let probeEngine = PrefillScriptEngine()
+        let probeBridge = makeBridge(engine: probeEngine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: probeBridge, engine: probeEngine)
+        probeEngine.setDeadlineBehavior(.reject)
+        for index in 0 ..< EngineV2Bridge.deadlineRefusalProbeThreshold {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await probeBridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    request: request,
+                    requestId: "refused-\(index)",
+                    firstContentDeadline: deadline())
+            }
+        }
+        let ordinaryBeforeProbe = probeEngine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await probeBridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "expired-probe",
+                firstContentDeadline: expired)
+        }
+        #expect(probeEngine.ordinarySubmissionCount == ordinaryBeforeProbe)
+
+        // Decode rate unmeasured with a row running.
+        let decodeNilEngine = PrefillScriptEngine()
+        let decodeNilBridge = makeBridge(engine: decodeNilEngine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: decodeNilBridge, engine: decodeNilEngine)
+        let decodeNilRow = await holdOpenRow(
+            bridge: decodeNilBridge, engine: decodeNilEngine, requestId: "row")
+        let ordinaryBeforeDecodeNil = decodeNilEngine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await decodeNilBridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "expired-decode-nil",
+                firstContentDeadline: expired)
+        }
+        #expect(decodeNilEngine.ordinarySubmissionCount == ordinaryBeforeDecodeNil)
+        await finishHeldRow(decodeNilRow)
+
+        // Multimodal peer row running.
+        let peerEngine = PrefillScriptEngine()
+        let peerBridge = makeBridge(engine: peerEngine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: peerBridge, engine: peerEngine)
+        let peerRow = await holdOpenRow(
+            bridge: peerBridge, engine: peerEngine, requestId: "image-row",
+            multimodal: CBv2MultimodalInput(spans: [], embeddings: { [] }))
+        let ordinaryBeforePeer = peerEngine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await peerBridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "expired-behind-image",
+                firstContentDeadline: expired)
+        }
+        #expect(peerEngine.ordinarySubmissionCount == ordinaryBeforePeer)
+        await finishHeldRow(peerRow)
+
+        // Full batch.
+        let fullEngine = PrefillScriptEngine()
+        let fullBridge = makeBridge(engine: fullEngine, mode: .enforce, maxConcurrentRequests: 1)
+        _ = try await measureColdPrefillRate(bridge: fullBridge, engine: fullEngine)
+        let occupant = await holdOpenRow(bridge: fullBridge, engine: fullEngine, requestId: "occupant")
+        let ordinaryBeforeFull = fullEngine.ordinarySubmissionCount
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await fullBridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "expired-full-batch",
+                firstContentDeadline: expired)
+        }
+        #expect(fullEngine.ordinarySubmissionCount == ordinaryBeforeFull)
+        await finishHeldRow(occupant)
 
         let offEngine = PrefillScriptEngine()
         let offBridge = makeBridge(engine: offEngine, mode: .off)

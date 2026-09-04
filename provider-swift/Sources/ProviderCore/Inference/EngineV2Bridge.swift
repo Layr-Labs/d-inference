@@ -246,6 +246,11 @@ public actor EngineV2Bridge {
     struct ActiveRequestState {
         let promptTokens: Int
         let maxTokens: Int
+        /// The row carries media blocks. Any such peer makes the engine's
+        /// first-token projection `.unbounded` for EVERY later text arrival
+        /// (`FirstTokenDeadlineAdmissionV2`: a multimodal peer row cannot be
+        /// priced), so deadline admission fails open while one is active.
+        var isMultimodal = false
         /// True only when no other bridge row (prefill or decode) and no other
         /// provider/engine submission existed at this request's exact
         /// engine-submit boundary.
@@ -366,6 +371,26 @@ public actor EngineV2Bridge {
     /// hidden inside this prefill denominator.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    /// Isolated cold samples folded into `isolatedPrefillTpsEwma` so far.
+    /// Deadline projection is enforced only once `isolatedPrefillSampleFloor`
+    /// samples exist: the FIRST request after a load (the startup self-test
+    /// on a preloaded slot, the first real request on an on-demand load) pays
+    /// Metal JIT / first-shape compilation inside its measured prefill window,
+    /// and a rate estimator whose only update path is the admission it gates
+    /// would otherwise wedge the slot on that one pathological seed (refusing
+    /// every prompt above ~4.5·r tokens until a short isolated request
+    /// happened to heal it).
+    var isolatedPrefillSampleCount = 0
+    static let isolatedPrefillSampleFloor = 3
+    /// Consecutive `deadline_unreachable` refusals since the last admitted or
+    /// ordinary submission. At `deadlineRefusalProbeThreshold` the next
+    /// request that arrives at an ISOLATED submit boundary is admitted as an
+    /// ordinary submission (a refusal-driven probe): being isolated by
+    /// construction, its finish re-samples the isolated rate (if cold) and
+    /// moves it toward truth, so a slot can never refuse forever. The absolute
+    /// expiry still applies to the probe.
+    var consecutiveDeadlineRefusals = 0
+    static let deadlineRefusalProbeThreshold = 3
     /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
     /// projection halves each available phase rate, providing a fixed 2x
     /// service-time envelope without letting one pathological minimum poison
@@ -896,7 +921,8 @@ public actor EngineV2Bridge {
         // bridge state, no suspension between here and the submit below.
         let deadlineAdmission = firstTokenDeadlineAdmission(
             deadline: firstContentDeadline,
-            isMultimodal: multimodal != nil)
+            isMultimodal: multimodal != nil,
+            isolatedSubmitBoundary: isolatedPrefillSampleEligible)
         if let profile {
             // Profiler engine-submit snapshot: ONE lock for the stamp and the
             // whole occupancy posture at the submit boundary.
@@ -955,6 +981,7 @@ public actor EngineV2Bridge {
                     firstTokenDeadline: admission)
                 switch result {
                 case .admitted(let stream, let projectedWork, let admittedAt, let retirement):
+                    consecutiveDeadlineRefusals = 0
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         engine.cancel(cbv2Id)
                         // Admitted, then torn down: an in-flight engine step
@@ -1026,6 +1053,10 @@ public actor EngineV2Bridge {
                         }
                     }
                 case .deadlineUnreachable:
+                    // Counted where the verdict is produced: a refusal leaves
+                    // no `active` row, no sample and no other trace, so this
+                    // counter is the only thing that can break a wedge.
+                    consecutiveDeadlineRefusals += 1
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         // Refused at admission after a latched cancel: nothing
                         // was generated, record the explicit 0 (see the
@@ -1036,10 +1067,14 @@ public actor EngineV2Bridge {
                     throw PreContentDeadlineFailure.deadlineUnreachable
                 }
             } else {
-                // Projection fails open when mode is off, no isolated rate has
-                // been measured, or media makes token projection incomplete.
-                // Absolute expiry does not: it was checked immediately above.
+                // Projection fails open when mode is off, too few isolated
+                // samples exist, the refusal-driven probe is due, the engine
+                // would price a posture as `.unbounded` (decode rate unmeasured
+                // with rows running, a multimodal peer row, a full batch), or
+                // media makes token projection incomplete. Absolute expiry
+                // does not: it was checked immediately above.
                 events = try engine.submit(engineRequest)
+                consecutiveDeadlineRefusals = 0
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
                     // have expired meanwhile, hence the zero clamp.
@@ -1120,6 +1155,7 @@ public actor EngineV2Bridge {
         active[id] = ActiveRequestState(
             promptTokens: promptTokens.count,
             maxTokens: cbv2Request.maxTokens,
+            isMultimodal: multimodal != nil,
             isolatedPrefillSampleEligible:
                 isolatedPrefillSampleEligible
                 && pendingSubmissionIDs.allSatisfy({ $0 == id })
@@ -1164,9 +1200,26 @@ public actor EngineV2Bridge {
     /// projection. This runs immediately before submission, after every SSD
     /// and shared-KV suspension. The absolute monotonic instant is carried
     /// unchanged; only the engine queue reads "now" for the final verdict.
+    ///
+    /// Returns nil (ordinary submission; the absolute expiry was already
+    /// enforced by the caller and is re-checked by the pump path) whenever
+    /// projection cannot be trusted to be both bounded AND self-correcting:
+    /// - fewer than `isolatedPrefillSampleFloor` isolated samples — the seed
+    ///   is structurally the post-load JIT request;
+    /// - `deadlineRefusalProbeThreshold` consecutive refusals and this request
+    ///   sits at an isolated boundary — the refusal-driven probe whose finish
+    ///   re-samples the rate the refusals were based on;
+    /// - a posture the engine would price as `.unbounded` although it is not
+    ///   a first-content fact about THIS request: the decode rate is still
+    ///   unmeasured while rows are running (their decode phase cannot be
+    ///   priced), a running row carries media (its steps cannot be priced),
+    ///   or the batch is full (the projection then jumps by
+    ///   `count × min(maxTokens − generated)` — minutes for gpt-oss — and
+    ///   the request waits under the engine's own admission lease instead).
     private func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
-        isMultimodal: Bool
+        isMultimodal: Bool,
+        isolatedSubmitBoundary: Bool
     ) -> CBv2FirstTokenDeadlineAdmission? {
         guard prefillDeadlineMode == .enforce,
             prefillDeadlineProjectionEnabled,
@@ -1174,6 +1227,16 @@ public actor EngineV2Bridge {
             let deadline,
             isolatedPrefillEwmaInitialized
         else {
+            return nil
+        }
+        guard isolatedPrefillSampleCount >= Self.isolatedPrefillSampleFloor else {
+            logDeadlineFailOpen("below_sample_floor")
+            return nil
+        }
+        if consecutiveDeadlineRefusals >= Self.deadlineRefusalProbeThreshold,
+            isolatedSubmitBoundary
+        {
+            logDeadlineFailOpen("refusal_probe")
             return nil
         }
 
@@ -1186,6 +1249,18 @@ public actor EngineV2Bridge {
             ? decodeCandidate
             : nil
         guard prefillRate.isFinite, prefillRate > 0 else {
+            return nil
+        }
+        if decodeRate == nil, !active.isEmpty {
+            logDeadlineFailOpen("decode_rate_unmeasured_with_rows")
+            return nil
+        }
+        if active.values.contains(where: { $0.isMultimodal }) {
+            logDeadlineFailOpen("multimodal_peer")
+            return nil
+        }
+        if active.count >= maxConcurrentRequests {
+            logDeadlineFailOpen("full_batch")
             return nil
         }
 
@@ -1203,6 +1278,18 @@ public actor EngineV2Bridge {
             return false
         }
         return active.isEmpty
+    }
+
+    /// Posture tag for a deadline-bearing request that took the ordinary
+    /// submission path on one of the self-correcting fail-open branches
+    /// (the profile only says `deadline_mode=legacy`). Debug level: this is
+    /// a per-request line on the admission path.
+    private func logDeadlineFailOpen(_ posture: String) {
+        #if canImport(os)
+        Self.logger.debug(
+            "engine_v2: deadline projection fails open posture=\(posture, privacy: .public) model=\(self.modelId, privacy: .public) running=\(self.active.count) isolated_samples=\(self.isolatedPrefillSampleCount) refusals=\(self.consecutiveDeadlineRefusals)"
+        )
+        #endif
     }
 
     /// A later arrival can share a step with an already-prefilling row. Mark
@@ -2209,6 +2296,7 @@ public actor EngineV2Bridge {
             isolatedPrefillTpsEwma = tps
             isolatedPrefillEwmaInitialized = true
         }
+        isolatedPrefillSampleCount += 1
     }
 
     static func isColdPrefillSample(usage: CBv2Usage) -> Bool {
@@ -2413,8 +2501,17 @@ public actor EngineV2Bridge {
     func _testSeedIsolatedPrefillEwma(_ tokensPerSecond: Double) {
         isolatedPrefillTpsEwma = tokensPerSecond
         isolatedPrefillEwmaInitialized = true
+        // The seed stands in for a fully measured slot: arm the enforcement
+        // floor too, or every seeded test silently takes the fail-open path.
+        isolatedPrefillSampleCount = Self.isolatedPrefillSampleFloor
     }
     #endif
+
+    /// Isolated cold samples recorded so far (the enforcement floor input).
+    func _testIsolatedPrefillSampleCount() -> Int { isolatedPrefillSampleCount }
+
+    /// Consecutive `deadline_unreachable` refusals since the last submission.
+    func _testConsecutiveDeadlineRefusals() -> Int { consecutiveDeadlineRefusals }
 
     /// Number of deterministic/monotonic engine IDs reserved across admission.
     func _testPendingEngineIDCount() -> Int { pendingEngineIDs.count }

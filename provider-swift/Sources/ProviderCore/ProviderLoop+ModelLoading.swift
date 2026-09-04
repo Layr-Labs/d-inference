@@ -32,6 +32,12 @@ extension ProviderLoop {
     /// expensive SHA-256 read runs off-actor so heartbeats and challenges remain
     /// responsive. Non-SSD loads may reuse an unchanged fingerprint/hash pair;
     /// reusable SSD loads always request a fresh cryptographic read.
+    ///
+    /// Default (`.medium`) priority, not `.utility`: the hash is on the
+    /// cold-start critical path (the requester awaits the load inline) and
+    /// `.utility` schedules the per-file SHA workers on the E-cores at a
+    /// measured ~+31 % wall time. Not `.userInitiated` either — that would
+    /// outrank a co-resident model's decode work for the duration.
     func captureWeightHash(
         modelId: String,
         modelPath: URL,
@@ -44,7 +50,7 @@ extension ProviderLoop {
         }
         let priorFingerprint = modelHashFingerprints[modelId]
         let priorHash = SSDPrefixCacheFactory.verifiedWeightHash(liveModelHashes[modelId])
-        let refresh = await Task.detached(priority: .utility) {
+        let refresh = await Task.detached(priority: .medium) {
             () -> WeightHashSnapshot in
             let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
             if let fingerprint, fingerprint == priorFingerprint, priorHash != nil
@@ -73,7 +79,7 @@ extension ProviderLoop {
         modelPath: URL,
         fingerprint: String? = nil
     ) async throws -> WeightHashSnapshot {
-        let hash = await Task.detached(priority: .utility) {
+        let hash = await Task.detached(priority: .medium) {
             SSDPrefixCacheFactory.verifiedWeightHash(
                 WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId))
         }.value
@@ -539,7 +545,7 @@ extension ProviderLoop {
                     newcomer: newcomer)
                 loadedWeightHash = cacheEligibleWeightHash
             } else {
-                let postLoadFingerprint = await Task.detached(priority: .utility) {
+                let postLoadFingerprint = await Task.detached(priority: .medium) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
                 }.value
                 try Task.checkCancellation()

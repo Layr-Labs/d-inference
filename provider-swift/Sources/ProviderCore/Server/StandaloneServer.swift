@@ -1360,7 +1360,8 @@ public actor StandaloneServer {
         modelPath: URL, modelId: String
     ) async -> String? {
         let override = v2TestHooks?.computeWeightHash
-        return await Task.detached(priority: .utility) {
+        // Default priority for the same reason as `ProviderLoop.captureWeightHash`.
+        return await Task.detached(priority: .medium) {
             let hash = override != nil
                 ? override!(modelPath, modelId)
                 : WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)

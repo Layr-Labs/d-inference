@@ -20,7 +20,39 @@ final class WeightHasherMemoryTests: XCTestCase {
     func testStreamingBufferSizeMustStaySmall() {
         XCTAssertFalse(WeightHasher.isStreamingBufferSizeAllowed(0))
         XCTAssertTrue(WeightHasher.isStreamingBufferSizeAllowed(64 * 1024))
+        XCTAssertTrue(WeightHasher.isStreamingBufferSizeAllowed(1024 * 1024))
         XCTAssertFalse(WeightHasher.isStreamingBufferSizeAllowed(2 * 1024 * 1024))
+    }
+
+    /// The concurrent per-file path holds at most one 1 MiB buffer per
+    /// worker; eight 64 MiB files hashed together must stay far under the
+    /// same bound the single-file test pins.
+    func testEightFileFixtureHashedConcurrentlyStaysWithinTheRSSBound() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("weight-hasher-memory-8-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        var files: [(file: URL, sortKey: String)] = []
+        for index in 0..<8 {
+            let name = "model-0000\(index)-of-00008.safetensors"
+            let file = tmp.appendingPathComponent(name)
+            FileManager.default.createFile(atPath: file.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.truncate(atOffset: 64 * 1024 * 1024)
+            try handle.close()
+            files.append((file: file, sortKey: name))
+        }
+
+        let beforePeak = try Self.maxRSSBytes()
+        XCTAssertNotNil(WeightHasher.hashFilesWithRelativeKey(files))
+        let afterPeak = try Self.maxRSSBytes()
+
+        let growth = afterPeak > beforePeak ? afterPeak - beforePeak : 0
+        XCTAssertLessThan(
+            growth,
+            Self.maxAllowedRSSGrowthBytes,
+            "concurrent per-file hashing must keep N × 1 MiB buffers, not N × file; grew by \(growth) bytes")
     }
 
     func testLargeFileHashingDoesNotRetainEveryChunk() throws {

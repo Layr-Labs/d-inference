@@ -2,6 +2,12 @@ import Crypto
 import Foundation
 import Logging
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 // MARK: - Weight Hasher
 
 /// On-demand SHA-256 weight hashing for model integrity verification.
@@ -17,8 +23,11 @@ public struct WeightHasher: Sendable {
 
     private static let logger = Logger(label: "darkbloom.WeightHasher")
 
-    /// Buffer size for streaming file reads (64 KB).
-    private static let bufferSize = 65536
+    /// Buffer size for streaming file reads: 1 MiB, the largest the
+    /// memory-bound test admits. One preallocated buffer per file in flight
+    /// (≤ core count), so the resident bound is N × 1 MiB; 16× fewer read
+    /// syscalls than the former 64 KiB chunks over a 12 GB catalog model.
+    private static let bufferSize = 1024 * 1024
     /// Keep each streaming buffer small even if the constant changes later.
     private static let maxStreamingBufferSize = 1024 * 1024
     /// Last-resort whole-file reads are only acceptable for small metadata files.
@@ -112,10 +121,15 @@ public struct WeightHasher: Sendable {
     public static func hashFilesWithRelativeKey(_ files: [(file: URL, sortKey: String)]) -> String? {
         let sorted = files.sorted { $0.sortKey < $1.sortKey }
 
+        // Per-file digests are independent, so they are computed concurrently
+        // (bounded by the core count); only the COMBINATION below is ordered,
+        // which is what makes the result digest-identical to a serial pass.
+        let digests = hashFilesConcurrently(sorted.map(\.file))
+
         // Combine per-file hashes in sorted order.
         var finalHasher = SHA256()
-        for entry in sorted {
-            guard let fileDigest = hashSingleFile(at: entry.file) else {
+        for fileDigest in digests {
+            guard let fileDigest else {
                 return nil
             }
             // SHA256Digest doesn't conform to DataProtocol; use withUnsafeBytes
@@ -125,6 +139,45 @@ public struct WeightHasher: Sendable {
 
         let finalDigest = finalHasher.finalize()
         return finalDigest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Per-file digests in the caller's order, hashed concurrently. SHA-256
+    /// is CPU-bound at ≈2.2 GB/s per core while the page cache/SSD supplies
+    /// several times that, so a 3-shard catalog model hashes in the time of
+    /// its largest shard instead of the sum. `concurrentPerform` inherits
+    /// the calling thread's QoS — the load path calls this at default
+    /// priority (`.utility` would pin the workers to the E-cores).
+    private static func hashFilesConcurrently(_ files: [URL]) -> [SHA256Digest?] {
+        guard files.count > 1 else {
+            return files.map { hashSingleFile(at: $0) }
+        }
+        let slots = DigestSlots(count: files.count)
+        DispatchQueue.concurrentPerform(iterations: files.count) { index in
+            slots.set(index, hashSingleFile(at: files[index]))
+        }
+        return slots.snapshot
+    }
+
+    /// Index-addressed digest results shared by the concurrent workers.
+    private final class DigestSlots: @unchecked Sendable {
+        private let lock = NSLock()
+        private var digests: [SHA256Digest?]
+
+        init(count: Int) {
+            digests = Array(repeating: nil, count: count)
+        }
+
+        func set(_ index: Int, _ digest: SHA256Digest?) {
+            lock.lock()
+            defer { lock.unlock() }
+            digests[index] = digest
+        }
+
+        var snapshot: [SHA256Digest?] {
+            lock.lock()
+            defer { lock.unlock() }
+            return digests
+        }
     }
 
     /// SHA-256 hash a single file by streaming in chunks. Returns the raw digest
@@ -183,25 +236,51 @@ public struct WeightHasher: Sendable {
         #endif
     }
 
+    /// `FileHandle` still does the OPEN (it is what resolves the
+    /// NSFileProtection cases the fallbacks below exist for), but the bytes
+    /// are pulled with `read(2)` on its descriptor into ONE preallocated
+    /// buffer per file — no per-chunk `Data` allocation/autorelease pair.
+    /// `read(2)` may return short; only 0 is end-of-file, and `EINTR`
+    /// retries (the former `read(upToCount:)` hid both).
     private static func hashSingleFileViaHandle(at url: URL) -> SHA256Digest? {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }
         defer { try? handle.close() }
 
+        let fd = handle.fileDescriptor
         var hasher = SHA256()
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
 
         while true {
-            guard let chunk = withAutoreleasePool({ try? handle.read(upToCount: bufferSize) }) else {
+            let bytesRead = buffer.withUnsafeMutableBytes { raw -> Int in
+                guard let base = raw.baseAddress else { return -1 }
+                return readRetryingOnInterrupt(fd, base, raw.count)
+            }
+            if bytesRead < 0 {
                 return nil
             }
-            if chunk.isEmpty {
+            if bytesRead == 0 {
                 break
             }
-            hasher.update(data: chunk)
+            buffer.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(start: base, count: bytesRead))
+            }
         }
 
         return hasher.finalize()
+    }
+
+    private static func readRetryingOnInterrupt(
+        _ fd: Int32, _ destination: UnsafeMutableRawPointer, _ count: Int
+    ) -> Int {
+        while true {
+            let n = read(fd, destination, count)
+            if n >= 0 { return n }
+            if errno == EINTR { continue }
+            return -1
+        }
     }
 
     private static func hashSingleFileViaInputStream(at url: URL) -> SHA256Digest? {

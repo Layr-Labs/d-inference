@@ -21,15 +21,21 @@ const (
 const warmPoolArrivalEWMAAlpha = 0.3
 
 type warmPoolPressureBucket struct {
-	capacityRejects     int
-	ttftMisses          int
-	speculativeStarted  int
-	speculativeWon      int
-	coldDispatches      int
-	loadSuccesses       int
-	loadFailures        int
-	loadDurationEWMA    time.Duration
+	capacityRejects    int
+	ttftMisses         int
+	speculativeStarted int
+	speculativeWon     int
+	coldDispatches     int
+	loadSuccesses      int
+	loadFailures       int
+	loadDurationEWMA   time.Duration
+	// lastEventAt is the last DEMAND event (capacity reject, TTFT miss,
+	// speculative start/win, cold dispatch); lastLoadAt the last load_model
+	// terminal. They age separately: a load completing must not extend the
+	// demand window, or a single reject kept the pool growing for as long
+	// as its own loads kept landing (the self-sustaining ratchet).
 	lastEventAt         time.Time
+	lastLoadAt          time.Time
 	lastTarget          int
 	lastTargetChangedAt time.Time
 
@@ -84,7 +90,17 @@ func (s *warmPoolState) recordLoad(model string, success bool, duration time.Dur
 			b.loadDurationEWMA = (b.loadDurationEWMA*3 + duration) / 4
 		}
 	}
-	b.lastEventAt = now
+	b.lastLoadAt = now
+}
+
+// loadDurationEWMA returns the model's smoothed load duration (0 = unknown).
+func (s *warmPoolState) loadDurationEWMA(model string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.models[model]; b != nil {
+		return b.loadDurationEWMA
+	}
+	return 0
 }
 
 func (s *warmPoolState) snapshot(now time.Time, recentWindow time.Duration) map[string]warmPoolPressureBucket {
@@ -95,17 +111,23 @@ func (s *warmPoolState) snapshot(now time.Time, recentWindow time.Duration) map[
 	}
 	out := make(map[string]warmPoolPressureBucket, len(s.models))
 	for model, b := range s.models {
-		if !b.lastEventAt.IsZero() && now.Sub(b.lastEventAt) > recentWindow {
+		eventsQuiet := b.lastEventAt.IsZero() || now.Sub(b.lastEventAt) > recentWindow
+		loadsQuiet := b.lastLoadAt.IsZero() || now.Sub(b.lastLoadAt) > recentWindow
+		// Demand counters age on the demand clock alone.
+		if !b.lastEventAt.IsZero() && eventsQuiet {
 			b.capacityRejects = 0
 			b.ttftMisses = 0
 			b.speculativeStarted = 0
 			b.speculativeWon = 0
 			b.coldDispatches = 0
+			b.arrivalAccum = 0
+			b.arrivalRateEWMA = 0
+		}
+		// Load stats age once BOTH clocks are quiet.
+		if eventsQuiet && loadsQuiet && (!b.lastEventAt.IsZero() || !b.lastLoadAt.IsZero()) {
 			b.loadSuccesses = 0
 			b.loadFailures = 0
 			b.loadDurationEWMA = 0
-			b.arrivalAccum = 0
-			b.arrivalRateEWMA = 0
 		}
 		out[model] = *b
 	}
@@ -229,11 +251,20 @@ func (r *Registry) RecordWarmPoolQueueCleared(model string) {
 	r.warmPool.recordQueuePressure(model, 0, 0, time.Now())
 }
 
-func (r *Registry) RecordWarmPoolQueueTimeout(model string, age time.Duration) {
+// RecordWarmPoolQueueTimeout refreshes the model's queue pressure after a
+// waiter timed out of the queue. The waiter has already left, so the LIVE
+// depth is recorded (possibly zero) rather than a phantom Depth=1 stamped with
+// the timed-out age, which kept demand pressure — and a warm+1 target — alive
+// for a full window after the queue had emptied.
+func (r *Registry) RecordWarmPoolQueueTimeout(model string, _ time.Duration) {
 	if r.warmPool == nil || model == "" {
 		return
 	}
-	r.warmPool.recordQueuePressure(model, 1, age, time.Now())
+	depth, oldest := 0, time.Duration(0)
+	if q := r.Queue(); q != nil {
+		depth, oldest = q.QueueStats(model)
+	}
+	r.warmPool.recordQueuePressure(model, depth, oldest, time.Now())
 }
 
 func (r *Registry) RecordWarmPoolTTFTMiss(model string, duration time.Duration) {

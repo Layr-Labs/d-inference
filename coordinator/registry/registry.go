@@ -4534,6 +4534,14 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 		if r.hasWarmProviderLocked(model, now) {
 			continue
 		}
+		// One in-flight load is enough to unblock a queue; the warm-pool tick
+		// and this planner used to dedup only per provider, so each of them
+		// sent a load_model to a DIFFERENT idle box for the same queued model.
+		// A failed load drops its start stamp (NotePendingModelLoadFailed) and
+		// a hung one ages past the hedge bound, so planning resumes.
+		if r.inFlightLoadsForModelLocked(model, now, r.pendingLoadHedgeBoundLocked(model)) > 0 {
+			continue
+		}
 
 		providerID := r.bestModelLoadProviderLocked(model, now, selectedProviders)
 		if providerID == "" {
@@ -4708,6 +4716,80 @@ func (r *Registry) providerHasPendingLoad(providerID string, now time.Time) bool
 	return false
 }
 
+// pendingLoadHedgeFloor is the floor of the in-flight window: a pending load
+// older than max(2 × the model's load-duration EWMA, this) no longer counts
+// as in flight toward the warm-pool gap or the swap planner's per-model skip,
+// so a slow or silently dropped load_model (alive provider; the 2 min entry
+// TTL ≈ the 120 s queue timeout) stops gating the planners and ONE more load
+// is planned — a bounded hedge in place of the old unbounded fan-out.
+const pendingLoadHedgeFloor = 60 * time.Second
+
+// pendingLoadHedgeBoundFor returns the in-flight window for a model whose
+// load-duration EWMA is ewma (0 = unknown).
+func pendingLoadHedgeBoundFor(ewma time.Duration) time.Duration {
+	if 2*ewma > pendingLoadHedgeFloor {
+		return 2 * ewma
+	}
+	return pendingLoadHedgeFloor
+}
+
+// pendingLoadHedgeBoundLocked is pendingLoadHedgeBoundFor with the EWMA read
+// from the warm-pool state (60 s floor when no controller is configured).
+// Caller must hold r.mu (read or write); the warm-pool state mutex is a leaf.
+func (r *Registry) pendingLoadHedgeBoundLocked(model string) time.Duration {
+	if r.warmPool == nil {
+		return pendingLoadHedgeFloor
+	}
+	return pendingLoadHedgeBoundFor(r.warmPool.state.loadDurationEWMA(model))
+}
+
+// inFlightLoadsForModelLocked counts the load_model commands for model that
+// are still in flight at now: an unexpired pendingModelLoads entry whose start
+// stamp exists (a terminal failure removes it — the entry then carries only
+// the post-failure cooldown) and is no older than maxAge. Caller must hold
+// r.mu (read or write).
+func (r *Registry) inFlightLoadsForModelLocked(model string, now time.Time, maxAge time.Duration) int {
+	n := 0
+	for key, expiresAt := range r.pendingModelLoads {
+		if key.ModelID != model || now.After(expiresAt) {
+			continue
+		}
+		started, ok := r.pendingModelLoadStarted[key]
+		if !ok || started.IsZero() || now.Sub(started) > maxAge {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// inFlightLoadsForModel is inFlightLoadsForModelLocked under r.mu.RLock.
+func (r *Registry) inFlightLoadsForModel(model string, now time.Time, maxAge time.Duration) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.inFlightLoadsForModelLocked(model, now, maxAge)
+}
+
+// NotePendingModelLoadFailed records a terminal load_model_status failure for
+// the pair: it returns how long the load was outstanding (0 when unknown) and
+// drops the start stamp so the entry — which the caller may re-stamp as a
+// cooldown, or leave on its full TTL — no longer counts as an in-flight load.
+// The pendingModelLoads entry itself is left to the caller's backoff policy
+// and to Disconnect.
+func (r *Registry) NotePendingModelLoadFailed(providerID, modelID string) time.Duration {
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
+	now := time.Now()
+	r.mu.Lock()
+	expiresAt, live := r.pendingModelLoads[key]
+	started := r.pendingModelLoadStarted[key]
+	delete(r.pendingModelLoadStarted, key)
+	r.mu.Unlock()
+	if !live || now.After(expiresAt) || started.IsZero() {
+		return 0
+	}
+	return now.Sub(started)
+}
+
 // ClearIneligiblePendingModelLoads releases warm-pool reservations whose
 // provider/model pair no longer passes the command-side catalog and capability
 // gate. Runtime-policy revocation calls this after capability reconciliation so
@@ -4842,27 +4924,22 @@ func (r *Registry) HasPendingModelLoad(providerID, modelID string) bool {
 }
 
 // backoffPendingModelLoad re-stamps a pending load entry's expiry to
-// now+backoff, seeding pendingModelLoadStarted when this is the first time the
-// pair is seen (the coordinator may learn of a rejection for a load_model whose
-// reservation already expired or was cleared). Shared by the drain and
-// memory/generic-failure backoff paths so a failed load is reconsidered after a
-// short cooldown instead of the full pendingModelLoadTTL. Caller must NOT hold
-// r.mu.
+// now+backoff (creating the entry when the coordinator learns of a rejection
+// for a load_model whose reservation already expired or was cleared). The
+// entry is a COOLDOWN, not an in-flight load: the start stamp is never seeded
+// here (NotePendingModelLoadFailed drops it), so the pair is skipped by the
+// per-provider dedup but not counted toward the warm-pool gap. Shared by the
+// drain and memory/generic-failure backoff paths so a failed load is
+// reconsidered after a short cooldown instead of the full pendingModelLoadTTL.
+// Caller must NOT hold r.mu.
 func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
 		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
-	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[modelLoadKey]time.Time)
-	}
 	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
-	now := time.Now()
-	r.pendingModelLoads[key] = now.Add(backoff)
-	if r.pendingModelLoadStarted[key].IsZero() {
-		r.pendingModelLoadStarted[key] = now
-	}
+	r.pendingModelLoads[key] = time.Now().Add(backoff)
 }
 
 // BackoffPendingModelLoadForDrain re-stamps a pending load entry with the

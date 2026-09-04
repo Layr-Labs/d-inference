@@ -732,7 +732,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.recordModelLoadResult(statusMsg.ModelID, "succeeded", duration)
 				s.registry.DrainQueuedRequestsForModelWithReason(statusMsg.ModelID, registry.DrainTriggerLoad)
 			case protocol.LoadModelStatusFailed:
-				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
+				// Also drops the in-flight stamp so the (possibly re-stamped)
+				// cooldown entry below stops counting toward the warm-pool gap.
+				duration := s.registry.NotePendingModelLoadFailed(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
 				s.recordModelLoadResult(statusMsg.ModelID, "failed", duration)
 				// Quantify WHY proactive loads are rejected. The reason

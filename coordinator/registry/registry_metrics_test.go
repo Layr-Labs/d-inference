@@ -187,6 +187,9 @@ func TestModelLoadSentAttributesPlanner(t *testing.T) {
 	}
 	expectMetric(t, sink, 1, "model_load.sent", "planner:swap")
 
+	// The swap-issued load settles without warming anything (cleared), so
+	// the warm-pool tick plans its own load instead of counting the in-flight one.
+	reg.ClearPendingModelLoad((*sent)[0].providerID, cold)
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	reg.RecordWarmPoolCapacityReject(cold)
 	reg.warmPool.tick(time.Now())

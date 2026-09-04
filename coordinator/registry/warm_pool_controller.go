@@ -64,6 +64,10 @@ type WarmPoolSnapshot struct {
 	LoadDurationEWMA   time.Duration
 	ObserveOnly        bool
 	Actions            []modelLoadAction
+	// PendingLoads is the number of load_model commands in flight for the
+	// model at planning time (bounded by the hedge window); they count toward
+	// the gap so the tick never re-issues a load the last tick already sent.
+	PendingLoads int
 
 	// Little's Law diagnostics (Layer 3, routing-v2.md). DemandConcurrency is
 	// L = λ·E[S]; QualityConcurrency is the per-provider batch ceiling at the
@@ -322,6 +326,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 				"speculative_won", snap.SpeculativeWon,
 				"cold_dispatches", snap.ColdDispatches,
 				"actions", len(snap.Actions),
+				"pending_loads", snap.PendingLoads,
 				"observe_only", snap.ObserveOnly,
 			)
 		}
@@ -406,7 +411,11 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
 		target := c.targetWarm(f, p, q, params, svc, now)
 
-		gap := target - f.warm
+		// In-flight loads close the gap too: with ~30 s load latency a tick
+		// every 10–30 s otherwise re-issued up to `gap` loads per tick to
+		// different idle boxes for the same demand.
+		pendingLoads := c.registry.inFlightLoadsForModel(model, now, pendingLoadHedgeBoundFor(p.loadDurationEWMA))
+		gap := target - (f.warm + pendingLoads)
 		if gap < 0 {
 			gap = 0
 		}
@@ -460,6 +469,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			LoadDurationEWMA:   p.loadDurationEWMA,
 			ObserveOnly:        c.config.ObserveOnly,
 			Actions:            actions,
+			PendingLoads:       pendingLoads,
 			RunningRequests:    f.running,
 			WaitingRequests:    f.waiting,
 			SpillArrivalRate:   p.arrivalRateEWMA,

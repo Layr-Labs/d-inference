@@ -523,7 +523,10 @@ func TestWarmPoolSkipsIneligibleProviders(t *testing.T) {
 	critical.SystemMetrics.ThermalState = "critical"
 	critical.mu.Unlock()
 	active.AddPending(&PendingRequest{RequestID: "active-req", Model: "other-model"})
+	// A post-failure cooldown entry: skipped as a target but not in flight. (An
+	// in-flight load would itself close the gap — TestWarmPoolPendingLoadsCloseTheGap.)
 	reg.reservePendingModelLoads([]modelLoadAction{{providerID: pending.ID, modelID: model}}, time.Now())
+	reg.NotePendingModelLoadFailed(pending.ID, model)
 
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	sent := captureWarmPoolLoads(reg)

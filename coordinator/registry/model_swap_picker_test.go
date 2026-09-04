@@ -191,8 +191,9 @@ func TestSwapPickerOnePerModelPerPass(t *testing.T) {
 	}
 	both := pickerCold(t, reg, "both")
 	addAdvertisedModel(both, other)
-	only := makeWarmPoolColdProvider(t, reg, "only-other", other, 80, 64, 8)
-	_ = only
+	// Roomier (higher score) for the other model, so it wins that pick in
+	// either planning order and "both" is left for pickerModel.
+	_ = makeWarmPoolColdProvider(t, reg, "only-other", other, 80, 64, 2)
 
 	reg.TriggerModelSwaps()
 	if len(*sent) != 2 {

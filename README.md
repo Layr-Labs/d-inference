@@ -335,7 +335,7 @@ cd console-ui && npm install && npm run dev
 cd console-ui && npm run build && npm test       # production build + vitest
 ```
 
-Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/developer/release.md`](docs/developer/release.md).
+Build, test, and release details: [`docs/developer/build.md`](docs/developer/build.md), [`docs/developer/test.md`](docs/developer/test.md), [`docs/operations/provider-release.md`](docs/operations/provider-release.md).
 
 ## Documentation
 

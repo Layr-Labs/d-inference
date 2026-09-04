@@ -124,7 +124,7 @@ The PR template will prompt you about this.
 
 Releases are cut by maintainers, not contributors. Don't bump versions or create tags in your PR — the release workflow handles that. If your change should land in a specific upcoming release, set the milestone on the PR.
 
-The release runbook is [`docs/developer/release.md`](docs/developer/release.md); production coordinator deploys are [`docs/operations/coordinator-deploy.md`](docs/operations/coordinator-deploy.md).
+The release runbook is [`docs/operations/provider-release.md`](docs/operations/provider-release.md); production coordinator deploys are [`docs/operations/coordinator-deploy.md`](docs/operations/coordinator-deploy.md).
 
 ## Code of conduct
 

@@ -2,7 +2,9 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Status: **Implemented** (master `5d400cf75`, 2026-09-03 — W0–W5, W7, W8 shipped and default-on; W6 investigated only; as-built facts live in [`../architecture/routing.md`](../architecture/routing.md) and [`../architecture/scheduling.md`](../architecture/scheduling.md); remaining flags in [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md)). Tracks the redesign of the
+Status: **Implemented (PR #383)** — 2026-06-16 — W0–W5, W7 and W8 shipped default-on ([#383](https://github.com/Layr-Labs/d-inference/pull/383) and its follow-up waves) and W6 was investigated only; as built: [`../architecture/routing.md`](../architecture/routing.md) and [`../architecture/scheduling.md`](../architecture/scheduling.md), remaining flags: [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md).
+
+Tracks the redesign of the
 coordinator's admission/routing/autoscaling so we (a) stop rejecting requests the
 fleet can serve, (b) use all eligible compute, and (c) never hand users degraded
 (low-tok/s) streams.

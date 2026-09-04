@@ -3,7 +3,7 @@
 > Last updated: 2026-08-31 · commit `5d400cf75`
 
 Date: 2026-08-31. Companion to
-`docs/reports/2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md`
+`docs/design/prefix-cache-and-cached-routing.md`
 (the deep-dive); this report reviews the two open PRs against that plan.
 Sources: full diffs of d-inference #686 (`codex/radix-prefix-cache-integration`,
 anupsv, 2026-08-23) and Layr-Labs/mlx-swift-lm #116, master @ b66ee3065,

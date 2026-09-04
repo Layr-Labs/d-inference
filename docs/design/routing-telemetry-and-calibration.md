@@ -2,7 +2,8 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-**Status:** Implemented (master `5d400cf75`, 2026-09-03 — `inference_routes` and `request_rejections` exist as designed in `coordinator/store/postgres.go`; the per-candidate and fleet time-series phases landed as the system profiler's `request_profiles` (top-4 candidates) and `fleet_snapshots` ([`../architecture/system-profiler.md`](../architecture/system-profiler.md)) rather than the `inference_route_candidates` / `provider_capacity_samples` tables named below; the constants in §2 have since been recalibrated — `effectiveTPSLoadFactor = 0.39` and `defaultPrefillToDecodeRatio = 12.0` (`coordinator/registry/scheduler.go`), not 0.27 and ×4 — see [`../architecture/routing.md`](../architecture/routing.md#cost-model))
+Status: **Implemented (PR #375)** — 2026-06-16 — `inference_routes` and `request_rejections` exist as designed (`coordinator/store/postgres.go`); the per-candidate and fleet time-series phases landed as the system profiler's `request_profiles` and `fleet_snapshots` ([`../architecture/system-profiler.md`](../architecture/system-profiler.md)) rather than the tables named below, and the §2 constants were recalibrated — current values in [`../architecture/routing.md`](../architecture/routing.md#cost-model).
+
 **Scope:** Coordinator only. No provider-swift or console-ui changes required for data collection. No prompt/response content is ever stored.
 
 Request final-outcome semantics are defined in [request-outcome-observability.md](../architecture/request-outcome-observability.md). This document focuses on routing calibration; the outcome model splits client, provider, and billing results so route rows do not incorrectly treat post-commit provider errors or client disconnects as plain success.

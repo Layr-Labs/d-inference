@@ -21,7 +21,7 @@ gate-specific checks, acceptance criteria, and rollback lever.
 
 Do not use it to debug why one provider lacks evidence; that is the per-reason
 counter table under Verification, and the fix is on the release-registration
-side ([`../developer/release.md`](../developer/release.md)).
+side ([`provider-release.md`](provider-release.md)).
 
 ## Prerequisites
 
@@ -208,7 +208,7 @@ recreate the container with the same image. This is the incident lever.
 
 - [`coordinator-deploy.md`](coordinator-deploy.md) — the container swap, env
   refresh, and rollback used by both stages.
-- [`../developer/release.md`](../developer/release.md) — how release rows
+- [`provider-release.md`](provider-release.md) — how release rows
   (binary hash, metallib hash, active flag) get registered.
 - [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
   — the challenge loop that produces the evidence.

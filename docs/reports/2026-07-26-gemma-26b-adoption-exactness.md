@@ -193,7 +193,7 @@ that can diverge. gemma-4's p50 prompt is 979 tokens, 27x under the floor.
 
 But the codebase already quantifies the tail above it: the 27,137 floor
 "makes 2.3% of its traffic donatable" (`SSDWindowSidecar.swift:15`, and
-`docs/reports/2026-07-25-paged-kv-migration-plan.md:66,264`). **That 2.3% is
+`docs/design/paged-kv-migration.md:66,264`). **That 2.3% is
 donatable, therefore adoptable, therefore exposed**, and both divergent prompt
 lengths measured here (28,613 tokens) sit inside it.
 

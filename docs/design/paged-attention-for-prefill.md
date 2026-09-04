@@ -1,6 +1,8 @@
 # Should we move to Paged Attention instead of optimizing AttentionV1?
 
-> Last updated: 2026-07-28 · commit `3eefaf1ed`
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Superseded by [paged-kv-migration.md](paged-kv-migration.md)** — 2026-07-25 — that plan's §21 reverses this memo's No, and v0.8.0 shipped paged KV ([`../releases/v0.8.0-notes.md`](../releases/v0.8.0-notes.md)).
 
 **Decision: No — not for the prefill problem.** Paged attention is a
 decode-side KV-memory optimization. Its prefill path is the *same* composed

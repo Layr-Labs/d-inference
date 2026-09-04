@@ -25,7 +25,7 @@ production (`darkbloom-mainnet`); that is
 - `mise install` locally (for `scripts/smoke-dev.sh`, `jq`, `gh`).
 - A dev Privy app, a dev Stripe account, and a Cloudflare R2 bucket
   `d-inf-app-dev` with a bucket-scoped token (for the release workflow's
-  `DEV_R2_*` secrets; see [`../developer/release.md`](../developer/release.md)).
+  `DEV_R2_*` secrets; see [`provider-release.md`](provider-release.md)).
 - Optional: one or more Apple Silicon Macs to enrol as dev providers.
 
 ### What dev looks like
@@ -149,7 +149,7 @@ gh workflow run release-swift.yml --ref <branch> -f environment=dev   # optional
 Builds, signs, notarizes, uploads to R2 `d-inf-app-dev`, and registers with
 the dev coordinator using the `DEV_*` secrets. Dev tags (`-dev.*`) are
 rejected; only dispatch is supported. Details:
-[`../developer/release.md`](../developer/release.md).
+[`provider-release.md`](provider-release.md).
 
 ### 9. Onboard a Mac
 
@@ -192,7 +192,7 @@ The next `master` push will move `DINF_IMAGE_TAG` forward again.
 (`DELETE /v1/admin/releases`, or `scripts/admin.sh releases deactivate <version>`)
 so `/v1/releases/latest` falls back to the previous version, then
 `deploy/provider-fleet/update-fleet.sh dev`. R2 objects are immutable per
-version; see [`../developer/release.md`](../developer/release.md) ("Rollback").
+version; see [`provider-release.md`](provider-release.md) ("Rollback").
 
 **Full teardown** (destroys dev state; secrets survive unless deleted):
 
@@ -215,6 +215,6 @@ gcloud sql instances delete d-inference-dev-db --project=sepolia-ai --quiet
 ## Related
 
 - [coordinator-deploy.md](coordinator-deploy.md) — production.
-- [`../developer/release.md`](../developer/release.md) — release workflow, `DEV_*` secrets.
+- [`provider-release.md`](provider-release.md) — release workflow, `DEV_*` secrets.
 - [`../developer/build.md`](../developer/build.md) — the Dockerfile Cloud Build builds.
 - [`../provider/installation.md`](../provider/installation.md) — what `install.sh` does on a Mac.

@@ -144,7 +144,7 @@ cd .. && ./scripts/fetch-metallib.sh release
 `darkbloom --version` must print the value of `ProviderCore.version`
 (`provider-swift/Sources/ProviderCore/ProviderCore.swift`);
 `scripts/check-release-version.sh` enforces this against the coordinator's
-`LatestProviderVersion` (see [release.md](release.md)).
+`LatestProviderVersion` (see [../operations/provider-release.md](../operations/provider-release.md)).
 
 ### 6. Console UI (Next.js)
 
@@ -270,6 +270,6 @@ ls console-ui/.next
 ## Related
 
 - [test.md](test.md) — unit, e2e, CI.
-- [release.md](release.md) — provider release runbook.
+- [../operations/provider-release.md](../operations/provider-release.md) — provider release runbook.
 - [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — container build and deploy on GCP.
 - [`../architecture/components/mlx-swift.md`](../architecture/components/mlx-swift.md) — why the metallib must match the MLX source.

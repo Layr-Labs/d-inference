@@ -7,7 +7,7 @@ Runbook for swapping the production coordinator container on the GCE VM
 verifying it, and rolling back. Every VM mutation here is **human-only**; agents
 may read build metadata and health endpoints but must not pull, stop, start, or
 edit the env file. Provider CLI releases are a separate runbook:
-[`../developer/release.md`](../developer/release.md); the dev coordinator is
+[`provider-release.md`](provider-release.md); the dev coordinator is
 [dev-environment.md](dev-environment.md).
 
 ## When to use
@@ -362,7 +362,7 @@ reference copy; editing it changes nothing on the host.
 ## Related
 
 - [dev-environment.md](dev-environment.md) — the dev coordinator (`sepolia-ai`), which auto-deploys from Cloud Build.
-- [`../developer/release.md`](../developer/release.md) — provider CLI release runbook.
+- [`provider-release.md`](provider-release.md) — provider CLI release runbook.
 - [`../developer/build.md`](../developer/build.md) — what the Dockerfile builds.
 - [`../reference/configuration.md`](../reference/configuration.md) — every environment variable.
 - [`../architecture/cache-aware-routing.md`](../architecture/cache-aware-routing.md) — what the cache-routing controls do.

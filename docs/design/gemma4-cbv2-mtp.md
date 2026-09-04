@@ -2,18 +2,7 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Status: **Implemented** (PR [#547](https://github.com/Layr-Labs/d-inference/pull/547) with mlx-swift-lm [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74) / [#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75), shipped default-off in v0.7.12 as the paragraph below records; re-verified 2026-09-03 at `5d400cf75` — the assistant path is built as `Gemma4AssistantDraftModel` loaded by `EngineV2MTPAssistant` (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`); activation is no longer the `DARKBLOOM_CBV2_MTP=1` opt-in described below: `mtp_mode` (`auto` | `on` | `off`, default `auto`, which enables only the Qwen3.5 embedded head) or a catalog-declared `spec_dec` artifact turns Gemma 4 MTP on, and `DARKBLOOM_CBV2_MTP` is now a negative kill switch (`CBv2MTPConfig.envEnabled`); as built: [`../architecture/inference.md`](../architecture/inference.md#multi-token-prediction)).
-
-**Status:** implementation merged through d-inference PR
-[#547](https://github.com/Layr-Labs/d-inference/pull/547), which pins the engine
-implementation in mlx-swift-lm PR
-[#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74), plus the exact
-automatic-verifier repair in mlx-swift-lm PR
-[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). The code is included
-in v0.7.12 but remains default-off. Production now publishes a verified
-`spec_dec` assistant for `gemma-4-26b-qat-4bit`; only providers explicitly
-enabled with `DARKBLOOM_CBV2_MTP=1` use it. Release publication is not fleet-wide
-MTP activation.
+Status: **Implemented (v0.7.12, PR #547)** — 2026-07-14 — merged as d-inference [#547](https://github.com/Layr-Labs/d-inference/pull/547) with mlx-swift-lm [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74) / [#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75) and built as `Gemma4AssistantDraftModel` loaded by `EngineV2MTPAssistant` (`provider-swift/Sources/ProviderCore/Inference/EngineV2MTPAssistant.swift`); the `DARKBLOOM_CBV2_MTP=1` opt-in below is now a negative kill switch (`CBv2MTPConfig.envEnabled`, `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`) and activation comes from `mtp_mode` or a catalog `spec_dec` artifact; as built: [`../architecture/inference.md`](../architecture/inference.md#multi-token-prediction).
 
 The recorded parity matrix is implementation evidence, not universal
 certification for every M1, M2, M3, or unknown Apple chip/model combination.

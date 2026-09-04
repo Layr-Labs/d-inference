@@ -30,15 +30,11 @@ freshness stamp carries its own date, not the current one.
 | 2026-06-15 | [metal-resource-count-fix-handoff](2026-06-15-metal-resource-count-fix-handoff.md) | How the Metal resource-count crash fix was landed through the `Layr-Labs/mlx*` forks |
 | 2026-07-02 | [engine-v2-contract-issues-provider-bridge](2026-07-02-engine-v2-contract-issues-provider-bridge.md) | Where the frozen `CBv2Contracts.swift` was insufficient for the provider bridge, and what was chosen |
 | 2026-07-19 | [frozen-full-prefix-cache-proof](2026-07-19-frozen-full-prefix-cache-proof.md) | Proof that frozen full-prefix reuse is exact on hybrid sliding-window models |
-| 2026-07-25 | [paged-attention-for-prefill-decision](2026-07-25-paged-attention-for-prefill-decision.md) | Paged attention vs optimising AttentionV1 — the decision memo |
-| 2026-07-25 | [paged-kv-migration-plan](2026-07-25-paged-kv-migration-plan.md) | Contiguous → paged KV and B=4 → B=8 migration plan (Rev 2) |
 | 2026-07-25 | [paged-gate-results](2026-07-25-paged-gate-results.md) | Live gate results for v0.8.0 PagedAttention |
 | 2026-07-25 | [prefill-and-fleet-performance-findings](2026-07-25-prefill-and-fleet-performance-findings.md) | Prefill and fleet performance findings that drove v0.8.0 |
 | 2026-07-25 | [v0.8.0-action-list](2026-07-25-v0.8.0-action-list.md) | Ranked list of what was left before v0.8.0 |
 | 2026-07-26 | [gemma-26b-adoption-exactness](2026-07-26-gemma-26b-adoption-exactness.md) | Cold-vs-adopted output exactness on `gemma-4-26B-A4B-it-qat-4bit` |
 | 2026-07-27 | [v080-post-release-engine-bench](2026-07-27-v080-post-release-engine-bench.md) | Post-release engine benchmark sweep for v0.8.0 |
-| 2026-08-03 | [gemma4-26b-inference-optimization-plan](2026-08-03-gemma4-26b-inference-optimization-plan.md) | Optimisation plan for Gemma 4 26B inference |
-| 2026-08-10 | [provider-memory-limit-plan](2026-08-10-provider-memory-limit-plan.md) | Plan for the provider unified-memory cap and load gate |
 | 2026-08-18 | [qwen36-prefill-metal-trace](2026-08-18-qwen36-prefill-metal-trace.md) | Metal trace of Qwen3.6 prefill on M4 Max |
 | 2026-08-19 | [solo-prefill-stripe-experiment](2026-08-19-solo-prefill-stripe-experiment.md) | A/B of the opt-in solo-prefill stripe scheduler feature (Qwen3.6 35B-A3B) |
 | 2026-08-20 | [gemma4-26b-prefill-decode-profile](2026-08-20-gemma4-26b-prefill-decode-profile.md) | Prefill/decode profile of Gemma 4 26B |
@@ -49,7 +45,8 @@ freshness stamp carries its own date, not the current one.
 | 2026-08-30 | [activation-floor-measurements](2026-08-30-activation-floor-measurements.md) | Full-catalog activation-floor sweep behind the per-model activation floors |
 | 2026-08-30 | [mlx-upstream-comparison](2026-08-30-mlx-upstream-comparison.md) | Fork vs upstream MLX comparison |
 | 2026-08-31 | [pr686-resident-prefix-cache-review](2026-08-31-pr686-resident-prefix-cache-review.md) | Review of PR #686 (resident prefix cache) |
-| 2026-08-31 | [prefix-cache-deep-dive-and-cached-routing-plan](2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md) | Prefix-cache deep dive and the cached-routing plan |
+
+Plans and decision memos live in [`../design/`](../design/README.md).
 
 ## Trust, fleet, and infrastructure records
 
@@ -57,7 +54,6 @@ freshness stamp carries its own date, not the current one.
 |---|---|---|
 | 2026-07-04 | [provider-trust-reliability](2026-07-04-provider-trust-reliability.md) | Why ~11% of the fleet stalled at `self_signed`, and the per-connection MDM fix |
 | 2026-07-17 | [eigencloud-to-gcp-migration](2026-07-17-eigencloud-to-gcp-migration.md) | Record of the prod move from EigenCloud to a GCP Confidential VM (complete) |
-| 2026-08-21 | [provider-referral-growth-program-design](2026-08-21-provider-referral-growth-program-design.md) | Referral growth programme design; what is actually built is in the billing docs |
 
 ## Raw benchmark outputs
 
@@ -66,7 +62,7 @@ Machine-generated; kept as evidence for the reports above.
 | Files | What |
 |---|---|
 | [`raw/…L500…`](raw/gptoss-20b-actfloor-shipped-pins-L500-2026-09-02.md), [`raw/…L4000…`](raw/gptoss-20b-actfloor-shipped-pins-L4000-2026-09-02.md), [`raw/…L4000-solostripe2048…`](raw/gptoss-20b-actfloor-shipped-pins-L4000-solostripe2048-2026-09-02.md) | `BenchCBv2RealModel` runs measuring gpt-oss-20b activation floors on the shipped pins at prompt lengths 500 and 4000, and with the solo-prefill stripe at 2048 (2026-09-02) |
-| `clean-*.json`, `m22-*.json`, `mr-*.json` | `BenchCBv2` JSON outputs from the Gemma 4 prefill experiments (`MLX_GATHER_QMM_EXPERT_SLICES` control vs `trust`; stripe 2048 vs base) behind the August measurement reports |
+| `clean-*.json`, `m22-*.json`, `mr-*.json` (in this directory, not `raw/`) | `BenchCBv2` JSON outputs from the Gemma 4 prefill experiments (`MLX_GATHER_QMM_EXPERT_SLICES` control vs `trust`; stripe 2048 vs base) behind the August measurement reports |
 
 ## Not here
 

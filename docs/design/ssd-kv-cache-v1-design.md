@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Status: **Superseded by** [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) (re-verified 2026-09-03 at `5d400cf75` — historical pre-v0.7.5 design; the DBK3 `formatVersion = 3` store in `provider-swift/Sources/ProviderCore/KVCacheSSD/` replaced the format below; layouts and the construction gate: [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md)).
+Status: **Superseded by [../reference/ssd-kv-cache.md](../reference/ssd-kv-cache.md)** — 2026-05-28 — pre-v0.7.5 design; the DBK3 store in `provider-swift/Sources/ProviderCore/KVCacheSSD/` replaced the format below, and its layouts and construction gate are in [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md).
 
 > Historical pre-v0.7.5 design. The one-engine release replaced these
 > implementation details; see the current

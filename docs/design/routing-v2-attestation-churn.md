@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Status: **Implemented** (master `5d400cf75`, 2026-09-03 — Fix 4 landed as `challengeFreshnessMaxAge = 16 * time.Minute` in `coordinator/registry/scheduler.go`; Fix 1/5 as `CodeAttestResponseTimeout = 300 * time.Second` (`coordinator/api/provider.go`) and `challengeExpirySeconds = 300` (`coordinator/apns/attestor.go`); Fix 0 `APNS_MODE=alert` remains an operator config choice, default `background`; the `6m` figures below are historical — see [`../architecture/routing.md`](../architecture/routing.md#challenge-freshness)).
+Status: **Implemented (PR #383)** — 2026-06-16 — Fix 4 landed as `challengeFreshnessMaxAge` (`coordinator/registry/scheduler.go`), Fix 1/5 as `CodeAttestResponseTimeout` (`coordinator/api/provider.go`) and `challengeExpirySeconds` (`coordinator/apns/attestor.go`), and Fix 0's `APNS_MODE=alert` remains an operator choice; the figures below are historical — current values in [`../architecture/routing.md`](../architecture/routing.md#challenge-freshness) and [`../architecture/security/attestation.md`](../architecture/security/attestation.md#flag--apns-code-identity).
 
 Goal: grow the routable pool (≈67/176 today) by making attestation resilient,
 without weakening the fail-closed code-identity property. There are **two

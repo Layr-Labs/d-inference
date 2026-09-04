@@ -17,7 +17,7 @@ lands fully or not at all.
   (`workflow_dispatch` with `environment=dev`).
 
 Coordinator deploys are a separate runbook:
-[`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md).
+[`coordinator-deploy.md`](coordinator-deploy.md).
 
 ## Prerequisites
 
@@ -178,8 +178,9 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
 ```
 
 - `GET /v1/releases/latest` returns the **highest active semver** for the
-  platform (`coordinator/store/postgres.go`, `GetLatestRelease` →
-  `releaseVersionGreater`), not the most recently registered row.
+  platform (`GetLatestRelease` in `coordinator/store/postgres.go`, ordered by
+  `releaseVersionGreater` in `coordinator/store/release_version.go`), not the
+  most recently registered row.
 - Install on a clean Mac: `curl -fsSL $COORD/install.sh | bash`;
   `scripts/install.sh` reads `/v1/releases/latest` and verifies the bundle
   hash before installing. `darkbloom --version` must print the new version.
@@ -194,7 +195,7 @@ curl -fsS "$COORD/v1/admin/releases" -H "Authorization: Bearer $ADMIN_KEY" | jq 
   over the next hour.
 - If the release-policy gate is enforced, confirm evidence for the new binary
   hash is accepted: see
-  [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md)
+  [`release-policy-rollout.md`](release-policy-rollout.md)
   ("Verification").
 - Coordinator log line: `release registered` with `version` and a truncated
   `binary_hash`.
@@ -239,8 +240,8 @@ it** so the previous active version becomes "latest" again.
 
 ## Related
 
-- [build.md](build.md) — building the same artifacts locally.
-- [test.md](test.md) — the CI gates a release depends on.
-- [`../operations/coordinator-deploy.md`](../operations/coordinator-deploy.md) — shipping the coordinator half of a version bump.
-- [`../operations/release-policy-rollout.md`](../operations/release-policy-rollout.md) — how registered releases feed the routing gate.
+- [`../developer/build.md`](../developer/build.md) — building the same artifacts locally.
+- [`../developer/test.md`](../developer/test.md) — the CI gates a release depends on.
+- [`coordinator-deploy.md`](coordinator-deploy.md) — shipping the coordinator half of a version bump.
+- [`release-policy-rollout.md`](release-policy-rollout.md) — how registered releases feed the routing gate.
 - [`../reference/api-contracts.md`](../reference/api-contracts.md) — `/v1/releases/latest`, `/v1/version` shapes.

@@ -91,7 +91,8 @@ enum EngineV2Translation {
             temperature: request.temperature ?? 0.0,
             topP: request.top_p ?? 1.0,
             topK: request.top_k ?? 0,
-            minP: 0,
+            // Contract no-op is 0; the sampler applies min-p only when > 0.
+            minP: request.min_p ?? 0,
             repetitionPenalty: request.repetition_penalty ?? 1.0,
             frequencyPenalty: request.frequency_penalty ?? 0,
             presencePenalty: request.presence_penalty ?? 0,

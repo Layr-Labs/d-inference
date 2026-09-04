@@ -155,7 +155,8 @@ extension MultiModelBatchSchedulerEngine {
             user: nil,
             logit_bias: logitBias,
             logprobs: logprobs,
-            top_logprobs: topLogprobs
+            top_logprobs: topLogprobs,
+            min_p: request.minP
         )
     }
 }

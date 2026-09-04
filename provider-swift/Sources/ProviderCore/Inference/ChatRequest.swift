@@ -8,6 +8,10 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public let temperature: Float?
     public let top_p: Float?
     public let top_k: Int?
+    /// OpenAI-compatible `min_p` (0 = off). v2 engine path only: rows with
+    /// `min_p > 0` leave the greedy fast path and take the top-k/p/min-p
+    /// argsort sampler, the cost of the knob the client asked for.
+    public let min_p: Float?
     public let max_tokens: Int?
     public let repetition_penalty: Float?
     public let presence_penalty: Float?
@@ -59,13 +63,15 @@ public struct ChatCompletionRequest: Codable, Sendable {
         prompt_cache_key: String? = nil,
         logit_bias: [String: Float]? = nil,
         logprobs: Bool? = nil,
-        top_logprobs: Int? = nil
+        top_logprobs: Int? = nil,
+        min_p: Float? = nil
     ) {
         self.model = model
         self.messages = messages
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
+        self.min_p = min_p
         self.max_tokens = max_tokens
         self.repetition_penalty = repetition_penalty
         self.presence_penalty = presence_penalty

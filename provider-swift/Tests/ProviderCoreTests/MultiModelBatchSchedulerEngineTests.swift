@@ -619,3 +619,32 @@ private struct MultiModelDeadlineTokenizer: MLXLMCommon.Tokenizer {
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] { [1, 2, 3] }
 }
+
+@Test("translate threads min_p through to the internal shape and the sampler params")
+func multiModelEngineTranslatesMinP() {
+    let request = OpenAIChatCompletionRequest(
+        model: "any",
+        messages: [.init(role: .user, content: .text("hi"))],
+        minP: 0.1
+    )
+    let translated = MultiModelBatchSchedulerEngine.translate(
+        openAIRequest: request,
+        defaultMaxTokens: 4096
+    )
+    #expect(translated.min_p == 0.1)
+    // The value the v2 sampler sees (`LogitsPipelineV2` applies min-p only
+    // when > 0; `DefaultSamplerV2` does the same for MTP verification
+    // widths).
+    let sampling = EngineV2Translation.samplingParams(from: translated)
+    #expect(sampling.minP == 0.1)
+
+    // Absent min_p stays the contract's no-op value.
+    let absent = MultiModelBatchSchedulerEngine.translate(
+        openAIRequest: OpenAIChatCompletionRequest(
+            model: "any",
+            messages: [.init(role: .user, content: .text("hi"))]),
+        defaultMaxTokens: 4096
+    )
+    #expect(absent.min_p == nil)
+    #expect(EngineV2Translation.samplingParams(from: absent).minP == 0)
+}

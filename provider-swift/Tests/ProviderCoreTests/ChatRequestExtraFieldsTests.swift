@@ -110,4 +110,20 @@ struct ChatRequestExtraFieldsTests {
         #expect(req.response_format == nil)
         #expect(req.temperature == 0.5)
     }
+
+    @Test("min_p decodes from the wire body and survives re-encoding")
+    func minPRoundTrips() throws {
+        let json = #"{"model":"m","messages":[{"role":"user","content":"hi"}],"min_p":0.05}"#
+        let decoder = JSONDecoder()
+        let req = try decoder.decode(ChatCompletionRequest.self, from: Data(json.utf8))
+        #expect(req.min_p == 0.05)
+        let reEncoded = try JSONEncoder().encode(req)
+        let reDecoded = try decoder.decode(ChatCompletionRequest.self, from: reEncoded)
+        #expect(reDecoded.min_p == 0.05)
+
+        let without = try decoder.decode(
+            ChatCompletionRequest.self,
+            from: Data(#"{"model":"m","messages":[]}"#.utf8))
+        #expect(without.min_p == nil)
+    }
 }

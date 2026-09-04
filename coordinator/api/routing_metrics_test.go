@@ -17,6 +17,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
+	"nhooyr.io/websocket"
 )
 
 // udpCollector listens on a random UDP port and collects DogStatsD packets.
@@ -119,6 +120,13 @@ func newTestDD(t *testing.T, collector *udpCollector) *datadog.Client {
 
 func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string) *registry.Provider {
 	t.Helper()
+	return makeRoutableProviderConn(t, reg, id, model, nil)
+}
+
+// makeRoutableProviderConn is makeRoutableProvider on a real WebSocket, so
+// the provider has a live writer (control-lane sends succeed).
+func makeRoutableProviderConn(t *testing.T, reg *registry.Registry, id, model string, conn *websocket.Conn) *registry.Provider {
+	t.Helper()
 	msg := &protocol.RegisterMessage{
 		Type: protocol.TypeRegister,
 		Hardware: protocol.Hardware{
@@ -146,7 +154,7 @@ func makeRoutableProvider(t *testing.T, reg *registry.Registry, id, model string
 			EnvScrubbed:             true,
 		},
 	}
-	p := reg.Register(id, nil, msg)
+	p := reg.Register(id, conn, msg)
 	p.Mu().Lock()
 	p.TrustLevel = registry.TrustHardware
 	p.RuntimeVerified = true

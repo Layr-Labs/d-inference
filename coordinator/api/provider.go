@@ -1816,19 +1816,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	}
 	pr, receivedAt := provider.BeginPendingChunkIngress(msg.RequestID)
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
-		s.ddIncr("inference.unknown_request_frames", []string{"kind:chunk"})
-		s.unknownRequestFrames.Add(1)
-		// The provider is still generating into a stream we abandoned (consumer
-		// gone / already settled), burning its GPU and token-budget admission.
-		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
-		// the provider with cancels.
-		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
-			s.sendProviderCancel(provider, msg.RequestID)
-			s.ddIncr("inference.zombie_stream_cancel", []string{})
-		}
+		// The provider is generating into a stream the coordinator abandoned
+		// (cancelled, consumer gone, already settled) — or sent an id it never
+		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
+		// schedule and rate-limits the log line per provider; request_id stays
+		// out of the log until it matches coordinator state.
+		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
 	ingressClassified := false
@@ -1876,7 +1869,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
-		s.sendProviderCancel(provider, pr.RequestID)
+		s.sendAbandonCancel(provider, pr, cancelCauseLateContent)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
@@ -1907,7 +1900,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.sendAbandonCancel(provider, pr, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -2132,15 +2125,33 @@ func (s *Server) handleCompleteAt(
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	parked := s.claimSettlement(msg.RequestID)
+	// No live pending record means the attempt was abandoned (or is unknown):
+	// correlate the terminal with the cancel the coordinator sent. Metric-only
+	// — a parked post-commit record still settles billing below, and a
+	// pre-commit attempt was refunded when it was abandoned. Only a terminal
+	// that finds no live record is matched, so the coordinator's own
+	// synthesized errors (raised while the record is live) never resolve one.
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("complete for unknown request", "provider_id", providerID)
-		s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
-		s.unknownRequestFrames.Add(1)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// The id matched a cancel the coordinator recorded, so it is
+			// coordinator-minted and safe to log: the provider honored the
+			// cancel with a partial completion.
+			s.logger.Debug("complete for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+		} else {
+			// Until it matches pending state, request_id is provider-controlled
+			// and therefore an arbitrary log-exfiltration channel.
+			s.logger.Warn("complete for unknown request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
+			s.unknownRequestFrames.Add(1)
+		}
 		// A claimed terminal whose pending request a consumer-side cleanup
 		// removed in between: the provider completed, the coordinator lost
 		// ownership; close the record rather than leak the attempt.
@@ -2799,16 +2810,30 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// Clear any parked settlement record (consumer disconnected mid-stream).
 	// Same object as a non-nil pr when the terminal raced the disconnect defer.
 	parked := s.claimSettlement(msg.RequestID)
+	// See handleCompleteAt: a terminal with no live pending record is matched
+	// against the cancel the coordinator sent for it (metric-only).
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		// request_id is provider-controlled until it matches coordinator-owned
-		// pending state. Do not log it: an attacker could use unknown IDs as an
-		// arbitrary log exfiltration channel.
-		s.logger.Warn("error for unknown request", "provider_id", providerID)
-		s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
-		s.unknownRequestFrames.Add(1)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// Coordinator-minted id (it matched a recorded cancel): the
+			// provider honored the cancel before producing output.
+			s.logger.Debug("error for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID,
+				"cause", cancelled.cause, "status_code", msg.StatusCode)
+		} else {
+			// request_id is provider-controlled until it matches
+			// coordinator-owned pending state. Do not log it: an attacker
+			// could use unknown IDs as an arbitrary log exfiltration channel.
+			s.logger.Warn("error for unknown request", "provider_id", providerID)
+			s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
+			s.unknownRequestFrames.Add(1)
+		}
 		// A terminal claimed here whose pending request a consumer-side cleanup
 		// removed in between: the provider errored, the coordinator lost
 		// ownership; close the record rather than leak the attempt. An owned

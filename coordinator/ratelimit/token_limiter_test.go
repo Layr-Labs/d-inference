@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestAllowN(t *testing.T) {
@@ -187,5 +188,83 @@ func TestStat(t *testing.T) {
 	}
 	if st.ResetSeconds <= 0 {
 		t.Errorf("ResetSeconds = %d, want > 0 after draining", st.ResetSeconds)
+	}
+}
+
+// TestTokenLimiterCommitAlwaysLands (T10-11): Peek and Commit take the shard
+// lock separately, so 64 concurrent same-account requests at burst 1 can all
+// pass Peek before any Commit. The charge must still land for every one of
+// them — the bucket goes to about −63 — so the account shows Remaining 0 with
+// a positive reset and the 65th request is rejected. (With the former
+// AllowN-and-ignore Commit the losers were silently uncharged: Remaining
+// stayed 0 but ResetSeconds stayed ~1 s and the debt was never recorded.)
+func TestTokenLimiterCommitAlwaysLands(t *testing.T) {
+	tl := NewTokenLimiter(1, 1, 1, 1)
+	const n = 64
+	var wg sync.WaitGroup
+	var peeked atomic.Int32
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if ok, _, _ := tl.Peek("acct", 1, 1); ok {
+				peeked.Add(1)
+			}
+			tl.Commit("acct", 1, 1)
+		}()
+	}
+	wg.Wait()
+	st, ok := tl.OutputStat("acct")
+	if !ok || st.Remaining != 0 {
+		t.Fatalf("OutputStat = %+v/%v, want Remaining 0 after %d commits", st, ok, n)
+	}
+	if st.ResetSeconds <= 0 {
+		t.Fatalf("ResetSeconds = %d, want > 0 (the bucket is not full)", st.ResetSeconds)
+	}
+	// ~63 tokens of debt at 1 tok/s: the 65th request's Retry-After is
+	// debt-sized (the Stat snapshot clamps the level at 0 for the headers;
+	// the admission deficit does not), where the former Commit left ~1 s.
+	if ok, dim, retry := tl.Peek("acct", 1, 1); ok || retry < 30*time.Second {
+		t.Fatalf("65th Peek = (%v, %q, %v), want rejected with a debt-sized Retry-After (>= 30s)", ok, dim, retry)
+	}
+	if peeked.Load() == 0 {
+		t.Fatal("no goroutine passed Peek — the race the test relies on did not occur")
+	}
+}
+
+// Peek+Commit on a warm account allocate nothing (inline FNV-1a shard hash;
+// hash/fnv allocated a hasher and a byte copy per call).
+func TestTokenLimiterPeekCommitAllocFree(t *testing.T) {
+	tl := NewTokenLimiter(1000, 1_000_000, 1000, 1_000_000)
+	tl.Commit("acct", 1, 1) // create the buckets
+	allocs := testing.AllocsPerRun(1000, func() {
+		tl.Peek("acct", 10, 20)
+		tl.Commit("acct", 10, 20)
+	})
+	if allocs != 0 {
+		t.Fatalf("Peek+Commit allocs/run = %v, want 0", allocs)
+	}
+	kt := NewKeyTokenLimiter()
+	kt.Commit("k", 1, 1, 100, 1_000_000, 100, 1_000_000)
+	allocs = testing.AllocsPerRun(1000, func() {
+		kt.Peek("k", 10, 20, 100, 1_000_000, 100, 1_000_000)
+		kt.Commit("k", 10, 20, 100, 1_000_000, 100, 1_000_000)
+	})
+	if allocs != 0 {
+		t.Fatalf("key Peek+Commit allocs/run = %v, want 0", allocs)
+	}
+	if shardIndex("acct") != shardIndex("acct") || shardIndex("") >= tokenLockShards {
+		t.Fatal("shardIndex must be deterministic and in range")
+	}
+}
+
+func BenchmarkTokenLimiterPeekCommit(b *testing.B) {
+	tl := NewTokenLimiter(1000, 1_000_000, 1000, 1_000_000)
+	tl.Commit("acct", 1, 1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tl.Peek("acct", 10, 20)
+		tl.Commit("acct", 10, 20)
 	}
 }

@@ -2,7 +2,6 @@ package ratelimit
 
 import (
 	"context"
-	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -30,9 +29,19 @@ type TokenLimiter struct {
 
 // lockFor returns the shard mutex guarding an account's peek+consume sequence.
 func (t *TokenLimiter) lockFor(accountID string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(accountID))
-	return &t.locks[h.Sum32()%tokenLockShards]
+	return &t.locks[shardIndex(accountID)]
+}
+
+// shardIndex is an allocation-free inline FNV-1a (32-bit) over the key —
+// hash/fnv's New32a + Write + Sum32 allocated a hasher and a []byte copy on
+// every Peek and Commit (three allocations per request).
+func shardIndex(key string) uint32 {
+	h := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return h % tokenLockShards
 }
 
 // NewTokenLimiter builds a TokenLimiter. Rates are in tokens per SECOND (the
@@ -127,7 +136,15 @@ func (t *TokenLimiter) Peek(accountID string, inputTokens, outputTokens int) (ok
 }
 
 // Commit consumes a charge that a prior Peek confirmed would fit. Charges are
-// clamped to each bucket's burst, matching Peek/Allow. Empty accountID is a no-op.
+// clamped to each bucket's burst, matching Peek/Allow. Empty accountID is a
+// no-op. The charge ALWAYS lands (DebitN reserves, driving the bucket briefly
+// negative if need be, like DebitOutput): the caller's Peek and this Commit
+// take the shard lock separately — the per-key limiter's Peek/Commit pair
+// sits between them — so a concurrent same-account request can drain the
+// bucket in the gap, and the former AllowN-and-ignore-the-bool left this
+// request uncharged whenever that happened (over-admit by up to (N-1)
+// requests under same-account concurrency). The next Peek's Retry-After grows
+// with the debt, as it does after an output-overage debit.
 func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
 	if accountID == "" {
 		return
@@ -136,10 +153,10 @@ func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
 	lock.Lock()
 	defer lock.Unlock()
 	if t.input != nil {
-		t.input.AllowN(accountID, clampCharge(inputTokens, t.input.Burst()))
+		t.input.DebitN(accountID, clampCharge(inputTokens, t.input.Burst()))
 	}
 	if t.output != nil {
-		t.output.AllowN(accountID, clampCharge(outputTokens, t.output.Burst()))
+		t.output.DebitN(accountID, clampCharge(outputTokens, t.output.Burst()))
 	}
 }
 

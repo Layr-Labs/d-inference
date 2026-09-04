@@ -2,7 +2,6 @@ package ratelimit
 
 import (
 	"context"
-	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -34,9 +33,7 @@ func NewKeyTokenLimiter() *KeyTokenLimiter {
 }
 
 func (t *KeyTokenLimiter) lockFor(key string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return &t.locks[h.Sum32()%tokenLockShards]
+	return &t.locks[shardIndex(key)]
 }
 
 // StartPruner launches idle-bucket pruning for both token dimensions.
@@ -115,7 +112,9 @@ func (t *KeyTokenLimiter) Peek(key string, inputTokens, outputTokens int,
 	return true, "", 0
 }
 
-// Commit consumes a charge that a prior Peek confirmed would fit.
+// Commit consumes a charge that a prior Peek confirmed would fit. The charge
+// always lands (DebitNWithRate; see TokenLimiter.Commit for why the former
+// AllowN-and-ignore could leave a concurrent same-key request uncharged).
 func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
 	inRPS float64, inBurst int, outRPS float64, outBurst int) {
 	if key == "" {
@@ -125,10 +124,10 @@ func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
 	lock.Lock()
 	defer lock.Unlock()
 	if inRPS > 0 && inBurst > 0 {
-		t.input.AllowNWithRate(key, inputTokens, inRPS, inBurst)
+		t.input.DebitNWithRate(key, clampCharge(inputTokens, inBurst), inRPS, inBurst)
 	}
 	if outRPS > 0 && outBurst > 0 {
-		t.output.AllowNWithRate(key, outputTokens, outRPS, outBurst)
+		t.output.DebitNWithRate(key, clampCharge(outputTokens, outBurst), outRPS, outBurst)
 	}
 }
 

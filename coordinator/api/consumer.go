@@ -95,18 +95,20 @@ const (
 
 	// maxFirstChunkTimeoutRetries bounds failover for coordinator-synthesized
 	// first-chunk TIMEOUTS (the untyped 504 the exhausted ladder reclassifies
-	// to a retryable 429 with reason "first_chunk_timeout"). Unlike capacity
-	// rejections these carried NO cap: every retry re-ran a full fleet
-	// reservation scan (~1,260 providers, registry.ReserveProviderEx), and in
-	// the 2026-09-01 congestion collapse retry-amplified inbound (~100 req/s
-	// of retryable 429 traffic from OpenRouter) times per-request fleet scans
-	// saturated every coordinator CPU — attempt-0 route p50 went 40ms → 4.6s,
-	// success ~40%, 429s were delivered after 11s, inbound ~6k/min vs served
-	// ~550/min. The request-absolute first-content budget already bounds WALL
-	// time per request; this bounds CPU: after this many timed-out attempts
-	// (each on a distinct provider — a timed-out provider is excluded from
-	// re-selection) the ladder exhausts immediately into the existing
-	// synthetic-timeout → 429 reclassification (classifyExhaustedStatus).
+	// to a retryable 429 with reason "first_chunk_timeout") — a BACKSTOP for
+	// the relative-timer configuration only. With a stamped request clock
+	// (RequestTiming.ReceivedAt set, i.e. every production request) each
+	// timeout arm fires at the request-absolute first-content expiry
+	// (deadlineWait = the leftover absolute budget, first_token_clock.go) and
+	// the next loop iteration exhausts on `attempt > 0 && firstTokenExpired()`
+	// before any rescan, so a stamped request dispatches ONCE and then answers
+	// the 429: this cap never operates there. It binds only when ReceivedAt is
+	// unstamped (unit fixtures, historical relative timers), where every
+	// attempt would otherwise get its own fresh window and the ladder could
+	// walk the fleet one reservation scan per silent provider — the CPU
+	// amplification of the 2026-09-01 collapse (retry-amplified inbound times
+	// per-request fleet scans). Timed-out providers stay excluded from
+	// re-selection either way.
 	maxFirstChunkTimeoutRetries = 3
 
 	// speculativeTimerRatio is the fraction of the TTFT deadline at which
@@ -2286,6 +2288,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Alias fallback (maybeFallbackAlias) rewrote the concrete build; the
 		// learned completion length is keyed by build id, so re-derive it.
 		expectedCompletionTokens = s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
+		// The first-content base is keyed by exact build id too (Qwen3-VL runs a
+		// 4 s base under the ordinary 9 s), so a fallback across builds must
+		// re-derive the clock the dispatch state, the queue wait and
+		// rp.FirstContentBudgetMs run on; the request-absolute anchor
+		// (ReceivedAt) is unchanged.
+		deadline = s.FirstContentDeadline(model, estimatedPromptTokens)
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
@@ -4606,8 +4614,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if model != admissionModel {
-		// Alias fallback rewrote the build (see the chat handler).
+		// Alias fallback rewrote the build (see the chat handler): re-derive the
+		// routing estimate and the per-build first-content clock.
 		expectedCompletionTokens = s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
+		genericDeadline = s.FirstContentDeadline(model, estimatedPromptTokens)
 	}
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by

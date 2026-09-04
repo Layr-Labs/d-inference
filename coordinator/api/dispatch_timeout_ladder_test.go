@@ -158,3 +158,67 @@ func TestShouldStopFailover_TimeoutCapCountsOnlySyntheticTimeouts(t *testing.T) 
 		t.Fatalf("dominance = %d, want exhaustedUndecided (plain reclassified timeout)", dominance)
 	}
 }
+
+// TestDispatch_FirstChunkTimeoutLadder_StampedClockDispatchesOnce pins the
+// production configuration the cap never operates in (T10-11 (2)): with a
+// STAMPED request clock every timeout arm fires at the request-absolute
+// first-content expiry, and the next loop iteration exhausts on
+// `attempt > 0 && firstTokenExpired()` before any rescan — so a stamped
+// request dispatches to exactly ONE silent provider and then answers the
+// retryable 429, well under maxFirstChunkTimeoutRetries. The un-stamped
+// three-attempt case above is the relative-timer fixture behaviour the cap is
+// the backstop for.
+func TestDispatch_FirstChunkTimeoutLadder_StampedClockDispatchesOnce(t *testing.T) {
+	reg, _, srv, ts := setupTTFTFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const model = "timeout-ladder-stamped-model"
+	const fleet = 5
+	providers := make([]*failoverProvider, 0, fleet)
+	for i := 0; i < fleet; i++ {
+		providers = append(providers, startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+			Name:      fmt.Sprintf("silent-stamped-%d", i),
+			Version:   "0.7.0",
+			DecodeTPS: 100,
+			Models:    []failoverModelSpec{{ID: model}},
+			Script:    nil, // accept, never answer
+		}))
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	deadline := 150 * time.Millisecond
+	d := &dispatchState{
+		s:                     srv,
+		w:                     w,
+		r:                     r,
+		model:                 model,
+		publicModel:           model,
+		rawBody:               []byte(`{"model":"` + model + `"}`),
+		consumerKey:           "test-key",
+		estimatedPromptTokens: 6,
+		requestedMaxTokens:    64,
+		// ReceivedAt STAMPED: the request-absolute clock governs every attempt.
+		timing:            &registry.RequestTiming{ReceivedAt: time.Now()},
+		deadline:          deadline,
+		speculativeAt:     10 * deadline,
+		refundReservation: func() {},
+		excludeProviders:  map[string]struct{}{},
+	}
+	d.run()
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate_limit_exceeded") || w.Header().Get("Retry-After") == "" {
+		t.Fatalf("want the retryable rate_limit_exceeded shape with Retry-After; body=%s", w.Body.String())
+	}
+	total := 0
+	for _, fp := range providers {
+		total += fp.dispatchCount()
+	}
+	if total != 1 {
+		t.Fatalf("total dispatches = %d, want exactly 1: a stamped clock exhausts at expiry before any rescan (the %d-attempt cap is a relative-timer backstop)", total, maxFirstChunkTimeoutRetries)
+	}
+}

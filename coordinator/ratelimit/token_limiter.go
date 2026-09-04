@@ -145,9 +145,17 @@ func (t *TokenLimiter) Peek(accountID string, inputTokens, outputTokens int) (ok
 // request uncharged whenever that happened (over-admit by up to (N-1)
 // requests under same-account concurrency). The next Peek's Retry-After grows
 // with the debt, as it does after an output-overage debit.
-func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
+//
+// outputCharged is the output charge that actually left the bucket — the
+// burst-clamped value, 0 when the output dimension is unlimited or the
+// account is empty. Settlement must credit back against THIS number, never
+// the unclamped admission: a 32,768-token bound on a 10,000 burst debits
+// 10,000, and crediting 32,768 − actual at completion would refill the
+// bucket past what was taken (the clamp at the top hides it) and stop the
+// per-minute limit from enforcing.
+func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) (outputCharged int) {
 	if accountID == "" {
-		return
+		return 0
 	}
 	lock := t.lockFor(accountID)
 	lock.Lock()
@@ -156,8 +164,10 @@ func (t *TokenLimiter) Commit(accountID string, inputTokens, outputTokens int) {
 		t.input.DebitN(accountID, clampCharge(inputTokens, t.input.Burst()))
 	}
 	if t.output != nil {
-		t.output.DebitN(accountID, clampCharge(outputTokens, t.output.Burst()))
+		outputCharged = clampCharge(outputTokens, t.output.Burst())
+		t.output.DebitN(accountID, outputCharged)
 	}
+	return outputCharged
 }
 
 func (t *TokenLimiter) DebitOutput(accountID string, outputTokens int) {

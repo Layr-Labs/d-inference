@@ -115,10 +115,13 @@ func (t *KeyTokenLimiter) Peek(key string, inputTokens, outputTokens int,
 // Commit consumes a charge that a prior Peek confirmed would fit. The charge
 // always lands (DebitNWithRate; see TokenLimiter.Commit for why the former
 // AllowN-and-ignore could leave a concurrent same-key request uncharged).
+// outputCharged is the burst-clamped output charge that actually left the
+// key's bucket (0 when the output dimension is unlimited) — the number
+// settlement credits back against (see TokenLimiter.Commit).
 func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
-	inRPS float64, inBurst int, outRPS float64, outBurst int) {
+	inRPS float64, inBurst int, outRPS float64, outBurst int) (outputCharged int) {
 	if key == "" {
-		return
+		return 0
 	}
 	lock := t.lockFor(key)
 	lock.Lock()
@@ -127,8 +130,10 @@ func (t *KeyTokenLimiter) Commit(key string, inputTokens, outputTokens int,
 		t.input.DebitNWithRate(key, clampCharge(inputTokens, inBurst), inRPS, inBurst)
 	}
 	if outRPS > 0 && outBurst > 0 {
-		t.output.DebitNWithRate(key, clampCharge(outputTokens, outBurst), outRPS, outBurst)
+		outputCharged = clampCharge(outputTokens, outBurst)
+		t.output.DebitNWithRate(key, outputCharged, outRPS, outBurst)
 	}
+	return outputCharged
 }
 
 func (t *KeyTokenLimiter) DebitOutput(key string, outputTokens int, outRPS float64, outBurst int) {

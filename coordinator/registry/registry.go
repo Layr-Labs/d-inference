@@ -715,6 +715,17 @@ type TokenAdmission struct {
 	KeyOutputRPS         float64
 	KeyOutputBurst       int
 
+	// AccountOutputCharged / KeyOutputCharged are the output charges that
+	// actually left each bucket at Commit — AdmittedOutputTokens clamped to
+	// that bucket's burst (a 32,768 bound on a 10,000 OTPM key debits
+	// 10,000). Settlement credits or debits each bucket against ITS charge,
+	// never the unclamped admission: crediting admitted − actual into a
+	// bucket that only took the burst refills it past what was taken (the
+	// top clamp hides the excess) and the per-minute limit stops enforcing.
+	// Zero for a bucket that did not track output.
+	AccountOutputCharged int
+	KeyOutputCharged     int
+
 	// settlement is the once-guard shared by every copy of this admission
 	// (PendingRequest carries a copy; the pointer is shared): the upfront
 	// output charge is settled exactly once — by the completion's

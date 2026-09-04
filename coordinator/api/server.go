@@ -681,12 +681,14 @@ func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http
 		}
 	}
 
-	// Both dimensions have capacity — commit to each.
+	// Both dimensions have capacity — commit to each, recording what each
+	// bucket actually took (its burst-clamped charge) so settlement credits
+	// back exactly that and never the unclamped admission.
 	if keyEnforced {
-		s.keyTokenLimiter.Commit(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst)
+		admission.KeyOutputCharged = s.keyTokenLimiter.Commit(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst)
 	}
 	if tl != nil {
-		tl.Commit(accountID, inputTokens, admission.AdmittedOutputTokens)
+		admission.AccountOutputCharged = tl.Commit(accountID, inputTokens, admission.AdmittedOutputTokens)
 		setTokenRateLimitHeaders(w, tl, accountID)
 	}
 	return admission, true
@@ -708,6 +710,14 @@ func outputAdmissionTags(tier string, estimated bool) []string {
 // omitted-max_tokens consumer to ~15 req/min (2 in a 64K burst) — a ~58x
 // over-throttle. Runs once per admission (ClaimSettlement): a request the
 // refund path already credited is skipped.
+//
+// Each bucket settles against the charge IT took at Commit
+// (AccountOutputCharged / KeyOutputCharged — the admission clamped to that
+// bucket's burst), not the unclamped AdmittedOutputTokens: a 10,000 OTPM key
+// admitted at the 32,768 bound was debited 10,000, and an 8,000-token
+// completion owes it a 2,000 credit, not the 24,768 that would refill the
+// bucket to full (hidden by the top clamp) and let ~48K tokens/min through a
+// 10K key.
 func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOutputTokens int) {
 	if pr == nil || !pr.TokenAdmission.TracksOutput() {
 		return
@@ -723,46 +733,74 @@ func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOut
 	if admittedOutputTokens < 0 {
 		admittedOutputTokens = 0
 	}
-	delta := actualOutputTokens - admittedOutputTokens
 	tags := append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:"+pr.Model)
 	s.ddHistogram("ratelimit.output_admission.actual_tokens", float64(actualOutputTokens), tags)
-	s.ddHistogram("ratelimit.output_admission.delta_tokens", float64(delta), tags)
-	switch {
-	case delta > 0:
-		s.adjustOutputAdmission(pr.ConsumerKey, pr.KeyID, admission, delta)
-		s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
-	case delta < 0:
-		s.adjustOutputAdmission(pr.ConsumerKey, pr.KeyID, admission, delta)
-		s.ddCount("ratelimit.output_admission.credit_tokens_total", int64(-delta), tags)
+	// delta_tokens is the ESTIMATE error (actual − admitted), the signal for
+	// sizing the upfront charge; the per-bucket counters below are what the
+	// buckets actually moved.
+	s.ddHistogram("ratelimit.output_admission.delta_tokens", float64(actualOutputTokens-admittedOutputTokens), tags)
+	accountDelta, keyDelta := 0, 0
+	if admission.AccountOutputLimited {
+		accountDelta = actualOutputTokens - admission.AccountOutputCharged
 	}
+	if admission.KeyOutputLimited {
+		keyDelta = actualOutputTokens - admission.KeyOutputCharged
+	}
+	s.adjustOutputAdmission(pr.ConsumerKey, pr.KeyID, admission, accountDelta, keyDelta)
+	s.countOutputSettlement(tags, "account", accountDelta)
+	s.countOutputSettlement(tags, "key", keyDelta)
+}
+
+// countOutputSettlement emits the per-bucket settlement counter: an overage
+// debit lands in delta_tokens_total, an unused credit in credit_tokens_total.
+func (s *Server) countOutputSettlement(tags []string, bucket string, delta int) {
+	if delta == 0 {
+		return
+	}
+	// Fresh backing array: the two bucket calls share tags, and an append in
+	// place would let the second overwrite the first's trailing element.
+	bucketTags := append(append(make([]string, 0, len(tags)+1), tags...), "bucket:"+bucket)
+	if delta > 0 {
+		s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), bucketTags)
+		return
+	}
+	s.ddCount("ratelimit.output_admission.credit_tokens_total", int64(-delta), bucketTags)
 }
 
 // creditUnusedOutputAdmission returns the WHOLE upfront output charge when a
 // request ends before any content (pre-content 429, provider failure, client
 // gone): nothing was generated for the consumer, so nothing should stay
-// charged against its OTPM. Guarded by the admission's once-guard: the
-// handler's refundReservation closure is called from many dispatch sites and
-// a late completion could still reconcile, and only the first settlement
-// counts.
+// charged against its OTPM. Each bucket gets back exactly what it was
+// debited at Commit (its clamped charge). Guarded by the admission's
+// once-guard: the handler's refundReservation closure is called from many
+// dispatch sites and a late completion could still reconcile, and only the
+// first settlement counts.
 func (s *Server) creditUnusedOutputAdmission(consumerKey, keyID string, admission registry.TokenAdmission) {
-	if !admission.TracksOutput() || admission.AdmittedOutputTokens <= 0 {
+	if !admission.TracksOutput() || (admission.AccountOutputCharged <= 0 && admission.KeyOutputCharged <= 0) {
 		return
 	}
 	if !admission.ClaimSettlement() {
 		return
 	}
-	s.adjustOutputAdmission(consumerKey, keyID, admission, -admission.AdmittedOutputTokens)
-	s.ddCount("ratelimit.output_admission.credit_tokens_total", int64(admission.AdmittedOutputTokens),
-		append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:unknown", "path:refund"))
+	accountDelta, keyDelta := 0, 0
+	if admission.AccountOutputLimited {
+		accountDelta = -admission.AccountOutputCharged
+	}
+	if admission.KeyOutputLimited {
+		keyDelta = -admission.KeyOutputCharged
+	}
+	s.adjustOutputAdmission(consumerKey, keyID, admission, accountDelta, keyDelta)
+	tags := append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:unknown", "path:refund")
+	s.countOutputSettlement(tags, "account", accountDelta)
+	s.countOutputSettlement(tags, "key", keyDelta)
 }
 
-// adjustOutputAdmission applies a signed settlement delta to the account and
-// key output buckets: positive debits (overage), negative credits (unused).
-func (s *Server) adjustOutputAdmission(consumerKey, keyID string, admission registry.TokenAdmission, delta int) {
-	if delta == 0 {
-		return
-	}
-	if admission.AccountOutputLimited {
+// adjustOutputAdmission applies a signed settlement delta to each output
+// bucket: positive debits (overage), negative credits (unused). The account
+// and key buckets carry their own deltas because each was charged its own
+// burst-clamped amount at Commit.
+func (s *Server) adjustOutputAdmission(consumerKey, keyID string, admission registry.TokenAdmission, accountDelta, keyDelta int) {
+	if admission.AccountOutputLimited && accountDelta != 0 {
 		var tl *ratelimit.TokenLimiter
 		switch admission.AccountTier {
 		case "service":
@@ -771,18 +809,18 @@ func (s *Server) adjustOutputAdmission(consumerKey, keyID string, admission regi
 			tl = s.consumerTokenLimiter
 		}
 		if tl != nil {
-			if delta > 0 {
-				tl.DebitOutput(consumerKey, delta)
+			if accountDelta > 0 {
+				tl.DebitOutput(consumerKey, accountDelta)
 			} else {
-				tl.CreditOutput(consumerKey, -delta)
+				tl.CreditOutput(consumerKey, -accountDelta)
 			}
 		}
 	}
-	if admission.KeyOutputLimited && s.keyTokenLimiter != nil {
-		if delta > 0 {
-			s.keyTokenLimiter.DebitOutput(keyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+	if admission.KeyOutputLimited && keyDelta != 0 && s.keyTokenLimiter != nil {
+		if keyDelta > 0 {
+			s.keyTokenLimiter.DebitOutput(keyID, keyDelta, admission.KeyOutputRPS, admission.KeyOutputBurst)
 		} else {
-			s.keyTokenLimiter.CreditOutput(keyID, -delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+			s.keyTokenLimiter.CreditOutput(keyID, -keyDelta, admission.KeyOutputRPS, admission.KeyOutputBurst)
 		}
 	}
 }

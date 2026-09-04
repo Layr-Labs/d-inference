@@ -165,3 +165,79 @@ func TestOmittedMaxTokensSequentialRequestsNoLongerExhaustOTPMLive(t *testing.T)
 		}
 	}
 }
+
+// TestReconcileSettlesAgainstTheClampedCharge: a key whose OTPM (10,000) is
+// below the admitted bound (32,768) is debited its burst at Commit — the
+// clamped 10,000 — and settlement must credit back against THAT. An
+// 8,000-token completion leaves the key bucket at 2,000 (10,000 − 8,000).
+// Before the fix the reconcile credited 32,768 − 8,000 = 24,768 into the key
+// bucket, the top clamp snapped it back to a full 10,000 as if nothing had
+// been generated, and the key admitted the next bound-sized request at once:
+// ~48K tokens/min through a 10K OTPM key. The account bucket (64,000 burst,
+// charged the unclamped 32,768) still settles to 64,000 − 8,000.
+func TestReconcileSettlesAgainstTheClampedCharge(t *testing.T) {
+	srv, _ := testServer(t)
+	tl := consumerOTPMLimiter()
+	srv.SetTokenLimiters(tl, nil)
+	kt := ratelimit.NewKeyTokenLimiter()
+	srv.SetKeyLimiters(nil, kt)
+	const keyOTPM = 10_000
+	outRPM := int64(keyOTPM)
+	key := &store.APIKey{ID: "key-small-otpm", OwnerAccountID: "acct-clamp", OTPMLimit: &outRPM}
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx := context.WithValue(r.Context(), ctxKeyConsumer, "acct-clamp")
+	ctx = context.WithValue(ctx, ctxKeyAPIKey, key)
+	r = r.WithContext(ctx)
+	rps := float64(keyOTPM) / 60
+
+	adm, ok := srv.applyTokenRateLimitWithAdmission(httptest.NewRecorder(), r, 10, 32_768, "m")
+	if !ok || !adm.KeyOutputLimited || !adm.AccountOutputLimited {
+		t.Fatalf("admission = %+v ok=%v, want admitted on both buckets (Peek clamps the bound to the burst)", adm, ok)
+	}
+	if adm.KeyOutputCharged != keyOTPM || adm.AccountOutputCharged != 32_768 {
+		t.Fatalf("charged = key %d / account %d, want key %d (clamped) / account 32,768", adm.KeyOutputCharged, adm.AccountOutputCharged, keyOTPM)
+	}
+	if ok, _, _ := kt.Peek(key.ID, 0, 1, 0, 0, rps, keyOTPM); ok {
+		t.Fatal("key bucket must be empty after committing its whole burst")
+	}
+
+	pr := &registry.PendingRequest{Model: "m", ConsumerKey: "acct-clamp", KeyID: key.ID, TokenAdmission: adm}
+	srv.reconcileOutputAdmission(pr, 8_000)
+
+	// Key bucket: 10,000 − 8,000 = 2,000 (a few tokens of refill at 166/s).
+	if ok, _, _ := kt.Peek(key.ID, 0, 1_900, 0, 0, rps, keyOTPM); !ok {
+		t.Fatal("after settling 8,000 of a 10,000 charge the key must have ~2,000 left; Peek(1,900) rejected")
+	}
+	if ok, _, _ := kt.Peek(key.ID, 0, 2_600, 0, 0, rps, keyOTPM); ok {
+		t.Fatal("key bucket refilled past 10,000 − 8,000: the settlement credited the unclamped admission (32,768 − 8,000) and the top clamp hid it")
+	}
+	// Account bucket: 64,000 − 8,000.
+	if got := remainingOutput(t, tl, "acct-clamp"); got < 64_000-8_000-5 || got > 64_000-8_000+5 {
+		t.Fatalf("account remaining = %d, want ~%d", got, 64_000-8_000)
+	}
+}
+
+// TestRefundPathCreditsTheChargedAmountNotTheAdmission: the pre-content
+// refund returns what the bucket was debited (the clamped charge), so it
+// cannot erase another in-flight request's overage. Account burst 64,000; a
+// 100,000 admission (n × bound) is clamped to 64,000 → 0; another request's
+// 5,000 overage debit → −5,000; the refund must land at 59,000, not snap the
+// bucket to a full 64,000 by crediting 100,000.
+func TestRefundPathCreditsTheChargedAmountNotTheAdmission(t *testing.T) {
+	srv, _ := testServer(t)
+	tl := consumerOTPMLimiter()
+	srv.SetTokenLimiters(tl, nil)
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(context.WithValue(context.Background(), ctxKeyConsumer, "acct-refund"))
+	adm, ok := srv.applyTokenRateLimitWithAdmission(httptest.NewRecorder(), r, 10, 100_000, "m")
+	if !ok {
+		t.Fatal("admission rejected: Peek must clamp an oversized bound to the burst")
+	}
+	if adm.AccountOutputCharged != 64_000 {
+		t.Fatalf("AccountOutputCharged = %d, want the clamped 64,000", adm.AccountOutputCharged)
+	}
+	tl.DebitOutput("acct-refund", 5_000) // another request's overage
+	srv.creditUnusedOutputAdmission("acct-refund", "", adm)
+	if got := remainingOutput(t, tl, "acct-refund"); got < 59_000-5 || got > 59_000+5 {
+		t.Fatalf("remaining after the refund = %d, want ~59,000 (64,000 charged back, 5,000 overage kept); the unclamped 100,000 credit would read 64,000", got)
+	}
+}

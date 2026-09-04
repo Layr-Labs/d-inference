@@ -606,6 +606,36 @@ public actor ProviderLoop {
     /// launchd never SIGKILLs a drain that is still inside its own bound.
     internal static let gracefulDrainTimeout: Duration = .seconds(120)
 
+    /// The bound `beginShutdownDrain` actually uses: `gracefulDrainTimeout`
+    /// unless the launchd job this daemon runs under carries a smaller
+    /// `ExitTimeOut` (`clampShutdownDrain`). launchd re-reads the plist only
+    /// at bootstrap, never on the `kickstart -k` auto-update relaunches the
+    /// fleet takes new builds through, so an auto-updated box keeps the 20 s
+    /// launchd default until its next login/reboot/`darkbloom start` — and a
+    /// drain that believed it had 120 s was SIGKILLed mid-generation at 20.
+    internal var shutdownDrainBound: Duration = ProviderLoop.gracefulDrainTimeout
+
+    /// Floor for the clamped shutdown drain: enough for a generation at a
+    /// step boundary to notice the cancel and push its terminal.
+    internal static let minimumShutdownDrainBound: Duration = .seconds(2)
+
+    /// The drain this daemon may run under a launchd job whose effective
+    /// `ExitTimeOut` is `seconds`: the close margin below it (so the
+    /// goingAway frame still goes out before launchd's SIGKILL), floored,
+    /// and never more than the graceful bound.
+    internal static func shutdownDrainBound(forLaunchdExitTimeOut seconds: Int) -> Duration {
+        let budget = Duration.seconds(seconds - LaunchAgent.shutdownCloseMarginSeconds)
+        return min(gracefulDrainTimeout, max(minimumShutdownDrainBound, budget))
+    }
+
+    /// Clamp the shutdown drain to the loaded launchd job's `ExitTimeOut`
+    /// (`LaunchAgent.loadedExitTimeOutSeconds()`); nil (not launchd-managed,
+    /// or not reported) keeps the graceful bound.
+    public func clampShutdownDrain(toLaunchdExitTimeOut seconds: Int?) {
+        shutdownDrainBound = seconds.map(Self.shutdownDrainBound(forLaunchdExitTimeOut:))
+            ?? Self.gracefulDrainTimeout
+    }
+
     /// Set by `beginShutdownDrain` so a second cancellation (or the post-loop
     /// teardown) cannot start a second drain.
     internal var shutdownDrainStarted: Bool = false

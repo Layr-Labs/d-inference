@@ -423,10 +423,13 @@ extension ProviderLoop {
     /// run()'s consumer and lets its teardown proceed.
     internal func beginShutdownDrain(
         coordinator: CoordinatorClient,
-        drainTimeout: Duration = ProviderLoop.gracefulDrainTimeout
+        drainTimeout: Duration? = nil
     ) async {
         guard !shutdownDrainStarted else { return }
         shutdownDrainStarted = true
+        // `shutdownDrainBound`: the graceful bound, clamped to the launchd
+        // job's effective ExitTimeOut on boxes that never re-ran `start`.
+        let drainTimeout = drainTimeout ?? shutdownDrainBound
         isShuttingDown = true
         // Quote path mirror (routing v2): quotes refuse with slot_state for
         // the window the socket stays up, exactly like the admission gate.

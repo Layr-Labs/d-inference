@@ -140,6 +140,9 @@ extension ProviderLoop {
     /// Test seam: the admission gate's shutdown flag.
     func isShuttingDownForTesting() -> Bool { isShuttingDown }
 
+    /// Test seam: the bound `beginShutdownDrain` uses by default.
+    func shutdownDrainBoundForTesting() -> Duration { shutdownDrainBound }
+
     /// Test seam: stop the capacity-refresh monitor and its liveness
     /// companion (production stops them in `run()`'s teardown).
     func stopCapacityRefreshMonitorForTesting() {

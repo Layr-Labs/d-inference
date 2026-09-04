@@ -263,6 +263,17 @@ extension Start {
 
         let schedule: Schedule? = config.schedule.flatMap { Schedule.from(config: $0) }
 
+        // launchd's SIGTERM→SIGKILL budget for THIS job, read from the loaded
+        // definition: the drain is clamped below it, and an install whose
+        // plist predates `ExitTimeOut` (auto-updated boxes) is reconciled on
+        // disk so the next bootstrap carries the intended value.
+        let launchdExitTimeOut = LaunchAgent.loadedExitTimeOutSeconds()
+        if launchdExitTimeOut != nil, LaunchAgent.isInstalled(),
+           LaunchAgent.reconcileExitTimeOutOnDisk()
+        {
+            print("Updated the launchd plist's ExitTimeOut to \(LaunchAgent.exitTimeOutSeconds)s (takes effect at the next login, reboot or `darkbloom start`).")
+        }
+
         print("darkbloom \(ProviderCore.version)")
         print("Backend: mlx-swift")
         // Engine env this process runs with (launchd replays the plist's
@@ -326,9 +337,12 @@ extension Start {
         do {
             try await runUntilTerminationSignal {
                 if let schedule {
-                    try await runScheduled(loopConfig: loopConfig, schedule: schedule)
+                    try await runScheduled(
+                        loopConfig: loopConfig, schedule: schedule,
+                        launchdExitTimeOut: launchdExitTimeOut)
                 } else {
                     let loop = try ProviderLoop(config: loopConfig)
+                    await loop.clampShutdownDrain(toLaunchdExitTimeOut: launchdExitTimeOut)
                     try await runProviderLoopWithFanLease(loop)
                 }
             }
@@ -402,7 +416,8 @@ extension Start {
 
     private func runScheduled(
         loopConfig: ProviderLoopConfig,
-        schedule: Schedule
+        schedule: Schedule,
+        launchdExitTimeOut: Int?
     ) async throws {
         while !Task.isCancelled {
             if !schedule.isActiveNow() {
@@ -416,6 +431,7 @@ extension Start {
             print("Availability window active for \(formatDuration(activeFor)).")
 
             let loop = try ProviderLoop(config: loopConfig)
+            await loop.clampShutdownDrain(toLaunchdExitTimeOut: launchdExitTimeOut)
             try await withThrowingTaskGroup(of: ScheduledLoopResult.self) { group in
                 group.addTask {
                     try await runProviderLoopWithFanLease(loop)

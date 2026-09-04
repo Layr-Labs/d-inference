@@ -4,11 +4,20 @@ public struct ProviderLaunchSnapshot: Codable, Sendable, Equatable {
     public let label: String
     public let runs: UInt64?
     public let process: ProcessIdentity?
+    /// The loaded job's effective `ExitTimeOut` (launchd's SIGTERM→SIGKILL
+    /// budget), from `launchctl print`'s `exit timeout = N` line. nil when
+    /// the output did not carry one (or for baselines recorded before it
+    /// was parsed).
+    public let exitTimeoutSeconds: Int?
 
-    public init(label: String, runs: UInt64?, process: ProcessIdentity?) {
+    public init(
+        label: String, runs: UInt64?, process: ProcessIdentity?,
+        exitTimeoutSeconds: Int? = nil
+    ) {
         self.label = label
         self.runs = runs
         self.process = process
+        self.exitTimeoutSeconds = exitTimeoutSeconds
     }
 
     public func provesLaunch(after baseline: ProviderLaunchSnapshot?) -> Bool {
@@ -44,10 +53,13 @@ extension LaunchAgent {
             .flatMap(UInt64.init)
         let pid = captureInteger(#"\bpid\s*=\s*([1-9][0-9]*)"#, in: output)
             .flatMap(Int32.init)
+        let exitTimeout = captureInteger(#"\bexit timeout\s*=\s*([0-9]+)"#, in: output)
+            .flatMap(Int.init)
         return ProviderLaunchSnapshot(
             label: label,
             runs: runs,
-            process: pid.flatMap(identityReader)
+            process: pid.flatMap(identityReader),
+            exitTimeoutSeconds: exitTimeout
         )
     }
 

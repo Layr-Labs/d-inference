@@ -578,8 +578,14 @@ extension ProviderLoop {
                 throw InferenceError.modelLoadFailed(message)
             }
             // Pin MLX's memory ceiling below physical RAM (idempotent). MLX's
-            // default (1.5× working set) otherwise allows a jetsam OOM.
-            MLXMemoryGuard.configureOnce(log: { limits in
+            // default (1.5× working set) otherwise allows a jetsam OOM. The
+            // ceiling is the provider's effective cap (cap-derived reserve,
+            // T3-04) — passed at EVERY configureOnce site because the first
+            // caller wins.
+            MLXMemoryGuard.configureOnce(
+                capDerivedReserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+                    configReserveBytes: configuredMemoryReserveBytes),
+                log: { limits in
                 FileHandle.standardError.write(Data(
                     "[mlx] memory ceiling set: limit=\(limits.memoryLimitBytes / (1024*1024*1024))GB cache=\(limits.cacheLimitBytes / (1024*1024*1024))GB\n".utf8
                 ))

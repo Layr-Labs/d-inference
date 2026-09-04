@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -128,6 +129,85 @@ private let gib = 1024 * 1024 * 1024
         explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "0"]) == 0)
 }
 
+// MARK: - Cap alignment (T3-04)
+
+@Test func mlxGuardCapDerivedReserveAlignsTheLimitWithTheEffectiveCap() {
+    // memoryLimit == min(0.9 × physical, physical − memory_reserve_gb) across
+    // the fleet's tiers with the 4 GiB default reserve; the cache limit is
+    // pinned unchanged (the 8 GiB absolute cap binds everywhere ≥ 24 GB).
+    let configReserve = UInt64(4 * gib)
+    for physGB in [24, 32, 36, 40, 48, 64, 128] {
+        let physical = UInt64(physGB * gib)
+        let reserve = MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: physical, configReserveBytes: configReserve)
+        let limits = MLXMemoryGuard.recommendedLimits(physicalBytes: physical, reserveBytes: reserve)
+        let effectiveCap = UnifiedMemoryCap.effectiveCapBytes(
+            physicalBytes: physical, configReserveBytes: configReserve)
+        #expect(limits.memoryLimitBytes == Int(effectiveCap), "\(physGB) GB")
+        #expect(limits.cacheLimitBytes == 8 * gib, "\(physGB) GB cache limit must not move")
+        #expect(limits.memoryLimitBytes < physGB * gib)
+    }
+    // The tiers where the legacy 6 GiB pin sat INSIDE sanctioned usage
+    // (0.9 × physical > physical − 6 GiB ⇔ physical < 60 GB): the limit is
+    // now 2 GiB looser on 24/32/36/40 GB and 1.2 GiB looser on 48 GB…
+    #expect(MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(32 * gib),
+        reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: UInt64(32 * gib), configReserveBytes: configReserve)
+    ).memoryLimitBytes == 28 * gib)  // was 26 GiB
+    #expect(MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(24 * gib),
+        reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: UInt64(24 * gib), configReserveBytes: configReserve)
+    ).memoryLimitBytes == 20 * gib)  // was 18 GiB
+    #expect(MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(40 * gib),
+        reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: UInt64(40 * gib), configReserveBytes: configReserve)
+    ).memoryLimitBytes == 36 * gib)  // was 34 GiB
+    // …and 0.9 × physical (tighter than the legacy pin, never binding under
+    // the provider gate) at 64 GB and above.
+    #expect(MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(64 * gib),
+        reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: UInt64(64 * gib), configReserveBytes: configReserve)
+    ).memoryLimitBytes == Int(Double(64 * gib) * 0.9))  // 57.6 GiB, was 58
+}
+
+@Test func mlxGuardReservePrecedenceIsExplicitThenEnvThenCapDerivedThenDefault() {
+    let capDerived = UInt64(3 * gib)
+    // explicit wins over everything.
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: UInt64(10 * gib), capDerived: capDerived,
+        env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "12"]) == UInt64(10 * gib))
+    // env wins over the cap-derived figure (the operator's measurement lever).
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, capDerived: capDerived,
+        env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "12"]) == UInt64(12) * 1_073_741_824)
+    // cap-derived wins over the legacy default…
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, capDerived: capDerived, env: [:]) == capDerived)
+    // …and garbage env falls through to it, not to the 6 GiB default.
+    #expect(MLXMemoryGuard.resolvedReserveBytes(
+        explicit: nil, capDerived: capDerived,
+        env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "not-a-number"]) == capDerived)
+    // No cap-derived figure: the legacy default (tools that never resolve a cap).
+    #expect(MLXMemoryGuard.resolvedReserveBytes(explicit: nil, capDerived: nil, env: [:])
+        == MLXMemoryGuard.defaultReserveGB * 1_073_741_824)
+}
+
+@Test func mlxGuardCapDerivedReserveIsPhysicalMinusEffectiveCap() {
+    // Config reserve below the cap-implied reserve: 10% of physical.
+    #expect(MLXMemoryGuard.capDerivedReserveBytes(
+        physicalBytes: UInt64(64 * gib), configReserveBytes: UInt64(4 * gib))
+        == UInt64(64 * gib) - UInt64(Double(64 * gib) * 0.9))
+    // Config reserve above it: the operator's reserve, exactly.
+    #expect(MLXMemoryGuard.capDerivedReserveBytes(
+        physicalBytes: UInt64(32 * gib), configReserveBytes: UInt64(4 * gib)) == UInt64(4 * gib))
+    // Never underflows.
+    #expect(MLXMemoryGuard.capDerivedReserveBytes(physicalBytes: 0, configReserveBytes: UInt64(4 * gib)) == 0)
+}
+
 /// Serialized: both tests reset + trip the process-global once-flag, so
 /// running them in parallel would race `configured` and flake.
 @Suite("MLXMemoryGuard.configureOnce", .serialized)
@@ -169,5 +249,27 @@ struct MLXMemoryGuardConfigureOnceTests {
         #expect(MLXMemoryGuard.configuredLimitsSnapshot() == limits)
         MLXMemoryGuard._resetForTest()
         #expect(MLXMemoryGuard.configuredLimitsSnapshot() == nil)
+    }
+
+    @Test func mlxGuardConfigureOnceUsesTheCapDerivedReserveWhenNothingOverridesIt() {
+        // Production shape: no explicit reserve, the cap-derived figure is
+        // passed, env is whatever the process has (the test asserts the
+        // NON-override path, so it skips when the operator lever is set).
+        guard ProcessInfo.processInfo.environment["DARKBLOOM_MLX_MEMORY_RESERVE_GB"] == nil else { return }
+        MLXMemoryGuard._resetForTest()
+        var applied: [MLXMemoryGuard.Limits] = []
+        let physical = UInt64(32 * gib)
+        let limits = MLXMemoryGuard.configureOnce(
+            capDerivedReserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+                physicalBytes: physical, configReserveBytes: UInt64(4 * gib)),
+            physicalBytes: physical,
+            apply: { applied.append($0) })
+        // 32 GB box: the limit is the provider's effective cap (28 GiB), no
+        // longer the legacy physical − 6 GiB (26 GiB) that sat inside
+        // sanctioned usage.
+        #expect(limits?.memoryLimitBytes == 28 * gib)
+        #expect(applied.first?.memoryLimitBytes == 28 * gib)
+        #expect(MLXMemoryGuard.configuredLimitsSnapshot()?.memoryLimitBytes == 28 * gib)
+        MLXMemoryGuard._resetForTest()
     }
 }

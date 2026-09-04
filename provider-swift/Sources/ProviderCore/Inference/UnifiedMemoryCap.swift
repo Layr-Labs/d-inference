@@ -217,6 +217,25 @@ public enum UnifiedMemoryCap {
         return min(byFraction, byFloor)
     }
 
+    /// The cap every memory verdict on the box actually enforces:
+    /// `min(hardCap, physical − configReserve)` — the hard cap unless the
+    /// operator's `memory_reserve_gb` is larger than the cap's own implied
+    /// reserve (on 16/32 GiB boxes the default 4 GiB is). The static KV
+    /// budget (``kvBudgetBytes``), the live KV gate (``liveKVHeadroomBytes``),
+    /// the load gate (``loadReserveBytes`` = `physical − this`) and the MLX
+    /// eval threshold (`MLXMemoryGuard.capDerivedReserveBytes`) all derive
+    /// from this one figure. No-op when `configReserve ≤ physical − cap`.
+    public static func effectiveCapBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        configReserveBytes: UInt64 = 0,
+        capFraction: Double? = nil
+    ) -> UInt64 {
+        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
+        let reserveFloor =
+            physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
+        return min(cap, reserveFloor)
+    }
+
     /// Bytes available for KV cache after subtracting all resident model weights,
     /// the activation reserve, and any RAM-resident prefix-cache allowance, from
     /// the hard cap. Clamps to 0 — never returns a negative budget.
@@ -241,10 +260,9 @@ public enum UnifiedMemoryCap {
         configReserveBytes: UInt64 = 0,
         capFraction: Double? = nil
     ) -> UInt64 {
-        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let reserveFloor =
-            physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
-        let effectiveCap = min(cap, reserveFloor)
+        let effectiveCap = effectiveCapBytes(
+            physicalBytes: physicalBytes, configReserveBytes: configReserveBytes,
+            capFraction: capFraction)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
         let claimed = saturatingAdd(residentWeightBytes, activations, ramPrefixAllowanceBytes)
         return effectiveCap > claimed ? effectiveCap - claimed : 0
@@ -283,9 +301,9 @@ public enum UnifiedMemoryCap {
         // serving could grow KV up to the 90% cap and consume memory the operator
         // explicitly reserved, reintroducing the OS-pressure/OOM the reserve
         // exists to prevent. No-op when `configReserve ≤ physical − cap`.
-        let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let reserveFloor = physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
-        let effectiveCap = min(cap, reserveFloor)
+        let effectiveCap = effectiveCapBytes(
+            physicalBytes: physicalBytes, configReserveBytes: configReserveBytes,
+            capFraction: capFraction)
         let underCap = effectiveCap > mlxUsedBytes ? effectiveCap - mlxUsedBytes : 0
         let realFree = min(underCap, systemAvailableBytes)
         let activations = activationReserveBytes ?? resolvedActivationReserveBytes()

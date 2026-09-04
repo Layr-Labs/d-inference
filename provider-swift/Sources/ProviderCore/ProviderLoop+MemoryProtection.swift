@@ -24,8 +24,14 @@ extension ProviderLoop {
         // Pin the MLX memory ceiling BEFORE any model weights are loaded (the
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
         // which runs after this). Idempotent; StandaloneServer invokes the same
-        // guard directly before its first load. See MLXMemoryGuard.
-        MLXMemoryGuard.configureOnce(log: { [logger] limits in
+        // guard directly before its first load. See MLXMemoryGuard. The
+        // ceiling is the provider's effective cap (cap-derived reserve, T3-04)
+        // so sanctioned usage never crosses MLX's per-primitive eval
+        // serialization threshold; the env override still wins.
+        MLXMemoryGuard.configureOnce(
+            capDerivedReserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+                configReserveBytes: configuredMemoryReserveBytes),
+            log: { [logger] limits in
             logger.info(
                 "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
         })

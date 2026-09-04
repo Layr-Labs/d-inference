@@ -517,3 +517,28 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.loadHeadroomBytes()
         == UnifiedMemoryCap.defaultActivationReserveBytes + UnifiedMemoryCap.minimumLoadKVBytes)
 }
+
+// MARK: - Effective cap (T3-04)
+
+@Test func effectiveCapIsTheHardCapUnlessTheConfigReserveIsLarger() {
+    // 64 GiB, 4 GiB reserve: the 10% fraction reserve (6.4 GiB) dominates.
+    #expect(UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 64 * gib, configReserveBytes: 4 * gib)
+        == UnifiedMemoryCap.hardCapBytes(physicalBytes: 64 * gib))
+    // 32 GiB, 4 GiB reserve: 0.9 × 32 = 28.8 GiB > 32 − 4 = 28 GiB → 28 GiB.
+    #expect(UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 32 * gib, configReserveBytes: 4 * gib) == 28 * gib)
+    // Zero reserve: the hard cap, exactly.
+    #expect(UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 24 * gib, configReserveBytes: 0)
+        == UnifiedMemoryCap.hardCapBytes(physicalBytes: 24 * gib))
+    // A reserve at or above physical clamps to zero, never underflows.
+    #expect(UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 8 * gib, configReserveBytes: 8 * gib) == 0)
+    #expect(UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 8 * gib, configReserveBytes: .max) == 0)
+    // It is the SAME cap the static budget and the live gate subtract from —
+    // the factoring is behaviour-preserving.
+    let cap = UnifiedMemoryCap.effectiveCapBytes(physicalBytes: 32 * gib, configReserveBytes: 4 * gib)
+    #expect(UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: 32 * gib, residentWeightBytes: 10 * gib,
+        activationReserveBytes: 3 * gib, configReserveBytes: 4 * gib) == cap - 13 * gib)
+    #expect(UnifiedMemoryCap.liveKVHeadroomBytes(
+        physicalBytes: 32 * gib, mlxUsedBytes: 10 * gib, systemAvailableBytes: .max,
+        activationReserveBytes: 3 * gib, configReserveBytes: 4 * gib) == cap - 13 * gib)
+}

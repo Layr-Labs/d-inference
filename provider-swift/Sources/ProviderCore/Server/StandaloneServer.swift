@@ -294,7 +294,11 @@ public actor StandaloneServer {
         LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
-        MLXMemoryGuard.configureOnce()
+        // Aligned with the effective cap (T3-04); the standalone budget carries
+        // no operator reserve, so the cap-derived reserve is the plain
+        // `physical − hardCap`.
+        MLXMemoryGuard.configureOnce(
+            capDerivedReserveBytes: MLXMemoryGuard.capDerivedReserveBytes(configReserveBytes: 0))
     }
 
     /// Drop models without a CBv2 adapter from the served catalog, with a

@@ -1,17 +1,42 @@
 import Foundation
 import MLX
 
-/// Hard ceiling on MLX's unified-memory footprint.
+/// Ceiling on MLX's unified-memory footprint — an EVAL-SCHEDULING threshold,
+/// not an allocation limit.
 ///
-/// MLX's `memoryLimit` defaults to 1.5× the device working set — above physical
-/// RAM — so by default MLX can allocate past total RAM and hit an uncatchable
-/// jetsam SIGKILL (an invisible OOM). Pinning it to `physical − reserve` makes
-/// the allocator throttle (malloc waits on scheduled tasks) instead. Coarse
-/// backstop; the live per-request gate (GlobalKVCacheBudget / tokenBudgetMax,
-/// clamped to SystemMemory.availableBytes) is the precise one.
+/// What `Memory.memoryLimit` actually does in the vendored MLX
+/// (`libs/mlx-swift/Source/Cmlx/mlx/mlx`):
+///
+///   * `transforms.cpp` `eval_impl`: while `active_memory > memory_limit &&
+///     n_active_tasks > 0`, commit every open stream and wait for one task
+///     after EVERY primitive. Above the limit a ~1,760-dispatch decode step
+///     becomes ~1,760 GPU round-trips — a silent, large slowdown that looks
+///     like a wedged slot (`MLXMemoryLimitRegime` detects and logs it).
+///   * `allocator.cpp` `set_memory_limit`: moves `block_limit_` and
+///     recomputes `gc_limit_ = min(block_limit_, 0.95 × recommended working
+///     set)` — the threshold above which freed buffers are returned instead
+///     of cached. `malloc` never blocks or throws on BYTES; only the resource
+///     COUNT (`num_resources_ ≥ resource_limit_`) throws.
+///
+/// So the limit cannot enforce the provider's cap (that is the admission
+/// layer: `UnifiedMemoryCap` + `GlobalKVCacheBudget`), and it MUST NOT sit
+/// below what the admission layer sanctions: sanctioned usage crossing it is
+/// the serialization cliff above. MLX's default (1.5× the device working
+/// set — above physical RAM) is still pinned down so a runaway allocation
+/// at least releases its cache before jetsam; the pin is `physical −
+/// reserve`, where the reserve resolves explicit > env
+/// (`DARKBLOOM_MLX_MEMORY_RESERVE_GB`) > cap-derived > the 6 GiB legacy
+/// default. Production passes the cap-derived reserve, so the limit equals
+/// the provider's effective cap (`UnifiedMemoryCap.effectiveCapBytes`) —
+/// looser than the legacy 6 GiB on every box below 60 GB (32 GB: 28 GiB vs
+/// 26; 24 GB: 20 vs 18; 40 GB: 36 vs 34), where the old limit sat inside
+/// sanctioned usage; slightly tighter at ≥ 64 GB (0.9 × physical), where the
+/// provider gate already bounds active below it.
 public enum MLXMemoryGuard {
-    /// Headroom (GB) left below physical RAM for macOS + non-MLX memory. Larger
-    /// than the per-request load reserve (4 GB): this is the whole-machine ceiling.
+    /// Legacy headroom (GB) left below physical RAM when no cap-derived
+    /// reserve is supplied (tests, tools that never resolve a cap). Larger
+    /// than the per-request load reserve (4 GB): this was sized as a
+    /// whole-machine ceiling before the limit was aligned with the cap.
     public static let defaultReserveGB: UInt64 = 6
 
     /// Absolute ceiling (GiB) on MLX's reusable buffer pool. The pool's useful
@@ -55,10 +80,30 @@ public enum MLXMemoryGuard {
         return Limits(memoryLimitBytes: limit, cacheLimitBytes: min(cache, limit))
     }
 
-    /// Reserve in BYTES from explicit (bytes), env DARKBLOOM_MLX_MEMORY_RESERVE_GB
-    /// (GB), or default. `explicit` is bytes, like reserveBytes everywhere else.
+    /// The reserve that makes `physical − reserve` equal the provider's
+    /// effective cap — `UnifiedMemoryCap.effectiveCapBytes(physical,
+    /// configReserve)` = min(0.9 × physical, physical − memory_reserve_gb),
+    /// the SAME figure the shared KV gate, the static budget and the load
+    /// gate enforce. Passing it as `capDerivedReserveBytes` aligns the MLX
+    /// eval threshold with the admission layer (T3-04).
+    public static func capDerivedReserveBytes(
+        physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
+        configReserveBytes: UInt64
+    ) -> UInt64 {
+        let cap = UnifiedMemoryCap.effectiveCapBytes(
+            physicalBytes: physicalBytes, configReserveBytes: configReserveBytes)
+        return physicalBytes > cap ? physicalBytes - cap : 0
+    }
+
+    /// Reserve in BYTES: explicit (bytes) > env DARKBLOOM_MLX_MEMORY_RESERVE_GB
+    /// (GB) > cap-derived (bytes, from `capDerivedReserveBytes`) > the legacy
+    /// default. `explicit` is bytes, like reserveBytes everywhere else. The
+    /// env override stays above the cap-derived figure so an operator can
+    /// still pin the limit by hand (the measurement lever for
+    /// `MLXMemoryLimitRegime`).
     static func resolvedReserveBytes(
         explicit: UInt64?,
+        capDerived: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
         if let explicit { return explicit }
@@ -71,6 +116,7 @@ public enum MLXMemoryGuard {
             let scaled = gb * 1_073_741_824
             return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
         }
+        if let capDerived { return capDerived }
         return saturatingGiBToBytes(defaultReserveGB)
     }
 
@@ -117,10 +163,18 @@ public enum MLXMemoryGuard {
 
     /// Set the MLX ceiling once per process (idempotent). `apply` is injectable
     /// for tests so they avoid touching real MLX globals.
+    ///
+    /// `capDerivedReserveBytes`: the reserve that aligns the limit with the
+    /// provider's effective cap (`capDerivedReserveBytes(physicalBytes:
+    /// configReserveBytes:)`). EVERY production call site passes it — the
+    /// guard is once-per-process and whichever site runs first wins, so a
+    /// site that omitted it would leave the legacy 6 GiB pin in place on
+    /// the ordering where it runs first.
     @discardableResult
     public static func configureOnce(
         reserveBytes: UInt64? = nil,
         cacheCapBytes: UInt64? = nil,
+        capDerivedReserveBytes: UInt64? = nil,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         apply: (Limits) -> Void = { limits in
             Memory.memoryLimit = limits.memoryLimitBytes
@@ -138,7 +192,8 @@ public enum MLXMemoryGuard {
 
         let limits = recommendedLimits(
             physicalBytes: physicalBytes,
-            reserveBytes: resolvedReserveBytes(explicit: reserveBytes),
+            reserveBytes: resolvedReserveBytes(
+                explicit: reserveBytes, capDerived: capDerivedReserveBytes),
             cacheCapBytes: resolvedCacheCapBytes(explicit: cacheCapBytes))
         lock.lock()
         configuredLimits = limits

@@ -92,8 +92,12 @@ func TestGetAccountEarningsWindowsExactBeyondPageLimit(t *testing.T) {
 					}
 				}
 			} else {
-				// Oldest first: the memory store's "newest first" is insertion
-				// order, so this mirrors Postgres' created_at DESC page.
+				// Oldest first: the memory store pages newest-INSERTED first
+				// (it walks providerEarnings from the end), so seeding the
+				// outer rows first mirrors Postgres' created_at DESC page.
+				// On both backends the legacy page is 5,000 of the 5,500
+				// inner rows: tally inner 5,000 / outer 5,000 — the inner
+				// window under-counted, the outer capped at the page size.
 				for i := 0; i < outerOnly; i++ {
 					seedEarning(t, s, acct, "model", now.Add(-3*24*time.Hour), 3)
 				}

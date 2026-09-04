@@ -145,6 +145,14 @@ type dispatchState struct {
 	queueExitPosition int
 
 	// ---- mutable per-request state ----
+	// lastDecision is the ladder's most recent INFORMATIVE routing decision
+	// (see noteRoutingDecision), captured by recordRoutingDecisionFor so the
+	// exhausted tail can seed the rejection ledger's counterfactual from the
+	// ladder's own scan counts instead of leaving the telemetry sink to
+	// re-walk the fleet.
+	lastDecision    registry.RoutingDecision
+	hasLastDecision bool
+
 	provider      *registry.Provider
 	pr            *registry.PendingRequest
 	requestID     string
@@ -420,8 +428,26 @@ func (d *dispatchState) recordRoutingDecision(decision registry.RoutingDecision,
 	d.recordRoutingDecisionFor(d.provider, d.pr, d.routingOutcomeKey(), d.attempt, decision, dispatchErr, outcomeOverride)
 }
 
+// noteRoutingDecision retains the ladder's most recent informative decision:
+// one whose scan reported candidates or rejections. Retry scans (they run
+// against the plan / exclusion set) and the terminal no-provider scan report
+// zero counts, so retaining them verbatim would record every exhausted
+// ladder as "no provider existed" — the rejection ledger's headline
+// could_have_served would then conflate "every provider refused" with "no
+// provider advertised the model". The last informative scan answers the
+// same question the sink's fleet walk would ("did a provider with capacity
+// exist?") from what the ladder already computed.
+func (d *dispatchState) noteRoutingDecision(decision registry.RoutingDecision) {
+	if decision.CandidateCount > 0 || decision.CapacityRejections > 0 ||
+		decision.ModelTooLargeRejections > 0 || decision.VisionRejections > 0 {
+		d.lastDecision = decision
+		d.hasLastDecision = true
+	}
+}
+
 func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr *registry.PendingRequest, requestID string, attempt int, decision registry.RoutingDecision, dispatchErr, outcomeOverride string) {
 	s := d.s
+	d.noteRoutingDecision(decision)
 	if requestID == "" && pr != nil {
 		requestID = pr.RequestID
 	}
@@ -1090,6 +1116,28 @@ func (d *dispatchState) rejectionInfo(stage, reason string, status, retryAfterMs
 		}
 	}
 	return info
+}
+
+// exhaustedRejectionInfo builds the rejection-ledger row for the dispatch
+// ladder's exhausted tail with servability seeded from what the ladder
+// already knows, so the telemetry sink never re-walks the fleet for it: a
+// terminal verdict (the request is unservable, or every attempted provider
+// refused the remaining deadline) is could_have_served=false; otherwise the
+// ladder's last informative routing decision — the candidate/capacity
+// counts of its last scan that saw providers — is the counterfactual. Only
+// a ladder that never recorded one leaves it to the sink (which then decides
+// under the scan semaphore).
+func (d *dispatchState) exhaustedRejectionInfo(reason string, status, retryAfterMs int, terminalVerdict bool) rejectionInfo {
+	if terminalVerdict {
+		info := d.rejectionInfo("dispatch", reason, status, retryAfterMs)
+		info.servabilityComputed = true
+		info.candidateCount = 0
+		return info
+	}
+	if d.hasLastDecision {
+		return d.rejectionInfoWithDecision("dispatch", reason, status, retryAfterMs, d.lastDecision)
+	}
+	return d.rejectionInfo("dispatch", reason, status, retryAfterMs)
 }
 
 func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, retryAfterMs int, decision registry.RoutingDecision) rejectionInfo {
@@ -3634,18 +3682,14 @@ exhausted:
 			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),
 				queuePos, hintSeconds)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
-			if !stickyFault && (d.unservable || failure.deadline) {
-				// No provider could serve this request (it exceeds the model
-				// context, or every attempted provider refused the remaining
-				// deadline). Mark it not-servable so the rejection ledger's
-				// counterfactual reflects the terminal decision.
-				info.servabilityComputed = true
-				info.candidateCount = 0
-			}
-			s.recordRejection(info)
+			// A terminal verdict (the request exceeds the model context, or
+			// every attempted provider refused the remaining deadline) is
+			// recorded not-servable; otherwise the ladder's last scan seeds
+			// the counterfactual (see exhaustedRejectionInfo).
+			s.recordRejection(d.exhaustedRejectionInfo(reason, statusCode, retryAfter*1000,
+				!stickyFault && (d.unservable || failure.deadline)))
 		} else {
-			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, 0))
+			s.recordRejection(d.exhaustedRejectionInfo(reason, statusCode, 0, false))
 		}
 		rateLimitMessage := fmt.Sprintf(
 			"all providers at capacity after %d attempt(s): %s",

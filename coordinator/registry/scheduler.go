@@ -2795,7 +2795,12 @@ func (r *Registry) QuickCapacityCheckWithTTFTForRequest(model string, estimatedP
 	return r.quickCapacityCheck(model, estimatedPromptTokens, requestedMaxTokens, traits, requiresVision, allowedSerials...)
 }
 
+// QuickCapacityWalks reports how many capacity-preflight walks have run
+// since start (test hook).
+func (r *Registry) QuickCapacityWalks() uint64 { return r.quickCapacityWalks.Load() }
+
 func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, requestedMaxTokens int, traits RequestTraits, requiresVision bool, allowedSerials ...string) (candidateCount, capacityRejections, modelTooLarge int, bestTTFT time.Duration, hasTTFT bool) {
+	r.quickCapacityWalks.Add(1)
 	// Use a dummy PendingRequest with the caller's actual token estimates
 	// for the admission gate (freeMemoryAdmits).
 	if estimatedPromptTokens <= 0 {

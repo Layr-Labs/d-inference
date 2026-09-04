@@ -1583,6 +1583,22 @@ func (s *Server) acquireRoutingScanSlot(wait time.Duration, done <-chan struct{}
 }
 
 // releaseRoutingScanSlot returns a slot taken by acquireRoutingScanSlot.
+// tryAcquireRoutingScanSlot takes a routing-scan slot only if one is free
+// right now (nil sem => always). Used by side-channel work (the rejection
+// ledger's counterfactual walk) that must never queue behind, or compete
+// with, the request-path scans; a false return means "skip the walk".
+func (s *Server) tryAcquireRoutingScanSlot() bool {
+	if s.routingScanSem == nil {
+		return true
+	}
+	select {
+	case s.routingScanSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) releaseRoutingScanSlot() {
 	if s.routingScanSem == nil {
 		return

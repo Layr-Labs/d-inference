@@ -2138,6 +2138,11 @@ func (p *Provider) pendingLoadForModelLocked(model string) int {
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
+	// quickCapacityWalks counts capacity-preflight fleet walks
+	// (quickCapacityCheck); exposed for tests that pin which callers may
+	// trigger one.
+	quickCapacityWalks atomic.Uint64
+
 	mu        sync.RWMutex
 	providers map[string]*Provider
 

@@ -140,15 +140,30 @@ func (s *Server) recordRejection(info rejectionInfo) {
 
 	s.submitTelemetry("recordRejection", func() {
 		if computeServability {
-			traits := registry.RequestTraits{HasTools: hasTools}
-			cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
-				resolvedModel, estPrompt, reqMax, traits, requiresVision,
-			)
-			rec.CandidateCount = cc
-			rec.CapacityRejections = capRej
-			rec.ModelTooLargeRejections = tooLarge
-			if hasTTFT {
-				rec.BestTTFTMs = float64(bestTTFT.Milliseconds())
+			// The counterfactual walk takes r.mu.RLock and every visited
+			// provider's p.mu — the same locks the request-path routing scans
+			// contend for. Take a routing-scan slot only if one is free: with
+			// headroom the walk runs exactly as before; when the scans are
+			// saturated (precisely the routing_saturated storms this ledger
+			// should record) it is skipped, so the single sink worker never
+			// stalls the route/outcome batches behind it. A skipped
+			// counterfactual is marked candidate_count = -1 — distinguishable
+			// from "no provider existed" (0); could_have_served stays false.
+			if s.tryAcquireRoutingScanSlot() {
+				traits := registry.RequestTraits{HasTools: hasTools}
+				cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
+					resolvedModel, estPrompt, reqMax, traits, requiresVision,
+				)
+				s.releaseRoutingScanSlot()
+				rec.CandidateCount = cc
+				rec.CapacityRejections = capRej
+				rec.ModelTooLargeRejections = tooLarge
+				if hasTTFT {
+					rec.BestTTFTMs = float64(bestTTFT.Milliseconds())
+				}
+			} else {
+				rec.CandidateCount = rejectionCounterfactualSkipped
+				s.ddIncr("rejection.counterfactual_skipped", []string{"model:" + resolvedModel})
 			}
 		}
 		// A request could have produced output iff at least one provider could
@@ -157,6 +172,11 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		_ = s.store.RecordRejection(rec)
 	})
 }
+
+// rejectionCounterfactualSkipped is the candidate_count marker for a
+// rejection row whose servability counterfactual was not computed because
+// the routing scans were saturated at record time.
+const rejectionCounterfactualSkipped = -1
 
 // clientClassFromUserAgent buckets the caller into a coarse, non-private class so
 // we can compare rejection patterns across integrations (e.g. OpenRouter vs

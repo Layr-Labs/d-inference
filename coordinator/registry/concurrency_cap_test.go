@@ -839,11 +839,11 @@ func TestWarmTargetDedicatedWholePool(t *testing.T) {
 	svc := estimateServiceTime(dedicated.prefillTPS, dedicated.soloDecodeTPS, params)
 	// Under demand (a capacity reject) → warm the whole eligible pool (2 + 3 = 5).
 	underDemand := warmPoolPressureBucket{capacityRejects: 1}
-	if got := c.targetWarm(dedicated, underDemand, warmPoolQueuePressure{}, params, svc, now); got != 5 {
+	if got := c.targetWarm(dedicated, underDemand, c.targetInputs(dedicated, underDemand, warmPoolQueuePressure{}), params, svc, now); got != 5 {
 		t.Fatalf("dedicated (under demand) warm target = %d, want 5 (warm 2 + eligibleCold 3 = whole pool)", got)
 	}
 	// No demand for this build → NOT force-warmed across the pool (left demand-derived).
-	if got := c.targetWarm(dedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}, params, svc, now); got == 5 {
+	if got := c.targetWarm(dedicated, warmPoolPressureBucket{}, c.targetInputs(dedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}), params, svc, now); got == 5 {
 		t.Fatalf("dedicated (no demand) warm target = %d, want < 5 (idle/stale build must not force-warm the whole pool)", got)
 	}
 
@@ -855,7 +855,7 @@ func TestWarmTargetDedicatedWholePool(t *testing.T) {
 		eligibleCold:  []warmPoolCandidate{{providerID: "c1"}, {providerID: "c2"}, {providerID: "c3"}},
 	}
 	svc2 := estimateServiceTime(nonDedicated.prefillTPS, nonDedicated.soloDecodeTPS, params)
-	if got := c.targetWarm(nonDedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}, params, svc2, now); got != 2 {
+	if got := c.targetWarm(nonDedicated, warmPoolPressureBucket{}, c.targetInputs(nonDedicated, warmPoolPressureBucket{}, warmPoolQueuePressure{}), params, svc2, now); got != 2 {
 		t.Fatalf("non-dedicated warm target = %d, want 2 (no demand pressure → left as-is)", got)
 	}
 }

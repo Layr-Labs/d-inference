@@ -68,11 +68,23 @@ type warmTargetInputs struct {
 	// window. With no demand pressure the pool is left as-is (no growth).
 	DemandPressure bool
 	// ReactiveFloor is true when a demand event (or a queue-state change with
-	// waiters) is newer than the last tick that applied the reactive warm+1
+	// waiters) is newer than the last tick that evaluated the reactive warm+1
 	// floor. The floor is applied once per such event: sustained demand keeps
 	// re-arming it, a single unmet event no longer re-applies it on every
-	// tick for as long as its window stays open.
+	// tick for as long as its window stays open. Only a tick under demand
+	// pressure evaluates (and so consumes) the arm — see reactiveFloorConsumed.
 	ReactiveFloor bool
+}
+
+// reactiveFloorConsumed reports whether a tick with these inputs evaluated the
+// reactive warm+1 floor, which is what consumes the arm (reactiveAppliedAt).
+// warmTarget returns the current warm count before reading ReactiveFloor when
+// there is no demand pressure, so such a tick leaves the arm intact for the
+// first pressured tick that follows — otherwise a waiter whose pressure only
+// materializes later (a saturation flip reported by a heartbeat, a threshold
+// crossed by aging counters) would find its +1 already spent.
+func reactiveFloorConsumed(in warmTargetInputs) bool {
+	return in.DemandPressure && in.ReactiveFloor
 }
 
 // qualityConcurrency returns the largest batch B a provider can run while every

@@ -406,3 +406,62 @@ func TestWarmPoolSustainedPressureConvergesThenStops(t *testing.T) {
 		t.Fatalf("pool overshot: %d loads for a demand of %d warm (+1 tolerance)", len(*sent), needWarm)
 	}
 }
+
+// reactiveAppliedAtFor reads the model's reactiveAppliedAt stamp (zero when
+// the floor has never been consumed).
+func reactiveAppliedAtFor(reg *Registry, model string) time.Time {
+	s := reg.warmPool.state
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.models[model]; b != nil {
+		return b.reactiveAppliedAt
+	}
+	return time.Time{}
+}
+
+// TestWarmPoolReactiveFloorSurvivesUnpressuredTick: the reactive warm+1 arm
+// is consumed only by a tick that evaluated it, i.e. one under demand
+// pressure (warmTarget returns the current warm count before reading the
+// floor otherwise). A waiter enters the queue from the dispatch loop (queue
+// state only — no demand event), the warm box still reports headroom, so the
+// trigger-driven tick sees no pressure and must leave the arm intact; when
+// the box's next heartbeat reports its slot busy, the warm set is saturated
+// under external pressure and the first pressured tick applies the floor.
+// Before the fix the unpressured tick stamped reactiveAppliedAt, the
+// pressured tick found no arm, and Little's law (L = 2 at qc >= 2) kept the
+// target at the current warm count: no load for the waiter.
+func TestWarmPoolReactiveFloorSurvivesUnpressuredTick(t *testing.T) {
+	reg := New(testLogger())
+	model := "warm-pool-floor-unpressured"
+	warm := makeSchedulerProvider(t, reg, "warm", model, 80)
+	makeWarmPoolColdProvider(t, reg, "cold", model, 80, 64, 8)
+	warm.mu.Lock()
+	warm.BackendCapacity.Slots[0].MaxConcurrency = 4
+	warm.mu.Unlock()
+	reg.ConfigureWarmPool(testWarmPoolConfig()) // QueueAgeThreshold 2 s, burst 0
+	sent := captureWarmPoolLoads(reg)
+
+	t0 := time.Now()
+	reg.warmPool.recordQueuePressure(model, 1, 0, t0) // api.recordWarmPoolQueueState
+	reg.warmPool.tick(t0)
+	if len(*sent) != 0 {
+		t.Fatalf("unpressured tick sent %d loads, want 0", len(*sent))
+	}
+	if at := reactiveAppliedAtFor(reg, model); !at.IsZero() {
+		t.Fatalf("unpressured tick consumed the reactive floor arm: reactiveAppliedAt = %v, want zero", at)
+	}
+
+	// Next heartbeat: the warm box's slot is busy. Saturated warm set under
+	// external pressure (the waiter) -> demand pressure with no new event.
+	warm.mu.Lock()
+	warm.BackendCapacity.Slots[0].NumRunning = 1
+	warm.mu.Unlock()
+	t1 := t0.Add(time.Second)
+	reg.warmPool.tick(t1)
+	if len(*sent) != 1 {
+		t.Fatalf("first pressured tick sent %d loads, want 1 (reactive floor armed by the queued waiter)", len(*sent))
+	}
+	if at := reactiveAppliedAtFor(reg, model); !at.Equal(t1) {
+		t.Fatalf("pressured tick did not consume the arm: reactiveAppliedAt = %v, want %v", at, t1)
+	}
+}

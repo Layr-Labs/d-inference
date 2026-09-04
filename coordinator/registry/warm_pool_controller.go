@@ -452,7 +452,8 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			serviceTPS = f.soloDecodeTPS
 		}
 		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
-		target := c.targetWarm(f, p, q, params, svc, now)
+		in := c.targetInputs(f, p, q)
+		target := c.targetWarm(f, p, in, params, svc, now)
 
 		// In-flight loads close the gap too: with ~30 s load latency a tick
 		// every 10–30 s otherwise re-issued up to `gap` loads per tick to
@@ -483,7 +484,12 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			actions = reserve(actions, now)
 		}
 		loadsRemaining -= len(actions)
-		c.state.rememberTarget(model, target, now, c.reactiveFloorArmed(p, q))
+		// The reactive arm is consumed only by a tick that evaluated it: with
+		// no demand pressure warmTarget never reads it, and stamping it there
+		// would leave a later pressured tick (a saturation flip on a heartbeat,
+		// a threshold crossed by aging counters) without the +1 the waiter
+		// earned, until a new event re-armed it.
+		c.state.rememberTarget(model, target, now, reactiveFloorConsumed(in))
 		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
 		// this explains a gap between the raw cold count and what we can actually warm.
 		if f.coldIneligible > 0 && c.registry != nil && c.registry.logger != nil && c.registry.IsDedicatedModel(model) {
@@ -518,7 +524,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			SpillArrivalRate:   p.arrivalRateEWMA,
 			ServiceTime:        svc,
 			QualityConcurrency: qualityConcurrency(f.soloDecodeTPS, params.DecodeFloorTPS, params.LoadFactorK, f.maxProviderConc, params.FallbackQualityConcurrency),
-			DemandConcurrency:  demandConcurrency(c.targetInputs(f, p, q), svc),
+			DemandConcurrency:  demandConcurrency(in, svc),
 		})
 	}
 	return out
@@ -561,9 +567,11 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 	}
 }
 
-// reactiveFloorArmed reports whether the reactive warm+1 floor applies this
-// tick: a demand event, or a queue-state change with waiters, newer than the
-// last tick that applied it. Consumed by rememberTarget.
+// reactiveFloorArmed reports whether the reactive warm+1 floor is armed for
+// this tick: a demand event, or a queue-state change with waiters, newer than
+// the last tick that evaluated it. Consumed by rememberTarget only on a tick
+// under demand pressure (reactiveFloorConsumed) — the only kind that reaches
+// the floor in warmTarget.
 func (c *warmPoolController) reactiveFloorArmed(pressure warmPoolPressureBucket, queue warmPoolQueuePressure) bool {
 	return pressure.lastEventAt.After(pressure.reactiveAppliedAt) ||
 		(queue.Depth > 0 && queue.UpdatedAt.After(pressure.reactiveAppliedAt))
@@ -594,11 +602,12 @@ func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pres
 	return false
 }
 
-// targetWarm computes the Little's Law warm-provider target for a model, then
-// applies the dwell guard so a transient demand dip cannot shrink the pool before
-// MinDwell elapses (anti-flap).
-func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, params warmTargetParams, svc time.Duration, now time.Time) int {
-	target := warmTarget(c.targetInputs(fleet, pressure, queue), params, svc)
+// targetWarm computes the Little's Law warm-provider target for a model from
+// the tick's inputs (targetInputs), then applies the dwell guard so a
+// transient demand dip cannot shrink the pool before MinDwell elapses
+// (anti-flap).
+func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, in warmTargetInputs, params warmTargetParams, svc time.Duration, now time.Time) int {
+	target := warmTarget(in, params, svc)
 	if c.config.MinDwell > 0 && pressure.lastTarget > target && now.Sub(pressure.lastTargetChangedAt) < c.config.MinDwell {
 		target = pressure.lastTarget
 		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
@@ -621,7 +630,7 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 	// the build actually receiving traffic gets the whole pool, not the stale one
 	// (which would otherwise burn model slots/memory and evict the live build).
 	// Bounded by warm+eligibleCold; the per-tick ramp still throttles the load rate.
-	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) && c.hasDemandPressure(fleet, pressure, queue) {
+	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) && in.DemandPressure {
 		if whole := fleet.warm + len(fleet.eligibleCold); whole > target {
 			target = whole
 		}

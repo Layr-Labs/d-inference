@@ -38,8 +38,11 @@ type warmPoolPressureBucket struct {
 	lastLoadAt          time.Time
 	lastTarget          int
 	lastTargetChangedAt time.Time
-	// reactiveAppliedAt is the last tick that applied the reactive warm+1
-	// floor; the floor re-arms only for a demand event newer than this.
+	// reactiveAppliedAt is the last tick that evaluated the reactive warm+1
+	// floor — a tick under demand pressure with the floor armed
+	// (reactiveFloorConsumed); a tick without demand pressure leaves the pool
+	// as-is and does not touch it. The floor re-arms only for a demand event
+	// newer than this.
 	reactiveAppliedAt time.Time
 
 	// arrivalAccum counts spill arrivals (capacity_reject + ttft_miss +
@@ -176,8 +179,9 @@ func (s *warmPoolState) foldArrivalRates(now time.Time, minInterval time.Duratio
 }
 
 // rememberTarget records the tick's target for the dwell guard and, when the
-// reactive floor was armed for this tick, consumes it (reactiveAppliedAt).
-func (s *warmPoolState) rememberTarget(model string, target int, now time.Time, reactiveFloor bool) {
+// tick evaluated the reactive floor (reactiveConsumed: armed AND under demand
+// pressure), consumes it (reactiveAppliedAt).
+func (s *warmPoolState) rememberTarget(model string, target int, now time.Time, reactiveConsumed bool) {
 	if model == "" {
 		return
 	}
@@ -188,7 +192,7 @@ func (s *warmPoolState) rememberTarget(model string, target int, now time.Time, 
 		b.lastTarget = target
 		b.lastTargetChangedAt = now
 	}
-	if reactiveFloor {
+	if reactiveConsumed {
 		b.reactiveAppliedAt = now
 	}
 }

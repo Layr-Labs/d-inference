@@ -16,7 +16,7 @@ Defaults (`coordinator/registry/registry.go:772`):
 
 | Limit | Value |
 |---|---|
-| Max size per model | `10` |
+| Max size per model | `32` default (`EIGENINFERENCE_QUEUE_MAX_DEPTH`); sized from serving capacity as `clamp(ceil(C × 3 s / E[S]), 8, 512)` once warm-pool snapshots exist, with an explicit env value acting as a ceiling (`registry/queue_depth.go`) |
 | Max wait | `120` seconds |
 
 Queue behavior:

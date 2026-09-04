@@ -434,7 +434,7 @@ func inferenceErrorReason(providerReason, status, class string, code int, messag
 		return errorReasonTokenBudgetExhaust
 	case lowerClass == errorReasonQueueFull || strings.Contains(lowerMessage, "queue full"):
 		return errorReasonQueueFull
-	case lowerClass == "queue_timeout" || lowerClass == errorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
+	case lowerClass == "queue_timeout" || lowerClass == rejectionReasonQueueDeadline || lowerClass == errorReasonCapacityTimeout || strings.Contains(lowerMessage, "queue timeout") || strings.Contains(lowerMessage, "timed out waiting for a free slot"):
 		return errorReasonCapacityTimeout
 	case lowerStatus == errorReasonCancelled || code == 499 || strings.Contains(lowerClass, "client_gone") || strings.Contains(lowerClass, "cancel") || strings.Contains(lowerMessage, "request cancelled"):
 		return errorReasonCancelled

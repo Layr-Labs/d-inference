@@ -243,6 +243,14 @@ type RequestQueue struct {
 	queues  map[string][]*QueuedRequest // model -> queue
 	maxSize int                         // max queue size per model
 	maxWait time.Duration               // max time a request waits
+
+	// DepthFor optionally sizes the per-model depth from serving capacity
+	// (queue_depth.go). nil, or a non-positive return, keeps maxSize. Enqueue
+	// resolves it BEFORE taking mu, so the hook may take registry locks.
+	DepthFor func(model string) int
+	// depthCeiling caps DepthFor when the operator set
+	// EIGENINFERENCE_QUEUE_MAX_DEPTH explicitly (0 = no ceiling).
+	depthCeiling int
 }
 
 // Default queue limits (see NewRequestQueueFromEnv for the sizing rationale).
@@ -262,18 +270,23 @@ func NewRequestQueue(maxSize int, maxWait time.Duration) *RequestQueue {
 
 // NewRequestQueueFromEnv creates a RequestQueue sized from the environment:
 //
-//   - EIGENINFERENCE_QUEUE_MAX_DEPTH — per-model depth, default 32. The queue
-//     drains fleet-wide (every SetProviderIdle / heartbeat sweeps it), so with a
-//     pool of hundreds of boxes and a few-second service time the fleet turns
-//     over hundreds of slots per second; a 32-deep queue clears in well under a
-//     second of fleet throughput and adds negligible tail latency, while depth
-//     10 rejected overflow bursts the fleet could absorb almost immediately.
+//   - EIGENINFERENCE_QUEUE_MAX_DEPTH — per-model depth, default 32 (the
+//     historical default was 10, which rejected overflow bursts the fleet could
+//     absorb almost immediately). The queue drains fleet-wide (every
+//     SetProviderIdle / heartbeat sweeps it), so the right depth follows the
+//     fleet's turnover: once warm-pool snapshots exist the depth is sized from
+//     serving capacity instead (DepthFor, queue_depth.go:
+//     clamp(ceil(C × 3 s / E[S]), 8, 512)); an explicitly set value then acts
+//     as an operator CEILING on that dynamic depth.
 //   - EIGENINFERENCE_QUEUE_MAX_WAIT — per-request wait bound, default 120s
-//     (Go duration string, e.g. "45s").
+//     (Go duration string, e.g. "45s"). Each waiter enforces it with its own
+//     timer (WaitForProviderContext); prod pins 6 s, so in the common case
+//     this timer fires BEFORE the request-absolute first-content clock.
 //
 // Non-positive or malformed values fall back to the defaults.
 func NewRequestQueueFromEnv() *RequestQueue {
-	depth := env.EnvInt(env.EnvPrefix+"_QUEUE_MAX_DEPTH", defaultQueueMaxDepth)
+	explicit := env.EnvInt(env.EnvPrefix+"_QUEUE_MAX_DEPTH", 0)
+	depth := explicit
 	if depth < 1 {
 		depth = defaultQueueMaxDepth
 	}
@@ -281,13 +294,20 @@ func NewRequestQueueFromEnv() *RequestQueue {
 	if wait <= 0 {
 		wait = defaultQueueMaxWait
 	}
-	return NewRequestQueue(depth, wait)
+	q := NewRequestQueue(depth, wait)
+	if explicit >= 1 {
+		q.depthCeiling = explicit
+	}
+	return q
 }
 
 // Enqueue adds a request to the queue for the given model.
 // Returns ErrQueueFull if the queue for this model is at capacity.
 func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 	req.init()
+	// Resolve the depth before taking mu: DepthFor reads registry state under
+	// the registry's own locks and must never nest inside the queue lock.
+	limit := q.MaxSizeFor(req.Model)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -296,7 +316,7 @@ func (q *RequestQueue) Enqueue(req *QueuedRequest) error {
 	q.cleanStaleLocked(req.Model)
 
 	queue := q.queues[req.Model]
-	if len(queue) >= q.maxSize {
+	if len(queue) >= limit {
 		return ErrQueueFull
 	}
 
@@ -408,9 +428,27 @@ func (q *RequestQueue) RequeueFront(req *QueuedRequest) {
 	q.queues[req.Model] = queue
 }
 
-// MaxSize returns the per-model maximum queue depth.
+// MaxSize returns the static per-model maximum queue depth (the default or
+// the env override). See MaxSizeFor for the effective per-model depth.
 func (q *RequestQueue) MaxSize() int {
 	return q.maxSize
+}
+
+// MaxSizeFor returns the effective depth for model: DepthFor's
+// capacity-derived value (capped by the explicit env ceiling) when the hook
+// yields one, else MaxSize. Safe to call without the queue lock.
+func (q *RequestQueue) MaxSizeFor(model string) int {
+	if q.DepthFor == nil {
+		return q.maxSize
+	}
+	depth := q.DepthFor(model)
+	if depth <= 0 {
+		return q.maxSize
+	}
+	if q.depthCeiling > 0 && depth > q.depthCeiling {
+		depth = q.depthCeiling
+	}
+	return depth
 }
 
 // QueueSize returns the number of queued requests for a model.

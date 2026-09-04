@@ -2462,7 +2462,7 @@ type modelLoadAction struct {
 
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
-	return &Registry{
+	r := &Registry{
 		providers:                      make(map[string]*Provider),
 		queue:                          NewRequestQueueFromEnv(),
 		MinTrustLevel:                  TrustHardware,
@@ -2500,6 +2500,10 @@ func New(logger *slog.Logger) *Registry {
 		cacheRoutingMaxCostFraction:    defaultCacheRoutingMaxCostFraction,
 		logger:                         logger,
 	}
+	// Size the request queue from serving capacity once warm-pool snapshots
+	// exist (queue_depth.go); until then it keeps the env/static default.
+	r.queue.DepthFor = r.queueDepthFor
+	return r
 }
 
 func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -395,11 +396,13 @@ func TestRetryAfterHeader_QueueFullLive(t *testing.T) {
 	cancelParked()
 }
 
-// TestRetryAfterFollowsRealWarmPoolTick drives a REAL warm-pool controller
-// planning tick over the live WS provider (no seeded snapshot) and checks that
-// the Retry-After source agrees with Little's law applied to the snapshot the
-// controller actually produced, at several queue positions.
-func TestRetryAfterFollowsRealWarmPoolTick(t *testing.T) {
+// TestRetryAfterAndQueueDepth_FollowRealWarmPoolTick drives a REAL warm-pool
+// controller planning tick over the live WS provider (no seeded snapshot) and
+// checks that both consumers of the cached snapshot — the Retry-After source
+// and the capacity-derived queue depth — agree with the formulas applied to
+// the snapshot the controller actually produced.
+func TestRetryAfterAndQueueDepth_FollowRealWarmPoolTick(t *testing.T) {
+	t.Setenv("EIGENINFERENCE_QUEUE_MAX_DEPTH", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	const model = "warm-pool-tick-model"
@@ -408,6 +411,9 @@ func TestRetryAfterFollowsRealWarmPoolTick(t *testing.T) {
 	// Before any tick: legacy answers.
 	if got := srv.retryAfterBaseSeconds(model, 0, 0); got != 2 {
 		t.Fatalf("pre-tick base = %d, want legacy 2", got)
+	}
+	if got := reg.Queue().MaxSizeFor(model); got != 32 {
+		t.Fatalf("pre-tick depth = %d, want static 32", got)
 	}
 
 	reg.ConfigureWarmPool(registry.WarmPoolConfig{
@@ -438,7 +444,18 @@ func TestRetryAfterFollowsRealWarmPoolTick(t *testing.T) {
 			t.Fatalf("base(queuePos=%d) = %d, want %d from snapshot C=%d E[S]=%v", queuePos, got, want, c, snap.ServiceTime)
 		}
 	}
-	// A stale snapshot is not trusted.
+	// Queue depth: clamp(ceil(C × 3s / E[S]), 8, 512).
+	wantDepth := int(math.Ceil(float64(c) * 3 / snap.ServiceTime.Seconds()))
+	if wantDepth < 8 {
+		wantDepth = 8
+	}
+	if wantDepth > 512 {
+		wantDepth = 512
+	}
+	if got := reg.Queue().MaxSizeFor(model); got != wantDepth {
+		t.Fatalf("post-tick depth = %d, want %d from snapshot C=%d E[S]=%v", got, wantDepth, c, snap.ServiceTime)
+	}
+	// A model the controller never observed is not trusted.
 	if _, ok := reg.LatestWarmPoolSnapshotFor("never-seen"); ok {
 		t.Fatal("LatestWarmPoolSnapshotFor returned a snapshot for an unobserved model")
 	}

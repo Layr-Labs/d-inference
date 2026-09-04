@@ -136,6 +136,13 @@ type dispatchState struct {
 	// expectedCompletionTokens is the routing-only decode length the scheduler
 	// ranks with (PendingRequest.ExpectedCompletionTokens). See routing_estimates.go.
 	expectedCompletionTokens int
+	// queueExpired records that the request-absolute first-content clock ran
+	// out while the request was still waiting in the coordinator queue —
+	// nothing was dispatched. The exhausted ladder keys the queue_deadline
+	// reason on it (classifyExhaustedStatus) and uses queueExitPosition (the
+	// waiter's enqueue position) as the Retry-After queue position.
+	queueExpired      bool
+	queueExitPosition int
 
 	// ---- mutable per-request state ----
 	provider      *registry.Provider
@@ -761,13 +768,28 @@ func (d *dispatchState) terminalFailureForExhaustion() (
 // coordinator-synthesized pre-content timeout to the retryable status exposed to
 // the caller. A typed provider 504 (safety deadline / backpressure timeout) is a
 // real provider terminal and must remain 504; an untyped 504 is the dispatch
-// loop's existing discriminator for its own first-content timeout.
-func classifyExhaustedStatus(statusCode int, terminalCause string) (code int, reason string, reclassified bool) {
+// loop's existing discriminator for its own first-content timeout. queueExpired
+// says the untyped 504 came from the queue wait (never dispatched): the same
+// retryable 429, reported as queue_deadline so the rejection ledger and route
+// rows stop conflating queue expiry with post-dispatch provider silence.
+func classifyExhaustedStatus(statusCode int, terminalCause string, queueExpired bool) (code int, reason string, reclassified bool) {
 	if statusCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(terminalCause) {
+		if queueExpired {
+			return http.StatusTooManyRequests, rejectionReasonQueueDeadline, true
+		}
 		return http.StatusTooManyRequests, "first_chunk_timeout", true
 	}
 	return statusCode, "dispatch_exhausted", false
 }
+
+// rejectionReasonQueueDeadline is the rejection-ledger reason_code and route
+// outcome class for a request whose request-absolute first-content clock
+// expired while it was still waiting in the coordinator queue. Nothing was
+// dispatched — it is the queue's own terminal, kept distinct from
+// first_chunk_timeout (a dispatched provider that produced no content in
+// time). Same retryable 429 + Retry-After; counts as capacity in the route
+// outcome vocabulary (errorReasonCapacityTimeout), not as a provider fault.
+const rejectionReasonQueueDeadline = "queue_deadline"
 
 type exhaustedDominance int
 
@@ -784,7 +806,7 @@ func (d *dispatchState) resolveDominantExhaustedStatus(
 	stickyFault bool,
 ) (statusCode int, reason string, timeoutReclassified bool, dominance exhaustedDominance) {
 	statusCode, reason, timeoutReclassified = classifyExhaustedStatus(
-		failure.statusCode, failure.terminalCause)
+		failure.statusCode, failure.terminalCause, d.queueExpired)
 	switch {
 	case d.terminalClientError:
 		statusCode = d.terminalClientErrorCode
@@ -1471,9 +1493,20 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			}
 			if errors.Is(err, context.DeadlineExceeded) ||
 				errors.Is(err, registry.ErrQueueFirstContentDeadline) {
+				// The first-content clock ran out while the request was still
+				// queued (the per-waiter timer or the drain sweep's
+				// RefreshFirstContentBudget): nothing was dispatched, so this
+				// is the queue's own terminal (queue_deadline), not a provider
+				// that went silent after dispatch (first_chunk_timeout). Same
+				// synthetic 504 -> retryable 429 path and the same client body;
+				// only the ledger reason, the route outcome and the Retry-After
+				// queue position differ. Deliberately no refund here — the
+				// exhausted ladder refunds.
 				s.recordWarmPoolQueueState(d.model)
+				d.queueExpired = true
+				d.queueExitPosition = queuedReq.EnqueuePosition
 				d.queuedExitOutcome(queuePR.Profile,
-					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout)
+					"timeout", rejectionReasonQueueDeadline, http.StatusGatewayTimeout)
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				return outcomeFailFast
 			}
@@ -3512,7 +3545,7 @@ exhausted:
 		statusCode, reason, timeoutReclassified, dominance :=
 			d.resolveDominantExhaustedStatus(failure, stickyFault)
 		if timeoutReclassified {
-			s.ddIncr("routing.first_chunk_timeout_reclassified", []string{"model:" + d.model})
+			s.ddIncr("routing.first_chunk_timeout_reclassified", []string{"model:" + d.model, "reason:" + reason})
 		}
 		switch dominance {
 		case exhaustedClientError:
@@ -3592,8 +3625,14 @@ exhausted:
 			// (retry_after.go) so a provider-authored value can neither hammer
 			// nor park clients.
 			hintSeconds := int((d.lastErrFeasibleAfterMS + 999) / 1000)
+			// Queue position: a waiter that expired in the queue sat at its
+			// enqueue position; everything else would join behind the depth.
+			queuePos := s.registry.Queue().QueueSize(d.model)
+			if d.queueExpired {
+				queuePos = d.queueExitPosition
+			}
 			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),
-				s.registry.Queue().QueueSize(d.model), hintSeconds)
+				queuePos, hintSeconds)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
 			if !stickyFault && (d.unservable || failure.deadline) {

@@ -5771,10 +5771,31 @@ func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
 	if !ok {
 		return
 	}
+	p.RecordLatency(latency)
+}
 
+// RecordLatency is Registry.RecordLatency for a provider the caller already
+// holds: it touches only p.mu, never the registry lock. The api layer uses it
+// on the first-byte path, where even a shared registry acquisition would put
+// the first client write behind every queued registry writer. A non-positive
+// latency is ignored; see Registry.RecordLatency for the persistence contract.
+func (p *Provider) RecordLatency(latency time.Duration) {
+	if p == nil || latency <= 0 {
+		return
+	}
 	p.mu.Lock()
 	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
+}
+
+// HoldWriteLockForTest acquires the registry write lock and returns the
+// function that releases it. Test-only, in the spirit of reservationAfterScan:
+// it lets api-package tests prove that a request-path step no longer waits on
+// r.mu (for example that the first client byte is written while a writer holds
+// the lock). Production code never calls it.
+func (r *Registry) HoldWriteLockForTest() (release func()) {
+	r.mu.Lock()
+	return r.mu.Unlock
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.

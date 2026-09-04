@@ -54,8 +54,10 @@ darkbloom start --local
 
 `darkbloom start` (`provider-swift/Sources/darkbloom/StartCommand.swift`) runs
 preflight checks (SIP, debugger, GPU, memory), offers to link your account if
-you are not logged in, shows an interactive model picker, then installs and
-starts a `launchd` user agent.
+you are not logged in, shows an interactive model picker, asks whether models
+should stay loaded while idle (`Always ready`) or be unloaded after 60 minutes
+without requests and reloaded on demand (`Free when idle`, the default; or a
+custom window), then installs and starts a `launchd` user agent.
 
 ## Link your account
 
@@ -159,8 +161,12 @@ end = "08:00"
   printing the restart boundary
   (`provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`).
 - `backend.enabled_models` — if non-empty, only these models are advertised.
-- `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
-  unloaded (default 60; 0 disables eviction).
+- `backend.idle_timeout_mins` — the idle-memory policy: minutes without
+  requests before a model is unloaded and its memory returned to the Mac
+  (default 60; reloaded on demand with a ~10-30 s cold start), or `0` to keep
+  models loaded for instant responses. `darkbloom start` asks for this
+  interactively; change it later with `darkbloom idle keep-loaded` /
+  `darkbloom idle unload-after <minutes>`.
 - `backend.max_model_slots` — maximum resident models at once (default 3).
 - `config_version` — schema version of this file, written automatically on
   first start after upgrading. It only dates the file, so the provider can

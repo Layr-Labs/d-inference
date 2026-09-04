@@ -126,8 +126,8 @@ const FAQ = [
     answer: "Yes. Configure power management to prevent sleep (pmset -c sleep 0 discsleep 0) and the provider daemon will run as a background service. Note that closing a MacBook lid will put it to sleep regardless of pmset settings.",
   },
   {
-    question: "How does the idle timeout work?",
-    answer: "The vllm-mlx backend process is automatically stopped after 1 hour of no inference requests to free GPU memory. When a new request arrives, the model is lazy-reloaded (10-30 second cold start). This is configurable via the provider config.",
+    question: "Does the provider hold my Mac's memory when nobody is using it?",
+    answer: "That's your call. When you run `darkbloom start` it asks: Always ready keeps models loaded for instant responses (and full base rewards, since a loaded model is what earns them); Free when idle — the default — unloads a model after 60 minutes without requests to give your Mac its memory back, then reloads it on demand when the next request arrives (a ~10–30 s cold start on that first request); Custom lets you pick the number of idle minutes. Change it any time with `darkbloom idle keep-loaded`, `darkbloom idle unload-after <minutes>`, or check it with `darkbloom idle status`; the setting is saved in provider.toml under [backend] idle_timeout_mins.",
   },
 ];
 

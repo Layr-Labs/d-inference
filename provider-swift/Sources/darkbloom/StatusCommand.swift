@@ -24,7 +24,7 @@ struct Status: AsyncParsableCommand {
         print("Coordinator: \(config.coordinator.url)")
         print("Backend port: \(config.backend.port)")
         print("Configured model: \(config.backend.model ?? "auto-select")")
-        print("Idle timeout: \(config.backend.idleTimeoutMins == 0 ? "disabled" : "\(config.backend.idleTimeoutMins)m")")
+        print("Memory when idle: \(IdleUnloadPolicy.describe(minutes: config.backend.idleTimeoutMins)) (manage with `darkbloom idle`)")
         print("Beta features: \(betaFeaturesStatus(config)) (manage with `darkbloom beta`)")
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
@@ -116,6 +116,14 @@ struct Status: AsyncParsableCommand {
         }
 
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
+        if let line = Self.notLoadedLine(
+            advertised: state.advertisedModels,
+            warmModels: state.warmModels,
+            currentModel: state.currentModel,
+            idleTimeoutMins: config.backend.idleTimeoutMins)
+        {
+            print(line)
+        }
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {
@@ -181,6 +189,28 @@ struct Status: AsyncParsableCommand {
         return "Daemon: running (pid \(state.pid), up \(uptime)) but last update \(ageText) ago "
             + "(expected every ~\(Int(period))s) — snapshot stale, the fields below may be "
             + "out of date"
+    }
+
+    /// Advertised models with no resident engine right now. Under an idle
+    /// policy that is the expected steady state between bursts ("reload on
+    /// demand"), so it is reported as information, not as a fault; under
+    /// "always ready" the same gap means the model has simply not been asked
+    /// for since start. nil when every advertised model is warm (or the daemon
+    /// predates `advertisedModels`).
+    static func notLoadedLine(
+        advertised: [String]?,
+        warmModels: [String],
+        currentModel: String?,
+        idleTimeoutMins: UInt64
+    ) -> String? {
+        guard let advertised else { return nil }
+        var resident = Set(warmModels)
+        if let currentModel, !currentModel.isEmpty { resident.insert(currentModel) }
+        let notLoaded = advertised.filter { !resident.contains($0) }
+        guard !notLoaded.isEmpty else { return nil }
+        let why = idleTimeoutMins == IdleUnloadPolicy.alwaysReadyMinutes
+            ? "loads on first request" : "unloaded when idle; reloads on demand"
+        return "Not loaded (\(why)): \(notLoaded.joined(separator: ", "))"
     }
 
     private func formatUptime(_ seconds: Double) -> String {

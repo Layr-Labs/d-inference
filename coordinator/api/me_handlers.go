@@ -91,12 +91,18 @@ type myProvider struct {
 	// Live snapshot (only set when the machine is currently connected)
 	SystemMetrics   *protocol.SystemMetrics   `json:"system_metrics,omitempty"`
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
-	WarmModels      []string                  `json:"warm_models,omitempty"`
-	CurrentModel    string                    `json:"current_model,omitempty"`
-	PendingRequests int                       `json:"pending_requests"`
-	MaxConcurrency  int                       `json:"max_concurrency"`
-	PrefillTPS      float64                   `json:"prefill_tps,omitempty"`
-	DecodeTPS       float64                   `json:"decode_tps,omitempty"`
+	// IdleUnloadMins is the machine's idle-memory policy as reported in its
+	// heartbeats: 0 = always ready (models stay loaded), N = unloaded after N
+	// idle minutes and reloaded on demand. Omitted for offline machines and
+	// for providers too old to report it. Lets the dashboard render a missing
+	// slot as "sleeping, wakes on demand" instead of a warning.
+	IdleUnloadMins  *int     `json:"idle_unload_mins,omitempty"`
+	WarmModels      []string `json:"warm_models,omitempty"`
+	CurrentModel    string   `json:"current_model,omitempty"`
+	PendingRequests int      `json:"pending_requests"`
+	MaxConcurrency  int      `json:"max_concurrency"`
+	PrefillTPS      float64  `json:"prefill_tps,omitempty"`
+	DecodeTPS       float64  `json:"decode_tps,omitempty"`
 
 	// Reputation
 	Reputation myReputation `json:"reputation"`
@@ -582,6 +588,10 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
 			mp.BackendCapacity = &cap
+		}
+		if live.IdleUnloadMins != nil {
+			v := *live.IdleUnloadMins
+			mp.IdleUnloadMins = &v
 		}
 		mp.WarmModels = append([]string{}, live.WarmModels...)
 		mp.CurrentModel = live.CurrentModel

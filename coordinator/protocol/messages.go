@@ -272,6 +272,15 @@ type HeartbeatMessage struct {
 	// registration (see api.handleCodeAttestationResponse).
 	APNsDeviceToken string `json:"apns_device_token,omitempty"` // hex device token from registerForRemoteNotifications
 	APNsEnvironment string `json:"apns_environment,omitempty"`  // "production" | "development" (selects the APNs host)
+
+	// IdleUnloadMins is the operator's idle-memory policy (`[backend]
+	// idle_timeout_mins` on the provider): minutes without requests before the
+	// box unloads a model, or 0 when models stay resident ("always ready").
+	// Pointer so 0 survives omitempty; nil = legacy provider that does not
+	// report the policy. Informational only — it lets the owner's dashboard
+	// tell "unloaded on purpose, wakes on demand" apart from "should be loaded
+	// and isn't". Routing keys on live slot state, never on this field.
+	IdleUnloadMins *int `json:"idle_unload_mins,omitempty"`
 }
 
 // BackendSlotCapacity describes the capacity state of a single backend slot

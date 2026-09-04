@@ -4,7 +4,7 @@
 // protect density.
 
 import type { MyProvider } from "../types";
-import { shortModelName } from "./format";
+import { describeIdlePolicy, shortModelName } from "./format";
 
 const CATALOG_LIMIT = 8;
 
@@ -31,12 +31,23 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
   const shownCatalog = catalog.slice(0, CATALOG_LIMIT);
   const extraCatalog = catalog.length - shownCatalog.length;
 
+  // The operator's idle-memory policy tells the reader whether an empty
+  // "Loaded" set is by design (sleeping, wakes on demand) or a problem.
+  const idlePolicy = provider.online ? describeIdlePolicy(provider.idle_unload_mins) : undefined;
+  const sleeping =
+    provider.online && warm.length === 0 && catalog.length > 0 && (provider.idle_unload_mins ?? 0) > 0;
+
   if (warm.length === 0 && catalog.length === 0) {
     return <p className="px-4 pb-3 text-xs text-text-tertiary">No models loaded yet.</p>;
   }
 
   return (
     <div className="px-4 pb-3 space-y-2.5">
+      {sleeping && (
+        <p className="text-xs text-text-tertiary" data-testid="models-sleeping">
+          Nothing loaded right now — sleeping until the next request (~10–30 s to reload).
+        </p>
+      )}
       {warm.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-[10px] uppercase tracking-wider text-text-tertiary">Loaded</p>
@@ -84,6 +95,14 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
             )}
           </div>
         </div>
+      )}
+
+      {idlePolicy && (
+        <p className="text-[11px] text-text-tertiary" data-testid="idle-policy">
+          <span className="uppercase tracking-wider text-[10px]">Memory when idle</span>
+          {" · "}
+          {idlePolicy}
+        </p>
       )}
     </div>
   );

@@ -89,7 +89,7 @@ auto_restart = true
 
 [backend]
 enabled_models = []
-idle_timeout_mins = 60
+idle_timeout_mins = 60   # free when idle; 0 = always ready (see `darkbloom idle`)
 max_model_slots = 3
 
 [gemma_optimizations]

@@ -108,7 +108,8 @@ public enum CoordinatorClientCodec {
         prefixCacheProtocol: Int? = nil,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
         prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+        idleUnloadMins: UInt64? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -122,7 +123,8 @@ public enum CoordinatorClientCodec {
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
             prefixCacheStatuses: prefixCacheStatuses,
-            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
+            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
+            idleUnloadMins: idleUnloadMins
         ))
     }
 

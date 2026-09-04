@@ -86,7 +86,11 @@ public enum LaunchAgent: Sendable {
     /// - Parameters:
     ///   - coordinatorURL: WebSocket URL for the coordinator (ws:// or wss://).
     ///   - models: Model IDs to serve (passed as --model flags to `serve`).
-    ///   - idleTimeout: Optional idle timeout in minutes (passed as --idle-timeout).
+    ///
+    /// The idle-unload policy is deliberately NOT an argv flag: it lives in
+    /// `[backend] idle_timeout_mins` so `darkbloom idle` + `darkbloom restart`
+    /// can change it without rewriting this plist. (Pre-v0.8.14 plists carried
+    /// `--idle-timeout`; `start --foreground` still parses it as a fallback.)
     /// Options for the unified local OpenAI endpoint (serve the public fleet AND
     /// a local endpoint off the same loaded models). `enabled == false` keeps the
     /// daemon coordinator-only.
@@ -106,7 +110,6 @@ public enum LaunchAgent: Sendable {
     public static func installAndStart(
         coordinatorURL: String,
         models: [String] = [],
-        idleTimeout: UInt64? = nil,
         configPath: URL? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
@@ -126,7 +129,6 @@ public enum LaunchAgent: Sendable {
             binaryPath: binaryPath,
             coordinatorURL: coordinatorURL,
             models: models,
-            idleTimeout: idleTimeout,
             configPath: configPath,
             localEndpoint: localEndpoint
         )
@@ -331,7 +333,6 @@ public enum LaunchAgent: Sendable {
         binaryPath: String,
         coordinatorURL: String,
         models: [String],
-        idleTimeout: UInt64?,
         configPath: URL?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
@@ -348,7 +349,6 @@ public enum LaunchAgent: Sendable {
             binaryPath: binaryPath,
             coordinatorURL: coordinatorURL,
             models: models,
-            idleTimeout: idleTimeout,
             configPath: configPath,
             localEndpoint: localEndpoint
         )
@@ -375,7 +375,6 @@ public enum LaunchAgent: Sendable {
         binaryPath: String,
         coordinatorURL: String,
         models: [String],
-        idleTimeout: UInt64?,
         configPath: URL?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) -> [String] {
@@ -391,9 +390,6 @@ public enum LaunchAgent: Sendable {
         }
         for model in models {
             arguments.append(contentsOf: ["--model", model])
-        }
-        if let idleTimeout {
-            arguments.append(contentsOf: ["--idle-timeout", "\(idleTimeout)"])
         }
         if localEndpoint.enabled {
             arguments.append("--local-endpoint")

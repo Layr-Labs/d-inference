@@ -727,6 +727,15 @@ const errRoutingScanSaturated = "routing scan capacity saturated — coordinator
 // never the routing_saturated 429 or a rejection-ledger row.
 const errClientGoneBeforeScan = "client disconnected before provider selection"
 
+// errClientGoneDuringSend is returned when the caller's context fired while
+// the request frame was being handed to (or written by) the provider writer.
+// The provider was reachable — the consumer left. The dispatch loop takes the
+// same client-gone terminal as errClientGoneBeforeScan; it must never be
+// classified as errProviderSendFailedText, whose exhausted-ladder verdict is
+// a 429 provider_unreachable with a rejection-ledger row and the
+// routing.provider_unreachable_rejected alarm series.
+const errClientGoneDuringSend = "client disconnected during provider send"
+
 // attempt0RouteAnchor returns the instant the attempt-0 route-latency EWMA
 // sample is measured from — the SAME anchor applyTimingDecomposition uses for
 // route_ms (MediaFetchedAt when a remote-media fetch happened, else
@@ -1437,6 +1446,14 @@ func (s *Server) dispatchWithReserver(
 		if errors.Is(writeErr, context.DeadlineExceeded) ||
 			errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
+		}
+		if r.Context().Err() != nil {
+			// writeCtx derives from r.Context(): the consumer hung up while
+			// the frame was in the writer. Whatever the writer returned for
+			// it (context.Canceled, or a writer-stopped race on the same
+			// tick), the provider is not unreachable and the client is not
+			// retrying — the caller books client_gone, never send_failed.
+			return nil, nil, decision, plan, errClientGoneDuringSend, 0
 		}
 		// Status 0, not 502: no provider ran the request, so the exhausted
 		// ladder classifies this class itself (rejectionReasonProviderUnreachable).

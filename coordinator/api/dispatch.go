@@ -1362,12 +1362,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			return outcomeFailFast
 		}
-		if dispatchErr == errClientGoneBeforeScan {
-			// The caller's context fired while parked for a scan slot. Mirror
-			// the queue-wait cancellation arm exactly: cancelled route
-			// outcome, refund, no response body — NEVER the routing_saturated
-			// 429 or a rejection-ledger row (the client is not retrying; the
-			// ledger must not count a shed that never happened).
+		if dispatchErr == errClientGoneBeforeScan || dispatchErr == errClientGoneDuringSend {
+			// The caller's context fired while parked for a scan slot, or
+			// while the frame was in the provider writer. Mirror the
+			// queue-wait cancellation arm exactly: cancelled route outcome,
+			// refund, no response body — NEVER the routing_saturated /
+			// provider_unreachable 429 or a rejection-ledger row (the client
+			// is not retrying; the ledger must not count a shed that never
+			// happened).
 			d.emitClientGone(phaseBeforeFirstToken)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
 			d.refundReservation()
@@ -1820,6 +1822,16 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.updateRoutingOutcome(d.errorRoutingOutcome(
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 				return outcomeFailFast
+			}
+			if r.Context().Err() != nil {
+				// The consumer hung up while the frame was in the writer
+				// (writeCtx derives from r.Context()): client_gone, exactly
+				// as the errClientGoneBeforeScan / queue-wait arms — never
+				// the send-failed class and its provider_unreachable verdict.
+				d.emitClientGone(phaseBeforeFirstToken)
+				d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+				d.refundReservation()
+				return outcomeClientGone
 			}
 			s.ddIncr("routing.dispatch_to_capacity_503", []string{
 				"model:" + d.model, "reason:send_failed", "kind:" + providerSendFailureKind(writeErr)})

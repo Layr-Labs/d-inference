@@ -351,6 +351,23 @@ func TestIntegration_ClientHangupDuringInFlightProviderWriteKeepsConnection(t *t
 	requireMetricWithTags(t, packets, "provider.writer_inflight_abort", "reason:client_gone")
 	requireMetricWithTags(t, packets, metricCancelSent, "cause:"+cancelCauseWriteAborted, "model:"+model)
 
+	// The consumer left; the provider was never unreachable. A's departure
+	// must be booked as client_gone — no provider_unreachable 429 verdict, no
+	// "writers dead" alarm series, no send_failed{kind:ctx} pollution, and
+	// no rejection-ledger row (the client is not retrying; the ledger must
+	// not count a shed that never happened).
+	if got := findMetrics(packets, "routing.provider_unreachable_rejected"); len(got) != 0 {
+		t.Errorf("a client hang-up mid-write was booked as provider_unreachable: %v", got)
+	}
+	if hasMetricWithTag(packets, "routing.dispatch_to_capacity_503", "kind:ctx") {
+		t.Errorf("a client hang-up mid-write was counted as a send failure: %v",
+			findMetrics(packets, "routing.dispatch_to_capacity_503"))
+	}
+	if rows := st.RejectionRecordsSince(time.Time{}); len(rows) != 0 {
+		t.Errorf("a client hang-up mid-write wrote %d rejection-ledger row(s): %+v", len(rows), rows)
+	}
+	requireMetricWithTags(t, packets, "routing.client_gone", "model:"+model, "phase:"+phaseBeforeFirstToken)
+
 	conn.Close(websocket.StatusNormalClosure, "")
 	<-readerDone
 }

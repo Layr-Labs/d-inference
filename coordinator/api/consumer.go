@@ -760,11 +760,44 @@ func consumerModel(pr *registry.PendingRequest) string {
 // precise key+value string replace (both compact and spaced JSON forms) to
 // avoid parsing every chunk on the hot path.
 func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
-	if pr.PublicModel == "" || pr.PublicModel == pr.Model {
+	return newModelAliasRewriter(pr).rewrite(chunk)
+}
+
+// modelAliasRewriter rewrites the concrete build id in a forwarded chunk back
+// to the public alias the consumer asked for. The two needle/replacement
+// pairs (compact and space-separated JSON) are built ONCE per request; the
+// per-chunk work is a Contains pre-check that costs no allocation when the
+// chunk carries no model field (every content delta after the first), and a
+// ReplaceAll only when it does.
+type modelAliasRewriter struct {
+	active           bool
+	needle, repl     string
+	needleSp, replSp string
+}
+
+func newModelAliasRewriter(pr *registry.PendingRequest) modelAliasRewriter {
+	if pr == nil || pr.PublicModel == "" || pr.PublicModel == pr.Model {
+		return modelAliasRewriter{}
+	}
+	return modelAliasRewriter{
+		active:   true,
+		needle:   `"model":"` + pr.Model + `"`,
+		repl:     `"model":"` + pr.PublicModel + `"`,
+		needleSp: `"model": "` + pr.Model + `"`,
+		replSp:   `"model": "` + pr.PublicModel + `"`,
+	}
+}
+
+func (a modelAliasRewriter) rewrite(chunk string) string {
+	if !a.active {
 		return chunk
 	}
-	chunk = strings.ReplaceAll(chunk, `"model":"`+pr.Model+`"`, `"model":"`+pr.PublicModel+`"`)
-	chunk = strings.ReplaceAll(chunk, `"model": "`+pr.Model+`"`, `"model": "`+pr.PublicModel+`"`)
+	if strings.Contains(chunk, a.needle) {
+		chunk = strings.ReplaceAll(chunk, a.needle, a.repl)
+	}
+	if strings.Contains(chunk, a.needleSp) {
+		chunk = strings.ReplaceAll(chunk, a.needleSp, a.replSp)
+	}
 	return chunk
 }
 
@@ -1361,6 +1394,7 @@ func (s *Server) dispatchWithReserver(
 	}
 	ap.Mark(registry.StampEncrypted)
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
+	pr.SharedKey = e2e.PrecomputeSharedKey(&providerPubKey, &sessionKeys.PrivateKey)
 	// pr.ReservedMicroUSD was already set in the struct literal and may have
 	// been increased by reserveAdditionalForProvider above. Don't overwrite.
 

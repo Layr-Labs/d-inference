@@ -1762,6 +1762,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		d.timing.EncryptedAt = time.Now()
 		d.pr.Profile.Mark(registry.StampEncrypted)
 		d.pr.SessionPrivKey = &sessionKeys.PrivateKey
+		d.pr.SharedKey = e2e.PrecomputeSharedKey(&providerPubKey, &sessionKeys.PrivateKey)
 		// pr.ReservedMicroUSD was already set in the struct literal and may
 		// have been increased by reserveAdditionalForProvider. Don't overwrite.
 		// Bound the provider write by the request-absolute first-token clock:

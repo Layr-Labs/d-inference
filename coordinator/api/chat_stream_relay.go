@@ -16,6 +16,9 @@ import (
 
 type chatStreamRelay struct {
 	pr *registry.PendingRequest
+	// alias rewrites the concrete build id back to the public alias in
+	// forwarded frames; needles are built once per request, not per chunk.
+	alias modelAliasRewriter
 
 	// sawResponsesAPI latches once a Responses API event is seen; from then on
 	// chat-completions-specific handling (DONE swallowing, usage/finish holds,
@@ -41,7 +44,7 @@ type chatStreamRelay struct {
 }
 
 func newChatStreamRelay(pr *registry.PendingRequest) *chatStreamRelay {
-	return &chatStreamRelay{pr: pr}
+	return &chatStreamRelay{pr: pr, alias: newModelAliasRewriter(pr)}
 }
 
 // handleChunk runs one provider chunk through the relay pipeline: Responses
@@ -84,7 +87,7 @@ func (rl *chatStreamRelay) handleChunk(chunk string) {
 			return
 		}
 	}
-	rl.writeFrame(rewriteChunkModel(chunk, rl.pr))
+	rl.writeFrame(rl.alias.rewrite(chunk))
 }
 
 // writeFrame appends one SSE frame (a "data: ..." payload without its

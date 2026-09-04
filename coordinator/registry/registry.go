@@ -231,8 +231,14 @@ type PendingRequest struct {
 	CompleteCh     chan protocol.UsageInfo // closed after usage sent
 	ErrorCh        chan protocol.InferenceErrorMessage
 	SessionPrivKey *[32]byte // E2E session private key for decrypting responses
-	SESignature    string    // SE signature over response hash
-	ResponseHash   string    // SHA-256 of response data
+	// SharedKey is the NaCl box key precomputed once at dispatch from
+	// SessionPrivKey and the provider's registered public key, so the
+	// per-token chunk decrypt is a single symmetric open with no map lookup
+	// or process-wide lock. Set beside SessionPrivKey by the dispatcher;
+	// computed lazily by the decrypt path when a constructor left it nil.
+	SharedKey    *[32]byte
+	SESignature  string // SE signature over response hash
+	ResponseHash string // SHA-256 of response data
 	// MetadataDetails asks chat-completions writers to include the same
 	// consumer-safe provider/attestation/timing details already returned in
 	// X-Provider-* / X-Timing headers in the JSON body. Opt-in so default

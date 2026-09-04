@@ -83,6 +83,16 @@ Go: [`InferenceResponseChunkMessage`](../../coordinator/protocol/messages.go); S
 | `data` | string | SSE chunk (plaintext) |
 | `encrypted_data` | object | [`EncryptedPayload`](#encryptedpayload) when E2E active |
 
+This is the one provider → coordinator frame that arrives once per streamed
+token. The coordinator's read loop decodes it with a hand-written single-pass
+scanner (`protocol.DecodeProviderMessage` → `chunk_scan.go`) that accepts
+exactly the production wire shape — these four top-level keys, the two
+`EncryptedPayload` keys, plain printable-ASCII strings with no escapes — and
+hands any other shape to `encoding/json` unchanged (`FuzzChunkFrameDecode`
+holds the equivalence). Adding a field to this message or to `EncryptedPayload`
+must teach the scanner; `TestScanChunkFrameStructShapeGuard` fails otherwise,
+because an unknown key silently pushes every chunk onto the slow path.
+
 ### `inference_complete`
 
 Go: [`InferenceCompleteMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.InferenceComplete`.

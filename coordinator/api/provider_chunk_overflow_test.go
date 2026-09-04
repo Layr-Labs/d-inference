@@ -111,14 +111,6 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 		t.Fatal("pending request still registered after overflow abort")
 	}
 
-	// The memoized chunk-decryption key is dropped (terminal cleanup).
-	srv.chunkKeys.mu.Lock()
-	_, keyCached := srv.chunkKeys.m[pr.SessionPrivKey]
-	srv.chunkKeys.mu.Unlock()
-	if keyCached {
-		t.Error("chunk key cache entry should be forgotten on terminal error")
-	}
-
 	// (c) No reputation penalty: 499 + "request cancelled" classifies as a
 	// consumer-side terminal in handleInferenceError, so RecordJobFailure is
 	// skipped — TotalJobs stays 0 (same observability as provider_test.go's

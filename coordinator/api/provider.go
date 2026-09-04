@@ -353,7 +353,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		}
 
 		var msg protocol.ProviderMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
+		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
+		// validation pass; per-token chunk frames take a hand-written decoder.
+		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -1830,7 +1832,10 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			pr.FinishProviderChunkIngress(receivedAt, false)
 		}
 	}()
-	decryptStart := time.Now()
+	var decryptStart time.Time
+	if pr.Profile != nil {
+		decryptStart = time.Now()
+	}
 	chunkData, err := s.decryptTextResponseChunk(provider, pr, msg)
 	if err != nil {
 		s.logger.Warn("rejecting insecure response chunk",
@@ -1961,18 +1966,27 @@ func (s *Server) decryptTextResponseChunk(provider *registry.Provider, pr *regis
 		return "", errTextChunkViolation("missing coordinator session key")
 	}
 
-	payload := &e2e.EncryptedPayload{
+	// The X25519 shared key is derived once per request — at dispatch, next to
+	// SessionPrivKey — and lives on the pending request, so the per-chunk cost
+	// is a single symmetric open with no map lookup or process-wide lock. A
+	// record built without it (tests, any future constructor) derives it here
+	// exactly once instead of failing, because a decrypt failure on this path
+	// is a trust event (MarkUntrusted), not a perf regression. The sender-key
+	// check above guarantees the key matches this chunk's ephemeral key.
+	shared := pr.SharedKey
+	if shared == nil {
+		pub, err := e2e.ParsePublicKey(provider.PublicKey)
+		if err != nil {
+			return "", err
+		}
+		shared = e2e.PrecomputeSharedKey(&pub, pr.SessionPrivKey)
+		pr.SharedKey = shared
+	}
+	payload := e2e.EncryptedPayload{
 		EphemeralPublicKey: msg.EncryptedData.EphemeralPublicKey,
 		Ciphertext:         msg.EncryptedData.Ciphertext,
 	}
-	// The X25519 shared key is derived once per request and memoized; the
-	// per-chunk cost is a single symmetric open. The sender-key check above
-	// guarantees the cached key matches this chunk's ephemeral key.
-	shared, err := s.chunkKeys.sharedKey(pr.SessionPrivKey, provider.PublicKey)
-	if err != nil {
-		return "", err
-	}
-	plaintext, err := e2e.DecryptWithSharedKey(payload, shared)
+	plaintext, err := e2e.DecryptWithSharedKey(&payload, shared)
 	if err != nil {
 		return "", err
 	}
@@ -2191,8 +2205,6 @@ func (s *Server) handleCompleteAt(
 	// consumer is already gone, cannot enqueue its record before the settlement
 	// stamp is written.
 	defer pr.Profile.CompleteTerminal()
-	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
 	// A parked record means the consumer handler already returned: there is no
 	// channel reader, and registry.Disconnect may have already CLOSED the
 	// channels (park-before-remove leaves a window where the record is in both
@@ -2870,8 +2882,6 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		// after the live branch has pushed the error to its channel reader.
 		defer ap.CompleteTerminal()
 	}
-	// The request is terminal — drop its memoized chunk-decryption key.
-	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
 	// Provider errors carry no validated cache usage, but still close the
 	// selection/outcome correlation denominator as an unreported result.

@@ -912,6 +912,18 @@ type ProviderMessage struct {
 	Payload any // one of: *RegisterMessage, *HeartbeatMessage, etc.
 }
 
+// DecodeProviderMessage decodes one provider→coordinator frame into pm. It is
+// the provider read loop's entry point and accepts exactly the inputs
+// json.Unmarshal(data, pm) accepts, producing the same values — minus the
+// whole-document validation pass encoding/json runs before invoking
+// UnmarshalJSON. That pass is redundant here: every branch of UnmarshalJSON
+// either validates the bytes it consumes itself (the chunk fast path) or hands
+// the complete frame to encoding/json, which validates it.
+// FuzzChunkFrameDecode holds the equivalence against json.Unmarshal.
+func DecodeProviderMessage(data []byte, pm *ProviderMessage) error {
+	return pm.UnmarshalJSON(data)
+}
+
 // UnmarshalJSON reads the "type" field first, then unmarshals the full object
 // into the appropriate concrete struct.
 //
@@ -922,6 +934,16 @@ type ProviderMessage struct {
 // non-string value, malformed input, missing key) it falls back to the
 // envelope decode, preserving the original error behavior.
 func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
+	// Fast path for the per-token chunk frame: a hand-written single-pass
+	// decoder (chunk_scan.go) that never calls encoding/json. It bails on any
+	// shape it is not certain about, in which case the frame takes the
+	// generic path below exactly as before.
+	if msg, ok := scanChunkFrame(data); ok {
+		pm.Type = TypeInferenceResponseChunk
+		pm.Payload = msg
+		return nil
+	}
+
 	msgType, ok := scanTopLevelString(data, "type")
 	if !ok {
 		var envelope struct {

@@ -434,12 +434,6 @@ type Server struct {
 	// /v1/encryption-key endpoint and the sealed-request middleware.
 	coordinatorKey *e2e.CoordinatorKey
 
-	// chunkKeys memoizes the per-request NaCl shared key so streaming chunk
-	// decryption skips the X25519 scalar multiplication per token. Zero value
-	// is ready; entries are dropped on request completion/error and bounded
-	// by chunkKeyCacheMax.
-	chunkKeys chunkKeyCache
-
 	// metrics is the in-process metrics registry exposed via /v1/admin/metrics
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics

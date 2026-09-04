@@ -1,6 +1,6 @@
 # Release a provider version
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `ac60c5ada`
 
 Runbook for shipping a new `darkbloom` provider CLI: bump the two version
 constants, land the changelog, push a `vX.Y.Z` tag, approve the `prod`
@@ -167,6 +167,14 @@ validates semver/platform/hex, requires `metallib_hash` when `backend` is
 resync the binary-hash policy (`SyncBinaryHashes`, `SyncRuntimeManifest`), and
 invalidate the cached `/v1/version` and `/v1/releases/latest` responses.
 Response: `{"status":"release_registered","release":{…}}`.
+
+Registration is safe against the live fleet: the rebuilt runtime manifest is
+the union of every active release's hashes, so providers still on the previous
+version keep passing their challenges through the self-update window
+([auto-update cadence](../provider/cli-reference.md#runtime-constants)). Their
+hashes leave the manifest only when that release is deactivated
+([Rollback](#rollback)); the mechanism is in
+[runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
 ## Verification
 

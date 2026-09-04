@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `ac60c5ada`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -459,7 +459,10 @@ registration X25519 key over the live WebSocket without spending an APNs push.
 
 Go `RuntimeStatusMessage` · Swift `RuntimeStatus`. `verified` (`bool`, req);
 `mismatches` (`[]RuntimeMismatch{component, expected, got}`, opt in Go, always
-encoded by Swift as `[RuntimeMismatch]`).
+encoded by Swift as `[RuntimeMismatch]`). For a `template:<name>` component
+`expected` reads `one of <hash>,<hash>` — every hash the
+[runtime manifest](../architecture/security/attestation.md#runtime-manifest)
+accepts for that name.
 
 ### `load_model`
 

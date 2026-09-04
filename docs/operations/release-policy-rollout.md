@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `ac60c5ada`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -203,6 +203,13 @@ recreate the container with the same image. This is the incident lever.
    first.
 4. Do not lower the boot grace for a production flip; the code clamps it to
    20m for this reason.
+5. Registering a release must never deroute the fleet on the previous
+   release. The runtime manifest is the union of every active release's
+   hashes, so v(N−1) and v(N) both pass their challenges through the
+   self-update window; hashes leave the manifest only when their release is
+   deactivated ([`provider-release.md` → Rollback](provider-release.md#rollback)).
+   Mechanism, flags, and the 2026-09-03 brownout that motivated the rule:
+   [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
 ## Related
 

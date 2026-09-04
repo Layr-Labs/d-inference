@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `ac60c5ada`
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -33,6 +33,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 | **Privacy capabilities** | Provider-declared invariants sent at registration (`privacy_capabilities`), required for private-text routing | [`reference/protocol-messages.md`](reference/protocol-messages.md) |
 | **Registration blob** | Secure-Enclave-signed attestation a provider sends when it registers; Layer 1 of trust | [`architecture/security/attestation.md`](architecture/security/attestation.md) |
 | **Release policy** | Coordinator gate that only routes providers running an active release (`EIGENINFERENCE_RELEASE_POLICY_MODE`) | [`operations/release-policy-rollout.md`](operations/release-policy-rollout.md) |
+| **Runtime manifest** | Coordinator policy listing, per template name (`mlx_metallib` included), every hash accepted across active releases; a provider whose reported metallib is not in the set stays connected but unroutable | [`architecture/security/attestation.md#runtime-manifest`](architecture/security/attestation.md#runtime-manifest) |
 | **Sealed request** | A consumer request whose body is NaCl-boxed to the coordinator key; responses carry `X-Eigen-Sealed` / `X-Eigen-Sealed-Kid` | [`architecture/security/encryption.md`](architecture/security/encryption.md) |
 | **Trust level** | Closed enum on a provider: `none`, `self_signed`, `hardware` (`registry.TrustLevel`). Routing applies a floor (`MinTrustLevel`, set by `EIGENINFERENCE_MIN_TRUST`) | [`architecture/security/attestation.md#trust-levels`](architecture/security/attestation.md#trust-levels) |
 | **Trust reuse** | Re-granting `hardware` after a reconnect from durable device evidence — a recent live MDM proof (`defaultTrustReuseWindow`) or a short coordinator-measured offline gap (`defaultTrustReuseReconnectGap`) — once a fresh signed challenge verifies, instead of a new `SecurityInfo` round-trip | [`architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant`](architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) |

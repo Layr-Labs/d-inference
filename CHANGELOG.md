@@ -56,6 +56,11 @@
   in `docs/architecture/security/encryption.md`. Code comments that named
   moved docs were updated (comment-only edits in `coordinator/`,
   `console-ui/`, `provider-swift/`).
+- **Re-verified against `ac60c5ada` (#816)** — the runtime manifest's
+  union-across-active-releases semantics, the `GET /v1/runtime/manifest`
+  shape and the `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` override are stated
+  once, in `docs/architecture/security/attestation.md#runtime-manifest`, and
+  linked from the provider-release and release-policy runbooks.
 
 ## Unreleased (2026-09-02) — system profiler
 

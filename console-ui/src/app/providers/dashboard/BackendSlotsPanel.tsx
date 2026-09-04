@@ -5,7 +5,7 @@
 
 import type { MyBackendCapacity } from "../types";
 import { abbreviateNumber, clampPct, formatTps } from "./format";
-import { modelDisplayName, NO_MODEL_NAMES, type ModelNames } from "./modelNames";
+import { modelDisplayName, type ModelNames } from "./modelNames";
 import { MeterBar } from "./gauges/MeterBar";
 
 const STATE_TAG: Record<string, string> = {
@@ -24,7 +24,7 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function BackendSlotsPanel({ cap, names = NO_MODEL_NAMES }: { cap: MyBackendCapacity; names?: ModelNames }) {
+export function BackendSlotsPanel({ cap, names }: { cap: MyBackendCapacity; names: ModelNames }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-2.5">

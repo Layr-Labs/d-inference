@@ -17,21 +17,21 @@ import { BackendSlotsPanel } from "./BackendSlotsPanel";
 import { AttestationPanel } from "./AttestationPanel";
 import { ExpandSection } from "./gauges/ExpandSection";
 import { RemoveMachineButton } from "./RemoveMachineButton";
-import { NO_MODEL_NAMES, type ModelNames } from "./modelNames";
+import type { ModelNames } from "./modelNames";
 
 export function MachineCard({
   provider,
   ctx,
   fleetMaxDecodeTps,
   onRemoved,
-  names = NO_MODEL_NAMES,
+  names,
 }: {
   provider: MyProvider;
   ctx: RoutingCtx;
   fleetMaxDecodeTps: number;
   onRemoved?: () => void;
   /** Catalog display names for the model chips, slot rows, and decode label. */
-  names?: ModelNames;
+  names: ModelNames;
 }) {
   // Compute this machine's warnings once and derive everything (rail color,
   // hero verdict, the top reason to surface) from the shared routing module so

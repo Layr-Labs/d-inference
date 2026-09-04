@@ -3,22 +3,17 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ModelsStrip } from "./ModelsStrip";
 import { BackendSlotsPanel } from "./BackendSlotsPanel";
-import { makeProvider } from "./testFixtures";
-import { modelNamesFrom } from "./modelNames";
+import { makeModelNames, makeProvider, makeSlot, MOE_ID, MOE_NAME, QWEN27_ID, QWEN27_NAME } from "./testFixtures";
+import { NO_MODEL_NAMES } from "./modelNames";
 import type { MyBackendCapacity } from "../types";
 
-const QWEN27 = "EigenLabs/Qwen3.8-27B-4bit-mtp";
-const MOE = "qwen3.6-35b-a3b-vl-mtp-mxfp8";
 const LOCAL = "EigenLabs/local-experiment-4bit";
-const QWEN27_NAME = "Qwen 3.8 27B";
-const MOE_NAME = "Qwen 3.6 35B A3B";
-
-const names = modelNamesFrom({ model_display_names: { [QWEN27]: QWEN27_NAME, [MOE]: MOE_NAME } });
+const names = makeModelNames();
 
 const cap: MyBackendCapacity = {
   slots: [
-    { model: MOE, state: "idle", num_running: 0, num_waiting: 0, active_tokens: 0, max_tokens_potential: 8192, observed_decode_tps: 88.4 },
-    { model: QWEN27, state: "running", num_running: 1, num_waiting: 0, active_tokens: 512, max_tokens_potential: 8192 },
+    makeSlot(MOE_ID, { observed_decode_tps: 88.4 }),
+    makeSlot(QWEN27_ID, { state: "running", num_running: 1, active_tokens: 512 }),
   ],
   gpu_memory_active_gb: 38.1,
   gpu_memory_peak_gb: 40,
@@ -29,10 +24,10 @@ const cap: MyBackendCapacity = {
 const provider = makeProvider({
   status: "serving",
   online: true,
-  current_model: QWEN27,
-  warm_models: [QWEN27, MOE],
+  current_model: QWEN27_ID,
+  warm_models: [QWEN27_ID, MOE_ID],
   backend_capacity: cap,
-  models: [{ id: QWEN27 }, { id: MOE }, { id: LOCAL }],
+  models: [{ id: QWEN27_ID }, { id: MOE_ID }, { id: LOCAL }],
 });
 
 describe("ModelsStrip display names", () => {
@@ -41,7 +36,7 @@ describe("ModelsStrip display names", () => {
     // Loaded + catalog chips both carry the display name.
     expect(screen.getAllByText(QWEN27_NAME)).toHaveLength(2);
     expect(screen.getAllByText(MOE_NAME)).toHaveLength(2);
-    expect(screen.getAllByTitle(QWEN27)).toHaveLength(2);
+    expect(screen.getAllByTitle(QWEN27_ID)).toHaveLength(2);
     expect(screen.queryByText("Qwen3.8-27B-4bit-mtp")).toBeNull();
   });
 
@@ -51,8 +46,8 @@ describe("ModelsStrip display names", () => {
     expect(screen.getByTitle(LOCAL)).toBeInTheDocument();
   });
 
-  it("renders short raw ids when no names are supplied (older coordinator)", () => {
-    render(<ModelsStrip provider={provider} />);
+  it("renders short raw ids when the coordinator sent no names", () => {
+    render(<ModelsStrip provider={provider} names={NO_MODEL_NAMES} />);
     expect(screen.getAllByText("Qwen3.8-27B-4bit-mtp")).toHaveLength(2);
     expect(screen.queryByText(QWEN27_NAME)).toBeNull();
   });
@@ -63,7 +58,7 @@ describe("BackendSlotsPanel display names", () => {
     render(<BackendSlotsPanel cap={cap} names={names} />);
     expect(screen.getByText(MOE_NAME)).toBeInTheDocument();
     expect(screen.getByText(QWEN27_NAME)).toBeInTheDocument();
-    expect(screen.getByTitle(MOE)).toBeInTheDocument();
+    expect(screen.getByTitle(MOE_ID)).toBeInTheDocument();
     expect(screen.getByText("0 run · 0 wait · 88.4 tok/s")).toBeInTheDocument();
   });
 });

@@ -1,11 +1,10 @@
-// Human-readable model names for the dashboard. The coordinator ships the
-// catalog's id -> display-name map on /v1/me/providers (model_display_names,
-// keyed by the raw build id providers advertise, e.g.
-// "EigenLabs/Qwen3.8-27B-4bit-mtp" -> "Qwen 3.8 27B"). Built once per response
-// into a Map so every chip, slot row, and label resolves in O(1); anything the
-// catalog has no name for (off-catalog local models, older coordinators) falls
-// back to the id minus its org prefix, and render sites keep the raw id in the
-// hover title so it is always one hover away.
+// Human-readable model names for the dashboard, from the coordinator's
+// model_display_names on /v1/me/providers (raw build id -> catalog display
+// name, e.g. "EigenLabs/Qwen3.8-27B-4bit-mtp" -> "Qwen 3.8 27B"; builds that
+// share a name arrive already disambiguated, "Gemma 4 26B (4bit)"). Ids the
+// catalog has no name for — off-catalog local models, older coordinators —
+// fall back to the id without its org prefix, and render sites keep the raw id
+// in the hover title.
 
 import type { MyProvidersResponse } from "../types";
 import { shortModelName } from "./format";

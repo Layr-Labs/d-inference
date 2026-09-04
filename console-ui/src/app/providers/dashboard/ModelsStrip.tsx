@@ -4,7 +4,7 @@
 // id on hover); catalog collapses past a threshold to protect density.
 
 import type { MyProvider } from "../types";
-import { modelDisplayName, NO_MODEL_NAMES, type ModelNames } from "./modelNames";
+import { modelDisplayName, type ModelNames } from "./modelNames";
 
 const CATALOG_LIMIT = 8;
 
@@ -14,7 +14,7 @@ const SLOT_TAG: Record<string, { label: string; cls: string }> = {
   reloading: { label: "reloading", cls: "bg-blue/15 text-blue" },
 };
 
-export function ModelsStrip({ provider, names = NO_MODEL_NAMES }: { provider: MyProvider; names?: ModelNames }) {
+export function ModelsStrip({ provider, names }: { provider: MyProvider; names: ModelNames }) {
   // Prefer the reported warm set; fall back to the single current model.
   const warm = provider.warm_models?.length
     ? provider.warm_models

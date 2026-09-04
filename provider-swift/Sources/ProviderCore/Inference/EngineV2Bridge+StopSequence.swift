@@ -13,10 +13,14 @@ extension EngineV2Bridge {
     ///
     /// Budget, in tokens: a byte-fallback scalar can span up to 4 tokens,
     /// so the longest candidate needs `4 × its scalar count`; +1 for the
-    /// one-step-late token, +1 for a leading context token (keeps
-    /// SentencePiece leading-whitespace rendering identical to the full
-    /// decode — a match must never start at the decode boundary), +1
-    /// margin.
+    /// one-step-late token; +2 defensive margin. The invariant the bound
+    /// rests on: the match plus at most one late token always sits inside
+    /// the last `4N + 3` filtered tokens. One margin token was budgeted as
+    /// a "leading context token" for SentencePiece leading-whitespace
+    /// rendering, but the engine cannot produce a finish whose match starts
+    /// at the tail boundary (a stop beginning with a one-byte space never
+    /// fills its 4N budget), so that term is margin, not a load-bearing
+    /// bound.
     static func stopTailTokenLimit(for candidates: [String]) -> Int {
         let longest = candidates.map { $0.unicodeScalars.count }.max() ?? 0
         guard longest > 0 else { return 0 }

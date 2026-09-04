@@ -2959,9 +2959,13 @@ struct EngineV2BoundedStopTailTests {
     @Test("a SentencePiece stop beginning with whitespace is matched with the leading context token")
     func sentencePieceLeadingWhitespace() async {
         // The tokenizer strips a leading space at the decode boundary. The
-        // stop " ###" sits (limit − 2) tokens from the end, so without the
-        // context token the tail decode would start ON the stop token and
-        // lose its space. The oracle (full decode) keeps it; so must we.
+        // stop " ###" is the second-to-last token (the engine's one-step-late
+        // shape), so the retained tail starts well before it and the
+        // boundary strip never touches the stop: the tail decode renders the
+        // space exactly as the oracle's full decode does. A fixture with the
+        // stop AS the tail's first token is deliberately absent — the engine
+        // cannot produce that shape (see `stopTailTokenLimit`); the +1
+        // context term in the limit is margin, not what this test pins.
         let limit = EngineV2Bridge.stopTailTokenLimit(for: [" ###"])
         var tokens = Array(repeating: 0, count: 300)
         tokens += [20, 0]

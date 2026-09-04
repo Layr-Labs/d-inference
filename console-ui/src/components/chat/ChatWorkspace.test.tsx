@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ChatPage from "@/app/page";
+import ChatPage from "@/app/chat/page";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatModelSelector } from "./ChatModelSelector";
 import { useStore } from "@/lib/store";

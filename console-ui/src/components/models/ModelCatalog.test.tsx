@@ -36,7 +36,7 @@ describe("model discovery flow", () => {
     expect(state.chats).toHaveLength(2);
     expect(state.activeChatId).not.toBe(previousChat);
     expect(state.chats.some((chat) => chat.id === previousChat)).toBe(true);
-    expect(push).toHaveBeenCalledWith("/");
+    expect(push).toHaveBeenCalledWith("/chat");
   });
 
   it("lets a user recover from an empty combination of search and capability filters", () => {

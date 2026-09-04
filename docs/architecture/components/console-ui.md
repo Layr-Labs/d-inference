@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-04 · commit `d286db14d`
+> Last updated: 2026-09-04 · commit `e0e872bd8`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -15,29 +15,67 @@ The console exists so a person can use Darkbloom without writing code: sign in, 
 
 ### Runtime and layout
 
-`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Every page is a client component; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
+`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
 
-### Page routes (13)
+### Page routes (14)
 
 Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; nothing is enforced by the request interceptor.
 
 | Path | File(s) | Purpose | Auth |
 |---|---|---|---|
-| `/` | `page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
+| `/` | `page.tsx`, `components/console-entry/*` | Consumer/Provider workspace chooser with account-aware provider destinations | Public |
+| `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
 | `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
 | `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
 | `/billing` | `billing/page.tsx` → `billing/BillingContent.tsx` (`next/dynamic`, `ssr: false`) | Balance and usage (`fetchBalance`, `fetchUsage`), Buy Credits (`createStripeCheckout`), invite redeem (`console-ui/src/lib/api/invite.ts`), Stripe Connect payouts (`components/payouts/useStripePayouts.ts`) | API key for balance/usage; Privy session for Stripe routes |
 | `/api-console` | `api-console/page.tsx`, `components/api-keys/*` (`ApiKeysManager`) | API reference snippets (base URL = `apiExampleUrl()`) and the **API key manager** — list/create/edit/rotate/delete through `/api/keys*` (`console-ui/src/lib/api/keys.ts`, `managementHeaders`); self-route-only toggle reads `/api/me/provider-models` | Page public; key management Privy |
-| `/providers` | `providers/layout.tsx` (tabs), `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard: polls `/api/me/providers` and `/api/me/summary` every `REFRESH_MS` = `15_000` ms with a Privy Bearer; remove machine via `DELETE /api/me/providers/[id]`; Setup/Earnings tabs appear when `useHasLinkedProviders()` is true | Privy |
-| `/providers/setup` | `providers/setup/page.tsx` | Static install and `darkbloom login` steps | None |
+| `/providers` | `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard with account-scoped polling every `REFRESH_MS` = `15_000` ms; guests and confirmed empty accounts see the shared onboarding guide | Public guide; fleet data Privy |
+| `/providers/setup` | `providers/setup/page.tsx`, `components/provider-onboarding/*` | Requirements and install → link → start → check guide; existing providers see “Add another Mac” | Public guide; device linking Privy |
 | `/providers/earnings` | `providers/earnings/page.tsx` → `EarningsContent.tsx` (`ssr: false`) | `GET /api/me/earnings?limit=100` with the Privy token (falls back to the API key as Bearer), payouts card | Privy (or API key) |
 | `/stats` | `stats/page.tsx`, `stats/useNetworkStats.ts`, `stats/*`, `components/stats/network-map/*` | Continuous geography, activity, model-capacity, and hardware overview with an expandable provider directory; `useNetworkStats` polls same-origin stats, catalog, capacity, and totals independently of the primary render. All traffic ranges, including `30m`, use `/api/network/series?window=` and its explicit `end_at`; see [network stats snapshots](#network-stats-snapshots) | Public |
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
 `components/earn/BaseRewardsPanel.tsx` is not mounted by any page (its only importer is its test), so base rewards are not surfaced anywhere in the console — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
+
+### Workspace entry and provider journeys
+
+`ConsoleWelcome` (`console-ui/src/components/console-entry/ConsoleWelcome.tsx`)
+offers Consumer → `/chat` with API/catalog links, and Provider → setup or the
+fleet. Workspace choice changes navigation, not account permissions. The root
+remains a chooser; no saved preference overrides a deep link. `AppShell` omits
+the sidebar on `/` and preserves the standalone device approval flow on `/link`.
+
+`useProviderAccount` (`console-ui/src/components/console-entry/useProviderAccount.ts`)
+uses the Privy auth context without provisioning an inference key. A successful
+empty provider list selects setup. Any linked record, including an offline or
+never-seen Mac, selects the fleet. Loading, malformed responses, missing tokens,
+and request errors remain unknown; they never imply a new provider. Discovery
+has a 15-second deadline and retries when the page becomes visible or the user
+requests it. Account changes cancel pending results.
+
+`ConsoleExperienceProvider` (`console-ui/src/components/console-entry/ConsoleExperience.tsx`)
+resolves consumer/provider routes first and the last workspace on shared stats
+and settings pages. Consumer navigation exposes chat, models, API, and billing;
+provider navigation exposes machines, setup, actual earnings, and the separate
+calculator. `ProviderOnboarding` is shared by public setup and empty/guest fleet
+views; its memory threshold comes from `MIN_PROVIDER_MEMORY_GB`.
+
+```mermaid
+flowchart TD
+  Home[ConsoleWelcome at /] --> Consumer[Consumer: /chat or /api-console]
+  Home --> Discovery[useProviderAccount]
+  Discovery -->|Guest or verified empty| Setup[ProviderOnboarding at /providers/setup]
+  Discovery -->|Linked, including offline| Fleet[ProviderDashboard at /providers]
+  Discovery -->|Loading or error| Unknown[Open provider workspace or retry discovery]
+  Unknown --> Fleet
+  Setup --> Link[Device approval at /link]
+  Link --> Fleet
+  Fleet --> Earnings[Recorded earnings at /providers/earnings]
+  Setup --> Estimate[Capacity estimate at /earn]
+```
 
 ### `/api/*` route handlers (33)
 
@@ -141,6 +179,7 @@ sequenceDiagram
 | `useStore` (Zustand) | `console-ui/src/lib/store.ts` | `chats`, `activeChatId`, `selectedModel`, `models`, `sidebarOpen`, `useMyMachine`; actions `createChat`, `deleteChat`, `addMessage`, `appendToMessage`, `appendToThinking`, `setUseMyMachine`, … | `persist` under `STORE_NAME` = `darkbloom-store`; `partialize` keeps chats (with `images` dropped and `streaming` cleared), `activeChatId`, `selectedModel`, `sidebarOpen`, `useMyMachine`; `skipHydration: true` — `AppShell` calls `useStore.persist.rehydrate()` after mount |
 | `useToastStore` | `console-ui/src/hooks/useToast.ts` | Toast queue | none |
 | `AuthContext` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | `AuthState` | Privy SDK (`privy-token` cookie) |
+| `ConsoleExperienceProvider` | `console-ui/src/components/console-entry/ConsoleExperience.tsx` | Workspace preference and account discovery | Only workspace preference in `darkbloom_workspace`; provider records are never persisted |
 | `ThemeProvider` | `console-ui/src/components/providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
 | `VerificationModeProvider` | `console-ui/src/components/providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
 
@@ -219,6 +258,8 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Client coordinator URL | `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`, `clientCoordinatorUrl`) |
 | Privy provider and mock auth | `console-ui/src/components/providers/PrivyClientProvider.tsx` (`MOCK_AUTH`, `IS_PRIVY_CONFIGURED`), `console-ui/src/components/providers/PrivyRealProvider.tsx` |
 | Console key provisioning | `console-ui/src/hooks/useAuth.ts` (`provisionConsoleKey`, `useAuth`) |
+| Workspace discovery and navigation | `console-ui/src/components/console-entry/ConsoleExperience.tsx`, `console-ui/src/components/console-entry/useProviderAccount.ts`, `console-ui/src/components/navigation/items.ts` |
+| Provider onboarding | `console-ui/src/components/provider-onboarding/ProviderOnboarding.tsx`, `console-ui/src/components/provider-onboarding/content.ts` |
 | Chat orchestration | `console-ui/src/hooks/useChatStream.ts`, `console-ui/src/lib/chat/stream.ts` (`streamChat`, `prepareBody`, `extractTrustMeta`), `console-ui/src/lib/chat/sse.ts` (`readSsePayloads`), `console-ui/src/lib/chat/think-parser.ts` |
 | Chat proxy | `console-ui/src/app/api/chat/route.ts` (`POST`) |
 | Browser-side sealing | `console-ui/src/lib/encryption.ts` (`getCoordinatorKey`, `sealRawRequest`, `unsealSseEvent`, `ENCRYPTION_FLAG_KEY`) |
@@ -254,11 +295,15 @@ It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forec
 
 These browser captures document the console redesign on 2026-09-04. Desktop
 views use a 1440 × 1000 viewport; mobile uses 390 × 844. Network values are
-snapshots captured at different times. The API console capture has no signed-in
-Privy session; it shows the corresponding API-key state.
+snapshots captured at different times. The local preview has no signed-in
+Privy session; the API console and workspace entrance show their corresponding
+unknown-account states, without treating unavailable account data as an empty fleet.
 
 | Surface | Screenshot |
 |---|---|
+| Workspace entrance | [Consumer and Provider](../../assets/console-redesign/09-workspace-entry.jpg) |
+| Provider onboarding | [Requirements and setup](../../assets/console-redesign/10-provider-onboarding.jpg) |
+| Mobile entrance | [Both workspace choices](../../assets/console-redesign/11-workspace-mobile.jpg) |
 | Chat workspace | [Desktop chat](../../assets/console-redesign/01-chat-desktop.jpg) |
 | Network overview | [Summary and geography](../../assets/console-redesign/02-stats-overview.jpg) |
 | Activity | [Request and token graphs](../../assets/console-redesign/03-stats-activity.jpg) |
@@ -266,7 +311,7 @@ Privy session; it shows the corresponding API-key state.
 | Hardware | [Silicon, memory, and identity](../../assets/console-redesign/05-hardware-composition.jpg) |
 | Model library | [Searchable model catalog](../../assets/console-redesign/06-model-library.jpg) |
 | API console | [SDK setup and API-key state](../../assets/console-redesign/07-api-console.jpg) |
-| Mobile | [Mobile chat](../../assets/console-redesign/08-chat-mobile.jpg) |
+| Mobile | [Workspace navigation](../../assets/console-redesign/08-chat-mobile.jpg) |
 
 ## Related
 

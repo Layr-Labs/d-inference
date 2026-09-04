@@ -30,7 +30,7 @@ export function ModelCatalog() {
     store.setModels(models);
     store.setSelectedModel(model.id);
     store.createChat();
-    router.push("/");
+    router.push("/chat");
   }
 
   return (

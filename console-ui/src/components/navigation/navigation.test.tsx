@@ -5,7 +5,7 @@ import { TopBar } from "@/components/TopBar";
 import { AppShell } from "@/components/AppShell";
 import { useStore } from "@/lib/store";
 
-const environment = vi.hoisted(() => ({ mobile: false, pathname: "/", push: vi.fn() }));
+const environment = vi.hoisted(() => ({ mobile: false, pathname: "/chat", push: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => environment.pathname, useRouter: () => ({ push: environment.push }) }));
 vi.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ ready: true, authenticated: false, login: vi.fn(), logout: vi.fn() }) }));
 vi.mock("@/components/providers/ThemeProvider", () => ({ useTheme: () => ({ theme: "light", toggleTheme: vi.fn() }) }));
@@ -14,13 +14,24 @@ vi.mock("@/components/Toasts", () => ({ Toasts: () => null }));
 beforeEach(() => {
   localStorage.clear();
   environment.mobile = false;
-  environment.pathname = "/";
+  environment.pathname = "/chat";
   environment.push.mockClear();
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: environment.mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
   useStore.setState({ chats: [], activeChatId: null, sidebarOpen: true });
 });
 
 describe("Console navigation", () => {
+  it("keeps the entrance and device approval free of workspace navigation", () => {
+    environment.pathname = "/";
+    const view = render(<AppShell><p>Choose a workspace</p></AppShell>);
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.getByText("Choose a workspace")).toBeVisible();
+    environment.pathname = "/link";
+    view.rerender(<AppShell><p>Approve device</p></AppShell>);
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.getByText("Approve device")).toBeVisible();
+  });
+
   it("keeps page destinations available in the collapsed rail", () => {
     useStore.setState({ sidebarOpen: false });
     render(<Sidebar />);
@@ -34,7 +45,7 @@ describe("Console navigation", () => {
     render(<Sidebar />);
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     expect(useStore.getState().chats).toHaveLength(1);
-    expect(environment.push).toHaveBeenCalledWith("/");
+    expect(environment.push).toHaveBeenCalledWith("/chat");
   });
 
   it("traps keyboard focus in the mobile drawer and supports Escape", () => {

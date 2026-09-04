@@ -236,9 +236,9 @@ describe("ProvidersPage", () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("No provider machines linked yet");
-    expect(screen.getByText("Set up a provider")).toBeInTheDocument();
-    expect(screen.getByText("Open calculator")).toBeInTheDocument();
+    await screen.findByText("Put your Mac to work.");
+    expect(screen.getByRole("region", { name: "Provider setup steps" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the earnings calculator" })).toBeInTheDocument();
   });
 
   it("renders the fleet, verdict, and a machine card when a machine is linked", async () => {

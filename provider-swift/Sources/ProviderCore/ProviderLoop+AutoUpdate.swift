@@ -72,7 +72,11 @@ extension ProviderLoop {
     /// the phase transitions, staged-bundle handoff, and drain bookkeeping
     /// stay race-free.
     private func performAutoUpdateCheck(coordinatorURL: String) async {
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        // Bounded network (30 s request / 600 s resource): the cross-process
+        // update lease is taken BEFORE the check, and `.shared`'s 7-day
+        // resource timeout would let a stalled download hold it until the
+        // next restart.
+        let updater = SelfUpdater.forDaemon(coordinatorBaseURL: coordinatorURL)
         let me = self
         let logger = self.logger
         let jitterMaxSeconds = loopConfig.config.provider.updateJitterSeconds
@@ -216,6 +220,15 @@ extension ProviderLoop {
     /// Download, verify, and stage the release bundle while still serving.
     /// Nothing under the live layout is touched; the staged bundle waits for
     /// the post-drain commit.
+    ///
+    /// The stage itself (tar xzf of a ~170 MB bundle, per-file SHA-256,
+    /// `codesign --verify --deep`, and the runtime-smoke child that brings up
+    /// Metal — each bounded at 120 s) is synchronous and runs OFF the loop
+    /// actor: this method is actor-isolated, and `run()`'s event consumer is
+    /// too, so running it inline queued every inference_request, cancel,
+    /// desired_models and capacity tick for the 10-40 s the stage takes —
+    /// "while still serving" in name only. Only the phase transitions and the
+    /// staged-bundle handoff stay on the actor.
     private func stageUpdateBundle(
         release: ReleaseInfo,
         updater: SelfUpdater
@@ -228,11 +241,10 @@ extension ProviderLoop {
             guard let session = updateSession else {
                 return .failed("cross-process update lease was lost before staging")
             }
-            switch updater.stageBundle(
-                from: tempFile,
-                release: release,
-                session: session
-            ) {
+            let outcome = await Self.runUpdateWorkOffActor {
+                updater.stageBundle(from: tempFile, release: release, session: session)
+            }
+            switch outcome {
             case .success(let staged):
                 stagedUpdateBundle = staged
                 return .completed
@@ -244,8 +256,10 @@ extension ProviderLoop {
 
     /// Swap the staged bundle into the live layout. Runs strictly after the
     /// drain: admission is closed and in-flight work has finished (or been
-    /// force-cancelled), so no request can observe the swap window.
-    private func commitStagedUpdateBundle(updater: SelfUpdater) -> AutoUpdateController.StepOutcome {
+    /// force-cancelled), so no request can observe the swap window. The
+    /// tree-hash + codesign re-verification runs off the actor like the
+    /// stage (a local endpoint may still be serving).
+    private func commitStagedUpdateBundle(updater: SelfUpdater) async -> AutoUpdateController.StepOutcome {
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
         }
@@ -253,13 +267,24 @@ extension ProviderLoop {
             return .failed("cross-process update lease was lost before commit")
         }
         stagedUpdateBundle = nil
-        let result = updater.commitStagedBundle(staged, session: session)
+        let result = await Self.runUpdateWorkOffActor {
+            updater.commitStagedBundle(staged, session: session)
+        }
         switch result {
         case .success:
             return .completed
         case .failure(let error):
             return .failed("\(error)")
         }
+    }
+
+    /// Run a synchronous, blocking update step on a detached utility task
+    /// and hand the result back to the caller's isolation. The precedent is
+    /// `ProviderLoop+Prefetch`'s detached download work.
+    nonisolated internal static func runUpdateWorkOffActor<T: Sendable>(
+        _ work: @escaping @Sendable () -> T
+    ) async -> T {
+        await Task.detached(priority: .utility) { work() }.value
     }
 
     /// The restart step, in the order the coordinator needs: close the link

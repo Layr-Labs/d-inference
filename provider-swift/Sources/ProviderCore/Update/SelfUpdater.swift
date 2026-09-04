@@ -105,11 +105,42 @@ public struct SelfUpdater: Sendable {
     /// would block the recovery loop indefinitely while holding the
     /// cross-process update lock.
     public static func watchdogURLSession() -> URLSession {
+        boundedURLSession(
+            requestTimeout: watchdogRequestTimeoutSeconds,
+            resourceTimeout: watchdogResourceTimeoutSeconds)
+    }
+
+    /// An ephemeral session with explicit per-request (handshake/idle) and
+    /// whole-transfer bounds. Every long-lived caller — the watchdog and the
+    /// serving daemon — must use one: `.shared`'s 7-day resource timeout lets
+    /// a stalled check or download hold the cross-process update lease
+    /// (`claimUpdateStart` takes it before any network step) until the next
+    /// restart.
+    public static func boundedURLSession(
+        requestTimeout: TimeInterval,
+        resourceTimeout: TimeInterval
+    ) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = watchdogRequestTimeoutSeconds
-        configuration.timeoutIntervalForResource = watchdogResourceTimeoutSeconds
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
+    }
+
+    /// The updater for the serving daemon (startup check and the background
+    /// monitor): production signature verification, bounded network. The
+    /// one-shot CLI (`darkbloom update`) keeps `.shared` — a human is watching
+    /// it and can interrupt.
+    public static func forDaemon(coordinatorBaseURL: String) -> SelfUpdater {
+        SelfUpdater(coordinatorBaseURL: coordinatorBaseURL, urlSession: watchdogURLSession())
+    }
+
+    /// Test seams: the bounds the injected session actually carries.
+    internal var requestTimeoutSeconds: TimeInterval {
+        urlSession.configuration.timeoutIntervalForRequest
+    }
+    internal var resourceTimeoutSeconds: TimeInterval {
+        urlSession.configuration.timeoutIntervalForResource
     }
 
     /// Test-only seam. Passing `verifyCodeSignatures: false` disables the
@@ -340,10 +371,10 @@ public struct SelfUpdater: Sendable {
                 return .failure(.downloadFailed("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"))
             }
 
-            // Verify SHA-256
-            let fileData = try Data(contentsOf: tempFileURL)
-            let digest = SHA256.hash(data: fileData)
-            let computedHash = digest.map { String(format: "%02x", $0) }.joined()
+            // Verify SHA-256 — streamed, not `Data(contentsOf:)`: the daemon
+            // runs this while serving on a box sized to its activation floor,
+            // and the bundle is ~170 MB.
+            let computedHash = try Self.hexSHA256(ofFileAt: tempFileURL)
 
             guard computedHash == release.bundleHash.lowercased() else {
                 try? FileManager.default.removeItem(at: tempFileURL)
@@ -1094,12 +1125,20 @@ public struct SelfUpdater: Sendable {
     }
 
     private func verifyHash(file: URL, expected: String, label: String) throws {
-        let data = try Data(contentsOf: file)
-        let digest = SHA256.hash(data: data)
-        let got = digest.map { String(format: "%02x", $0) }.joined()
+        let got = try Self.hexSHA256(ofFileAt: file)
         guard got == expected.lowercased() else {
             throw UpdateError.hashMismatch(expected: expected, got: "\(label): \(got)")
         }
+    }
+
+    /// Lower-case hex SHA-256 of a file, streamed in bounded chunks through
+    /// `WeightHasher.hashSingleFile` (the same reader the weight hasher uses;
+    /// it also copes with URLSession's file-protected download temp files).
+    internal static func hexSHA256(ofFileAt url: URL) throws -> String {
+        guard let digest = WeightHasher.hashSingleFile(at: url) else {
+            throw UpdateError.replaceFailed("could not read \(url.lastPathComponent) for hashing")
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func verifyRuntimeCapabilities(

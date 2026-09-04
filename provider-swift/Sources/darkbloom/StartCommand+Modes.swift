@@ -339,7 +339,10 @@ extension Start {
             return
         }
         print("Checking for provider update...")
-        let updater = SelfUpdater(coordinatorBaseURL: coordinatorURL)
+        // Bounded network: this runs before the PID lock and the preload, and
+        // `.shared`'s 7-day resource timeout could otherwise park a cold start
+        // on a stalled download for as long as the operator waits.
+        let updater = SelfUpdater.forDaemon(coordinatorBaseURL: coordinatorURL)
         switch await updater.update() {
         case .alreadyUpToDate:
             return

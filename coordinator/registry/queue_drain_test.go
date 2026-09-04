@@ -865,3 +865,47 @@ func TestDrainSaturatedPassAllocBudget(t *testing.T) {
 	}
 	t.Logf("saturated pass (depth %d): %.0f allocs/op with dominance vs %.0f without; one scan = %.0f allocs", depth, afterAllocs, beforeAllocs, scanAllocs)
 }
+
+// TestDrainDeclinedOfferIsNotAnAdmission: a waiter that gave up before the
+// pass reached it is still popped and scanned (PopNextFresh reaps on age
+// only), wins a reservation, and declines the offer. Nothing was placed, so
+// the pass is not outcome:admitted and must not lift the heartbeat
+// suppression mark: the fleet verdict the mark records has not changed.
+// Before the fix admitted was counted before the offer, so the pass read as
+// an admission and cleared the mark.
+func TestDrainDeclinedOfferIsNotAnAdmission(t *testing.T) {
+	reg := New(testLogger())
+	sink := newRecordingMetricsSink()
+	reg.SetMetricsSink(sink)
+	p := drainTestProvider(t, reg, "box", 1000, 1000)
+	reg.SetQueue(NewRequestQueue(8, 30*time.Second))
+	req := drainTestEnqueue(t, reg, drainTestPending("gone", 800, 1024))
+	scans := drainScanCounter(reg)
+	drainTestClock(reg)
+
+	reg.Heartbeat(p.ID, drainTestHeartbeat(1000, 1000))
+	drainTestExpectScans(t, scans, 1, "saturated heartbeat")
+	expectMetric(t, sink, 1, "queue.drain.pass", "trigger:heartbeat", "outcome:saturated")
+	if !reg.drainSuppress.suppressed(drainTestModel) {
+		t.Fatal("model not marked saturated after the heartbeat pass")
+	}
+
+	// The waiter gives up, capacity frees, and the idle drain offers it the
+	// box anyway; the offer is declined and the reservation released.
+	req.markDone()
+	drainTestSetBudget(p, 0, 32_768)
+	reg.SetProviderIdle(p.ID)
+	drainTestExpectScans(t, scans, 1, "idle drain over the departed waiter")
+	if got := sink.get("queue.drain.pass", "trigger:idle", "outcome:admitted"); got != 0 {
+		t.Fatalf("declined offer counted as an admission: pass{trigger:idle,outcome:admitted} = %d", got)
+	}
+	if !reg.drainSuppress.suppressed(drainTestModel) {
+		t.Fatal("declined offer lifted the heartbeat suppression mark")
+	}
+	if n := p.PendingCount(); n != 0 {
+		t.Fatalf("pending count after the declined offer = %d, want 0 (reservation released)", n)
+	}
+	if depth := reg.Queue().QueueSize(drainTestModel); depth != 0 {
+		t.Fatalf("queue depth = %d, want 0 (departed waiter not requeued)", depth)
+	}
+}

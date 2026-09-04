@@ -3451,13 +3451,17 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 			}
 			req.DrainTrigger = reason
 			req.Decision = decision
-			admitted++
 			requeueSkipped()
 
 			releaseReservation := func() {
 				provider.RemovePending(req.Pending.RequestID)
 				r.SetProviderIdle(provider.ID)
 			}
+			// A waiter that already gave up (or was already assigned)
+			// declines the offer: the reservation is released and nothing
+			// was placed, so it is not an admission — the pass must not
+			// read as one, nor lift the heartbeat suppression mark on a
+			// fleet verdict that has not changed.
 			if !req.offerAssignment(provider, releaseReservation) {
 				releaseReservation()
 				continue
@@ -3471,6 +3475,7 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 				// acknowledges it in WaitForProviderContext. Cancellation after
 				// this buffered send rejects the published assignment and runs
 				// releaseReservation exactly once.
+				admitted++
 			case <-req.Done():
 				req.rejectAssignment()
 				continue

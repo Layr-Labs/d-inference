@@ -174,10 +174,15 @@ func TestFirstContentClockAnchorsAtIngressLive(t *testing.T) {
 	t.Run("expired_at_entry_is_shed_without_dispatch", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		ts, key, _, _ := ingressClockHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 250 * time.Millisecond}, authDelay, model)
+		ts, key, _, fp := ingressClockHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 250 * time.Millisecond}, authDelay, model)
 		resp, body := ingressClockChat(t, ctx, ts, key, model)
 		if resp.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("status = %d, want 429 (clock anchored at ingress is already spent); body=%s", resp.StatusCode, body)
+		}
+		// "Without a dispatch": the post-dispatch first_chunk_timeout path
+		// answers the same 429 shape, so the provider must have seen nothing.
+		if n := fp.dispatchCount(); n != 0 {
+			t.Fatalf("provider received %d dispatch(es); an expired-at-entry request must be shed before any dispatch", n)
 		}
 		if resp.Header.Get("Retry-After") == "" {
 			t.Fatalf("429 without Retry-After: %s", body)

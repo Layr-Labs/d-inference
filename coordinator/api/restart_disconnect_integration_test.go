@@ -343,7 +343,7 @@ func TestVersionChangedReconnect_LateFlushStrikesAreSuperseded(t *testing.T) {
 	feedFlush := func(srv *Server, id string) {
 		pr := &registry.PendingRequest{RequestID: id + "-req", Model: model, ProviderID: id}
 		for i := 0; i < 8; i++ {
-			srv.noteInferenceError(id, pr, 502, "provider disconnected", "", "")
+			srv.noteInferenceError(id, pr, 502, "provider disconnected", "", "", protocol.CoordinatorCauseProviderDisconnected)
 		}
 	}
 	quarantined := func(t *testing.T, reg *registry.Registry, liveID string, want bool) {

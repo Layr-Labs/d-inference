@@ -3,6 +3,8 @@ package registry
 import (
 	"strings"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Per-provider (node-health) circuit breaker.
@@ -201,18 +203,19 @@ func (w *providerHealthWindow) windowStats(now time.Time, window time.Duration) 
 // fault key (serial/SE-key when bound, session id otherwise) so it survives
 // reconnect churn — a zombie that bounces its connection between faults must
 // keep accumulating. Only gate.mu is taken; never r.mu.
-func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode int, errStr string) (opened bool, closed bool) {
+func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode int, errStr string, causes ...protocol.CoordinatorInferenceErrorCause) (opened bool, closed bool) {
 	if providerID == "" {
 		return false, false
 	}
+	flush := !ok && isDisconnectFlush(statusCode, causes)
 	var source disconnectSource
-	if !ok && statusCode == disconnectFlushStatusCode {
+	if flush {
 		source = r.captureDisconnectSource(providerID)
 	}
 	hold := r.lockGate(r.gateForSession(providerID), "breaker")
 	defer hold.unlock()
 	g := hold.g
-	if !ok && statusCode == disconnectFlushStatusCode && source.supersededBy(g) {
+	if flush && source.supersededBy(g) {
 		return false, false
 	}
 
@@ -239,7 +242,7 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 		return false, false
 	}
 	w := g.healthWindowLocked()
-	w.recordFault(now, statusCode == disconnectFlushStatusCode)
+	w.recordFault(now, flush)
 
 	// Already open: the gate is derouting new traffic. In-flight faults are
 	// still recorded above, but must not re-arm until the cooldown elapses

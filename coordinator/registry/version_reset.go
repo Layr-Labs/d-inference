@@ -1,12 +1,23 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // Version changes clear only disconnect-flush faults, at most once per
 // identityVersionResetMinInterval. Reset history and fault mutations share
 // gate.mu so a trailing old-session 502 cannot re-poison a new binary.
 const disconnectFlushStatusCode = 502
 const identityVersionResetMinInterval = 10 * time.Minute
+
+// Only the non-wire coordinator cause can identify a disconnect flush.
+// A provider-authored 502 (including encryption failure) is a genuine fault.
+func isDisconnectFlush(statusCode int, causes []protocol.CoordinatorInferenceErrorCause) bool {
+	return statusCode == disconnectFlushStatusCode && len(causes) == 1 &&
+		causes[0] == protocol.CoordinatorCauseProviderDisconnected
+}
 
 // SetVersion observes the bound identity while p.mu excludes a concurrent
 // rebind. The index lock stabilizes lookup until the gate has been acquired.
@@ -61,8 +72,8 @@ func (source disconnectSource) supersededBy(g *gateState) bool {
 	}
 	return g != nil && !at.IsZero() && !g.versionResetAt.IsZero() && !g.versionResetAt.Before(at)
 }
-func (r *Registry) IsSupersededDisconnectFlush(sessionID string, statusCode int) bool {
-	if statusCode != disconnectFlushStatusCode || sessionID == "" {
+func (r *Registry) IsSupersededDisconnectFlush(sessionID string, statusCode int, causes ...protocol.CoordinatorInferenceErrorCause) bool {
+	if !isDisconnectFlush(statusCode, causes) || sessionID == "" {
 		return false
 	}
 	source := r.captureDisconnectSource(sessionID)

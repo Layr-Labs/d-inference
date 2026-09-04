@@ -3,6 +3,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Reset and all three trailing-fault recorders must remain independent of the
@@ -21,11 +23,11 @@ func TestVersionResetAndLateFlushDoNotWaitForRegistryLock(t *testing.T) {
 			go func() {
 				p.SetVersion("0.9.1")
 				for range 8 {
-					r.RecordInferenceError("old", "m", 502, "base")
-					r.RecordProviderOutcome("old", false, 502, "provider disconnected")
-					r.RecordProviderSessionServeOutcome("old", false, 502, "provider disconnected")
+					r.RecordInferenceError("old", "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected)
+					r.RecordProviderOutcome("old", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
+					r.RecordProviderSessionServeOutcome("old", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 				}
-				done <- r.IsSupersededDisconnectFlush("old", 502)
+				done <- r.IsSupersededDisconnectFlush("old", 502, protocol.CoordinatorCauseProviderDisconnected)
 			}()
 			select {
 			case superseded := <-done:

@@ -11,6 +11,8 @@
 
 ## Unreleased — provider lifecycle and bounded coordinator work
 
+- Keep genuine provider 502 faults across version changes; only coordinator-marked disconnect flushes are eligible for reset. Count first-scan TTFT rejections in request outcome telemetry.
+- Evict capped zombie tracker entries in constant time, preserving recent activity without per-insertion full-map scans.
 - Fragment large provider WebSocket messages, bound queue-drain work, and keep control traffic responsive.
 - Fence typed draining refusals at ingress before releasing the request slot; preserve newer recovery heartbeats. Graceful restarts remain health-neutral, and late disconnect errors follow identity enrichment without re-quarantining an upgraded provider.
 - Correlate cancel sends and terminals atomically, bound version history and telemetry tags, and retain MLX metrics on HTTP-only Datadog deployments.

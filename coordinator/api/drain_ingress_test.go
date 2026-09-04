@@ -62,7 +62,7 @@ func TestDrainingIngressFencesQueuedDemandBeforeRelease(t *testing.T) {
 				// A delayed classification must not mark the provider draining again.
 				srv.registry.Heartbeat(p.ID, &protocol.HeartbeatMessage{Status: "idle"})
 				em := <-pr.ErrorCh
-				srv.noteInferenceError(p.ID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause)
+				srv.noteInferenceError(p.ID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
 				if srv.registry.ProviderDraining(p.ID) {
 					t.Fatal("delayed consumer classification overwrote the recovery heartbeat")
 				}

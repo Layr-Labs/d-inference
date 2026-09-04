@@ -1,6 +1,7 @@
 package api
 
 import (
+	"container/list"
 	"sync"
 	"time"
 )
@@ -130,6 +131,8 @@ type zombieStreamCanceller struct {
 	entries   map[string]*zombieEntry
 	warn      map[string]*strayChunkWarnState
 	lastSweep time.Time
+	recency   list.List
+	positions map[string]*list.Element
 }
 
 func newZombieStreamCanceller() *zombieStreamCanceller {
@@ -173,12 +176,13 @@ func (z *zombieStreamCanceller) record(requestID, model, cause string, now time.
 	z.mu.Lock()
 	z.ensureMapsLocked()
 	defer z.mu.Unlock()
-	expired = z.sweepLocked(now, false)
+	expired = z.sweepLocked(now)
 	if _, ok := z.entries[requestID]; ok {
 		return false, expired
 	}
-	expired = append(expired, z.makeRoomLocked(now)...)
+	expired = append(expired, z.makeRoomLocked()...)
 	z.entries[requestID] = &zombieEntry{model: model, cause: cause, firstCancelAt: now}
+	z.touchLocked(requestID)
 	return true, expired
 }
 
@@ -196,6 +200,7 @@ func (z *zombieStreamCanceller) markSent(requestID string, now time.Time) (resen
 	if e == nil {
 		return -1
 	}
+	z.touchLocked(requestID)
 	return e.markSent(now)
 }
 
@@ -221,6 +226,7 @@ func (z *zombieStreamCanceller) send(requestID string, enqueue func() bool) (res
 		e.nextResendAt = time.Now().Add(zombieResendRetry)
 		return -1, false
 	}
+	z.touchLocked(requestID)
 	return e.markSent(time.Now()), true
 }
 
@@ -231,7 +237,7 @@ func (z *zombieStreamCanceller) forget(requestID string) {
 		return
 	}
 	z.mu.Lock()
-	delete(z.entries, requestID)
+	z.removeLocked(requestID)
 	z.mu.Unlock()
 }
 
@@ -262,15 +268,16 @@ func (z *zombieStreamCanceller) strayChunk(requestID string, now time.Time) stra
 	z.mu.Lock()
 	z.ensureMapsLocked()
 	defer z.mu.Unlock()
-	res := strayChunkResult{expired: z.sweepLocked(now, false)}
+	res := strayChunkResult{expired: z.sweepLocked(now)}
 	e := z.entries[requestID]
 	if e == nil {
-		res.expired = append(res.expired, z.makeRoomLocked(now)...)
+		res.expired = append(res.expired, z.makeRoomLocked()...)
 		e = &zombieEntry{cause: cancelCauseStrayChunk, firstCancelAt: now}
 		z.entries[requestID] = e
 	}
 	e.strayChunks++
 	e.lastStrayAt = now
+	z.touchLocked(requestID)
 	res.cause = e.cause
 	res.model = e.model
 	if e.resendDue(now) {
@@ -293,7 +300,7 @@ func (z *zombieStreamCanceller) terminal(requestID string) (zombieEntry, bool) {
 	if !ok {
 		return zombieEntry{}, false
 	}
-	delete(z.entries, requestID)
+	z.removeLocked(requestID)
 	return *e, true
 }
 
@@ -332,10 +339,10 @@ func (z *zombieStreamCanceller) size() int {
 }
 
 // sweepLocked expires entries idle past zombieEntryTTL (and stale warn state),
-// at most once per zombieSweepEvery unless forced. Expired entries are
+// at most once per zombieSweepEvery. Expired entries are
 // returned so the caller can report them outside the lock.
-func (z *zombieStreamCanceller) sweepLocked(now time.Time, force bool) []zombieEntry {
-	if !force && now.Sub(z.lastSweep) < zombieSweepEvery {
+func (z *zombieStreamCanceller) sweepLocked(now time.Time) []zombieEntry {
+	if now.Sub(z.lastSweep) < zombieSweepEvery {
 		return nil
 	}
 	z.lastSweep = now
@@ -343,37 +350,13 @@ func (z *zombieStreamCanceller) sweepLocked(now time.Time, force bool) []zombieE
 	for id, e := range z.entries {
 		if now.Sub(e.lastActivity()) > zombieEntryTTL {
 			expired = append(expired, *e)
-			delete(z.entries, id)
+			z.removeLocked(id)
 		}
 	}
 	for id, st := range z.warn {
 		if now.Sub(st.lastWarnAt) > strayChunkWarnStateTTL {
 			delete(z.warn, id)
 		}
-	}
-	return expired
-}
-
-// makeRoomLocked keeps the map under its cap ahead of an insert: expire first,
-// then evict the least recently active entry.
-func (z *zombieStreamCanceller) makeRoomLocked(now time.Time) []zombieEntry {
-	if len(z.entries) < zombieCancelMaxEntries {
-		return nil
-	}
-	expired := z.sweepLocked(now, true)
-	if len(z.entries) < zombieCancelMaxEntries {
-		return expired
-	}
-	var oldestID string
-	var oldest time.Time
-	for id, e := range z.entries {
-		if la := e.lastActivity(); oldestID == "" || la.Before(oldest) {
-			oldestID, oldest = id, la
-		}
-	}
-	if oldestID != "" {
-		expired = append(expired, *z.entries[oldestID])
-		delete(z.entries, oldestID)
 	}
 	return expired
 }

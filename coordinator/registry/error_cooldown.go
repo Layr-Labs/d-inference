@@ -1,6 +1,10 @@
 package registry
 
-import "time"
+import (
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // Inference-error circuit breaker.
 //
@@ -53,7 +57,7 @@ const (
 // SICKNESS count as strikes:
 //
 //	500 — provider bug / crash-adjacent backend failure
-//	502 — disconnect flush (registry.Disconnect fails pending requests as 502)
+//	502 — provider failure or an explicitly marked coordinator disconnect flush
 //	504 — accepted the request, then went silent
 //
 // Everything else records nothing and returns false. In particular 503 is a
@@ -70,7 +74,9 @@ const (
 //
 // State lives on the identity's gate (gate_state.go), keyed inside it by
 // (model, shape); only gate.mu is taken, never r.mu.
-func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode int, shape string) (enteredCooldown bool) {
+// The optional coordinator cause tags only synthetic disconnect flushes for
+// version-reset cleanup; an omitted cause preserves the fault on version change.
+func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode int, shape string, causes ...protocol.CoordinatorInferenceErrorCause) (enteredCooldown bool) {
 	switch statusCode {
 	case 500, 502, 504:
 		// Provider-sickness shapes: count the strike.
@@ -78,14 +84,15 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 		return false
 	}
 
+	flush := isDisconnectFlush(statusCode, causes)
 	var source disconnectSource
-	if statusCode == disconnectFlushStatusCode {
+	if flush {
 		source = r.captureDisconnectSource(providerID)
 	}
 	hold := r.lockGate(r.gateForSession(providerID), "inference_error")
 	defer hold.unlock()
 	g := hold.g
-	if statusCode == disconnectFlushStatusCode && source.supersededBy(g) {
+	if flush && source.supersededBy(g) {
 		return false
 	}
 
@@ -105,7 +112,7 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 	kept = append(kept, now)
 	g.inferenceErrorStrikes[key] = kept
 	g.pruneInferenceFlushStrikesLocked(key, now)
-	if statusCode == disconnectFlushStatusCode {
+	if flush {
 		g.noteInferenceFlushStrikeLocked(key, now)
 	}
 

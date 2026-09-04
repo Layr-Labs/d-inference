@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-04 · commit `73df54ad0`
+> Last updated: 2026-09-04 · commit `6f364e64b`
 
 Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
 
@@ -158,6 +158,12 @@ Queued exits carry the transient `QueueExit` marker and instead increment
 (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`;
 `coordinator/api/dispatch.go`, `queuedExitOutcome`).
 
+`inference.request_outcome_or_view{model,class}` also counts a TTFT rejection
+on the first reservation scan as `rate_limited`, even though that branch does
+not write a retry rejection row. The request-level outcome is independent of
+the retry-only ledger/legacy dispatch metrics
+(`coordinator/api/dispatch.go`, `dispatchPrimary`).
+
 `inference.cancel_sent{cause,model}` counts cancels accepted by the provider
 writer; a full/stopped writer increments `inference.cancel_send_failed{reason}`.
 `inference.cancel_to_terminal_ms{terminal,model,cause}` starts at the first
@@ -169,6 +175,12 @@ even if stray chunks arrived. `inference.cancelled_terminal` includes
 so an immediate terminal cannot observe an unmarked accepted cancel.
 Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/cancel_lifecycle.go`,
 `sendRecordedCancel`, `resolveCancelledTerminal`, `emitExpiredCancelEntries`).
+The zombie tracker keeps at most `zombieCancelMaxEntries = 4096` entries.
+Insertions at the cap evict one least-recently-active ID with constant-time
+list operations; they do not force an expiry scan. TTL and warning-state
+cleanup remain rate-limited to `zombieSweepEvery`
+(`coordinator/api/zombie_eviction.go`, `makeRoomLocked`;
+`coordinator/api/zombie_stream.go`, `sweepLocked`).
 
 ### Read surfaces
 

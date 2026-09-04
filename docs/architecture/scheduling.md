@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-04 · commit `6f364e64b`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -448,7 +448,10 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 On reconnect with a changed binary version, `Provider.SetVersion` removes the
 stable identity's disconnect-flush strikes and recomputes quarantine state,
 at most once per `identityVersionResetMinInterval = 10 * time.Minute`.
-Genuine 500/504 faults survive. Each tracker discards a late 502 from a session
+Genuine provider 500/502/504 faults survive. Only a 502 carrying the non-wire
+`CoordinatorCauseProviderDisconnected` marker is tagged as a disconnect flush;
+HTTP status alone does not establish that provenance. Each tracker discards a
+marked late disconnect flush from a session
 dropped before that reset while holding its mutation lock; request goroutines
 cannot reopen the new binary's quarantine after the reset. Same-version churn
 and a drop after a throttled reset keep their strikes

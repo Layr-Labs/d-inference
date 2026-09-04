@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/attestation"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestDisconnectedGateRefFollowsSharedIdentityEnrichment(t *testing.T) {
@@ -79,7 +80,7 @@ func TestDisconnectedGateRefFollowsSharedIdentityEnrichment(t *testing.T) {
 			if !has || resolved.g != target || resolved.p != nil {
 				t.Fatal("stale false flag did not re-resolve through the redirected disconnect cache")
 			}
-			if !reg.IsSupersededDisconnectFlush(old.ID, disconnectFlushStatusCode) {
+			if !reg.IsSupersededDisconnectFlush(old.ID, disconnectFlushStatusCode, protocol.CoordinatorCauseProviderDisconnected) {
 				t.Fatal("fresh old-session lookup lost the version reset after enrichment")
 			}
 		})

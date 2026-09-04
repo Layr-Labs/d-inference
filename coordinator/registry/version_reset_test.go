@@ -62,13 +62,13 @@ func dieAbruptlyWithFlush(t *testing.T, r *Registry, id string) {
 		t.Fatalf("stable identity after disconnect = %q, want %q", sid, versionResetStable)
 	}
 	for i := 0; i < 2; i++ {
-		r.RecordInferenceError(id, "m", 502, "base")
+		r.RecordInferenceError(id, "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected)
 	}
 	for i := 0; i < 5; i++ {
-		r.RecordProviderOutcome(id, false, 502, "provider disconnected")
+		r.RecordProviderOutcome(id, false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 	}
 	for i := 0; i < 8; i++ {
-		r.RecordProviderServeOutcome(sid, false, 502, "provider disconnected")
+		r.RecordProviderServeOutcome(sid, false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 	}
 }
 
@@ -236,7 +236,7 @@ func TestInferenceFlushStrikes_BoundedForSameVersionIdentity(t *testing.T) {
 	g.publishLocked()
 	g.mu.Unlock()
 
-	r.RecordInferenceError("s1", "m", 502, "base")
+	r.RecordInferenceError("s1", "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected)
 
 	g.mu.Lock()
 	strikes := append([]time.Time(nil), g.inferenceErrorStrikes[key]...)
@@ -326,13 +326,13 @@ func dieAbruptlyWithFlushKeyed(t *testing.T, r *Registry, id, stable string) {
 		t.Fatalf("stable identity after disconnect = %q, want %q", sid, stable)
 	}
 	for i := 0; i < 2; i++ {
-		r.RecordInferenceError(id, "m", 502, "base")
+		r.RecordInferenceError(id, "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected)
 	}
 	for i := 0; i < 5; i++ {
-		r.RecordProviderOutcome(id, false, 502, "provider disconnected")
+		r.RecordProviderOutcome(id, false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 	}
 	for i := 0; i < 8; i++ {
-		r.RecordProviderServeOutcome(stable, false, 502, "provider disconnected")
+		r.RecordProviderServeOutcome(stable, false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 	}
 }
 
@@ -461,23 +461,23 @@ func TestSupersededDisconnectFlush_DatesTheDropAgainstTheReset(t *testing.T) {
 	r := New(testLogger())
 	bindVersionedSession(t, r, "s1", "0.9.0", true)
 	dropAbruptlyUnrecorded(t, r, "s1")
-	if r.IsSupersededDisconnectFlush("s1", 502) {
+	if r.IsSupersededDisconnectFlush("s1", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("no reset has run: the flush strike must record")
 	}
 
 	// Registration order: the eviction above already happened when SetVersion
 	// runs the reset against empty windows.
 	bindVersionedSession(t, r, "s2", "0.9.1", false)
-	if !r.IsSupersededDisconnectFlush("s1", 502) {
+	if !r.IsSupersededDisconnectFlush("s1", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("s1 was dropped before the version reset: its flush strike is superseded")
 	}
 	if r.IsSupersededDisconnectFlush("s1", 500) {
 		t.Fatal("only the disconnect-flush status is superseded, never a genuine fault")
 	}
-	if r.IsSupersededDisconnectFlush("s2", 502) {
+	if r.IsSupersededDisconnectFlush("s2", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("a live session is never superseded")
 	}
-	if r.IsSupersededDisconnectFlush("nobody", 502) {
+	if r.IsSupersededDisconnectFlush("nobody", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("an unknown session is never superseded")
 	}
 
@@ -486,10 +486,10 @@ func TestSupersededDisconnectFlush_DatesTheDropAgainstTheReset(t *testing.T) {
 	// (dropped after the only reset) must still land.
 	dropAbruptlyUnrecorded(t, r, "s2")
 	bindVersionedSession(t, r, "s3", "0.9.2", false)
-	if r.IsSupersededDisconnectFlush("s2", 502) {
+	if r.IsSupersededDisconnectFlush("s2", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("s2 was dropped after the last reset (the next one was throttled): its flush strike must record")
 	}
-	if !r.IsSupersededDisconnectFlush("s1", 502) {
+	if !r.IsSupersededDisconnectFlush("s1", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("s1's verdict does not change with later sessions")
 	}
 }
@@ -503,7 +503,7 @@ func TestSupersededDisconnectFlush_UnattestedSessionIsNotDated(t *testing.T) {
 	p := r.Register("anon", nil, msg)
 	p.SetVersion("0.9.0")
 	dropAbruptlyUnrecorded(t, r, "anon")
-	if r.IsSupersededDisconnectFlush("anon", 502) {
+	if r.IsSupersededDisconnectFlush("anon", 502, protocol.CoordinatorCauseProviderDisconnected) {
 		t.Fatal("a session without a stable identity is never superseded")
 	}
 }
@@ -517,13 +517,17 @@ func TestVersionResetInterleavedWithTrackerWrites(t *testing.T) {
 			r := New(testLogger())
 			bindVersionedSession(t, r, "old", "0.9.0", true)
 			dropAbruptlyUnrecorded(t, r, "old")
-			if r.IsSupersededDisconnectFlush("old", 502) {
+			if r.IsSupersededDisconnectFlush("old", 502, protocol.CoordinatorCauseProviderDisconnected) {
 				t.Fatal("API precheck before the reset must allow the old flush")
 			}
 			writes := []func(){
-				func() { r.RecordInferenceError("old", "m", 502, "base") },
-				func() { r.RecordProviderOutcome("old", false, 502, "provider disconnected") },
-				func() { r.RecordProviderSessionServeOutcome("old", false, 502, "provider disconnected") },
+				func() { r.RecordInferenceError("old", "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected) },
+				func() {
+					r.RecordProviderOutcome("old", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
+				},
+				func() {
+					r.RecordProviderSessionServeOutcome("old", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
+				},
 			}
 			for _, write := range writes[:split] {
 				for range 8 {
@@ -566,9 +570,9 @@ func TestVersionResetSurvivesDisconnectedIdentityEnrichment(t *testing.T) {
 	current := bindKey("current-key-session", "0.9.1")
 	enrich(current)
 	for range 8 {
-		r.RecordInferenceError("old-key-session", "m", 502, "base")
-		r.RecordProviderOutcome("old-key-session", false, 502, "provider disconnected")
-		r.RecordProviderSessionServeOutcome("old-key-session", false, 502, "provider disconnected")
+		r.RecordInferenceError("old-key-session", "m", 502, "base", protocol.CoordinatorCauseProviderDisconnected)
+		r.RecordProviderOutcome("old-key-session", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
+		r.RecordProviderSessionServeOutcome("old-key-session", false, 502, "provider disconnected", protocol.CoordinatorCauseProviderDisconnected)
 	}
 	// Reconnecting through the weaker identity must not resurrect the old
 	// binary's flushes when the same serial is attested again.

@@ -2,6 +2,8 @@ package registry
 
 import (
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Stable-identity health ejection + the stable fault-key infrastructure.
@@ -234,31 +236,35 @@ func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string
 //
 // State lives on the identity's gate (gate_state.go), filed under the stable
 // id itself; only gate.mu is taken, never r.mu.
-func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
+func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCode int, errStr string, causes ...protocol.CoordinatorInferenceErrorCause) (ejected, recovered bool) {
 	if stableID == "" || !healthEjectionEnabled() {
 		return false, false
 	}
 	hold := r.lockGate(r.gateForKey(stableID), "health_ejection")
 	defer hold.unlock()
 	g := hold.g
-	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr)
+	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr, !ok && isDisconnectFlush(statusCode, causes))
 }
 
-func (r *Registry) RecordProviderSessionServeOutcome(sessionID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
+func (r *Registry) RecordProviderSessionServeOutcome(sessionID string, ok bool, statusCode int, errStr string, causes ...protocol.CoordinatorInferenceErrorCause) (ejected, recovered bool) {
 	if sessionID == "" || !healthEjectionEnabled() || r.faultKeyForSession(sessionID) == sessionID {
 		return false, false
 	}
-	source := r.captureDisconnectSource(sessionID)
+	flush := !ok && isDisconnectFlush(statusCode, causes)
+	var source disconnectSource
+	if flush {
+		source = r.captureDisconnectSource(sessionID)
+	}
 	hold := r.lockGate(r.gateForSession(sessionID), "health_ejection")
 	defer hold.unlock()
 	g := hold.g
-	if g == nil || g.key == sessionID || (!ok && statusCode == disconnectFlushStatusCode && source.supersededBy(g)) {
+	if g == nil || g.key == sessionID || (flush && source.supersededBy(g)) {
 		return false, false
 	}
-	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr)
+	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr, !ok && isDisconnectFlush(statusCode, causes))
 }
 
-func (r *Registry) recordProviderServeOutcomeOnGateLocked(g *gateState, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
+func (r *Registry) recordProviderServeOutcomeOnGateLocked(g *gateState, ok bool, statusCode int, errStr string, flush bool) (ejected, recovered bool) {
 	now := time.Now()
 	defer g.updatedLocked(now)
 
@@ -276,7 +282,7 @@ func (r *Registry) recordProviderServeOutcomeOnGateLocked(g *gateState, ok bool,
 
 	if providerOutcomeIsFault(statusCode, errStr) {
 		w := g.ejectionWindowLocked()
-		w.recordFault(now, statusCode == disconnectFlushStatusCode)
+		w.recordFault(now, flush)
 
 		if now.Before(g.ejectionUntil) {
 			return false, false // already ejected; in-flight faults don't re-arm until cooldown

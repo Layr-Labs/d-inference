@@ -2981,6 +2981,8 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	unknownTTFTCandidate := false
 	now := time.Now()
 	r.scanStats.fleetWalks.Add(1)
+	// Per-walk environment read (see scanCandidatesLocked).
+	calibrationOn := ttftCalibrationEnabled()
 	// Per-model index: visit only providers advertising the model (gates
 	// unchanged; see model_index.go).
 	for _, p := range r.providersForModelLocked(model) {
@@ -3157,7 +3159,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 		candidateCount++
 		if snap.hasBackendCapacity {
-			ttft := estimatedTTFTFromSnapshot(&snap, estimatedPromptTokens)
+			ttft := estimatedTTFTFromSnapshot(&snap, estimatedPromptTokens, calibrationOn)
 			if !hasTTFT || ttft < bestTTFT {
 				bestTTFT = ttft
 				hasTTFT = true
@@ -3172,14 +3174,16 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 	return candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT
 }
 
-func estimatedTTFTFromSnapshot(snap *routingSnapshot, reqPromptTokens int) time.Duration {
+// calibrationOn is the TTFT-calibration kill switch, read by the caller once
+// per walk (the preflight) rather than once per admitted candidate.
+func estimatedTTFTFromSnapshot(snap *routingSnapshot, reqPromptTokens int, calibrationOn bool) time.Duration {
 	ttftMs := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if ttftMs <= 0 || math.IsNaN(ttftMs) || math.IsInf(ttftMs, 0) {
 		return 0
 	}
-	// Same calibration as the scheduler's gate input (buildCandidateWithReason)
-	// so the preflight bestTTFT and the hard-reject ceiling cannot drift.
-	ttftMs = calibratedTTFTMs(snap, ttftMs)
+	// Same calibration as the scheduler's gate input (buildCandidateInto) so
+	// the preflight bestTTFT and the hard-reject ceiling cannot drift.
+	ttftMs = calibratedTTFTMsWithRatio(snap, ttftMs, ttftCalibration.appliedRatioIf(calibrationOn, snap.model, snap.chipFamily))
 	return time.Duration(ttftMs * float64(time.Millisecond))
 }
 

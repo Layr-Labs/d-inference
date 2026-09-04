@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 // Scan/commit hygiene: environment reads hoisted to once per walk and the
@@ -108,4 +109,40 @@ func TestPredictionNotedAfterReservationReturns(t *testing.T) {
 		t.Fatal("plan path: no pending prediction after ReserveNextFromPlan returned")
 	}
 	next.RemovePending(retry.RequestID)
+}
+
+// TestPreflightCalibrationSwitchReadOncePerWalk: the capacity preflight's
+// bestTTFT is calibrated with the switch read once per walk, and follows the
+// environment between walks exactly like the reservation scan.
+func TestPreflightCalibrationSwitchReadOncePerWalk(t *testing.T) {
+	ttftCalibration.reset()
+	t.Cleanup(ttftCalibration.reset)
+	reg := New(testLogger())
+	model := "hygiene-preflight-model"
+	makeSchedulerProvider(t, reg, "pre-a", model, 100)
+	for i := 0; i < ttftCalibrationWarmupObs+2; i++ {
+		id := fmt.Sprintf("pre-learn-%d", i)
+		ttftCalibration.notePrediction(id, 0, model, "M3", 100)
+		ttftCalibration.recordActual(id, 0, 200)
+	}
+	best := func() time.Duration {
+		_, _, _, ttft, ok := reg.QuickCapacityCheckWithTTFTForRequest(model, 100, 100, RequestTraits{}, false)
+		if !ok {
+			t.Fatal("preflight reported no TTFT")
+		}
+		return ttft
+	}
+	t.Setenv("EIGENINFERENCE_TTFT_CALIBRATION", "off")
+	raw := best()
+	t.Setenv("EIGENINFERENCE_TTFT_CALIBRATION", "on")
+	calibrated := best()
+	if calibrated <= raw {
+		t.Fatalf("calibrated bestTTFT %v <= raw %v: the learned 2.0 ratio must apply with the switch on", calibrated, raw)
+	}
+	reg.mu.RLock()
+	snap, _ := reg.snapshotProviderLockedEx(reg.providers["pre-a"], model, RequestTraits{}, false, false, time.Now())
+	reg.mu.RUnlock()
+	if got := estimatedTTFTFromSnapshot(&snap, 100, false); got != raw {
+		t.Fatalf("explicit switch off = %v, want the raw estimate %v", got, raw)
+	}
 }

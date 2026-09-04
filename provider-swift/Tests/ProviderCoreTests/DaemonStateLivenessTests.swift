@@ -151,10 +151,13 @@ struct DaemonStateLivenessTests {
         await loop.startCapacityRefreshMonitor()
         defer { Task { await loop.stopCapacityRefreshMonitorForTesting() } }
 
-        // Observe the file over ~3.5 poll intervals.
+        // Observe the file until three distinct stamps are seen (the
+        // monitor's initial write plus two liveness refreshes at the 1 s
+        // cadence) — a count, not a fixed window, so a starved runner
+        // cannot fail a passing daemon; pre-fix the count never passes 1.
         var observed: [Double] = []
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(3500))
-        while ContinuousClock.now < deadline {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while observed.count < 3, ContinuousClock.now < deadline {
             if let state = DaemonStateFile.read(from: url),
                observed.last != state.writtenAt {
                 observed.append(state.writtenAt)

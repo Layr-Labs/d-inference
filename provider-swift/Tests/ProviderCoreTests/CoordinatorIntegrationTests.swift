@@ -480,14 +480,16 @@ struct CoordinatorIntegrationTests {
         let dropped = ContinuousClock.now
         await mock.dropActiveWebSocket()
 
-        // Base window [0.5, 1] s + up to 4 s post-healthy spread, never the
-        // 15–30 s ratchet tail.
-        let after = try await mock.waitForSnapshot(timeout: .seconds(8)) {
+        // Base window [0.5, 1] s + up to 4 s post-healthy spread (design
+        // maximum 5 s) plus connect/register, never the 15–30 s ratchet
+        // tail: the budget keeps that separation with headroom for a loaded
+        // runner.
+        let after = try await mock.waitForSnapshot(timeout: .seconds(12)) {
             $0.registers.count > registersBefore
         }
         let elapsed = ContinuousClock.now - dropped
-        try #require(after != nil, "no re-register within 8 s: backoff ratchet not reset (took \(elapsed))")
-        #expect(elapsed < .seconds(6), "reconnect took \(elapsed); expected base window + spread")
+        try #require(after != nil, "no re-register within 12 s: backoff ratchet not reset (took \(elapsed))")
+        #expect(elapsed < .seconds(12), "reconnect took \(elapsed); expected base window + spread")
     }
 
     /// The herd guard: a session that dies INSIDE the healthy minimum (the
@@ -545,7 +547,7 @@ struct CoordinatorIntegrationTests {
     /// capacity-blind on the coordinator until the next capacity tick. The
     /// client now sends an event heartbeat right after `.connected`. Fails on
     /// the pre-fix client: with a 60 s interval no heartbeat arrives inside
-    /// 500 ms of the register.
+    /// 3 s of the register (a budget a loaded runner can meet).
     @Test("an event heartbeat follows the register frame immediately, seq restarts at 1")
     func heartbeatFollowsRegisterImmediately() async throws {
         let mock = MockCoordinator()
@@ -575,10 +577,10 @@ struct CoordinatorIntegrationTests {
 
         let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
         try #require(first != nil)
-        let afterRegister = try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+        let afterRegister = try await mock.waitForSnapshot(timeout: .seconds(3)) {
             !$0.heartbeats.isEmpty
         }
-        let snap = try #require(afterRegister, "no heartbeat within 500 ms of register")
+        let snap = try #require(afterRegister, "no heartbeat within 3 s of register")
         #expect(snap.heartbeats.first?.backendCapacity?.capacitySeq == 1)
 
         // Reconnect: the new session restarts the seq at 1 and is again
@@ -590,12 +592,12 @@ struct CoordinatorIntegrationTests {
             $0.registers.count > registersBeforeDrop
         }
         try #require(reRegistered != nil)
-        let afterReconnect = try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+        let afterReconnect = try await mock.waitForSnapshot(timeout: .seconds(3)) {
             $0.heartbeats.dropFirst(heartbeatsBeforeDrop).contains {
                 $0.backendCapacity?.capacitySeq == 1
             }
         }
-        #expect(afterReconnect != nil, "no seq-1 heartbeat within 500 ms of the re-register")
+        #expect(afterReconnect != nil, "no seq-1 heartbeat within 3 s of the re-register")
     }
 
     /// Client-only ordering: the on-connect send burns seq 1 and the baseline
@@ -657,9 +659,9 @@ struct CoordinatorIntegrationTests {
 
         let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
         try #require(first != nil)
-        let snap = try #require(try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+        let snap = try #require(try await mock.waitForSnapshot(timeout: .seconds(3)) {
             !$0.heartbeats.isEmpty
-        }, "no heartbeat within 500 ms of register")
+        }, "no heartbeat within 3 s of register")
         #expect(snap.heartbeats.first?.backendCapacity == nil)
         #expect(snap.registers.count == 1)
     }

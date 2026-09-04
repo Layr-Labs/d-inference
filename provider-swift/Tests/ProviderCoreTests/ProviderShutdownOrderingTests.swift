@@ -108,12 +108,14 @@ struct ProviderShutdownOrderingTests {
         let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
         try #require(first != nil)
 
-        // In-flight work that finishes on its own after ~900 ms. Like the
+        // In-flight work gated on the test (released after the assertions
+        // below, so there is no wall-clock window to miss). Like the
         // production task, its terminal goes out (here: the flag) BEFORE the
         // defer-time `finishInflightRequest` releases the drain.
+        let release = AsyncStream<Void>.makeStream()
         let finished = Flag()
         let work = Task {
-            try? await Task.sleep(for: .milliseconds(900))
+            for await _ in release.stream { break }
             finished.set()
             await loop.finishInflightRequest(requestId: "req-drain-1")
         }
@@ -122,9 +124,9 @@ struct ProviderShutdownOrderingTests {
         let drain = Task { await loop.beginShutdownDrain(coordinator: client) }
 
         // Refusing + draining: the socket is still up and the work still running.
-        try await Task.sleep(for: .milliseconds(250))
+        let draining = try await mock.waitForSnapshot(timeout: .seconds(5)) { _ in state.refusingNewWork }
+        #expect(draining != nil, "the drain never started")
         #expect(await loop.isShuttingDownForTesting())
-        #expect(state.refusingNewWork)
         #expect(!finished.value)
         #expect(mock.snapshot().socketCloses == 0, "link closed before the drain finished")
 
@@ -149,6 +151,9 @@ struct ProviderShutdownOrderingTests {
         #expect(bounce.failureCode == .capacity)
         #expect(mock.snapshot().socketCloses == 0)
 
+        // Only now may the work finish; the close must follow it.
+        release.continuation.yield(())
+        release.continuation.finish()
         await drain.value
         #expect(finished.value, "the link was closed before the in-flight work completed")
         // A close FRAME with goingAway (1001) — the clean close the
@@ -198,7 +203,9 @@ struct ProviderShutdownOrderingTests {
         await loop.beginShutdownDrain(coordinator: client, drainTimeout: .milliseconds(300))
         let elapsed = ContinuousClock.now - started
         #expect(cancelled.value, "straggler was not force-cancelled")
-        #expect(elapsed < .seconds(5), "drain took \(elapsed)")
+        // Bound 300 ms + 2 s terminal flush + 500 ms close frame; the
+        // straggler alone would have taken 30 s. Generous for a loaded runner.
+        #expect(elapsed < .seconds(15), "drain took \(elapsed)")
         let closed = try await mock.waitForSnapshot(timeout: .seconds(2)) { !$0.closeCodes.isEmpty }
         #expect(closed?.closeCodes == [1001], "expected one goingAway close frame, got \(String(describing: closed?.closeCodes))")
         #expect(closed?.socketCloses == 1)

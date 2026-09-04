@@ -2030,17 +2030,33 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 tokens: 2_000, tokensPerSecond: 1_000)
         }
         // At the enforcement floor the seed's 5 s still weighs 0.49 in Σt:
-        // ≈ 585 tok/s. Conservative, not wedged (the old EWMA read ≈ 515).
+        // the decayed ΣP/Σt closed form, ≈ 585.4 tok/s. Conservative, not
+        // wedged. Pinned to the closed form (not a band): the per-request
+        // EWMA this replaced reads 514.9 here and 918.5 below, both inside
+        // the [500, 700] / ≥ 900 bands the test used to assert, so the
+        // bands never discriminated token weighting from the old estimator.
+        let decay = EngineV2Bridge.prefillSampleDecay
         let atFloor = await bridge._testIsolatedPrefillTps()
-        #expect(atFloor >= 500 && atFloor <= 700, "at floor: \(atFloor)")
+        let expectedAtFloor =
+            (50 * decay * decay + 2_000 * decay + 2_000)
+            / (5 * decay * decay + 2 * decay + 2)
+        #expect(abs(atFloor - expectedAtFloor) < 1e-6, "at floor: \(atFloor) vs \(expectedAtFloor)")
+        #expect(atFloor > 570 && atFloor < 600)
         for index in 2 ..< 7 {
             try await recordStampedIsolatedSample(
                 bridge: bridge, engine: engine, requestId: "warm-\(index)",
                 tokens: 2_000, tokensPerSecond: 1_000)
         }
-        // Eight samples in: the seed is at 0.7^7 ≈ 8 % weight — ≥ 90 % of truth.
+        // Eight samples in: the seed is at 0.7^7 ≈ 8 % weight — ≈ 937.6
+        // tok/s by the same closed form (the EWMA would read 918.5).
         let healed = await bridge._testIsolatedPrefillTps()
-        #expect(healed >= 900, "healed: \(healed)")
+        var tokens = 50.0, seconds = 5.0
+        for _ in 0 ..< 7 {
+            tokens = decay * tokens + 2_000
+            seconds = decay * seconds + 2
+        }
+        #expect(abs(healed - tokens / seconds) < 1e-6, "healed: \(healed) vs \(tokens / seconds)")
+        #expect(healed > 925 && healed < 950)
     }
 
     // MARK: - The refusal carries the engine's projection (T2-02)

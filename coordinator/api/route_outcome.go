@@ -36,7 +36,19 @@ const (
 	// on the normal bounded-failover path, NEVER in the terminal client-error
 	// stop set (see isTerminalClientErrorCode).
 	errorReasonToolNoncompliance = "tool_noncompliance"
-	errorReasonUnknown           = "unknown"
+	// errorReasonDraining (R2): the provider's typed refusal because it is
+	// draining ahead of a restart/update. Transient capacity for failover
+	// (another provider serves) that consumes NO transient-capacity retry,
+	// derates NO gray-box state, and marks the provider draining
+	// (registry.MarkDraining) so the next scan skips it.
+	errorReasonDraining = protocol.InferenceErrorReasonDraining
+	// errorReasonProviderRestart (R1): coordinator-internal marker stamped by
+	// the registry on the pending-request flush of a GRACEFUL peer close
+	// (restart/stop/update). Health-neutral through
+	// isProviderHealthNeutralErrorReason; never accepted from the wire
+	// (safeInferenceErrorReason does not emit it).
+	errorReasonProviderRestart = protocol.InferenceErrorReasonProviderRestart
+	errorReasonUnknown         = "unknown"
 )
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
@@ -100,7 +112,25 @@ func isDeadlineUnreachableErrorReason(reason string) bool {
 // supplied remaining SLA, not provider sickness or capacity dishonesty.
 func isProviderHealthNeutralErrorReason(reason string) bool {
 	return isNonProviderFaultErrorReason(reason) ||
-		isDeadlineUnreachableErrorReason(reason)
+		isDeadlineUnreachableErrorReason(reason) ||
+		isProviderRestartErrorReason(reason)
+}
+
+// isProviderRestartErrorReason reports whether reason is the coordinator-
+// internal provider_restart marker the registry stamps on the flushed
+// terminals of a GRACEFUL peer close (registry.DisconnectWithReason). The
+// requests fail over like any disconnect, but the terminal is health-neutral:
+// no breaker/cooldown/ejection strike, no clear. An abrupt drop's flush
+// carries no reason and keeps striking (the zombie discriminator).
+func isProviderRestartErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonProviderRestart
+}
+
+// isDrainingErrorReason reports whether reason is the provider's typed
+// draining refusal (R2): transient capacity that consumes no capacity retry
+// and derates nothing; the provider is marked draining instead.
+func isDrainingErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonDraining
 }
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
@@ -132,6 +162,8 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonProviderError:             {},
 	errorReasonClientError:               {},
 	errorReasonToolNoncompliance:         {},
+	errorReasonDraining:                  {},
+	errorReasonProviderRestart:           {},
 	errorReasonUnknown:                   {},
 }
 
@@ -150,6 +182,8 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 		return
 	}
 	s.emitInferenceErrorMetric(model, outcome)
+	s.emitAttemptOutcomeMetric(model, outcome)
+	s.emitCommittedRequestOutcomeORView(model, outcome)
 	s.emitTimingDecompositionMetric(model, outcome.FinalStatus, outcome)
 	// Off the request path: the batching sink pipelines this update with its
 	// neighbours after the group's route inserts (route_telemetry_submit.go).
@@ -280,7 +314,7 @@ func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string
 }
 
 func providerDisconnectedError(msg protocol.InferenceErrorMessage) bool {
-	return msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected
+	return msg.CoordinatorCause.IsProviderDisconnect()
 }
 
 // applyAttemptUsage copies a typed error terminal's provider-reported partial

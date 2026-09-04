@@ -184,10 +184,16 @@ extension ProviderLoop {
     /// admission, drop any staged-but-uncommitted bundle, and replay the
     /// desired-models state that was deferred during the drain so the
     /// provider converges back onto the coordinator's current desired set.
-    private func resumeServingAfterUpdate() async {
+    internal func resumeServingAfterUpdate() async {
         updatePhase = .idle
         // Quote path mirror (routing v2): quotes may admit again.
         state.refusingNewWork = false
+        // Announce the un-drain NOW: the coordinator ages its drain mark on a
+        // TTL, so a prompt `serving`/`idle` heartbeat ends the routing
+        // blackout instead of leaving it to the next 5 s baseline tick.
+        if let client = coordinatorClient {
+            Task { await client.sendEventHeartbeat() }
+        }
 
         if let staged = stagedUpdateBundle {
             stagedUpdateBundle = nil
@@ -208,11 +214,18 @@ extension ProviderLoop {
     /// Enter the `.draining` phase: new requests are refused (503 reroute /
     /// local queue-full) while in-flight work finishes ahead of the commit +
     /// hot-swap.
-    private func beginUpdateDraining() {
+    internal func beginUpdateDraining() {
         updatePhase = .draining
         // Quote path mirror (routing v2): while draining, capacity quotes
         // refuse with `slot_state` exactly like the live admission gate.
         state.refusingNewWork = true
+        // Tell the coordinator NOW (heartbeat `status: draining`) instead of
+        // letting it discover the drain one 503 bounce at a time until the
+        // next baseline heartbeat. The flag above is set before the send, so
+        // the frame carries the draining status.
+        if let client = coordinatorClient {
+            Task { await client.sendEventHeartbeat() }
+        }
     }
 
     /// Download, verify, and stage the release bundle while still serving.

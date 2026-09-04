@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `aa87a0ebd`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -45,7 +45,7 @@ provider (every heartbeat_interval_secs, event heartbeats ≤ 2/s)
                                  drop stale capacity_seq (only LastHeartbeat advances); delta-merge stats
   → BackendCapacitySnapshot     the accepted, clamped copy
   → recordBackendWedgeTelemetry provider.first_token_wedge_suspected{model}, provider.eval_in_flight_long
-  → recordMLXCacheTelemetry     provider.mlx_memory.*{provider_id}, provider.mlx_cache.*{provider_id}
+  → recordMLXCacheTelemetry     provider.mlx_memory.*{chip_family,provider_version}, provider.mlx_cache.*{chip_family,provider_version}
   → PersistProviderThrottled    providers / provider_reputation rows, at most every 30 s
 ```
 
@@ -60,6 +60,23 @@ through the real routing gates; every 15 s `StartDDGaugeLoop` pushes the
 platform gauges (`providers.online`, `utilization.*`, `capacity.*`,
 `request_queue.depth`). How the scheduler reads the capacity fields:
 [`scheduling.md`](scheduling.md); the gate vocabulary: [`routing.md`](routing.md).
+
+`recordMLXCacheTelemetry` emits allocator snapshots as histograms with a
+DogStatsD-only client, or as latest-value gauges through HTTPS when
+`DD_API_KEY` is configured (`coordinator/datadog/metrics_snapshot.go`,
+`HistogramOrGauge`). HTTPS gauges preserve snapshot visibility without
+claiming fleet percentiles. It emits
+cumulative reclaimer counters as nonnegative deltas from the previous accepted
+heartbeat. The first observation has no counter baseline; a reset contributes
+no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`). Tags
+never include a provider session id. `sanitizeChipFamilyTag` uses the fixed
+M1–M5 family/tier vocabulary plus `unknown`/`other`; client-cancellation metrics
+use the same helper (`coordinator/api/chip_family_tags.go`).
+`sanitizeVersionTag` maps strict semver to `0.6.x`, `0.7.x`, `0.8.x`, `0.9.x`,
+`other_release`, or `prerelease`; missing values are `unknown`, invalid values
+are `other` (`coordinator/api/unknown_frame_metrics.go`). Arbitrary patch
+numbers and prerelease counters cannot create new series. Exact versions
+remain in provider metadata.
 
 ### Datadog transport
 

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `3f3fe7f00`
+> Last updated: 2026-09-04 · commit `c54b40e18`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -64,6 +64,24 @@ anything else to `unknown`):
 | `disconnect` | A provider left; queued requests it alone could have served fail fast (`Disconnect`). |
 | `kick` | Cold-dispatch kick from the API layer when a request is enqueued (`coordinator/api/cold_dispatch.go`). |
 | `unknown` | Any other caller of the public drain helpers (`coordinator/registry/scheduler.go`). |
+
+`drainModelQueue` (`coordinator/registry/scheduler.go`) serializes passes per
+model through `queueDrainCoalescer` (`coordinator/registry/queue_drain_coalesce.go`).
+A trigger arriving during a pass requests another pass after held waiters are
+requeued. Within a pass, `drainDominated` skips a scan only for a request with
+the same structural eligibility that is no smaller and has no looser TTFT
+ceiling than an earlier capacity rejection (`coordinator/registry/queue_drain_dominance.go`).
+Heartbeat-only triggers within `heartbeatDrainSuppressWindow = 20 * time.Millisecond`
+of a saturated pass coalesce into one trailing drain; other triggers run
+immediately (`coordinator/registry/queue_drain_suppress.go`).
+
+A provider reporting `status: draining` or a typed `error_reason: draining`
+is excluded as transient capacity until its next idle/serving heartbeat, or
+`drainStateTTL = 150 * time.Second` without a refresh. These rejections do not
+consume capacity retries or feed provider fault/capacity trackers
+(`coordinator/registry/drain_state.go`, `MarkDraining`;
+`coordinator/api/consumer.go`, `noteInferenceError`). Wire values are listed in
+[the protocol reference](../reference/protocol-messages.md).
 
 `PopNextFresh` skips stale entries as it pops; `RequeueFront` returns a
 waiter that could not be placed; `PreferWaiterOwners` lets a drain favour
@@ -246,8 +264,8 @@ model in rather than waiting out the queue. It has two entry points:
   heartbeat; the trailing plan claims the same gate, so the planner still
   runs at most once per window. If a delayed timer finds that a heartbeat
   opened a newer window, it rearms for that window to preserve any later
-  suppressed state change. The queue *drain* is per-heartbeat and is not
-  coalesced.
+  suppressed state change. The queue *drain* uses the per-model coalescing and
+  heartbeat suppression described above.
 - **Cold dispatch** ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
   `coordinator/api/cold_dispatch.go`) calls `TriggerModelSwaps` directly the
   moment a request is enqueued; that kick is immediate and not subject to
@@ -408,13 +426,32 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
    its session-keyed residue deleted.
 3. Decrements the online and per-model provider counts.
 4. Fails every in-flight request on the provider with a `502`
-   `"provider disconnected"` error
-   (`CoordinatorCauseProviderDisconnected`) and closes its channels.
+   `"provider disconnected"` error and closes its channels. A peer close with
+   code 1000/1001 uses the health-neutral `CoordinatorCauseProviderRestart`;
+   abrupt drops retain `CoordinatorCauseProviderDisconnected`
+   (`coordinator/registry/disconnect_reason.go`, `ClassifyPeerClose`).
 5. Drains the provider's model queues with `DrainTriggerDisconnect` so
    waiters that only it could serve fail fast.
 6. Clears the provider's prefix-cache holders
    (`cacheHolderRemovalDisconnect`, [`cache-aware-routing.md`](cache-aware-routing.md))
    and resolves outstanding capacity-probe waiters as send-failed.
+
+On reconnect with a changed binary version, `Provider.SetVersion` removes the
+stable identity's disconnect-flush strikes and recomputes quarantine state,
+at most once per `identityVersionResetMinInterval = 10 * time.Minute`.
+Genuine 500/504 faults survive. Each tracker discards a late 502 from a session
+dropped before that reset while holding its mutation lock; request goroutines
+cannot reopen the new binary's quarantine after the reset. Same-version churn
+and a drop after a throttled reset keep their strikes. Cached disconnected
+identities follow identity enrichment without changing their original drop
+time, so a later weaker-identity reconnect cannot resurrect superseded faults
+(`coordinator/registry/version_reset.go`, `supersededDisconnectFlushLocked`;
+`coordinator/registry/health_ejection.go`, `migrateFaultStateLocked`).
+Version metadata for departed identities expires after
+`identityVersionRetention = 20 * time.Minute`; live identities, recent reset
+throttles, active fault windows and quarantines are retained. Disconnect
+starts a fresh reconnect grace window, and the eviction loop performs
+periodic cleanup (`coordinator/registry/version_history.go`).
 
 ## Invariants
 
@@ -460,7 +497,7 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 | Concern | File / symbol |
 |---|---|
 | Per-model queue, drain triggers, stale sweep | `coordinator/registry/queue.go` — `RequestQueue`, `Enqueue`, `WaitForProviderContext`, `PopNextFresh`, `cleanStaleLocked`, `DrainTrigger*` |
-| Drain orchestration | `coordinator/registry/registry.go` — `drainQueuedRequestsForModelsWithReason`, `SetProviderIdle`, `Heartbeat` |
+| Drain orchestration | `coordinator/registry/scheduler.go` — `drainQueuedRequestsForModelsWithReason`; `coordinator/registry/registry.go` — `SetProviderIdle`, `Heartbeat` |
 | Slot vocabulary | `coordinator/registry/gate_reason.go` — `SlotState`; `coordinator/registry/scheduler.go` — `slotStatePenalty`, `slotStateModelLoaded` |
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |

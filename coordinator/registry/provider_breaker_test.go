@@ -641,7 +641,7 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 	}
 
 	t.Run("empty source is a no-op", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(1), ok: false})
 		dst.merge(&providerHealthWindow{})
 		dst.merge(nil)
 		if dst.size != 2 || dst.consecFail != 2 {
@@ -651,15 +651,15 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 
 	t.Run("empty destination adopts the source", func(t *testing.T) {
 		dst := &providerHealthWindow{}
-		dst.merge(fill(providerHealthOutcome{at(0), true}, providerHealthOutcome{at(1), false}))
+		dst.merge(fill(providerHealthOutcome{ts: at(0), ok: true}, providerHealthOutcome{ts: at(1), ok: false}))
 		if dst.size != 2 || dst.consecFail != 1 {
 			t.Fatalf("size=%d consecFail=%d, want 2/1", dst.size, dst.consecFail)
 		}
 	})
 
 	t.Run("interleaved timestamps merge chronologically", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(2), true}, providerHealthOutcome{at(4), false})
-		src := fill(providerHealthOutcome{at(1), false}, providerHealthOutcome{at(3), false}, providerHealthOutcome{at(5), false})
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(2), ok: true}, providerHealthOutcome{ts: at(4), ok: false})
+		src := fill(providerHealthOutcome{ts: at(1), ok: false}, providerHealthOutcome{ts: at(3), ok: false}, providerHealthOutcome{ts: at(5), ok: false})
 		dst.merge(src)
 		if dst.size != 6 {
 			t.Fatalf("size=%d, want 6", dst.size)
@@ -680,8 +680,8 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 	})
 
 	t.Run("trailing success resets the merged streak", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
-		dst.merge(fill(providerHealthOutcome{at(2), true}))
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(1), ok: false})
+		dst.merge(fill(providerHealthOutcome{ts: at(2), ok: true}))
 		if dst.consecFail != 0 {
 			t.Fatalf("consecFail=%d, want 0 — the newest merged outcome is a success", dst.consecFail)
 		}

@@ -37,7 +37,7 @@ extension ProviderLoop {
     /// hot-swap, or across the post-retirement reconnect (the socket is
     /// about to close; admitting now would only hand the request to the
     /// `.disconnected` cancel).
-    private func rejectIfDrainingForUpdate(
+    internal func rejectIfDrainingForUpdate(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
@@ -47,7 +47,7 @@ extension ProviderLoop {
             .inferenceError(
                 requestId: requestId,
                 failure: CapacityRejectionEnrichment.enrich(
-                    InferenceFailure(code: .capacity, statusCode: 503),
+                    InferenceFailure(code: .capacity, statusCode: 503, errorReason: .draining),
                     modelId: nil,
                     published: state.publishedCapacity,
                     fallbackReason: .slotState),

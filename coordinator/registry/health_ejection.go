@@ -174,7 +174,8 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 	// re-insert an entry Disconnect already removed (it would leak forever —
 	// nothing cleans that session id again). The disconnectedStableIDs cache
 	// covers post-disconnect resolution.
-	if _, live := r.providers[sessionID]; !live {
+	p, live := r.providers[sessionID]
+	if !live {
 		return
 	}
 	// Migrate accumulated fault state when the key changes: from the session id
@@ -192,6 +193,14 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 		r.migrateFaultStateLocked(old, stableID)
 	}
 	r.faultKeyBySession[sessionID] = stableID
+	// Version-changed reconnect reset (version_reset.go): a session that
+	// already reported its binary version binds here on re-attestation;
+	// registration-time binds happen before the version is stored and are
+	// covered by Provider.SetVersion. r.mu → p.mu is the established order.
+	p.mu.Lock()
+	version := p.Version
+	p.mu.Unlock()
+	r.noteIdentityVersionLocked(stableID, version)
 }
 
 // migrateFaultStateLocked re-keys every fault-tracking map entry from oldKey to
@@ -204,6 +213,16 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	if oldKey == "" || newKey == "" || oldKey == newKey {
 		return
+	}
+
+	// Late disconnect-flush outcomes must follow the same identity as the
+	// migrated windows and reset timestamp. Preserve each drop time so the
+	// migration neither extends the cache TTL nor changes reset ordering.
+	for sessionID, cached := range r.disconnectedStableIDs {
+		if cached.id == oldKey {
+			cached.id = newKey
+			r.disconnectedStableIDs[sessionID] = cached
+		}
 	}
 
 	// Dispatch-load cooldowns: struct keys per (fault key, model).
@@ -236,6 +255,37 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 			}
 			delete(r.inferenceErrorCooldowns, k)
 		}
+	}
+	// Disconnect-flush strike tags, the last-seen binary version, and the
+	// version-reset throttle timestamp follow the identity too
+	// (version_reset.go): an existing version under the new key is the more
+	// recent binding and wins; the later reset timestamp wins so a rebind can
+	// never hand the identity a second reset inside the interval.
+	for k, flush := range r.inferenceErrorFlushStrikes {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			r.inferenceErrorFlushStrikes[nk] = mergeChronologicalTimestamps(r.inferenceErrorFlushStrikes[nk], flush)
+			delete(r.inferenceErrorFlushStrikes, k)
+		}
+	}
+	if v, ok := r.identityVersions[oldKey]; ok {
+		if _, exists := r.identityVersions[newKey]; !exists {
+			r.identityVersions[newKey] = v
+		}
+		delete(r.identityVersions, oldKey)
+	}
+	if at, ok := r.identityVersionSeenAt[oldKey]; ok {
+		if cur, exists := r.identityVersionSeenAt[newKey]; !exists || at.After(cur) {
+			r.identityVersionSeenAt[newKey] = at
+		}
+		delete(r.identityVersionSeenAt, oldKey)
+	}
+	if at, ok := r.identityVersionResetAt[oldKey]; ok {
+		if cur, exists := r.identityVersionResetAt[newKey]; !exists || at.After(cur) {
+			r.identityVersionResetAt[newKey] = at
+		}
+		delete(r.identityVersionResetAt, oldKey)
 	}
 
 	// Node-health breaker.
@@ -429,7 +479,9 @@ func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string
 			}
 		}
 	}
-	r.disconnectedStableIDs[sessionID] = disconnectedStableID{id: stableID, at: time.Now()}
+	disconnectedAt := time.Now()
+	r.disconnectedStableIDs[sessionID] = disconnectedStableID{id: stableID, at: disconnectedAt}
+	r.touchIdentityVersionLocked(stableID, disconnectedAt)
 }
 
 // RecordProviderServeOutcome feeds one terminal outcome into the stable-identity
@@ -453,6 +505,36 @@ func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCo
 	}
 	hold := r.lockWrite("health_ejection")
 	defer hold.unlock()
+	return r.recordProviderServeOutcomeLocked(stableID, ok, statusCode, errStr)
+}
+
+// RecordProviderSessionServeOutcome retains the source session through the
+// ejection mutation so a version reset cannot be followed by an old flush strike.
+func (r *Registry) RecordProviderSessionServeOutcome(sessionID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
+	if sessionID == "" || !healthEjectionEnabled() {
+		return false, false
+	}
+	hold := r.lockWrite("health_ejection")
+	defer hold.unlock()
+	if !ok && statusCode == disconnectFlushStatusCode && r.supersededDisconnectFlushLocked(sessionID) {
+		return false, false
+	}
+	stableID := ""
+	if p := r.providers[sessionID]; p != nil {
+		p.mu.Lock()
+		stableID = stableProviderIdentityLocked(p)
+		p.mu.Unlock()
+	} else if cached, exists := r.disconnectedStableIDs[sessionID]; exists && time.Since(cached.at) < disconnectedStableIDTTL {
+		stableID = cached.id
+	}
+	if stableID == "" {
+		return false, false
+	}
+	return r.recordProviderServeOutcomeLocked(stableID, ok, statusCode, errStr)
+}
+
+// recordProviderServeOutcomeLocked requires r.mu and a nonempty stable identity.
+func (r *Registry) recordProviderServeOutcomeLocked(stableID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
 	now := time.Now()
 	r.healthEjectionSweepLocked(now)
 
@@ -470,7 +552,7 @@ func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCo
 
 	if providerOutcomeIsFault(statusCode, errStr) {
 		w := r.healthEjectionWindowLocked(stableID)
-		w.record(false, now)
+		w.recordFault(now, statusCode == disconnectFlushStatusCode)
 
 		if until, had := r.healthEjectionUntil[stableID]; had && now.Before(until) {
 			return false, false // already ejected; in-flight faults don't re-arm until cooldown

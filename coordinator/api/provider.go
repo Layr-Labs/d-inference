@@ -162,20 +162,50 @@ const maxProviderVersionLength = 128
 //   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
 //     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
 //   - "read_error"      — the socket died without a close frame (TCP reset,
-//     NAT/LB teardown, machine went to sleep mid-write).
+//     NAT/LB teardown, machine went to sleep mid-write);
+//   - "read_error_control_frame" — nhooyr failed while handling a peer
+//     control frame (see readErrorDisconnectReason).
+//
+// readReason is the frame-less classification from readErrorDisconnectReason
+// and is used only when neither stronger signal applies.
 //
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool) string {
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
-		return "read_error"
+		return readReason
 	}
+}
+
+const (
+	readErrorReasonGeneric      = "read_error"
+	readErrorReasonControlFrame = "read_error_control_frame"
+)
+
+// readErrorDisconnectReason classifies a frame-less provider Read failure
+// into a fixed two-value vocabulary shared by the ws_disconnects metric, the
+// telemetry event, and the provider_sessions disconnect_reason column.
+//
+// nhooyr answers peer pings on its READ goroutine, with a 5s budget to take
+// the connection's per-frame write lock and put the pong on the wire. When
+// that fails, the library fails the Read with "failed to handle control frame
+// opPing: failed to write control frame opPong: failed to acquire lock: ..."
+// — the peer was alive (it just pinged us), so this is a
+// coordinator-side write stall, not a network drop, and must not be counted
+// with real drops. The same prefix covers any other control-frame handling
+// failure (e.g. a malformed control frame); close frames are never wrapped
+// this way (they surface as a CloseError on the peer_close branch).
+func readErrorDisconnectReason(err error) string {
+	if err != nil && strings.Contains(err.Error(), "failed to handle control frame") {
+		return readErrorReasonControlFrame
+	}
+	return readErrorReasonGeneric
 }
 
 // closeSessionWithReason closes this connection's provider_sessions row with a
@@ -207,6 +237,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	var schedulerSEKey string
 	var schedulerGeneration uint64
 
+	// peerCloseStatus is the close code the peer sent, captured by the read
+	// loop so the deferred teardown can flush pending requests with the
+	// health-neutral restart cause on a graceful 1000/1001 close and the
+	// striking abrupt cause otherwise (registry.ClassifyPeerClose). -1 = no
+	// close frame observed.
+	peerCloseStatus := websocket.StatusCode(-1)
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
@@ -222,7 +258,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// provider down), so the measured reconnect gap starts here rather
 		// than at the last periodic coverage pass.
 		s.stopTrustCoverageForProvider(providerID)
-		s.registry.Disconnect(providerID)
+		s.registry.DisconnectWithReason(providerID, registry.ClassifyPeerClose(peerCloseStatus, false))
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -231,7 +267,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if err != nil {
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
+			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
+				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
 				// Peer-initiated closes were previously unmetered — only
@@ -247,20 +285,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"code:" + strconv.Itoa(int(closeStatus)),
 				})
 			} else {
-				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
+				readReason = readErrorDisconnectReason(err)
+				s.logger.Error("provider websocket read error",
+					"provider_id", providerID, "error", err, "reason", readReason)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
 					"provider websocket read error",
 					map[string]any{
 						"provider_id": providerID,
 						"ws_state":    "read_error",
+						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "read_error"},
+						MetricLabel{"reason", readReason},
 					)
 				}
-				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
+				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
 
 				// An abrupt read_error under high last-known memory pressure with
 				// active inference is very likely a jetsam OOM (the kill leaves no
@@ -317,17 +358,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected))
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
 			}
 			return
 		}
 
 		var msg protocol.ProviderMessage
-		// Call the typed decoder directly: json.Unmarshal would first validate
-		// the whole frame (a full scan) and then invoke this same method, which
-		// decodes the frame again. The typed decode still rejects malformed
-		// input, an unknown type, and a type-mismatched payload.
-		if err := msg.UnmarshalJSON(data); err != nil {
+		// DecodeProviderMessage is json.Unmarshal minus its redundant outer
+		// validation pass; per-token chunk frames take a hand-written decoder.
+		if err := protocol.DecodeProviderMessage(data, &msg); err != nil {
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -407,11 +446,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 
-			// Store provider version.
+			// Store provider version. SetVersion also runs the version-changed
+			// reconnect reset for the session's stable identity, which the
+			// attestation bind above could not (the version was not stored
+			// yet) — see registry/version_reset.go.
 			if regMsg.Version != "" {
-				provider.Mu().Lock()
-				provider.Version = regMsg.Version
-				provider.Mu().Unlock()
+				provider.SetVersion(regMsg.Version)
 			}
 
 			// Verify runtime integrity against the known-good manifest. Swift
@@ -591,13 +631,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
+			// The pre-heartbeat snapshot is the baseline for the MLX reclaimer
+			// counter deltas (recordMLXCacheTelemetry); nil on the session's
+			// first heartbeat.
+			prevCapacity := provider.BackendCapacitySnapshot()
 			s.registry.Heartbeat(providerID, hbMsg)
 			// Emit only from the accepted registry snapshot: malformed values
 			// have been clamped and slot model IDs constrained to this
 			// connection's coordinator-known inventory.
 			capacity := provider.BackendCapacitySnapshot()
 			s.recordBackendWedgeTelemetry(capacity)
-			s.recordMLXCacheTelemetry(providerID, capacity)
+			s.recordMLXCacheTelemetry(provider, prevCapacity, capacity)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -1783,19 +1827,14 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	}
 	pr, receivedAt := provider.BeginPendingChunkIngress(msg.RequestID)
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
 		s.ddIncr("inference.unknown_request_frames", []string{"kind:chunk"})
 		s.unknownRequestFrames.Add(1)
-		// The provider is still generating into a stream we abandoned (consumer
-		// gone / already settled), burning its GPU and token-budget admission.
-		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
-		// the provider with cancels.
-		if s.zombieCanceller.shouldCancel(msg.RequestID, time.Now()) {
-			s.sendProviderCancel(provider, msg.RequestID)
-			s.ddIncr("inference.zombie_stream_cancel", []string{})
-		}
+		// The provider is generating into a stream the coordinator abandoned
+		// (cancelled, consumer gone, already settled) — or sent an id it never
+		// owned. noteStrayChunk re-sends the cancel on the escalating zombie
+		// schedule and rate-limits the log line per provider; request_id stays
+		// out of the log until it matches coordinator state.
+		s.noteStrayChunk(provider, providerID, msg.RequestID, receivedAt)
 		return
 	}
 	ingressClassified := false
@@ -1849,7 +1888,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// either late first content or an on-time chunk that finished
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
-		s.sendProviderCancel(provider, pr.RequestID)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
@@ -1880,7 +1919,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"request_id", msg.RequestID,
 		)
 		s.ddIncr("inference.chunk_overflow_abort", []string{})
-		s.sendProviderCancel(provider, msg.RequestID)
+		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
@@ -2105,13 +2144,32 @@ func (s *Server) handleCompleteAt(
 	// Clear any parked settlement record (consumer disconnected mid-stream):
 	// settles the disconnect case and stops the grace timer from no-op-refunding.
 	parked := s.claimSettlement(msg.RequestID)
+	// No live pending record means the attempt was abandoned (or is unknown):
+	// correlate the terminal with the cancel the coordinator sent. Metric-only
+	// — a parked post-commit record still settles billing below, and a
+	// pre-commit attempt was refunded when it was abandoned. Only a terminal
+	// that finds no live record is matched, so the coordinator's own
+	// synthesized errors (raised while the record is live) never resolve one.
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalComplete, cancelledOutcomeCompletePartial, receivedAt)
 		pr = parked
 	}
 	if pr == nil {
-		// Until it matches pending state, request_id is provider-controlled and
-		// therefore an arbitrary log-exfiltration channel.
-		s.logger.Warn("complete for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// The id matched a cancel the coordinator recorded, so it is
+			// coordinator-minted and safe to log: the provider honored the
+			// cancel with a partial completion.
+			s.logger.Debug("complete for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID, "cause", cancelled.cause)
+		} else {
+			// Until it matches pending state, request_id is provider-controlled and
+			// therefore an arbitrary log-exfiltration channel.
+			s.logger.Warn("complete for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindComplete, provider)
+		}
 		s.ddIncr("inference.unknown_request_frames", []string{"kind:complete"})
 		s.unknownRequestFrames.Add(1)
 		// A claimed terminal whose pending request a consumer-side cleanup
@@ -2749,14 +2807,29 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// Clear any parked settlement record (consumer disconnected mid-stream).
 	// Same object as a non-nil pr when the terminal raced the disconnect defer.
 	parked := s.claimSettlement(msg.RequestID)
+	// See handleCompleteAt: a terminal with no live pending record is matched
+	// against the cancel the coordinator sent for it (metric-only).
+	var cancelled zombieEntry
+	wasCancelled := false
 	if pr == nil {
+		cancelled, wasCancelled = s.resolveCancelledTerminal(
+			msg.RequestID, cancelTerminalError, cancelledErrorOutcome(msg), time.Now())
 		pr = parked
 	}
 	if pr == nil {
-		// request_id is provider-controlled until it matches coordinator-owned
-		// pending state. Do not log it: an attacker could use unknown IDs as an
-		// arbitrary log exfiltration channel.
-		s.logger.Warn("error for unknown request", "provider_id", providerID)
+		if wasCancelled && cancelled.cause != cancelCauseStrayChunk {
+			// Coordinator-minted id (it matched a recorded cancel): the
+			// provider honored the cancel before producing output.
+			s.logger.Debug("error for cancelled request",
+				"request_id", msg.RequestID, "provider_id", providerID,
+				"cause", cancelled.cause, "status_code", msg.StatusCode)
+		} else {
+			// request_id is provider-controlled until it matches coordinator-owned
+			// pending state. Do not log it: an attacker could use unknown IDs as an
+			// arbitrary log exfiltration channel.
+			s.logger.Warn("error for unknown request", "provider_id", providerID)
+			s.emitUnknownFrame(unknownFrameKindError, provider)
+		}
 		s.ddIncr("inference.unknown_request_frames", []string{"kind:error"})
 		s.unknownRequestFrames.Add(1)
 		// A terminal claimed here whose pending request a consumer-side cleanup

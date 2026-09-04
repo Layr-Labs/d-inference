@@ -853,7 +853,12 @@ type Provider struct {
 	// distinguish "never enrolled" from "enrolled but unresponsive".
 	MDMFailureReason string
 
-	Status           ProviderStatus
+	Status ProviderStatus
+	// drainingUntil is non-zero while the provider has declared itself
+	// draining (heartbeat status "draining" or a typed draining rejection);
+	// routing skips it until its next idle/serving heartbeat or the TTL
+	// (drain_state.go). Guarded by p.mu.
+	drainingUntil    time.Time
 	Conn             *websocket.Conn
 	writer           *providerWriter
 	LastHeartbeat    time.Time
@@ -2121,6 +2126,13 @@ type Registry struct {
 	providers map[string]*Provider
 
 	queue *RequestQueue
+	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
+	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
+	drainSuppress queueDrainSuppressor
+	// drainPasses runs one queue-drain pass per model at a time and reruns it
+	// for triggers that landed mid-pass (queue_drain_coalesce.go). Zero value
+	// ready.
+	drainPasses queueDrainCoalescer
 
 	MinTrustLevel TrustLevel
 
@@ -2206,6 +2218,10 @@ type Registry struct {
 	// shared reading after winner selection and before the serialized commit.
 	// Production leaves it nil; tests set it before starting concurrent scans.
 	reservationAfterScan func(model string)
+	// drainBeforePop is a test-only barrier invoked with no locks held before
+	// every pop of a queue-drain pass, so a test can interleave a trigger at a
+	// chosen point of the pass. Production leaves it nil.
+	drainBeforePop func(model string)
 
 	// modelIndex maps advertised model id → providers advertising it, so the
 	// per-request fleet walks visit only providers that can pass the first
@@ -2350,7 +2366,10 @@ type Registry struct {
 	// keyed by its (now-removed) session id, so the pending-request ErrorCh flush —
 	// which runs AFTER Disconnect deletes the provider and carries the 502 "provider
 	// disconnected" faults that define a reconnecting zombie — can still resolve the
-	// identity and record those faults against the stable-identity breaker.
+	// identity and record those faults against the stable-identity breaker. The
+	// entry also dates the drop: a flush strike from a session dropped at or
+	// before the identity's last version-changed reset is discarded as already
+	// accounted for (version_reset.go, IsSupersededDisconnectFlush).
 	disconnectedStableIDs map[string]disconnectedStableID
 	// faultKeyBySession maps a LIVE session id to its stable identity
 	// (serial/SE-key/account). Bound by SetAttestationResult, removed on
@@ -2362,6 +2381,18 @@ type Registry struct {
 	// wiping it (the prod zombie exploit: median 18 sessions/machine/week
 	// reset every session-keyed breaker before it could trip).
 	faultKeyBySession map[string]string
+	// identityVersions / inferenceErrorFlushStrikes back the version-changed
+	// reconnect reset (version_reset.go): the last binary version seen per
+	// stable identity, the time of its last reset (rate limit), and the subset
+	// of inferenceErrorStrikes that came from the disconnect flush (502) so
+	// exactly those can be removed when the identity returns on a new binary.
+	// Lazily created; guarded by r.mu; migrated on rebind; NOT cleared on
+	// Disconnect.
+	identityVersions           map[string]string
+	identityVersionResetAt     map[string]time.Time
+	identityVersionSeenAt      map[string]time.Time
+	identityVersionSweepAt     time.Time
+	inferenceErrorFlushStrikes map[inferenceErrorKey][]time.Time
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -4131,6 +4162,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// loaded. Clear stale state so challenge checks never compare against a
 	// provider-injected identifier.
 	p.CurrentModel = currentModel
+	// Drain awareness (drain_state.go): "draining" arms the routing skip,
+	// "idle"/"serving" clear it. Independent of p.Status below — a draining
+	// provider keeps its online/serving accounting; only routing changes.
+	applyHeartbeatDrainStateLocked(p, msg.Status, now)
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -4167,8 +4202,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
-	// rather than the legacy direct queue assignment path.
-	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
+	// rather than the legacy direct queue assignment path. Heartbeats are the
+	// one trigger that is rate-limited after a saturated pass
+	// (queue_drain_suppress.go); every capacity-freeing trigger drains at once.
+	r.drainQueuedRequestsForHeartbeat(providerModelIDs(p))
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
 	// check if a cold provider should swap models to serve queued demand —
@@ -5015,16 +5052,28 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 	return merged
 }
 
-// Disconnect removes a provider from the registry and cleans up pending requests.
+// Disconnect removes a provider from the registry and cleans up pending
+// requests. This is the ABRUPT path: the flushed terminals carry
+// CoordinatorCauseProviderDisconnected and strike the provider's stable
+// identity. The provider read loop, which knows how the socket ended, calls
+// DisconnectWithReason (disconnect_reason.go) so a graceful peer close flushes
+// with the health-neutral restart cause instead.
 func (r *Registry) Disconnect(id string) {
-	r.disconnectProvider(id, nil, 0)
+	r.disconnectWithCause(id, protocol.CoordinatorCauseProviderDisconnected)
+}
+
+// disconnectWithCause preserves the read loop's graceful/abrupt classification
+// for unconditional disconnects. Eviction adds an identity/freshness guard.
+func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInferenceErrorCause) {
+	r.disconnectProvider(id, nil, 0, cause)
 }
 
 // disconnectProvider applies an optional eviction guard atomically with removal.
 // expected is the exact session observed by the stale scan; nil is an ordinary
 // unconditional disconnect. Both its identity and latest heartbeat are checked
-// while r.mu and p.mu exclude replacement and heartbeat updates.
-func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration) bool {
+// while r.mu and p.mu exclude replacement and heartbeat updates. The supplied
+// cause is stamped on every flushed pending-request terminal.
+func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration, cause protocol.CoordinatorInferenceErrorCause) bool {
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
@@ -5075,6 +5124,11 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			for key := range r.inferenceErrorCooldowns {
 				if key.ProviderID == id {
 					delete(r.inferenceErrorCooldowns, key)
+				}
+			}
+			for key := range r.inferenceErrorFlushStrikes {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorFlushStrikes, key)
 				}
 			}
 			for key := range r.dispatchLoadCooldowns {
@@ -5135,7 +5189,8 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 					RequestID:        reqID,
 					Error:            "provider disconnected",
 					StatusCode:       502,
-					CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+					ErrorReason:      disconnectFlushErrorReason(cause),
+					CoordinatorCause: cause,
 				}
 			}()
 			func() {
@@ -6460,6 +6515,7 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 				return
 			case <-ticker.C:
 				r.evictStale(timeout)
+				r.sweepIdentityVersionHistory(time.Now())
 			}
 		}
 	})
@@ -6539,7 +6595,7 @@ func (r *Registry) evictStale(timeout time.Duration) {
 	for _, p := range toEvict {
 		// A heartbeat may recover this session after the read scan, or the
 		// same id may name a replacement. Revalidate inside the removal lock.
-		if r.disconnectProvider(p.ID, p, timeout) {
+		if r.disconnectProvider(p.ID, p, timeout, protocol.CoordinatorCauseProviderDisconnected) {
 			r.logger.Warn("evicted stale provider", "provider_id", p.ID, "timeout", timeout)
 		}
 	}

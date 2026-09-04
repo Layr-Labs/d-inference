@@ -3043,9 +3043,12 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				enforced = 1.0
 			}
 			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
+			perModel := s.registry.ModelProviderSnapshot()
+			for model, count := range perModel {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
 			}
+			// Per-model queue depth/age (fleet_gauges.go).
+			s.emitPerModelQueueGauges(perModel)
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}

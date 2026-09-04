@@ -1201,13 +1201,15 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
 			// ALSO fails a structural gate out of the count; both checks are
 			// cheap and only run on the already-rare drop path.
-			if r.capacityCooldownActiveLocked(p.ID, model, now) {
-				p.mu.Lock()
-				otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
-				p.mu.Unlock()
-				if otherwiseRoutable {
-					capacityRejections++
-				}
+			// A draining provider (drain_state.go) is the same transient
+			// class: present, serving the model, back after its restart.
+			p.mu.Lock()
+			transient := r.capacityCooldownActiveLocked(p.ID, model, now) || providerDrainingLocked(p, now)
+			otherwiseRoutable := transient &&
+				r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
+			p.mu.Unlock()
+			if otherwiseRoutable {
+				capacityRejections++
 			}
 			continue
 		}
@@ -1715,7 +1717,13 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	// keep winning the cost scheduler. A busy box that is also SERVING never
 	// trips this (any accept resets the streak), and the pair is re-probed once
 	// its TTL expires. See capacity_cooldown.go.
-	if !ignoreCapacityCooldown && r.capacityCooldownActiveLocked(p.ID, model, now) {
+	// A DRAINING provider (heartbeat status "draining" or a typed draining
+	// rejection — drain_state.go) rides the same transient branch: it refuses
+	// every dispatch until it restarts, so it is skipped here and counted as
+	// a capacityRejection by the scan/preflight re-check, never as absence.
+	// It is tallied under GateCapacityCooldown on the routing record.
+	if !ignoreCapacityCooldown &&
+		(r.capacityCooldownActiveLocked(p.ID, model, now) || providerDrainingLocked(p, now)) {
 		return false, GateCapacityCooldown
 	}
 	// Skip a provider quarantined by the per-provider node-health breaker: a
@@ -2840,7 +2848,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			// never fit the hardware counts as modelTooLarge — never as
 			// transient capacity, or a fleet of undersized cooled boxes would
 			// read as "busy, retry" for a model that will never fit.
-			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
+			if (r.capacityCooldownActiveLocked(p.ID, model, now) || providerDrainingLocked(p, now)) &&
 				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
 				p.SystemMetrics.ThermalState != "critical" &&
 				(!requiresVision || r.providerServesVisionModelLocked(p, model, false)) {
@@ -3173,88 +3181,154 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 		return
 	}
 	for _, model := range models {
-		var skipped []*QueuedRequest
-		requeueSkipped := func() {
-			for i := len(skipped) - 1; i >= 0; i-- {
-				queue.RequeueFront(skipped[i])
-			}
-			skipped = nil
-		}
-		for {
-			req := queue.PopNextFresh(model)
-			if req == nil {
-				requeueSkipped()
-				break
-			}
-			if req.Pending == nil {
-				req.Pending = &PendingRequest{
-					RequestID:          req.RequestID,
-					Model:              model,
-					RequestedMaxTokens: defaultRequestedMaxTokens,
-				}
-			}
-			// Queue time spends the same absolute first-content clock as
-			// parsing, admission, and provider dispatch. Refresh immediately
-			// before reservation so hard TTFT admission never reuses the
-			// enqueue-time ceiling.
-			if !req.Pending.RefreshFirstContentBudget(time.Now()) {
-				req.failWithReason(ErrQueueFirstContentDeadline)
-				continue
-			}
-			provider, decision := r.ReserveProviderEx(model, req.Pending)
-			// Queue context for the routing record: where the request sat at
-			// enqueue and which event ran the drain that produced this decision.
-			decision.QueuePosition = req.EnqueuePosition
-			decision.QueueDepth = req.DepthAtEnqueue
-			decision.DrainTrigger = reason
-			if provider == nil {
-				if req.Pending.Traits.RequiresToolConstraint &&
-					!r.hasToolConstraintProviderForPending(model, req.Pending) {
-					req.DrainTrigger = reason
-					req.Decision = decision
-					req.failWithReason(ErrQueueToolConstraintUnavailable)
-					continue
-				}
-				// A pure-TTFT rejection (hard-reject mode, no capacity-rejected
-				// provider that could free up) is deterministic for this pass:
-				// requeueing would only make the waiter hang until maxWait for
-				// the same answer. Fail it now; the API waiter turns
-				// ErrQueueTTFTTooSlow into the standard ttft_too_slow 429 using
-				// the decision's BestTTFTMs for Retry-After.
-				if drainRejectionTTFTTerminal(req.Pending, decision) {
-					req.DrainTrigger = reason
-					req.Decision = decision
-					req.failWithReason(ErrQueueTTFTTooSlow)
-					continue
-				}
-				skipped = append(skipped, req)
-				continue
-			}
-			req.DrainTrigger = reason
-			req.Decision = decision
-			requeueSkipped()
+		r.drainModelQueue(queue, model, reason)
+	}
+}
 
-			releaseReservation := func() {
-				provider.RemovePending(req.Pending.RequestID)
-				r.SetProviderIdle(provider.ID)
-			}
-			if !req.offerAssignment(provider, releaseReservation) {
-				releaseReservation()
-				continue
-			}
-			if req.beforeAssignmentSend != nil {
-				req.beforeAssignmentSend()
-			}
-			select {
-			case req.ResponseCh <- provider:
-				// The reservation remains scheduler-owned until the waiter
-				// acknowledges it in WaitForProviderContext. Cancellation after
-				// this buffered send rejects the published assignment and runs
-				// releaseReservation exactly once.
-			case <-req.Done():
-				req.rejectAssignment()
-				continue
+// drainModelQueue runs the drain pass for one model under the per-model claim
+// (queue_drain_coalesce.go): a trigger that finds a pass in flight hands its
+// reason to that pass and returns, and the pass reruns once for it after
+// requeueing. A pass that does not complete releases the claim on the way out
+// so a recovered panic cannot leave the model undrainable.
+func (r *Registry) drainModelQueue(queue *RequestQueue, model, reason string) {
+	if !r.drainPasses.begin(model, reason) {
+		return
+	}
+	released := false
+	defer func() {
+		if !released {
+			r.drainPasses.abandon(model)
+		}
+	}()
+	for {
+		r.drainModelQueuePass(queue, model, reason)
+		next, again := r.drainPasses.end(model)
+		if !again {
+			released = true
+			return
+		}
+		reason = next
+	}
+}
+
+// drainModelQueuePass pops every fresh queued request for model once and
+// either assigns it, fails it deterministically, or requeues it in order.
+// Fleet state is read live per scan; verdicts are reused within the pass only
+// through the dominance skip, whose records this pass owns.
+func (r *Registry) drainModelQueuePass(queue *RequestQueue, model, reason string) {
+	var skipped []*QueuedRequest
+	// rejected anchors the per-pass dominance skip (queue_drain_dominance.go)
+	// and deliberately survives requeueSkipped: an admission only removes
+	// capacity, so this pass's verdicts stay valid for the requeued waiters
+	// the next PopNextFresh hands back.
+	var rejected []drainRejectionRecord
+	admitted := 0
+	saturated := false
+	requeueSkipped := func() {
+		for i := len(skipped) - 1; i >= 0; i-- {
+			queue.RequeueFront(skipped[i])
+		}
+		skipped = nil
+	}
+	for {
+		if r.drainBeforePop != nil {
+			r.drainBeforePop(model)
+		}
+		req := queue.PopNextFresh(model)
+		if req == nil {
+			requeueSkipped()
+			break
+		}
+		if req.Pending == nil {
+			req.Pending = &PendingRequest{
+				RequestID:          req.RequestID,
+				Model:              model,
+				RequestedMaxTokens: defaultRequestedMaxTokens,
 			}
 		}
+		// Queue time spends the same absolute first-content clock as
+		// parsing, admission, and provider dispatch. Refresh immediately
+		// before reservation so hard TTFT admission never reuses the
+		// enqueue-time ceiling.
+		if !req.Pending.RefreshFirstContentBudget(time.Now()) {
+			req.failWithReason(ErrQueueFirstContentDeadline)
+			continue
+		}
+		// A waiter at least as demanding as one this pass already rejected
+		// purely on capacity/TTFT gets the same verdict from the same fleet
+		// state; requeue it without paying for another full fleet scan.
+		if drainDominated(req.Pending, rejected) {
+			saturated = true
+			skipped = append(skipped, req)
+			continue
+		}
+		provider, decision := r.ReserveProviderEx(model, req.Pending)
+		// Queue context for the routing record: where the request sat at
+		// enqueue and which event ran the drain that produced this decision.
+		decision.QueuePosition = req.EnqueuePosition
+		decision.QueueDepth = req.DepthAtEnqueue
+		decision.DrainTrigger = reason
+		if provider == nil {
+			if req.Pending.Traits.RequiresToolConstraint &&
+				!r.hasToolConstraintProviderForPending(model, req.Pending) {
+				req.DrainTrigger = reason
+				req.Decision = decision
+				req.failWithReason(ErrQueueToolConstraintUnavailable)
+				continue
+			}
+			// A pure-TTFT rejection (hard-reject mode, no capacity-rejected
+			// provider that could free up) is deterministic for this pass:
+			// requeueing would only make the waiter hang until maxWait for
+			// the same answer. Fail it now; the API waiter turns
+			// ErrQueueTTFTTooSlow into the standard ttft_too_slow 429 using
+			// the decision's BestTTFTMs for Retry-After.
+			if drainRejectionTTFTTerminal(req.Pending, decision) {
+				req.DrainTrigger = reason
+				req.Decision = decision
+				req.failWithReason(ErrQueueTTFTTooSlow)
+				continue
+			}
+			if rec, ok := drainRejectionRecordFor(req.Pending, decision); ok {
+				rejected = append(rejected, rec)
+			}
+			saturated = saturated || drainPureCapacityRejection(decision)
+			skipped = append(skipped, req)
+			continue
+		}
+		admitted++
+		req.DrainTrigger = reason
+		req.Decision = decision
+		requeueSkipped()
+
+		releaseReservation := func() {
+			provider.RemovePending(req.Pending.RequestID)
+			r.SetProviderIdle(provider.ID)
+		}
+		if !req.offerAssignment(provider, releaseReservation) {
+			releaseReservation()
+			continue
+		}
+		if req.beforeAssignmentSend != nil {
+			req.beforeAssignmentSend()
+		}
+		select {
+		case req.ResponseCh <- provider:
+			// The reservation remains scheduler-owned until the waiter
+			// acknowledges it in WaitForProviderContext. Cancellation after
+			// this buffered send rejects the published assignment and runs
+			// releaseReservation exactly once.
+		case <-req.Done():
+			req.rejectAssignment()
+			continue
+		}
+	}
+	// Heartbeat-triggered passes are suppressed for a short window after
+	// a saturated pass (queue_drain_suppress.go); an admission proves
+	// capacity moved and lifts the mark.
+	switch {
+	case admitted > 0:
+		r.drainSuppress.clear(model)
+	case saturated:
+		r.drainSuppress.markSaturated(model)
 	}
 }

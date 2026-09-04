@@ -85,28 +85,17 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
 ///
 /// Returns true if RDMA is disabled (safe) or if rdma_ctl is not
 /// available (older macOS without RDMA support).
-public func checkRDMADisabled() -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/rdma_ctl")
-    process.arguments = ["status"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
+public func checkRDMADisabled(runner: SecurityCommandRunner = .live) -> Bool {
+    let result: SecurityCommandResult
     do {
-        try process.run()
+        result = try runner.run("/usr/bin/rdma_ctl", ["status"])
     } catch {
         // rdma_ctl not found means RDMA is not supported on this Mac
         // (pre-macOS 26.2 or hardware without Thunderbolt 5 RDMA support).
         logger.debug("RDMA check: rdma_ctl not available, assuming safe")
         return true
     }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-    let disabled = output.trimmingCharacters(in: .whitespacesAndNewlines) == "disabled"
+    let disabled = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "disabled"
 
     if disabled {
         logger.debug("RDMA check: RDMA is disabled")
@@ -382,24 +371,11 @@ public func computeResponseAttestation(
 /// This is the cryptographic hash of the sealed system volume. It proves
 /// the system volume is Apple's original, unmodified volume. The hash
 /// is embedded in the APFS snapshot name.
-public func systemVolumeHash() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-    process.arguments = ["info", "/"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    do {
-        try process.run()
-    } catch {
+public func systemVolumeHash(runner: SecurityCommandRunner = .live) -> String? {
+    guard let result = try? runner.run("/usr/sbin/diskutil", ["info", "/"]) else {
         return nil
     }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+    let output = result.stdout
 
     // Extract hash from snapshot name: com.apple.os.update-<HASH>
     for line in output.components(separatedBy: "\n") {

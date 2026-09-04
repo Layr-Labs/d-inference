@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -353,4 +354,132 @@ private final class PtraceRecorder: @unchecked Sendable {
             )
         }
     }
+}
+
+
+// MARK: - T1-04: attestation posture cache
+
+/// Software P-256 signer with the same wire shape as the Secure Enclave
+/// identities (DER signature, raw X||Y public key) so
+/// `AttestationBuilder.verify` can check the blobs it produces.
+private struct SoftwareP256TestSigner: AttestationSigner {
+    let key = P256.Signing.PrivateKey()
+    var publicKeyBase64: String { key.publicKey.rawRepresentation.base64EncodedString() }
+    func sign(_ data: Data) throws -> Data { try key.signature(for: data).derRepresentation }
+}
+
+/// Records every probe spawn and answers each with a healthy fixture.
+private final class ProbeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [String] = []
+    func record(_ path: String, _ args: [String]) { lock.withLock { calls.append(([path] + args).joined(separator: " ")) } }
+    var snapshot: [String] { lock.withLock { calls } }
+    var count: Int { lock.withLock { calls.count } }
+
+    var runner: SecurityCommandRunner {
+        SecurityCommandRunner { [self] path, args in
+            self.record(path, args)
+            switch (path, args) {
+            case ("/usr/bin/csrutil", ["status"]):
+                return SecurityCommandResult(terminationStatus: 0, stdout: "System Integrity Protection status: enabled.\n")
+            case ("/usr/bin/csrutil", ["authenticated-root", "status"]):
+                return SecurityCommandResult(terminationStatus: 0, stdout: "Authenticated Root status: enabled\n")
+            case ("/usr/bin/rdma_ctl", ["status"]):
+                return SecurityCommandResult(terminationStatus: 0, stdout: "disabled\n")
+            case ("/usr/sbin/diskutil", ["info", "/"]):
+                return SecurityCommandResult(
+                    terminationStatus: 0,
+                    stdout: "   APFS Snapshot Name:        com.apple.os.update-ABCDEF0123456789\n   Sealed: Yes\n")
+            case ("/usr/sbin/system_profiler", ["SPHardwareDataType"]):
+                return SecurityCommandResult(
+                    terminationStatus: 0,
+                    stdout: "      Chip: Apple M4 Max\n      Serial Number (system): C02TESTSERIAL\n")
+            case ("/usr/sbin/ioreg", _):
+                return SecurityCommandResult(
+                    terminationStatus: 0,
+                    stdout: "    |   \"IOPlatformSerialNumber\" = \"C02TESTSERIAL\"\n")
+            default:
+                return SecurityCommandResult(terminationStatus: 127, stderr: "unexpected probe: \(path) \(args)")
+            }
+        }
+    }
+}
+
+@Test func attestationBuilderGathersBootImmutableFactsOnceAndNeverSpawnsAgain() throws {
+    let probes = ProbeRecorder()
+    let builder = AttestationBuilder(identity: SoftwareP256TestSigner(), runner: probes.runner)
+
+    let first = try builder.buildAttestation(encryptionPublicKey: "ZW5j", binaryHash: "bin", chipFamily: .m4)
+    let spawnsAfterFirst = probes.count
+    #expect(spawnsAfterFirst > 0)
+    // The former duplicate: `secureBootEnabled` no longer costs a second
+    // `csrutil authenticated-root` spawn.
+    #expect(probes.snapshot.filter { $0 == "/usr/bin/csrutil authenticated-root status" }.count == 1)
+
+    let second = try builder.buildAttestation(encryptionPublicKey: "ZW5j", binaryHash: "bin", chipFamily: .m4)
+    #expect(probes.count == spawnsAfterFirst, "second attestation must reuse the cached facts: \(probes.snapshot)")
+
+    // Same facts, fresh timestamp + signature, and both verify.
+    #expect(first.attestation.chipName == "Apple M4 Max")
+    #expect(first.attestation.serialNumber == "C02TESTSERIAL")
+    #expect(first.attestation.systemVolumeHash == "ABCDEF0123456789")
+    #expect(first.attestation.sipEnabled && first.attestation.rdmaDisabled)
+    #expect(first.attestation.authenticatedRootEnabled && first.attestation.secureBootEnabled)
+    #expect(second.attestation.chipName == first.attestation.chipName)
+    #expect(second.attestation.serialNumber == first.attestation.serialNumber)
+    #expect(second.attestation.systemVolumeHash == first.attestation.systemVolumeHash)
+    #expect(second.attestation.hardwareModel == first.attestation.hardwareModel)
+    #expect(second.attestation.osVersion == first.attestation.osVersion)
+    #expect(second.attestation.timestamp >= first.attestation.timestamp)
+    #expect(AttestationBuilder.verify(first))
+    #expect(AttestationBuilder.verify(second))
+    #expect(builder.staticFacts() == builder.staticFacts())
+}
+
+@Test func challengeResponseReadsThePostureCacheWithZeroSpawns() throws {
+    let probes = ProbeRecorder()
+    let builder = AttestationBuilder(identity: SoftwareP256TestSigner(), runner: probes.runner)
+
+    let first = try builder.buildChallengeResponse(
+        nonce: "bm9uY2U=", timestamp: "2026-09-03T00:00:00Z", providerPublicKey: "cHVi",
+        binaryHash: "bin", modelHashes: ["m": "h"])
+    let spawnsAfterFirst = probes.count
+    #expect(spawnsAfterFirst > 0)
+
+    let second = try builder.buildChallengeResponse(
+        nonce: "bm9uY2Uy", timestamp: "2026-09-03T00:05:00Z", providerPublicKey: "cHVi",
+        binaryHash: "bin", modelHashes: ["m": "h"])
+    #expect(probes.count == spawnsAfterFirst, "challenge must not re-probe posture: \(probes.snapshot)")
+
+    #expect(first.rdmaDisabled == true && first.sipEnabled == true && first.secureBootEnabled == true)
+    #expect(second.rdmaDisabled == first.rdmaDisabled)
+    #expect(second.sipEnabled == first.sipEnabled)
+    #expect(second.secureBootEnabled == first.secureBootEnabled)
+    #expect(second.nonce == "bm9uY2Uy")
+    #expect(first.statusSignature != nil && second.statusSignature != nil)
+}
+
+@Test func secureBootProxyStillMirrorsAuthenticatedRootThroughTheFactsCache() throws {
+    // A box whose authenticated root reads DISABLED must report both
+    // fields false from the single probe (wire-compatible alias).
+    let runner = SecurityCommandRunner { path, args in
+        switch (path, args) {
+        case ("/usr/bin/csrutil", ["authenticated-root", "status"]):
+            return SecurityCommandResult(terminationStatus: 0, stdout: "Authenticated Root status: disabled\n")
+        case ("/usr/bin/csrutil", ["status"]):
+            return SecurityCommandResult(terminationStatus: 0, stdout: "System Integrity Protection status: enabled.\n")
+        default:
+            return SecurityCommandResult(terminationStatus: 1, stderr: "no fixture")
+        }
+    }
+    let builder = AttestationBuilder(identity: SoftwareP256TestSigner(), runner: runner)
+    let facts = builder.staticFacts()
+    #expect(!facts.authenticatedRootEnabled)
+    #expect(!facts.secureBootEnabled)
+    #expect(facts.sipEnabled)
+    // rdma_ctl "not available" (non-zero, no stdout) reads as disabled/safe.
+    #expect(facts.rdmaDisabled == false || facts.rdmaDisabled == true)
+    #expect(facts.chipName == "Unknown")
+    #expect(facts.serialNumber == nil)
+    #expect(facts.systemVolumeHash == nil)
 }

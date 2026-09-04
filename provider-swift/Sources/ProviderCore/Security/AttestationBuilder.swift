@@ -161,9 +161,38 @@ public enum StatusCanonical {
 ///   4. Serialize to JSON and include in the Register message
 public final class AttestationBuilder: @unchecked Sendable {
     private let identity: any AttestationSigner
+    private let runner: SecurityCommandRunner
+    private let factsLock = NSLock()
+    private var cachedFacts: StaticAttestationFacts?
 
-    public init(identity: any AttestationSigner) {
+    /// - Parameter runner: the command runner behind every posture probe
+    ///   (`csrutil`, `rdma_ctl`, `diskutil`, `system_profiler`, `ioreg`) —
+    ///   injectable so tests can count spawns exactly; `.live` in production.
+    public init(identity: any AttestationSigner, runner: SecurityCommandRunner = .live) {
         self.identity = identity
+        self.runner = runner
+    }
+
+    /// The boot-immutable posture facts, gathered ONCE per process on first
+    /// use and reused by every registration attestation and challenge
+    /// response after that. Every field can only change across a reboot
+    /// (SIP / authenticated-root / RDMA flip in Recovery; the sealed system
+    /// volume, serial, chip and model never) — and a reboot restarts the
+    /// daemon, so a process-lifetime cache is exactly as fresh as a per-call
+    /// probe. Per-call probing cost ≈0.4–0.56 s of `Process.run()` +
+    /// `waitUntilExit` on every (re)connect (including a duplicate
+    /// `csrutil authenticated-root` spawn) and ≈0.1 s inline on the serial
+    /// event loop for every 5-minute challenge. Only timestamp, encryption
+    /// key and signature must be fresh, and they still are.
+    public func staticFacts() -> StaticAttestationFacts {
+        factsLock.lock()
+        defer { factsLock.unlock() }
+        if let cachedFacts { return cachedFacts }
+        // Gathered under the lock: a concurrent first caller waits rather
+        // than spawning the probes a second time.
+        let facts = StaticAttestationFacts.gather(runner: runner)
+        cachedFacts = facts
+        return facts
     }
 
     /// Build an attestation blob from the current system state and sign it.
@@ -184,25 +213,26 @@ public final class AttestationBuilder: @unchecked Sendable {
         runtimeCapabilities: Set<ProviderRuntimeCapability> = [],
         metallibHash: String? = nil
     ) throws -> SignedAttestation {
+        let facts = staticFacts()
         let blob = AttestationBlob(
-            authenticatedRootEnabled: checkAuthenticatedRootEnabled(),
+            authenticatedRootEnabled: facts.authenticatedRootEnabled,
             binaryHash: binaryHash,
             chipFamily: chipFamily?.rawValue,
-            chipName: detectChipName(),
+            chipName: facts.chipName,
             encryptionPublicKey: encryptionPublicKey,
-            hardwareModel: detectHardwareModel(),
+            hardwareModel: facts.hardwareModel,
             metallibHash: metallibHash,
-            osVersion: detectOSVersion(),
+            osVersion: facts.osVersion,
             publicKey: identity.publicKeyBase64,
-            rdmaDisabled: checkRDMADisabled(),
+            rdmaDisabled: facts.rdmaDisabled,
             runtimeCapabilities: runtimeCapabilities.isEmpty
                 ? nil
                 : runtimeCapabilities.sorted(),
-            secureBootEnabled: checkSecureBootEnabled(),
-            secureEnclaveAvailable: SecureEnclave.isAvailable,
-            serialNumber: detectSerialNumber(),
-            sipEnabled: checkSIPEnabled(),
-            systemVolumeHash: systemVolumeHash(),
+            secureBootEnabled: facts.secureBootEnabled,
+            secureEnclaveAvailable: facts.secureEnclaveAvailable,
+            serialNumber: facts.serialNumber,
+            sipEnabled: facts.sipEnabled,
+            systemVolumeHash: facts.systemVolumeHash,
             timestamp: Date()
         )
 
@@ -306,9 +336,14 @@ extension AttestationBuilder {
     ) throws -> ProviderMessage.AttestationResponse {
         let signature = try signChallenge(nonce: nonce, timestamp: timestamp)
 
-        let rdmaDisabled = checkRDMADisabled()
-        let sipEnabled = checkSIPEnabled()
-        let secureBootEnabled = checkSecureBootEnabled()
+        // Boot-immutable posture from the process-lifetime cache: zero
+        // spawns per challenge after the first (was rdma_ctl + csrutil
+        // status + csrutil authenticated-root, ≈0.1 s, every 5 minutes and
+        // immediately after every register).
+        let facts = staticFacts()
+        let rdmaDisabled = facts.rdmaDisabled
+        let sipEnabled = facts.sipEnabled
+        let secureBootEnabled = facts.secureBootEnabled
         let statusData = try StatusCanonical.build(StatusCanonicalInput(
             nonce: nonce,
             timestamp: timestamp,
@@ -342,6 +377,72 @@ extension AttestationBuilder {
     }
 }
 
+// MARK: - Static facts
+
+/// Boot-immutable posture and hardware identity, gathered once per process
+/// (see `AttestationBuilder.staticFacts`).
+public struct StaticAttestationFacts: Sendable, Equatable {
+    public let authenticatedRootEnabled: Bool
+    public let chipName: String
+    public let hardwareModel: String
+    public let osVersion: String
+    public let rdmaDisabled: Bool
+    public let serialNumber: String?
+    public let sipEnabled: Bool
+    public let systemVolumeHash: String?
+    public let secureEnclaveAvailable: Bool
+
+    /// Historical Authenticated Root proxy retained for wire compatibility
+    /// (`checkSecureBootEnabled` IS `checkAuthenticatedRootEnabled`): one
+    /// `csrutil authenticated-root` probe feeds both fields instead of the
+    /// former two spawns per attestation.
+    public var secureBootEnabled: Bool { authenticatedRootEnabled }
+
+    public init(
+        authenticatedRootEnabled: Bool,
+        chipName: String,
+        hardwareModel: String,
+        osVersion: String,
+        rdmaDisabled: Bool,
+        serialNumber: String?,
+        sipEnabled: Bool,
+        systemVolumeHash: String?,
+        secureEnclaveAvailable: Bool
+    ) {
+        self.authenticatedRootEnabled = authenticatedRootEnabled
+        self.chipName = chipName
+        self.hardwareModel = hardwareModel
+        self.osVersion = osVersion
+        self.rdmaDisabled = rdmaDisabled
+        self.serialNumber = serialNumber
+        self.sipEnabled = sipEnabled
+        self.systemVolumeHash = systemVolumeHash
+        self.secureEnclaveAvailable = secureEnclaveAvailable
+    }
+
+    /// Probe every fact once through `runner`.
+    static func gather(runner: SecurityCommandRunner) -> StaticAttestationFacts {
+        StaticAttestationFacts(
+            authenticatedRootEnabled: checkAuthenticatedRootEnabled(runner: runner),
+            chipName: detectChipName(runner: runner),
+            hardwareModel: detectHardwareModel(),
+            osVersion: detectOSVersion(),
+            rdmaDisabled: checkRDMADisabled(runner: runner),
+            serialNumber: detectSerialNumber(runner: runner),
+            sipEnabled: checkSIPEnabled(runner: runner),
+            // Via a file-scope helper: the struct's own `systemVolumeHash`
+            // member shadows the free function inside this scope.
+            systemVolumeHash: probeSystemVolumeHash(runner: runner),
+            secureEnclaveAvailable: SecureEnclave.isAvailable)
+    }
+}
+
+/// File-scope forwarder so `StaticAttestationFacts.gather` can reach the
+/// free function its own `systemVolumeHash` member would otherwise shadow.
+private func probeSystemVolumeHash(runner: SecurityCommandRunner) -> String? {
+    systemVolumeHash(runner: runner)
+}
+
 // MARK: - System Info Helpers
 
 /// Get the machine model identifier (e.g., "Mac16,1") via sysctl.
@@ -358,20 +459,11 @@ private func detectHardwareModel() -> String {
 ///
 /// Parses the "Chip:" line from SPHardwareDataType output. Returns "Unknown"
 /// if the chip name cannot be determined.
-private func detectChipName() -> String {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return "Unknown" }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
+private func detectChipName(runner: SecurityCommandRunner = .live) -> String {
+    guard let result = try? runner.run("/usr/sbin/system_profiler", ["SPHardwareDataType"]) else {
+        return "Unknown"
+    }
+    let output = result.stdout
 
     for line in output.components(separatedBy: "\n") {
         if line.contains("Chip:") {
@@ -392,46 +484,23 @@ private func detectOSVersion() -> String {
 ///
 /// The coordinator uses this to look up the device in MicroMDM and
 /// independently verify its security posture via MDM SecurityInfo.
-private func detectSerialNumber() -> String? {
-    if let serial = detectSerialNumberFromIOReg() {
+private func detectSerialNumber(runner: SecurityCommandRunner = .live) -> String? {
+    if let serial = detectSerialNumberFromIOReg(runner: runner) {
         return serial
     }
-    return detectSerialNumberFromSystemProfiler()
+    return detectSerialNumberFromSystemProfiler(runner: runner)
 }
 
-private func detectSerialNumberFromIOReg() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
-    process.arguments = ["-c", "IOPlatformExpertDevice", "-d", "2"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-    return parseSerialNumberFromIOReg(output)
+private func detectSerialNumberFromIOReg(runner: SecurityCommandRunner) -> String? {
+    guard let result = try? runner.run("/usr/sbin/ioreg", ["-c", "IOPlatformExpertDevice", "-d", "2"])
+    else { return nil }
+    return parseSerialNumberFromIOReg(result.stdout)
 }
 
-private func detectSerialNumberFromSystemProfiler() -> String? {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
-    process.arguments = ["SPHardwareDataType"]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = Pipe()
-
-    guard let _ = try? process.run() else { return nil }
-    process.waitUntilExit()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-
-    return parseSerialNumberFromSystemProfiler(output)
+private func detectSerialNumberFromSystemProfiler(runner: SecurityCommandRunner) -> String? {
+    guard let result = try? runner.run("/usr/sbin/system_profiler", ["SPHardwareDataType"])
+    else { return nil }
+    return parseSerialNumberFromSystemProfiler(result.stdout)
 }
 
 func parseSerialNumberFromIOReg(_ output: String) -> String? {

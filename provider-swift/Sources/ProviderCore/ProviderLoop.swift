@@ -594,7 +594,8 @@ public actor ProviderLoop {
         purgeLegacyFiles: Bool,
         attestationSigner: (any AttestationSigner)?,
         preloadTaskStarted: (@Sendable (String) -> Void)? = nil,
-        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil,
+        securityCommandRunner: SecurityCommandRunner = .live
     ) throws {
         self.loopConfig = config
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -632,7 +633,9 @@ public actor ProviderLoop {
         }
         self.keyPair = NodeKeyPair.generate()
         self.signer = attestationSigner
-        self.attestationBuilder = signer.map { AttestationBuilder(identity: $0) }
+        self.attestationBuilder = signer.map {
+            AttestationBuilder(identity: $0, runner: securityCommandRunner)
+        }
         self.stats = AtomicProviderStats()
         self.state = ProviderState()
         self.cancellationRegistry = InferenceCancellationRegistry()

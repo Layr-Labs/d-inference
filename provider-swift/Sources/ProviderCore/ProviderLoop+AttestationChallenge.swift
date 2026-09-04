@@ -26,57 +26,72 @@ extension ProviderLoop {
             return
         }
 
-        do {
-            let activeModelHash: String?
-            if let modelId = state.currentModel {
-                activeModelHash = liveModelHashes[modelId]
-            } else {
-                activeModelHash = nil
+        // Snapshot every piece of actor state the response binds, ON the
+        // actor and synchronously (no suspension between the reads), then
+        // build + sign + send OFF the actor. The serial event loop awaits
+        // this handler inline, so before T1-04 the posture probes (three
+        // process spawns, ≈0.1 s) and two Secure Enclave signs held the
+        // loop executor on every challenge — every 5 minutes and immediately
+        // after every (re)register, exactly when a post-reconnect load is
+        // likely. Responses are nonce-keyed on the coordinator, so their
+        // order relative to later events is irrelevant.
+        let activeModelHash: String?
+        if let modelId = state.currentModel {
+            activeModelHash = liveModelHashes[modelId]
+        } else {
+            activeModelHash = nil
+        }
+
+        // Report hashes ONLY for models we are CURRENTLY SERVING (a live
+        // slot this session), never for every advertised model. Registration
+        // still advertises all models' startup hashes (the coordinator's
+        // catalog routing filter needs them, and a stale IDLE model there
+        // degrades to a gentle silent deroute). But the challenge response
+        // feeds the coordinator's model-swap *hard-untrust* check: reporting
+        // a hash for an idle, unloaded model would hard-untrust this provider
+        // the moment that model's catalog hash changes (e.g. a re-publish)
+        // before we re-download it — even though we never served stale
+        // weights. A model that has been idle-unloaded drops out
+        // automatically here because it no longer has a slot.
+        let loadedModelHashes = loadedModelHashesSnapshot()
+        let providerPublicKey = keyPair.publicKeyBase64
+        let signedBinaryHash = binaryHash
+        let runtimeHashes = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
+        let log = logger
+
+        Task.detached {
+            do {
+                let response = try builder.buildChallengeResponse(
+                    nonce: nonce,
+                    timestamp: timestamp,
+                    providerPublicKey: providerPublicKey,
+                    binaryHash: signedBinaryHash,
+                    activeModelHash: activeModelHash,
+                    runtimeHashes: runtimeHashes,
+                    modelHashes: loadedModelHashes
+                )
+
+                send.send(.attestationResponse(AttestationResponsePayload(
+                    nonce: response.nonce,
+                    signature: response.signature,
+                    statusSignature: response.statusSignature,
+                    publicKey: response.publicKey,
+                    rdmaDisabled: response.rdmaDisabled,
+                    sipEnabled: response.sipEnabled,
+                    secureBootEnabled: response.secureBootEnabled,
+                    binaryHash: response.binaryHash,
+                    activeModelHash: response.activeModelHash,
+                    pythonHash: response.pythonHash,
+                    runtimeHash: response.runtimeHash,
+                    templateHashes: response.templateHashes,
+                    modelHashes: response.modelHashes
+                )))
+
+                log.info(.attestationResponseSent)
+            } catch {
+                log.error(.attestationSigningFailed)
+                log.error("Failed to sign attestation challenge: \(error)")
             }
-
-            // Report hashes ONLY for models we are CURRENTLY SERVING (a live
-            // slot this session), never for every advertised model. Registration
-            // still advertises all models' startup hashes (the coordinator's
-            // catalog routing filter needs them, and a stale IDLE model there
-            // degrades to a gentle silent deroute). But the challenge response
-            // feeds the coordinator's model-swap *hard-untrust* check: reporting
-            // a hash for an idle, unloaded model would hard-untrust this provider
-            // the moment that model's catalog hash changes (e.g. a re-publish)
-            // before we re-download it — even though we never served stale
-            // weights. A model that has been idle-unloaded drops out
-            // automatically here because it no longer has a slot.
-            let loadedModelHashes = loadedModelHashesSnapshot()
-
-            let response = try builder.buildChallengeResponse(
-                nonce: nonce,
-                timestamp: timestamp,
-                providerPublicKey: keyPair.publicKeyBase64,
-                binaryHash: binaryHash,
-                activeModelHash: activeModelHash,
-                runtimeHashes: augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes),
-                modelHashes: loadedModelHashes
-            )
-
-            send.send(.attestationResponse(AttestationResponsePayload(
-                nonce: response.nonce,
-                signature: response.signature,
-                statusSignature: response.statusSignature,
-                publicKey: response.publicKey,
-                rdmaDisabled: response.rdmaDisabled,
-                sipEnabled: response.sipEnabled,
-                secureBootEnabled: response.secureBootEnabled,
-                binaryHash: response.binaryHash,
-                activeModelHash: response.activeModelHash,
-                pythonHash: response.pythonHash,
-                runtimeHash: response.runtimeHash,
-                templateHashes: response.templateHashes,
-                modelHashes: response.modelHashes
-            )))
-
-            logger.info(.attestationResponseSent)
-        } catch {
-            logger.error(.attestationSigningFailed)
-            logger.error("Failed to sign attestation challenge: \(error)")
         }
     }
 

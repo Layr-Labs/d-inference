@@ -4547,7 +4547,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	var endpointBody, inferenceBody []byte
 	var loweringErr error
-	routingTraits := routingTraitsForModel(model)
+	// Populated by refreshGenericBody(model) below (and on every model
+	// fallback); an eager routingTraitsForModel(model) here lowered the body
+	// once more only to be overwritten before anything read it.
+	var routingTraits registry.RequestTraits
 	refreshGenericBody := func(newModel string) bool {
 		var runtimeParameters map[string]any
 		if rec, err := s.store.GetModelRegistryRecord(newModel); err == nil {

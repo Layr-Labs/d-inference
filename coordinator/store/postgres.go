@@ -894,7 +894,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_created ON inference_routes(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_provider ON inference_routes(provider_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inference_routes_model ON inference_routes(model, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_inference_routes_request ON inference_routes(request_id)`,
+		// idx_inference_routes_request(request_id) is no longer created: it
+		// was a strict prefix of the unique (request_id, attempt) index below
+		// and is dropped by dropRedundantRouteIndex after this loop.
 		`DO $$
 		BEGIN
 			IF NOT EXISTS (
@@ -1205,6 +1207,41 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	// startup never runs a long, lock-holding data migration on this hot table.
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
+	}
+	if err := s.dropRedundantRouteIndex(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// dropRedundantRouteIndex removes idx_inference_routes_request(request_id).
+// inference_routes carries UNIQUE(request_id, attempt) plus the explicit
+// idx_inference_routes_request_attempt_unique, and a request_id-only lookup
+// is served by their prefix, so the single-column index was a fifth index
+// maintained on every route insert/upsert for no query. It is dropped
+// CONCURRENTLY on a dedicated connection via the simple query protocol (like
+// CREATE INDEX CONCURRENTLY it cannot run inside the extended protocol's
+// implicit transaction) so the hottest telemetry table is never taken under
+// ACCESS EXCLUSIVE at boot; every boot after the first finds nothing to do.
+func (s *PostgresStore) dropRedundantRouteIndex(ctx context.Context) error {
+	const idxName = "idx_inference_routes_request"
+	var present bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')`, idxName,
+	).Scan(&present); err != nil {
+		return fmt.Errorf("store: check %s: %w", idxName, err)
+	}
+	if !present {
+		return nil
+	}
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn to drop %s: %w", idxName, err)
+	}
+	defer conn.Release()
+	mrr := conn.Conn().PgConn().Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+idxName)
+	if _, err := mrr.ReadAll(); err != nil {
+		return fmt.Errorf("store: drop %s concurrently: %w", idxName, err)
 	}
 	return nil
 }

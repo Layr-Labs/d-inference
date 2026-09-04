@@ -233,32 +233,33 @@ moment a request is enqueued.
 `warmPoolController` (`coordinator/registry/warm_pool_controller.go`) runs
 every `Interval` and, per model, decides how many providers *should* be warm
 and which cold providers to load. Configuration is read once in `ReadConfig`
-(`coordinator/registry/config.go`):
+(`coordinator/registry/config.go`); the type and default of every knob is in
+[configuration.md → Warm pool](../reference/configuration.md#warm-pool):
 
-| Field | Default | Environment variable |
-|---|---|---|
-| `Enabled` | `true` | `EIGENINFERENCE_WARM_POOL_ENABLED` |
-| `ObserveOnly` | `false` | `EIGENINFERENCE_WARM_POOL_OBSERVE_ONLY` |
-| `Interval` | `10*time.Second` | `EIGENINFERENCE_WARM_POOL_INTERVAL` |
-| `MinDwell` | `5*time.Minute` | `EIGENINFERENCE_WARM_POOL_MIN_DWELL` |
-| `QueueAgeThreshold` | `0` | `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` |
-| `CapacityRejectThreshold` | `1` | `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` |
-| `WarmSaturationThreshold` | `0.8` | `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` |
-| `TTFTMissThreshold` | `1` | `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` |
-| `SpeculativeStartThreshold` | `2` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` |
-| `SpeculativeWinThreshold` | `1` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` |
-| `ColdDispatchThreshold` | `1` | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` |
-| `LoadDurationThreshold` | `20*time.Second` | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` |
-| `DecodeFloorTPS` | `15` | `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` |
-| `BurstBuffer` | `1` | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` |
-| `FallbackQualityConcurrency` | `4` | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` |
-| `AssumedPromptTokens` | `512` | `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` |
-| `AssumedCompletionTokens` | `256` | `EIGENINFERENCE_WARM_POOL_ASSUMED_COMPLETION_TOKENS` |
-| `MinWarmByModel` | empty | `EIGENINFERENCE_WARM_POOL_MIN_WARM` (`model=n,...`) |
-| `MaxLoadsPerTick` | `4` | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` |
-| `MaxLoadsPerTickCeiling` | `16` | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` |
-| `RampGapFraction` | `0.5` | `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` |
-| `MaxGlobalPendingLoads` | `16` | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` |
+| Field | Environment variable |
+|---|---|
+| `Enabled` | `EIGENINFERENCE_WARM_POOL_ENABLED` |
+| `ObserveOnly` | `EIGENINFERENCE_WARM_POOL_OBSERVE_ONLY` |
+| `Interval` | `EIGENINFERENCE_WARM_POOL_INTERVAL` |
+| `MinDwell` | `EIGENINFERENCE_WARM_POOL_MIN_DWELL` |
+| `QueueAgeThreshold` | `EIGENINFERENCE_WARM_POOL_QUEUE_AGE_THRESHOLD` |
+| `CapacityRejectThreshold` | `EIGENINFERENCE_WARM_POOL_CAPACITY_REJECT_THRESHOLD` |
+| `WarmSaturationThreshold` | `EIGENINFERENCE_WARM_POOL_WARM_SATURATION_THRESHOLD` |
+| `TTFTMissThreshold` | `EIGENINFERENCE_WARM_POOL_TTFT_MISS_THRESHOLD` |
+| `SpeculativeStartThreshold` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_START_THRESHOLD` |
+| `SpeculativeWinThreshold` | `EIGENINFERENCE_WARM_POOL_SPECULATIVE_WIN_THRESHOLD` |
+| `ColdDispatchThreshold` | `EIGENINFERENCE_WARM_POOL_COLD_DISPATCH_THRESHOLD` |
+| `LoadDurationThreshold` | `EIGENINFERENCE_WARM_POOL_LOAD_DURATION_THRESHOLD` |
+| `DecodeFloorTPS` | `EIGENINFERENCE_WARM_POOL_DECODE_FLOOR_TPS` |
+| `BurstBuffer` | `EIGENINFERENCE_WARM_POOL_BURST_BUFFER` |
+| `FallbackQualityConcurrency` | `EIGENINFERENCE_WARM_POOL_FALLBACK_QUALITY_CONCURRENCY` |
+| `AssumedPromptTokens` | `EIGENINFERENCE_WARM_POOL_ASSUMED_PROMPT_TOKENS` |
+| `AssumedCompletionTokens` | `EIGENINFERENCE_WARM_POOL_ASSUMED_COMPLETION_TOKENS` |
+| `MinWarmByModel` | `EIGENINFERENCE_WARM_POOL_MIN_WARM` (`model=n,...`) |
+| `MaxLoadsPerTick` | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK` |
+| `MaxLoadsPerTickCeiling` | `EIGENINFERENCE_WARM_POOL_MAX_LOADS_PER_TICK_CEILING` |
+| `RampGapFraction` | `EIGENINFERENCE_WARM_POOL_RAMP_GAP_FRACTION` |
+| `MaxGlobalPendingLoads` | `EIGENINFERENCE_WARM_POOL_MAX_GLOBAL_PENDING_LOADS` |
 
 **Demand pressure** (`hasDemandPressure`). A model is under pressure when,
 within the current pressure window, capacity rejects, TTFT misses, cold

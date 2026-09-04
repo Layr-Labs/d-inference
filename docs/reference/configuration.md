@@ -163,7 +163,11 @@ Quality concurrency cap:
 | `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | integer | `5` | `coordinator/registry/concurrency_cap.go` | Solo samples required before a per-model median is trusted. |
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | `model[@chip-class]=tok/s,…` | unset | `coordinator/registry/concurrency_cap.go` (`soloTPSSeedForClass`) | Cold-start decode-rate seed until solo samples accumulate. |
 
-Warm pool (`coordinator/registry/config.go`, `ReadConfig`, all read once):
+#### Warm pool
+
+All read once in `ReadConfig` (`coordinator/registry/config.go`); the controller
+they tune is explained in
+[scheduling.md → Warm-pool controller](../architecture/scheduling.md#warm-pool-controller):
 
 | Variable | Values / type | Default | Read in | Effect |
 |---|---|---|---|---|

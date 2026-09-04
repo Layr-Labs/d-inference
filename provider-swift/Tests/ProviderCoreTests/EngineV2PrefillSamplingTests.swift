@@ -1405,29 +1405,62 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         await finishHeldRow(row)
     }
 
-    @Test("a running multimodal peer row fails the text arrival open (the engine cannot price its steps)")
-    func multimodalPeerFailsOpen() async throws {
+    @Test("a multimodal peer fails the text arrival open only once it is past its own prefill; in its tower it stays refused")
+    func multimodalPeerFailsOpenOnlyWhenDecoding() async throws {
+        // Review fix (S1 P2): a text row admitted behind an image row that
+        // is still in its vision-tower prefill waits the whole tower run
+        // (seconds) before its own prefill starts — an admit-then-expire the
+        // coordinator ends as `first_chunk_timeout`. Only a DECODING media
+        // peer (cheap interleave, `.unbounded` purely because its steps
+        // cannot be priced) is the wedge posture to fail open on.
         let engine = PrefillScriptEngine()
         let bridge = makeBridge(engine: engine, mode: .enforce)
         _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
         try await recordDecodeRate(bridge: bridge, engine: engine)
-        engine.setDeadlineBehavior(.reject)
+        // The real engine prices a multimodal peer as `.unbounded`.
+        engine.setDeadlineBehavior(.rejectUnbounded)
 
-        // Image request A is active (its own submission fails open — media).
+        // Image request A is active and still in its tower prefill (no
+        // first token yet; its own submission failed open — media).
         let image = await holdOpenRow(
             bridge: bridge, engine: engine, requestId: "image-request",
             multimodal: CBv2MultimodalInput(spans: [], embeddings: { [] }))
         #expect(await bridge._testCounters().active == 1)
+        #expect(await bridge.backendSlotCapacity().telemetry?.partialPrefillRows == 1)
         let ordinaryBefore = engine.ordinarySubmissionCount
 
-        // Text request B with a 9 s deadline: submitted ordinarily, not
-        // refused within ~50 ms on an `.unbounded` verdict.
+        // Text request B with a 9 s deadline behind the tower: PROJECTED
+        // and refused in ~ms, not parked behind the tower run.
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "text-behind-tower",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore)
+
+        // The image row emits its first token: it is decoding now.
+        image.continuation.yield(.delta(text: "i", tokens: [21], logprobs: nil))
+        var decoding = false
+        for _ in 0 ..< 2_000 {
+            if await bridge.backendSlotCapacity().telemetry?.partialPrefillRows == 0 {
+                decoding = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(decoding, "image row never recorded its first token")
+
+        // Text request C: submitted ordinarily (fail open), not refused on
+        // the `.unbounded` verdict the decoding peer would produce.
         let text = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
-            requestId: "text-behind-image",
+            requestId: "text-behind-decoding-image",
             firstContentDeadline: deadline(budgetMilliseconds: 9_000))
-        #expect(engine.deadlineAdmissions.isEmpty)
+        #expect(engine.deadlineAdmissions.count == 1)
         #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
         try await finishLatestSubmission(text, engine: engine)
         await finishHeldRow(image)
@@ -1440,7 +1473,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 requestId: "text-alone",
                 firstContentDeadline: deadline(budgetMilliseconds: 9_000))
         }
-        #expect(engine.deadlineAdmissions.count == 1)
+        #expect(engine.deadlineAdmissions.count == 2)
     }
 
     @Test("a full batch is refused in milliseconds, never parked in the engine queue past its deadline")

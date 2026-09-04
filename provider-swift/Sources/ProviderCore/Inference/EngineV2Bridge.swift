@@ -249,7 +249,9 @@ public actor EngineV2Bridge {
         /// The row carries media blocks. Any such peer makes the engine's
         /// first-token projection `.unbounded` for EVERY later text arrival
         /// (`FirstTokenDeadlineAdmissionV2`: a multimodal peer row cannot be
-        /// priced), so deadline admission fails open while one is active.
+        /// priced), so deadline admission fails open while one is DECODING;
+        /// while one is still in its own (tower) prefill the refusal is
+        /// honest and stands — see `firstTokenDeadlineAdmission`.
         var isMultimodal = false
         /// True only when no other bridge row (prefill or decode) and no other
         /// provider/engine submission existed at this request's exact
@@ -1153,7 +1155,7 @@ public actor EngineV2Bridge {
                 // Projection fails open when mode is off, too few isolated
                 // samples exist, the refusal-driven probe is due, the engine
                 // would price a posture as `.unbounded` (decode rate unmeasured
-                // with rows running, a multimodal peer row), or media makes
+                // with rows running, a decoding multimodal peer), or media makes
                 // token projection incomplete. Absolute expiry does not: it
                 // was checked immediately above. A full batch is refused, not
                 // parked (see `firstTokenDeadlineAdmission`).
@@ -1302,8 +1304,10 @@ public actor EngineV2Bridge {
     /// - a posture the engine would price as `.unbounded` although it is not
     ///   a first-content fact about THIS request: the decode rate is still
     ///   unmeasured while rows are running (their decode phase cannot be
-    ///   priced), or a running row carries media (its steps cannot be
-    ///   priced).
+    ///   priced), or a DECODING row carries media (its steps cannot be
+    ///   priced, yet the interleave is cheap). A media row still in its own
+    ///   prefill is a first-content fact — the tower run precedes this
+    ///   request's prefill — and stays projected (refused).
     ///
     /// A FULL batch is deliberately NOT a fail-open posture. The engine
     /// prices it as a bounded (if huge) projection and refuses in
@@ -1354,7 +1358,23 @@ public actor EngineV2Bridge {
             logDeadlineFailOpen("decode_rate_unmeasured_with_rows")
             return nil
         }
+        // A multimodal peer makes the engine's projection `.unbounded`
+        // whatever phase it is in, but only a peer still in its own prefill
+        // (the vision tower runs one image at a time inside the step, so a
+        // text row admitted behind it waits the whole tower run before its
+        // own prefill starts) is genuinely unable to make a 4-9 s budget:
+        // there a fast refusal is honest and reroutes inside the budget.
+        // Once every media peer is DECODING, the interleave is cheap and
+        // the `.unbounded` verdict would wedge text traffic for the length
+        // of the peer's completion — that is the posture to fail open on.
         if active.values.contains(where: { $0.isMultimodal }) {
+            guard !active.values.contains(where: { $0.isMultimodal && $0.firstTokenAt == nil })
+            else {
+                return CBv2FirstTokenDeadlineAdmission(
+                    deadline: deadline.instant,
+                    conservativePrefillTokensPerSecond: prefillRate,
+                    conservativeDecodeTokensPerSecond: decodeRate)
+            }
             logDeadlineFailOpen("multimodal_peer")
             return nil
         }

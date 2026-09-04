@@ -1065,9 +1065,8 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
     }
 
-    // `holdDestructiveEpochForTesting` exists only under `#if DEBUG` in SSDPrefixCache.swift,
-    // so this test must be gated the same way or `swift test -c release` fails to compile.
-    #if DEBUG
+#if DEBUG  // holdDestructiveEpochForTesting is a DEBUG-only SSDPrefixCache hook;
+           // this test runs in debug and is excluded from release --build-tests.
     @Test("capability publication waits for destructive mutation completion")
     func destructiveMutationBracketsCapabilityPublication() async throws {
         let dir = tempDir("epoch-publication-bracket")
@@ -1127,7 +1126,7 @@ struct SSDPrefixCacheLifecycleTests {
         let current = try #require(cache.prefixCacheV2Capability())
         #expect(current.cacheEpoch != original.cacheEpoch)
     }
-    #endif
+#endif  // DEBUG
 
     @Test("reconciliation drops a symlink-replaced indexed file without following it")
     func reconciliationDropsSymlinkReplacement() throws {

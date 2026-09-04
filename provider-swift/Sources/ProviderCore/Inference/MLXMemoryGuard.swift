@@ -26,12 +26,20 @@ import MLX
 /// at least releases its cache before jetsam; the pin is `physical −
 /// reserve`, where the reserve resolves explicit > env
 /// (`DARKBLOOM_MLX_MEMORY_RESERVE_GB`) > cap-derived > the 6 GiB legacy
-/// default. Production passes the cap-derived reserve, so the limit equals
-/// the provider's effective cap (`UnifiedMemoryCap.effectiveCapBytes`) —
-/// looser than the legacy 6 GiB on every box below 60 GB (32 GB: 28 GiB vs
-/// 26; 24 GB: 20 vs 18; 40 GB: 36 vs 34), where the old limit sat inside
-/// sanctioned usage; slightly tighter at ≥ 64 GB (0.9 × physical), where the
-/// provider gate already bounds active below it.
+/// default. Production passes the cap-derived reserve, so the limit is
+/// `max(effective cap, physical − 6 GiB)` — the provider's effective cap
+/// (`UnifiedMemoryCap.effectiveCapBytes`) on every box below 60 GB (32 GB:
+/// 28 GiB vs 26; 24 GB: 20 vs 18; 40 GB: 36 vs 34), where the legacy pin sat
+/// inside sanctioned usage, and NEVER tighter than the legacy pin above it.
+/// The cap-implied reserve (0.1 × physical) exceeds 6 GiB from 60 GB up
+/// (128 GB: 12.8 vs 6; 512 GB: 51 vs 6), and the admission layer bounds
+/// `active + cache + promises` under the cap only at COMMIT time against an
+/// activation reserve that is a MAX over the serving set's per-model floors,
+/// not a sum over concurrently stepping slots — three resident slots each
+/// stepping at B=8 legitimately hold step-time active above the cap. A
+/// threshold below that would put sanctioned usage into the per-primitive
+/// serialization regime; loosening a scheduling threshold is always safe,
+/// tightening it is not.
 public enum MLXMemoryGuard {
     /// Legacy headroom (GB) left below physical RAM when no cap-derived
     /// reserve is supplied (tests, tools that never resolve a cap). Larger
@@ -84,15 +92,22 @@ public enum MLXMemoryGuard {
     /// effective cap — `UnifiedMemoryCap.effectiveCapBytes(physical,
     /// configReserve)` = min(0.9 × physical, physical − memory_reserve_gb),
     /// the SAME figure the shared KV gate, the static budget and the load
-    /// gate enforce. Passing it as `capDerivedReserveBytes` aligns the MLX
-    /// eval threshold with the admission layer (T3-04).
+    /// gate enforce — capped at the legacy `defaultReserveGB` so the limit
+    /// only ever LOOSENS versus the pre-T3-04 pin: `limit = max(effective
+    /// cap, physical − 6 GiB)`. Below 60 GB the cap-implied reserve is the
+    /// smaller one and the limit rises to the cap; from 60 GB up the legacy
+    /// 6 GiB is smaller and the limit stays where it was (see the type doc
+    /// for why a tighter threshold is unsafe on multi-slot boxes). Passing
+    /// it as `capDerivedReserveBytes` aligns the MLX eval threshold with
+    /// the admission layer (T3-04).
     public static func capDerivedReserveBytes(
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         configReserveBytes: UInt64
     ) -> UInt64 {
         let cap = UnifiedMemoryCap.effectiveCapBytes(
             physicalBytes: physicalBytes, configReserveBytes: configReserveBytes)
-        return physicalBytes > cap ? physicalBytes - cap : 0
+        let capImplied = physicalBytes > cap ? physicalBytes - cap : 0
+        return min(capImplied, saturatingGiBToBytes(defaultReserveGB))
     }
 
     /// Reserve in BYTES: explicit (bytes) > env DARKBLOOM_MLX_MEMORY_RESERVE_GB

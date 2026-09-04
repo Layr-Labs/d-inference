@@ -132,10 +132,12 @@ private let gib = 1024 * 1024 * 1024
 // MARK: - Cap alignment (T3-04)
 
 @Test func mlxGuardCapDerivedReserveAlignsTheLimitWithTheEffectiveCap() {
-    // memoryLimit == min(0.9 × physical, physical − memory_reserve_gb) across
-    // the fleet's tiers with the 4 GiB default reserve; the cache limit is
-    // pinned unchanged (the 8 GiB absolute cap binds everywhere ≥ 24 GB).
+    // memoryLimit == max(min(0.9 × physical, physical − memory_reserve_gb),
+    // physical − 6 GiB) across the fleet's tiers with the 4 GiB default
+    // reserve; the cache limit is pinned unchanged (the 8 GiB absolute cap
+    // binds everywhere ≥ 24 GB).
     let configReserve = UInt64(4 * gib)
+    let legacyReserve = Int(MLXMemoryGuard.defaultReserveGB) * gib
     for physGB in [24, 32, 36, 40, 48, 64, 128] {
         let physical = UInt64(physGB * gib)
         let reserve = MLXMemoryGuard.capDerivedReserveBytes(
@@ -143,7 +145,10 @@ private let gib = 1024 * 1024 * 1024
         let limits = MLXMemoryGuard.recommendedLimits(physicalBytes: physical, reserveBytes: reserve)
         let effectiveCap = UnifiedMemoryCap.effectiveCapBytes(
             physicalBytes: physical, configReserveBytes: configReserve)
-        #expect(limits.memoryLimitBytes == Int(effectiveCap), "\(physGB) GB")
+        #expect(
+            limits.memoryLimitBytes == max(Int(effectiveCap), physGB * gib - legacyReserve),
+            "\(physGB) GB")
+        #expect(limits.memoryLimitBytes >= physGB * gib - legacyReserve, "\(physGB) GB never tighter than legacy")
         #expect(limits.cacheLimitBytes == 8 * gib, "\(physGB) GB cache limit must not move")
         #expect(limits.memoryLimitBytes < physGB * gib)
     }
@@ -165,13 +170,43 @@ private let gib = 1024 * 1024 * 1024
         reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
             physicalBytes: UInt64(40 * gib), configReserveBytes: configReserve)
     ).memoryLimitBytes == 36 * gib)  // was 34 GiB
-    // …and 0.9 × physical (tighter than the legacy pin, never binding under
-    // the provider gate) at 64 GB and above.
+    // …and UNCHANGED (physical − 6 GiB) at 64 GB and above, where the
+    // cap-implied reserve (0.1 × physical) exceeds the legacy pin: the
+    // activation reserve is a max over models, not a sum over stepping
+    // slots, so a limit at 0.9 × physical would sit inside sanctioned
+    // multi-slot step-time usage (review fix, S4 P2).
     #expect(MLXMemoryGuard.recommendedLimits(
         physicalBytes: UInt64(64 * gib),
         reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
             physicalBytes: UInt64(64 * gib), configReserveBytes: configReserve)
-    ).memoryLimitBytes == Int(Double(64 * gib) * 0.9))  // 57.6 GiB, was 58
+    ).memoryLimitBytes == 58 * gib)  // was 58; 0.9 × physical would be 57.6
+    #expect(MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(128 * gib),
+        reserveBytes: MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: UInt64(128 * gib), configReserveBytes: configReserve)
+    ).memoryLimitBytes == 122 * gib)  // was 122; 0.9 × physical would be 115.2
+}
+
+@Test func mlxGuardCapDerivedReserveNeverTightensTheLegacyPin() {
+    // Loosen-only across the big-box tiers: the reserve is exactly the
+    // legacy 6 GiB wherever the cap-implied reserve would exceed it, so the
+    // limit equals the pre-T3-04 `physical − 6 GiB` there.
+    let legacyReserve = MLXMemoryGuard.defaultReserveGB * 1_073_741_824
+    for physGB in [60, 64, 96, 128, 192, 512] {
+        let physical = UInt64(physGB * gib)
+        let reserve = MLXMemoryGuard.capDerivedReserveBytes(
+            physicalBytes: physical, configReserveBytes: UInt64(4 * gib))
+        #expect(reserve == legacyReserve, "\(physGB) GB reserve \(reserve)")
+        #expect(
+            MLXMemoryGuard.recommendedLimits(physicalBytes: physical, reserveBytes: reserve)
+                .memoryLimitBytes == physGB * gib - Int(legacyReserve),
+            "\(physGB) GB")
+    }
+    // An operator reserve LARGER than 6 GiB still does not tighten the MLX
+    // threshold: the gate enforces it, the threshold only needs to be no
+    // tighter than sanctioned usage.
+    #expect(MLXMemoryGuard.capDerivedReserveBytes(
+        physicalBytes: UInt64(128 * gib), configReserveBytes: UInt64(20 * gib)) == legacyReserve)
 }
 
 @Test func mlxGuardReservePrecedenceIsExplicitThenEnvThenCapDerivedThenDefault() {
@@ -197,10 +232,15 @@ private let gib = 1024 * 1024 * 1024
 }
 
 @Test func mlxGuardCapDerivedReserveIsPhysicalMinusEffectiveCap() {
-    // Config reserve below the cap-implied reserve: 10% of physical.
+    // Config reserve below the cap-implied reserve: 10% of physical — but
+    // never more than the legacy 6 GiB (loosen-only): 6.4 GiB → 6 GiB.
     #expect(MLXMemoryGuard.capDerivedReserveBytes(
         physicalBytes: UInt64(64 * gib), configReserveBytes: UInt64(4 * gib))
-        == UInt64(64 * gib) - UInt64(Double(64 * gib) * 0.9))
+        == MLXMemoryGuard.defaultReserveGB * 1_073_741_824)
+    // Below the crossover the cap-implied reserve is exact: 48 GB → 4.8 GiB.
+    #expect(MLXMemoryGuard.capDerivedReserveBytes(
+        physicalBytes: UInt64(48 * gib), configReserveBytes: UInt64(4 * gib))
+        == UInt64(48 * gib) - UInt64(Double(48 * gib) * 0.9))
     // Config reserve above it: the operator's reserve, exactly.
     #expect(MLXMemoryGuard.capDerivedReserveBytes(
         physicalBytes: UInt64(32 * gib), configReserveBytes: UInt64(4 * gib)) == UInt64(4 * gib))

@@ -94,9 +94,10 @@ Each request is charged
 `prompt_tokens × input_price + completion_tokens × output_price` at the
 platform price, floored at the per-request minimum, on the token counts the
 provider reports. Before dispatch the coordinator reserves the worst case —
-your estimated prompt plus the full output bound (`max_tokens` or, if you set
-none, the model's registry limit or `8192`) — and refunds the difference after
-the response. A provider with a custom price above the platform price is paid
+your estimated prompt plus the full output bound (your `max_tokens`, or a
+model default when you set none; the exact rule and default are in
+[pricing-model.md → Formulas](../reference/pricing-model.md#formulas)) — and
+refunds the difference after the response. A provider with a custom price above the platform price is paid
 for from an extra reservation taken at dispatch. Requests that route to your
 own machine ([self-route](../provider/self-route.md)) settle at zero. The
 formulas and constants are in [`reference/pricing-model.md` →
@@ -186,7 +187,7 @@ Details: [`architecture/billing.md` → Service accounts](../architecture/billin
 | Symptom | Cause | Fix |
 |---|---|---|
 | Paid on Stripe, balance unchanged | Webhook not delivered yet, or the coordinator's webhook secret is wrong | Poll the session status; if it stays `pending` for minutes, contact the operator with `stripe_session` |
-| `402` `insufficient_funds` — "your balance is too low for this request — add funds at /billing or lower max_tokens" | Balance is below the worst-case reservation | Deposit, or lower `max_tokens`; see step 4 |
+| `402`, `error.type` `insufficient_funds` (`error.code` is `insufficient_quota` on every 402) — "your balance is too low for this request — add funds at /billing or lower max_tokens" | Balance is below the worst-case reservation | Deposit, or lower `max_tokens`; see step 4 |
 | `402` `insufficient_quota` — "API key spend limit reached (monthly cap $25.00, used $24.90) — raise this key's limit or use another key" | Per-key cap | `PATCH /v1/keys/{id}` with a higher `limit_usd`, wait for the window to reset, or use another key |
 | `402` `provider_error` — "insufficient funds for provider price" | The only provider that could serve the model has a custom price above the platform price and your balance could not cover the extra reservation | Deposit; the request was not charged |
 | `400` "amount_usd must be at least $0.50" | Deposit below the minimum | Send `"amount_usd": "0.50"` or more, as a string |

@@ -266,7 +266,7 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 |---|---|---|
 | 400 | `invalid_request_error`, `invalid_sealed_envelope`, `kid_mismatch`, `decryption_failed`, `invalid_request`, `bad_request`, `referral_error` | Body/JSON validation, `n > 1`, tool-choice and vision rules, inference-enforced `tool_choice` combined with images (`param: tool_choice`), sealed-envelope faults, device-code and key-management input, unknown catalog `?type=` |
 | 401 | `authentication_error`, `auth_error`, `unauthorized` | Missing/invalid bearer (`requireAuth`, `requirePrivyAuth`), no account user (`requirePrivyUser`), release key |
-| 402 | `insufficient_funds`, `insufficient_quota` | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`): empty balance or exhausted key budget |
+| 402 | `insufficient_funds` (balance below the reservation), `insufficient_quota` (per-key spend cap); `code` is `insufficient_quota` for both | `reserveInferenceBalance` (`coordinator/api/inference_admission.go`); the per-cause table, including the provider-price 402, is [Payment-required responses](../architecture/billing.md#payment-required-responses) |
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
@@ -297,7 +297,7 @@ Requests are decoded into a generic JSON object with `json.Number` preserved (`p
 | `messages` (Chat) / `input` (Responses) | Required; missing → 400 |
 | `stream` | SSE when `true`; the provider's usage chunk, when it sends one, is held and emitted at the end of the stream |
 | `n` | Values above 1 → 400 `invalid_request_error` |
-| `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`; the value is bounded to the registry's `max_output_length`, else `defaultMaxOutputTokens` = 8192 (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
+| `max_tokens`, `max_completion_tokens` | `max_completion_tokens` is mapped to `max_tokens`. An explicit value is passed through unchanged (not clamped); when none is set the coordinator fills in the output bound from [pricing-model.md → Formulas](pricing-model.md#formulas) (`ensureMaxTokensBound`, `coordinator/api/consumer.go`) |
 | `stop` | A single string is normalised to a one-element array in `parseInferencePrelude` |
 | `tools`, `tool_choice`, `parallel_tool_calls` | Schemas normalised by `NormalizeToolSchemas` (`coordinator/api/toolschema.go`); constraints validated by `validateToolConstraintPolicy` (`coordinator/api/tool_constraints.go`) |
 | `response_format` | Passed through to the provider without coordinator validation |
@@ -374,7 +374,7 @@ Built by `handleStreamingResponseWithFirstChunk` (`coordinator/api/consumer.go`)
 | Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same 16 MiB cap | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
 | `n` | Must be 1 | `handleChatCompletions` |
-| `max_tokens` | `max_completion_tokens` → `max_tokens`; bounded to the registry `max_output_length`, else `defaultMaxOutputTokens` = 8192 | `ensureMaxTokensBound` |
+| `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
 | Catalog membership | Model resolved but absent from the routable catalog → 404 `model_not_found`, after the balance reservation is released | `handleChatCompletions` |
 | Key allow-list | `model` not in the key's `allowed_models` → 403 `model_not_allowed` | `keyModelAllowed` |

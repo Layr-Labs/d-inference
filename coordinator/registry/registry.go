@@ -5086,6 +5086,11 @@ func (r *Registry) Disconnect(id string) {
 	// outside r.mu so it can't stall the registry.
 	p.closeWriterNow()
 
+	// Final reputation persist: job successes are persisted on a 30 s throttle
+	// (RecordJobSuccess), so flush whatever accumulated since the last window
+	// before the row goes cold. Async, like every other persist.
+	r.persistReputation(p)
+
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
 	if r.store != nil {
@@ -5732,7 +5737,14 @@ func trustRank(t TrustLevel) int {
 // reputation. latency is the per-request responsiveness sample (time to first
 // content, with the prompt-size prefill removed); a non-positive value records
 // the success without touching the latency EWMA. Both updates happen under one
-// lock and a single persist.
+// lock.
+//
+// Persistence is throttled to the same 30 s window the heartbeat path uses:
+// an unthrottled upsert per completion was ~46 statements and goroutines per
+// second in production for a row nothing reads until the provider's next
+// registration. Skipped writes are not lost — the in-memory counters keep
+// accumulating and the next window (or Disconnect's final persist) writes
+// them. Failures still persist immediately (RecordJobFailure).
 func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -5746,8 +5758,7 @@ func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
 
-	// Persist reputation.
-	r.persistReputation(p)
+	r.persistReputationThrottled(p)
 }
 
 // RecordLatency folds a per-request responsiveness sample into the provider's

@@ -331,6 +331,16 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			hasTools:              p.hasTools,
 			retryAfterMs:          retryAfter * 1000,
 			params:                rejectionSamplingParams(parsed),
+			// This request was shed precisely because the scan semaphore was
+			// saturated; letting recordRejection run the counterfactual
+			// QuickCapacityCheck fleet walk on the single telemetry worker
+			// would add a full fleet walk per shed exactly when CPU is gone
+			// and serialize it with route-outcome writes. Mark the
+			// counterfactual as computed with zero candidates: for this
+			// reason code could_have_served=false means "not evaluated"
+			// (the same convention as the servability gate's
+			// no-candidate rejection).
+			servabilityComputed: true,
 		})
 		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 			"the coordinator is at routing capacity — please retry",

@@ -3765,9 +3765,11 @@ func (d *dispatchState) writeCommittedResponse() {
 	// completion), so nothing is parked then. Both settle paths are
 	// FinalizeReservation-guarded, so the park-then-remove overlap can't double-bill.
 	defer func() {
+		terminalSettled := true
 		if stale := provider.GetPending(requestID); stale != nil {
 			// The provider is still generating for a client that is gone: this
 			// cancel is the one that stops real work, so stamp it.
+			terminalSettled = false
 			stale.Profile.Mark(registry.StampCancelSent)
 			s.holdForSettlement(stale)
 		} else {
@@ -3786,7 +3788,14 @@ func (d *dispatchState) writeCommittedResponse() {
 		}
 		provider.RemovePending(requestID) // then remove so SetProviderIdle frees the slot
 		s.registry.SetProviderIdle(provider.ID)
-		s.sendProviderCancel(provider, requestID)
+		// A settled terminal means the provider already sent its completion or
+		// error (or disconnected): there is no generation left to stop, so the
+		// cancel frame — one marshal and one writer-lane WebSocket write per
+		// completed request — is skipped. Only a still-pending request (the
+		// client-gone / mid-stream exits above) gets the cancel.
+		if !terminalSettled {
+			s.sendProviderCancel(provider, requestID)
+		}
 	}()
 
 	// The committed provider's held preamble chunks stream out first, in

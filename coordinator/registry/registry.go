@@ -3633,9 +3633,22 @@ func (r *Registry) SetQueue(q *RequestQueue) {
 // ~3-4x current hardware ceilings (M2 Ultra is ~800 GB/s, MLX decode is ~120
 // tok/s, max Mac Studio RAM is 512 GB) so legitimate future hardware isn't
 // clamped unnecessarily.
+//
+// maxPrefillTPS matches the provider's own plausibility ceiling
+// (EngineV2Bridge maxPlausiblePrefillTps = 20,000, PR #454; measured real
+// prefill p90 ~17.7K tok/s on 7B, ~6.8K on the M5 Max gemma tier) and the
+// coordinator's maxTelemetryTPS for isolated_prefill_tps. The former 5,000
+// cap zeroed every observed_prefill_tps above it ("ignore, fall back to
+// estimate"), and the fallback — p.PrefillTPS, which no provider sends —
+// resolved to sqrt(bandwidth)×12 ≈ 280-345 tok/s: the fastest slots were
+// priced 15-25× too slow on the prefill term, ranked below every 1,000 tok/s
+// box, and were excluded outright by the TTFT ceiling on long prompts. The
+// original garbage case (a prefix-hit window collapse reporting billions) is
+// handled provider-side (isColdPrefillSample) and by the ignore-on-overflow
+// rule below, which still applies above 20,000.
 const (
 	maxDecodeTPS                    = 500.0
-	maxPrefillTPS                   = 5000.0
+	maxPrefillTPS                   = 20_000.0
 	maxMemoryBandwidthGBs           = 2000.0
 	maxMemoryGB                     = 1024
 	maxMemoryGBFloat                = 1024.0

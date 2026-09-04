@@ -147,6 +147,8 @@ func TestClampBackendCapacityPrefillOverflowIgnored(t *testing.T) {
 			{Model: "gemma", ObservedPrefillTPS: -1},          // negative
 			{Model: "nan", ObservedPrefillTPS: math.NaN()},    // NaN
 			{Model: "ok", ObservedPrefillTPS: 1600},           // plausible -> kept
+			{Model: "fast", ObservedPrefillTPS: 6_500},        // top tier (M5 Max gemma p90 6.8K) -> kept
+			{Model: "over", ObservedPrefillTPS: 25_000},       // above the provider's 20K ceiling -> ignored
 		},
 	}
 	clampBackendCapacity(logger, "p1", bc)
@@ -162,5 +164,14 @@ func TestClampBackendCapacityPrefillOverflowIgnored(t *testing.T) {
 	}
 	if bc.Slots[3].ObservedPrefillTPS != 1600 {
 		t.Errorf("plausible ObservedPrefillTPS = %v, want 1600 (unchanged)", bc.Slots[3].ObservedPrefillTPS)
+	}
+	if bc.Slots[4].ObservedPrefillTPS != 6_500 {
+		t.Errorf("fast-tier ObservedPrefillTPS = %v, want 6500 kept (the 5,000 cap zeroed it)", bc.Slots[4].ObservedPrefillTPS)
+	}
+	if bc.Slots[5].ObservedPrefillTPS != 0 {
+		t.Errorf("over-ceiling ObservedPrefillTPS = %v, want 0 (ignored above 20,000)", bc.Slots[5].ObservedPrefillTPS)
+	}
+	if maxPrefillTPS != maxTelemetryTPS {
+		t.Errorf("maxPrefillTPS = %v, want the telemetry ceiling %v (the provider's plausibility ceiling)", maxPrefillTPS, maxTelemetryTPS)
 	}
 }

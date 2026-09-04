@@ -27,6 +27,10 @@ export interface Model {
   architecture?: string;
   family?: string;
   capabilities?: string[];
+  // Provider hardware/runtime the model needs (e.g. ["apple_m5", "mlx_nax"]).
+  // Empty or absent means any provider can serve it. Label mapping lives in
+  // lib/provider-capabilities.ts.
+  required_provider_capabilities?: string[];
   // OpenRouter provider schema fields (from the enriched /v1/models endpoint).
   name?: string;
   hugging_face_id?: string;

@@ -610,6 +610,13 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
     /// tokens and terminal reasons. `.enforce` throws on an unstable case;
     /// `.record` reports it here and keeps the median.
     public let repetitionStable: Bool
+    /// Exit status of the per-case command, run immediately before this case's
+    /// warmup. Nil when no command was configured.
+    ///
+    /// Nil and 0 are NOT the same thing. A recorded 0 says a thermal hold ran
+    /// and succeeded before this case; nil says nothing held, which is what
+    /// every report before schema 9 silently was.
+    public let preCaseExit: Int32?
     public let rows: [MTPBenchmarkRowResult]
     public let metrics: MTPBenchmarkMetrics
 
@@ -622,6 +629,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         parityMismatchRows: [Int],
         parityDivergences: [MTPBenchmarkParityDivergence] = [],
         repetitionStable: Bool = true,
+        preCaseExit: Int32? = nil,
         rows: [MTPBenchmarkRowResult],
         metrics: MTPBenchmarkMetrics
     ) {
@@ -633,6 +641,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         self.parityMismatchRows = parityMismatchRows
         self.parityDivergences = parityDivergences
         self.repetitionStable = repetitionStable
+        self.preCaseExit = preCaseExit
         self.rows = rows
         self.metrics = metrics
     }
@@ -647,6 +656,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
             parityMismatchRows: parityMismatchRows,
             parityDivergences: parityDivergences,
             repetitionStable: repetitionStable,
+            preCaseExit: preCaseExit,
             rows: rows.map { $0.withoutPerformanceMeasurements() },
             metrics: metrics.withoutPerformanceMeasurements())
     }
@@ -780,7 +790,7 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 8
+    public static let currentSchemaVersion = 9
 
     public let schemaVersion: Int
     public let runFingerprint: String
@@ -812,6 +822,10 @@ public struct MTPBenchmarkReport: Codable, Sendable {
     public let modeOrderSeed: UInt64
     public let coverage: MTPBenchmarkCoverage
     public let elapsedMs: Double?
+    /// The per-case command, verbatim, when one was configured. Recorded so a
+    /// report states whether anything held between cases, instead of leaving
+    /// the reader to infer it from the elapsed time.
+    public let preCaseCommand: String?
     public let cases: [MTPBenchmarkCaseResult]
 
     public static func buildBoundFingerprint(
@@ -846,6 +860,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         modeOrderSeed: UInt64,
         coverage: MTPBenchmarkCoverage,
         elapsedMs: Double?,
+        preCaseCommand: String? = nil,
         cases: [MTPBenchmarkCaseResult]
     ) {
         self.schemaVersion = schemaVersion
@@ -874,6 +889,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         self.modeOrderSeed = modeOrderSeed
         self.coverage = coverage
         self.elapsedMs = purpose.performanceEligible ? elapsedMs : nil
+        self.preCaseCommand = preCaseCommand
         self.cases = purpose.performanceEligible
             ? cases
             : cases.map { $0.withoutPerformanceMeasurements() }

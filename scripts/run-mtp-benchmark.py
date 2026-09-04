@@ -24,7 +24,7 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 8
+REPORT_SCHEMA_VERSION = 9
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
@@ -958,6 +958,7 @@ def validate_report(
     warmup: int,
     repetitions: int,
     seed: int,
+    pre_case_cmd: str | None = None,
     expect_mtp_inactive: bool,
     batch_sizes: list[int],
     widths: list[int],
@@ -974,6 +975,14 @@ def validate_report(
     report = json.loads(encoded.decode("utf-8"))
     if not isinstance(report, dict):
         raise ValueError("report root is not an object")
+    # The command the report claims to have run between cases must be the one
+    # that was asked for. A report that silently held nothing is the defect this
+    # whole hook exists to make visible, so it is checked, not trusted.
+    if report.get("preCaseCommand") != pre_case_cmd:
+        raise ValueError(
+            f"preCaseCommand is {report.get('preCaseCommand')!r}, "
+            f"expected {pre_case_cmd!r}"
+        )
     if report.get("schemaVersion") != REPORT_SCHEMA_VERSION:
         raise ValueError(
             f"schemaVersion is {report.get('schemaVersion')}, expected {REPORT_SCHEMA_VERSION}"
@@ -1403,6 +1412,16 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                 "DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE": (
                     "1" if args.expect_mtp_inactive else "0"
                 ),
+                # Forwarded, not interpreted. The wrapper never sees a case
+                # boundary -- every case runs inside the one `swift test`
+                # process below -- so the hold has to be applied by the Swift
+                # runner's own case loop and this only carries the command to
+                # it.
+                **(
+                    {"MTP_PRE_CASE_CMD": args.pre_case_cmd}
+                    if args.pre_case_cmd
+                    else {}
+                ),
                 "DARKBLOOM_MTP_BENCHMARK_WARMUP": str(warmup),
                 "DARKBLOOM_MTP_BENCHMARK_REPETITIONS": str(repetitions),
                 "DARKBLOOM_MTP_BENCHMARK_SEED": str(args.seed),
@@ -1473,6 +1492,7 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                     warmup=warmup,
                     repetitions=repetitions,
                     seed=args.seed,
+                    pre_case_cmd=args.pre_case_cmd,
                     expect_mtp_inactive=args.expect_mtp_inactive,
                     batch_sizes=args.batch_size_list,
                     widths=args.width_list,
@@ -1667,6 +1687,15 @@ def parse_arguments() -> argparse.Namespace:
         help=(
             "legacy pre-serial-target regression mode: require the retired Apple M5 "
             "hardware-veto reason and zero speculative work"
+        ),
+    )
+    parser.add_argument(
+        "--pre-case-cmd",
+        help=(
+            "shell command run immediately before each case's warmup, with "
+            "MTP_CASE set to the case description. Forwarded to the runner as "
+            "MTP_PRE_CASE_CMD; a non-zero exit is recorded per case as "
+            "preCaseExit and does not abort the matrix."
         ),
     )
     parser.add_argument("--warmup", type=int)

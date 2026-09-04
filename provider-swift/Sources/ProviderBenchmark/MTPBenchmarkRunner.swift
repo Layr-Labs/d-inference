@@ -203,11 +203,23 @@ public enum MTPBenchmarkRunner {
                 modeOrderSeed: configuration.modeOrderSeed,
                 coverage: coverage,
                 elapsedMs: milliseconds(ContinuousClock.now - startedAt),
+                preCaseCommand: Self.preCaseCommand,
                 cases: results)
         }
 
+        let preCaseCommand = Self.preCaseCommand
         for key in orderedCases {
             try requireBeforeDeadline(deadlineAt)
+            // THE TEST specifies a 40 C thermal hold. The arm runner holds
+            // before each ARM, but every case of this matrix runs inside one
+            // process, so without this nothing holds between cases: the depth
+            // sweep ran 7 modes x (1 warmup + 3 reps) back to back for 5.2
+            // minutes and the later modes measured hotter than the earlier
+            // ones. The hold has to happen here, where the cases iterate, and
+            // before the warmup rather than before the measured repetitions —
+            // the warmup heats the part too.
+            let preCaseExit = runPreCaseCommand(
+                preCaseCommand, caseLabel: "\(key.mode.label) B=\(key.batchSize)")
             for _ in 0..<configuration.warmupIterations {
                 _ = try await runSample(
                     key: key,
@@ -280,7 +292,8 @@ public enum MTPBenchmarkRunner {
                 performanceEligible: configuration.purpose.performanceEligible,
                 tokenEvidenceSalt: tokenEvidenceSalt,
                 divergences: divergences,
-                repetitionStable: repetitionStable))
+                repetitionStable: repetitionStable,
+                preCaseExit: preCaseExit))
             if let checkpointDestination = configuration.checkpointDestination {
                 try requireBeforeDeadline(deadlineAt)
                 try report(complete: false).write(to: checkpointDestination)
@@ -1040,7 +1053,8 @@ public enum MTPBenchmarkRunner {
         performanceEligible: Bool,
         tokenEvidenceSalt: Data,
         divergences: [MTPBenchmarkParityDivergence],
-        repetitionStable: Bool
+        repetitionStable: Bool,
+        preCaseExit: Int32?
     ) -> MTPBenchmarkCaseResult {
         let sortedSamples = samples.sorted {
             $0.batch.aggregateDecodeTokensPerSecond < $1.batch.aggregateDecodeTokensPerSecond
@@ -1080,8 +1094,55 @@ public enum MTPBenchmarkRunner {
             parityMismatchRows: divergences.map(\.row),
             parityDivergences: divergences,
             repetitionStable: repetitionStable,
+            preCaseExit: preCaseExit,
             rows: rows,
             metrics: representative.metrics)
+    }
+
+    /// The per-case command, read once from `MTP_PRE_CASE_CMD`.
+    ///
+    /// An environment variable rather than a configuration field on purpose:
+    /// the matrix is launched by `swift test`, so there is no argument surface
+    /// between the arm script and this runner, and the wrapper already forwards
+    /// environment to the test subprocess.
+    static var preCaseCommand: String? {
+        guard let raw = ProcessInfo.processInfo.environment["MTP_PRE_CASE_CMD"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty
+        else { return nil }
+        return raw
+    }
+
+    /// Run the per-case command and return its exit status, or nil when none is
+    /// configured.
+    ///
+    /// A non-zero exit is REPORTED, not thrown. A thermal gate that times out
+    /// should leave a mark in the report and let the matrix finish; aborting a
+    /// 5-minute run because the part cooled slowly would lose the cases that
+    /// had already been measured correctly.
+    private static func runPreCaseCommand(
+        _ command: String?, caseLabel: String
+    ) -> Int32? {
+        guard let command else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        var environment = ProcessInfo.processInfo.environment
+        environment["MTP_CASE"] = caseLabel
+        process.environment = environment
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            FileHandle.standardError.write(
+                Data("pre-case command failed to launch for \(caseLabel): \(error)\n"
+                    .utf8))
+            return -1
+        }
+        let status = process.terminationStatus
+        FileHandle.standardError.write(
+            Data("pre-case command for \(caseLabel) exited \(status)\n".utf8))
+        return status
     }
 
     private static func validateArtifactBoundary(

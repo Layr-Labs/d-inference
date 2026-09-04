@@ -193,6 +193,13 @@ extension ProviderLoop {
         // or restart lands here): the admission gate keeps answering 503 for
         // the rest of that drain, so quotes must keep refusing too.
         state.refusingNewWork = isShuttingDown
+        // Re-advertise admission: the drain folded every slot to
+        // `reloading`; a full rebuild (the bridges are healthy on this
+        // path) restores the live states and the materiality check fires
+        // the event heartbeat that lets the coordinator route here again.
+        if !isShuttingDown {
+            await updateAggregateCapacity()
+        }
 
         if let staged = stagedUpdateBundle {
             stagedUpdateBundle = nil
@@ -218,6 +225,8 @@ extension ProviderLoop {
         // Quote path mirror (routing v2): while draining, capacity quotes
         // refuse with `slot_state` exactly like the live admission gate.
         state.refusingNewWork = true
+        // Heartbeat mirror: stop being a routing target within a heartbeat.
+        publishDrainingCapacity()
     }
 
     /// Download, verify, and stage the release bundle while still serving.

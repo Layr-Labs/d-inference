@@ -230,6 +230,16 @@ extension ProviderLoop {
             allSlots.append(contentsOf: engineV2.slots)
             totalActive += engineV2.activeRequests
         }
+        // Refusing new work (shutdown drain, update drain): every admitting
+        // slot is reported `reloading` — the one state the scheduler prices
+        // as not routable while the cache status still counts the model
+        // loaded — so the coordinator stops selecting this box instead of
+        // routing into the slot_state 503 for the whole drain window.
+        // Applied on EVERY rebuild (a request finishing rebuilds too), not
+        // only at drain start, or the next rebuild would re-advertise.
+        if isShuttingDown || isDrainingForUpdate {
+            allSlots = Self.withdrawingAdmission(from: allSlots)
+        }
 
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
@@ -345,6 +355,36 @@ extension ProviderLoop {
         // seam that implements all of the plan's event triggers without
         // forking any of those call sites.
         scheduleEventHeartbeatIfMaterial()
+    }
+
+    /// Slot-state fold for a provider that refuses new work: every slot but
+    /// a `crashed` one is reported `reloading`, the coordinator's existing
+    /// "loaded, not admitting" state (`slotStatePenalty` prices it +Inf and
+    /// not routable; the cache status still counts the model resident).
+    internal static func withdrawingAdmission(
+        from slots: [BackendSlotCapacity]
+    ) -> [BackendSlotCapacity] {
+        slots.map { slot in
+            guard slot.state != "crashed" else { return slot }
+            var withdrawn = slot
+            withdrawn.state = "reloading"
+            return withdrawn
+        }
+    }
+
+    /// Drain start: fold the LAST rebuilt snapshot in place — deliberately no
+    /// `updateAggregateCapacity`, which awaits every engine bridge and would
+    /// park a shutdown behind a wedged bridge before the drain's own bound —
+    /// and fire one event heartbeat so the coordinator stops routing here
+    /// within a heartbeat rather than at the close. Later rebuilds keep the
+    /// posture through the `isShuttingDown || isDrainingForUpdate` fold.
+    internal func publishDrainingCapacity() {
+        if var capacity = state.backendCapacity {
+            capacity.slots = Self.withdrawingAdmission(from: capacity.slots)
+            state.backendCapacity = capacity
+        }
+        guard let client = coordinatorClient else { return }
+        Task { await client.sendEventHeartbeat() }
     }
 
     /// Fire (or schedule) an out-of-band heartbeat when the freshly rebuilt

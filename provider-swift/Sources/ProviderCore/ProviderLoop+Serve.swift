@@ -453,6 +453,11 @@ extension ProviderLoop {
         if updatePhase != .draining {
             autoUpdateTask?.cancel()
         }
+        // Heartbeat mirror: every slot reported non-routable, one event
+        // heartbeat now, so the coordinator stops routing here within a
+        // heartbeat instead of bouncing requests off the 503 gate until the
+        // close (up to the whole drain window).
+        publishDrainingCapacity()
         let inflight = inflightTasks.count
         if inflight > 0 {
             logger.info("Shutdown requested: refusing new work; draining \(inflight) in-flight request(s) (bound \(drainTimeout.components.seconds)s) before closing the coordinator link")

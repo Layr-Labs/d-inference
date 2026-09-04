@@ -67,11 +67,26 @@ func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
 	return l.store.LedgerHistory(consumerID)
 }
 
-// RecordUsage appends a usage entry for a consumer's history.
+// usageHistoryCap bounds the per-consumer in-memory usage history. It is a
+// session view: GET /v1/payments/usage serves it when non-empty and falls
+// back to the store's UsageByConsumer, which is already LIMIT 100, so the cap
+// matches the persisted view. Without it the slice grew by one entry per
+// finalized completion for the life of the process (~3M/day for the
+// wholesale consumer) and one GET marshalled all of them.
+const usageHistoryCap = 100
+
+// RecordUsage appends a usage entry for a consumer's history, keeping only
+// the newest usageHistoryCap entries.
 func (l *Ledger) RecordUsage(consumerID string, entry UsageEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.usage[consumerID] = append(l.usage[consumerID], entry)
+	entries := append(l.usage[consumerID], entry)
+	if len(entries) > usageHistoryCap {
+		// Shift the newest entries to the front in place (copy handles the
+		// overlap) so the backing array stays bounded at cap+1 for good.
+		entries = append(entries[:0], entries[len(entries)-usageHistoryCap:]...)
+	}
+	l.usage[consumerID] = entries
 }
 
 // Usage returns a copy of usage history for a consumer.

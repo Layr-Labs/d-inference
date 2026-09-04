@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/nacl/box"
@@ -145,10 +146,25 @@ func TestDecryptTextResponseChunkDistinctKeysPerRequest(t *testing.T) {
 	}
 }
 
+// legacyRewriteChunkModel is the pre-T11-06 per-chunk rewrite, frozen
+// verbatim (api/consumer.go at bb4e41059) as the oracle: rewriteChunkModel now
+// delegates to the rewriter under test, so comparing against it would be
+// tautological.
+func legacyRewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
+	if pr.PublicModel == "" || pr.PublicModel == pr.Model {
+		return chunk
+	}
+	chunk = strings.ReplaceAll(chunk, `"model":"`+pr.Model+`"`, `"model":"`+pr.PublicModel+`"`)
+	chunk = strings.ReplaceAll(chunk, `"model": "`+pr.Model+`"`, `"model": "`+pr.PublicModel+`"`)
+	return chunk
+}
+
 // TestModelAliasRewriterMatchesRewriteChunkModel: the per-request rewriter
-// produces byte-identical output to the historical per-chunk rewrite on every
-// chunk shape, and an alias-free chunk (every content delta after the first)
-// costs zero allocations.
+// (and the rewriteChunkModel wrapper) produce byte-identical output to the
+// frozen historical per-chunk rewrite on every chunk shape — including the
+// space-separated needle, nested/repeated model fields, a different model,
+// an alias-less request and the empty chunk — and an alias-free chunk (every
+// content delta after the first) costs zero allocations.
 func TestModelAliasRewriterMatchesRewriteChunkModel(t *testing.T) {
 	pr := &registry.PendingRequest{Model: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", PublicModel: "gemma-4-26b"}
 	corpus := []string{
@@ -157,14 +173,36 @@ func TestModelAliasRewriterMatchesRewriteChunkModel(t *testing.T) {
 		`data: {"choices":[{"delta":{"content":" the"},"index":0}]}`,
 		`data: {"model":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","x":{"model":"mlx-community/gemma-4-26B-A4B-it-qat-4bit"}}`,
 		`data: {"model":"other-model"}`,
+		`data: {"model" : "mlx-community/gemma-4-26B-A4B-it-qat-4bit"}`, // neither needle: untouched, as before
+		`{"model":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","model": "mlx-community/gemma-4-26B-A4B-it-qat-4bit"}`,
+		`gemma-4-26b mlx-community/gemma-4-26B-A4B-it-qat-4bit`, // bare ids outside a model field: untouched
 		``,
 	}
-	rw := newModelAliasRewriter(pr)
-	for _, chunk := range corpus {
-		if got, want := rw.rewrite(chunk), rewriteChunkModel(chunk, pr); got != want {
-			t.Fatalf("rewrite(%q) = %q, want %q", chunk, got, want)
+	rewritten := 0
+	for _, req := range []*registry.PendingRequest{
+		pr,
+		{Model: "m", PublicModel: "m"},
+		{Model: "m", PublicModel: ""},
+		{Model: "mlx-community/gemma-4-26B-A4B-it-qat-4bit", PublicModel: "gemma-4-26b-preview"},
+	} {
+		rw := newModelAliasRewriter(req)
+		for _, chunk := range corpus {
+			want := legacyRewriteChunkModel(chunk, req)
+			if got := rw.rewrite(chunk); got != want {
+				t.Fatalf("rewrite(%q) with %+v = %q, want %q", chunk, req, got, want)
+			}
+			if got := rewriteChunkModel(chunk, req); got != want {
+				t.Fatalf("rewriteChunkModel(%q) with %+v = %q, want %q", chunk, req, got, want)
+			}
+			if want != chunk {
+				rewritten++
+			}
 		}
 	}
+	if rewritten == 0 {
+		t.Fatal("corpus exercised no rewrite: the oracle comparison is vacuous")
+	}
+	rw := newModelAliasRewriter(pr)
 	plain := corpus[2]
 	if allocs := testing.AllocsPerRun(100, func() { _ = rw.rewrite(plain) }); allocs != 0 {
 		t.Fatalf("alias-free chunk cost %.0f allocs, want 0", allocs)

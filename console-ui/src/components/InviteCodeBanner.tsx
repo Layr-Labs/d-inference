@@ -1,23 +1,20 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import Link from "next/link";
 import { Ticket, X, Check, Loader2 } from "lucide-react";
 import { redeemInviteCode } from "@/lib/api";
 import { trackEvent } from "@/lib/google-analytics";
 
 export const INVITE_DISMISSED_KEY = "darkbloom_invite_dismissed";
-/** Fired on window when the banner is dismissed, so other corner UI can take the slot. */
+/** Fired on dismissal so other invitation surfaces can update. */
 export const INVITE_DISMISSED_EVENT = "darkbloom-invite-dismissed";
-const DISMISSED_KEY = INVITE_DISMISSED_KEY;
 
 export function InviteCodeBanner() {
-  // SSR-safe: render nothing on the first client paint (matching the server,
-  // which has no localStorage) to avoid a React #418 hydration mismatch that
-  // would regenerate the page tree and break the sidebar nav. The real dismissed
-  // state is read after mount.
+  // Match the server on the first paint before reading browser-local state.
   const [dismissed, setDismissed] = useState(true);
   useEffect(() => {
-    setDismissed(localStorage.getItem(DISMISSED_KEY) === "1");
+    setDismissed(localStorage.getItem(INVITE_DISMISSED_KEY) === "1");
   }, []);
   const [expanded, setExpanded] = useState(false);
   const [code, setCode] = useState("");
@@ -27,145 +24,86 @@ export function InviteCodeBanner() {
 
   const dismissBanner = useCallback(() => {
     setDismissed(true);
-    localStorage.setItem(DISMISSED_KEY, "1");
+    localStorage.setItem(INVITE_DISMISSED_KEY, "1");
     window.dispatchEvent(new Event(INVITE_DISMISSED_EVENT));
   }, []);
 
-  const handleDismiss = useCallback(() => {
-    trackEvent("invite_banner_dismissed");
-    dismissBanner();
-  }, [dismissBanner]);
+  useEffect(() => {
+    if (!success) return;
+    const timeout = setTimeout(dismissBanner, 3000);
+    return () => clearTimeout(timeout);
+  }, [success, dismissBanner]);
 
   const handleRedeem = useCallback(async () => {
     const trimmed = code.trim().toUpperCase();
-    if (!trimmed) return;
-
-    trackEvent("invite_redeem_submitted", {
-      surface: "banner",
-    });
+    if (!trimmed || loading) return;
+    trackEvent("invite_redeem_submitted", { surface: "banner" });
     setLoading(true);
     setError("");
     try {
       const result = await redeemInviteCode(trimmed);
-      trackEvent("invite_redeem_succeeded", {
-        surface: "banner",
-        credited_usd: result.credited_usd,
-      });
+      trackEvent("invite_redeem_succeeded", { surface: "banner", credited_usd: result.credited_usd });
       setSuccess(`$${result.credited_usd} added to your account`);
       setCode("");
-      setTimeout(() => {
-        dismissBanner();
-      }, 3000);
-    } catch (e) {
-      trackEvent("invite_redeem_failed", {
-        surface: "banner",
-      });
-      setError((e as Error).message);
+    } catch (cause) {
+      trackEvent("invite_redeem_failed", { surface: "banner" });
+      setError((cause as Error).message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, [code, dismissBanner]);
+  }, [code, loading]);
 
   if (dismissed) return null;
 
   return (
-    <div className="fixed bottom-24 right-3 sm:right-6 z-40 w-[calc(100%-1.5rem)] sm:w-auto sm:max-w-sm message-animate">
-      <div className="bg-bg-white border border-border-dim rounded-xl shadow-lg overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3">
-          <button
-            onClick={() => {
-              const nextExpanded = !expanded;
-              if (nextExpanded) {
-                trackEvent("invite_banner_expanded", {
-                  source: "header",
-                });
-              }
-              setExpanded(nextExpanded);
-            }}
-            className="flex items-center gap-2 text-sm font-semibold text-ink"
-          >
-            <div className="w-7 h-7 rounded-lg bg-gold-light border-2 border-gold flex items-center justify-center">
-              <Ticket size={14} className="text-gold" />
-            </div>
-            Got an invite code?
-          </button>
-          <button
-            onClick={handleDismiss}
-            className="p-1 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors"
-          >
-            <X size={14} />
-          </button>
-        </div>
+    <div className="mx-auto mt-6 max-w-md text-xs">
+      <div className="flex items-center justify-center gap-2">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => {
+            if (!expanded) trackEvent("invite_banner_expanded", { source: "header" });
+            setExpanded(!expanded);
+          }}
+          className="flex min-h-8 items-center gap-2 rounded-lg px-2 text-text-secondary hover:bg-bg-secondary hover:text-text-primary"
+        >
+          <Ticket size={13} />
+          Have an invite code? <span className="text-accent-brand">Add credits</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Dismiss invite code reminder"
+          onClick={() => { trackEvent("invite_banner_dismissed"); dismissBanner(); }}
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-text-tertiary hover:bg-bg-secondary hover:text-text-primary"
+        ><X size={13} /></button>
+      </div>
 
-        {/* Note */}
-        <div className="px-4 pb-2">
-          <p className="text-xs text-text-tertiary leading-relaxed">
-            Invite codes are not required to become a provider. They give you free credits for inference.
-            You can also <a href="/billing" className="text-accent-brand hover:underline">purchase credits</a> directly.
-          </p>
-        </div>
-
-        {/* Expandable input */}
-        {!expanded && !success && (
-          <div className="px-4 pb-3">
-            <button
-              onClick={() => {
-                trackEvent("invite_banner_expanded", {
-                  source: "claim_button",
-                });
-                setExpanded(true);
-              }}
-              className="w-full py-2 rounded-lg bg-gold-light border-2 border-gold text-ink text-xs font-bold
-                         transition-all"
-            >
-              Claim invite code
+      {expanded && !success && (
+        <form onSubmit={(event) => { event.preventDefault(); void handleRedeem(); }} className="mt-3 rounded-xl border border-border-dim bg-bg-white p-4">
+          <label htmlFor="chat-invite-code" className="mb-2 block font-medium text-text-primary">Invite code</label>
+          <div className="flex gap-2">
+            <input
+              id="chat-invite-code"
+              type="text"
+              value={code}
+              onChange={(event) => { setError(""); setCode(event.target.value.replace(/[^A-Za-z0-9-]/g, "").toUpperCase()); }}
+              placeholder="INV-XXXXXXXX"
+              maxLength={20}
+              disabled={loading}
+              className="min-w-0 flex-1 rounded-lg border border-border-dim bg-bg-primary px-3 py-2.5 text-sm text-ink placeholder:text-text-tertiary"
+              autoFocus
+            />
+            <button type="submit" disabled={loading || !code.trim()} className="flex items-center gap-2 rounded-lg bg-accent-brand px-4 py-2.5 text-xs font-medium text-white hover:bg-accent-brand-hover disabled:opacity-40 dark:text-bg-primary">
+              {loading && <Loader2 size={14} className="animate-spin" />}
+              {loading ? "Claiming…" : "Claim"}
             </button>
           </div>
-        )}
+          {error && <p className="mt-2 text-accent-red" role="alert">{error}</p>}
+          <p className="mt-3 leading-relaxed text-text-secondary">Redeem a code for inference credits, or <Link href="/billing" className="text-accent-brand underline underline-offset-2">add credits in billing</Link>. A code isn’t required to run a provider.</p>
+        </form>
+      )}
 
-        {expanded && !success && (
-          <div className="px-4 pb-4 space-y-2">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={code}
-                onChange={(e) => {
-                  setError("");
-                  setCode(e.target.value.replace(/[^A-Za-z0-9-]/g, "").toUpperCase());
-                }}
-                placeholder="INV-XXXXXXXX"
-                maxLength={20}
-                className="flex-1 bg-bg-primary border-2 border-border-dim rounded-lg px-3 py-2 text-ink font-mono text-sm tracking-wider
-                           outline-none focus:border-coral transition-colors placeholder:text-text-tertiary/50"
-                onKeyDown={(e) => e.key === "Enter" && handleRedeem()}
-                autoFocus
-              />
-              <button
-                onClick={handleRedeem}
-                disabled={loading || !code.trim()}
-                className="px-4 py-2 rounded-lg bg-coral border-2 border-ink text-white text-sm font-bold
-                           disabled:opacity-40
-                           hover:opacity-90 transition-all"
-              >
-                {loading ? <Loader2 size={14} className="animate-spin" /> : "Claim"}
-              </button>
-            </div>
-            {error && (
-              <p className="text-xs text-accent-red font-semibold">{error}</p>
-            )}
-          </div>
-        )}
-
-        {/* Success */}
-        {success && (
-          <div className="px-4 pb-4">
-            <div className="flex items-center gap-2 text-teal text-sm font-semibold">
-              <Check size={14} />
-              {success}
-            </div>
-          </div>
-        )}
-      </div>
+      {success && <p className="mt-3 flex items-center justify-center gap-2 text-teal" role="status"><Check size={14} />{success}</p>}
     </div>
   );
 }

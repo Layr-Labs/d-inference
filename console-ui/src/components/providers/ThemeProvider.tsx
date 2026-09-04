@@ -29,14 +29,12 @@ const STORAGE_KEY = "darkbloom-theme";
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>("light");
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    const initial = stored || "light";
+    const initial = stored === "dark" ? "dark" : "light";
     setThemeState(initial);
     document.documentElement.classList.toggle("dark", initial === "dark");
-    setMounted(true);
   }, []);
 
   const setTheme = (t: Theme) => {
@@ -48,11 +46,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const toggleTheme = () => {
     setTheme(theme === "light" ? "dark" : "light");
   };
-
-  // Prevent flash of wrong theme
-  if (!mounted) {
-    return <>{children}</>;
-  }
 
   return (
     <ThemeContext.Provider value={{ theme, setTheme, toggleTheme }}>

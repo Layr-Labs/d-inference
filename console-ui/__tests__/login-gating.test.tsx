@@ -57,7 +57,7 @@ describe("ChatInput sign-in gating (Codex review)", () => {
   it("enables the sign-in CTA once auth is ready and forwards the click", () => {
     const onLogin = vi.fn();
     render(<ChatInput {...baseProps} onLogin={onLogin} ready={true} />);
-    const btn = screen.getByRole("button", { name: /sign in to start chatting/i });
+    const btn = screen.getByRole("button", { name: /sign in to chat/i });
     expect(btn).not.toBeDisabled();
     fireEvent.click(btn);
     expect(onLogin).toHaveBeenCalledTimes(1);

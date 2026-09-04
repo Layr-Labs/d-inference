@@ -1,139 +1,81 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowDown } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { fetchModels } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { useChatStream } from "@/hooks/useChatStream";
 import { ChatMessage } from "@/components/chat/ChatMessage";
-import { ChatInput } from "@/components/ChatInput";
+import { ChatWelcome, ChatStarters } from "@/components/chat/ChatWelcome";
+import { ChatInput, type SuggestedDraft } from "@/components/ChatInput";
 import { TopBar } from "@/components/TopBar";
 import { PreSendTrustBanner } from "@/components/PreSendTrustBanner";
-import { Mail } from "lucide-react";
 import { InviteCodeBanner } from "@/components/InviteCodeBanner";
-import { trackEvent } from "@/lib/google-analytics";
-
-const SUGGESTED_PROMPTS = [
-  { label: "Explain quantum computing", prompt: "Explain quantum computing in simple terms" },
-  { label: "Write a Python script", prompt: "Write a Python script that reads a CSV and generates a summary report" },
-  { label: "Compare ML frameworks", prompt: "Compare PyTorch and JAX for research use cases" },
-  { label: "Explain zero-knowledge proofs", prompt: "What are zero-knowledge proofs and how are they used in blockchain?" },
-];
 
 export default function ChatPage() {
-  // Narrow store selectors so unrelated state changes don't re-render the page
-  // (perf F3). chats/activeChatId are necessary to render the message list.
   const chats = useStore((s) => s.chats);
   const activeChatId = useStore((s) => s.activeChatId);
   const setModels = useStore((s) => s.setModels);
-
   const { ready, authenticated, apiKeyReady, login } = useAuth();
   const { isStreaming, handleSend, handleStop, handleRetry } = useChatStream();
+  const [suggestedDraft, setSuggestedDraft] = useState<SuggestedDraft>();
+  const [modelLoadAttempt, setModelLoadAttempt] = useState(0);
+  const [modelLoadFailed, setModelLoadFailed] = useState(false);
+  const [showJump, setShowJump] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-
+  const followReply = useRef(true);
   const activeChat = chats.find((c) => c.id === activeChatId);
+  const hasMessages = authenticated && !!activeChat?.messages.length;
 
-  // Load models once API key is ready.
   useEffect(() => {
     if (!authenticated || !apiKeyReady) return;
+    let cancelled = false;
+    setModelLoadFailed(false);
     fetchModels()
-      .then(setModels)
+      .then((models) => {
+        if (!cancelled) setModels(models);
+        return models;
+      })
       .catch(() => {
-        // coordinator may be unreachable
+        if (!cancelled) setModelLoadFailed(true);
       });
-  }, [setModels, authenticated, apiKeyReady]);
+    return () => { cancelled = true; };
+  }, [setModels, authenticated, apiKeyReady, modelLoadAttempt]);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    followReply.current = true;
+    setShowJump(false);
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    const area = scrollRef.current;
+    if (area && followReply.current) area.scrollTop = area.scrollHeight;
   }, [activeChat?.messages]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       <TopBar />
 
-      {!authenticated ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center max-w-lg px-6">
-            <h2 className="text-5xl text-ink mb-3" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.03em" }}>
-              Darkbloom
-            </h2>
-            <p className="text-base text-text-secondary mb-8 leading-relaxed">
-              Private inference on verified hardware.
-              <br />
-              <span className="text-text-tertiary">Your prompts stay encrypted, your data stays yours.</span>
-            </p>
-
-            <button
-              onClick={() => {
-                trackEvent("login_cta_clicked", {
-                  source: "chat_page_guest_hero",
-                });
-                login();
-              }}
-              disabled={!ready}
-              className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-lg
-                         bg-coral text-white font-bold text-sm
-                         hover:opacity-90
-                         disabled:opacity-40 disabled:cursor-not-allowed
-                         transition-all"
-            >
-              <Mail size={16} />
-              {!ready ? "Loading..." : "Sign In"}
-            </button>
-
-            <p className="mt-4 text-xs text-text-tertiary">
-              Sign in with your email to get started
-            </p>
-
-            <p className="mt-12 text-xs font-mono text-text-tertiary tracking-wide">
-              End-to-end encrypted · Apple Silicon · Decentralized
-            </p>
-          </div>
-        </div>
-      ) : !activeChat || activeChat.messages.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center max-w-lg px-6">
-            <h2 className="text-4xl text-ink mb-2" style={{ fontFamily: "'Louize', Georgia, serif", letterSpacing: "-0.03em" }}>
-              Darkbloom
-            </h2>
-            <p className="text-sm text-text-tertiary mb-10">
-              Private inference on verified hardware
-            </p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-10">
-              {SUGGESTED_PROMPTS.map(({ label, prompt }) => (
-                <button
-                  key={label}
-                  onClick={() => {
-                    trackEvent("suggested_prompt_click", {
-                      prompt_label: label,
-                    });
-                    handleSend(prompt);
-                  }}
-                  className="text-left px-4 py-3 rounded-lg bg-bg-secondary/60
-                             text-sm text-text-secondary hover:text-text-primary
-                             hover:bg-bg-secondary transition-colors"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <p className="text-xs font-mono text-text-tertiary tracking-wide">
-              End-to-end encrypted · Apple Silicon · Decentralized
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className="space-y-1">
+      <div className={`relative flex min-h-0 flex-1 flex-col ${hasMessages ? "" : "overflow-y-auto"}`}>
+        {hasMessages && (
+          <div
+            ref={scrollRef}
+            onScroll={() => {
+              const area = scrollRef.current;
+              if (!area) return;
+              const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 100;
+              followReply.current = nearBottom;
+              setShowJump(!nearBottom);
+            }}
+            className="min-h-0 flex-1 overflow-y-auto pt-5 pb-8 sm:pt-8"
+            aria-label="Conversation"
+            role="region"
+            tabIndex={0}
+          >
             {activeChat.messages.map((msg, idx) => {
-              const isLastAssistant =
-                msg.role === "assistant" &&
-                !msg.streaming &&
-                idx === activeChat.messages.length - 1;
+              const isLastAssistant = msg.role === "assistant" && !msg.streaming && idx === activeChat.messages.length - 1;
               return (
                 <ChatMessage
                   key={msg.id}
@@ -144,24 +86,53 @@ export default function ChatPage() {
               );
             })}
           </div>
-          <div className="h-4" />
+        )}
+
+        <div className={hasMessages ? "relative shrink-0 px-4 pb-4 sm:px-8 sm:pb-5" : "mx-auto my-auto w-full max-w-3xl px-5 py-6 sm:px-10 sm:py-8"}>
+          {!hasMessages && <ChatWelcome authenticated={authenticated} />}
+
+          {showJump && hasMessages && (
+            <button
+              type="button"
+              onClick={() => {
+                followReply.current = true;
+                if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                setShowJump(false);
+              }}
+              className="absolute -top-12 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border-dim bg-bg-white px-3 py-2 text-xs text-text-secondary shadow-sm hover:text-text-primary"
+            >
+              <ArrowDown size={14} /> Latest message
+            </button>
+          )}
+
+          <ChatInput
+            onSend={(content, images) => {
+              followReply.current = true;
+              void handleSend(content, images);
+            }}
+            onStop={handleStop}
+            isStreaming={isStreaming}
+            authenticated={authenticated}
+            onLogin={login}
+            ready={ready}
+            submitReady={apiKeyReady}
+            suggestedDraft={suggestedDraft}
+            spacious={!hasMessages}
+          />
+
+          {modelLoadFailed && authenticated && (
+            <p className="mx-auto mt-3 max-w-3xl text-center text-xs text-text-secondary" role="alert">
+              Models couldn’t be loaded. <button type="button" className="font-medium text-accent-brand underline underline-offset-4" onClick={() => setModelLoadAttempt((attempt) => attempt + 1)}>Try again</button>
+            </p>
+          )}
+
+          {authenticated && !hasMessages && (
+            <ChatStarters onSelect={(text) => setSuggestedDraft((draft) => ({ text, revision: (draft?.revision ?? 0) + 1 }))} />
+          )}
+          <PreSendTrustBanner visible={authenticated && !hasMessages} />
+          {authenticated && !hasMessages && <InviteCodeBanner />}
         </div>
-      )}
-
-      {authenticated && <InviteCodeBanner />}
-
-      <PreSendTrustBanner
-        visible={authenticated && (!activeChat || activeChat.messages.length === 0)}
-      />
-
-      <ChatInput
-        onSend={handleSend}
-        onStop={handleStop}
-        isStreaming={isStreaming}
-        authenticated={authenticated}
-        onLogin={login}
-        ready={ready}
-      />
+      </div>
     </div>
   );
 }

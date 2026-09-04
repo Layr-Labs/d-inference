@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `fcecc3675`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -33,7 +33,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | `/providers` | `providers/layout.tsx` (tabs), `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard: polls `/api/me/providers` and `/api/me/summary` every `REFRESH_MS` = `15_000` ms with a Privy Bearer; remove machine via `DELETE /api/me/providers/[id]`; Setup/Earnings tabs appear when `useHasLinkedProviders()` is true | Privy |
 | `/providers/setup` | `providers/setup/page.tsx` | Static install and `darkbloom login` steps | None |
 | `/providers/earnings` | `providers/earnings/page.tsx` → `EarningsContent.tsx` (`ssr: false`) | `GET /api/me/earnings?limit=100` with the Privy token (falls back to the API key as Bearer), payouts card | Privy (or API key) |
-| `/stats` | `stats/page.tsx`, `stats/*`, `components/stats/network-map/*` | Public network stats: `useVisiblePolling(fetchStats, 15_000)` over `/api/stats`, `/api/models`, `/api/models/capacity`, `/api/network/totals?window=24h`, `/api/network/series?window=`; the catalog fetch falls back to `COORDINATOR_URL` directly (`fetchModelCatalog`) | Public |
+| `/stats` | `stats/page.tsx`, `stats/useNetworkStats.ts`, `stats/*`, `components/stats/network-map/*` | Continuous geography, activity, model-capacity, and hardware overview with an expandable provider directory; `useNetworkStats` polls same-origin stats, catalog, capacity, and totals independently of the primary render. All traffic ranges, including `30m`, use `/api/network/series?window=` and its explicit `end_at`; see [network stats snapshots](#network-stats-snapshots) | Public |
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
@@ -78,8 +78,22 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/payments/stripe/withdrawals` | GET | `GET /v1/billing/stripe/withdrawals[?limit=]` | Privy (if present) | — |
 | `/api/payments/withdraw/stripe` | POST | `POST /v1/billing/withdraw/stripe` | Privy (if present) | Payout request |
 | `/api/pricing` | GET | `GET /v1/pricing` | none | `cacheControl(300, 600)` |
-| `/api/stats` | GET | `GET /v1/stats` | none | `cacheControl(10, 30)`; `?mock=geo` merges `mock-geo.ts` geography for offline development, uncached |
+| `/api/stats` | GET | `GET /v1/stats` | none | Shared snapshot cache with concurrent request coalescing (`getStatsSnapshot`, `console-ui/src/app/api/stats/snapshot-cache.ts`); source/fetch timestamp headers and bounded edge freshness; `?mock=geo` is isolated and `no-store` |
 | `/api/telemetry` | POST | **none** | — | Always answers `telemetry_ingest_disabled` (the same response as the coordinator's [telemetry route](../../reference/api-contracts.md#telemetry-1)); the body is never read |
+
+### Network stats snapshots
+
+The stats page renders a continuous overview without waiting for catalog or capacity requests. Geography leads into side-by-side request and token charts, graphical model-capacity lanes (`console-ui/src/app/stats/models/ModelCapacityLandscape.tsx`, `ModelCapacityLandscape`), and linked silicon-generation and memory charts (`console-ui/src/app/stats/hardware/HardwareComposition.tsx`, `HardwareComposition`). Model diagnostics and the provider directory open on demand (`console-ui/src/app/stats/page.tsx`, `StatsPage`).
+
+| Concern | Contract | Code |
+|---|---|---|
+| Source freshness | The coordinator publishes and retains `snapshot_at` according to the [public stats contract](../../reference/api-contracts.md#public-stats-and-health-5) | `coordinator/api/stats.go` (`handleStats`) |
+| Shared proxy cache | `SNAPSHOT_TTL_MS = 30_000`; keyed by configured coordinator URL; concurrent requests share one upstream request. Expiry is the earlier of fetch time plus TTL and valid source time plus TTL, so the proxy does not extend a source snapshot's lifetime | `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`, `fetchSnapshot`) |
+| Response timestamps | `X-Stats-Fetched-At` records the upstream fetch start; `X-Stats-Snapshot-At` exists only when upstream publishes a valid RFC 3339 `snapshot_at`; `X-Stats-Expires-At` records cache expiry; `X-Stats-Cache` is `HIT` or `MISS` | `console-ui/src/app/api/stats/snapshot-cache.ts` (`statsSnapshotHeaders`) |
+| Edge cache and errors | `Cache-Control: public, max-age=0, s-maxage=<remaining seconds>, must-revalidate`; no stale extension. `UPSTREAM_TIMEOUT_MS = 20_000` bounds upstream fetch and body reading; timeout returns `504`, other upstream errors retain their status, and network/JSON failures return `502`. Failures use `no-store` and release pending requests for retry | `console-ui/src/app/api/stats/snapshot-cache.ts` (`fetchSnapshot`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
+| Browser refresh | `STATS_REFRESH_MS = 30_000`; polling pauses while hidden and refreshes on visibility return. Primary and auxiliary requests coalesce independently; primary failure retains the previous data and dates with an error, while unavailable auxiliary data becomes unknown | `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |
+| Traffic boundaries | Every range, including `30m`, fetches `/api/network/series?window=<range>`; the response's explicit `end_at` anchors completed buckets for both request and token charts | `console-ui/src/app/stats/traffic/useTrafficSeries.ts` (`useTrafficSeries`), `console-ui/src/app/stats/traffic/TrafficPanel.tsx` (`TrafficPanel`) |
+| Displayed age and mock mode | The header labels source time as “Snapshot” and marks source snapshots at least 30 seconds old as stale, or labels fetch time as “Fetched” when the source timestamp is absent. `?mock=geo` returns `X-Stats-Cache: MOCK`, uses `no-store`, and displays a simulation notice | `console-ui/src/app/stats/StatsHeader.tsx` (`StatsHeader`), `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
 
 ### Two credential paths
 
@@ -153,7 +167,7 @@ Names and effect only; values, defaults, and where each is set are in [`../../re
 
 | Variable | Read in | Effect |
 |---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts`, `console-ui/src/app/stats/page.tsx`, `console-ui/src/app/settings/page.tsx` | Upstream coordinator for every `/api/*` handler; displayed base URL; `/stats` direct-fetch fallback |
+| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts`, `console-ui/src/app/settings/page.tsx` | Upstream coordinator for every `/api/*` handler; displayed base URL |
 | `NEXT_PUBLIC_PRIVY_APP_ID` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Privy app; unset or `"placeholder"` selects mock auth |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `console-ui/src/lib/google-analytics.ts` | GA property; empty string disables GA |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | `console-ui/src/components/DatadogRUM.tsx` | Both required to initialise RUM |
@@ -185,7 +199,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/page.tsx`) |
 | First sealed request after a coordinator key rotation fails with 400 | Cached key `kid` no longer matches; `streamChat` clears `darkbloom_coord_enc_key_v2` so the retry refetches | `clearCoordinatorKeyCache` |
 | "Session expired — please try again" mid-chat | `/api/chat` returned 401; the key is dropped and re-provisioned via `darkbloom-key-expired` | `streamChat`, `useAuth` |
-| `/stats` catalog falls back to a direct coordinator fetch that the browser blocks | `fetchModelCatalog` (`console-ui/src/app/stats/page.tsx`) tries `${COORDINATOR_URL}/v1/models/catalog…` after `/api/models`; `connect-src` allows only `https://api.darkbloom.dev`, so a non-production `NEXT_PUBLIC_COORDINATOR_URL` is blocked by CSP | `cspDirectives` (`console-ui/next.config.ts`) |
+| `/stats` retains an older snapshot or shows unknown model capacity | A primary refresh failed, or an auxiliary catalog/capacity request failed; the page retains dated primary data and clears unavailable auxiliary values | `useNetworkStats` (`console-ui/src/app/stats/useNetworkStats.ts`) |
 | Datadog RUM enabled but no data arrives | `NEXT_PUBLIC_DD_*` set, yet no Datadog intake host is in `connect-src` | `cspDirectives`, `DatadogRUM` |
 | Buy Credits fails although the API key works | `/api/payments/stripe/checkout` forwards only the Privy session; a browser with an API key but no `privy-token` cookie sends an unauthenticated upstream call | `console-ui/src/app/api/payments/stripe/checkout/route.ts` |
 | Visiting `/login` lands on `/` and the `?next=` target is lost | `console-ui/src/proxy.ts` redirects before the page renders | `proxy` |
@@ -212,7 +226,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | localStorage key registry | `console-ui/src/lib/constants.ts` (`STORAGE_KEYS`) |
 | API clients (browser) | `console-ui/src/lib/api/` (`billing.ts`, `keys.ts`, `models.ts`, `providers.ts`, `invite.ts`, `health.ts`, `pricing.ts`) |
 | Fleet polling | `console-ui/src/app/providers/dashboard/useFleetData.ts` (`REFRESH_MS`) |
-| Public stats | `console-ui/src/app/stats/page.tsx`, `console-ui/src/hooks/useVisiblePolling.ts` |
+| Public stats | `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |
 | Earnings calculator | `console-ui/src/app/earn/calc.ts` (`calculateCapacityRevenue`, `CALCULATOR_MODELS`, `MAC_CONFIGS`), `console-ui/src/app/earn/providerReadiness.ts` (`MIN_PROVIDER_MEMORY_GB`) |
 | Analytics and telemetry facade | `console-ui/src/lib/google-analytics.ts`, `console-ui/src/components/DatadogRUM.tsx`, `console-ui/src/lib/telemetry.ts` (`emit`), `console-ui/src/app/api/telemetry/route.ts` |
 | Tests | `console-ui/__tests__/` (route handlers, encryption, store hydration, pages) and colocated `*.test.ts(x)` under `console-ui/src/`; run with `npm test` (vitest) — see [`../../developer/test.md`](../../developer/test.md) |

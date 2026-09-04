@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-04 · commit `fcecc3675`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -64,8 +64,8 @@ Run 30–60 min after the swap, then again at 24 h:
 #    -inuse_space` on a workstation.
 curl -s 'http://127.0.0.1:6060/debug/pprof/heap?debug=1' | grep -B1 -A3 'RecordUsage' | head -20
 
-# 2. Stats refresher: one statement set per minute, never per request.
-#    The pipelines were ~1,950/h before 1.3; expect ~60/h (locations + flows)
+# 2. Stats refresher: one statement set per 30 seconds, never per request.
+#    The pipelines were ~1,950/h before 1.3; expect ~120/h (locations + flows)
 #    and ~240/h network totals (4 windows x 60/h).
 sudo docker logs coordinator --since 10m 2>&1 | grep -c 'cache refresh'   # failures only; 0 is the healthy answer
 
@@ -249,7 +249,7 @@ flowchart LR
   end
   subgraph After
     direction TB
-    A1[refresher tick, 60 s] --> A2[stats:v1 + network_totals:*<br/>one query per family, 5 min safety TTL<br/>last good value kept on timeout]
+    A1[stats tick 30 s / totals tick 60 s] --> A2[stats:v1 + network_totals:*<br/>one query per family, 5 min safety TTL<br/>last good value kept on timeout]
     A3[provider registers] -.->|no eviction| A2
     A5[provider first content] --> A7[first client byte]
     A5 -.->|goroutine| A6[RecordCapacityAccept]

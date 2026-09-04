@@ -2,63 +2,33 @@
 
 import { useState } from "react";
 import { useStore } from "@/lib/store";
-import { Menu } from "lucide-react";
+import { Menu, ShieldCheck } from "lucide-react";
 import { E2ELockIndicator } from "./E2ELockIndicator";
 import { TrustExplainerModal } from "./TrustExplainerModal";
 
 export function TopBar({ title }: { title?: string }) {
   const sidebarOpen = useStore((s) => s.sidebarOpen);
   const setSidebarOpen = useStore((s) => s.setSidebarOpen);
-  // Subscribe to derived primitives instead of the whole `chats` array so the
-  // header doesn't re-render on every streamed token (perf F3): `hasMessages`
-  // is a boolean and `lastTrust` only changes when a reply completes.
-  const hasMessages = useStore((s) => {
-    const c = s.chats.find((chat) => chat.id === s.activeChatId);
-    return !!c && c.messages.length > 0;
-  });
-  const lastTrust = useStore((s) => {
-    const c = s.chats.find((chat) => chat.id === s.activeChatId);
-    return c?.messages.filter((m) => m.role === "assistant" && m.trust).at(-1)?.trust;
-  });
+  const chatTitle = useStore((s) => s.chats.find((chat) => chat.id === s.activeChatId)?.title);
+  const hasMessages = useStore((s) => !!s.chats.find((chat) => chat.id === s.activeChatId)?.messages.length);
+  const lastTrust = useStore((s) => s.chats.find((chat) => chat.id === s.activeChatId)?.messages.filter((m) => m.role === "assistant" && m.trust).at(-1)?.trust);
   const [showExplainer, setShowExplainer] = useState(false);
+  const isChat = !title || title === "Chat";
+  const conversationTitle = hasMessages ? chatTitle || "Conversation" : "Chat";
 
   return (
     <>
-      <header className="h-14 bg-bg-primary/80 backdrop-blur-sm flex items-center px-3 sm:px-5 gap-3 shrink-0 border-b border-border-dim">
-        {!sidebarOpen && (
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-lg hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors border-2 border-transparent hover:border-border-subtle"
-          >
-            <Menu size={18} />
-          </button>
-        )}
-        {!sidebarOpen && (
-          <div className="mr-3">
-            <span className="text-xl text-ink tracking-tight" style={{ fontFamily: "'Louize', Georgia, serif" }}>
-              Darkbloom
-            </span>
-          </div>
-        )}
-        {title && (
-          <h1 className="text-base font-medium text-text-secondary">{title}</h1>
-        )}
-
-        {/* E2E lock indicator — shown when there's an active chat */}
-        {hasMessages && (
-          <div className="ml-auto">
-            <E2ELockIndicator
-              trust={lastTrust}
-              onOpenExplainer={() => setShowExplainer(true)}
-            />
-          </div>
-        )}
+      <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-border-dim px-4 sm:px-8">
+        <button type="button" onClick={() => setSidebarOpen(true)} aria-label="Open navigation" aria-controls="console-navigation" aria-expanded={sidebarOpen} className="-ml-2 rounded-lg p-2 text-text-secondary hover:bg-bg-hover sm:hidden"><Menu size={19} /></button>
+        <div className="flex min-w-0 items-center gap-3 text-[13px]">
+          <span className="hidden text-text-tertiary sm:inline">Console</span><span className="hidden text-border-subtle sm:inline" aria-hidden="true">/</span>
+          <span className="truncate font-medium text-text-primary">{isChat ? conversationTitle : title}</span>
+        </div>
+        <div className="ml-auto shrink-0">
+          {isChat && hasMessages ? <E2ELockIndicator trust={lastTrust} onOpenExplainer={() => setShowExplainer(true)} /> : <button type="button" onClick={() => setShowExplainer(true)} className="flex items-center gap-2 rounded-lg px-2 py-2 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-accent-brand"><ShieldCheck size={15} /><span className="hidden sm:inline">How privacy works</span><span className="sm:hidden">Privacy</span></button>}
+        </div>
       </header>
-
-      <TrustExplainerModal
-        open={showExplainer}
-        onClose={() => setShowExplainer(false)}
-      />
+      <TrustExplainerModal open={showExplainer} onClose={() => setShowExplainer(false)} />
     </>
   );
 }

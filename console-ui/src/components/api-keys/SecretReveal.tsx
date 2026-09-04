@@ -66,7 +66,7 @@ export function SecretReveal({
 
       <button
         onClick={onClose}
-        className="w-full py-2.5 rounded-lg bg-coral text-white text-sm font-semibold hover:opacity-90 transition-all"
+        className="w-full py-2.5 rounded-lg bg-coral text-white dark:text-bg-primary text-sm font-semibold hover:opacity-90 transition-all"
       >
         Done
       </button>

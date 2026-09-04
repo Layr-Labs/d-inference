@@ -15,6 +15,8 @@ export const STORAGE_KEYS = {
   consoleKeyId: "darkbloom_console_key_id",
   /** User-selected coordinator base URL override (client side only). */
   coordinatorUrl: "darkbloom_coordinator_url",
+  /** Base URL used only in API console integration examples. */
+  apiExampleUrl: "darkbloom_api_example_url",
   /** Verification panel display mode ("normal" | "technical"). */
   verificationMode: "darkbloom-verification-mode",
 } as const;

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (2026-09-04) — console redesign
+
+- Redesigned console navigation, chat composition, searchable model discovery, settings, and API integration examples.
+- Redesigned network stats as one continuous overview: an explorable geography
+  map, side-by-side request and token charts, graphical model-capacity lanes,
+  linked silicon and memory charts, and an expandable provider directory.
+- Stats refresh every 30 seconds. Source timestamps survive cache hits; the
+  console proxy coalesces requests and bounds fresh caching to 30 seconds. The
+  coordinator retains successful snapshots for up to five minutes on refresh
+  failures; older source snapshots are marked stale. The page pauses refreshes
+  while hidden and distinguishes unknown capacity from zero.
+
 ## Unreleased — coordinator performance Tier 1
 
 - Bound recent in-process usage history with lazy allocation; aggregate dashboard earnings across every row in the rolling windows.

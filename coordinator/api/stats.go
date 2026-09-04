@@ -90,7 +90,7 @@ const statsCacheKey = "stats:v1"
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
 // The response is served from the stats:v1 read-cache entry, which the
-// refresher recomputes every cacheRefreshInterval. A handler only computes on
+// refresher recomputes every statsRefreshInterval. A handler only computes on
 // a cold start (no entry at all), and concurrent cold misses share one
 // computation.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +121,9 @@ func (s *Server) refreshStats() ([]byte, bool) {
 // computeStats returns a complete stats response. An empty successful query
 // is valid data; any failed input prevents publication of a partial response.
 func (s *Server) computeStats() ([]byte, error) {
+	// Preserve the start of the source observation through successful cache hits
+	// and bounded stale-on-error reads; downstream caches must not renew its age.
+	snapshotAt := time.Now()
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -238,7 +241,7 @@ func (s *Server) computeStats() ([]byte, error) {
 	// Build time series via SQL bucket aggregation (last 30 minutes), plus exact
 	// 24-hour totals for the headline deltas. Geography and route analytics use
 	// the full 24-hour window advertised by the public UI.
-	now := time.Now()
+	now := snapshotAt
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
 	buckets, seriesErr := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
@@ -283,6 +286,7 @@ func (s *Server) computeStats() ([]byte, error) {
 	util := s.registry.NetworkUtilizationSnapshot()
 
 	resp := map[string]any{
+		"snapshot_at":                    snapshotAt.UTC().Format(time.RFC3339Nano),
 		"total_requests":                 totalRequests,
 		"total_prompt_tokens":            totalPromptTokens,
 		"total_completion_tokens":        totalCompletionTokens,

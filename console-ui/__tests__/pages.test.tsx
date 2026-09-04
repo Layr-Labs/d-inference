@@ -6,6 +6,11 @@ import { render, screen } from "@testing-library/react";
 // pages can import them without hitting Privy, Zustand persistence, etc.
 // ---------------------------------------------------------------------------
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/",
+}));
+
 // Mock @/hooks/useToast — provides addToast
 vi.mock("@/hooks/useToast", () => ({
   useToastStore: () => vi.fn(),
@@ -425,8 +430,8 @@ describe("ModelsPage", () => {
       "title",
       "Served only by providers with: Apple M5, NAX runtime"
     );
-    // The ungated card renders no requirement pill.
+    // The ungated model renders no requirement pill.
     expect(screen.getAllByText(/ only$/)).toHaveLength(1);
-    expect(screen.getByText("gemma-4-26b")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gemma 4 26B" })).toBeInTheDocument();
   });
 });

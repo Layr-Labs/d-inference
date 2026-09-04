@@ -98,11 +98,15 @@ public struct ModelDownloader: Sendable {
 
     // MARK: - Internals
 
+    /// The `models--{org}--{name}` directory this model downloads into. ONE
+    /// resolver with the scanner (`ModelScanner.defaultCacheDirectory`), so
+    /// a download and the discovery/load path that reads it back can never
+    /// disagree on the cache root (HF_HUB_CACHE / HF_HOME / legacy default).
     public static func cacheModelDirectory(for modelID: String) -> URL {
         let safe = modelID.replacingOccurrences(of: "/", with: "--")
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-            .appendingPathComponent("models--\(safe)", isDirectory: true)
+        let cacheDir = ModelScanner.defaultCacheDirectory()
+            ?? ModelScanner.resolveCacheDirectory(environment: [:])
+        return cacheDir.appendingPathComponent("models--\(safe)", isDirectory: true)
     }
 
     static func cacheSnapshotDirectory(for modelID: String) -> URL {

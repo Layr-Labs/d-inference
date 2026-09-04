@@ -53,10 +53,76 @@ public struct ModelScanner: Sendable {
 
     // MARK: - Public API
 
-    /// Returns the default HuggingFace cache directory.
-    public static func defaultCacheDirectory() -> URL? {
-        FileManager.default.homeDirectoryForCurrentUser
+    /// Returns the HuggingFace hub cache directory, honoring the standard
+    /// HF environment the rest of the HF tooling (and the repo's own
+    /// `huggingface-cli download` guidance) assumes:
+    ///
+    ///   1. `HF_HUB_CACHE` — the hub cache itself;
+    ///   2. `HF_HOME` — the HF home, whose `hub/` subdirectory is the cache;
+    ///   3. `~/.cache/huggingface/hub` — the legacy default.
+    ///
+    /// Empty values are ignored (same as the HF client). The launchd daemon
+    /// forwards both keys from the installing shell
+    /// (`LaunchAgent.passthroughEnvKeys`) so the CLI and the daemon agree on
+    /// ONE cache; a shell that sets neither keeps the legacy path, which is
+    /// the whole fleet today.
+    ///
+    /// The optional return type is historical (every branch resolves): keep
+    /// it so the many `guard let` call sites stay untouched.
+    public static func defaultCacheDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        if let override = cacheDirectoryOverride() {
+            return override
+        }
+        return resolveCacheDirectory(environment: environment)
+    }
+
+    /// Pure resolver over an injected environment (no test override), so the
+    /// env precedence is unit-testable without mutating the process
+    /// environment.
+    public static func resolveCacheDirectory(environment: [String: String]) -> URL {
+        if let hubCache = nonEmpty(environment["HF_HUB_CACHE"]) {
+            return URL(fileURLWithPath: hubCache, isDirectory: true)
+        }
+        if let hfHome = nonEmpty(environment["HF_HOME"]) {
+            return URL(fileURLWithPath: hfHome, isDirectory: true)
+                .appendingPathComponent("hub", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespaces), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    // MARK: - Test override
+
+    /// Process-wide cache-root override for TEST PROCESSES ONLY. Fixture
+    /// suites that fabricate `models--*` snapshots point every resolver at a
+    /// per-run temp cache so they never write into the operator's real
+    /// HuggingFace cache (a killed run used to leave husks there that every
+    /// later `darkbloom start`/`status`/`doctor` scan walked and rendered).
+    /// A Swift-level override rather than `setenv`: mutating the process
+    /// environment from parallel test suites races every concurrent
+    /// `environ` reader. Production never sets it.
+    private static let overrideLock = NSLock()
+    nonisolated(unsafe) private static var overrideValue: URL?
+
+    public static func setCacheDirectoryOverrideForTesting(_ url: URL?) {
+        overrideLock.lock()
+        defer { overrideLock.unlock() }
+        overrideValue = url
+    }
+
+    private static func cacheDirectoryOverride() -> URL? {
+        overrideLock.lock()
+        defer { overrideLock.unlock() }
+        return overrideValue
     }
 
     /// Resolve a model ID to its local snapshot path on disk.

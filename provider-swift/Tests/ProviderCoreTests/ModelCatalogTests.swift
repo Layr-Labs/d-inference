@@ -80,10 +80,18 @@ struct ModelCatalogTests {
         #expect(str.contains(#""min_ram_gb":8"#))
     }
 
-    @Test("cacheModelDirectory mirrors the HuggingFace cache layout")
+    @Test("cacheModelDirectory mirrors the HuggingFace cache layout under the scanner's cache root")
     func cacheModelDirectoryShape() {
         let url = ModelDownloader.cacheModelDirectory(for: "mlx-community/Foo-Bar")
-        #expect(url.path.hasSuffix(".cache/huggingface/hub/models--mlx-community--Foo-Bar"))
+        #expect(url.lastPathComponent == "models--mlx-community--Foo-Bar")
+        // ONE resolver: the downloader writes where the scanner reads
+        // (HF_HUB_CACHE / HF_HOME / legacy default, or the test override).
+        #expect(
+            url.deletingLastPathComponent().standardizedFileURL
+                == ModelScanner.defaultCacheDirectory()?.standardizedFileURL)
+        #expect(
+            ModelScanner.resolveCacheDirectory(environment: [:]).path
+                .hasSuffix(".cache/huggingface/hub"))
     }
 
     @Test("parseShardNames returns sorted unique values from weight_map")

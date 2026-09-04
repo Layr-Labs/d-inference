@@ -654,19 +654,11 @@ private actor PreloadRaceGateCatalog: SpecDecCatalogLooking {
 
 /// Create a minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath`
 /// resolves `modelId` (ensureModelLoaded requires an on-disk snapshot BEFORE
-/// it reaches the admission gates under test). Returns the `models--...`
-/// directory for cleanup.
+/// it reaches the admission gates under test). Lives in the per-process
+/// temp cache (`TestHFCache`), never the operator's real one. Returns the
+/// `models--...` directory for cleanup.
 private func makeFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-    let modelDir = cacheDir.appendingPathComponent(
-        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
-    let snapshot = modelDir
-        .appendingPathComponent("snapshots", isDirectory: true)
-        .appendingPathComponent("main", isDirectory: true)
-    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
-    return modelDir
+    try TestHFCache.makeFakeSnapshot(modelId: modelId)
 }
 
 @Suite("Startup preload no-evict enforcement (production load path)")

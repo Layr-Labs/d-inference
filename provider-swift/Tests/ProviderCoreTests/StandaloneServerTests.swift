@@ -691,17 +691,9 @@ private final class StandaloneHashRecorder: @unchecked Sendable {
     var snapshot: [String?] { lock.withLock { values } }
 }
 
+/// Config-only fake snapshot in the per-process temp cache (`TestHFCache`).
 private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-    let modelDir = cacheDir.appendingPathComponent(
-        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
-    let snapshot = modelDir
-        .appendingPathComponent("snapshots", isDirectory: true)
-        .appendingPathComponent("main", isDirectory: true)
-    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
-    return modelDir
+    try TestHFCache.makeFakeSnapshot(modelId: modelId)
 }
 
 @Test func standalonePendingLoadReservesWeightsBeforeAwaitingContainer() async throws {

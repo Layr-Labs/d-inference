@@ -313,6 +313,12 @@ public enum LaunchAgent: Sendable {
 
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
+        // The HuggingFace cache root (`ModelScanner.defaultCacheDirectory`):
+        // forwarded so the daemon scans/downloads where the installing
+        // shell's `darkbloom models download` / `huggingface-cli` put the
+        // weights, instead of the CLI and its own daemon splitting across
+        // two caches. Unset in the shell ⇒ not forwarded ⇒ legacy path.
+        "HF_HUB_CACHE", "HF_HOME",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",

@@ -515,6 +515,9 @@ struct ProviderLoopPrefetchTests {
     /// Seed a minimal valid MLX snapshot (config.json + one .safetensors) in the
     /// HuggingFace cache so the scanner + WeightHasher can read it.
     private func seedSnapshot(modelID: String) throws -> URL {
+        // Install the per-process temp cache BEFORE resolving any downloader
+        // path, so the seed lands there rather than in the operator's cache.
+        _ = TestHFCache.root
         let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
         let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)

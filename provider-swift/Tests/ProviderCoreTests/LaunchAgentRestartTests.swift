@@ -54,6 +54,19 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
+    @Test func forwardsTheHuggingFaceCacheRootSoTheDaemonScansTheShellsCache() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "HF_HOME": "/Volumes/models/hf",
+            "HF_HUB_CACHE": "/Volumes/models/hf/hub",
+            "HOME": "/Users/x",
+        ])
+        #expect(out == ["HF_HOME": "/Volumes/models/hf", "HF_HUB_CACHE": "/Volumes/models/hf/hub"])
+        // The daemon resolves the same cache the installing shell used.
+        #expect(
+            ModelScanner.resolveCacheDirectory(environment: out).path
+                == "/Volumes/models/hf/hub")
+    }
+
     @Test func dropsEmptyAndMissingVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
         let out = LaunchAgent.passthroughEnvironment(from: [

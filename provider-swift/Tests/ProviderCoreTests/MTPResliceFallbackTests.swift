@@ -38,16 +38,7 @@ private actor RaceGateCatalog: SpecDecCatalogLooking {
 /// Minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath` resolves
 /// the id before the load path reaches the preparation await under test.
 private func makeRaceFakeHFSnapshot(modelId: String) throws -> URL {
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
-    let modelDir = cacheDir.appendingPathComponent(
-        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
-    let snapshot = modelDir
-        .appendingPathComponent("snapshots", isDirectory: true)
-        .appendingPathComponent("main", isDirectory: true)
-    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
-    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
-    return modelDir
+    try TestHFCache.makeFakeSnapshot(modelId: modelId)
 }
 
 private let mtpFloorGiB: UInt64 = 1_073_741_824

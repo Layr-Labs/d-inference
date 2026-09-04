@@ -2661,7 +2661,9 @@ func (s *Server) handleCompleteAt(
 		// /stats time-series, request-location, or flow aggregations. Private-only
 		// providers only ever serve free self-route, so this also keeps their
 		// traffic out of public stats. The owner still sees it via the in-memory
-		// RecordUsage above (their session/transparency view).
+		// RecordUsage above (their session/transparency view) — the newest
+		// payments.usageHistoryCap entries since boot, with no store fallback
+		// for this traffic class (docs/consumer/billing.md).
 		if !freeSelfRoute {
 			saferun.Go(s.logger, "recordUsage", func() {
 				s.store.RecordUsageFullWithPublicModel(providerID, pr.ConsumerKey, pr.KeyID, pr.Model, consumerModel(pr), msg.RequestID, msg.Usage.PromptTokens, msg.Usage.CompletionTokens, totalCost, pr.ConsumerLocation)

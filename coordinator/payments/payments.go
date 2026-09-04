@@ -69,10 +69,16 @@ func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
 
 // usageHistoryCap bounds the per-consumer in-memory usage history. It is a
 // session view: GET /v1/payments/usage serves it when non-empty and falls
-// back to the store's UsageByConsumer, which is already LIMIT 100, so the cap
-// matches the persisted view. Without it the slice grew by one entry per
-// finalized completion for the life of the process (~3M/day for the
-// wholesale consumer) and one GET marshalled all of them.
+// back to the store's UsageByConsumer, which is already LIMIT 100, so for
+// paid traffic the cap matches the persisted view. Free self-route
+// completions are NEVER persisted (api/provider.go skips the usage row so
+// owner-only traffic stays out of the public stats), so for an owner whose
+// box served more than usageHistoryCap free self-route requests since the
+// coordinator booted this window is the only record and the older entries
+// are gone — documented in docs/consumer/billing.md. Without the cap the
+// slice grew by one entry per finalized completion for the life of the
+// process (~3M/day for the wholesale consumer) and one GET marshalled all of
+// them.
 const usageHistoryCap = 100
 
 // RecordUsage appends a usage entry for a consumer's history, keeping only

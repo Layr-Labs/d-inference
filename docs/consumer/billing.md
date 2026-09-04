@@ -66,6 +66,18 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
      "https://api.darkbloom.dev/v1/payments/usage?limit=50"
 ```
 
+The response is a window, not a full history: the coordinator keeps the newest
+100 completions per consumer in memory since it last started and serves those;
+when that in-memory view is empty (a fresh coordinator) it falls back to the
+newest 100 persisted usage rows. Paid completions are persisted, so a paid
+consumer sees the same window either way. **Free self-route completions (a
+request served by your own linked machine) are never persisted** — they are
+owner-only traffic kept out of the public stats — so for a self-route owner the
+in-memory window is the only record: after more than 100 free self-route
+requests since the coordinator booted, the older entries are no longer
+retrievable from this endpoint. Use the per-request `usage` object on each
+response for accounting you need to keep.
+
 ```json
 {
   "usage": [

@@ -1368,7 +1368,7 @@ func (s *Server) dispatchWithReserver(
 	writeCtx, cancelWrite := firstTokenWriteContext(
 		r.Context(), receivedAt, requestDeadline)
 	ap.Mark(registry.StampWriteSubmitted)
-	_, writeErr := writeProviderInferenceRequestDeferred(
+	writeMetadata, writeErr := writeProviderInferenceRequestDeferred(
 		writeCtx,
 		provider,
 		providerInferenceFrameBuilder(
@@ -1390,15 +1390,16 @@ func (s *Server) dispatchWithReserver(
 	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
+		// A frame the writer already handed off completes on the wire even
+		// though this attempt is abandoned (request clock or client hang-up
+		// mid-write): cancel it, and do so BEFORE cleanupPending's idle drain
+		// so the stop is on the control lane ahead of any new assignment. A
+		// frame discarded before handoff gets no cancel.
+		s.cancelAbortedProviderWrite(provider, pr, writeMetadata, writeErr)
 		cleanupPending()
 		excludeProviders[provider.ID] = struct{}{}
 		if errors.Is(writeErr, context.DeadlineExceeded) ||
 			errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
-			// The writer either discarded the frame before handoff or aborted
-			// its connection during an in-flight write. Cancel defensively in
-			// case the provider decoded the final bytes before disconnect.
-			ap.Mark(registry.StampCancelSent)
-			s.sendProviderCancel(provider, requestID)
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
 		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway

@@ -1761,7 +1761,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// while the aggregator's cancel clock keeps running.
 		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
 		d.pr.Profile.Mark(registry.StampWriteSubmitted)
-		_, writeErr := writeProviderInferenceRequestDeferred(
+		writeMetadata, writeErr := writeProviderInferenceRequestDeferred(
 			writeCtx,
 			d.provider,
 			providerInferenceFrameBuilder(
@@ -1778,14 +1778,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		}
 		if writeErr != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
+			// See dispatchWithReserver: a frame already handed to the socket
+			// completes; cancel it ahead of the idle drain.
+			s.cancelAbortedProviderWrite(d.provider, d.pr, writeMetadata, writeErr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)
 			d.excludeProviders[d.provider.ID] = struct{}{}
 			if errors.Is(writeErr, context.DeadlineExceeded) ||
 				errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
-				d.pr.Profile.Mark(registry.StampCancelSent)
-				s.sendProviderCancel(d.provider, d.requestID)
 				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 				d.updateRoutingOutcome(d.errorRoutingOutcome(
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))

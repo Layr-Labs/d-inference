@@ -357,23 +357,22 @@ func (w *providerWriter) writeRequest(
 					return metadata, ctx.Err()
 				case 4:
 					// A frame is already in the non-preemptible WebSocket
-					// write. Closing the connection is the only way to return
-					// at the request deadline without letting that frame
-					// outlive dispatch cleanup.
-					if !req.state.CompareAndSwap(4, 1) {
-						continue
-					}
-					w.closeNow()
-					if handoff != nil {
-						select {
-						case handedOff := <-handoff:
-							acceptHandoff(handedOff)
-						case <-req.done:
-							takeReadyHandoff()
-						case <-w.done:
-							takeReadyHandoff()
-						}
-					}
+					// write. Let it complete (the write watchdog bounds it)
+					// and return the caller's context error now, with the
+					// dequeue metadata the caller already accepted at
+					// handoff — DequeuedAt set is the caller's proof that the
+					// frame reached, or will reach, the wire. The caller
+					// owns the follow-up: it enqueues a cancel on the control
+					// lane, which is served only after this data write
+					// finishes, so the provider always sees request-then-
+					// cancel on one connection. Closing the connection here
+					// (#704: "the only way to return at the request deadline
+					// without letting that frame outlive dispatch cleanup")
+					// killed every other in-flight request on the provider —
+					// a read_error disconnect and a 502 flush per abandoned
+					// write; the cancel covers the orphan instead. req.done
+					// is buffered, so the writer's later publication never
+					// blocks on this abandoned owner.
 					return metadata, ctx.Err()
 				case 5:
 					// The complete frame is already on the wire. Keep the
@@ -591,19 +590,11 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		w.drainAll(err)
 		return false
 	}
-	if !req.state.CompareAndSwap(4, 5) {
-		// Cancellation won the write-completion race. Ensure the connection is
-		// unusable before dispatch cleanup can release the request reservation.
-		w.closeNow()
-		if req.done != nil {
-			if req.ctx != nil && req.ctx.Err() != nil {
-				req.done <- req.ctx.Err()
-			} else {
-				req.done <- context.Canceled
-			}
-		}
-		return false
-	}
+	// Nothing moves a request out of state 4 any more: an owner whose
+	// context fires mid-write returns immediately and leaves the frame to
+	// complete (writeRequest case 4), so this transition cannot fail. It
+	// stays a CAS so a future state can never be overwritten silently.
+	req.state.CompareAndSwap(4, 5)
 	if req.control {
 		w.link.controlFramesOut.Add(1)
 		w.link.controlBytesOut.Add(uint64(len(data)))

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -159,4 +160,82 @@ func TestUnknownTerminalPathsOnBareServer(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestCancelAbortedProviderWrite: the follow-up to an abandoned provider
+// write sends a cancel ONLY for a frame that reached the wire (dequeue
+// metadata set) and only for a context abort (request clock / client
+// hang-up), never for a frame discarded before handoff or a writer that died
+// mid-frame; the reason tag and the write_aborted cancel cause are emitted.
+func TestCancelAbortedProviderWrite(t *testing.T) {
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "k"}), ServerConfig{}, logger)
+	dd := newTestDD(t, collector)
+	defer dd.Close()
+	srv.SetDatadog(dd)
+
+	serverConn, clientConn := testWebSocketPairAPI(t)
+	cancelIDs := make(chan string, 8)
+	go func() {
+		for {
+			_, data, err := clientConn.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var msg protocol.CancelMessage
+			if json.Unmarshal(data, &msg) == nil && msg.Type == protocol.TypeCancel {
+				cancelIDs <- msg.RequestID
+			}
+		}
+	}()
+	const model = "write-abort-unit-model"
+	provider := makeRoutableProviderConn(t, reg, "p-abort", model, serverConn)
+	defer reg.Disconnect(provider.ID)
+	pr := &registry.PendingRequest{RequestID: "req-a", Model: model}
+	dequeued := registry.TextFrameWriteMetadata{DequeuedAt: time.Now()}
+
+	// Discarded before handoff: nothing reached the wire. Writer died
+	// mid-frame: nothing can take a cancel. Neither sends one.
+	srv.cancelAbortedProviderWrite(provider, pr, registry.TextFrameWriteMetadata{}, context.Canceled)
+	srv.cancelAbortedProviderWrite(provider, pr, registry.TextFrameWriteMetadata{}, context.DeadlineExceeded)
+	srv.cancelAbortedProviderWrite(provider, pr, dequeued, registry.ErrProviderWriterStopped)
+	select {
+	case id := <-cancelIDs:
+		t.Fatalf("unexpected cancel %q for a frame that never reached the wire", id)
+	case <-time.After(200 * time.Millisecond):
+	}
+	_ = dd.Statsd.Flush()
+	if got := findMetrics(collector.drain(), "provider.writer_inflight_abort"); len(got) != 0 {
+		t.Fatalf("writer_inflight_abort must not fire without a frame on the wire: %v", got)
+	}
+
+	// Client hang-up while the frame was in the socket write.
+	srv.cancelAbortedProviderWrite(provider, pr, dequeued, context.Canceled)
+	select {
+	case id := <-cancelIDs:
+		if id != "req-a" {
+			t.Fatalf("cancel for %q, want req-a", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no cancel followed the abandoned in-flight frame")
+	}
+	// Request clock while the frame was in the socket write.
+	pr2 := &registry.PendingRequest{RequestID: "req-b", Model: model}
+	srv.cancelAbortedProviderWrite(provider, pr2, dequeued, context.DeadlineExceeded)
+	select {
+	case id := <-cancelIDs:
+		if id != "req-b" {
+			t.Fatalf("cancel for %q, want req-b", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no cancel followed the deadline-aborted in-flight frame")
+	}
+	_ = dd.Statsd.Flush()
+	packets := collector.drain()
+	requireMetricWithTags(t, packets, "provider.writer_inflight_abort", "reason:client_gone")
+	requireMetricWithTags(t, packets, "provider.writer_inflight_abort", "reason:deadline")
+	requireMetricWithTags(t, packets, metricCancelSent, "cause:"+cancelCauseWriteAborted, "model:"+model)
 }

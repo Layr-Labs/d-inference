@@ -190,22 +190,30 @@ func TestProviderWriteDeferredBuildsAtDequeue(t *testing.T) {
 	}
 }
 
-func TestProviderWriteDeadlineAbortsInFlightSocketWrite(t *testing.T) {
+// TestProviderWriteContextCancelDuringInFlightSocketWriteKeepsConnection pins
+// the inversion of #704's in-flight abort: when the owner's context fires while
+// its frame is inside the non-preemptible socket write, the owner returns at
+// once with the dequeue metadata it accepted (proof the frame reached the
+// wire), the frame completes on its own, and the connection stays alive and
+// reusable — the writer never closes the socket for an abandoned frame,
+// because that killed every other in-flight request on the provider. The
+// follow-up cancel is the caller's job (api.cancelAbortedProviderWrite).
+func TestProviderWriteContextCancelDuringInFlightSocketWriteKeepsConnection(t *testing.T) {
 	started := make(chan struct{})
-	writeExited := make(chan struct{})
-	stop := make(chan struct{})
+	release := make(chan struct{})
+	var frames atomic.Int32
 	w := &providerWriter{
 		queue:   make(chan *providerWriteRequest, 1),
 		control: make(chan *providerWriteRequest, 1),
-		stop:    stop,
+		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 		writeFrameForTest: func(data []byte) error {
 			if string(data) == `{"type":"request"}` {
 				close(started)
-				<-stop
+				<-release
 			}
-			close(writeExited)
-			return errProviderWriterStopped
+			frames.Add(1)
+			return nil
 		},
 	}
 	go w.run()
@@ -232,21 +240,33 @@ func TestProviderWriteDeadlineAbortsInFlightSocketWrite(t *testing.T) {
 	select {
 	case got := <-resultCh:
 		if got.err != context.Canceled {
-			t.Fatalf("canceled write error = %v, want context.Canceled", got.err)
+			t.Fatalf("canceled in-flight write error = %v, want context.Canceled", got.err)
 		}
 		if got.metadata.DequeuedAt.IsZero() {
-			t.Fatal("canceled in-flight write lost dequeue metadata")
+			t.Fatal("canceled in-flight write lost dequeue metadata (the caller needs it to know the frame is on the wire)")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("deadline did not abort in-flight socket write")
+		t.Fatal("owner did not return while its frame was in flight")
 	}
-	select {
-	case <-writeExited:
-	case <-time.After(time.Second):
-		t.Fatal("socket write did not exit after writer close")
+	if w.dead.Load() {
+		t.Fatal("connection was closed for an abandoned in-flight frame")
 	}
-	if !w.dead.Load() {
-		t.Fatal("writer remained reusable after an aborted partial frame")
+
+	// The abandoned frame completes and the writer keeps serving the same
+	// connection.
+	close(release)
+	if err := w.write(context.Background(), []byte(`{"type":"next"}`)); err != nil {
+		t.Fatalf("write after an abandoned in-flight frame = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for frames.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := frames.Load(); got != 2 {
+		t.Fatalf("frames written = %d, want 2 (the abandoned frame completed, then the next one)", got)
+	}
+	if w.dead.Load() {
+		t.Fatal("writer died after serving an abandoned frame")
 	}
 }
 

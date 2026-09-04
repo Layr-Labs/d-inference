@@ -27,6 +27,10 @@ const (
 	// cancelCauseStrayChunk is a cancel triggered by a chunk for an id no
 	// abandon path recorded (genuinely unknown, or predating a restart).
 	cancelCauseStrayChunk = "stray_chunk"
+	// cancelCauseWriteAborted: the caller's context (request clock or client
+	// hang-up) fired while the request frame was in the provider socket
+	// write; the frame completes on its own and this cancel follows it.
+	cancelCauseWriteAborted = "write_aborted"
 )
 
 const (
@@ -89,6 +93,33 @@ func (s *Server) sendRecordedCancel(provider *registry.Provider, pr *registry.Pe
 	if !s.sendProviderCancel(provider, pr.RequestID) {
 		s.zombieCanceller.noteSendFailed(pr.RequestID, now)
 	}
+}
+
+// cancelAbortedProviderWrite follows up a failed provider write whose frame
+// nevertheless reached (or will reach) the wire: the writer handed back
+// dequeue metadata, so the request was in the non-preemptible socket write
+// when the caller's context fired (request clock or client hang-up). The
+// frame completes on its own — the connection is no longer closed for it —
+// so the provider will admit an orphan request; the cancel enqueued here is
+// served on the control lane only after that data write finishes, which is
+// the request-then-cancel ordering the provider needs to correlate them. A
+// frame discarded before handoff (zero DequeuedAt) never reached the wire
+// and gets no cancel; a writer that died mid-frame cannot take one.
+func (s *Server) cancelAbortedProviderWrite(provider *registry.Provider, pr *registry.PendingRequest, metadata registry.TextFrameWriteMetadata, writeErr error) {
+	if pr == nil || metadata.DequeuedAt.IsZero() {
+		return
+	}
+	var reason string
+	switch {
+	case errors.Is(writeErr, context.Canceled):
+		reason = "client_gone"
+	case errors.Is(writeErr, context.DeadlineExceeded):
+		reason = "deadline"
+	default:
+		return
+	}
+	s.ddIncr("provider.writer_inflight_abort", []string{"reason:" + reason})
+	s.sendAbandonCancel(provider, pr, cancelCauseWriteAborted)
 }
 
 // cancelSendFailureReason maps an EnqueueText error to a bounded tag value.

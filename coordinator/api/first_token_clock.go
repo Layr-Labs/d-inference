@@ -92,8 +92,11 @@ func timingReceivedAt(t *registry.RequestTiming) time.Time {
 // watchdog allows 5-30s per frame); without this bound the budget can expire
 // while the dispatch goroutine is still blocked on the write, letting the
 // aggregator cancel before the loop can shed with a 429. Cancellation before
-// socket handoff discards the frame; cancellation during a socket write closes
-// the connection so a partial or late request can never be reused.
+// socket handoff discards the frame; cancellation during a socket write
+// returns immediately while the frame completes on its own, and the caller
+// follows it with a cancel on the control lane (cancelAbortedProviderWrite)
+// — the connection is never closed for an abandoned frame, because that
+// killed every other in-flight request on the provider.
 func firstTokenWriteContext(ctx context.Context, receivedAt time.Time, deadline time.Duration) (context.Context, context.CancelFunc) {
 	if receivedAt.IsZero() || deadline <= 0 {
 		return ctx, func() {}

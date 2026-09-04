@@ -137,10 +137,14 @@ type dispatchState struct {
 	// ranks with (PendingRequest.ExpectedCompletionTokens). See routing_estimates.go.
 	expectedCompletionTokens int
 	// queueExpired records that the request-absolute first-content clock ran
-	// out while the request was still waiting in the coordinator queue —
-	// nothing was dispatched. The exhausted ladder keys the queue_deadline
-	// reason on it (classifyExhaustedStatus) and uses queueExitPosition (the
-	// waiter's enqueue position) as the Retry-After queue position.
+	// out while the LAST attempt was still waiting in the coordinator queue —
+	// no provider was dispatched on that attempt. An earlier attempt may have
+	// been dispatched and failed pre-content (write error, retryable
+	// provider_error) before the ladder fell back to the queue; the ledger
+	// reason describes the attempt that expired, not the whole request. The
+	// exhausted ladder keys the queue_deadline reason on it
+	// (classifyExhaustedStatus) and uses queueExitPosition (the waiter's
+	// enqueue position) as the Retry-After queue position.
 	queueExpired      bool
 	queueExitPosition int
 
@@ -814,9 +818,10 @@ func (d *dispatchState) terminalFailureForExhaustion() (
 // the caller. A typed provider 504 (safety deadline / backpressure timeout) is a
 // real provider terminal and must remain 504; an untyped 504 is the dispatch
 // loop's existing discriminator for its own first-content timeout. queueExpired
-// says the untyped 504 came from the queue wait (never dispatched): the same
-// retryable 429, reported as queue_deadline so the rejection ledger and route
-// rows stop conflating queue expiry with post-dispatch provider silence.
+// says the untyped 504 came from the queue wait (no provider dispatched on that
+// attempt): the same retryable 429, reported as queue_deadline so the rejection
+// ledger and route rows stop conflating queue expiry with post-dispatch
+// provider silence.
 func classifyExhaustedStatus(statusCode int, terminalCause string, queueExpired bool) (code int, reason string, reclassified bool) {
 	if statusCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(terminalCause) {
 		if queueExpired {
@@ -1565,9 +1570,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				errors.Is(err, registry.ErrQueueFirstContentDeadline) {
 				// The first-content clock ran out while the request was still
 				// queued (the per-waiter timer or the drain sweep's
-				// RefreshFirstContentBudget): nothing was dispatched, so this
-				// is the queue's own terminal (queue_deadline), not a provider
-				// that went silent after dispatch (first_chunk_timeout). Same
+				// RefreshFirstContentBudget): nothing was dispatched on THIS
+				// attempt, so this is the queue's own terminal (queue_deadline),
+				// not a provider that went silent after dispatch
+				// (first_chunk_timeout). Same
 				// synthetic 504 -> retryable 429 path and the same client body;
 				// only the ledger reason, the route outcome and the Retry-After
 				// queue position differ. Deliberately no refund here — the

@@ -5,6 +5,7 @@
 
 import type { MyProvider } from "../types";
 import { clampPct, formatTps, pct } from "./format";
+import { resolveThroughput } from "./throughput";
 import { MeterBar, StackedBar, pressureColor, cpuColor } from "./gauges/MeterBar";
 import { ThermalPips } from "./gauges/ThermalPips";
 import { ConcurrencyDots } from "./gauges/ConcurrencyDots";
@@ -47,8 +48,7 @@ export function CardVitals({
     return <p className="px-4 py-3 text-xs text-text-tertiary">{msg}</p>;
   }
 
-  const decode = provider.decode_tps ?? 0;
-  const prefill = provider.prefill_tps ?? 0;
+  const { decode, prefill } = resolveThroughput(provider);
   const decodePct = fleetMaxDecodeTps > 0 ? (decode / fleetMaxDecodeTps) * 100 : 0;
 
   return (

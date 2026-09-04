@@ -8,12 +8,8 @@
 import { useMemo } from "react";
 import { useFleetData } from "./useFleetData";
 import { semverLess } from "../warnings";
-import {
-  buildAttentionGroups,
-  deriveFleetVerdict,
-  fleetMaxDecodeTps,
-  onlineCount,
-} from "./aggregate";
+import { buildAttentionGroups, deriveFleetVerdict, onlineCount } from "./aggregate";
+import { fleetMaxDecodeTps } from "./throughput";
 import { DashboardHeader } from "./DashboardHeader";
 import { FleetHealthStrip } from "./FleetHealthStrip";
 import { AttentionFeed } from "./AttentionFeed";

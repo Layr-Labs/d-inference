@@ -36,8 +36,9 @@ export interface MyBackendSlot {
   active_tokens: number;
   max_tokens_potential: number;
   // Measured provider telemetry, mirrored from the Go BackendSlotCapacity wire
-  // type. Both are `omitempty` server-side (omitted when zero/unmeasured), so
+  // type. All are `omitempty` server-side (omitted when zero/unmeasured), so
   // they are optional here.
+  observed_decode_tps?: number; // EWMA of measured per-request decode TPS for this slot's model
   observed_prefill_tps?: number; // EWMA of measured prefill TPS (admission→first token)
   model_load_time_ms?: number; // measured cold-start load time (ms) for this slot's model
   // Per-slot KV-cache backend the provider's engine was actually built with,
@@ -130,6 +131,9 @@ export interface MyProvider {
   current_model?: string;
   pending_requests: number;
   max_concurrency: number;
+  // Measured throughput resolved server-side from the heartbeat's per-slot
+  // EWMAs (active model first). Omitted when the machine has not served a
+  // request yet. Read through dashboard/throughput.ts, never directly.
   prefill_tps?: number;
   decode_tps?: number;
 

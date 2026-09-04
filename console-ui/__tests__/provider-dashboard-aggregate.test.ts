@@ -3,10 +3,9 @@ import {
   buildAttentionGroups,
   deriveFleetVerdict,
   capacitySegments,
-  fleetMaxDecodeTps,
-  fleetDecodeTps,
   onlineCount,
 } from "@/app/providers/dashboard/aggregate";
+import { fleetMaxDecodeTps } from "@/app/providers/dashboard/throughput";
 import { baseProvider, ctx } from "./provider-dashboard-fixtures";
 
 describe("buildAttentionGroups", () => {
@@ -101,14 +100,13 @@ describe("capacitySegments", () => {
 });
 
 describe("fleet throughput + online helpers", () => {
-  it("computes max/sum decode tps with guards", () => {
+  it("computes max decode tps with guards", () => {
     const providers = [
       baseProvider({ decode_tps: 40 }),
       baseProvider({ id: "x", decode_tps: 90 }),
       baseProvider({ id: "y", decode_tps: undefined }),
     ];
     expect(fleetMaxDecodeTps(providers)).toBe(90);
-    expect(fleetDecodeTps(providers)).toBe(130);
     expect(fleetMaxDecodeTps([])).toBe(0);
   });
 

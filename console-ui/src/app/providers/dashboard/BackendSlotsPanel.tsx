@@ -1,9 +1,10 @@
 // Backend detail (inside the "Backend slots" accordion): GPU memory mini-stats
 // plus a per-model slot table. The token-budget bar (active / max potential) is
-// the literal headroom the coordinator admits new requests against.
+// the literal headroom the coordinator admits new requests against; each slot's
+// measured decode tok/s is the per-model view of the card's headline Decode line.
 
 import type { MyBackendCapacity } from "../types";
-import { abbreviateNumber, clampPct, shortModelName } from "./format";
+import { abbreviateNumber, clampPct, formatTps, shortModelName } from "./format";
 import { MeterBar } from "./gauges/MeterBar";
 
 const STATE_TAG: Record<string, string> = {
@@ -50,6 +51,7 @@ export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
                     </span>
                     <span className="text-[11px] font-mono text-text-tertiary">
                       {s.num_running} run · {s.num_waiting} wait
+                      {(s.observed_decode_tps ?? 0) > 0 && ` · ${formatTps(s.observed_decode_tps)} tok/s`}
                     </span>
                   </div>
                 </div>

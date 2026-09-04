@@ -37,15 +37,32 @@ type PostgresStore struct {
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
-	// platform pricing lookups (which change rarely).
+	// platform pricing lookups (which change rarely). Misses ("no custom
+	// price", the common case for every provider account and for models
+	// without a platform row) are cached too — found=false — so the
+	// per-request, per-attempt and per-settlement lookups stop hitting
+	// Postgres; only a genuine DB error is left uncached.
 	priceCacheMu sync.RWMutex
 	priceCache   map[string]cachedPrice
 }
 
 type cachedPrice struct {
 	input, output int64
-	at            time.Time
+	// found is false for a cached miss (no row); such an entry answers
+	// (0, 0, false) until it expires or SetModelPrice invalidates it.
+	found bool
+	at    time.Time
 }
+
+// priceCacheTTL bounds staleness for out-of-band SQL edits to model_prices;
+// in-process SetModelPrice invalidates immediately.
+const priceCacheTTL = 30 * time.Second
+
+// priceCacheMaxEntries bounds the price cache. Keys are accountID:model, so
+// only an account-diverse scan can grow it; past the bound the map is reset
+// rather than evicted entry by entry (every entry is re-derivable in one
+// query).
+const priceCacheMaxEntries = 4096
 
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
@@ -3149,11 +3166,11 @@ func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outpu
 func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
 	key := accountID + ":" + model
 
-	// Check in-memory cache (30-second TTL).
+	// Check in-memory cache (positive and negative entries, priceCacheTTL).
 	s.priceCacheMu.RLock()
-	if cached, ok := s.priceCache[key]; ok && time.Since(cached.at) < 30*time.Second {
+	if cached, ok := s.priceCache[key]; ok && time.Since(cached.at) < priceCacheTTL {
 		s.priceCacheMu.RUnlock()
-		return cached.input, cached.output, true
+		return cached.input, cached.output, cached.found
 	}
 	s.priceCacheMu.RUnlock()
 
@@ -3166,15 +3183,30 @@ func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bo
 		accountID, model,
 	).Scan(&input, &output)
 	if err != nil {
+		// Only a definitive "no row" is a cacheable miss. Any other error
+		// (timeout, pool exhaustion, closed pool) must not be remembered as
+		// "no custom price": callers fall back to the default price, and
+		// caching that for a TTL would under-reserve / under-charge against a
+		// real custom row — a billing error, not a perf trade.
+		if errors.Is(err, pgx.ErrNoRows) {
+			s.storePriceCache(key, cachedPrice{at: time.Now()})
+		}
 		return 0, 0, false
 	}
 
-	// Populate cache.
-	s.priceCacheMu.Lock()
-	s.priceCache[key] = cachedPrice{input: input, output: output, at: time.Now()}
-	s.priceCacheMu.Unlock()
-
+	s.storePriceCache(key, cachedPrice{input: input, output: output, found: true, at: time.Now()})
 	return input, output, true
+}
+
+// storePriceCache records one price lookup, resetting the map when it has
+// grown past priceCacheMaxEntries.
+func (s *PostgresStore) storePriceCache(key string, entry cachedPrice) {
+	s.priceCacheMu.Lock()
+	if len(s.priceCache) >= priceCacheMaxEntries {
+		s.priceCache = make(map[string]cachedPrice)
+	}
+	s.priceCache[key] = entry
+	s.priceCacheMu.Unlock()
 }
 
 func (s *PostgresStore) ListModelPrices(accountID string) []ModelPrice {

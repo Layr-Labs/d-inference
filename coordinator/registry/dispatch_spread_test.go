@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"testing"
 
@@ -132,6 +133,18 @@ const spreadDecodeFloorTPS = 15
 // arrivals, and the Gini coefficient of the load vector.
 func replayArrivals(t *testing.T, reg *Registry, model string, ids []string, arrivals, prompt, maxTokens, expected int) (map[string]int, int, float64) {
 	t.Helper()
+	return replayArrivalsWith(t, reg, model, ids, arrivals, prompt, maxTokens, expected, false)
+}
+
+// replayArrivalsWith is replayArrivals with a heartbeat choice: with
+// reported=true the winner's next heartbeat is taken to reflect each
+// reservation as admitted work (max_tokens_potential grows by the request's
+// prompt + max_tokens), so the coordinator's in-gap pending charge
+// (inGapPendingTokens) is zero and the only contention pricing left is the
+// fixed queue/pending penalties — the pre-in-gap-charge conditions under
+// which the expected-completion decode term alone decides the spread.
+func replayArrivalsWith(t *testing.T, reg *Registry, model string, ids []string, arrivals, prompt, maxTokens, expected int, reported bool) (map[string]int, int, float64) {
+	t.Helper()
 	counts := make(map[string]int, len(ids))
 	rejected := 0
 	for i := 0; i < arrivals; i++ {
@@ -149,6 +162,15 @@ func replayArrivals(t *testing.T, reg *Registry, model string, ids []string, arr
 			continue
 		}
 		counts[p.ID]++
+		if reported {
+			p.mu.Lock()
+			for j := range p.BackendCapacity.Slots {
+				if p.BackendCapacity.Slots[j].Model == model {
+					p.BackendCapacity.Slots[j].MaxTokensPotential += int64(prompt + maxTokens)
+				}
+			}
+			p.mu.Unlock()
+		}
 	}
 	loads := make([]int, 0, len(ids))
 	for _, id := range ids {
@@ -286,4 +308,94 @@ func TestDispatchSpreadHomogeneousFleetAtLargeMaxTokens(t *testing.T) {
 			t.Fatalf("max_load=%d, want <= 2 (no box fills toward its cap of 8)", maxLoad(counts))
 		}
 	})
+}
+
+// TestDispatchSpreadExpectedCompletionTermIsLoadBearing is the CI pin for
+// the expected-completion decode term ITSELF (completion_calibration.go,
+// thisReqDecodeTokens). The replays above compose it with the in-gap pending
+// charge, which spreads the cohort on its own, so they no longer fail when
+// the term regresses (e.g. silently falls back to RequestedMaxTokens). Here
+// each reservation is reflected by the winner's heartbeat
+// (replayArrivalsWith reported=true), so the in-gap charge is zero and the
+// only contention pricing is the 3.75 s of fixed queue/pending penalties:
+// with max_tokens in the decode term the 27 vs 26 tok/s tiers differ by
+// ~23 s of thisReqMs and the fastest tier fills to its cap of 8; with the
+// learned ~575 the gap is ~0.8 s, inside the tie window, and the cohort
+// spreads. Fails before the term landed (and whenever it is bypassed).
+func TestDispatchSpreadExpectedCompletionTermIsLoadBearing(t *testing.T) {
+	const (
+		model     = "spread-term-model"
+		arrivals  = 140
+		prompt    = 1000
+		maxTokens = 16384
+	)
+	t.Run("calibrated_spreads", func(t *testing.T) {
+		t.Setenv("EIGENINFERENCE_COMPLETION_CALIBRATION", "on")
+		reg := New(testLogger())
+		ids := homogeneousSpreadFleet(reg, model)
+		seedCompletionWindow(reg, model, 50, 100, 500)
+		expected, learned := reg.ExpectedCompletionTokensLearned(model, maxTokens)
+		if !learned || expected >= maxTokens {
+			t.Fatalf("seeded expected=%d learned=%v, want a learned value below the bound", expected, learned)
+		}
+		counts, rejected, gini := replayArrivalsWith(t, reg, model, ids, arrivals, prompt, maxTokens, expected, true)
+		t.Logf("calibrated (heartbeat-reported): rejected=%d providers_used=%d/%d max_load=%d gini=%.2f", rejected, len(counts), len(ids), maxLoad(counts), gini)
+		if rejected != 0 {
+			t.Fatalf("rejected=%d, want 0", rejected)
+		}
+		if gini > 0.1 || len(counts) != len(ids) {
+			t.Fatalf("gini=%.2f providers_used=%d/%d, want <= 0.1 over all providers: the expected-completion decode term must spread the cohort by itself", gini, len(counts), len(ids))
+		}
+	})
+	t.Run("uncalibrated_herds", func(t *testing.T) {
+		t.Setenv("EIGENINFERENCE_COMPLETION_CALIBRATION", "off")
+		reg := New(testLogger())
+		ids := homogeneousSpreadFleet(reg, model)
+		seedCompletionWindow(reg, model, 50, 100, 500)
+		expected := reg.ExpectedCompletionTokens(model, maxTokens)
+		if expected != maxTokens {
+			t.Fatalf("switch off: expected=%d, want the bound %d", expected, maxTokens)
+		}
+		counts, rejected, gini := replayArrivalsWith(t, reg, model, ids, arrivals, prompt, maxTokens, expected, true)
+		t.Logf("uncalibrated (heartbeat-reported): rejected=%d providers_used=%d/%d max_load=%d gini=%.2f", rejected, len(counts), len(ids), maxLoad(counts), gini)
+		if rejected != 0 {
+			t.Fatalf("rejected=%d, want 0", rejected)
+		}
+		// The control: the pre-P1 herd (the fastest tier filled to its
+		// concurrency cap) reproduces exactly when the term is priced with
+		// the bound, which is what makes the calibrated subtest discriminating.
+		if maxLoad(counts) != 8 || gini < 0.5 {
+			t.Fatalf("max_load=%d gini=%.2f, want the herd (max_load 8 at the cap, gini >= 0.5) with the bound in the decode term", maxLoad(counts), gini)
+		}
+	})
+}
+
+// TestExpectedCompletionPricesOnlyThisRequestDecodeTerm pins the arithmetic:
+// for one candidate the learned expected completion replaces the bound in
+// ThisReqMs alone — the difference is exactly (max_tokens − expected) at the
+// box's decode rate — while the backlog term (in-gap charge, priced with the
+// bound) is byte-identical.
+func TestExpectedCompletionPricesOnlyThisRequestDecodeTerm(t *testing.T) {
+	reg := New(testLogger())
+	model := "term-arith-model"
+	const prompt, maxTokens, expected, tps = 100, 16384, 575, 80.0
+	p := makeTokenBudgetProvider(t, reg, "term-box", model, 100, 0, 1_000_000, tps)
+	p.AddPending(inGapPending("occupant", model, prompt, maxTokens))
+
+	bound := inGapPending("probe-bound", model, prompt, maxTokens)
+	calibrated := inGapPending("probe-calibrated", model, prompt, maxTokens)
+	calibrated.ExpectedCompletionTokens = expected
+	b := inGapCandidate(t, reg, p, model, bound)
+	c := inGapCandidate(t, reg, p, model, calibrated)
+
+	want := float64(maxTokens-expected) / tps * 1000
+	if got := b.breakdown.ThisReqMs - c.breakdown.ThisReqMs; math.Abs(got-want) > 1e-6 {
+		t.Fatalf("ThisReqMs bound−calibrated = %v, want %v ((max_tokens − expected) / tps)", got, want)
+	}
+	if b.breakdown.BacklogMs != c.breakdown.BacklogMs || b.breakdown.BacklogMs <= 0 {
+		t.Fatalf("BacklogMs bound=%v calibrated=%v, want equal and > 0 (the in-gap charge keeps the bound)", b.breakdown.BacklogMs, c.breakdown.BacklogMs)
+	}
+	if got := b.costMs - c.costMs; math.Abs(got-want) > 1e-6 {
+		t.Fatalf("CostMs bound−calibrated = %v, want %v (only the decode term moved)", got, want)
+	}
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { coordinatorUrl, cacheControl } from "@/lib/server/coordinator";
+import { coordinatorUrl } from "@/lib/server/coordinator";
+import { getStatsSnapshot, statsSnapshotHeaders, StatsUpstreamError } from "./snapshot-cache";
 import {
   MOCK_CITY_BUCKETS,
   MOCK_REGION_BUCKETS,
@@ -66,17 +67,20 @@ export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get("mock") === "geo") {
     // Mock mode: try upstream but fall back to empty base so dev works offline.
     const res = await fetch(`${coordinatorUrl()}/v1/stats`, { cache: "no-store" }).catch(() => null);
-    const data = res?.ok ? await res.json() : {};
-    return NextResponse.json(withMockGeography(data));
+    const data = res?.ok ? await res.json().catch(() => ({})) : {};
+    return NextResponse.json(withMockGeography(data), {
+      headers: { "Cache-Control": "no-store", "X-Stats-Cache": "MOCK" },
+    });
   }
-  const res = await fetch(`${coordinatorUrl()}/v1/stats`, { cache: "no-store" });
-  if (!res.ok) {
+
+  try {
+    const { snapshot, cache } = await getStatsSnapshot(coordinatorUrl());
+    return NextResponse.json(snapshot.data, { headers: statsSnapshotHeaders(snapshot, cache) });
+  } catch (error) {
+    const status = error instanceof StatsUpstreamError ? error.status : 502;
     return NextResponse.json(
-      { error: `Upstream ${res.status}` },
-      { status: res.status },
+      { error: error instanceof StatsUpstreamError ? error.message : "Unable to fetch network statistics" },
+      { status, headers: { "Cache-Control": "no-store" } },
     );
   }
-  return NextResponse.json(await res.json(), {
-    headers: { "Cache-Control": cacheControl(10, 30) },
-  });
 }

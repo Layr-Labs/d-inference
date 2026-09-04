@@ -6,6 +6,11 @@ import { render, screen } from "@testing-library/react";
 // pages can import them without hitting Privy, Zustand persistence, etc.
 // ---------------------------------------------------------------------------
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/",
+}));
+
 // Mock @/hooks/useToast — provides addToast
 vi.mock("@/hooks/useToast", () => ({
   useToastStore: () => vi.fn(),
@@ -231,9 +236,9 @@ describe("ProvidersPage", () => {
     const ProvidersPage = (await import("@/app/providers/page")).default;
     render(<ProvidersPage />);
 
-    await screen.findByText("No provider machines linked yet");
-    expect(screen.getByText("Set up a provider")).toBeInTheDocument();
-    expect(screen.getByText("Open calculator")).toBeInTheDocument();
+    await screen.findByText("Put your Mac to work.");
+    expect(screen.getByRole("region", { name: "Provider setup steps" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the earnings calculator" })).toBeInTheDocument();
   });
 
   it("renders the fleet, verdict, and a machine card when a machine is linked", async () => {
@@ -425,8 +430,8 @@ describe("ModelsPage", () => {
       "title",
       "Served only by providers with: Apple M5, NAX runtime"
     );
-    // The ungated card renders no requirement pill.
+    // The ungated model renders no requirement pill.
     expect(screen.getAllByText(/ only$/)).toHaveLength(1);
-    expect(screen.getByText("gemma-4-26b")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gemma 4 26B" })).toBeInTheDocument();
   });
 });

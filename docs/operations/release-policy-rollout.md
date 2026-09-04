@@ -1,6 +1,6 @@
 # Roll out the release-policy routing gate (shadow → enforce)
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-04 · commit `fcecc3675`
 
 Runbook for the two production changes that involve the coordinator's
 release-policy routing gate: (1) deploying a coordinator that contains the gate
@@ -121,8 +121,7 @@ Where the gate lives: `coordinator/registry/registry.go`
 
 ## Verification
 
-`/v1/stats` is cached for one minute (`coordinator/api/stats.go`), so poll no
-faster than that. Fields used below:
+Poll `/v1/stats` no faster than its [documented cache interval](../reference/api-contracts.md#public-stats-and-health-5), and compare `snapshot_at` to identify a new source observation. Fields used below:
 
 | `/v1/stats` field | Meaning | Source |
 |---|---|---|

@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `dbd12f295`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -15,29 +15,69 @@ The console exists so a person can use Darkbloom without writing code: sign in, 
 
 ### Runtime and layout
 
-`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Every page is a client component; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
+`console-ui/src/app/layout.tsx` (`RootLayout`) mounts, in order: `<Analytics/>` (`@vercel/analytics/next`), `GoogleAnalytics`, `TelemetryInitializer`, `DatadogRUM`, then `ThemeProvider` → `PrivyClientProvider` → `VerificationModeProvider` → `AppShell` → the page. Route entry points compose client workspaces; there is no `not-found.tsx` or `loading.tsx`, and `console-ui/src/app/global-error.tsx` is the root error boundary. Dependencies of note (`console-ui/package.json`): `@privy-io/react-auth`, `zustand`, `tweetnacl`, `@datadog/browser-rum`, `react-markdown`, Tailwind 4. `console-ui/next.config.ts` sets `typescript.ignoreBuildErrors: true`, so type errors do not fail `next build`.
 
-### Page routes (13)
+### Page routes (14)
 
 Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; nothing is enforced by the request interceptor.
 
 | Path | File(s) | Purpose | Auth |
 |---|---|---|---|
-| `/` | `page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
+| `/` | `page.tsx`, `components/console-entry/*` | Consumer/Provider workspace chooser with account-aware provider destinations | Public |
+| `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
 | `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
-| `/settings` | `settings/page.tsx` | Coordinator-URL field (localStorage `darkbloom_coordinator_url`), health check via `/api/health` (`healthCheck`, `console-ui/src/lib/api/health.ts`), encrypt-to-coordinator toggle (`setEncryptionEnabled`) | None |
+| `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
 | `/billing` | `billing/page.tsx` → `billing/BillingContent.tsx` (`next/dynamic`, `ssr: false`) | Balance and usage (`fetchBalance`, `fetchUsage`), Buy Credits (`createStripeCheckout`), invite redeem (`console-ui/src/lib/api/invite.ts`), Stripe Connect payouts (`components/payouts/useStripePayouts.ts`) | API key for balance/usage; Privy session for Stripe routes |
-| `/api-console` | `api-console/page.tsx`, `components/api-keys/*` (`ApiKeysManager`) | API reference snippets (base URL = `clientCoordinatorUrl()`) and the **API key manager** — list/create/edit/rotate/delete through `/api/keys*` (`console-ui/src/lib/api/keys.ts`, `managementHeaders`); self-route-only toggle reads `/api/me/provider-models` | Page public; key management Privy |
-| `/providers` | `providers/layout.tsx` (tabs), `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard: polls `/api/me/providers` and `/api/me/summary` every `REFRESH_MS` = `15_000` ms with a Privy Bearer; remove machine via `DELETE /api/me/providers/[id]`; Setup/Earnings tabs appear when `useHasLinkedProviders()` is true | Privy |
-| `/providers/setup` | `providers/setup/page.tsx` | Static install and `darkbloom login` steps | None |
+| `/api-console` | `api-console/page.tsx`, `components/api-keys/*` (`ApiKeysManager`) | API reference snippets (base URL = `apiExampleUrl()`) and the **API key manager** — list/create/edit/rotate/delete through `/api/keys*` (`console-ui/src/lib/api/keys.ts`, `managementHeaders`); self-route-only toggle reads `/api/me/provider-models` | Page public; key management Privy |
+| `/providers` | `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard with account-scoped polling every `REFRESH_MS` = `15_000` ms; guests and confirmed empty accounts see the shared onboarding guide | Public guide; fleet data Privy |
+| `/providers/setup` | `providers/setup/page.tsx`, `components/provider-onboarding/*` | Requirements and install → link → start → check guide; existing providers see “Add another Mac” | Public guide; device linking Privy |
 | `/providers/earnings` | `providers/earnings/page.tsx` → `EarningsContent.tsx` (`ssr: false`) | `GET /api/me/earnings?limit=100` with the Privy token (falls back to the API key as Bearer), payouts card | Privy (or API key) |
-| `/stats` | `stats/page.tsx`, `stats/*`, `components/stats/network-map/*` | Public network stats: `useVisiblePolling(fetchStats, 15_000)` over `/api/stats`, `/api/models`, `/api/models/capacity`, `/api/network/totals?window=24h`, `/api/network/series?window=`; the catalog fetch falls back to `COORDINATOR_URL` directly (`fetchModelCatalog`) | Public |
+| `/stats` | `stats/page.tsx`, `stats/useNetworkStats.ts`, `stats/*`, `components/stats/network-map/*` | Continuous geography, activity, model-capacity, and hardware overview with an expandable provider directory; `useNetworkStats` polls same-origin stats, catalog, capacity, and totals independently of the primary render. All traffic ranges, including `30m`, use `/api/network/series?window=` and its explicit `end_at`; see [network stats snapshots](#network-stats-snapshots) | Public |
 | `/earn` | `earn/page.tsx`, `earn/calc.ts`, `earn/useEarningsCalculator.ts`, `earn/providerReadiness.ts` | Earnings calculator — pure client math, no network call; readiness notice below `MIN_PROVIDER_MEMORY_GB` | Public; CTAs call `login()` |
 | `/leaderboard` | `leaderboard/page.tsx` → `components/leaderboard/LeaderboardContent.tsx`, `components/leaderboard/useLeaderboard.ts` | Provider leaderboard from `/api/leaderboard?<metric,window,limit>` | Public |
 
 `components/earn/BaseRewardsPanel.tsx` is not mounted by any page (its only importer is its test), so base rewards are not surfaced anywhere in the console — see [`../../design/base-rewards.md`](../../design/base-rewards.md).
+
+### Workspace entry and provider journeys
+
+`ConsoleWelcome` (`console-ui/src/components/console-entry/ConsoleWelcome.tsx`)
+offers Consumer → `/chat` with API/catalog links, and Provider → setup or the
+fleet. Workspace choice changes navigation, not account permissions. The root
+remains a chooser; no saved preference overrides a deep link. `AppShell` omits
+the sidebar on `/` and preserves the standalone device approval flow on `/link`.
+
+`useProviderAccount` (`console-ui/src/components/console-entry/useProviderAccount.ts`)
+uses the Privy auth context without provisioning an inference key. A successful
+empty provider list selects setup. Any linked record, including an offline or
+never-seen Mac, selects the fleet. Loading, malformed responses, missing tokens,
+and request errors remain unknown; they never imply a new provider. Discovery
+has a 15-second deadline and retries when the page becomes visible or the user
+requests it. Account changes cancel pending results.
+
+`ConsoleExperienceProvider` (`console-ui/src/components/console-entry/ConsoleExperience.tsx`)
+resolves consumer/provider routes first and the last workspace on shared stats
+and settings pages. Consumer navigation exposes chat, models, API, and billing;
+provider navigation exposes machines, setup, actual earnings, and the separate
+calculator. `ProviderOnboarding` is shared by public setup and empty/guest fleet
+views; its memory threshold comes from `MIN_PROVIDER_MEMORY_GB`. The guide
+requires macOS 26 or later (`ProviderRequirements`,
+`console-ui/src/components/provider-onboarding/ProviderRequirements.tsx`).
+
+```mermaid
+flowchart TD
+  Home[ConsoleWelcome at /] --> Consumer[Consumer: /chat or /api-console]
+  Home --> Discovery[useProviderAccount]
+  Discovery -->|Guest or verified empty| Setup[ProviderOnboarding at /providers/setup]
+  Discovery -->|Linked, including offline| Fleet[ProviderDashboard at /providers]
+  Discovery -->|Loading or error| Unknown[Open provider workspace or retry discovery]
+  Unknown --> Fleet
+  Setup --> Link[Device approval at /link]
+  Link --> Fleet
+  Fleet --> Earnings[Recorded earnings at /providers/earnings]
+  Setup --> Estimate[Capacity estimate at /earn]
+```
 
 ### `/api/*` route handlers (33)
 
@@ -78,8 +118,22 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/payments/stripe/withdrawals` | GET | `GET /v1/billing/stripe/withdrawals[?limit=]` | Privy (if present) | — |
 | `/api/payments/withdraw/stripe` | POST | `POST /v1/billing/withdraw/stripe` | Privy (if present) | Payout request |
 | `/api/pricing` | GET | `GET /v1/pricing` | none | `cacheControl(300, 600)` |
-| `/api/stats` | GET | `GET /v1/stats` | none | `cacheControl(10, 30)`; `?mock=geo` merges `mock-geo.ts` geography for offline development, uncached |
+| `/api/stats` | GET | `GET /v1/stats` | none | Shared snapshot cache with concurrent request coalescing (`getStatsSnapshot`, `console-ui/src/app/api/stats/snapshot-cache.ts`); source/fetch timestamp headers and bounded edge freshness; `?mock=geo` is isolated and `no-store` |
 | `/api/telemetry` | POST | **none** | — | Always answers `telemetry_ingest_disabled` (the same response as the coordinator's [telemetry route](../../reference/api-contracts.md#telemetry-1)); the body is never read |
+
+### Network stats snapshots
+
+The stats page renders a continuous overview without waiting for catalog or capacity requests. Geography leads into side-by-side request and token charts, graphical model-capacity lanes (`console-ui/src/app/stats/models/ModelCapacityLandscape.tsx`, `ModelCapacityLandscape`), and linked silicon-generation and memory charts (`console-ui/src/app/stats/hardware/HardwareComposition.tsx`, `HardwareComposition`). Model diagnostics and the provider directory open on demand (`console-ui/src/app/stats/page.tsx`, `StatsPage`).
+
+| Concern | Contract | Code |
+|---|---|---|
+| Source freshness | The coordinator publishes and retains `snapshot_at` according to the [public stats contract](../../reference/api-contracts.md#public-stats-and-health-5) | `coordinator/api/stats.go` (`handleStats`) |
+| Shared proxy cache | `SNAPSHOT_TTL_MS = 30_000`; keyed by configured coordinator URL; concurrent requests share one upstream request. Expiry is the earlier of fetch time plus TTL and valid source time plus TTL, so the proxy does not extend a source snapshot's lifetime | `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`, `fetchSnapshot`) |
+| Response timestamps | `X-Stats-Fetched-At` records the upstream fetch start; `X-Stats-Snapshot-At` exists only when upstream publishes a valid RFC 3339 `snapshot_at`; `X-Stats-Expires-At` records cache expiry; `X-Stats-Cache` is `HIT` or `MISS` | `console-ui/src/app/api/stats/snapshot-cache.ts` (`statsSnapshotHeaders`) |
+| Edge cache and errors | `Cache-Control: public, max-age=0, s-maxage=<remaining seconds>, must-revalidate`; no stale extension. `UPSTREAM_TIMEOUT_MS = 20_000` bounds upstream fetch and body reading; timeout returns `504`, other upstream errors retain their status, and network/JSON failures return `502`. Failures use `no-store` and release pending requests for retry | `console-ui/src/app/api/stats/snapshot-cache.ts` (`fetchSnapshot`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
+| Browser refresh | `STATS_REFRESH_MS = 30_000`; polling pauses while hidden and refreshes on visibility return. Primary and auxiliary requests coalesce independently; primary failure retains the previous data and dates with an error, while unavailable auxiliary data becomes unknown | `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |
+| Traffic boundaries | Every range, including `30m`, fetches `/api/network/series?window=<range>`; the response's explicit `end_at` anchors completed buckets for both request and token charts | `console-ui/src/app/stats/traffic/useTrafficSeries.ts` (`useTrafficSeries`), `console-ui/src/app/stats/traffic/TrafficPanel.tsx` (`TrafficPanel`) |
+| Displayed age and mock mode | The header labels source time as “Snapshot” and marks source snapshots at least 30 seconds old as stale, or labels fetch time as “Fetched” when the source timestamp is absent. `?mock=geo` returns `X-Stats-Cache: MOCK`, uses `no-store`, and displays a simulation notice | `console-ui/src/app/stats/StatsHeader.tsx` (`StatsHeader`), `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/api/stats/route.ts` (`GET`) |
 
 ### Two credential paths
 
@@ -92,7 +146,7 @@ The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/u
 
 ### Coordinator URL resolution
 
-`coordinatorUrl()` (`console-ui/src/lib/server/coordinator.ts`) is `process.env.NEXT_PUBLIC_COORDINATOR_URL || DEFAULT_COORDINATOR_URL`, where `DEFAULT_COORDINATOR_URL = "https://api.darkbloom.dev"`. It is the only upstream base every route handler uses, and it is resolved from the server environment alone — no request header, cookie, or body can change it. **The Settings coordinator-URL field is cosmetic.** `handleSave` (`console-ui/src/app/settings/page.tsx`) writes `darkbloom_coordinator_url`; `clientCoordinatorUrl()` (`console-ui/src/lib/coordinator-url.ts`) reads it back for the displayed base URL on `/api-console` and as the cache key for the coordinator's encryption public key (`getCoordinatorKey`, `console-ui/src/lib/encryption.ts`). No `/api/*` handler reads it, no `x-coordinator-url` header exists, and `useAuth` removes the key from localStorage on every login (session-poisoning guard). `NEXT_PUBLIC_*` values are inlined at build time, so changing the coordinator requires a rebuild.
+`coordinatorUrl()` (`console-ui/src/lib/server/coordinator.ts`) is `process.env.NEXT_PUBLIC_COORDINATOR_URL || DEFAULT_COORDINATOR_URL`, where `DEFAULT_COORDINATOR_URL = "https://api.darkbloom.dev"`. It is the only upstream base every route handler uses, and it is resolved from the server environment alone — no request header, cookie, or body can change it. The Settings API example URL is a separate display preference. `handleSave` (`console-ui/src/app/settings/useConsoleSettings.ts`) validates an HTTP(S) URL without credentials, query, or fragment and writes `darkbloom_api_example_url`. `apiExampleUrl()` (`console-ui/src/lib/api-example-url.ts`) reads that preference for API-console examples, falling back to `PUBLIC_COORDINATOR_URL`. It never controls console routing or encryption-key lookup. The legacy `darkbloom_coordinator_url` key remains a client-side encryption-cache namespace through `clientCoordinatorUrl()`; `useAuth` removes it on login. `NEXT_PUBLIC_*` values are inlined at build time, so changing the coordinator requires a rebuild.
 
 ### Authentication (Privy)
 
@@ -127,6 +181,7 @@ sequenceDiagram
 | `useStore` (Zustand) | `console-ui/src/lib/store.ts` | `chats`, `activeChatId`, `selectedModel`, `models`, `sidebarOpen`, `useMyMachine`; actions `createChat`, `deleteChat`, `addMessage`, `appendToMessage`, `appendToThinking`, `setUseMyMachine`, … | `persist` under `STORE_NAME` = `darkbloom-store`; `partialize` keeps chats (with `images` dropped and `streaming` cleared), `activeChatId`, `selectedModel`, `sidebarOpen`, `useMyMachine`; `skipHydration: true` — `AppShell` calls `useStore.persist.rehydrate()` after mount |
 | `useToastStore` | `console-ui/src/hooks/useToast.ts` | Toast queue | none |
 | `AuthContext` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | `AuthState` | Privy SDK (`privy-token` cookie) |
+| `ConsoleExperienceProvider` | `console-ui/src/components/console-entry/ConsoleExperience.tsx` | Workspace preference and account discovery | Only workspace preference in `darkbloom_workspace`; provider records are never persisted |
 | `ThemeProvider` | `console-ui/src/components/providers/ThemeProvider.tsx` | Theme | localStorage `darkbloom-theme` |
 | `VerificationModeProvider` | `console-ui/src/components/providers/verification-mode.tsx` | `mode` ∈ `normal`, `technical` (verification-panel display mode; changes no request) | localStorage `darkbloom-verification-mode` (`STORAGE_KEYS.verificationMode`) |
 
@@ -153,7 +208,7 @@ Names and effect only; values, defaults, and where each is set are in [`../../re
 
 | Variable | Read in | Effect |
 |---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts`, `console-ui/src/app/stats/page.tsx`, `console-ui/src/app/settings/page.tsx` | Upstream coordinator for every `/api/*` handler; displayed base URL; `/stats` direct-fetch fallback |
+| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts` | Upstream coordinator for every `/api/*` handler; displayed base URL |
 | `NEXT_PUBLIC_PRIVY_APP_ID` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Privy app; unset or `"placeholder"` selects mock auth |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `console-ui/src/lib/google-analytics.ts` | GA property; empty string disables GA |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | `console-ui/src/components/DatadogRUM.tsx` | Both required to initialise RUM |
@@ -182,10 +237,10 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 |---|---|---|
 | Everyone appears signed in, yet key creation, fleet, and earnings return `401 {"error":"missing privy token"}` and chat never becomes sendable | Mock auth (`NEXT_PUBLIC_PRIVY_APP_ID` unset or `"placeholder"`): `getAccessToken()` is `null`, so `provisionConsoleKey` returns `null` and management calls carry no `Authorization` | `MOCK_AUTH` (`console-ui/src/components/providers/PrivyClientProvider.tsx`), `missingPrivyToken` |
 | 401 on a Privy-required route in a real deployment | No `Authorization` header and no `privy-token` cookie (logged out, or the SDK has not set the cookie yet) | `privyAuth` |
-| "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/page.tsx`) |
+| "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/useConsoleSettings.ts`) |
 | First sealed request after a coordinator key rotation fails with 400 | Cached key `kid` no longer matches; `streamChat` clears `darkbloom_coord_enc_key_v2` so the retry refetches | `clearCoordinatorKeyCache` |
 | "Session expired — please try again" mid-chat | `/api/chat` returned 401; the key is dropped and re-provisioned via `darkbloom-key-expired` | `streamChat`, `useAuth` |
-| `/stats` catalog falls back to a direct coordinator fetch that the browser blocks | `fetchModelCatalog` (`console-ui/src/app/stats/page.tsx`) tries `${COORDINATOR_URL}/v1/models/catalog…` after `/api/models`; `connect-src` allows only `https://api.darkbloom.dev`, so a non-production `NEXT_PUBLIC_COORDINATOR_URL` is blocked by CSP | `cspDirectives` (`console-ui/next.config.ts`) |
+| `/stats` retains an older snapshot or shows unknown model capacity | A primary refresh failed, or an auxiliary catalog/capacity request failed; the page retains dated primary data and clears unavailable auxiliary values | `useNetworkStats` (`console-ui/src/app/stats/useNetworkStats.ts`) |
 | Datadog RUM enabled but no data arrives | `NEXT_PUBLIC_DD_*` set, yet no Datadog intake host is in `connect-src` | `cspDirectives`, `DatadogRUM` |
 | Buy Credits fails although the API key works | `/api/payments/stripe/checkout` forwards only the Privy session; a browser with an API key but no `privy-token` cookie sends an unauthenticated upstream call | `console-ui/src/app/api/payments/stripe/checkout/route.ts` |
 | Visiting `/login` lands on `/` and the `?next=` target is lost | `console-ui/src/proxy.ts` redirects before the page renders | `proxy` |
@@ -205,6 +260,8 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | Client coordinator URL | `console-ui/src/lib/coordinator-url.ts` (`PUBLIC_COORDINATOR_URL`, `clientCoordinatorUrl`) |
 | Privy provider and mock auth | `console-ui/src/components/providers/PrivyClientProvider.tsx` (`MOCK_AUTH`, `IS_PRIVY_CONFIGURED`), `console-ui/src/components/providers/PrivyRealProvider.tsx` |
 | Console key provisioning | `console-ui/src/hooks/useAuth.ts` (`provisionConsoleKey`, `useAuth`) |
+| Workspace discovery and navigation | `console-ui/src/components/console-entry/ConsoleExperience.tsx`, `console-ui/src/components/console-entry/useProviderAccount.ts`, `console-ui/src/components/navigation/items.ts` |
+| Provider onboarding | `console-ui/src/components/provider-onboarding/ProviderOnboarding.tsx`, `console-ui/src/components/provider-onboarding/content.ts` |
 | Chat orchestration | `console-ui/src/hooks/useChatStream.ts`, `console-ui/src/lib/chat/stream.ts` (`streamChat`, `prepareBody`, `extractTrustMeta`), `console-ui/src/lib/chat/sse.ts` (`readSsePayloads`), `console-ui/src/lib/chat/think-parser.ts` |
 | Chat proxy | `console-ui/src/app/api/chat/route.ts` (`POST`) |
 | Browser-side sealing | `console-ui/src/lib/encryption.ts` (`getCoordinatorKey`, `sealRawRequest`, `unsealSseEvent`, `ENCRYPTION_FLAG_KEY`) |
@@ -212,7 +269,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 | localStorage key registry | `console-ui/src/lib/constants.ts` (`STORAGE_KEYS`) |
 | API clients (browser) | `console-ui/src/lib/api/` (`billing.ts`, `keys.ts`, `models.ts`, `providers.ts`, `invite.ts`, `health.ts`, `pricing.ts`) |
 | Fleet polling | `console-ui/src/app/providers/dashboard/useFleetData.ts` (`REFRESH_MS`) |
-| Public stats | `console-ui/src/app/stats/page.tsx`, `console-ui/src/hooks/useVisiblePolling.ts` |
+| Public stats | `console-ui/src/app/stats/page.tsx` (`StatsPage`), `console-ui/src/app/stats/useNetworkStats.ts` (`useNetworkStats`), `console-ui/src/app/api/stats/snapshot-cache.ts` (`getStatsSnapshot`), `console-ui/src/hooks/useVisiblePolling.ts` (`useVisiblePolling`) |
 | Earnings calculator | `console-ui/src/app/earn/calc.ts` (`calculateCapacityRevenue`, `CALCULATOR_MODELS`, `MAC_CONFIGS`), `console-ui/src/app/earn/providerReadiness.ts` (`MIN_PROVIDER_MEMORY_GB`) |
 | Analytics and telemetry facade | `console-ui/src/lib/google-analytics.ts`, `console-ui/src/components/DatadogRUM.tsx`, `console-ui/src/lib/telemetry.ts` (`emit`), `console-ui/src/app/api/telemetry/route.ts` |
 | Tests | `console-ui/__tests__/` (route handlers, encryption, store hydration, pages) and colocated `*.test.ts(x)` under `console-ui/src/`; run with `npm test` (vitest) — see [`../../developer/test.md`](../../developer/test.md) |
@@ -235,6 +292,28 @@ annualRevenueUSD       = monthlyRevenueUSD × 12
 It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards (`calc.ts` keeps `FLOOR_TIERS` only for the unmounted `BaseRewardsPanel`). `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
 
 **Network stats.** `landing/network-stats.js` reads `GET <coordinator>/v1/stats` (default `https://api.darkbloom.dev`, overridable with `?coord=<origin>`) and estimates fleet power from `POWER_TABLE` (`machineWatts`, `formatPower`). The `<script src="network-stats.js">` tag in `landing/index.html` is commented out — the HTML comment records that the `/v1/stats` CORS allowance is not yet deployed — so the live-network strip is not rendered; the console's `/stats` page, which goes through `/api/stats`, is the working equivalent.
+
+## Visual reference
+
+These browser captures document the console redesign on 2026-09-04. Desktop
+views use a 1440 × 1000 viewport; mobile uses 390 × 844. Network values are
+snapshots captured at different times. The local preview has no signed-in
+Privy session; the API console and workspace entrance show their corresponding
+unknown-account states, without treating unavailable account data as an empty fleet.
+
+| Surface | Screenshot |
+|---|---|
+| Workspace entrance | [Consumer and Provider](../../assets/console-redesign/09-workspace-entry.jpg) |
+| Provider onboarding | [Requirements and setup](../../assets/console-redesign/10-provider-onboarding.jpg) |
+| Mobile entrance | [Both workspace choices](../../assets/console-redesign/11-workspace-mobile.jpg) |
+| Chat workspace | [Desktop chat](../../assets/console-redesign/01-chat-desktop.jpg) |
+| Network overview | [Summary and geography](../../assets/console-redesign/02-stats-overview.jpg) |
+| Activity | [Request and token graphs](../../assets/console-redesign/03-stats-activity.jpg) |
+| Model capacity | [Comparable capacity lanes](../../assets/console-redesign/04-model-capacity.jpg) |
+| Hardware | [Silicon, memory, and identity](../../assets/console-redesign/05-hardware-composition.jpg) |
+| Model library | [Searchable model catalog](../../assets/console-redesign/06-model-library.jpg) |
+| API console | [SDK setup and API-key state](../../assets/console-redesign/07-api-console.jpg) |
+| Mobile | [Workspace navigation](../../assets/console-redesign/08-chat-mobile.jpg) |
 
 ## Related
 

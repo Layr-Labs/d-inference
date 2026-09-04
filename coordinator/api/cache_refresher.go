@@ -10,6 +10,8 @@ import (
 
 const (
 	cacheRefreshInterval = time.Minute
+	// Stats has a shorter freshness window than the network earnings totals.
+	statsRefreshInterval = 30 * time.Second
 	// Failed refreshes retain the previous success only until this safety TTL.
 	refreshedCacheTTL = 5 * time.Minute
 )
@@ -90,7 +92,7 @@ func (s *Server) runCacheRefreshLoop(ctx context.Context, interval time.Duration
 // statement in one never delays the other. Stops when ctx is cancelled.
 func (s *Server) StartCacheRefreshers(ctx context.Context) {
 	saferun.Go(s.logger, "api.statsRefresher", func() {
-		s.runStatsRefresher(ctx, cacheRefreshInterval)
+		s.runStatsRefresher(ctx, statsRefreshInterval)
 	})
 	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
 		s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)

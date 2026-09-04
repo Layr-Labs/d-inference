@@ -59,24 +59,37 @@ func (s *mdmVerificationScheduler) nextDispatchDelay() time.Duration {
 	delay := mdmSchedulerDispatchInterval
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Same worker arithmetic as dispatchDueRows: the reserved urgent slot is
+	// not available to refresh/recovery work, so a due non-urgent job with
+	// only that slot free cannot dispatch and must not spin at 1 ms.
 	available := s.cfg.Workers
 	for _, count := range s.active {
 		available -= count
 	}
+	reservedFree := s.reservedUrgentSlots() - s.activeUrgent
+	if reservedFree < 0 {
+		reservedFree = 0
+	}
+	generalAvailable := available - reservedFree
+	dueBlocked := false
 	for _, job := range s.jobs {
 		if job.running || (job.record.State != store.VerificationStatePending && job.record.State != store.VerificationStateBackoff) {
 			continue
 		}
 		candidate := job.record.NextAttemptAt.Sub(now)
 		if candidate <= 0 {
-			if available <= 0 {
-				return mdmSchedulerBusyRetryDelay
+			if available > 0 && (isUrgentVerification(job.record) || generalAvailable > 0) {
+				return time.Millisecond
 			}
-			return time.Millisecond
+			dueBlocked = true
+			continue
 		}
 		if candidate < delay {
 			delay = candidate
 		}
+	}
+	if dueBlocked {
+		return mdmSchedulerBusyRetryDelay
 	}
 	return delay
 }

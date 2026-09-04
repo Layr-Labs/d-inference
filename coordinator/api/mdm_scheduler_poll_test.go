@@ -156,4 +156,22 @@ func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
 		t.Fatalf("delay with every worker busy = %s, want %s", got, mdmSchedulerBusyRetryDelay)
 	}
+
+	// One worker busy leaves only the reserved urgent slot: a due non-urgent
+	// (refresh) job cannot dispatch, so it must not spin at 1 ms either —
+	// dispatchDueRows would skip it on every wake.
+	sch.mu.Lock()
+	sch.active[store.VerificationTaskSecurityInfo] = 1
+	sch.mu.Unlock()
+	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
+		t.Fatalf("delay with only the reserved urgent slot free and a refresh job due = %s, want %s", got, mdmSchedulerBusyRetryDelay)
+	}
+	// An urgent (first/expired SecurityInfo) job may take that slot: fast retry.
+	sch.mu.Lock()
+	sch.jobs["due"].record.Kind = store.VerificationTaskSecurityInfo
+	sch.jobs["due"].record.Priority = store.VerificationPriorityFirstOrExpired
+	sch.mu.Unlock()
+	if got := sch.nextDispatchDelay(); got != time.Millisecond {
+		t.Fatalf("delay with the reserved slot free and an urgent job due = %s, want 1ms", got)
+	}
 }

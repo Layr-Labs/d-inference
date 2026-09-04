@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -916,23 +917,34 @@ func TestIntegration_CancelToTerminalOnLateErrorTerminal(t *testing.T) {
 // the freed slot to a waiting request. Before the reorder the drain (one
 // reservation scan per queued waiter) ran first and the stop reached the wire
 // after it. The drain's assignment send blocks on the unbuffered ResponseCh,
-// so the receiver observes the writer's control-lane counters strictly before
+// so the receiver observes the writer's control-lane depth strictly before
 // SetProviderIdle returns.
+//
+// The observation is made deterministic by parking the writer goroutine
+// inside a multi-MiB data write to a peer that never reads: serve() handles
+// one request end to end, so the cancel cannot leave the control lane while
+// the write is in flight and ControlQueueDepth == 1 is exactly "the cancel
+// was enqueued". Sampling ControlFramesOut instead raced the writer between
+// dequeue (depth 0) and the post-write counter increment and flaked under
+// -race (1/25).
 func TestCancelDispatchEnqueuesCancelBeforeIdleDrain(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := registry.New(logger)
 	srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "k"}), ServerConfig{}, logger)
-	serverConn, clientConn := testWebSocketPairAPI(t)
-	go func() {
-		for {
-			if _, _, err := clientConn.Read(context.Background()); err != nil {
-				return
-			}
-		}
-	}()
+	serverConn, _ := testWebSocketPairAPI(t) // client never reads: the data write parks
 	const model = "cancel-order-model"
 	provider := makeRoutableProviderConn(t, reg, "p-order", model, serverConn)
 	defer reg.Disconnect(provider.ID)
+
+	parked := bytes.Repeat([]byte("x"), 32<<20)
+	go func() { _ = provider.WriteText(context.Background(), parked) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for !provider.WriteInFlight() {
+		if time.Now().After(deadline) {
+			t.Fatal("parking write never became in-flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	pr := &registry.PendingRequest{
 		RequestID:  "req-abandoned",
@@ -950,14 +962,13 @@ func TestCancelDispatchEnqueuesCancelBeforeIdleDrain(t *testing.T) {
 	reg.Queue().Enqueue(waiter)
 
 	type observation struct {
-		assigned      *registry.Provider
-		controlFrames uint64
+		assigned     *registry.Provider
+		controlDepth int
 	}
 	observed := make(chan observation, 1)
 	go func() {
 		assigned := <-waiter.ResponseCh
-		st := provider.LinkStats()
-		observed <- observation{assigned, st.ControlFramesOut + uint64(st.ControlQueueDepth)}
+		observed <- observation{assigned, provider.LinkStats().ControlQueueDepth}
 	}()
 
 	srv.cancelDispatch(provider, pr, cancelCauseClientGonePre)
@@ -967,7 +978,7 @@ func TestCancelDispatchEnqueuesCancelBeforeIdleDrain(t *testing.T) {
 		if got.assigned == nil || got.assigned.ID != provider.ID {
 			t.Fatalf("queued waiter assigned to %v, want the freed provider", got.assigned)
 		}
-		if got.controlFrames == 0 {
+		if got.controlDepth < 1 {
 			t.Fatal("the idle drain assigned the freed slot before the cancel frame was on the control lane")
 		}
 	case <-time.After(2 * time.Second):

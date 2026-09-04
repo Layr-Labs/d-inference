@@ -235,6 +235,11 @@ public struct InferenceProfile: Codable, Sendable, Equatable {
     public var projectedPrefillTokens: Int64?
     public var projectedDecodeTokens: Int64?
     public var projectedServiceUs: Int64?
+    /// Remaining first-content budget at the ENGINE'S VERDICT instant —
+    /// present on admits AND on `deadline_unreachable` refusals (T2-02
+    /// stamps the refusal's projection too). Its presence does not mean
+    /// the engine admitted the request: admission is signalled by
+    /// `engine_admitted_us` alone. Mirrored in coordinator/protocol/profile.go.
     public var budgetRemainingAtAdmitUs: Int64?
     public var mtpActive: Bool?
     public var partialPrefillCap: Int64?

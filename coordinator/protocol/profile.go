@@ -186,14 +186,18 @@ type InferenceProfile struct {
 	TotalUS           *int64 `json:"total_us,omitempty"`
 
 	// Durations (µs).
-	ToolConstraintUS         *int64 `json:"tool_constraint_us,omitempty"`
-	VisionPrepUS             *int64 `json:"vision_prep_us,omitempty"`
-	SSDStageUS               *int64 `json:"ssd_stage_us,omitempty"`
-	KVReserveUS              *int64 `json:"kv_reserve_us,omitempty"`
-	FlushUS                  *int64 `json:"flush_us,omitempty"`
-	SESignUS                 *int64 `json:"se_sign_us,omitempty"`
-	SleptUS                  *int64 `json:"slept_us,omitempty"`
-	ProjectedServiceUS       *int64 `json:"projected_service_us,omitempty"`
+	ToolConstraintUS   *int64 `json:"tool_constraint_us,omitempty"`
+	VisionPrepUS       *int64 `json:"vision_prep_us,omitempty"`
+	SSDStageUS         *int64 `json:"ssd_stage_us,omitempty"`
+	KVReserveUS        *int64 `json:"kv_reserve_us,omitempty"`
+	FlushUS            *int64 `json:"flush_us,omitempty"`
+	SESignUS           *int64 `json:"se_sign_us,omitempty"`
+	SleptUS            *int64 `json:"slept_us,omitempty"`
+	ProjectedServiceUS *int64 `json:"projected_service_us,omitempty"`
+	// Remaining first-content budget at the engine's VERDICT instant. Present
+	// on admits AND on deadline_unreachable refusals (the provider stamps the
+	// refusal's projection too), so its presence is not evidence the engine
+	// admitted the request — key admission on engine_admitted_us alone.
 	BudgetRemainingAtAdmitUS *int64 `json:"budget_remaining_at_admit_us,omitempty"`
 
 	// Counts.

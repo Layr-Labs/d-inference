@@ -437,7 +437,7 @@ Mixed-fleet rule:
 |---|---|
 | Header | `schema` (must be `1`), `wall_ms` (untrusted wall-clock anchor, Unix ms) |
 | Offsets (µs from `t0p`) | `dequeued_us`, `decrypted_us`, `parsed_us`, `admission_us`, `accepted_sent_us`, `load_wait_start_us`, `load_wait_end_us`, `task_spawned_us`, `prompt_prep_start_us`, `prompt_prep_end_us`, `engine_submit_us`, `engine_admitted_us`, `first_delta_us`, `first_frame_us`, `last_delta_us`, `terminal_built_us`, `terminal_sent_us`, `cancel_received_us`, `cancel_aborted_us`, `total_us` |
-| Durations (µs) | `tool_constraint_us`, `vision_prep_us`, `ssd_stage_us`, `kv_reserve_us`, `flush_us`, `se_sign_us`, `slept_us`, `projected_service_us`, `budget_remaining_at_admit_us` |
+| Durations (µs) | `tool_constraint_us`, `vision_prep_us`, `ssd_stage_us`, `kv_reserve_us`, `flush_us`, `se_sign_us`, `slept_us`, `projected_service_us`, `budget_remaining_at_admit_us` (remaining first-content budget at the engine's verdict — stamped on admits AND `deadline_unreachable` refusals; admission is signalled by `engine_admitted_us` alone) |
 | Counts | `prompt_tokens`, `frames_emitted`, `running_at_admit`, `waiting_at_admit`, `queued_prefill_tokens_at_admit`, `steps_at_submit`, `steps_at_finish`, `projected_prefill_tokens`, `projected_decode_tokens`, `partial_prefill_cap`, `tokens_after_cancel` |
 | Bytes | `bytes_emitted`, `kv_bytes_in_use_at_admit`, `kv_bytes_capacity`, `mlx_active_bytes_at_finish`, `mlx_peak_bytes` |
 | Flags (bool) | `usage_recovered`, `load_cold`, `load_parked`, `mtp_active`, `low_power_mode` |

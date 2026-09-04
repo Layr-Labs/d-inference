@@ -83,6 +83,11 @@ struct GemmaOptimizationEnvironmentTests {
         "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL",
         "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT",
         "MLX_GATHER_QMM_EXPERT_SLICES",
+        // Not config-backed and not an engine switch: MLX C++ reads it once at
+        // first Metal device construction, so the projection is the only place
+        // that can set it before MLX initializes. The measured Gemma 4 serial
+        // stack ran 500.
+        "MLX_MAX_MB_PER_BUFFER",
     ]
 
     @Test("projection emits the selected controls")
@@ -95,6 +100,7 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
             "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+            "MLX_MAX_MB_PER_BUFFER": "500",
         ])
 
         let disabled = GemmaOptimizationEnvironment.projection(
@@ -108,6 +114,7 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "0",
             "MLX_GATHER_QMM_EXPERT_SLICES": "0",
+            "MLX_MAX_MB_PER_BUFFER": "500",
         ])
     }
 
@@ -239,6 +246,7 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
             "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
+            "MLX_MAX_MB_PER_BUFFER": "500",
         ])
         // The application boundary must hand the environment exactly what
         // projection() reports, or the release matrix describes a dispatch

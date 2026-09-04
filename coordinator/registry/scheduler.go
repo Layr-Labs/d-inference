@@ -39,6 +39,16 @@ const (
 	nearTieCostWindowMs      = 3_000.0
 	challengeFreshnessMaxAge = 16 * time.Minute
 
+	// maxCommitRescans bounds the reserve loop's commit-time rescans. Each
+	// rescan is a full fleet walk plus a second trip through the writer
+	// queue, so under a write-lock wait that spans heartbeats (whose
+	// SystemMetrics/TPS rewrites move every candidate's cost) the loop could
+	// otherwise re-walk until the first-content clock expired. After this
+	// many rescans the commit is forced: the winner is still fully
+	// revalidated on fresh state (gates, budget, admit, cap), only the
+	// "did the ranking move?" comparison is skipped.
+	maxCommitRescans = 3
+
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
 	//
@@ -538,7 +548,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		// current-state re-check and the pending debit.
 		tCommitStart := time.Now()
 		provider, candidate, outcome, rejected := r.commitProviderReservation(
-			model, pr, last, excluded...)
+			model, pr, last, rescans >= maxCommitRescans, excluded...)
 		admitUS = time.Since(tCommitStart).Microseconds()
 		switch outcome {
 		case reservationNeedsRescan:
@@ -642,10 +652,17 @@ func (r *Registry) scanProviderReservation(model string, pr *PendingRequest, exc
 // commitProviderReservation is the short serialized phase. It repeats the full
 // current-state capacity chain before adding the pending debit, so concurrent
 // scans cannot double-spend a provider's shared cross-model token pool.
+//
+// force (set by reserveProvider after maxCommitRescans) skips ONLY the
+// ranking-drift comparison below; the cache-configuration and breaker-bypass
+// re-checks and the whole admission chain (gates, token budget including the
+// coordinator-side pending debit, admit re-check under p.mu) still run on
+// fresh state, so a forced commit can never double-spend.
 func (r *Registry) commitProviderReservation(
 	model string,
 	pr *PendingRequest,
 	scan providerReservationScan,
+	force bool,
 	excludeIDs ...string,
 ) (*Provider, *routingCandidate, reservationCommitOutcome, RoutingDecision) {
 	r.mu.Lock()
@@ -730,11 +747,18 @@ func (r *Registry) commitProviderReservation(
 
 	// Another reservation changed this winner after the shared scan. Re-scan the
 	// fleet so cost ranking observes that debit instead of herding the whole scan
-	// cohort onto the formerly-cheapest provider.
-	if snapshot.pendingForModel != selected.snapshot.pendingForModel ||
+	// cohort onto the formerly-cheapest provider. The cost term is compared
+	// inside the selector's near-tie window, not for float equality: every
+	// heartbeat rewrites the winner's SystemMetrics and TPS EWMAs (healthMs,
+	// thisReqMs, backlogMs all move continuously), so an exact compare turned
+	// any heartbeat for the winner during the scan → write-lock-wait window
+	// into a full fleet re-walk, although within the window the selector would
+	// have coin-flipped the same winner anyway. Debit changes (pending counts,
+	// effective queue) still rescan verbatim.
+	if !force && (snapshot.pendingForModel != selected.snapshot.pendingForModel ||
 		snapshot.totalPending != selected.snapshot.totalPending ||
 		candidate.effectiveQueue != selected.effectiveQueue ||
-		candidate.costMs != selected.costMs {
+		math.Abs(candidate.costMs-selected.costMs) > nearTieCostWindowMs) {
 		return nil, nil, reservationNeedsRescan, RoutingDecision{}
 	}
 

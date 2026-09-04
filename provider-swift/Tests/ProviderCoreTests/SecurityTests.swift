@@ -183,6 +183,20 @@ import Testing
     #expect(String(data: data, encoding: .utf8) == expected)
 }
 
+@Test func statusCanonicalMatchesCoordinatorForMixedCaseModelIDs() throws {
+    let data = try StatusCanonical.build(StatusCanonicalInput(
+        nonce: "n",
+        timestamp: "t",
+        modelHashes: [
+            "Qwen3.5-9B": "127de76b4ef82b7a",
+            "gemma-4-26b-qat-4bit": "2468a0cb3049a871",
+            "qwen3.6-35b-a3b-vl-mtp-mxfp8": "d932e96b00404b05",
+        ]
+    ))
+    let expected = #"{"model_hashes":{"Qwen3.5-9B":"127de76b4ef82b7a","gemma-4-26b-qat-4bit":"2468a0cb3049a871","qwen3.6-35b-a3b-vl-mtp-mxfp8":"d932e96b00404b05"},"nonce":"n","timestamp":"t"}"#
+    #expect(String(data: data, encoding: .utf8) == expected)
+}
+
 @Test func registrationAttestationBlobJSONOmitsHypervisorKeys() throws {
     // The registration attestation blob is signed over its exact serialized
     // bytes (sorted keys, ISO-8601 dates -- the same encoder settings

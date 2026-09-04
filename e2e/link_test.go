@@ -19,6 +19,19 @@ import (
 // reassemble it into one message, and the provider must decrypt it and produce
 // a first token. This is the change that hits every provider in the fleet the
 // moment the coordinator deploys, so a Go-only test is not enough.
+//
+// This test is NOT part of the coordinator's unit gates (go test ./... under
+// coordinator/ never runs it) and cannot run without the local testbed: a
+// Postgres instance, a built Swift provider binary and a downloaded MLX model
+// (see docs/developer/test.md, "E2E integration tests"). Run it from the
+// repository root before shipping any change to the provider data-lane
+// writer (coordinator/registry/provider_writer.go) — it is the ship gate for
+// the fragmented write path:
+//
+//	make e2e-integration
+//	go test ./e2e -run TestIntegration_LargeRequestFragmentedDispatch -v
+//
+// The root module's `go vet ./e2e/...` keeps it compiling.
 func TestIntegration_LargeRequestFragmentedDispatch(t *testing.T) {
 	s := startSuite(t)
 

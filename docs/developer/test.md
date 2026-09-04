@@ -51,6 +51,12 @@ The E2E harness lives in `e2e/testbed/`:
 - Request encryption (NaCl Box).
 - Attestation challenge-response.
 - Model alias migration.
+- Fragmented (> 64 KiB) provider writes reassembled by the real provider
+  (`TestIntegration_LargeRequestFragmentedDispatch` in `e2e/link_test.go`).
+  This is the ship gate for the coordinator's fragmented data-lane writer
+  (`coordinator/registry/provider_writer.go`): the Go unit tests reassemble
+  with nhooyr's client only, so run this one against the local Swift provider
+  before deploying any change to that writer.
 
 ## Running a local coordinator
 

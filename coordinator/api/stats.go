@@ -96,9 +96,10 @@ const (
 	// and every request recompute it.
 	refreshedCacheTTL = 5 * time.Minute
 	// refreshedDegradedTTL is the TTL when the only value available is
-	// degraded (a usage analytics statement returned nothing, typically the
-	// 10 s store timeout). It is short so the next tick or miss retries, but
-	// longer than the refresh interval so the entry cannot expire between ticks.
+	// degraded (a usage analytics statement returned nothing or reported a
+	// failure, typically a store timeout). It is short so the next tick or
+	// miss retries, but longer than the refresh interval so the entry cannot
+	// expire between ticks.
 	refreshedDegradedTTL = 2 * time.Minute
 )
 
@@ -241,9 +242,11 @@ func (s *Server) refreshStats() ([]byte, bool) {
 }
 
 // computeStats builds the /v1/stats body. degraded reports that a usage
-// analytics statement (request locations or request flows) produced no rows,
-// which is indistinguishable at the store boundary from a timeout;
-// storeCachedEntry decides what to do with it.
+// statement did not complete: the two analytics statements (request
+// locations, request flows) produced no rows — indistinguishable at the store
+// boundary from a timeout — or one of the usage aggregates (lifetime totals,
+// 24 h totals and count, 30 min series) reported an error. storeCachedEntry
+// decides what to do with it.
 func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	var (
 		totalRequests    int64
@@ -343,7 +346,7 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	}
 
 	// Read historical totals via SQL aggregation (no per-row wire transfer).
-	totals := s.store.UsageTotals()
+	totals, totalsErr := s.store.UsageTotals()
 	if totals.Requests > totalRequests {
 		totalRequests = totals.Requests
 	}
@@ -365,8 +368,8 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	now := time.Now()
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
-	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
-	last24h := s.store.UsageTotalsSince(analyticsCutoff)
+	buckets, seriesErr := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
+	last24h, last24hErr := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, b := range buckets {
@@ -383,7 +386,7 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
 	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs, countErr := s.aggregateRequestLocations(analyticsCutoff)
 
 	// --- Request flow aggregation ---
 	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
@@ -456,6 +459,24 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	// either one means the statement did not complete.
 	noLocations := len(requestLocations) == 0 && len(requestRegions) == 0
 	degraded = noLocations || len(requestFlows) == 0
+	// The usage aggregates report failure explicitly. The store used to fold a
+	// timeout into zeros, which this body would have carried as the 24 h
+	// headline totals and a negative unknown-location count, and the refresher
+	// would have cached over the last good value.
+	for _, st := range []struct {
+		name string
+		err  error
+	}{
+		{"usage_totals", totalsErr},
+		{"usage_time_series", seriesErr},
+		{"usage_totals_24h", last24hErr},
+		{"usage_count_24h", countErr},
+	} {
+		if st.err != nil {
+			s.logger.Warn("cache refresh: usage statement failed", "key", statsCacheKey, "statement", st.name, "error", st.err)
+			degraded = true
+		}
+	}
 	return body, degraded, nil
 }
 
@@ -599,12 +620,15 @@ func (s *Server) aggregateProviderLocations() (
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations.
+// buckets from usage records with request-origin locations. countErr reports
+// that the window's request count could not be read; unknownRequests is then
+// 0 (it cannot be derived) and the caller treats the result as degraded.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
+	countErr error,
 ) {
 	locBuckets := s.store.UsageLocationBuckets(since)
 
@@ -615,8 +639,10 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 		locatedRequests += b.Requests
 	}
 	// Total usage records in the window (SQL COUNT, no row transfer).
-	totalInWindow := s.store.UsageCountSince(since)
-	unknownRequests = totalInWindow - locatedRequests
+	var totalInWindow int64
+	if totalInWindow, countErr = s.store.UsageCountSince(since); countErr == nil {
+		unknownRequests = totalInWindow - locatedRequests
+	}
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string

@@ -29,6 +29,43 @@ type countingStatsStore struct {
 	totalsCalls   atomic.Int64
 	fail          atomic.Bool
 	totalsFail    atomic.Bool
+	// The four usage aggregates behind the /v1/stats headline figures report
+	// failure explicitly (the postgres store used to fold a timeout into
+	// zeros); each flag makes one of them fail.
+	usageTotalsFail      atomic.Bool
+	usageTotalsSinceFail atomic.Bool
+	usageTimeSeriesFail  atomic.Bool
+	usageCountFail       atomic.Bool
+}
+
+var errUsageStatementTimeout = errors.New("store: usage statement: timeout: context deadline exceeded")
+
+func (c *countingStatsStore) UsageTotals() (store.UsageTotals, error) {
+	if c.usageTotalsFail.Load() {
+		return store.UsageTotals{}, errUsageStatementTimeout
+	}
+	return c.Store.UsageTotals()
+}
+
+func (c *countingStatsStore) UsageTotalsSince(since time.Time) (store.UsageTotals, error) {
+	if c.usageTotalsSinceFail.Load() {
+		return store.UsageTotals{}, errUsageStatementTimeout
+	}
+	return c.Store.UsageTotalsSince(since)
+}
+
+func (c *countingStatsStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]store.UsageBucket, error) {
+	if c.usageTimeSeriesFail.Load() {
+		return nil, errUsageStatementTimeout
+	}
+	return c.Store.UsageTimeSeries(since, until, bucketSize)
+}
+
+func (c *countingStatsStore) UsageCountSince(since time.Time) (int64, error) {
+	if c.usageCountFail.Load() {
+		return 0, errUsageStatementTimeout
+	}
+	return c.Store.UsageCountSince(since)
 }
 
 func (c *countingStatsStore) NetworkTotals(since time.Time) (store.NetworkTotalsRow, error) {
@@ -260,6 +297,83 @@ func TestStatsRefreshKeepsPreviousValueWhenAnalyticsReturnNothing(t *testing.T) 
 	}
 	if !srv.statsRefresh.haveGood {
 		t.Fatal("haveGood not set after a good refresh")
+	}
+}
+
+// TestStatsRefreshKeepsPreviousValueWhenUsageAggregateFails: the four usage
+// aggregates behind the headline figures (lifetime totals, 24 h totals, the
+// 30 min series, the 24 h request count) report failure explicitly, and any
+// one failing marks the refresh degraded — so the last good value stays cached
+// instead of a body with zero 24 h totals and a negative unknown-location
+// count. The two analytics statements still return rows in every case here;
+// before the fix that alone made the refresh count as good.
+func TestStatsRefreshKeepsPreviousValueWhenUsageAggregateFails(t *testing.T) {
+	srv, _, st := newStatsRefresherFixture(t)
+	// One request without a location, so the good body carries a non-zero
+	// unknown-location count that a failed window count would change.
+	st.RecordUsageWithCostAndLocation("provider-sf", "consumer", "model", "req-unlocated", 10, 20, 0, nil)
+
+	good, ok := srv.refreshStats()
+	if !ok || statsBodyLocations(t, good) == 0 {
+		t.Fatalf("first refresh: ok=%v body=%s", ok, good)
+	}
+	var goodParsed struct {
+		Unknown int64 `json:"unknown_request_location_requests"`
+	}
+	if err := json.Unmarshal(good, &goodParsed); err != nil || goodParsed.Unknown != 1 {
+		t.Fatalf("good body unknown_request_location_requests = %d (err=%v), want 1", goodParsed.Unknown, err)
+	}
+
+	cases := []struct {
+		name string
+		flag *atomic.Bool
+	}{
+		{"UsageTotals", &st.usageTotalsFail},
+		{"UsageTotalsSince", &st.usageTotalsSinceFail},
+		{"UsageTimeSeries", &st.usageTimeSeriesFail},
+		{"UsageCountSince", &st.usageCountFail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.flag.Store(true)
+			defer tc.flag.Store(false)
+			served, ok := srv.refreshStats()
+			if !ok {
+				t.Fatal("degraded refresh reported failure")
+			}
+			if !bytes.Equal(served, good) {
+				t.Fatalf("refresh with a failing %s served a new body instead of the previous good one:\n%s", tc.name, served)
+			}
+			cached, ok := srv.readCache.Get(statsCacheKey)
+			if !ok || !bytes.Equal(cached, good) {
+				t.Fatalf("refresh with a failing %s replaced the cached good value (ok=%v)", tc.name, ok)
+			}
+			if !srv.statsRefresh.haveGood {
+				t.Fatalf("haveGood cleared by a refresh with a failing %s", tc.name)
+			}
+		})
+	}
+
+	// Cold cache + failing count: the only value available is degraded and is
+	// flagged so; it never carries a negative unknown-location count.
+	st.usageCountFail.Store(true)
+	defer st.usageCountFail.Store(false)
+	srv.readCache.Invalidate(statsCacheKey)
+	degraded, ok := srv.refreshStats()
+	if !ok {
+		t.Fatal("cold degraded refresh reported failure")
+	}
+	if srv.statsRefresh.haveGood {
+		t.Fatal("haveGood set by a refresh whose request count failed")
+	}
+	var parsed struct {
+		Unknown int64 `json:"unknown_request_location_requests"`
+	}
+	if err := json.Unmarshal(degraded, &parsed); err != nil {
+		t.Fatalf("decode degraded stats: %v", err)
+	}
+	if parsed.Unknown < 0 {
+		t.Fatalf("unknown_request_location_requests = %d with a failed count, want >= 0", parsed.Unknown)
 	}
 }
 

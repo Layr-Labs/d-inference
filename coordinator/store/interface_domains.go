@@ -120,21 +120,27 @@ type UsageStore interface {
 
 	// UsageCountSince returns the number of usage records created at or after
 	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
-	// avoid transferring rows over the wire.
-	UsageCountSince(since time.Time) int64
+	// avoid transferring rows over the wire. It returns an error (never a
+	// zero count) when the statement could not be completed, so callers do
+	// not cache or display zeros for a statement that timed out.
+	UsageCountSince(since time.Time) (int64, error)
 
 	// UsageTotals returns aggregated lifetime totals across all usage records
-	// without transferring per-row data over the wire.
-	UsageTotals() UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotals() (UsageTotals, error)
 
 	// UsageTotalsSince returns aggregate usage at or after the given time
-	// without transferring per-row data over the wire.
-	UsageTotalsSince(since time.Time) UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotalsSince(since time.Time) (UsageTotals, error)
 
 	// UsageTimeSeries returns aggregates for the given time window using the
 	// requested bucket size. Implementations enforce a one-minute minimum,
-	// thirty-day maximum lookback, and bounded result cardinality.
-	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket
+	// thirty-day maximum lookback, and bounded result cardinality. It returns
+	// an error (never a partial or empty series) when the statement could
+	// not be completed.
+	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error)
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.

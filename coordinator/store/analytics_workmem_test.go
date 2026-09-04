@@ -229,3 +229,25 @@ func TestNetworkTotalsReturnsErrorWhenUnavailable(t *testing.T) {
 		t.Fatal("NetworkTotals on a closed pool returned no error")
 	}
 }
+
+// TestUsageAggregatesReturnErrorWhenUnavailable: the four usage aggregates
+// behind /v1/stats report an error instead of zero totals, a zero count or a
+// nil series when the statement cannot run, so the stats refresher can keep
+// its last good value instead of caching a corrupted body.
+func TestUsageAggregatesReturnErrorWhenUnavailable(t *testing.T) {
+	s := testPostgresStore(t)
+	s.Close()
+	since := time.Now().Add(-24 * time.Hour)
+	if _, err := s.UsageTotals(); err == nil {
+		t.Error("UsageTotals on a closed pool returned no error")
+	}
+	if _, err := s.UsageTotalsSince(since); err == nil {
+		t.Error("UsageTotalsSince on a closed pool returned no error")
+	}
+	if _, err := s.UsageCountSince(since); err == nil {
+		t.Error("UsageCountSince on a closed pool returned no error")
+	}
+	if _, err := s.UsageTimeSeries(since, time.Now(), time.Minute); err == nil {
+		t.Error("UsageTimeSeries on a closed pool returned no error")
+	}
+}

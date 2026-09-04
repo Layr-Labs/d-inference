@@ -57,9 +57,12 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-// apiKeyCacheEntry stores the authenticated key record for a single raw API
-// key. Cached to skip DB round trips on repeat requests with the same key. A
-// nil key means the token is known-invalid (negative cache).
+// apiKeyCacheEntry stores the authenticated key record for a single API key.
+// Cached to skip DB round trips on repeat requests with the same key. Entries
+// are keyed by store.HashKey(token), never the raw bearer secret, and only
+// known-good keys live here; unknown tokens go to the separate, smaller
+// negative map (apiKeyNegCache) so a scanner or a client retrying a revoked
+// key cannot evict legitimate keys.
 type apiKeyCacheEntry struct {
 	key      *store.APIKey
 	cachedAt time.Time
@@ -69,6 +72,12 @@ type apiKeyCacheEntry struct {
 const (
 	apiKeyCacheTTL     = 60 * time.Second
 	apiKeyCacheMaxSize = 1000
+	// apiKeyNegCacheTTL is short so a key created right after a client's
+	// failed attempt with it becomes usable within seconds (key creation has
+	// no invalidation hook); apiKeyNegCacheMaxSize bounds what unknown tokens
+	// can occupy.
+	apiKeyNegCacheTTL     = 10 * time.Second
+	apiKeyNegCacheMaxSize = 256
 )
 
 // contextKey is an unexported type for context keys in this package.
@@ -459,9 +468,13 @@ type Server struct {
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
-	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries.
-	apiKeyCacheMu sync.RWMutex
-	apiKeyCache   map[string]apiKeyCacheEntry
+	// apiKeyCacheTTL. Bounded at apiKeyCacheMaxSize entries, keyed by
+	// store.HashKey(token). apiKeyNegCache remembers unknown tokens (hash ->
+	// time cached) for apiKeyNegCacheTTL, bounded at apiKeyNegCacheMaxSize.
+	// Both share apiKeyCacheMu; both evict a random entry when full.
+	apiKeyCacheMu  sync.RWMutex
+	apiKeyCache    map[string]apiKeyCacheEntry
+	apiKeyNegCache map[string]time.Time
 	// apiKeyCacheGen is bumped on every key mutation. A cached entry is only
 	// honored when its gen matches, so a single bump atomically invalidates the
 	// whole cache and closes the read-stale-after-mutation race.
@@ -943,6 +956,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		readCache:                newTTLCache(),
 		geoResolver:              newProviderGeoResolverFromEnv(logger),
 		apiKeyCache:              make(map[string]apiKeyCacheEntry),
+		apiKeyNegCache:           make(map[string]time.Time),
 		codeAttestThrottle:       newCodeAttestThrottle(),
 		trustReuseCache:          newTrustReuseCache(),
 		mdmSchedulerConfig:       cfg.MDMScheduler,
@@ -3263,11 +3277,11 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// lookupAPIKeyCache returns a cached ValidateKeyFull result if present and
-// not expired. Returns false on miss or expiry.
-func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
+// lookupAPIKeyCache returns a cached ValidateKeyFull result for the hashed
+// token if present and not expired. Returns false on miss or expiry.
+func (s *Server) lookupAPIKeyCache(keyHash string) (apiKeyCacheEntry, bool) {
 	s.apiKeyCacheMu.RLock()
-	entry, ok := s.apiKeyCache[token]
+	entry, ok := s.apiKeyCache[keyHash]
 	gen := s.apiKeyCacheGen
 	s.apiKeyCacheMu.RUnlock()
 	// Miss on absence, TTL expiry, or a stale generation (a key mutation has
@@ -3278,44 +3292,73 @@ func (s *Server) lookupAPIKeyCache(token string) (apiKeyCacheEntry, bool) {
 	return entry, true
 }
 
-// storeAPIKeyCache inserts an auth result into the cache, stamped with the
-// current generation. If the cache is at capacity, the oldest entry is evicted.
-func (s *Server) storeAPIKeyCache(token string, entry apiKeyCacheEntry) {
+// lookupAPIKeyNegCache reports whether the hashed token is a recently
+// confirmed unknown token (negative cache, apiKeyNegCacheTTL).
+func (s *Server) lookupAPIKeyNegCache(keyHash string) bool {
+	s.apiKeyCacheMu.RLock()
+	at, ok := s.apiKeyNegCache[keyHash]
+	s.apiKeyCacheMu.RUnlock()
+	return ok && time.Since(at) <= apiKeyNegCacheTTL
+}
+
+// storeAPIKeyCache inserts a positive auth result into the cache, stamped
+// with the current generation. At capacity one random entry is evicted (Go
+// map iteration order is random): O(1) under the write lock every
+// authenticated request's read lock waits on, instead of a full scan for the
+// oldest entry. A hot key evicted this way costs one extra DB read within
+// the TTL; with unknown tokens kept out of this map that is the only way a
+// legitimate key can be displaced.
+func (s *Server) storeAPIKeyCache(keyHash string, entry apiKeyCacheEntry) {
 	s.apiKeyCacheMu.Lock()
 	defer s.apiKeyCacheMu.Unlock()
 	entry.gen = s.apiKeyCacheGen
-	if len(s.apiKeyCache) >= apiKeyCacheMaxSize {
-		var oldest string
-		var oldestTime time.Time
-		for k, v := range s.apiKeyCache {
-			if oldest == "" || v.cachedAt.Before(oldestTime) {
-				oldest = k
-				oldestTime = v.cachedAt
-			}
+	if _, present := s.apiKeyCache[keyHash]; !present && len(s.apiKeyCache) >= apiKeyCacheMaxSize {
+		for victim := range s.apiKeyCache {
+			delete(s.apiKeyCache, victim)
+			break
 		}
-		delete(s.apiKeyCache, oldest)
 	}
-	s.apiKeyCache[token] = entry
+	s.apiKeyCache[keyHash] = entry
 }
 
-// invalidateAPIKeyCache removes a single key from the API key cache. Called
-// when a key is revoked so stale positive results don't grant access.
-func (s *Server) invalidateAPIKeyCache(token string) {
+// storeAPIKeyNegCache remembers an unknown token (by hash) so a client
+// retrying it does not re-read the DB for apiKeyNegCacheTTL. Same random
+// eviction at its (small) capacity.
+func (s *Server) storeAPIKeyNegCache(keyHash string) {
 	s.apiKeyCacheMu.Lock()
-	delete(s.apiKeyCache, token)
+	defer s.apiKeyCacheMu.Unlock()
+	if _, present := s.apiKeyNegCache[keyHash]; !present && len(s.apiKeyNegCache) >= apiKeyNegCacheMaxSize {
+		for victim := range s.apiKeyNegCache {
+			delete(s.apiKeyNegCache, victim)
+			break
+		}
+	}
+	s.apiKeyNegCache[keyHash] = time.Now()
+}
+
+// invalidateAPIKeyCache removes a single key from both caches. Called with
+// the RAW token when a key is revoked so stale positive results don't grant
+// access; the hash is derived here so no caller has to know the map key.
+func (s *Server) invalidateAPIKeyCache(rawToken string) {
+	keyHash := store.HashKey(rawToken)
+	s.apiKeyCacheMu.Lock()
+	delete(s.apiKeyCache, keyHash)
+	delete(s.apiKeyNegCache, keyHash)
 	s.apiKeyCacheMu.Unlock()
 }
 
 // invalidateAllAPIKeyCache atomically invalidates every cached auth result by
 // bumping the cache generation (entries cached under an older generation are
-// ignored). Called BEFORE and AFTER a by-ID key mutation (update/revoke/rotate)
-// where we don't hold the raw token: the pre-bump drops any pre-existing entry,
-// and the post-bump drops any entry a concurrent request re-cached from
-// pre-commit state during the mutation — closing the read-stale race.
+// ignored) and dropping the negative map. Called BEFORE and AFTER a by-ID key
+// mutation (update/revoke/rotate) where we don't hold the raw token: the
+// pre-bump drops any pre-existing entry, and the post-bump drops any entry a
+// concurrent request re-cached from pre-commit state during the mutation —
+// closing the read-stale race.
 func (s *Server) invalidateAllAPIKeyCache() {
 	s.apiKeyCacheMu.Lock()
 	s.apiKeyCacheGen++
 	s.apiKeyCache = make(map[string]apiKeyCacheEntry)
+	s.apiKeyNegCache = make(map[string]time.Time)
 	s.apiKeyCacheMu.Unlock()
 }
 
@@ -3359,10 +3402,15 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Fall back to API key auth.
-		// Check cache first to skip DB on repeat requests with the same key.
+		// Check the caches first to skip DB on repeat requests with the same
+		// token: the negative map for a recently confirmed unknown token, then
+		// the positive map. Both are keyed by the token's hash, computed once.
 		var keyRec *store.APIKey
 		authKind := "apikey_cache"
-		if cached, ok := s.lookupAPIKeyCache(token); ok {
+		keyHash := store.HashKey(token)
+		if s.lookupAPIKeyNegCache(keyHash) {
+			// keyRec stays nil: known-invalid.
+		} else if cached, ok := s.lookupAPIKeyCache(keyHash); ok {
 			keyRec = cached.key
 		} else {
 			authKind = "apikey_db"
@@ -3390,9 +3438,16 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 						s.logger.Warn("legacy key balance migration failed", "error", err)
 					}
 				}
-				// Cache the API-key result (positive or negative). Provider-token
-				// fallbacks are deliberately NOT cached below.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
+				// Cache the positive API-key result. Provider-token fallbacks
+				// are deliberately NOT cached below.
+				s.storeAPIKeyCache(keyHash, apiKeyCacheEntry{key: keyRec, cachedAt: time.Now()})
+			} else if strings.HasPrefix(token, store.KeyPrefix) {
+				// An sk-db- token can never be a provider token (those are
+				// minted as eigeninference-pt-<hex>), so skip that read: an
+				// unknown API key costs exactly one store call. AuthenticateKey
+				// is never skipped on the prefix — legacy unlinked keys may
+				// lack it. Negative-cache to avoid hammering the DB.
+				s.storeAPIKeyNegCache(keyHash)
 			} else if pt, err := s.store.GetProviderToken(token); err == nil && pt != nil && pt.Active {
 				// Provider device-login tokens authenticate as an account-scoped
 				// identity with no per-key limits (ID left empty). These are NOT
@@ -3403,7 +3458,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 				keyRec = &store.APIKey{OwnerAccountID: pt.AccountID}
 			} else {
 				// Unknown token — negative-cache to avoid hammering the DB.
-				s.storeAPIKeyCache(token, apiKeyCacheEntry{key: nil, cachedAt: time.Now()})
+				s.storeAPIKeyNegCache(keyHash)
 			}
 		}
 

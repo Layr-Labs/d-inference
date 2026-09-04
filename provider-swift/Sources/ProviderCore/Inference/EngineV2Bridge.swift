@@ -2067,7 +2067,7 @@ public actor EngineV2Bridge {
     ) {
         switch reason {
         case .stop, .length:
-            let final = recordFinish(id: id, usage: usage, success: true, lastDeltaAt: lastDeltaAt, finishReason: reason)
+            let final = recordFinish(id: id, usage: usage, lastDeltaAt: lastDeltaAt, finishReason: reason)
             // Preserve the v2 engine's truncation signal: `.length` must
             // reach the client as finish_reason "length", not be flattened
             // to "stop" (max_tokens truncation was invisible on v2).
@@ -2079,7 +2079,7 @@ public actor EngineV2Bridge {
             ))
         case .cancelled:
             let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                id: id, usage: usage, lastDeltaAt: lastDeltaAt,
                 finishReason: reason)
             // A cancel that did real work emits its usage BEFORE the error
             // so a listener can still bill delivered tokens (legacy abort
@@ -2100,7 +2100,7 @@ public actor EngineV2Bridge {
             // AND that usage through — instead of flattening the deadline into
             // a generic string with zero usage (the incident behavior).
             let final = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                id: id, usage: usage, lastDeltaAt: lastDeltaAt,
                 finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if let wireCause = Self.wireTerminalCause(cbCause) {
@@ -2117,7 +2117,7 @@ public actor EngineV2Bridge {
             }
         case .error(let message):
             _ = recordFinish(
-                id: id, usage: usage, success: false, lastDeltaAt: lastDeltaAt,
+                id: id, usage: usage, lastDeltaAt: lastDeltaAt,
                 finishReason: reason)
             emitInferenceErrorTelemetry(requestId: id)
             if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
@@ -2199,7 +2199,6 @@ public actor EngineV2Bridge {
     private func recordFinish(
         id: String,
         usage: CBv2Usage,
-        success: Bool,
         lastDeltaAt: SuspendingClock.Instant? = nil,
         finishReason: CBv2FinishReason? = nil
     ) -> (prompt: Int, completion: Int, tps: Double) {
@@ -2263,22 +2262,40 @@ public actor EngineV2Bridge {
             let seconds = WedgeMonitor.seconds(now - state.submittedAt)
             tps = seconds > 0 ? Double(completion) / seconds : 0
         }
+        // Rate-sample eligibility keys on the finish reason, not `success`:
+        // a request cancelled AFTER its first token performed a complete
+        // cold prefill (the hedge losers and client disconnects that are the
+        // long-prompt samples a slow rate needs to heal), and — with enough
+        // decode steps — a real decode observation. A cancel BEFORE the first
+        // token, an engine error or a typed terminal observed nothing.
+        let sampleEligible: Bool
+        switch finishReason {
+        case .stop, .length: sampleEligible = true
+        case .cancelled: sampleEligible = state.firstTokenAt != nil
+        default: sampleEligible = false
+        }
         // Only tokens emitted strictly after the first engine emission are a
         // decode observation. MTP can deliver several accepted tokens in that
         // first burst; charging all but one over a near-zero interval would
         // catastrophically inflate the conservative decode rate.
-        if success, let firstTokenAt = state.firstTokenAt,
+        if sampleEligible, let firstTokenAt = state.firstTokenAt,
             completion > state.firstEmissionTokens
         {
             let decodeSeconds = WedgeMonitor.seconds(now - firstTokenAt)
             let decodeTokens = completion - state.firstEmissionTokens
+            // A cancel lands asynchronously at a step boundary, so its
+            // window includes the cancel latency: a handful of tokens over
+            // it would read low. Require a real decode run first.
+            let cancelledTooShort =
+                finishReason == .cancelled
+                && decodeTokens < Self.minCancelledDecodeSampleTokens
             let decodeTps =
                 decodeSeconds > 0 ? Double(decodeTokens) / decodeSeconds : 0
-            if decodeTps > 0 {
+            if decodeTps > 0, !cancelledTooShort {
                 updateDecodeTpsEwma(decodeTps)
             }
         }
-        if success {
+        if sampleEligible {
             recordPrefillSample(
                 promptTokens: prompt,
                 usage: usage,
@@ -2290,6 +2307,10 @@ public actor EngineV2Bridge {
     }
 
     // MARK: - Prefill sampling (observed_prefill_tps)
+
+    /// Minimum decode tokens after the first emission for a CANCELLED
+    /// request's decode sample to count (see `recordFinish`).
+    static let minCancelledDecodeSampleTokens = 8
 
     /// Minimum submit→first-token window (seconds) for a prefill sample to
     /// count. A near-zero window (scripted engines, degenerate prompts)
@@ -2333,7 +2354,8 @@ public actor EngineV2Bridge {
     ) {
         guard Self.isColdPrefillSample(usage: usage) else { return }
         guard let firstTokenAt else { return }
-        let prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
+        let prefillSeconds = Self.prefillWindowSeconds(
+            timing: usage.timing, submittedAt: submittedAt, firstTokenAt: firstTokenAt)
         guard
             let tps = Self.classifyPrefillSample(
                 prefilledTokens: promptTokens, prefillSeconds: prefillSeconds)
@@ -2354,6 +2376,33 @@ public actor EngineV2Bridge {
             isolatedPrefillEwmaInitialized = true
         }
         isolatedPrefillSampleCount += 1
+    }
+
+    /// The prefill window a sample is measured over. ENGINE-STAMPED when the
+    /// terminal usage carries both stamps: first prefill-chunk launch → the
+    /// readback-done instant of the step that confirmed the first token
+    /// (`CBv2RequestTiming`, nanosecond offsets from engine enqueue). That
+    /// window excludes the engine queue turn, the prefix-hash lookup inside
+    /// `engine.submit`, and the detok/output-stream/pump hops the BRIDGE
+    /// window (`firstTokenAt − submittedAt`) folds into every sample — fixed
+    /// costs that made short prompts read as slow prefill and made the two
+    /// submit paths (ordinary: bridge clock before submit; atomic: engine
+    /// commit instant) measure different things. Residual: it still spans one
+    /// sampling step plus host readback, and for a striped prompt any
+    /// mixed-step peers (none for an isolated sample). Falls back to the
+    /// bridge window byte-for-byte when either stamp is absent (fixture
+    /// engines, pre-#809 usage).
+    static func prefillWindowSeconds(
+        timing: CBv2RequestTiming,
+        submittedAt: ContinuousClock.Instant,
+        firstTokenAt: ContinuousClock.Instant
+    ) -> Double {
+        if timing.prefillFirstLaunchNanos > 0,
+            timing.firstTokenNanos > timing.prefillFirstLaunchNanos
+        {
+            return Double(timing.firstTokenNanos - timing.prefillFirstLaunchNanos) / 1e9
+        }
+        return WedgeMonitor.seconds(firstTokenAt - submittedAt)
     }
 
     static func isColdPrefillSample(usage: CBv2Usage) -> Bool {

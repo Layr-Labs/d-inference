@@ -312,31 +312,178 @@ struct EngineV2PrefillSamplingTests {
         #expect(reported <= 4_100)
     }
 
-    @Test("cancelled requests never feed the prefill EWMA")
-    func cancelledRequestsDoNotSample() async throws {
+    /// One request driven to `reason` after `deltas` (each a token batch),
+    /// with the submission backdated so the bridge window clears the floor.
+    private func finish(
+        bridge: EngineV2Bridge,
+        engine: PrefillScriptEngine,
+        requestId: String,
+        deltas: [[Int]],
+        reason: CBv2FinishReason,
+        interDeltaMilliseconds: Int = 0
+    ) async throws {
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: 200),
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")],
+                max_tokens: 64),
+            requestId: requestId)
+        let consumer = Task { for await _ in stream {} }
+        await bridge.backdateSubmissionForTesting(requestId: requestId, byMilliseconds: 100)
+        let continuation = try #require(engine.continuations.last)
+        for (index, tokens) in deltas.enumerated() {
+            if index > 0, interDeltaMilliseconds > 0 {
+                try await Task.sleep(for: .milliseconds(interDeltaMilliseconds))
+            }
+            continuation.yield(.delta(text: "x", tokens: tokens, logprobs: nil))
+        }
+        continuation.yield(.finished(
+            reason: reason,
+            usage: CBv2Usage(
+                promptTokens: 200,
+                completionTokens: deltas.reduce(0) { $0 + $1.count })))
+        continuation.finish()
+        _ = await consumer.value
+    }
+
+    @Test("a request cancelled AFTER its first token feeds the prefill rate; before it, or on error/terminal, it does not")
+    func cancelledAfterFirstTokenSamplesPrefill() async throws {
         let engine = PrefillScriptEngine()
         let bridge = EngineV2Bridge(
             engine: engine,
             modelId: "gpt-oss-20b",
             tokenizer: TokenizerHandle(PrefillStubTokenizer()),
-            eosTokenIds: []
-        )
+            eosTokenIds: [])
+
+        // Cancelled BEFORE the first token: nothing was observed.
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "cancel-before-first",
+            deltas: [], reason: .cancelled)
+        #expect(await bridge.observedPrefillTpsEwma == 0)
+        #expect(await bridge._testIsolatedPrefillTps() == 0)
+
+        // Engine error / typed terminal after a token: still nothing.
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "engine-error",
+            deltas: [[11]], reason: .error("boom"))
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "typed-terminal",
+            deltas: [[11]], reason: .terminal(cause: .decodeStall, message: "stall"))
+        #expect(await bridge.observedPrefillTpsEwma == 0)
+        #expect(await bridge._testIsolatedPrefillTps() == 0)
+        #expect(await bridge.observedDecodeTpsEwma == 0)
+
+        // Cancelled AFTER the first token (a hedge loser / client disconnect):
+        // the prompt was fully computed — a real, isolated prefill sample.
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "cancel-after-first",
+            deltas: [[11]], reason: .cancelled)
+        let sampled = await bridge.observedPrefillTpsEwma
+        #expect(sampled > 0)
+        #expect(await bridge._testIsolatedPrefillTps() == sampled)
+        #expect(await bridge._testIsolatedPrefillSampleCount() == 1)
+        // Two decode tokens over a window that includes the cancel latency
+        // is not a decode observation (floor: 8).
+        #expect(await bridge.observedDecodeTpsEwma == 0)
+    }
+
+    @Test("a cancelled request's decode sample counts only past the 8-token floor")
+    func cancelledDecodeSampleNeedsEightTokens() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+        // 1 first-emission token + 7 decode tokens: below the floor.
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "cancel-seven",
+            deltas: [[11], [12, 13, 14, 15, 16, 17, 18]], reason: .cancelled,
+            interDeltaMilliseconds: 10)
+        #expect(await bridge.observedDecodeTpsEwma == 0)
+        // 1 + 8: a real decode run.
+        try await finish(
+            bridge: bridge, engine: engine, requestId: "cancel-eight",
+            deltas: [[11], [12, 13, 14, 15, 16, 17, 18, 19]], reason: .cancelled,
+            interDeltaMilliseconds: 10)
+        #expect(await bridge.observedDecodeTpsEwma > 0)
+        // A clean stop still samples decode from the first decode token on.
+        let bridge2 = EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+        try await finish(
+            bridge: bridge2, engine: engine, requestId: "stop-two",
+            deltas: [[11], [12]], reason: .stop, interDeltaMilliseconds: 10)
+        #expect(await bridge2.observedDecodeTpsEwma > 0)
+    }
+
+    @Test("the prefill window is the engine's stamped launch→first-token span when present, the bridge window otherwise")
+    func prefillWindowPrefersEngineStamps() {
+        let submittedAt = ContinuousClock.now
+        let firstTokenAt = submittedAt.advanced(by: .milliseconds(1_000))
+        let bridgeWindow = WedgeMonitor.seconds(firstTokenAt - submittedAt)
+
+        // No stamps (fixture engines, pre-#809 usage): byte-for-byte the
+        // bridge window.
+        #expect(EngineV2Bridge.prefillWindowSeconds(
+            timing: CBv2RequestTiming(), submittedAt: submittedAt, firstTokenAt: firstTokenAt)
+            == bridgeWindow)
+        // Only one stamp: still the bridge window.
+        var launchOnly = CBv2RequestTiming()
+        launchOnly.prefillFirstLaunchNanos = 5_000
+        #expect(EngineV2Bridge.prefillWindowSeconds(
+            timing: launchOnly, submittedAt: submittedAt, firstTokenAt: firstTokenAt)
+            == bridgeWindow)
+        // First token not after the launch (clamped/degenerate): bridge window.
+        var inverted = CBv2RequestTiming()
+        inverted.prefillFirstLaunchNanos = 5_000
+        inverted.firstTokenNanos = 5_000
+        #expect(EngineV2Bridge.prefillWindowSeconds(
+            timing: inverted, submittedAt: submittedAt, firstTokenAt: firstTokenAt)
+            == bridgeWindow)
+        // Both stamps: the engine window, whatever the bridge clock says.
+        var stamped = CBv2RequestTiming()
+        stamped.prefillFirstLaunchNanos = 5_000
+        stamped.firstTokenNanos = 5_000 + 250_000_000
+        #expect(EngineV2Bridge.prefillWindowSeconds(
+            timing: stamped, submittedAt: submittedAt, firstTokenAt: firstTokenAt)
+            == 0.25)
+    }
+
+    @Test("engine-stamped usage measures the sample over the engine window, not the backdated bridge window")
+    func stampedUsageSamplesEngineWindow() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
         let stream = await bridge.submitTokenized(
             promptTokens: Array(repeating: 7, count: 200),
             request: ChatCompletionRequest(
                 model: "gpt-oss-20b",
                 messages: [ChatMessage(role: "user", content: "hi")]),
-            requestId: "req-prefill-cancel")
+            requestId: "stamped")
         let consumer = Task { for await _ in stream {} }
-        try await Task.sleep(for: .milliseconds(20))
+        // Bridge window: ≥ 1 s (→ ≤ 200 tok/s). Engine window: 100 ms.
+        await bridge.backdateSubmissionForTesting(requestId: "stamped", byMilliseconds: 1_000)
+        var usage = CBv2Usage(promptTokens: 200, completionTokens: 1)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1
+        timing.firstTokenNanos = 1 + 100_000_000
+        usage.timing = timing
         let continuation = try #require(engine.continuations.first)
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
-        continuation.yield(.finished(
-            reason: .cancelled, usage: CBv2Usage(promptTokens: 200, completionTokens: 1)))
+        continuation.yield(.finished(reason: .stop, usage: usage))
         continuation.finish()
         _ = await consumer.value
 
-        #expect(await bridge.backendSlotCapacity().observedPrefillTps == 0)
+        let observed = await bridge.observedPrefillTpsEwma
+        #expect(abs(observed - 2_000) < 1e-6, "200 tokens over the 100 ms engine window")
+        #expect(await bridge._testIsolatedPrefillTps() == observed)
     }
 
     @Test("cache-hit submit-to-first-token timing never feeds the cold prefill EWMA")

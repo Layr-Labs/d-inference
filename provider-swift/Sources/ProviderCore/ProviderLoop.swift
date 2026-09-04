@@ -269,6 +269,16 @@ public actor ProviderLoop {
     /// not linearizable).
     internal var activationReserveEpoch: UInt64 = 0
 
+    /// MLX active-over-limit regime (T13-05, `MLXMemoryLimitRegime`): the
+    /// last verdict of the capacity tick's sampler and the number of ticks
+    /// spent over the limit (per-primitive eval serialization) since start.
+    /// Diagnostic only; nothing on the wire.
+    internal var mlxOverLimit = false
+    internal var mlxOverLimitTicks = 0
+    /// Test seam: the memory limit the sampler compares against; nil ⇒
+    /// `MLXMemoryGuard.configuredLimitsSnapshot()?.memoryLimitBytes`.
+    internal var mlxMemoryLimitBytesForTesting: Int?
+
     /// The single pending post-retirement reconnect (see
     /// `scheduleRetirementReconnect`): a burst of failed-self-test
     /// retirements coalesces into one re-registration, fired once

@@ -64,6 +64,10 @@ extension ProviderLoop {
         kvBudget.proactiveReclaimSweep()
         await updateAggregateCapacity()
         await sampleLiveSlotPostures()
+        // ONCE per tick, deliberately outside `updateAggregateCapacity`
+        // (which re-enters itself on the reserve-epoch guard and also runs
+        // on every request event): the MLX over-limit regime sampler.
+        sampleMLXMemoryLimitRegime()
         await recoverWedgedEngineV2Slots()
         writeDaemonState()
     }
@@ -89,6 +93,68 @@ extension ProviderLoop {
             postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
         }
         lastLiveSlotPostures = postures
+    }
+
+    /// MLX active-over-limit regime detector (T13-05, `MLXMemoryLimitRegime`).
+    /// Above `Memory.memoryLimit` MLX's eval commits and waits after EVERY
+    /// primitive — a silent ~10× decode slowdown shaped exactly like a wedged
+    /// slot. Edge-triggered: WARN + `engine_health` telemetry
+    /// (`operation=mlx_memory_limit_exceeded`) on entry, INFO +
+    /// `mlx_memory_limit_recovered` on exit, a tick counter while over. The
+    /// limit comes from `MLXMemoryGuard.configuredLimitsSnapshot()` — the
+    /// value this process set — never from an MLX global read (which can
+    /// initialize Metal in no-GPU tests); the test seam overrides it.
+    internal func sampleMLXMemoryLimitRegime() {
+        let active = max(0, MLX.Memory.activeMemory)
+        let limit = mlxMemoryLimitBytesForTesting
+            ?? MLXMemoryGuard.configuredLimitsSnapshot()?.memoryLimitBytes
+        let transition = MLXMemoryLimitRegime.transition(
+            activeBytes: active, limitBytes: limit, wasOver: mlxOverLimit)
+        switch transition {
+        case .none:
+            if mlxOverLimit { mlxOverLimitTicks += 1 }
+            return
+        case .enter:
+            mlxOverLimit = true
+            mlxOverLimitTicks += 1
+        case .exit:
+            mlxOverLimit = false
+        }
+        let entered = transition == .enter
+        let limitBytes = limit ?? 0
+        let ratio = limitBytes > 0 ? Double(active) / Double(limitBytes) : 0
+        let message = entered
+            ? String(
+                format: "MLX active memory %d B above memory limit %d B (×%.2f) — eval "
+                    + "serializes per primitive until active drops below the limit",
+                active, limitBytes, ratio)
+            : String(
+                format: "MLX active memory %d B back below memory limit %d B (×%.2f) after "
+                    + "%d over-limit tick(s)",
+                active, limitBytes, ratio, mlxOverLimitTicks)
+        if entered { logger.warning(message) } else { logger.info(message) }
+        // Allowlisted keys only (the limit rides the message); the engine_v2
+        // health kind + the slot-hook sink so the loop-level test can capture
+        // it — production falls through to the shared client.
+        let event = TelemetryEvent(
+            source: .provider,
+            severity: entered ? .warn : .info,
+            kind: .engineHealth,
+            message: message
+        ).withFields([
+            "component": .string("engine"),
+            "operation": .string(
+                entered ? "mlx_memory_limit_exceeded" : "mlx_memory_limit_recovered"),
+            "backend": .string("engine_v2"),
+            "mlx_active_bytes": .int64(Int64(active)),
+            "mlx_cache_bytes": .int64(Int64(max(0, MLX.Memory.cacheMemory))),
+            "num_running": .int(modelSlots.count),
+        ])
+        if let emit = engineV2SlotHooks?.emitTelemetry {
+            emit(event)
+        } else {
+            TelemetryClient.shared.emit(event)
+        }
     }
 
     /// `attempt`: internal retry counter for the stale-snapshot guard below;
@@ -160,9 +226,13 @@ extension ProviderLoop {
         // is in flight we treat NOTHING as reclaimable (conservative, never
         // advertises an actively-served model's weights as free); only when fully
         // idle do we assume idle models can be evicted.
-        let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
-        let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
-        let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+        let mlxActiveBytes = UInt64(max(0, MLX.Memory.activeMemory))
+        // Heartbeat `gpu_memory_peak_gb` is the peak since the LAST MODEL LOAD
+        // (the load path resets MLX's peak counter to measure its transient,
+        // T3-08), not since process start. No routing consumer reads it; the
+        // profiler's fleet_snapshots column inherits the same semantics.
+        let mlxPeakBytes = UInt64(max(0, MLX.Memory.peakMemory))
+        let mlxCacheBytes = UInt64(max(0, MLX.Memory.cacheMemory))
         let mlxUsed = mlxActiveBytes + mlxCacheBytes
         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(

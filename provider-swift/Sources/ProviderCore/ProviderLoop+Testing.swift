@@ -204,6 +204,17 @@ extension ProviderLoop {
         engineV2Runtime = runtime
     }
 
+    /// Test seam: the MLX memory limit the over-limit regime sampler
+    /// (`sampleMLXMemoryLimitRegime`) compares against, so the transition
+    /// is driven without mutating `MLXMemoryGuard`'s process-global state.
+    func setMLXMemoryLimitBytesForTesting(_ bytes: Int?) {
+        mlxMemoryLimitBytesForTesting = bytes
+    }
+
+    func mlxOverLimitStateForTesting() -> (over: Bool, ticks: Int) {
+        (mlxOverLimit, mlxOverLimitTicks)
+    }
+
     /// Test seam: install slot-factory hooks (EOS snapshot + engine builder
     /// + physical-memory override) so the re-slice + bridge construction
     /// path runs end-to-end with a scripted `CBv2Engine` — no model

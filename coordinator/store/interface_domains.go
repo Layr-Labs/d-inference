@@ -745,11 +745,4 @@ type ProviderStore interface {
 	CompleteVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, outcome VerificationOutcome, now time.Time) error
 	RescheduleVerificationJob(ctx context.Context, seKey string, kind VerificationTaskKind, owner string, priority VerificationPriority, retryStage int, previousDelay time.Duration, nextAttemptAt time.Time, outcome VerificationOutcome, now time.Time) error
 
-	// --- Provider Log Reports ---
-
-	// StoreLogReport stores a provider log report and returns its support ID.
-	StoreLogReport(accountID string, logData []byte) (int64, error)
-
-	// GetLogReport retrieves a single log report by ID.
-	GetLogReport(id int64) (*LogReport, error)
 }

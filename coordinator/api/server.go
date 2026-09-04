@@ -2924,9 +2924,9 @@ func (s *Server) routes() {
 	// operational telemetry remains separate.
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
-	// Explicit provider log reports
-	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
-	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))
+	// Keep a body-blind tombstone for providers that still expose `darkbloom
+	// report`; new provider builds no longer register that CLI command.
+	s.mux.HandleFunc("POST /v1/provider/log-report", s.handleProviderLogReportGone)
 
 	// Metrics snapshot (admin only)
 	s.mux.HandleFunc("GET /v1/admin/metrics", s.handleAdminMetrics)

@@ -127,10 +127,6 @@ type MemoryStore struct {
 	// Durable scheduler parity for tests/development. Key is SE key + task kind.
 	verificationJobs map[string]VerificationJob
 
-	// Provider log reports
-	logReports   []LogReport
-	logReportSeq int64
-
 	// Provider sessions (connect→disconnect uptime history)
 	providerSessions   []ProviderSession
 	providerSessionSeq int64
@@ -265,9 +261,6 @@ func (s *MemoryStore) Prune(maxEntries int) {
 	}
 	if n := len(s.providerSessions); n > maxEntries {
 		s.providerSessions = append([]ProviderSession(nil), s.providerSessions[n-maxEntries:]...)
-	}
-	if n := len(s.logReports); n > maxEntries {
-		s.logReports = append([]LogReport(nil), s.logReports[n-maxEntries:]...)
 	}
 	// Floor-draw audit rows are bounded, but the floorDrawKeys idempotency map is
 	// intentionally NOT pruned — it is the authoritative dedupe guard and dropping
@@ -3862,50 +3855,6 @@ func (s *MemoryStore) RescheduleVerificationJob(_ context.Context, seKey string,
 	rec.ClaimExpiresAt = nil
 	s.verificationJobs[key] = rec
 	return nil
-}
-
-// --- Provider Log Reports ---
-
-func (s *MemoryStore) StoreLogReport(accountID string, logData []byte) (int64, error) {
-	const maxSize = 10 << 20 // 10 MB
-	if len(logData) > maxSize {
-		logData = logData[:maxSize]
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.logReportSeq++
-	cp := make([]byte, len(logData))
-	copy(cp, logData)
-	s.logReports = append(s.logReports, LogReport{
-		ID:           s.logReportSeq,
-		AccountID:    accountID,
-		LogSizeBytes: int64(len(cp)),
-		LogData:      cp,
-		CreatedAt:    time.Now(),
-	})
-	return s.logReportSeq, nil
-}
-
-func (s *MemoryStore) GetLogReport(id int64) (*LogReport, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for i := range s.logReports {
-		if s.logReports[i].ID == id {
-			r := s.logReports[i]
-			cp := LogReport{
-				ID:           r.ID,
-				AccountID:    r.AccountID,
-				LogSizeBytes: r.LogSizeBytes,
-				CreatedAt:    r.CreatedAt,
-				LogData:      make([]byte, len(r.LogData)),
-			}
-			copy(cp.LogData, r.LogData)
-			return &cp, nil
-		}
-	}
-	return nil, fmt.Errorf("log report %d not found", id)
 }
 
 // OpenProviderSession records the start of a provider connection. Idempotent

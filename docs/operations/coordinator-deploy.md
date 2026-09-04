@@ -25,8 +25,15 @@ edit the env file. Provider CLI releases are a separate runbook:
   and to read Cloud Build / Artifact Registry.
 - `psql` access to the production RDS database (`PROD_DB_URL`) for the
   pre-swap lock check.
-- Explicit human approval for the production mutation, recorded where your team
+- Explicit human approval for the production mutation (rule 1 in
+  [README.md](README.md) is the canonical statement), recorded where your team
   records deploys; a second human on hand during the swap.
+- `APPROVED_PREVIOUS_IMAGE`: the `sha256:<64 hex>` image ID of the container
+  currently in production, confirmed known-good and written into the same
+  deploy record before you touch the host. Step 3 refuses to continue if the
+  live container is not that image, so the rollback target is decided — and
+  reviewed — before anything is mutated. There is no file or script behind it;
+  it is a value you paste from the deploy record.
 - The candidate commit is `origin/master`, CI is green, and
   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) job "Release
   Integrity" passed (`scripts/check-release-version.sh`,
@@ -165,8 +172,8 @@ sudo grep -Fx 'EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS=9000' /etc/d-inference/
 ```
 
 Record the current container's immutable image and persist the rollback state
-root-only, then confirm the running image is the one on your reviewed rollback
-allowlist (`APPROVED_PREVIOUS_IMAGE`):
+root-only, then confirm the running image is the approved rollback target
+(`APPROVED_PREVIOUS_IMAGE`, see Prerequisites):
 
 ```bash
 : "${APPROVED_PREVIOUS_IMAGE:?sha256:<64 hex> from the reviewed rollback allowlist}"
@@ -265,8 +272,30 @@ sudo docker run -d --name coordinator \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   "$PREVIOUS_IMAGE"
-curl -fsS localhost:8080/health | jq .
 ```
+
+### Verify the rollback
+
+The same checks as [Verification](#verification), keyed to the previous image
+instead of the candidate:
+
+```bash
+PREVIOUS_COMMIT=$(sudo docker image inspect "$PREVIOUS_IMAGE" \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+HEALTH=$(curl -fsS localhost:8080/health); echo "$HEALTH"
+echo "$HEALTH" | jq -e --arg c "$PREVIOUS_COMMIT" \
+  '.status == "ok" and .build_commit == $c and .build_date != "unknown"'
+curl -fsS localhost:8080/readyz                       # 200 once not draining
+[[ "$(sudo docker inspect --format '{{.Image}}' coordinator)" == "$PREVIOUS_IMAGE" ]]
+sudo docker logs coordinator 2>&1 | grep -c "upgraded live provider to hardware trust"   # climbs over ~2 min
+sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"        # a few dozen is normal; hundreds = volume mount missing
+curl -fsS https://api.darkbloom.dev/health
+```
+
+Then run the `inference_routes` traffic query from Verification and confirm
+the pre-incident rate returns within ~2 minutes. Record the rollback and its
+cause in the deploy record; the failed candidate image stays in Artifact
+Registry for diagnosis.
 
 Providers reconnect on their own; the live registry is in-process and rebuilt
 from reconnects, durable state is in RDS and on the persistent disk.

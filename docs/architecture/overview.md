@@ -134,13 +134,14 @@ retained: [`security/encryption.md`](security/encryption.md).
 
 ## Money in one paragraph
 
-The ledger is in micro-USD. Defaults are `DefaultInputPricePerMillion =
-50_000` and `DefaultOutputPricePerMillion = 200_000` µUSD per million tokens
-($0.05 / $0.20), with `platformFeePercent = 0` during the public alpha
-(`coordinator/payments/pricing.go`). Consumers fund balances through Stripe;
-providers withdraw through Stripe Connect. A consumer routing to a provider it
-owns (self-route) pays nothing. [`billing.md`](billing.md),
-[`../reference/pricing-model.md`](../reference/pricing-model.md).
+The ledger is in micro-USD. A request reserves the consumer's balance for its
+worst-case cost before dispatch and settles the actual cost from
+`inference_complete`; the provider's account is credited net of the platform
+fee, whose value is stated once, in [`billing.md`](billing.md#invariants).
+Default per-token prices and the price-resolution order are in
+[`../reference/pricing-model.md`](../reference/pricing-model.md). Consumers
+fund balances through Stripe; providers withdraw through Stripe Connect. A
+consumer routing to a provider it owns (self-route) pays nothing.
 
 ## Invariants
 

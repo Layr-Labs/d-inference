@@ -636,7 +636,7 @@ func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	r.sendModelLoadActions(actions, loadPlannerSwap)
 
 	r.mu.Lock()
-	hasPending := r.providerHasPendingLoad(p.ID)
+	hasPending := r.providerHasPendingLoad(p.ID, time.Now())
 	r.mu.Unlock()
 	if hasPending {
 		t.Fatal("pending model load was not cleared after writer queue rejected load_model")

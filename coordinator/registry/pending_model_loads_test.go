@@ -8,7 +8,7 @@ import (
 func hasPendingLoad(r *Registry, providerID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.providerHasPendingLoad(providerID)
+	return r.providerHasPendingLoad(providerID, time.Now())
 }
 
 func pendingLoadExpiry(r *Registry, providerID, modelID string) (time.Time, bool) {
@@ -208,4 +208,107 @@ func TestDisconnectClearsPendingModelLoad(t *testing.T) {
 	if startedLeft {
 		t.Fatal("Disconnect left a dangling pendingModelLoadStarted entry")
 	}
+}
+
+// TestExpiredPendingLoadIgnoredWithoutSweep pins lazy expiry: an expired
+// entry is invisible to every planner read (providerHasPendingLoad,
+// reservePendingModelLoads' per-provider check, PendingModelLoadDuration)
+// with no sweep having run, and the warm-pool tick's pendingModelLoadCount
+// reaps it.
+func TestExpiredPendingLoadIgnoredWithoutSweep(t *testing.T) {
+	r := New(testLogger())
+	now := time.Now()
+	r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m1"}}, now)
+	if !hasPendingLoad(r, "p1") {
+		t.Fatal("fresh reservation not visible")
+	}
+	if d := r.PendingModelLoadDuration("p1", "m1"); d <= 0 {
+		t.Fatalf("live reservation duration = %v, want > 0", d)
+	}
+
+	// Back-date the entry past its TTL without running any sweep.
+	r.mu.Lock()
+	r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m1"}] = now.Add(-time.Second)
+	r.mu.Unlock()
+
+	if hasPendingLoad(r, "p1") {
+		t.Fatal("expired entry still reported as pending")
+	}
+	if d := r.PendingModelLoadDuration("p1", "m1"); d != 0 {
+		t.Fatalf("expired entry duration = %v, want 0", d)
+	}
+	again := r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m2"}}, now)
+	if len(again) != 1 {
+		t.Fatal("provider with only an expired entry was not reservable")
+	}
+	r.mu.RLock()
+	_, stale := r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m1"}]
+	r.mu.RUnlock()
+	if !stale {
+		t.Fatal("expired entry was deleted by a read path; deletion belongs to the write-locked sweeps")
+	}
+	if n := r.pendingModelLoadCount(now); n != 1 {
+		t.Fatalf("pendingModelLoadCount = %d, want 1 (only the live m2 entry)", n)
+	}
+	r.mu.RLock()
+	_, stale = r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m1"}]
+	r.mu.RUnlock()
+	if stale {
+		t.Fatal("warm-pool sweep did not reap the expired entry")
+	}
+}
+
+// TestClearIneligibleReapsExpiredEntries: the runtime-policy sweep, already
+// under the write lock, reaps expired entries without counting them as
+// ineligible releases.
+func TestClearIneligibleReapsExpiredEntries(t *testing.T) {
+	r := New(testLogger())
+	r.Register("p1", nil, testRegisterMessage())
+	r.mu.Lock()
+	r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m-expired"}] = time.Now().Add(-time.Second)
+	r.pendingModelLoadStarted[modelLoadKey{ProviderID: "p1", ModelID: "m-expired"}] = time.Now().Add(-time.Minute)
+	r.mu.Unlock()
+	if cleared := r.ClearIneligiblePendingModelLoads("p1"); cleared != 0 {
+		t.Fatalf("expired entry counted as an ineligible release: cleared = %d", cleared)
+	}
+	r.mu.RLock()
+	_, left := r.pendingModelLoads[modelLoadKey{ProviderID: "p1", ModelID: "m-expired"}]
+	_, startedLeft := r.pendingModelLoadStarted[modelLoadKey{ProviderID: "p1", ModelID: "m-expired"}]
+	r.mu.RUnlock()
+	if left || startedLeft {
+		t.Fatal("ClearIneligiblePendingModelLoads left the expired entry (or its start stamp) behind")
+	}
+}
+
+// TestTriggerModelSwapsTakesNoWriteLockWhenNothingToLoad: with a queued model
+// nobody can load, TriggerModelSwaps must complete while another goroutine
+// holds r.mu for reading — i.e. it takes no write lock (a writer would wait
+// for the reader and the call would hang). Fails before the change, where
+// every TriggerModelSwaps called expirePendingModelLoads under r.mu.Lock.
+func TestTriggerModelSwapsTakesNoWriteLockWhenNothingToLoad(t *testing.T) {
+	r := New(testLogger())
+	r.SetQueue(NewRequestQueue(8, 30*time.Second))
+	const model = "no-loader-model"
+	r.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 15}})
+	if err := r.Queue().Enqueue(&QueuedRequest{RequestID: "q", Model: model, Pending: &PendingRequest{RequestID: "q", Model: model}}); err != nil {
+		t.Fatal(err)
+	}
+	// A stale entry that the old code would have swept under the write lock.
+	r.mu.Lock()
+	r.pendingModelLoads[modelLoadKey{ProviderID: "gone", ModelID: model}] = time.Now().Add(-time.Second)
+	r.mu.Unlock()
+
+	r.mu.RLock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.TriggerModelSwaps()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		r.mu.RUnlock()
+		t.Fatal("TriggerModelSwaps blocked on r.mu.Lock while a reader held the lock")
+	}
+	r.mu.RUnlock()
 }

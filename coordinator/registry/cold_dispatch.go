@@ -69,7 +69,7 @@ func (r *Registry) ColdSpillProviders(model string, traits RequestTraits, requir
 		// Skip providers already loading something — a second load_model while
 		// the first is in flight oscillates single-slot machines, and
 		// TriggerModelSwaps would skip it anyway.
-		if r.providerHasPendingLoad(id) {
+		if r.providerHasPendingLoad(id, now) {
 			continue
 		}
 		if r.coldSpillProviderEligibleLocked(p, model, traits, requiresVision, now) {

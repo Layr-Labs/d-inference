@@ -4500,14 +4500,19 @@ func (r *Registry) TriggerModelSwaps() {
 		return
 	}
 
+	// No write lock on this path: expired pendingModelLoads entries are
+	// ignored on read (providerHasPendingLoad et al. compare expiry) and
+	// reaped by the warm-pool tick's pendingModelLoadCount sweep, so a plan
+	// that issues no load never contends with the routing scans for r.mu.
 	now := time.Now()
-	r.expirePendingModelLoads(now)
-
 	actions := r.planModelLoadActions(queuedModels, now)
 	actions = r.reservePendingModelLoads(actions, now)
 	r.sendModelLoadActions(actions, loadPlannerSwap)
 }
 
+// expirePendingModelLoads deletes expired entries under the write lock. The
+// planners no longer call it (lazy expiry); pendingModelLoadCount performs
+// the same sweep once per warm-pool tick.
 func (r *Registry) expirePendingModelLoads(now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -4659,7 +4664,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		// Check per-provider (not just per-key) to prevent concurrent
 		// heartbeat goroutines from reserving the same idle provider
 		// for different models.
-		if r.providerHasPendingLoad(action.providerID) {
+		if r.providerHasPendingLoad(action.providerID, now) {
 			continue
 		}
 		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
@@ -4688,11 +4693,15 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction, planner strin
 	}
 }
 
-// providerHasPendingLoad reports whether the provider has any pending
-// load_model command. Caller must hold r.mu (read or write).
-func (r *Registry) providerHasPendingLoad(providerID string) bool {
-	for key := range r.pendingModelLoads {
-		if key.ProviderID == providerID && key.ModelID != "" {
+// providerHasPendingLoad reports whether the provider has any UNEXPIRED
+// pending load_model command (or post-failure cooldown) at now. Expired
+// entries are treated as absent here rather than deleted — deletion needs the
+// write lock and happens in pendingModelLoadCount (warm-pool tick),
+// ClearPendingModelLoad, ClearIneligiblePendingModelLoads and Disconnect.
+// Caller must hold r.mu (read or write).
+func (r *Registry) providerHasPendingLoad(providerID string, now time.Time) bool {
+	for key, expiresAt := range r.pendingModelLoads {
+		if key.ProviderID == providerID && key.ModelID != "" && !now.After(expiresAt) {
 			return true
 		}
 	}
@@ -4713,9 +4722,16 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	now := time.Now()
 	cleared := 0
-	for key := range r.pendingModelLoads {
+	for key, expiresAt := range r.pendingModelLoads {
 		if key.ProviderID != providerID || key.ModelID == "" {
+			continue
+		}
+		if now.After(expiresAt) {
+			// Lazy expiry: reap while the write lock is held anyway.
+			delete(r.pendingModelLoads, key)
+			delete(r.pendingModelLoadStarted, key)
 			continue
 		}
 		if r.providerCanAcquireCatalogModelLocked(p, key.ModelID) {
@@ -4799,14 +4815,19 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 	return time.Since(started)
 }
 
+// PendingModelLoadDuration returns how long the unexpired pending load for
+// the pair has been outstanding, or 0 when there is no live entry.
 func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
+	now := time.Now()
 	r.mu.RLock()
-	started := r.pendingModelLoadStarted[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
+	expiresAt, live := r.pendingModelLoads[key]
+	started := r.pendingModelLoadStarted[key]
 	r.mu.RUnlock()
-	if started.IsZero() {
+	if !live || now.After(expiresAt) || started.IsZero() {
 		return 0
 	}
-	return time.Since(started)
+	return now.Sub(started)
 }
 
 // HasPendingModelLoad reports whether an unexpired coordinator-issued

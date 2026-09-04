@@ -826,7 +826,6 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var completionTokens = 0
                 var startedAt = Date()
                 var firstTokenAt: Date?
-                var lastTokenAt: Date?
                 var stopReason: String = "stop"
                 var failed: String?
                 // Typed platform/engine terminal (deadline lease / watchdog),
@@ -859,8 +858,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     }
                     switch event {
                     case .chunk(let text):
+                        // One clock read at the first chunk only; the
+                        // generation span closes at the finish instant
+                        // below (nothing on the provider reads it).
                         if firstTokenAt == nil { firstTokenAt = Date() }
-                        lastTokenAt = Date()
                         if !text.isEmpty {
                             if let handler = toolHandler {
                                 if let visible = handler.processChunk(text),
@@ -986,8 +987,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
                 let now = Date()
                 let promptTime = (firstTokenAt ?? now).timeIntervalSince(startedAt)
-                let generateTime = (lastTokenAt ?? now)
-                    .timeIntervalSince(firstTokenAt ?? startedAt)
+                let generateTime = now.timeIntervalSince(firstTokenAt ?? startedAt)
                 continuation.yield(
                     .info(
                         ServerGenerationInfo(

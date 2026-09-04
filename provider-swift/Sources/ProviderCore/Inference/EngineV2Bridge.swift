@@ -2041,9 +2041,11 @@ public actor EngineV2Bridge {
     }
 
     private func recordProgress(id: String, newTokens: Int) {
-        guard newTokens > 0, var state = active[id] else { return }
-        state.completionTokens += newTokens
-        active[id] = state
+        // In-place `_modify` through the dictionary subscript: one hash
+        // and no copy of the state struct (which holds a class reference)
+        // per delta.
+        guard newTokens > 0 else { return }
+        active[id]?.completionTokens += newTokens
     }
 
     /// Finish bookkeeping with the legacy billing-zero defense: the

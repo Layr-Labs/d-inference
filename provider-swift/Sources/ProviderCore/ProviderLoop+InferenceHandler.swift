@@ -1014,6 +1014,12 @@ extension ProviderLoop {
             // kept and the dropped count is logged (never token text).
             var pendingLogprobs: [SSETokenLogprob] = []
             var pendingLogprobsDropped = 0
+            // One decoder per request, not one per frame.
+            let chunkDecoder = JSONDecoder()
+            // Frames the decoder rejected: forwarded verbatim but invisible
+            // to the hash / billing floor / TTFT sample. First one warns,
+            // the total is logged at stream end (same pattern as logprobs).
+            var unparsedFrames = 0
             do {
                 for try await frame in frames {
                     // The iterator suspension is the final pre-content await.
@@ -1051,7 +1057,17 @@ extension ProviderLoop {
                     //   hash that ignored them would commit to (near-)
                     //   empty bytes instead of the actual output.
                     var frameToEmit = frame
-                    if let parsed = Self.parseStreamChunk(frame) {
+                    let parsed = Self.parseStreamChunk(frame, decoder: chunkDecoder)
+                    if Self.isUnparsedStreamFrame(frame, parsed: parsed) {
+                        unparsedFrames += 1
+                        if unparsedFrames == 1 {
+                            log.warning(
+                                "[\(requestId)] SSE frame did not parse (\(frame.utf8.count) bytes); "
+                                + "forwarded verbatim but excluded from hash/billing/TTFT bookkeeping"
+                            )
+                        }
+                    }
+                    if let parsed {
                         var frameHadContent = false
                         if let content = parsed.contentDelta {
                             fullResponseText += content
@@ -1111,25 +1127,22 @@ extension ProviderLoop {
                                     ).count,
                                     max(0, completionTokens)
                                 )
-                                frameToEmit = Self.injectReasoningTokens(
-                                    into: frame, reasoningTokens: reasoningTokens
-                                )
                             }
-                            // v2 prefix cache (T-041): splice OpenAI-standard
-                            // `prompt_tokens_details.cached_tokens` into the
+                            // v2 prefix cache (T-041): OpenAI-standard
+                            // `prompt_tokens_details.cached_tokens` on the
                             // trailing usage chunk. The bridge pump recorded
                             // the signal BEFORE yielding its terminal, which
                             // happens-before this usage frame was encoded, so
-                            // the read is never racy. Operates on frameToEmit
-                            // (composes with the reasoning splice above);
-                            // absent/zero hits leave the frame untouched.
-                            // Billing is unaffected — the coordinator settles
-                            // from inference_complete, not from this field.
-                            if let hits = v2UsageSignal.prefixCacheHitTokens, hits > 0 {
-                                frameToEmit = Self.injectCachedTokens(
-                                    into: frameToEmit, cachedTokens: hits
-                                )
-                            }
+                            // the read is never racy. Billing is unaffected —
+                            // the coordinator settles from inference_complete,
+                            // not from this field.
+                            // Both details are spliced in ONE JSON round trip;
+                            // absent/zero values leave the frame untouched.
+                            frameToEmit = Self.injectUsageDetails(
+                                into: frame,
+                                reasoningTokens: reasoningTokens,
+                                cachedTokens: v2UsageSignal.prefixCacheHitTokens ?? 0
+                            )
                         }
                     }
                     // Logprobs passthrough (v2 only): splice pending entries
@@ -1216,6 +1229,11 @@ extension ProviderLoop {
                 log.warning(
                     "[\(requestId)] dropped \(pendingLogprobsDropped) pending logprob "
                     + "entries in total (buffer cap \(EngineV2LogprobsChannel.maxEntries))"
+                )
+            }
+            if unparsedFrames > 1 {
+                log.warning(
+                    "[\(requestId)] \(unparsedFrames) SSE frames did not parse in total"
                 )
             }
 

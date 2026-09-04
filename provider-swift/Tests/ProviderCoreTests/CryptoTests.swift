@@ -146,3 +146,22 @@ extension Data {
         self = data
     }
 }
+
+@Test("NodeKeyPair: the stored base64 public key equals the encoded raw key on both init paths")
+func nodeKeyPairStoredPublicKeyBase64() throws {
+    // `encryptPayloadFast` stamps `publicKeyBase64` on EVERY streamed chunk;
+    // it is stored at init, so both constructors must agree with the raw
+    // bytes and the per-chunk stamp must be the same string.
+    let generated = NodeKeyPair.generate()
+    #expect(generated.publicKeyBase64 == generated.publicKeyBytes.base64EncodedString())
+
+    let restored = try NodeKeyPair(rawSecret: Data(hexString: goldenProviderPrivateKeyHex))
+    #expect(restored.publicKeyBase64 == restored.publicKeyBytes.base64EncodedString())
+    #expect(Data(base64Encoded: restored.publicKeyBase64) == restored.publicKeyBytes)
+
+    let peer = NodeKeyPair.generate()
+    let shared = try restored.precomputeSharedKey(recipientPublicKey: peer.publicKeyBytes)
+    let payload = try restored.encryptPayloadFast(sharedKey: shared, plaintext: Data("chunk".utf8))
+    #expect(payload.ephemeralPublicKey == restored.publicKeyBase64)
+    #expect(try peer.decryptPayload(payload) == Data("chunk".utf8))
+}

@@ -54,6 +54,10 @@ public struct NodeKeyPair: Sendable {
     private let secretKeyBytes: Data
     /// Raw 32-byte X25519 public key.
     private let publicKeyData: Data
+    /// Base64-encoded public key (standard encoding, no padding stripping).
+    /// Stored, not computed: `encryptPayloadFast` stamps it on every
+    /// streamed chunk, so re-encoding 32 bytes per token was pure waste.
+    public let publicKeyBase64: String
 
     // MARK: - Initialization
 
@@ -76,20 +80,18 @@ public struct NodeKeyPair: Sendable {
         }
         let privKey = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: rawSecret)
         self.secretKeyBytes = rawSecret
-        self.publicKeyData = Data(privKey.publicKey.rawRepresentation)
+        let publicKeyData = Data(privKey.publicKey.rawRepresentation)
+        self.publicKeyData = publicKeyData
+        self.publicKeyBase64 = publicKeyData.base64EncodedString()
     }
 
     private init(secretKeyBytes: Data, publicKeyData: Data) {
         self.secretKeyBytes = secretKeyBytes
         self.publicKeyData = publicKeyData
+        self.publicKeyBase64 = publicKeyData.base64EncodedString()
     }
 
     // MARK: - Public key accessors
-
-    /// Base64-encoded public key (standard encoding, no padding stripping).
-    public var publicKeyBase64: String {
-        publicKeyData.base64EncodedString()
-    }
 
     /// Raw 32-byte public key.
     public var publicKeyBytes: Data {

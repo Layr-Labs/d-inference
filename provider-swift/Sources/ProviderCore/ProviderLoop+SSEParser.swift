@@ -97,6 +97,15 @@ extension ProviderLoop {
     /// event / pretty-print addition must not silently corrupt our
     /// `fullResponseText` accumulation.
     internal static func parseStreamChunk(_ frame: String) -> StreamChunkExtract? {
+        parseStreamChunk(frame, decoder: JSONDecoder())
+    }
+
+    /// `parseStreamChunk(_:)` with a caller-owned decoder: the frames loop
+    /// creates ONE per request instead of one per frame. The decoder is not
+    /// assumed thread-safe — it is owned by the loop that made it.
+    internal static func parseStreamChunk(
+        _ frame: String, decoder: JSONDecoder
+    ) -> StreamChunkExtract? {
         guard let joined = joinedDataPayload(frame) else {
             // Frame contained no `data:` line. This is unexpected from
             // upstream; warn so a future upstream change that emits
@@ -111,7 +120,7 @@ extension ProviderLoop {
         let payload = joined.trimmingCharacters(in: .whitespacesAndNewlines)
         if payload == "[DONE]" || payload.isEmpty { return nil }
         guard let bytes = payload.data(using: .utf8) else { return nil }
-        guard let chunk = try? JSONDecoder().decode(
+        guard let chunk = try? decoder.decode(
             OpenAIChatCompletionChunk.self,
             from: bytes
         ) else {
@@ -141,6 +150,17 @@ extension ProviderLoop {
             finishReason: firstChoice?.finishReason,
             role: firstChoice?.delta.role
         )
+    }
+
+    /// True when a frame the frames loop could not parse is a real parse
+    /// failure rather than the stream's `[DONE]` sentinel. Such a frame is
+    /// still forwarded verbatim, but it is invisible to the response hash,
+    /// the billing floor and the TTFT sample — worth a warning, never a
+    /// silent drop.
+    internal static func isUnparsedStreamFrame(_ frame: String, parsed: StreamChunkExtract?) -> Bool {
+        guard parsed == nil else { return false }
+        guard let payload = joinedDataPayload(frame) else { return true }
+        return payload.trimmingCharacters(in: .whitespacesAndNewlines) != "[DONE]"
     }
 
     /// True only after the stream has produced visible assistant output
@@ -175,7 +195,19 @@ extension ProviderLoop {
     internal static func injectReasoningTokens(
         into frame: String, reasoningTokens: Int
     ) -> String {
-        guard reasoningTokens > 0,
+        injectUsageDetails(into: frame, reasoningTokens: reasoningTokens, cachedTokens: 0)
+    }
+
+    /// One JSON round trip for BOTH usage details: `reasoning_tokens` under
+    /// `completion_tokens_details` and `cached_tokens` under
+    /// `prompt_tokens_details`. A detail ≤ 0 is left out; when both are,
+    /// the frame is returned untouched without decoding it. Output is
+    /// byte-identical to composing the two single-detail splices (same
+    /// merge-not-clobber rule, same `sortedKeys` serialization).
+    internal static func injectUsageDetails(
+        into frame: String, reasoningTokens: Int, cachedTokens: Int
+    ) -> String {
+        guard reasoningTokens > 0 || cachedTokens > 0,
               let payload = joinedDataPayload(frame),
               let bytes = payload.data(using: .utf8),
               var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
@@ -183,10 +215,17 @@ extension ProviderLoop {
         else {
             return frame
         }
-        // Merge into any existing details object rather than clobbering it.
-        var details = usage["completion_tokens_details"] as? [String: Any] ?? [:]
-        details["reasoning_tokens"] = reasoningTokens
-        usage["completion_tokens_details"] = details
+        // Merge into any existing details objects rather than clobbering them.
+        if reasoningTokens > 0 {
+            var details = usage["completion_tokens_details"] as? [String: Any] ?? [:]
+            details["reasoning_tokens"] = reasoningTokens
+            usage["completion_tokens_details"] = details
+        }
+        if cachedTokens > 0 {
+            var details = usage["prompt_tokens_details"] as? [String: Any] ?? [:]
+            details["cached_tokens"] = cachedTokens
+            usage["prompt_tokens_details"] = details
+        }
         obj["usage"] = usage
         guard let out = try? JSONSerialization.data(
                 withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
@@ -214,26 +253,7 @@ extension ProviderLoop {
     internal static func injectCachedTokens(
         into frame: String, cachedTokens: Int
     ) -> String {
-        guard cachedTokens > 0,
-              let payload = joinedDataPayload(frame),
-              let bytes = payload.data(using: .utf8),
-              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
-              var usage = obj["usage"] as? [String: Any]
-        else {
-            return frame
-        }
-        var details = usage["prompt_tokens_details"] as? [String: Any] ?? [:]
-        details["cached_tokens"] = cachedTokens
-        usage["prompt_tokens_details"] = details
-        obj["usage"] = usage
-        guard let out = try? JSONSerialization.data(
-                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
-              ),
-              let json = String(data: out, encoding: .utf8)
-        else {
-            return frame
-        }
-        return "data: \(json)\n\n"
+        injectUsageDetails(into: frame, reasoningTokens: 0, cachedTokens: cachedTokens)
     }
 
     /// Splice OpenAI-standard streaming logprobs

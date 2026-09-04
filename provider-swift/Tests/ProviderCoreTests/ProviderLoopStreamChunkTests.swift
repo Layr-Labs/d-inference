@@ -500,3 +500,96 @@ func injectLogprobsSkipsNonContentFrames() throws {
     #expect(ProviderLoop.injectLogprobs(
         into: try encodeChunk(content: "x"), entries: []) == nil)
 }
+
+// MARK: - injectUsageDetails (single splice for both usage details)
+
+/// Goldens captured from the two-pass composition
+/// (`injectCachedTokens(into: injectReasoningTokens(into:))`) BEFORE the
+/// single-splice change: `sortedKeys` output over a hand-built usage frame.
+private let usageDetailsBaseFrame =
+    #"data: {"id":"x","model":"m","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#
+    + "\n\n"
+
+@Test("injectUsageDetails matches the two-pass composition for every detail combination")
+func injectUsageDetailsMatchesTwoPassGoldens() {
+    let both = ProviderLoop.injectUsageDetails(
+        into: usageDetailsBaseFrame, reasoningTokens: 2, cachedTokens: 4)
+    #expect(both == #"data: {"choices":[],"id":"x","model":"m","usage":{"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":2},"prompt_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}"# + "\n\n")
+
+    let reasoningOnly = ProviderLoop.injectUsageDetails(
+        into: usageDetailsBaseFrame, reasoningTokens: 2, cachedTokens: 0)
+    #expect(reasoningOnly == #"data: {"choices":[],"id":"x","model":"m","usage":{"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":2},"prompt_tokens":5}}"# + "\n\n")
+
+    let cachedOnly = ProviderLoop.injectUsageDetails(
+        into: usageDetailsBaseFrame, reasoningTokens: 0, cachedTokens: 4)
+    #expect(cachedOnly == #"data: {"choices":[],"id":"x","model":"m","usage":{"completion_tokens":3,"prompt_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}"# + "\n\n")
+
+    // Neither detail: the frame is returned untouched WITHOUT a JSON round
+    // trip (byte-identical to the input, not merely equivalent).
+    let neither = ProviderLoop.injectUsageDetails(
+        into: usageDetailsBaseFrame, reasoningTokens: 0, cachedTokens: 0)
+    #expect(neither == usageDetailsBaseFrame)
+
+    // The single-detail entry points are now thin wrappers and must agree
+    // with the composed form.
+    let composed = ProviderLoop.injectCachedTokens(
+        into: ProviderLoop.injectReasoningTokens(into: usageDetailsBaseFrame, reasoningTokens: 2),
+        cachedTokens: 4)
+    #expect(composed == both)
+}
+
+@Test("injectUsageDetails leaves frames without a usage block untouched")
+func injectUsageDetailsNoUsageIsNoop() throws {
+    let frame = try encodeChunk(content: "hello")
+    #expect(ProviderLoop.injectUsageDetails(into: frame, reasoningTokens: 3, cachedTokens: 9) == frame)
+}
+
+@Test("injectUsageDetails merges into pre-existing details objects")
+func injectUsageDetailsMergesExisting() throws {
+    let raw = #"data: {"id":"x","model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"completion_tokens_details":{"audio_tokens":3},"prompt_tokens_details":{"audio_tokens":7}}}"# + "\n\n"
+    let rewritten = ProviderLoop.injectUsageDetails(into: raw, reasoningTokens: 4, cachedTokens: 5)
+    let payload = try #require(ProviderLoop.joinedDataPayload(rewritten))
+    let obj = try #require(
+        try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+    )
+    let usage = try #require(obj["usage"] as? [String: Any])
+    let completion = try #require(usage["completion_tokens_details"] as? [String: Any])
+    let prompt = try #require(usage["prompt_tokens_details"] as? [String: Any])
+    #expect((completion["reasoning_tokens"] as? Int) == 4)
+    #expect((completion["audio_tokens"] as? Int) == 3)
+    #expect((prompt["cached_tokens"] as? Int) == 5)
+    #expect((prompt["audio_tokens"] as? Int) == 7)
+}
+
+// MARK: - parseStreamChunk with a caller-owned decoder
+
+@Test("parseStreamChunk reuses one caller-owned decoder across frames")
+func parseStreamChunkSharedDecoder() throws {
+    let decoder = JSONDecoder()
+    let frames = [
+        try encodeChunk(role: "assistant"),
+        try encodeChunk(content: "Hello"),
+        try encodeChunk(reasoningContent: "why"),
+        try encodeChunk(finishReason: "stop", usage: OpenAIUsage(promptTokens: 2, completionTokens: 2)),
+    ]
+    for frame in frames {
+        let shared = ProviderLoop.parseStreamChunk(frame, decoder: decoder)
+        let fresh = ProviderLoop.parseStreamChunk(frame)
+        #expect(shared?.contentDelta == fresh?.contentDelta)
+        #expect(shared?.reasoningDelta == fresh?.reasoningDelta)
+        #expect(shared?.usage?.promptTokens == fresh?.usage?.promptTokens)
+        #expect(shared?.finishReason == fresh?.finishReason)
+        #expect(shared?.role == fresh?.role)
+    }
+    #expect(ProviderLoop.parseStreamChunk(ServerSentEventEncoder.done, decoder: decoder) == nil)
+}
+
+@Test("an unparsed frame is a parse failure unless it is the [DONE] sentinel")
+func unparsedFrameClassification() throws {
+    #expect(!ProviderLoop.isUnparsedStreamFrame(ServerSentEventEncoder.done, parsed: nil))
+    #expect(!ProviderLoop.isUnparsedStreamFrame("data: [DONE]\n\n", parsed: nil))
+    #expect(ProviderLoop.isUnparsedStreamFrame("data: {not json\n\n", parsed: nil))
+    #expect(ProviderLoop.isUnparsedStreamFrame(": keepalive only\n\n", parsed: nil))
+    let good = try encodeChunk(content: "x")
+    #expect(!ProviderLoop.isUnparsedStreamFrame(good, parsed: ProviderLoop.parseStreamChunk(good)))
+}

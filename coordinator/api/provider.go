@@ -2215,9 +2215,10 @@ func (s *Server) handleCompleteAt(
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 	s.observeCompletionLength(pr, msg.Usage, consumerGone)
 
-	// Record job success and usage BEFORE closing ChunkCh. Closing
-	// ChunkCh unblocks the consumer response handler, and callers may
-	// check usage immediately after the HTTP response completes.
+	// Record job success and usage BEFORE signalling the consumer (see
+	// signalConsumer below): closing ChunkCh unblocks the consumer response
+	// handler, and callers may check usage immediately after the HTTP
+	// response completes.
 	//
 	// Only the success COUNT is recorded here. The responsiveness latency is
 	// recorded separately by the consumer/dispatch goroutine at commit (see
@@ -2227,6 +2228,30 @@ func (s *Server) handleCompleteAt(
 	s.registry.RecordJobSuccess(providerID, 0)
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
+	// The request left the provider's pending set at RemovePending above, so
+	// its slot is free NOW: flip the provider back to Online and drain queued
+	// requests onto it before the settlement round trips below, not after
+	// them (the post-terminal sweep in dispatch.go already idles immediately
+	// after its RemovePending). Nothing below reads or writes provider status.
+	s.registry.SetProviderIdle(providerID)
+
+	// signalConsumer releases the consumer response handler ([DONE] / the
+	// non-stream body) exactly once. It runs as soon as the CONSUMER's money
+	// is final — after the finalize gate and the refund/charge/usage record
+	// below — and before the provider credit and platform fee, which are
+	// provider/platform-side rows the consumer never observes. Skipped when
+	// the consumer is gone: no reader, and the channels may already be closed
+	// (send would panic).
+	consumerSignalled := false
+	signalConsumer := func() {
+		if consumerGone || consumerSignalled {
+			return
+		}
+		consumerSignalled = true
+		pr.CompleteCh <- msg.Usage
+		close(pr.ChunkCh)
+		close(pr.CompleteCh)
+	}
 
 	// Resolve the consumer once: platform-fee override (nil = global default)
 	// and whether this is a wholesale/service channel (e.g. OpenRouter). A
@@ -2574,6 +2599,12 @@ func (s *Server) handleCompleteAt(
 		s.emitRequestBackendLatency(pr.Model, s.providerKVBackendAttribution(provider, pr.Model),
 			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
 
+		// The consumer's balance is final (finalized above, refund/charge
+		// applied, usage recorded): release the response now. Everything
+		// after this point is provider/platform-side settlement, which lands
+		// a few ms (seconds under DB pressure) after the consumer's [DONE].
+		signalConsumer()
+
 		// Resolve provider identity for payout.
 		p := s.registry.GetProvider(providerID)
 		if p == nil {
@@ -2654,19 +2685,10 @@ func (s *Server) handleCompleteAt(
 		}
 	}
 
-	// Signal completion to the consumer response handler. This must happen
-	// AFTER usage/billing is recorded because closing ChunkCh immediately
-	// unblocks the HTTP response, and callers may check usage right after.
-	// Skipped when the consumer is gone: no reader, and the channels may
-	// already be closed (send would panic).
-	if !consumerGone {
-		pr.CompleteCh <- msg.Usage
-		close(pr.ChunkCh)
-		close(pr.CompleteCh)
-	}
-
-	// Mark provider idle if no more pending requests.
-	s.registry.SetProviderIdle(providerID)
+	// Not-finalized path (a consumer-side refund won the gate): nothing was
+	// charged or credited here, so release the consumer now; a no-op when the
+	// finalized branch above already signalled.
+	signalConsumer()
 
 	s.logger.Info("inference complete",
 		"request_id", msg.RequestID,

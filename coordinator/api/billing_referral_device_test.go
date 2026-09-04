@@ -83,12 +83,13 @@ func TestIntegration_ReferralRewardDistribution(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
-
 	// Calculate expected amounts.
 	totalCost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
 	expectedProviderPayout := payments.ProviderPayout(totalCost) // provider payout at the default fee
-	expectedPlatformFee := payments.PlatformFee(totalCost)       // platform fee at the default rate (0% during alpha)
+	// The provider credit lands after the consumer's [DONE] (settlement
+	// ordering): poll for it instead of sleeping.
+	waitForCond(3*time.Second, func() bool { return st.GetBalance(providerAccountID) == expectedProviderPayout })
+	expectedPlatformFee := payments.PlatformFee(totalCost) // platform fee at the default rate (0% during alpha)
 
 	// Referral share is a percentage of the platform fee (0 while the fee is 0).
 	referralShare := expectedPlatformFee * referralSvc.SharePercent() / 100
@@ -247,10 +248,10 @@ func TestIntegration_DeviceAuthFullFlow(t *testing.T) {
 	}
 
 	<-providerDone
-	time.Sleep(300 * time.Millisecond)
-
-	// Step 7: Verify earnings went to the linked account.
+	// Step 7: Verify earnings went to the linked account. The provider credit
+	// lands after the consumer's [DONE] (settlement ordering): poll for it.
 	expectedPayout := payments.ProviderPayout(payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens))
+	waitForCond(3*time.Second, func() bool { return st.GetBalance(accountID) == expectedPayout })
 
 	accountBalance := st.GetBalance(accountID)
 	if accountBalance != expectedPayout {
@@ -364,7 +365,7 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 		t.Fatalf("inference 1 status = %d, want 200", status1)
 	}
 	<-provider1Done
-	time.Sleep(300 * time.Millisecond)
+	waitForCond(3*time.Second, func() bool { return st.GetBalance(accountID) > 0 })
 
 	// Inference 2: model2 → provider 2.
 	provider2Done := serveOneInference(ctx, t, conn2, pubKey2, usage2)
@@ -373,12 +374,12 @@ func TestIntegration_MultiNodeSameAccount(t *testing.T) {
 		t.Fatalf("inference 2 status = %d, want 200", status2)
 	}
 	<-provider2Done
-	time.Sleep(300 * time.Millisecond)
-
-	// Verify the SAME account got credited twice.
+	// Verify the SAME account got credited twice. Provider credits land after
+	// each consumer's [DONE] (settlement ordering): poll for the total.
 	expectedPayout1 := payments.ProviderPayout(payments.CalculateCost(model1, usage1.PromptTokens, usage1.CompletionTokens))
 	expectedPayout2 := payments.ProviderPayout(payments.CalculateCost(model2, usage2.PromptTokens, usage2.CompletionTokens))
 	expectedTotalBalance := expectedPayout1 + expectedPayout2
+	waitForCond(3*time.Second, func() bool { return st.GetBalance(accountID) == expectedTotalBalance })
 
 	actualBalance := st.GetBalance(accountID)
 	if actualBalance != expectedTotalBalance {

@@ -522,8 +522,9 @@ func TestIntegration_AccountLinkedEarnings(t *testing.T) {
 	}
 
 	<-providerDone
-	// Give handleComplete a moment to process credits.
-	time.Sleep(300 * time.Millisecond)
+	// The provider credit lands after the consumer's [DONE] (settlement
+	// ordering): poll for it instead of sleeping.
+	waitForCond(3*time.Second, func() bool { return st.GetBalance(accountID) > 0 })
 
 	// Verify the account received credits.
 	accountBalance := st.GetBalance(accountID)

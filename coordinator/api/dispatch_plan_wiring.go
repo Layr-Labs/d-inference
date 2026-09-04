@@ -83,6 +83,7 @@ func (d *dispatchState) dispatchProviderWith(
 	return d.s.dispatchWithReserver(
 		d.r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation,
 		d.reservedMicroUSD, d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens,
+		d.expectedCompletionTokens,
 		d.tokenAdmission, d.requiresVision, d.traits(), d.allowedProviderSerials,
 		d.isResponsesAPI, d.policy, timing, d.serviceReservation, d.cachePlan,
 		exclude, d.attempt, d.profile, backupOf, recordRoute, d.noteProviderDispatched, fullScan, reserve,

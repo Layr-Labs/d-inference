@@ -172,6 +172,13 @@ type PendingRequest struct {
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
+	// ExpectedCompletionTokens is the LEARNED completion length the router
+	// plans for in the cost function's decode and waiting-backlog terms
+	// (completion_calibration.go). Additive: 0 = unset → RequestedMaxTokens.
+	// It never feeds admission, the pending-token ledger, servability, the
+	// capacity probes, finish_reason or billing — those keep the worst-case
+	// RequestedMaxTokens the provider's own ledger reserves.
+	ExpectedCompletionTokens int
 	// MaxTTFTMs is an optional per-request TTFT ceiling in milliseconds.
 	// When > 0, the scheduler only selects providers whose estimated TTFT is
 	// <= MaxTTFTMs. Used by public inference routes to honor the public
@@ -2385,6 +2392,11 @@ type Registry struct {
 	// a lazily-created map, so bare &Registry{} test constructions work
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
+
+	// completionCal is the online completion-length calibrator fed from
+	// completed requests (completion_calibration.go). Same value-field +
+	// leaf-mutex + lazy-map idiom as capacityQuotes.
+	completionCal completionCalibrator
 
 	cacheRouting     *cacheRoutingTracker
 	cacheActivation  *cacheActivationGate

@@ -2210,7 +2210,13 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 
 	effectiveQueue := snapshotOccupancy(snap)
 
-	waitingBacklogTokens := float64(snap.backendWaiting * reqMax)
+	// Decode length for the RANKING terms only: the learned expected completion
+	// (pr.ExpectedCompletionTokens, never above reqMax) replaces the forwarded
+	// bound in the waiting-backlog and this-request decode terms. Admission
+	// above (freeMemoryAdmits) and the pending ledger keep reqMax. See
+	// thisReqDecodeTokens (completion_calibration.go).
+	decodeTokens := thisReqDecodeTokens(pr, reqMax)
+	waitingBacklogTokens := float64(snap.backendWaiting * decodeTokens)
 	unaccountedPendingTokens := float64(snap.pendingMaxTokens) - float64(snap.maxTokensPotential) - waitingBacklogTokens
 	if unaccountedPendingTokens < 0 {
 		unaccountedPendingTokens = 0
@@ -2234,7 +2240,7 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	// here pinned the dominant prefill term to the static rate, which left a box
 	// whose measured prefill had degraded looking as cheap as its benchmark.
 	prefillTPS := resolvePrefillTPS(snap)
-	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(reqMax)/effectiveTPS*1000.0
+	thisReqMs := float64(reqPrompt)/prefillTPS*1000.0 + float64(decodeTokens)/effectiveTPS*1000.0
 	// Long-prompt fastest-tier preference: amplify the first-token-blocking time
 	// for very long prompts so the provider that reaches first token soonest is
 	// strongly preferred, reducing pre-first-token client_gone. The amplified

@@ -343,6 +343,7 @@ func TestDispatchOneProviderUsesPinnedExpiredClockWithoutRecomputing(t *testing.
 		8,
 		10*time.Millisecond,
 		64,
+		0, // expectedCompletionTokens (routing-only; unset → the bound)
 		registry.TokenAdmission{},
 		false,
 		registry.RequestTraits{},

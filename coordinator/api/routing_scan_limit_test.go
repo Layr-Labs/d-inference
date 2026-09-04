@@ -57,7 +57,7 @@ func TestRoutingScanSemaphore_BoundsConcurrentScans(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 			_, _, _, _, lastErr, lastErrCode := srv.dispatchWithReserver(
 				r, "sem-model", "sem-model", []byte(`{"model":"sem-model"}`),
-				"test-key", nil, 0, 0, 5*time.Second, 64,
+				"test-key", nil, 0, 0, 5*time.Second, 64, 0,
 				registry.TokenAdmission{}, false, registry.RequestTraits{},
 				nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
 				map[string]struct{}{}, 0, nil, "", nil, nil, true, reserver)
@@ -294,7 +294,7 @@ func TestRoutingScanSemaphore_PlanStepBypassesGate(t *testing.T) {
 	// Plan step (fullScan=false): must run the reserver despite zero free slots.
 	_, _, _, _, lastErr, _ := srv.dispatchWithReserver(
 		r, "plan-model", "plan-model", []byte(`{"model":"plan-model"}`),
-		"test-key", nil, 0, 0, 200*time.Millisecond, 64,
+		"test-key", nil, 0, 0, 200*time.Millisecond, 64, 0,
 		registry.TokenAdmission{}, false, registry.RequestTraits{},
 		nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
 		map[string]struct{}{}, 1, nil, "", nil, nil, false, reserver)
@@ -309,7 +309,7 @@ func TestRoutingScanSemaphore_PlanStepBypassesGate(t *testing.T) {
 	reserverRan = false
 	_, _, _, _, lastErr, lastErrCode := srv.dispatchWithReserver(
 		r, "plan-model", "plan-model", []byte(`{"model":"plan-model"}`),
-		"test-key", nil, 0, 0, 100*time.Millisecond, 64,
+		"test-key", nil, 0, 0, 100*time.Millisecond, 64, 0,
 		registry.TokenAdmission{}, false, registry.RequestTraits{},
 		nil, false, selfRoutePolicy{}, nil, false, registry.CachePlan{},
 		map[string]struct{}{}, 1, nil, "", nil, nil, true, reserver)

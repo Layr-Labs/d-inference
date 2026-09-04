@@ -2213,6 +2213,7 @@ func (s *Server) handleCompleteAt(
 	}
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
+	s.observeCompletionLength(pr, msg.Usage, consumerGone)
 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
 	// ChunkCh unblocks the consumer response handler, and callers may

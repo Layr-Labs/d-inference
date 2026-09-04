@@ -133,6 +133,9 @@ type dispatchState struct {
 	modelMaxContext int
 	// refundReservation refunds the shared base reservation (the caller's closure).
 	refundReservation func()
+	// expectedCompletionTokens is the routing-only decode length the scheduler
+	// ranks with (PendingRequest.ExpectedCompletionTokens). See routing_estimates.go.
+	expectedCompletionTokens int
 
 	// ---- mutable per-request state ----
 	provider      *registry.Provider
@@ -1220,7 +1223,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		var plan *registry.DispatchPlan
 		d.provider, d.pr, decision, plan, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-			d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+			d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.expectedCompletionTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
 			d.attempt, d.profile, "",
@@ -1354,32 +1357,34 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			ExcludedProviderIDs:    d.excludedProviderIDs(),
-			CachePlan:              d.cachePlan,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MetadataDetails:        d.metadataDetails,
+			RequestID:             d.requestID,
+			Attempt:               d.attempt,
+			Model:                 d.model,
+			PublicModel:           d.publicModel,
+			ConsumerKey:           d.consumerKey,
+			KeyID:                 keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:      keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:         keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:      d.consumerLocation,
+			IsResponsesAPI:        d.isResponsesAPI,
+			EstimatedPromptTokens: d.estimatedPromptTokens,
+			RequiresVision:        d.requiresVision,
+			Traits:                d.traits(),
+			RequestedMaxTokens:    d.requestedMaxTokens,
+			// Routing-only expected completion; 0 = unset → RequestedMaxTokens.
+			ExpectedCompletionTokens: d.expectedCompletionTokens,
+			TokenAdmission:           d.tokenAdmission,
+			ReservedMicroUSD:         d.reservedMicroUSD,
+			BaseReservedMicroUSD:     d.reservedMicroUSD,
+			ServiceReservation:       d.serviceReservation,
+			AllowedProviderSerials:   d.allowedProviderSerials,
+			ExcludedProviderIDs:      d.excludedProviderIDs(),
+			CachePlan:                d.cachePlan,
+			SelfRouteOnly:            d.policy.enabled,
+			PreferOwner:              d.policy.prefer,
+			OwnerAccountID:           d.policy.ownerAccountID,
+			FreeSelfRoute:            d.policy.enabled,
+			MetadataDetails:          d.metadataDetails,
 			MaxTTFTMs: queueMaxTTFTMs(
 				d.policy, d.deadline, d.s.hardTTFTGateApplies(d.requiresVision)),
 			MinDecodeTPS: d.s.minDecodeTPS,
@@ -2306,7 +2311,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 		if !planTried {
 			backupProvider, backupPR, _, _, backupErr, backupErrCode = s.dispatchOneProvider(
 				r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
-				d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
+				d.estimatedPromptTokens, d.deadline, d.requestedMaxTokens, d.expectedCompletionTokens, d.tokenAdmission, d.requiresVision,
 				d.traits(),
 				d.allowedProviderSerials, d.isResponsesAPI, d.policy,
 				backupTiming,

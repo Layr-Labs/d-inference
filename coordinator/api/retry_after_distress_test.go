@@ -121,7 +121,7 @@ func TestNoteAttempt0RouteLatency_IgnoresMediaFetchTime(t *testing.T) {
 	// provider write fails AFTER RoutedAt is stamped, which is all we need.
 	srv.dispatchOneProvider(
 		r, model, model, []byte(`{"model":"`+model+`"}`), "test-key", nil,
-		0, 6, 15*time.Second, 64, registry.TokenAdmission{}, false,
+		0, 6, 15*time.Second, 64, 0, registry.TokenAdmission{}, false,
 		registry.RequestTraits{}, nil, false, selfRoutePolicy{}, timing,
 		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, "", nil, nil)
 
@@ -152,7 +152,7 @@ func TestNoteAttempt0RouteLatency_RecordsFailedSelections(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	_, _, _, _, lastErr, _ := srv.dispatchOneProvider(
 		r, "overload-model", "overload-model", []byte(`{"model":"overload-model"}`),
-		"test-key", nil, 0, 6, 15*time.Second, 64, registry.TokenAdmission{},
+		"test-key", nil, 0, 6, 15*time.Second, 64, 0, registry.TokenAdmission{},
 		false, registry.RequestTraits{}, nil, false, selfRoutePolicy{}, timing,
 		false, registry.CachePlan{}, map[string]struct{}{}, 0, nil, "", nil, nil)
 	if lastErr != "no provider available" {

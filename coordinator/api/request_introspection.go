@@ -569,6 +569,13 @@ func requestHasTools(parsed map[string]any) bool {
 	return ok && len(tools) > 0
 }
 
+// defaultRequestedMaxTokens is the per-choice output budget assumed for
+// routing when a request carries no max-tokens field (mirrors the registry's
+// own default). On the production handlers ensureMaxTokensBound injects the
+// model bound before estimateRequestedMaxTokens runs, so this default is
+// reached only through defaultRoutingMaxTokens (routing_estimates.go).
+const defaultRequestedMaxTokens = 256
+
 func estimateRequestedMaxTokens(parsed map[string]any) int {
 	for _, key := range []string{"max_tokens", "max_completion_tokens", "max_output_tokens"} {
 		if n, ok := intFromRequestValue(parsed[key]); ok && n > 0 {
@@ -578,10 +585,17 @@ func estimateRequestedMaxTokens(parsed map[string]any) int {
 			return n
 		}
 	}
+	return defaultRoutingMaxTokens(parsed)
+}
+
+// defaultRoutingMaxTokens is the routing-side output budget for a request that
+// omitted every max-tokens field: defaultRequestedMaxTokens per requested
+// choice (n).
+func defaultRoutingMaxTokens(parsed map[string]any) int {
 	if copies, ok := intFromRequestValue(parsed["n"]); ok && copies > 1 {
-		return 256 * copies
+		return defaultRequestedMaxTokens * copies
 	}
-	return 256
+	return defaultRequestedMaxTokens
 }
 
 // stripProviderRoutingFields drops the retired consumer-side serial allowlist.

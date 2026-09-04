@@ -892,6 +892,7 @@ func (s *Server) dispatchOneProvider(
 	estimatedPromptTokens int,
 	requestDeadline time.Duration,
 	requestedMaxTokens int,
+	expectedCompletionTokens int,
 	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
 	traits registry.RequestTraits,
@@ -918,7 +919,7 @@ func (s *Server) dispatchOneProvider(
 	return s.dispatchWithReserver(
 		r, model, publicModel, rawBody, consumerKey, consumerLocation,
 		reservedMicroUSD, estimatedPromptTokens, requestDeadline,
-		requestedMaxTokens, tokenAdmission, requiresVision, traits,
+		requestedMaxTokens, expectedCompletionTokens, tokenAdmission, requiresVision, traits,
 		allowedProviderSerials, isResponsesAPI, policy, timing,
 		serviceReservation, cachePlan, excludeProviders, attempt, rp, backupOf,
 		recordRoute, onDispatched,
@@ -948,6 +949,7 @@ func (s *Server) dispatchWithReserver(
 	estimatedPromptTokens int,
 	requestDeadline time.Duration,
 	requestedMaxTokens int,
+	expectedCompletionTokens int,
 	tokenAdmission registry.TokenAdmission,
 	requiresVision bool,
 	traits registry.RequestTraits,
@@ -997,35 +999,37 @@ func (s *Server) dispatchWithReserver(
 		// inference_complete immediately is correlated to the right route row.
 		// Setting it after the send (on the dispatch goroutine) would race the
 		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CachePlan:              cachePlan,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		MetadataDetails:        metadataDetailsFromRequest(r),
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan registry.ProviderChunk, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		Attempt:               attempt,
+		Model:                 model,
+		PublicModel:           publicModel,
+		ConsumerKey:           consumerKey,
+		KeyID:                 keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:      keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:         keyLimitResetFromContext(r.Context()),
+		ConsumerLocation:      consumerLocation,
+		IsResponsesAPI:        isResponsesAPI,
+		EstimatedPromptTokens: estimatedPromptTokens,
+		RequiresVision:        requiresVision,
+		Traits:                traits,
+		RequestedMaxTokens:    requestedMaxTokens,
+		// Routing-only expected completion; 0 = unset → RequestedMaxTokens.
+		ExpectedCompletionTokens: expectedCompletionTokens,
+		TokenAdmission:           tokenAdmission,
+		CachePlan:                cachePlan,
+		ReservedMicroUSD:         reservedMicroUSD,
+		BaseReservedMicroUSD:     reservedMicroUSD,
+		ServiceReservation:       serviceReservation,
+		AllowedProviderSerials:   allowedProviderSerials,
+		SelfRouteOnly:            policy.enabled,
+		PreferOwner:              policy.prefer,
+		OwnerAccountID:           policy.ownerAccountID,
+		FreeSelfRoute:            policy.enabled,
+		MetadataDetails:          metadataDetailsFromRequest(r),
+		AcceptedCh:               make(chan struct{}, 1),
+		ChunkCh:                  make(chan registry.ProviderChunk, chunkBufferSize),
+		CompleteCh:               make(chan protocol.UsageInfo, 1),
+		ErrorCh:                  make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                   timing,
 	}
 	if !receivedAt.IsZero() {
 		pr.FirstContentDeadline = receivedAt.Add(requestDeadline)
@@ -1978,6 +1982,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// provider could return more tokens than we reserved for, and the
 	// silent post-inference charge failure would hand the consumer free
 	// inference (GitHub issue #33).
+	// Captured BEFORE the bound is injected: the routing decode term keys off
+	// whether the client bounded the generation itself (routing_estimates.go).
+	clientSetMaxTokens := explicitMaxTokens(parsed) > 0
 	if ensureMaxTokensBound(parsed, isResponsesAPI, maxOutputBound) {
 		body.markDirty()
 	}
@@ -1986,6 +1993,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	estimatedPromptTokens := shape.routingPromptTokens(parsed)
 	billingPromptTokens := shape.billingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	expectedCompletionTokens := s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
 	deadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
@@ -2265,6 +2273,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	var preflightHandled bool
 	preflightStart := time.Now()
+	admissionModel := model
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -2294,6 +2303,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if preflightHandled {
 		return
+	}
+	if model != admissionModel {
+		// Alias fallback (maybeFallbackAlias) rewrote the concrete build; the
+		// learned completion length is keyed by build id, so re-derive it.
+		expectedCompletionTokens = s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
 	}
 
 	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
@@ -2374,6 +2388,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		refundReservation:      refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
+		// Routing-only decode length for the scheduler's cost term (routing_estimates.go).
+		expectedCompletionTokens: expectedCompletionTokens,
 	}
 	d.run()
 }
@@ -4453,12 +4469,15 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		modelMaxContext = rec.MaxContextLength
 	}
+	clientSetMaxTokens := explicitMaxTokens(parsed) > 0
 	ensureMaxTokensBound(parsed, false, genericMaxOutput)
 
 	stream, _ := parsed["stream"].(bool)
 	estimatedPromptTokens := estimatePromptTokens(parsed)
 	billingPromptTokens := estimateBillingPromptTokens(parsed)
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
+	// See the chat handler: routing-only expected completion beside the bound.
+	expectedCompletionTokens := s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
 	genericDeadline := s.FirstContentDeadline(model, estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
 	rp.Mark(registry.StampReqParsed)
@@ -4575,6 +4594,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// capacity+TTFT gate — see runInferenceAdmission).
 	var preflightHandled bool
 	preflightStart := time.Now()
+	admissionModel := model
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
 		model:                     model,
 		publicModel:               publicModel,
@@ -4604,6 +4624,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	if preflightHandled {
 		return
+	}
+	if model != admissionModel {
+		// Alias fallback rewrote the build (see the chat handler).
+		expectedCompletionTokens = s.expectedCompletionTokensForRouting(model, parsed, clientSetMaxTokens, requestedMaxTokens)
 	}
 	cachePlan := registry.CachePlan{}
 	// Response framing is determined by the caller-facing endpoint, never by
@@ -4670,6 +4694,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		modelMaxContext:        modelMaxContext,
 		refundReservation:      refundReservation,
 		excludeProviders:       make(map[string]struct{}),
+		// Routing-only decode length for the scheduler's cost term (routing_estimates.go).
+		expectedCompletionTokens: expectedCompletionTokens,
 	}
 	d.run()
 }

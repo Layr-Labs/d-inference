@@ -65,6 +65,16 @@ struct LaunchAgentEnvironmentTests {
         #expect(EngineStepProfileDump.environmentKey == "CBV2_STEP_PROFILE")
     }
 
+    /// The prompt-narrowing kill switch must reach the launchd daemon, or the
+    /// documented `=0` escape is foreground-only.
+    @Test func forwardsThePrefillNarrowingKillSwitch() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            LaunchAgent.prefillNarrowingEnvKey: "0",
+            "HOME": "/Users/x",
+        ])
+        #expect(out == ["DARKBLOOM_CBV2_PREFILL_NARROWING": "0"])
+    }
+
     @Test func forwardsTheHuggingFaceCacheRootSoTheDaemonScansTheShellsCache() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             "HF_HOME": "/Volumes/models/hf",

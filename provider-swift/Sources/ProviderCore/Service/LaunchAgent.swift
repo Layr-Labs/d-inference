@@ -291,6 +291,10 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
     /// admission-mode control. Both must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_CBV2_PREFILL_NARROWING`: the prompt-narrowing A/B control
+    /// and incident escape (`0` restores the full-vocabulary prompt forward).
+    static let prefillNarrowingEnvKey = "DARKBLOOM_CBV2_PREFILL_NARROWING"
+
     /// `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`: the mixed-step prefill token quota
     /// (`SchedulerV2.mixedStepPrefillTokenCap`, read once at engine
     /// construction; default nil = off). Without passthrough the quota was
@@ -306,7 +310,7 @@ public enum LaunchAgent: Sendable {
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         "DARKBLOOM_CBV2_MIXED_PREFILL_CAP",
-        "DARKBLOOM_CBV2_PREFILL_NARROWING",
+        prefillNarrowingEnvKey,
         EngineStepProfileDump.environmentKey,
         "MLX_COMPILED_DECODE",
         "MLX_QWEN_DIRECT_EXPERT_REDUCTION",

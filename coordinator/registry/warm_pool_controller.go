@@ -2,8 +2,10 @@ package registry
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +24,9 @@ type warmPoolController struct {
 	queueMu  syncQueuePressure
 	tickMu   sync.Mutex
 	triggerC chan struct{}
+	// ticks counts tick() invocations (tests/benchmarks: the trigger-storm
+	// shape is asserted as a tick count, not a timing).
+	ticks atomic.Int64
 
 	// lastMu guards the most recent set of per-model snapshots produced by tick.
 	// They are cached read-only so observability paths (network utilization
@@ -214,19 +219,66 @@ func (c *warmPoolController) latestSnapshots() ([]WarmPoolSnapshot, time.Time) {
 	return cp, c.lastSnapsAt
 }
 
+// warmPoolTriggerSpacing is the minimum spacing between TRIGGER-driven ticks
+// (RequestWarmPoolTrigger: every enqueue, queue-state change, preflight
+// capacity reject and TTFT miss). The 1-slot trigger channel only coalesces
+// while a tick is in progress, so under a reject storm ticks ran
+// back-to-back — each one a whole-fleet walk under r.mu.RLock plus a write
+// lock in pendingModelLoadCount and an Info line per model. A trigger inside
+// the window is not dropped: it arms ONE trailing tick at the end of the
+// window, so new demand is observed within the spacing instead of on the
+// baseline interval. Deliberately a constant, not an env knob; clamped to
+// Interval/4 when Interval < 4 s so tests with tiny intervals keep their
+// cadence (prod Interval is 30 s, so the 1 s constant applies).
+const warmPoolTriggerSpacing = time.Second
+
+// effectiveTriggerSpacing returns the trigger spacing for a run loop with the
+// given (already defaulted) baseline interval.
+func effectiveTriggerSpacing(interval time.Duration) time.Duration {
+	if interval < 4*warmPoolTriggerSpacing {
+		return interval / 4
+	}
+	return warmPoolTriggerSpacing
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	spacing := effectiveTriggerSpacing(interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// nextAllowed is the earliest instant a trigger-driven tick may run;
+	// trailing is the single armed end-of-window tick (nil when none).
+	var nextAllowed time.Time
+	var trailing *time.Timer
+	var trailingC <-chan time.Time
+	defer func() {
+		if trailing != nil {
+			trailing.Stop()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.triggerC:
-			c.tick(time.Now())
+			now := time.Now()
+			if now.Before(nextAllowed) {
+				if trailing == nil {
+					trailing = time.NewTimer(nextAllowed.Sub(now))
+					trailingC = trailing.C
+				}
+				continue
+			}
+			c.tick(now)
+			nextAllowed = now.Add(spacing)
+		case <-trailingC:
+			trailing, trailingC = nil, nil
+			now := time.Now()
+			c.tick(now)
+			nextAllowed = now.Add(spacing)
 		case <-ticker.C:
 			c.tick(time.Now())
 		}
@@ -239,11 +291,19 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 	}
 	c.tickMu.Lock()
 	defer c.tickMu.Unlock()
+	c.ticks.Add(1)
 	snapshots := c.plan(now)
 	c.storeSnapshots(snapshots, now)
 	for _, snap := range snapshots {
 		if c.registry.logger != nil {
-			c.registry.logger.Info("warm_pool_tick",
+			// A tick that plans nothing is the common case under a trigger
+			// storm; keep it at Debug and reserve Info for ticks that act
+			// (observe-only ticks stay at Info — they exist to be read).
+			level := slog.LevelInfo
+			if len(snap.Actions) == 0 && !snap.ObserveOnly {
+				level = slog.LevelDebug
+			}
+			c.registry.logger.Log(context.Background(), level, "warm_pool_tick",
 				"model", snap.Model,
 				"target_warm", snap.TargetWarm,
 				"warm", snap.WarmProviders,

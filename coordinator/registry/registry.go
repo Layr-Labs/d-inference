@@ -698,10 +698,32 @@ type TokenAdmission struct {
 	KeyOutputLimited     bool
 	KeyOutputRPS         float64
 	KeyOutputBurst       int
+
+	// settlement is the once-guard shared by every copy of this admission
+	// (PendingRequest carries a copy; the pointer is shared): the upfront
+	// output charge is settled exactly once — by the completion's
+	// reconciliation OR by the pre-content refund path — never both. nil (a
+	// zero admission, tests) means no guard: every claim succeeds.
+	settlement *atomic.Bool
 }
 
 func (a TokenAdmission) TracksOutput() bool {
 	return a.AccountOutputLimited || a.KeyOutputLimited
+}
+
+// ArmSettlementGuard attaches the once-guard. Call on the admission value
+// BEFORE it is copied into the pending request and the handler's closures.
+func (a *TokenAdmission) ArmSettlementGuard() {
+	a.settlement = new(atomic.Bool)
+}
+
+// ClaimSettlement returns true for the first caller (across all copies) and
+// false for every later one. Without an armed guard it always returns true.
+func (a TokenAdmission) ClaimSettlement() bool {
+	if a.settlement == nil {
+		return true
+	}
+	return a.settlement.CompareAndSwap(false, true)
 }
 
 // MarkReservationFinalized returns true only for the first settlement or refund

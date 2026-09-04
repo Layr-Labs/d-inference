@@ -136,6 +136,35 @@ func (l *Limiter) DebitN(accountID string, n int) {
 	}
 }
 
+// CreditN returns n units to the account's bucket — a settlement that found
+// the upfront charge too high (the OTPM gate charges the forwarded max_tokens
+// bound; the real completion is usually a small fraction of it). The inner
+// limiter accepts a negative reservation (no n < 0 guard in x/time's
+// reserveN), so the credit lands atomically under the bucket's own lock and
+// is clamped at the burst on the next advance(): a bucket never exceeds its
+// capacity, and a credit larger than what was consumed is simply lost at the
+// top. Bypasses AllowN's n <= 0 short-circuit deliberately. Empty accountID
+// or n <= 0 is a no-op.
+func (l *Limiter) CreditN(accountID string, n int) {
+	if accountID == "" || n <= 0 {
+		return
+	}
+	now := time.Now()
+	e := l.bucketFor(accountID, now)
+	e.limiter.AllowN(now, -n)
+}
+
+// CreditNWithRate is CreditN against a per-key bucket configured with the
+// supplied rate (KeyTokenLimiter).
+func (l *Limiter) CreditNWithRate(key string, n int, rps float64, burst int) {
+	if key == "" || n <= 0 || rps <= 0 || burst <= 0 {
+		return
+	}
+	now := time.Now()
+	e := l.bucketForWithRate(key, rps, burst, now)
+	e.limiter.AllowN(now, -n)
+}
+
 // CanN reports whether n units are currently available for the account WITHOUT
 // consuming them. Used for cross-bucket peek-then-consume so a rejection in one
 // dimension doesn't debit another. Empty accountID or n <= 0 is always true.

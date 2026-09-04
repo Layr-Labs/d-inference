@@ -153,6 +153,19 @@ func (t *TokenLimiter) DebitOutput(accountID string, outputTokens int) {
 	t.output.DebitN(accountID, outputTokens)
 }
 
+// CreditOutput returns unused admitted output tokens to the account's output
+// bucket (the twin of DebitOutput): the settlement found the completion
+// shorter than the upfront charge. Clamped at the burst by the bucket itself.
+func (t *TokenLimiter) CreditOutput(accountID string, outputTokens int) {
+	if accountID == "" || outputTokens <= 0 || t.output == nil {
+		return
+	}
+	lock := t.lockFor(accountID)
+	lock.Lock()
+	defer lock.Unlock()
+	t.output.CreditN(accountID, outputTokens)
+}
+
 func (t *TokenLimiter) HasOutputLimit() bool {
 	return t != nil && t.output != nil
 }

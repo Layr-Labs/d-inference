@@ -640,6 +640,9 @@ func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http
 	admission.KeyOutputRPS = outRPS
 	admission.KeyOutputBurst = outBurst
 	if admission.TracksOutput() {
+		// One settlement per admission: the completion's reconciliation or
+		// the pre-content refund path credits the unused charge, never both.
+		admission.ArmSettlementGuard()
 		s.ddHistogram("ratelimit.output_admission.estimated_tokens", float64(admission.AdmittedOutputTokens), outputAdmissionTags(tier, admission.EstimatedOutput))
 	}
 
@@ -681,11 +684,23 @@ func outputAdmissionTags(tier string, estimated bool) []string {
 	return []string{"tier:" + tier, "estimated:" + strconv.FormatBool(estimated)}
 }
 
+// reconcileOutputAdmission settles the upfront OTPM charge against the
+// completion's real output: an overage is debited (as before) and — new —
+// the UNUSED admitted tokens are credited back. The gate charges the
+// forwarded max_tokens bound (32,768 when the client omitted max_tokens on
+// gpt-oss/gemma) while the honest mean completion is ~560 tokens, so a
+// debit-only reconcile left ~32K per request unreturned and throttled an
+// omitted-max_tokens consumer to ~15 req/min (2 in a 64K burst) — a ~58x
+// over-throttle. Runs once per admission (ClaimSettlement): a request the
+// refund path already credited is skipped.
 func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOutputTokens int) {
 	if pr == nil || !pr.TokenAdmission.TracksOutput() {
 		return
 	}
 	admission := pr.TokenAdmission
+	if !admission.ClaimSettlement() {
+		return
+	}
 	if actualOutputTokens < 0 {
 		actualOutputTokens = 0
 	}
@@ -694,12 +709,41 @@ func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOut
 		admittedOutputTokens = 0
 	}
 	delta := actualOutputTokens - admittedOutputTokens
-	if delta < 0 {
-		delta = 0
-	}
 	tags := append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:"+pr.Model)
 	s.ddHistogram("ratelimit.output_admission.actual_tokens", float64(actualOutputTokens), tags)
 	s.ddHistogram("ratelimit.output_admission.delta_tokens", float64(delta), tags)
+	switch {
+	case delta > 0:
+		s.adjustOutputAdmission(pr.ConsumerKey, pr.KeyID, admission, delta)
+		s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
+	case delta < 0:
+		s.adjustOutputAdmission(pr.ConsumerKey, pr.KeyID, admission, delta)
+		s.ddCount("ratelimit.output_admission.credit_tokens_total", int64(-delta), tags)
+	}
+}
+
+// creditUnusedOutputAdmission returns the WHOLE upfront output charge when a
+// request ends before any content (pre-content 429, provider failure, client
+// gone): nothing was generated for the consumer, so nothing should stay
+// charged against its OTPM. Guarded by the admission's once-guard: the
+// handler's refundReservation closure is called from many dispatch sites and
+// a late completion could still reconcile, and only the first settlement
+// counts.
+func (s *Server) creditUnusedOutputAdmission(consumerKey, keyID string, admission registry.TokenAdmission) {
+	if !admission.TracksOutput() || admission.AdmittedOutputTokens <= 0 {
+		return
+	}
+	if !admission.ClaimSettlement() {
+		return
+	}
+	s.adjustOutputAdmission(consumerKey, keyID, admission, -admission.AdmittedOutputTokens)
+	s.ddCount("ratelimit.output_admission.credit_tokens_total", int64(admission.AdmittedOutputTokens),
+		append(outputAdmissionTags(admission.AccountTier, admission.EstimatedOutput), "model:unknown", "path:refund"))
+}
+
+// adjustOutputAdmission applies a signed settlement delta to the account and
+// key output buckets: positive debits (overage), negative credits (unused).
+func (s *Server) adjustOutputAdmission(consumerKey, keyID string, admission registry.TokenAdmission, delta int) {
 	if delta == 0 {
 		return
 	}
@@ -712,13 +756,20 @@ func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOut
 			tl = s.consumerTokenLimiter
 		}
 		if tl != nil {
-			tl.DebitOutput(pr.ConsumerKey, delta)
+			if delta > 0 {
+				tl.DebitOutput(consumerKey, delta)
+			} else {
+				tl.CreditOutput(consumerKey, -delta)
+			}
 		}
 	}
 	if admission.KeyOutputLimited && s.keyTokenLimiter != nil {
-		s.keyTokenLimiter.DebitOutput(pr.KeyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+		if delta > 0 {
+			s.keyTokenLimiter.DebitOutput(keyID, delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+		} else {
+			s.keyTokenLimiter.CreditOutput(keyID, -delta, admission.KeyOutputRPS, admission.KeyOutputBurst)
+		}
 	}
-	s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
 }
 
 // rateLimitRetryAfterSeconds converts a limiter's time-to-refill into the

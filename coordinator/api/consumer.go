@@ -2075,6 +2075,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
 		}
+		// Nothing was generated: return the upfront OTPM charge (once).
+		s.creditUnusedOutputAdmission(consumerKeyFromContext(r.Context()), keyIDFromContext(r.Context()), tokenAdmission)
 	}
 
 	// Reject requests for models not in the catalog.
@@ -4493,6 +4495,8 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		if reservedMicroUSD > 0 {
 			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
 		}
+		// Nothing was generated: return the upfront OTPM charge (once).
+		s.creditUnusedOutputAdmission(consumerKey, keyIDFromContext(r.Context()), tokenAdmission)
 	}
 	timing.ReservedAt = time.Now()
 	rp.Mark(registry.StampReqReserved)

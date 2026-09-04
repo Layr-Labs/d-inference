@@ -141,3 +141,15 @@ func (t *KeyTokenLimiter) DebitOutput(key string, outputTokens int, outRPS float
 	defer lock.Unlock()
 	t.output.DebitNWithRate(key, outputTokens, outRPS, outBurst)
 }
+
+// CreditOutput returns unused admitted output tokens to the key's output
+// bucket (the twin of DebitOutput).
+func (t *KeyTokenLimiter) CreditOutput(key string, outputTokens int, outRPS float64, outBurst int) {
+	if key == "" || outputTokens <= 0 || outRPS <= 0 || outBurst <= 0 {
+		return
+	}
+	lock := t.lockFor(key)
+	lock.Lock()
+	defer lock.Unlock()
+	t.output.CreditNWithRate(key, outputTokens, outRPS, outBurst)
+}

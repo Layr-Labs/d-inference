@@ -465,6 +465,9 @@ type Server struct {
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
 	dd *datadog.Client
+	// reserveMetrics holds the gauge loop's last-seen registry scan counters
+	// (reserve_metrics.go).
+	reserveMetrics reserveMetricsState
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -3139,6 +3142,7 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			}
 			s.emitExactCacheDDGauges()
 			s.emitStoreCacheGauges()
+			s.emitRegistryLockGauges()
 			// Network utilization — demand/capacity across the warm-serving and
 			// token-budget axes, plus a per-model breakdown.
 			util := s.registry.NetworkUtilizationSnapshot()

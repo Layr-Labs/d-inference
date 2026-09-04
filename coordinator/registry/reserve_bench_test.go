@@ -28,7 +28,10 @@ import (
 // TestReserveProviderExAllocBudget. Set to the measured pre-change baseline
 // (see the header comment); a regression that adds a single heap allocation
 // per reserve trips the test.
-const reserveBenchMaxAllocs = 850 // re-pinned after the two-phase reserve (scan under RLock + short commit) landed on master
+// Re-pinned to the measured value after the coordinator performance program
+// (in-place snapshots, candidate arena, per-model index) landed: 15 allocs/op
+// on this fixture. The old 850 ceiling no longer guarded anything.
+const reserveBenchMaxAllocs = 15
 
 const (
 	reserveBenchProviders = 350

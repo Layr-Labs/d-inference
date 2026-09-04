@@ -116,7 +116,8 @@ func (d *dispatchState) dispatchFromPlanMachinery(
 	reserved := false
 	provider, pr, decision, _, lastErr, lastErrCode = d.dispatchProviderWith(
 		func(pending *registry.PendingRequest, excludeIDs []string) (*registry.Provider, registry.RoutingDecision, *registry.DispatchPlan) {
-			p, dec, _ := d.s.registry.ReserveNextFromPlan(pending, plan, excludeIDs...)
+			p, dec, skips := d.s.registry.ReserveNextFromPlan(pending, plan, excludeIDs...)
+			d.s.notePlanSkips(plan, skips)
 			reserved = p != nil
 			return p, dec, nil
 		},
@@ -277,6 +278,7 @@ func (d *dispatchState) tryAcquireBackupHedge(primaryID string) (hedgeVerdict, b
 		return hedgeAllow, false
 	}
 	exclude := append(d.excludedProviderIDs(), primaryID)
+	d.s.ddIncr("routing.hedge_governor_snapshot", []string{"model:" + d.model})
 	idleAlt, queueDepth, fleetIdle, capacitySignals := d.s.registry.HedgeGovernorSnapshot(d.model, d.pr, exclude...)
 	if !capacitySignals {
 		g.acquireHedgeUngoverned()

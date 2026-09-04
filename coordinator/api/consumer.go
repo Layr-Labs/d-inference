@@ -1114,6 +1114,7 @@ func (s *Server) dispatchWithReserver(
 	provider, decision, plan = reserve(pr, excludeList())
 	ap.Mark(registry.StampReserveDone)
 	ap.SetDecision(decision)
+	s.emitReserveDecisionMetrics(model, decision)
 	if fullScan {
 		s.releaseRoutingScanSlot()
 	}

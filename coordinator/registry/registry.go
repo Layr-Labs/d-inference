@@ -2143,7 +2143,10 @@ type Registry struct {
 	// trigger one.
 	quickCapacityWalks atomic.Uint64
 
-	mu        sync.RWMutex
+	// mu is a sync.RWMutex whose exclusive acquisitions are timed
+	// (lock_metrics.go); scanStats counts the fleet walks.
+	mu        registryMutex
+	scanStats scanCounters
 	providers map[string]*Provider
 
 	queue *RequestQueue

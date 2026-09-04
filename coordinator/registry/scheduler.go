@@ -416,8 +416,17 @@ type RoutingDecision struct {
 	PendingForModel, TotalPending int
 	// LockWaitUS / ScanUS / AdmitUS are the three phases of ReserveProviderEx:
 	// waiting for r.mu, the candidate scan + selection (+ shadow evaluation),
-	// and the admit re-check under p.mu. Microseconds.
+	// and the admit re-check under p.mu. Microseconds. Stamped from the LAST
+	// reserve-loop iteration only (attempt_profile.go derives the lock-acquired
+	// stamp as done − ScanUS − AdmitUS, so these must describe the iteration
+	// that committed); the discarded iterations are summarised by Rescans.
 	LockWaitUS, ScanUS, AdmitUS int64
+	// Rescans is the number of reserve-loop iterations discarded because the
+	// commit re-check found the winner changed after the shared scan
+	// (reservationNeedsRescan); RescanUS is the lock-wait + scan + commit time
+	// those discarded iterations cost, in microseconds.
+	Rescans  int
+	RescanUS int64
 	// TTFTCalibrationRatio is the ratio the TTFT calibrator applied to the
 	// winner's (model, chip) raw estimate (1.0 = uncalibrated or kill switch off).
 	// PrefillDecodeRatio is the decode→prefill fallback multiplier in effect.
@@ -508,10 +517,15 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 	carried := RoutingDecision{Model: model}
 	var last providerReservationScan
 	var admitUS int64
+	// Discarded iterations (commit found the winner changed) are counted and
+	// their cost summed; the phase stamps keep last-iteration semantics.
+	var rescans int
+	var rescanUS int64
 	failedDecision := func() RoutingDecision {
 		decision := routingDecisionForFailedScan(model, last.candidates)
 		addRoutingRejections(&decision, carried)
 		decision.LockWaitUS, decision.ScanUS, decision.AdmitUS = last.lockWaitUS, last.scanUS, admitUS
+		decision.Rescans, decision.RescanUS = rescans, rescanUS
 		return decision
 	}
 	for pr.RefreshFirstContentBudget(time.Now()) {
@@ -528,6 +542,8 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		admitUS = time.Since(tCommitStart).Microseconds()
 		switch outcome {
 		case reservationNeedsRescan:
+			rescans++
+			rescanUS += last.lockWaitUS + last.scanUS + admitUS
 			continue
 		case reservationCandidateRejected:
 			addRoutingRejections(&carried, rejected)
@@ -540,6 +556,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 				model, provider, candidate, last.candidates)
 			addRoutingRejections(&decision, carried)
 			decision.LockWaitUS, decision.ScanUS, decision.AdmitUS = last.lockWaitUS, last.scanUS, admitUS
+			decision.Rescans, decision.RescanUS = rescans, rescanUS
 			r.currentTTFTShadow(
 				model, pr, candidate, excluded...).applyTo(&decision)
 			var plan *DispatchPlan
@@ -770,6 +787,7 @@ func (r *Registry) currentTTFTShadow(
 	defer r.mu.RUnlock()
 	var current candidateScan
 	if snapshotOccupancy(&winner.snapshot) > 0 {
+		r.scanStats.shadowRescans.Add(1)
 		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
 	}
 	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
@@ -1127,6 +1145,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	// legacy counters above are assigned into it at the end, unchanged.
 	var scan candidateScan
 	now := time.Now()
+	r.scanStats.fleetWalks.Add(1)
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
@@ -2827,6 +2846,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 
 	unknownTTFTCandidate := false
 	now := time.Now()
+	r.scanStats.fleetWalks.Add(1)
 	// Per-model index: visit only providers advertising the model (gates
 	// unchanged; see model_index.go).
 	for _, p := range r.providersForModelLocked(model) {

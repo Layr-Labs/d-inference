@@ -56,6 +56,9 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 	rows := s.registry.FleetSample(now)
 	coord := s.registry.CoordinatorSample(now)
 	coord.Goroutines = runtime.NumGoroutine()
+	// Writer wait on Registry.mu since the last DogStatsD gauge tick (the
+	// gauge loop owns the reset; the sampler only peeks).
+	coord.ReserveLockWaitP95US = s.registry.LockWaitPeek().P95US
 	if s.profiler != nil && s.profiler.sink != nil {
 		coord.ProfileSinkDepth = s.profiler.sink.depth()
 		coord.ProfileSinkDroppedTotal = s.profiler.sink.droppedTotal()

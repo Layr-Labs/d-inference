@@ -625,10 +625,20 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// is disabled (PenaltyMs <= 0) — in which case the completion re-offer
 	// would store nothing either. So the unconditional stamp never loses an
 	// outcome and never double counts.
+	//
+	// The accept carries the instant it was OBSERVED — the first content
+	// chunk, stamped above by MarkFirstContentArrived — not the instant the
+	// goroutine finally holds the lock: a capacity reject for the same pair
+	// recorded in between happened AFTER this accept and must survive it
+	// (registry.RecordCapacityAcceptObserved).
 	pr.MarkRateOutcomeCounted()
 	providerID, model := pr.ProviderID, pr.Model
+	observedAt := pr.FirstContentAtSafe()
+	if observedAt.IsZero() {
+		observedAt = time.Now()
+	}
 	saferun.Go(d.s.logger, "api.recordCapacityAccept", func() {
-		d.s.registry.RecordCapacityAccept(providerID, model)
+		d.s.registry.RecordCapacityAcceptObserved(providerID, model, observedAt, true)
 	})
 }
 

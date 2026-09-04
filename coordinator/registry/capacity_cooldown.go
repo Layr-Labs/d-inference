@@ -243,7 +243,7 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	r.mu.Lock()
+	r.lockWrite("capacity_reject")
 	defer r.mu.Unlock()
 	now := time.Now()
 
@@ -418,7 +418,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 			return false
 		}
 	}
-	r.mu.Lock()
+	r.lockWrite("capacity_accept")
 	now := time.Now()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)

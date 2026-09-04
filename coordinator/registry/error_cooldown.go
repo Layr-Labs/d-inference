@@ -88,7 +88,7 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 		return false
 	}
 
-	r.mu.Lock()
+	r.lockWrite("inference_error")
 	defer r.mu.Unlock()
 	now := time.Now()
 	// Key by the stable fault key (serial/SE-key when bound, session id
@@ -146,7 +146,7 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 // deterministic tool failure interleaved with text traffic could never trip
 // the breaker (the original incident).
 func (r *Registry) RecordInferenceSuccess(providerID, modelID, shape string) {
-	r.mu.Lock()
+	r.lockWrite("inference_success")
 	defer r.mu.Unlock()
 	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
 	delete(r.inferenceErrorStrikes, key)

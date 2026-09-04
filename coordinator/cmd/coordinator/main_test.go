@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -145,5 +146,43 @@ func TestPprofListener(t *testing.T) {
 	// A malformed address surfaces the listen error instead of half-starting.
 	if _, err := startPprofListener("not-an-address"); err == nil {
 		t.Error("startPprofListener(not-an-address) = nil error, want listen failure")
+	}
+}
+
+// TestPprofListenerEnablesContentionProfiles: the mutex and block profiles are
+// off in the Go runtime by default (mutex.pprof and block.pprof come back
+// empty); enabling the pprof listener turns them on at a sampling rate that
+// is negligible in production, and the listener serves both endpoints.
+func TestPprofListenerEnablesContentionProfiles(t *testing.T) {
+	previous := runtime.SetMutexProfileFraction(-1)
+	t.Cleanup(func() {
+		runtime.SetMutexProfileFraction(previous)
+		runtime.SetBlockProfileRate(0)
+	})
+
+	enableContentionProfiling()
+	if got := runtime.SetMutexProfileFraction(-1); got != 100 {
+		t.Fatalf("mutex profile fraction = %d, want 100", got)
+	}
+
+	ln, err := startPprofListener("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("startPprofListener: %v", err)
+	}
+	defer ln.Close()
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, profile := range []string{"mutex", "block"} {
+		resp, err := client.Get("http://" + ln.Addr().String() + "/debug/pprof/" + profile + "?debug=1")
+		if err != nil {
+			t.Fatalf("%s profile: %v", profile, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("/debug/pprof/%s = %d, want 200", profile, resp.StatusCode)
+		}
+		if !strings.Contains(string(body), "sampling period") && !strings.Contains(string(body), "cycles/second") {
+			t.Fatalf("/debug/pprof/%s body is not a %s profile: %.200s", profile, profile, body)
+		}
 	}
 }

@@ -2350,6 +2350,9 @@ type Registry struct {
 	// restarts. Keyed by the device's Secure Enclave public key. Set once at
 	// startup; nil = no-op. Guarded by r.mu (set + read).
 	onHardUntrust func(seKey string)
+	// lockWaitObserver, when set, is told how long each request-path write
+	// acquisition of r.mu waited, tagged by call site (see lockWrite).
+	lockWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -2507,7 +2510,7 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
-	r.mu.Lock()
+	r.lockWrite("dispatch_load_cooldown")
 	defer r.mu.Unlock()
 	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
 }
@@ -5166,6 +5169,36 @@ func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
 	r.mu.Lock()
 	r.onHardUntrust = fn
 	r.mu.Unlock()
+}
+
+// SetLockWaitObserver registers an optional observer for request-path write
+// acquisitions of the registry lock: it receives the call site and how long
+// the acquisition waited. The api layer turns it into the
+// registry.mu.write_wait_ms histogram tagged by site, which measures the
+// write-lock convoy directly instead of inferring it from goroutine dumps.
+// The observer runs with the lock held, so it must be cheap. Set once at
+// startup; nil clears it. Thread-safe.
+func (r *Registry) SetLockWaitObserver(fn func(site string, wait time.Duration)) {
+	if fn == nil {
+		r.lockWaitObserver.Store(nil)
+		return
+	}
+	r.lockWaitObserver.Store(&fn)
+}
+
+// lockWrite is r.mu.Lock() for the request-path recorders (commit, capacity
+// accept/reject, error cooldown, breaker, health ejection, dispatch-load
+// cooldown), reporting the acquisition wait to the observer registered with
+// SetLockWaitObserver. Callers still unlock r.mu themselves.
+func (r *Registry) lockWrite(site string) {
+	obs := r.lockWaitObserver.Load()
+	if obs == nil {
+		r.mu.Lock()
+		return
+	}
+	start := time.Now()
+	r.mu.Lock()
+	(*obs)(site, time.Since(start))
 }
 
 // SetRuntimeCapabilitiesPromotedHook registers the API-layer fanout invoked

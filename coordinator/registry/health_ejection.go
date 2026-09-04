@@ -453,7 +453,7 @@ func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCo
 	if stableID == "" || !healthEjectionEnabled() {
 		return false, false
 	}
-	r.mu.Lock()
+	r.lockWrite("health_ejection")
 	defer r.mu.Unlock()
 	now := time.Now()
 	r.healthEjectionSweepLocked(now)

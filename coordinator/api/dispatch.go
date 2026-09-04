@@ -444,6 +444,12 @@ func (d *dispatchState) recordRoutingDecisionFor(provider *registry.Provider, pr
 		keyID = pr.KeyID
 	}
 
+	// Scans per attempt (rescans included). Plan-based retries reuse the
+	// previous scan and report zero, which is not emitted.
+	if decision.ScanCount > 0 {
+		s.ddCount("routing.scans", int64(decision.ScanCount), []string{"model:" + d.model, "outcome:" + outcome})
+	}
+
 	record := &store.InferenceRouteRecord{
 		RequestID:               requestID,
 		Attempt:                 attempt,

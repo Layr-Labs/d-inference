@@ -843,6 +843,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
 		)
 	}
+	// Registry write-lock wait, by call site. This is the acceptance metric
+	// for taking the recorders off the request path: today the wait is only
+	// inferable from goroutine dumps.
+	reg.SetLockWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.mu.write_wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)

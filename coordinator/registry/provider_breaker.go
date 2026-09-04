@@ -190,7 +190,7 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 		return false, false
 	}
 
-	r.mu.Lock()
+	r.lockWrite("breaker")
 	defer r.mu.Unlock()
 	now := time.Now()
 	// Key by the stable fault key (serial/SE-key when bound, session id

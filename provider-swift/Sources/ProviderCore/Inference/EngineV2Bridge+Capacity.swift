@@ -135,6 +135,13 @@ extension EngineV2Bridge {
             boundedKVBytesCapacity = min(
                 boundedKVBytesCapacity, snapshot.kvBytesBackendCapacity)
         }
+        // The engine refuses (`AdmissionV2.canEverFit`) any request whose
+        // worst case exceeds `capacity − watermark` (5% by default; the
+        // provider passes no admissionConfig), so the top 5% of the grant is
+        // never admissible. Advertise the admissible figure, BEFORE the fleet
+        // clamp (a clamp below it stays below it). Mirror of the engine's
+        // constant — see `engineAdmissionWatermarkFraction`.
+        boundedKVBytesCapacity = Self.engineAdmissibleBytes(capacity: boundedKVBytesCapacity)
         let reportedKVBytesCapacity: Int
         if let kvBytesBudgetClamp {
             reportedKVBytesCapacity = min(boundedKVBytesCapacity, max(0, kvBytesBudgetClamp))
@@ -251,6 +258,25 @@ extension EngineV2Bridge {
             evalInFlightMs: evalInFlightMs,
             telemetry: slotTelemetry
         )
+    }
+
+    /// MIRROR of `AdmissionV2.Config().watermarkFraction` (T3-05): the
+    /// fraction of its byte capacity the engine keeps free as the optimism
+    /// watermark, which `canEverFit` judges every request against. The
+    /// provider constructs the engine with the default config, so this is
+    /// the live value; `EngineV2WatermarkParityTests` pins the two together
+    /// so an engine retune fails this build instead of silently
+    /// over-advertising again. The proper fix — `CBv2CapacitySnapshot`
+    /// carrying `admissibleBytesCapacity` — waits for the next engine pin.
+    static let engineAdmissionWatermarkFraction = 0.05
+
+    /// `capacity − Int(Double(capacity) × fraction)` — the engine's own
+    /// arithmetic form (`AdmissionV2.watermark`), so the mirror cannot differ
+    /// from `admissibleBytesCapacity` by a rounding byte.
+    static func engineAdmissibleBytes(capacity: Int) -> Int {
+        guard capacity > 0 else { return max(0, capacity) }
+        let watermark = Int(Double(capacity) * engineAdmissionWatermarkFraction)
+        return max(0, capacity - watermark)
     }
 
     /// Longest fallback reason the heartbeat will carry, in Characters. The

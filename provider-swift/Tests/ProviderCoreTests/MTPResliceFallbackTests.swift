@@ -348,7 +348,10 @@ struct MTPResliceFallbackTests {
         #expect(existingEngine.updates == [expected[mtpFloorExistingID]!])
 
         let heartbeat = await build.bundle.bridge.backendSlotCapacity()
-        #expect(heartbeat.activeTokenBudgetMax == Int64(expected[mtpFloorNewID]! / 20_480))
+        // Advertised max is the engine-ADMISSIBLE share of the grant (the 5%
+        // watermark mirror, T3-05), in tokens.
+        #expect(heartbeat.activeTokenBudgetMax
+            == Int64(EngineV2Bridge.engineAdmissibleBytes(capacity: expected[mtpFloorNewID]!) / 20_480))
         let sum = UInt64(expected.values.reduce(0, +))
         let targetBudget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: mtpFloorPhysical,

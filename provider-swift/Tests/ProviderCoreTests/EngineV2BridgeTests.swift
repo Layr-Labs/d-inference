@@ -1127,7 +1127,9 @@ struct EngineV2CapacityTests {
         #expect(slot.activeTokenBudgetUsed == 308)
         #expect(slot.queuedTokenBudget == 0)
         // Budget ceiling: the engine's byte capacity in tokens.
-        #expect(slot.activeTokenBudgetMax == 10000)   // 40 MB / 4000 B-per-token
+        // Budget ceiling: the engine's ADMISSIBLE byte capacity in tokens —
+        // 95% of the 40 MB grant (the engine's 5% watermark, T3-05) / 4000 B.
+        #expect(slot.activeTokenBudgetMax == 9500)
         #expect(slot.kvBytesPerToken == 4000)
         #expect(slot.maxConcurrency == 4)
         // The engine's own monotonic step counter flows straight through.
@@ -1179,7 +1181,8 @@ struct EngineV2CapacityTests {
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.maxTokensPotential == 5)
         #expect(slot.activeTokenBudgetUsed == 9)
-        #expect(slot.activeTokenBudgetMax == 390)
+        // (0.95 × 40_000 − 3 prospective rows × (250 + 20 × 4)) / 100.
+        #expect(slot.activeTokenBudgetMax == 370)
     }
 
     @Test("finished requests release their committed budget from the heartbeat")
@@ -1293,15 +1296,16 @@ struct EngineV2CapacityTests {
                 kvBytesCapacity: 40_000_000, activeTokens: 0
             ))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
-        // No clamp (unit callers / no fleet context): construction grant.
+        // No clamp (unit callers / no fleet context): the admissible 95% of
+        // the construction grant.
         let raw = await bridge.backendSlotCapacity()
-        #expect(raw.activeTokenBudgetMax == 10000)
+        #expect(raw.activeTokenBudgetMax == 9500)
         // Fleet shrank the live budget below the grant: report the clamp.
         let clamped = await bridge.backendSlotCapacity(kvBytesBudgetClamp: 20_000_000)
         #expect(clamped.activeTokenBudgetMax == 5000)
         // A clamp ABOVE the grant never inflates the report.
         let above = await bridge.backendSlotCapacity(kvBytesBudgetClamp: 80_000_000)
-        #expect(above.activeTokenBudgetMax == 10000)
+        #expect(above.activeTokenBudgetMax == 9500)
         // Degenerate negative clamp reports 0, never traps.
         let negative = await bridge.backendSlotCapacity(kvBytesBudgetClamp: -1)
         #expect(negative.activeTokenBudgetMax == 0)
@@ -1326,14 +1330,18 @@ struct EngineV2CapacityTests {
         let runtime = EngineV2Runtime()
         await runtime.register(modelId: "gemma-4-27b-it", bridge: bridge)
 
-        // Fleet unchanged since construction: reported max == the grant.
+        // Fleet unchanged since construction: reported max == the engine-
+        // ADMISSIBLE share of the grant (5% watermark mirror, T3-05).
+        let admissible = EngineV2Bridge.engineAdmissibleBytes(capacity: grant)
         let alone = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
                 totalResidentWeightBytes: UInt64(weights), physicalBytes: physical))
-        #expect(alone.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
+        #expect(alone.slots.first?.activeTokenBudgetMax == Int64(admissible / rate))
 
         // A 12 GiB model loaded later (legacy — subtracts nothing from the
-        // grant): the reported max shrinks by exactly its weights in tokens.
+        // grant): the fleet clamp (grant − its weights) binds below the
+        // admissible line, so the reported max shrinks by exactly its
+        // weights in tokens.
         let laterWeights = 12 * gib
         let grown = await runtime.capacitySummary(
             fleetKV: EngineV2Runtime.FleetKVContext(
@@ -1342,9 +1350,9 @@ struct EngineV2CapacityTests {
         #expect(grown.slots.first?.activeTokenBudgetMax
             == Int64((grant - Int(laterWeights)) / rate))
 
-        // No fleet context (legacy callers): raw construction figures.
+        // No fleet context (legacy callers): the admissible construction figure.
         let uncontexted = await runtime.capacitySummary()
-        #expect(uncontexted.slots.first?.activeTokenBudgetMax == Int64(grant / rate))
+        #expect(uncontexted.slots.first?.activeTokenBudgetMax == Int64(admissible / rate))
     }
 }
 
@@ -3096,5 +3104,29 @@ struct EngineV2ReservationShrinkTests {
         engine.manualContinuation?.finish()
         while await iterator.next() != nil {}
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+// MARK: - Engine watermark mirror (T3-05)
+
+@Suite("EngineV2 watermark parity")
+struct EngineV2WatermarkParityTests {
+
+    @Test("the bridge's mirrored watermark IS the engine's default admission watermark")
+    func mirrorMatchesEngineDefault() {
+        #expect(EngineV2Bridge.engineAdmissionWatermarkFraction == AdmissionV2.Config().watermarkFraction)
+    }
+
+    @Test("admissible bytes use the engine's arithmetic form and never go negative")
+    func admissibleArithmetic() {
+        // capacity − Int(Double(capacity) × 0.05), exactly as AdmissionV2 sizes
+        // its watermark — not Int(Double(capacity) × 0.95), which rounds the
+        // other way for some capacities.
+        for capacity in [1, 19, 20, 21, 40_000, 40_000_000, 1_234_567_891] {
+            let expected = capacity - Int(Double(capacity) * 0.05)
+            #expect(EngineV2Bridge.engineAdmissibleBytes(capacity: capacity) == expected, "\(capacity)")
+        }
+        #expect(EngineV2Bridge.engineAdmissibleBytes(capacity: 0) == 0)
+        #expect(EngineV2Bridge.engineAdmissibleBytes(capacity: -5) == 0)
     }
 }

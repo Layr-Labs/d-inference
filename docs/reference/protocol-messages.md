@@ -144,9 +144,11 @@ booleans: `text_backend_inprocess`, `text_proxy_disabled`,
 
 Go `HeartbeatMessage` · Swift `ProviderMessage.Heartbeat`. Built by
 `buildHeartbeatJSON` (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`);
-consumed by `Registry.Heartbeat` (`coordinator/registry/registry.go`). Default
-cadence, the liveness timeout, and what happens when heartbeats stop (stale →
-evicted, in-flight requests) are owned by
+consumed by `Registry.Heartbeat` (`coordinator/registry/registry.go`). The
+default cadence is the `heartbeat_interval_secs` row of
+[`cli-reference.md` → `provider.toml` keys](../provider/cli-reference.md#providertoml-keys-read-by-the-cli);
+the liveness timeout and what happens when heartbeats stop (stale → evicted,
+in-flight requests) are owned by
 [`scheduling.md` → Heartbeat cadence and eviction](../architecture/scheduling.md#heartbeat-cadence-and-eviction);
 the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md).
 

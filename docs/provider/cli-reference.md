@@ -289,9 +289,10 @@ before ArgumentParser, accepts internal positional `shapes`, and is what
 
 Defaults are the `ProviderConfig` initialisers
 (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`); a missing
-key decodes to its default. The full schema, including startup preload,
-per-model tables and every environment variable, is in
-[`reference/configuration.md`](../reference/configuration.md).
+key decodes to its default, and that file is the complete schema (this table
+lists the keys an operator is likely to set). Environment variables, which
+override `provider.toml` for one process, are in
+[`reference/configuration.md`](../reference/configuration.md#provider-cli-darkbloom).
 
 | Key | Default | Effect |
 |---|---|---|

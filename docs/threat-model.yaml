@@ -1,5 +1,11 @@
 version: "1.0"
 created: "2026-05-14"
+# Partially re-verified 2026-09-03 against commit 5d400cf75: A-001, A-003, T-003
+# and T-011 were corrected to the shipped design (the coordinator is a plaintext
+# endpoint on every request; the provider X25519 key is per-process and never on
+# disk) — see docs/architecture/security/encryption.md and identity-binding.md.
+# Every other entry still reflects the 2026-05-14 review and has not been
+# re-verified.
 methodology: STRIDE
 description: >
   Runtime threat model for the EigenInference / darkbloom decentralized GPU inference
@@ -64,9 +70,15 @@ assets:
     description: Plaintext inference requests and responses from consumers.
     sensitivity: critical
     notes: >
-      Encrypted on the coordinator→provider leg via X25519/NaCl box. The coordinator
-      sees plaintext unless sender-to-coordinator encryption is also enabled (currently
-      optional and off by default — SEC-015).
+      Sealed to the provider's X25519 key on the coordinator→provider leg (fresh
+      session key pair per request) and to the coordinator's per-request session key
+      on the provider→coordinator leg. The coordinator is a plaintext endpoint on
+      every request: it decrypts in memory to parse, route, bill and re-encrypt, and
+      does not log or persist content. Optional sender sealing
+      (Content-Type application/eigeninference-sealed+json) protects the
+      consumer→coordinator leg from TLS-terminating intermediaries; it does not hide
+      content from the coordinator. Product copy claiming otherwise is SEC-015.
+      Canonical description: docs/architecture/security/encryption.md.
 
   - id: A-002
     name: provider_se_p256_key
@@ -79,9 +91,12 @@ assets:
     description: X25519 Diffie-Hellman private key used for E2E encryption of inference traffic.
     sensitivity: critical
     notes: >
-      Stored on disk in the provider TOML config. The provider operator has filesystem
-      read access. Compromise enables decryption of future (not past) inference traffic
-      for that provider.
+      Generated in memory for each provider process (NodeKeyPair.generate() in the
+      ProviderLoop initialiser; legacy on-disk key files are purged at start) and
+      bound to the Secure Enclave identity through the signed blob's
+      encryptionPublicKey. Never written to disk. Compromise of a running process
+      exposes traffic for that process lifetime only. See
+      docs/architecture/security/identity-binding.md.
 
   - id: A-004
     name: model_weights
@@ -442,9 +457,9 @@ trust_boundaries:
       - "No Content-Security-Policy, X-Frame-Options, HSTS, or Referrer-Policy headers
         are configured at the application layer. XSS impact is unrestricted (next.config.ts,
         SEC-014)."
-      - "Sender-to-coordinator encryption is opt-in and defaults off. The product UI
-        claims all prompts are E2E encrypted, but the coordinator leg is unprotected in
-        the default configuration (encryption.ts, api.ts, SEC-015)."
+      - "Sender-to-coordinator sealing is opt-in and defaults off, and the coordinator
+        decrypts every request in memory regardless. Product copy claiming all prompts
+        are end-to-end encrypted is wrong (encryption.ts, lib/chat/stream.ts, SEC-015)."
       - "next.config.ts sets ignoreBuildErrors: true, allowing TypeScript errors to be
         silently ignored at build time, potentially masking type-safety regressions in
         security-sensitive code paths."
@@ -813,7 +828,8 @@ threats:
     affected_assets: [A-007, A-009]
     affected_files:
       - console-ui/src/hooks/useAuth.ts
-      - console-ui/src/lib/api.ts
+      - console-ui/src/lib/http/proxy-client.ts
+      - console-ui/src/lib/migrate-storage.ts
       - coordinator/auth/**
     mitigations:
       - description: API keys verified on every coordinator request via constant-time compare.
@@ -867,27 +883,35 @@ threats:
   - id: T-003
     trust_boundary: TB-001
     stride: Information_Disclosure
-    title: Coordinator sees plaintext prompts when sender encryption is off
+    title: Coordinator is a plaintext endpoint for every request
     description: >
-      Sender-to-coordinator encryption is optional and defaults off. The product UI
-      claims all prompts are E2E encrypted, but the coordinator receives and routes
-      plaintext when consumers do not opt in.
+      The coordinator decrypts every request in memory (inside a confidential VM in
+      production) to parse, route, bill and re-encrypt it, whether or not the consumer
+      used sender sealing. Sender sealing is opt-in and off by default in the console;
+      when used it protects only the consumer→coordinator leg from TLS-terminating
+      intermediaries. Product copy that claims the coordinator never sees plaintext is
+      wrong (SEC-015).
     adversaries: [ADV-003]
     affected_assets: [A-001]
     affected_files:
+      - coordinator/api/sender_encryption.go
       - console-ui/src/lib/encryption.ts
-      - console-ui/src/lib/api.ts
+      - console-ui/src/lib/chat/stream.ts
+      - console-ui/src/app/api/chat/route.ts
       - console-ui/src/app/page.tsx
     mitigations:
-      - description: Provider-leg encryption is always on (X25519/NaCl box).
+      - description: Provider-leg encryption is always on (X25519/NaCl box, fresh session key per request).
         status: implemented
-      - description: Sender-to-coordinator leg is opt-in and off by default.
+      - description: The coordinator does not log or persist request or response content (encryption.md, "What the coordinator logs and retains").
+        status: implemented
+      - description: Sender-to-coordinator sealing is opt-in and off by default; it does not remove the coordinator from the plaintext path.
         status: open
     open_findings: [SEC-015]
     severity: medium
     detection_hint: >
-      Changes to encryption.ts defaults, the plaintext fallback in api.ts, or
-      product copy claiming E2E encryption should re-examine this boundary.
+      Changes to encryption.ts defaults, the sealing path in lib/chat/stream.ts or
+      app/api/chat/route.ts, sender_encryption.go, or product copy claiming E2E
+      encryption should re-examine this boundary.
 
   - id: T-004
     trust_boundary: TB-001
@@ -1085,20 +1109,25 @@ threats:
   - id: T-011
     trust_boundary: TB-003
     stride: Information_Disclosure
-    title: Provider operator reads X25519 private key from config file
+    title: Provider operator reads X25519 private key from process memory
     description: >
-      The X25519 Diffie-Hellman private key used for E2E encryption is stored in the
-      provider's TOML config file on disk. The operator has full filesystem read
-      access. Reading this key enables decryption of all future (not past) E2E
-      inference traffic routed to this provider.
+      The X25519 Diffie-Hellman private key used for E2E encryption is generated in
+      memory for each provider process and never written to disk (legacy key files
+      are purged at start). An operator with root can still read the memory of the
+      running process and recover the key for that process lifetime, decrypting the
+      traffic routed to it during that time. Severity has not been re-rated since
+      the on-disk storage was removed.
     adversaries: [ADV-001]
     affected_assets: [A-003, A-001]
     affected_files:
-      - provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift
+      - provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift
+      - provider-swift/Sources/ProviderCore/ProviderLoop.swift
     mitigations:
-      - description: XSalsa20-Poly1305 encryption provides no forward secrecy; past sessions are safe.
+      - description: Key is process-scoped and never persisted (NodeKeyPair.generate(), NodeKeyPair.purgeLegacyFiles()).
         status: implemented
-      - description: Key is stored in plaintext TOML; no OS keychain or SE protection for X25519 key.
+      - description: XSalsa20-Poly1305 provides no forward secrecy within a process lifetime; a new key per process bounds exposure to that lifetime.
+        status: implemented
+      - description: Key material is not protected by the Secure Enclave; only the P-256 identity key is.
         status: open
     open_findings: []
     severity: high
@@ -1235,7 +1264,7 @@ threats:
     adversaries: [ADV-001]
     affected_assets: []
     affected_files:
-      - provider-swift/Sources/ProviderCore/Inference/LocalMLXModelFoundation.swift
+      - provider-swift/Sources/ProviderCore/InferenceFoundation/LocalMLXModelFoundation.swift
     mitigations:
       - description: Model load failure reported to coordinator; provider marked unavailable and re-queued.
         status: implemented

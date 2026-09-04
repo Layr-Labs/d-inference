@@ -15,6 +15,12 @@ Written for an operator with production access; how the feature works is in
 - Turning cache routing off — on its own, or as the first step of a coordinator
   binary rollback.
 
+There is no per-model switch. The mode is fleet-wide, and `PERCENT` samples a
+deterministic cohort keyed on account + resolved model + provider-bound body
+(`cacheActivationCohort`, `coordinator/registry/cache_route_keys.go`), so a
+small percentage is the only way to limit exposure; the same request from the
+same account is either always in or always out of the cohort.
+
 ## Prerequisites
 
 - Every `EIGENINFERENCE_CACHE_ROUTING_*` value is read **once at process
@@ -157,6 +163,12 @@ window (fields from `CacheRoutingActivationStatus`,
   appearing; `routing.cache_selection_precision` is non-zero.
 - Ordinary traffic is not harmed: the activation gate only declines cache
   participation, so the `429` rate does not move with the flip.
+- Latency has not regressed: compare p50/p95 first-content latency per model
+  before and after the flip with the recipes in
+  [`profiler-queries.md`](profiler-queries.md). `request_profiles.cache_discount_ms`
+  (> 0 when the chosen provider received a cache discount) is the only cache
+  signal in the profiles, so split by it or compare time windows rather than
+  cohorts. A regression is the rollback trigger below.
 
 Compare with the snapshot from step 1 when in doubt:
 

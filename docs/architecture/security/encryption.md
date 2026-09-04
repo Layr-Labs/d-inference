@@ -111,6 +111,7 @@ This table is the privacy statement. [`../../consumer/privacy-expectations.md`](
 
 | Retained or logged (metadata only) | Code |
 |---|---|
+| Access log, one `request` line per HTTP request: `request_id`, `method`, `path`, `route`, `status`, `duration_ms`, `remote` (the connection's remote address), `user_id` (account, when authenticated) | `coordinator/api/server.go` (`loggingMiddleware`) |
 | `inference request dispatched`: `trace_id`, `request_id`, `model`, `provider_id`, `stream`, `attempt` | `coordinator/api/dispatch.go` |
 | Request / route records: token counts, timing, non-content params (`temperature`, `top_p`); the record types document that they contain no prompt or response content | `coordinator/store/interface.go` |
 | Cache-affinity keys: keyed digests of identity / prefix bytes; raw bytes are never stored, logged, or returned | `coordinator/registry/cache_route_keys.go` |

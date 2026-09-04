@@ -63,8 +63,10 @@ const (
 	// error instead of running again. With nothing cached, every cold request
 	// would otherwise start a fresh pipeline the moment the previous one
 	// failed — on a database that is timing out, that stacks full scans
-	// back-to-back. The hold is shorter than the tick so the timer always
-	// retries; failed pipelines are capped at two per minute per key.
+	// back-to-back. Failed pipelines are capped at two per minute per key.
+	// The hold applies to the tick as well: a request-driven failure just
+	// before a tick makes that tick a no-op, so the worst-case gap between
+	// attempts is hold + interval (~90 s), not the interval.
 	refreshFailureHold = statsRefreshInterval / 2
 )
 

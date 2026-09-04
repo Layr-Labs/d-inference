@@ -292,28 +292,6 @@ func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (hea
 	return heartbeatAt, rawRemaining, budgetReported
 }
 
-// dropInactiveBudgetClampLocked deletes the pair's clamp entry when it can no
-// longer gate admission, so the entry's lifecycle matches its effect:
-//   - armed budgetless (entry.budgetReported == false: the exemption means it
-//     NEVER gates, so keeping it only costs the accept fast path);
-//   - TTL lapsed (fail-open — a re-reject re-arms fresh anyway);
-//   - fully released (accept proof AND a strictly-fresher heartbeat with
-//     meaningful headroom, evaluated against the provider's live snapshot).
-//
-// Deleting on release matters twice over: a lingering released entry (a) keeps
-// pulling every subsequent RecordCapacityAccept for the pair onto the r.mu
-// write lock (the fast-path gate keys on map presence), and (b) revives as a
-// block on the identity's next reconnect — the budgetless pre-heartbeat hold
-// branch treats an unreleased-looking entry as an active clamp, re-blocking a
-// pair that already proved recovery. A deleted entry re-arms from scratch on
-// the next reject, with budgetReported re-read at arm time. Called from the
-// accept path (RecordCapacityAcceptOutcome); the heartbeat release sweep uses
-// the snapshot variant below. Caller holds the r.mu WRITE lock.
-func (r *Registry) dropInactiveBudgetClampLocked(providerID, modelID string, now time.Time) {
-	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
-	r.dropInactiveBudgetClampSnapshotLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, now)
-}
-
 // dropInactiveBudgetClampSnapshotLocked is dropInactiveBudgetClampLocked with
 // the budget snapshot supplied by the caller instead of re-read from
 // r.providers. The heartbeat release sweep passes the just-delivered

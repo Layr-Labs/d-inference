@@ -207,9 +207,11 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	if oldKey == "" || newKey == "" || oldKey == newKey {
 		return
 	}
+	// The wedge tracker has its own leaf lock and is never nested under
+	// outcomeMu (see Registry.outcomeMu): migrate it before taking the leaf.
+	r.deadlineWedge.migrate(oldKey, newKey)
 	r.outcomeMu.Lock()
 	defer r.outcomeMu.Unlock()
-	r.deadlineWedge.migrate(oldKey, newKey)
 
 	// Dispatch-load cooldowns: struct keys per (fault key, model).
 	for k, expiry := range r.dispatchLoadCooldowns {

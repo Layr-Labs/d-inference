@@ -245,6 +245,9 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Provider-locked reads are resolved BEFORE the leaf lock: nothing may
+	// acquire a Provider.mu while holding outcomeMu (see Registry.outcomeMu).
+	reportsBudget := armClamp && r.providerReportsTokenBudgetLocked(providerID, modelID)
 	// The reject path writes the rate window (leaf-locked) and the strike /
 	// cooldown / trip / clamp maps the accept path probes under outcomeMu, so
 	// it holds both for its whole section (see Registry.outcomeMu).
@@ -265,7 +268,7 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	// prompt says nothing about the pair's budget honesty).
 	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	if armClamp {
-		r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
+		r.recordBudgetClampLocked(clampKey, reportsBudget, now)
 	}
 	if deratePair {
 		r.recordCapacityRateRejectLocked(clampKey, now)
@@ -435,6 +438,10 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	}
 
 	r.mu.Lock()
+	// The clamp release below needs the provider's budget snapshot, which
+	// takes Provider.mu: resolve it here, before the leaf lock (see
+	// Registry.outcomeMu — nothing acquires a Provider.mu under outcomeMu).
+	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
 	r.outcomeMu.Lock()
 	// Re-resolve: the fault key may have been rebound since the probe.
 	key = capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
@@ -452,7 +459,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	// budgetless reconnect window.
 	if _, hasClamp := r.budgetClamps[key]; hasClamp {
 		r.noteBudgetClampAcceptLocked(key)
-		r.dropInactiveBudgetClampLocked(providerID, modelID, now)
+		r.dropInactiveBudgetClampSnapshotLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, now)
 	}
 	if r.healthEjectionLastTripCapacity[key.ProviderID] {
 		delete(r.healthEjectionTrips, key.ProviderID)

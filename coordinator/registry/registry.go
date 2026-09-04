@@ -2247,7 +2247,16 @@ type Registry struct {
 	// healthEjectionWindows, healthEjectionCapacityStreaks and
 	// capacityRateAccepts. Those four maps are read and written under
 	// outcomeMu only. Lock order is mu -> Provider.mu -> outcomeMu; nothing
-	// acquires mu or a Provider.mu while holding outcomeMu.
+	// acquires mu or a Provider.mu while holding outcomeMu — a section that
+	// needs a provider's slot state (the reject path's budget-reporting probe,
+	// the accept path's clamp-release snapshot) resolves it under mu BEFORE
+	// taking the leaf, so a future recorder that takes outcomeMu without mu
+	// can never deadlock against a mu -> Provider.mu -> outcomeMu holder
+	// (Disconnect). deadlineWedge.mu is a separate leaf, taken under mu /
+	// Provider.mu by the routing gate and the commit-time probe claim but
+	// never under outcomeMu (identity migration re-keys it before taking
+	// outcomeMu; the accept path clears it before; Disconnect after
+	// releasing), and nothing is acquired while holding it.
 	//
 	// The rare fault maps (providerBreakerOpenUntil / providerBreakerTrips,
 	// healthEjectionUntil / Trips / LastTripCapacity, capacityRejectStrikes /
@@ -2264,7 +2273,8 @@ type Registry struct {
 	// capacity_cooldown.go.
 	outcomeMu sync.RWMutex
 	// deadlineWedge is the deadline-wedge skip tracker (deadline_wedge.go):
-	// its own leaf mutex, never nested under anything it takes.
+	// its own leaf mutex, nested under mu / Provider.mu only (never under
+	// outcomeMu), and nothing is acquired while it is held.
 	deadlineWedge *deadlineWedgeTracker
 	providers     map[string]*Provider
 

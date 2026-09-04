@@ -477,9 +477,118 @@ private final class ProbeRecorder: @unchecked Sendable {
     #expect(!facts.authenticatedRootEnabled)
     #expect(!facts.secureBootEnabled)
     #expect(facts.sipEnabled)
-    // rdma_ctl "not available" (non-zero, no stdout) reads as disabled/safe.
-    #expect(facts.rdmaDisabled == false || facts.rdmaDisabled == true)
+    // rdma_ctl exiting non-zero with no stdout is NOT "not available" (only
+    // a throw — the tool absent — reads as safe), so the fixture reports
+    // RDMA enabled. A failed probe like this one is also non-definitive, so
+    // nothing above was cached (AttestationChallengePostureCacheTests).
+    #expect(facts.rdmaDisabled == false)
     #expect(facts.chipName == "Unknown")
     #expect(facts.serialNumber == nil)
     #expect(facts.systemVolumeHash == nil)
+}
+
+// MARK: - Review fix (S2): only definitive posture facts are cached
+
+/// A transient probe failure (an installed tool whose spawn threw, or a
+/// non-zero exit) reads as the negative posture for THAT report — exactly the
+/// pre-cache behaviour — but must not be pinned for the process: the
+/// coordinator hard-untrusts on sip=false / secure-boot=false, so a cached
+/// failure would leave the provider unroutable until a daemon restart. The
+/// next challenge re-probes; a definitive gather is then cached for good.
+@Suite("Attestation challenge posture cache: transient probe failures are not cached")
+struct AttestationChallengePostureCacheTests {
+    /// Fails ONE scripted probe on the first call, healthy afterwards.
+    private final class FlakyProbe: @unchecked Sendable {
+        let healthy = ProbeRecorder()
+        private let lock = NSLock()
+        private var failedOnce = false
+        private let target: (path: String, args: [String])
+        private let failure: (String, [String]) throws -> SecurityCommandResult
+
+        init(path: String, args: [String], failure: @escaping (String, [String]) throws -> SecurityCommandResult) {
+            self.target = (path, args)
+            self.failure = failure
+        }
+
+        var runner: SecurityCommandRunner {
+            SecurityCommandRunner { [self] path, args in
+                let failNow = lock.withLock { () -> Bool in
+                    guard !failedOnce, path == target.path, args == target.args else { return false }
+                    failedOnce = true
+                    return true
+                }
+                if failNow { return try failure(path, args) }
+                return try healthy.runner.run(path, args)
+            }
+        }
+    }
+
+    private func challenge(_ builder: AttestationBuilder, nonce: String) throws -> ProviderMessage.AttestationResponse {
+        try builder.buildChallengeResponse(
+            nonce: nonce, timestamp: "2026-09-03T00:00:00Z", providerPublicKey: "cHVi",
+            binaryHash: "bin", modelHashes: ["m": "h"])
+    }
+
+    @Test("a csrutil spawn that throws (installed tool, EAGAIN under load) is reported once and re-probed on the next challenge")
+    func spawnFailureIsNotCached() throws {
+        // `/usr/bin/csrutil` exists on every macOS, so the throw is a
+        // transient spawn failure, not a missing tool.
+        let probe = FlakyProbe(path: "/usr/bin/csrutil", args: ["status"]) { _, _ in
+            throw POSIXError(.EAGAIN)
+        }
+        let builder = AttestationBuilder(identity: SoftwareP256TestSigner(), runner: probe.runner)
+
+        let first = try challenge(builder, nonce: "bm9uY2Ux")
+        #expect(first.sipEnabled == false, "a failed probe reads negative for that report, as before")
+        let spawnsAfterFirst = probe.healthy.count
+
+        let second = try challenge(builder, nonce: "bm9uY2Uy")
+        #expect(second.sipEnabled == true, "the next challenge must re-probe and heal, not replay the failure")
+        #expect(probe.healthy.count > spawnsAfterFirst, "the failed gather must not have been cached")
+
+        // The healed gather IS definitive: cached, zero spawns from here on.
+        let spawnsAfterSecond = probe.healthy.count
+        let third = try challenge(builder, nonce: "bm9uY2Uz")
+        #expect(third.sipEnabled == true)
+        #expect(probe.healthy.count == spawnsAfterSecond, "definitive facts are cached: \(probe.healthy.snapshot)")
+        #expect(builder.staticFacts().sipEnabled)
+    }
+
+    @Test("a non-zero csrutil authenticated-root exit is not cached either; the secure-boot proxy heals with it")
+    func nonZeroExitIsNotCached() throws {
+        let probe = FlakyProbe(path: "/usr/bin/csrutil", args: ["authenticated-root", "status"]) { _, _ in
+            SecurityCommandResult(terminationStatus: 1, stderr: "csrutil: transient failure")
+        }
+        let builder = AttestationBuilder(identity: SoftwareP256TestSigner(), runner: probe.runner)
+
+        let first = try challenge(builder, nonce: "bm9uY2Ux")
+        // csrutil failed and the ProbeRecorder's diskutil says "Sealed: Yes",
+        // so the value itself heals through the fallback — but the gather
+        // saw a failed probe and must not be pinned.
+        _ = first
+        let spawnsAfterFirst = probe.healthy.count
+        let second = try challenge(builder, nonce: "bm9uY2Uy")
+        #expect(second.secureBootEnabled == true)
+        #expect(probe.healthy.count > spawnsAfterFirst, "a gather with a non-zero probe exit was cached")
+        let spawnsAfterSecond = probe.healthy.count
+        _ = try challenge(builder, nonce: "bm9uY2Uz")
+        #expect(probe.healthy.count == spawnsAfterSecond)
+    }
+
+    @Test("gather reports definitiveness: healthy probes are definitive, a failed one is not")
+    func gatherReportsDefinitiveness() {
+        let healthy = ProbeRecorder()
+        #expect(StaticAttestationFacts.gather(runner: healthy.runner).definitive)
+
+        let unparseable = SecurityCommandRunner { path, args in
+            if path == "/usr/bin/csrutil", args == ["status"] {
+                // exit 0 but no known state: `.unrecognized`, reads disabled.
+                return SecurityCommandResult(terminationStatus: 0, stdout: "???\n")
+            }
+            return try healthy.runner.run(path, args)
+        }
+        let gathered = StaticAttestationFacts.gather(runner: unparseable)
+        #expect(!gathered.facts.sipEnabled)
+        #expect(!gathered.definitive)
+    }
 }

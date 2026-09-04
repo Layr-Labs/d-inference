@@ -75,6 +75,19 @@ public enum SIPStatus: Sendable, Equatable {
             return false
         }
     }
+
+    /// The probe ran and parsed to a known state. `.unavailable` (spawn or
+    /// exit failure) and `.unrecognized` (unparseable output) read as "not
+    /// enabled" on the wire but prove nothing about the box, so a posture
+    /// cache must never pin them (`StaticAttestationFacts.gather`).
+    public var isDefinitive: Bool {
+        switch self {
+        case .enabled, .enabledWithCustomConfiguration, .disabled:
+            return true
+        case .unavailable, .unrecognized:
+            return false
+        }
+    }
 }
 
 public enum SIPStatusParser {

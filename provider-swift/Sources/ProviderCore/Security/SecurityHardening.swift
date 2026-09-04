@@ -57,6 +57,13 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 /// Custom Configuration) while local posture warns unless protection is full;
 /// coordinator MDM remains authoritative for trust.
 public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
+    sipStatusPosture(runner: runner).reportsEnabled
+}
+
+/// The SIP status with its verdict logged — shared by the boolean check and
+/// `StaticAttestationFacts.gather`, which also needs the enum itself to tell
+/// a definitive reading from a failed probe (both report "not enabled").
+func sipStatusPosture(runner: SecurityCommandRunner) -> SIPStatus {
     let status = SIPStatusChecker(runner: runner).status()
     switch status {
     case .enabled:
@@ -70,7 +77,7 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     case .unrecognized:
         logger.error("SIP check: could not interpret csrutil output")
     }
-    return status.reportsEnabled
+    return status
 }
 
 // MARK: - RDMA Check

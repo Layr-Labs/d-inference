@@ -184,15 +184,29 @@ public final class AttestationBuilder: @unchecked Sendable {
     /// `csrutil authenticated-root` spawn) and ≈0.1 s inline on the serial
     /// event loop for every 5-minute challenge. Only timestamp, encryption
     /// key and signature must be fresh, and they still are.
+    ///
+    /// Only a DEFINITIVE gather is cached. Every probe maps its own failure
+    /// to the negative posture (a `csrutil` spawn refused under load reads
+    /// as sip=false / authenticated-root=false), and the coordinator
+    /// hard-untrusts on those fields; pinning one such reading for the
+    /// process would leave the provider unroutable until a daemon restart.
+    /// A non-definitive gather is reported once — exactly what a failed
+    /// probe cost before the cache — and the next registration or
+    /// challenge probes again and heals.
     public func staticFacts() -> StaticAttestationFacts {
         factsLock.lock()
         defer { factsLock.unlock() }
         if let cachedFacts { return cachedFacts }
         // Gathered under the lock: a concurrent first caller waits rather
         // than spawning the probes a second time.
-        let facts = StaticAttestationFacts.gather(runner: runner)
-        cachedFacts = facts
-        return facts
+        let gathered = StaticAttestationFacts.gather(runner: runner)
+        if gathered.definitive {
+            cachedFacts = gathered.facts
+        } else {
+            logger.warning(
+                "attestation posture probe did not complete (transient tool failure) — reporting it uncached; the next challenge re-probes")
+        }
+        return gathered.facts
     }
 
     /// Build an attestation blob from the current system state and sign it.
@@ -421,20 +435,52 @@ public struct StaticAttestationFacts: Sendable, Equatable {
     }
 
     /// Probe every fact once through `runner`.
-    static func gather(runner: SecurityCommandRunner) -> StaticAttestationFacts {
-        StaticAttestationFacts(
-            authenticatedRootEnabled: checkAuthenticatedRootEnabled(runner: runner),
-            chipName: detectChipName(runner: runner),
+    ///
+    /// `definitive` is false when any probe failed in a way that says
+    /// nothing about the box: an installed tool whose spawn threw
+    /// (`posix_spawn` EAGAIN/ENOMEM, `Pipe()` EMFILE under load), a
+    /// non-zero exit, or `csrutil status` output that parsed to no known
+    /// state. Each of those reads as the NEGATIVE posture (sip=false,
+    /// authenticated-root=false, rdma unknown), which is the pre-cache
+    /// behaviour for one report but must not be cached for the process
+    /// (`AttestationBuilder.staticFacts`). A tool that is not installed at
+    /// all (`rdma_ctl` before macOS 26.2) is a boot-immutable fact and
+    /// keeps the gather definitive.
+    static func gather(runner: SecurityCommandRunner) -> (facts: StaticAttestationFacts, definitive: Bool) {
+        let outcomes = ProbeOutcomes()
+        let recording = SecurityCommandRunner { path, arguments in
+            do {
+                let result = try runner.run(path, arguments)
+                if result.terminationStatus != 0 { outcomes.markTransientFailure() }
+                return result
+            } catch {
+                if FileManager.default.fileExists(atPath: path) { outcomes.markTransientFailure() }
+                throw error
+            }
+        }
+        let sipStatus = sipStatusPosture(runner: recording)
+        let facts = StaticAttestationFacts(
+            authenticatedRootEnabled: checkAuthenticatedRootEnabled(runner: recording),
+            chipName: detectChipName(runner: recording),
             hardwareModel: detectHardwareModel(),
             osVersion: detectOSVersion(),
-            rdmaDisabled: checkRDMADisabled(runner: runner),
-            serialNumber: detectSerialNumber(runner: runner),
-            sipEnabled: checkSIPEnabled(runner: runner),
+            rdmaDisabled: checkRDMADisabled(runner: recording),
+            serialNumber: detectSerialNumber(runner: recording),
+            sipEnabled: sipStatus.reportsEnabled,
             // Via a file-scope helper: the struct's own `systemVolumeHash`
             // member shadows the free function inside this scope.
-            systemVolumeHash: probeSystemVolumeHash(runner: runner),
+            systemVolumeHash: probeSystemVolumeHash(runner: recording),
             secureEnclaveAvailable: SecureEnclave.isAvailable)
+        return (facts, !outcomes.sawTransientFailure && sipStatus.isDefinitive)
     }
+}
+
+/// Records whether any probe of one `gather` failed transiently.
+private final class ProbeOutcomes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failed = false
+    func markTransientFailure() { lock.withLock { failed = true } }
+    var sawTransientFailure: Bool { lock.withLock { failed } }
 }
 
 /// File-scope forwarder so `StaticAttestationFacts.gather` can reach the

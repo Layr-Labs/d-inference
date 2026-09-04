@@ -427,6 +427,11 @@ extension ProviderLoop {
     ) async {
         guard !shutdownDrainStarted else { return }
         shutdownDrainStarted = true
+        // Process-global, before any suspension: the signal trap's
+        // escalation reads it to tell "draining" from "the loop actor is
+        // wedged and this never ran" (then it exits instead of lingering
+        // until launchd's SIGKILL while heartbeats keep attracting work).
+        GracefulShutdownProgress.markDrainStarted()
         // `shutdownDrainBound`: the graceful bound, clamped to the launchd
         // job's effective ExitTimeOut on boxes that never re-ran `start`.
         let drainTimeout = drainTimeout ?? shutdownDrainBound

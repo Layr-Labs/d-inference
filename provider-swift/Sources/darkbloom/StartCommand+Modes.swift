@@ -335,7 +335,7 @@ extension Start {
         )
 
         do {
-            try await runUntilTerminationSignal {
+            try await Self.runUntilTerminationSignal {
                 if let schedule {
                     try await runScheduled(
                         loopConfig: loopConfig, schedule: schedule,
@@ -475,14 +475,22 @@ extension Start {
     /// every in-flight request became a 502 "provider disconnected" on the
     /// coordinator. The trap cancels the serve task instead, which is
     /// `ProviderLoop.run()`'s refuse → drain → close path; launchd's
-    /// `ExitTimeOut` (set by `LaunchAgent` to the drain bound) and a second
-    /// signal (see `ShutdownSignalTrap`) remain the hard stops.
-    private func runUntilTerminationSignal(
+    /// `ExitTimeOut` (set by `LaunchAgent` past the drain bound), the trap's
+    /// escalation (a wedged loop actor never starts the drain — see
+    /// `ShutdownSignalTrap.Escalation`) and a second signal remain the hard
+    /// stops. Static, with the escalation injectable, so the CLI tests can
+    /// drive it with a fake serve closure and a real signal.
+    static func runUntilTerminationSignal(
+        escalation: ShutdownSignalTrap.Escalation = .production,
         _ serve: @escaping @Sendable () async throws -> Void
     ) async throws {
+        // Whatever ends the group, the serve task has returned: the drain
+        // (if any) is done and the process is on its way out — a pending
+        // escalation must not cut the tail (telemetry flush) short.
+        defer { ShutdownSignalTrap.disarmEscalation() }
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask { try await serve() }
-            group.addTask { await ShutdownSignalTrap.waitForTermination() }
+            group.addTask { await ShutdownSignalTrap.waitForTermination(escalation: escalation) }
             // Whichever finishes first ends the other: a signal cancels the
             // serve task; a serve exit releases the trap.
             do {

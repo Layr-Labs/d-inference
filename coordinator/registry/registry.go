@@ -2510,8 +2510,8 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
-	r.lockWrite("dispatch_load_cooldown")
-	defer r.mu.Unlock()
+	hold := r.lockWrite("dispatch_load_cooldown")
+	defer hold.unlock()
 	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
 }
 
@@ -5176,7 +5176,7 @@ func (r *Registry) SetHardUntrustHook(fn func(seKey string)) {
 // the acquisition waited. The api layer turns it into the
 // registry.mu.write_wait_ms histogram tagged by site, which measures the
 // write-lock convoy directly instead of inferring it from goroutine dumps.
-// The observer runs with the lock held, so it must be cheap. Set once at
+// The observer runs after the lock is released (see writeHold). Set once at
 // startup; nil clears it. Thread-safe.
 func (r *Registry) SetLockWaitObserver(fn func(site string, wait time.Duration)) {
 	if fn == nil {
@@ -5186,19 +5186,38 @@ func (r *Registry) SetLockWaitObserver(fn func(site string, wait time.Duration))
 	r.lockWaitObserver.Store(&fn)
 }
 
+// writeHold is an acquired request-path write lock. unlock releases r.mu
+// and only then reports the acquisition wait to the observer, so the
+// observer (a DogStatsD histogram in the api layer) never runs inside the
+// critical section of the busiest lock in the process.
+type writeHold struct {
+	r    *Registry
+	site string
+	wait time.Duration
+	obs  *func(site string, wait time.Duration)
+}
+
 // lockWrite is r.mu.Lock() for the request-path recorders (commit, capacity
 // accept/reject, error cooldown, breaker, health ejection, dispatch-load
-// cooldown), reporting the acquisition wait to the observer registered with
-// SetLockWaitObserver. Callers still unlock r.mu themselves.
-func (r *Registry) lockWrite(site string) {
+// cooldown). With no observer registered it costs one atomic load; with one,
+// it measures the acquisition wait for the returned hold to report on unlock.
+func (r *Registry) lockWrite(site string) writeHold {
 	obs := r.lockWaitObserver.Load()
 	if obs == nil {
 		r.mu.Lock()
-		return
+		return writeHold{r: r}
 	}
 	start := time.Now()
 	r.mu.Lock()
-	(*obs)(site, time.Since(start))
+	return writeHold{r: r, site: site, wait: time.Since(start), obs: obs}
+}
+
+// unlock releases the write lock and reports the wait recorded by lockWrite.
+func (h writeHold) unlock() {
+	h.r.mu.Unlock()
+	if h.obs != nil {
+		(*h.obs)(h.site, h.wait)
+	}
 }
 
 // SetRuntimeCapabilitiesPromotedHook registers the API-layer fanout invoked

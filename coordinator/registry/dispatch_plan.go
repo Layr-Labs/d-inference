@@ -396,8 +396,8 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
 
 	var skips []PlanSkip
-	r.lockWrite("commit_plan")
-	defer r.mu.Unlock()
+	hold := r.lockWrite("commit_plan")
+	defer hold.unlock()
 
 	// tryReserve runs the full CURRENT gate chain against one identity-checked
 	// entry and, on success, commits the reservation. Failure appends the

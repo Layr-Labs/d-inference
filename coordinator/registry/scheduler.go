@@ -632,8 +632,8 @@ func (r *Registry) commitProviderReservation(
 	scan providerReservationScan,
 	excludeIDs ...string,
 ) (*Provider, *routingCandidate, reservationCommitOutcome, RoutingDecision) {
-	r.lockWrite("commit")
-	defer r.mu.Unlock()
+	hold := r.lockWrite("commit")
+	defer hold.unlock()
 
 	// The shared scan and write-lock wait consume the same absolute request
 	// clock as queueing and provider handoff. Never debit capacity for work whose

@@ -243,8 +243,8 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	r.lockWrite("capacity_reject")
-	defer r.mu.Unlock()
+	hold := r.lockWrite("capacity_reject")
+	defer hold.unlock()
 	now := time.Now()
 
 	// Gray-box trackers ride the SAME classified entry point but have their own
@@ -418,7 +418,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 			return false
 		}
 	}
-	r.lockWrite("capacity_accept")
+	hold := r.lockWrite("capacity_accept")
 	now := time.Now()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)
@@ -445,7 +445,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 		delete(r.healthEjectionTrips, key.ProviderID)
 		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
-	r.mu.Unlock()
+	hold.unlock()
 	return rateOutcomeRecorded
 }
 

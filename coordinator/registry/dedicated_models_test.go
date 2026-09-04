@@ -260,11 +260,19 @@ func TestDedicatedWarmPoolSkipsMixedBox(t *testing.T) {
 		_, ok := reg.warmPoolCandidateLocked(p, gemmaBuild, now)
 		return ok
 	}
+	// loadCand asks the swap planner's picker (bestModelLoadProviderLocked)
+	// whether it would target p, with every other provider pre-selected so
+	// only p can win.
 	loadCand := func(p *Provider) bool {
 		reg.mu.RLock()
 		defer reg.mu.RUnlock()
-		_, ok := reg.modelLoadCandidatePendingLocked(p, gemmaBuild, now)
-		return ok
+		selected := make(map[string]struct{})
+		for id := range reg.providers {
+			if id != p.ID {
+				selected[id] = struct{}{}
+			}
+		}
+		return reg.bestModelLoadProviderLocked(gemmaBuild, now, selected) == p.ID
 	}
 
 	// Baseline: with the rule OFF, the mixed box is a valid warm/load target.

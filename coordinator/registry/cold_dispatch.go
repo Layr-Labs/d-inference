@@ -110,12 +110,14 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		}
 	}
 
-	// Idle enough to evict+load. Mirror TriggerModelSwaps' planner gate EXACTLY
-	// (coordinator pending AND backend slot busy — warm_pool_controller.go:499);
-	// otherwise a provider with an empty coordinator-pending map but a running/
-	// waiting backend slot passes here, the request is enqueued, and the planner
-	// then refuses to load it — so it just waits out the 120s queue timeout
-	// instead of failing fast (Codex #3).
+	// Idle enough to evict+load. Mirror the shared load-target gate EXACTLY
+	// (warmPoolCandidateReasonLocked: coordinator pending AND backend slot
+	// busy), which both the warm-pool tick and TriggerModelSwaps'
+	// bestModelLoadProviderLocked apply; otherwise a provider with an empty
+	// coordinator-pending map but a running/waiting backend slot passes here,
+	// the request is enqueued, and the planner then refuses to load it — so
+	// it just waits out the 120s queue timeout instead of failing fast
+	// (Codex #3).
 	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {
 		return false
 	}
@@ -129,7 +131,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 		}
 		// Live free-capacity gate (shared helper): keep cold-spill in sync with the
 		// load planner. If the provider reports it cannot fit this model, don't spill
-		// the request into its queue — the planner (modelLoadCandidatePendingLocked)
+		// the request into its queue — the planner (warmPoolCandidateReasonLocked)
 		// would refuse the load and the request would wait out the 120s queue timeout
 		// instead of failing fast (#390).
 		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {

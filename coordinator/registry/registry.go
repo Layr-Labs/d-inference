@@ -4600,82 +4600,40 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 	return false
 }
 
-// bestModelLoadProviderLocked selects the eligible provider with the fewest
-// pending requests. Caller must hold r.mu (read or write).
+// bestModelLoadProviderLocked selects the load_model target for model: the
+// highest-scored provider that passes the warm-pool candidate gate
+// (warmPoolCandidateReasonLocked — liveness/trust/privacy, catalog membership
+// and dedicated-box isolation, no pending load or dispatch-load cooldown, idle
+// on BOTH the coordinator pending ledger and the backend slots, not
+// thermal-critical, static fit, reported free-for-load). The warm-pool tick
+// and the cold-spill predicate (cold_dispatch.go) use the same gate, so the
+// three planners agree on WHO is loadable: the old picker took the first
+// provider in index order with pendingCount()==0 and never looked at backend
+// slot occupancy, thermal state or the dispatch-load cooldown, so it could
+// send load_model to a box that then failed it ("active slot cannot be
+// evicted") and put the pair into a 30 s–2 min cooldown. Ties keep the first
+// provider in index order, so the pick is deterministic. Caller must hold
+// r.mu (read or write).
 func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
 	bestProviderID := ""
-	// Only advertisers qualify (modelLoadCandidatePendingLocked requires
-	// providerServesRoutableModelLocked), so the per-model index prunes the
-	// walk losslessly (model_index.go).
+	bestScore := 0.0
+	// Only advertisers qualify (the gate requires providerServesCatalogModelLocked),
+	// so the per-model index prunes the walk losslessly (model_index.go).
 	for _, p := range r.providersForModelLocked(model) {
-		id := p.ID
-		if _, selected := selectedProviders[id]; selected {
+		if _, selected := selectedProviders[p.ID]; selected {
 			continue
 		}
-		// Skip providers that have any pending model load -- sending a
-		// second load_model while the first is in progress can cause
-		// swap oscillation on single-slot providers.
-		if r.providerHasPendingLoad(id) {
+		p.mu.Lock()
+		candidate, reason := r.warmPoolCandidateReasonLocked(p, model, now)
+		p.mu.Unlock()
+		if reason != warmColdEligible {
 			continue
 		}
-
-		pendingCount, ok := r.modelLoadCandidatePendingLocked(p, model, now)
-		if !ok {
-			continue
-		}
-		// Only consider idle providers (no in-flight requests). Sending
-		// load_model to a provider that is actively serving another model
-		// will fail because the active slot cannot be evicted.
-		if pendingCount == 0 {
-			bestProviderID = id
-			break
+		if bestProviderID == "" || candidate.score > bestScore {
+			bestProviderID, bestScore = p.ID, candidate.score
 		}
 	}
 	return bestProviderID
-}
-
-// modelLoadCandidatePendingLocked applies the same routing safety gates used by
-// the scheduler, then returns the provider's current pending request count.
-// Caller must hold r.mu (read or write).
-func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, now time.Time) (int, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Liveness/trust/privacy core + catalog membership + dedicated-box
-	// isolation, with NO owner relaxation: this is a public load_model target
-	// picker, so private-only machines never qualify and a dedicated-family
-	// model (e.g. Gemma 4) may only be loaded onto a provider dedicated to it,
-	// never a mixed-catalog box (routing would never use it). Mirrors
-	// providerHasWarmModelLocked.
-	if !r.providerLivenessGateLocked(p, r.MinTrustLevel, false, now) {
-		return 0, false
-	}
-	if !r.providerServesRoutableModelLocked(p, model, false) {
-		return 0, false
-	}
-
-	// Memory gate: reject providers that cannot run the model per the catalog's
-	// authoritative min_ram_gb (falling back to the weight heuristic only when
-	// unknown). Shares modelFitsHardware with the consumer-routing admission
-	// gate so the two can never drift. This prevents the coordinator from
-	// sending load_model commands to machines that clearly cannot fit it, while
-	// trusting the operator-published requirement rather than a synthetic
-	// multiple that would exclude catalog-qualified nodes.
-	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
-		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
-			return 0, false
-		}
-		// Live free-capacity gate (shared helper with the direct path): don't plan
-		// a load the provider already reports it cannot fit. Mirrors freeMemoryAdmits
-		// so the warming planner can't send a load_model the provider then
-		// OOM-rejects, which would leave queued cold-dispatch requests sitting until
-		// they time out. Legacy providers (no report) fall through to the static gate.
-		if admit, reported := reportedFreeForLoadAdmits(entry.SizeGB, backendFreeForLoadGB(p.BackendCapacity), p.Version, model); reported && !admit {
-			return 0, false
-		}
-	}
-
-	return p.pendingCount(), true
 }
 
 func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.Time) []modelLoadAction {

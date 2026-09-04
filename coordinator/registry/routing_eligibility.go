@@ -12,7 +12,8 @@ import "time"
 //   - publiclyRoutableLocked             (registry.go)  — public capacity feeds
 //   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
 //
-// (plus modelLoadCandidatePendingLocked, the load planner). They share two
+// (the load planner's picker, bestModelLoadProviderLocked, selects through
+// warmPoolCandidateReasonLocked). They share two
 // exactly-identical sub-pipelines — the liveness/trust/privacy core and the
 // catalog+dedicated model gate — extracted here so the shared decision cannot
 // drift. The function-specific gates (dispatch / inference-error cooldowns, the

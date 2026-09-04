@@ -17,8 +17,9 @@ import (
 //   - publiclyRoutableLocked             (registry.go)  — capacity feeds
 //   - warmPoolCandidateReasonLocked      (warm_pool_controller.go) — warming
 //
-// plus modelLoadCandidatePendingLocked (registry.go), which shares the same
-// liveness/trust/privacy core and is also folded onto the shared helper.
+// plus the swap planner's picker bestModelLoadProviderLocked (registry.go),
+// which selects through warmPoolCandidateReasonLocked and so inherits its
+// backend-busy / thermal / dispatch-load-cooldown gates.
 //
 // These tests pin the EXACT current decision of every gate across a matrix of
 // provider states, INCLUDING the intentional differences between them (the
@@ -40,12 +41,12 @@ type gateOutcomes struct {
 	hasWarm            bool // providerHasWarmModelLocked
 	publiclyRoutable   bool // publiclyRoutableLocked (model-agnostic)
 	warmReason         warmColdReason
-	modelLoadCand      bool // modelLoadCandidatePendingLocked ok
+	modelLoadCand      bool // bestModelLoadProviderLocked would pick p
 }
 
 // collectGateOutcomes evaluates every gate function under the correct lock
-// discipline. modelLoadCandidatePendingLocked takes p.mu itself, so it is
-// called after releasing the provider lock.
+// discipline. bestModelLoadProviderLocked takes p.mu itself, so it is called
+// after releasing the provider lock.
 func collectGateOutcomes(reg *Registry, p *Provider, model string, now time.Time) gateOutcomes {
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
@@ -62,7 +63,7 @@ func collectGateOutcomes(reg *Registry, p *Provider, model string, now time.Time
 	_, out.warmReason = reg.warmPoolCandidateReasonLocked(p, model, now)
 	p.mu.Unlock()
 
-	_, out.modelLoadCand = reg.modelLoadCandidatePendingLocked(p, model, now)
+	out.modelLoadCand = reg.bestModelLoadProviderLocked(model, now, map[string]struct{}{}) == p.ID
 	return out
 }
 
@@ -227,13 +228,14 @@ func TestRoutingGateCharacterization(t *testing.T) {
 					p.BackendCapacity.Slots[0].NumRunning = 1
 				}), gateCharModel
 			},
-			// A busy backend slot only disqualifies the warm pool (it picks idle
-			// boxes); every other gate is unaffected and the slot is still warm.
+			// A busy backend slot disqualifies the warm pool AND the swap
+			// planner's picker (both select idle boxes through the same gate);
+			// every other gate is unaffected and the slot is still warm.
 			want: gateOutcomes{
 				routingGates: true, routingGatesSelf: true, routingGatesBypass: true,
 				canRoutePublic: true, canRouteRelaxed: true,
 				hasWarm: true, publiclyRoutable: true,
-				warmReason: warmColdNotIdle, modelLoadCand: true,
+				warmReason: warmColdNotIdle, modelLoadCand: false,
 			},
 		},
 		{

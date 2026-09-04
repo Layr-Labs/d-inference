@@ -221,7 +221,8 @@ func TestFreeMemoryAdmitsColdLoadNormalizesCatalogSize(t *testing.T) {
 	}
 }
 
-// The cold-load *planner* (modelLoadCandidatePendingLocked, used by warm-pool /
+// The cold-load *planner* (bestModelLoadProviderLocked via the shared
+// warmPoolCandidateReasonLocked gate, used by TriggerModelSwaps / warm-pool /
 // queue-before-shed) must also respect free_for_load_gb, so it never sends a
 // load_model the direct gate would reject (Codex #390 P2). Mirrors the direct path.
 func TestModelLoadCandidateRespectsFreeForLoad(t *testing.T) {
@@ -242,20 +243,26 @@ func TestModelLoadCandidateRespectsFreeForLoad(t *testing.T) {
 		p.mu.Unlock()
 	}
 
+	plannerPicks := func() bool {
+		reg.mu.RLock()
+		defer reg.mu.RUnlock()
+		return reg.bestModelLoadProviderLocked(model, now, map[string]struct{}{}) == p.ID
+	}
+
 	low := 9.0
 	setFFL(&low)
-	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); ok {
+	if plannerPicks() {
 		t.Fatal("planner must reject a 14GB model when the provider reports 9GB free-for-load")
 	}
 
 	high := 20.0
 	setFFL(&high)
-	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+	if !plannerPicks() {
 		t.Fatal("planner must accept a 14GB model when the provider reports 20GB free-for-load")
 	}
 
 	setFFL(nil) // legacy provider → fall back to the static hardware gate (64GB box)
-	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+	if !plannerPicks() {
 		t.Fatal("legacy provider (no free-for-load) must fall back to the static hardware gate")
 	}
 }

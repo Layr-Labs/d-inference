@@ -91,11 +91,15 @@ private func tempInstallRoot() throws -> URL {
 @Suite("Update pipeline hygiene (T1-09)")
 struct UpdatePipelineHygieneTests {
 
-    @Test("the daemon's updater carries the watchdog bounds; the CLI's keeps .shared")
+    @Test("the daemon's updater is bounded (30 s idle, a transfer bound sized for the bundle); the CLI's keeps .shared")
     func daemonUpdaterIsBounded() {
         let daemon = SelfUpdater.forDaemon(coordinatorBaseURL: "https://coordinator.test")
         #expect(daemon.requestTimeoutSeconds == SelfUpdater.watchdogRequestTimeoutSeconds)
-        #expect(daemon.resourceTimeoutSeconds == SelfUpdater.watchdogResourceTimeoutSeconds)
+        #expect(daemon.resourceTimeoutSeconds == SelfUpdater.daemonResourceTimeoutSeconds)
+        // ~170 MB must fit a ~1 Mbit/s link; the watchdog's 600 s did not.
+        #expect(daemon.resourceTimeoutSeconds >= 1500)
+        #expect(daemon.resourceTimeoutSeconds > SelfUpdater.watchdogResourceTimeoutSeconds)
+        #expect(daemon.resourceTimeoutSeconds < URLSession.shared.configuration.timeoutIntervalForResource)
         #expect(daemon.verifiesCodeSignatures)
 
         let cli = SelfUpdater(coordinatorBaseURL: "https://coordinator.test")

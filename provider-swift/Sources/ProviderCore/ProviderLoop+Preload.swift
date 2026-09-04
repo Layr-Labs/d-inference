@@ -40,15 +40,12 @@ extension ProviderLoop {
                     eligibility: eligibility).localizedDescription))
             return
         }
-        if isShuttingDown {
-            send.send(.loadModelStatus(
-                modelId: modelId,
-                status: .failed,
-                error: "provider is shutting down"
-            ))
-            return
-        }
-        if isDrainingForUpdate {
+        // Both drains answer with a "draining" reason: the coordinator's
+        // load-failure classifier buckets on that word (a shutdown drain
+        // keeps the socket up for the drain window, so the warm-pool planner
+        // can still send load_model here), and anything else it books as a
+        // real warm-pool load failure with a memory backoff.
+        if isShuttingDown || isDrainingForUpdate {
             sendDrainingLoadModelFailure(modelId: modelId, send: send)
             return
         }

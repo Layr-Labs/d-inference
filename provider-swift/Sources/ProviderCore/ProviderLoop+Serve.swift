@@ -392,7 +392,7 @@ extension ProviderLoop {
             handleLoadModelRequest(modelId: modelId, send: send)
 
         case .prefetchModel(let modelId, let priority):
-            if isDrainingForUpdate {
+            if isDrainingForUpdate || isShuttingDown {
                 sendDrainingPrefetchFailure(modelId: modelId, send: send)
             } else {
                 staleDesiredPrefetches.remove(modelId)

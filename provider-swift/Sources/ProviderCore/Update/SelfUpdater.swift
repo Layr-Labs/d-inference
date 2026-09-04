@@ -127,12 +127,25 @@ public struct SelfUpdater: Sendable {
         return URLSession(configuration: configuration)
     }
 
+    /// Whole-transfer bound for the serving daemon's background download.
+    /// Sized for the ~170 MB bundle on a slow residential uplink (~1 Mbit/s
+    /// sustained), not for the watchdog's recovery tick: at the watchdog's
+    /// 600 s any link under ~2.3 Mbit/s failed EVERY background download,
+    /// retried every 30 min forever while holding the cross-process update
+    /// lease for its whole attempt. The per-request idle bound stays at the
+    /// watchdog's 30 s, so a stalled transfer still fails fast.
+    public static let daemonResourceTimeoutSeconds: TimeInterval = 1800
+
     /// The updater for the serving daemon (startup check and the background
     /// monitor): production signature verification, bounded network. The
     /// one-shot CLI (`darkbloom update`) keeps `.shared` — a human is watching
     /// it and can interrupt.
     public static func forDaemon(coordinatorBaseURL: String) -> SelfUpdater {
-        SelfUpdater(coordinatorBaseURL: coordinatorBaseURL, urlSession: watchdogURLSession())
+        SelfUpdater(
+            coordinatorBaseURL: coordinatorBaseURL,
+            urlSession: boundedURLSession(
+                requestTimeout: watchdogRequestTimeoutSeconds,
+                resourceTimeout: daemonResourceTimeoutSeconds))
     }
 
     /// Test seams: the bounds the injected session actually carries.

@@ -600,13 +600,15 @@ struct CoordinatorIntegrationTests {
         #expect(afterReconnect != nil, "no seq-1 heartbeat within 3 s of the re-register")
     }
 
-    /// Client-only ordering: the on-connect send burns seq 1 and the baseline
-    /// task's first send is seq 2 — one heartbeat per build, strictly
-    /// monotonic, no double-send. (In production a capacity tick landing
-    /// between the register and the on-connect send can emit seq 1 and 2
-    /// back-to-back; the coordinator only requires monotonic seq.)
-    @Test("the baseline heartbeat follows the on-connect heartbeat with the next seq")
-    func baselineHeartbeatFollowsWithNextSeq() async throws {
+    /// Client-only ordering: the on-connect send is exactly ONE heartbeat
+    /// (seq 1) — no double-send with the baseline task, whose first send is
+    /// a full interval away. With a 60 s interval the pre-fix client sends
+    /// nothing in the window and a double-sending client sends two; either
+    /// fails. (In production a capacity tick landing between the register
+    /// and the on-connect send can emit seq 1 and 2 back-to-back; the
+    /// coordinator only requires monotonic seq.)
+    @Test("the on-connect heartbeat is exactly one send with seq 1; the baseline does not double it")
+    func onConnectHeartbeatIsExactlyOne() async throws {
         let mock = MockCoordinator()
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
@@ -619,7 +621,7 @@ struct CoordinatorIntegrationTests {
         let coordinator = makeClient(
             url: baseURL.mockProviderWebSocketURL(),
             publicKey: keys.publicKeyBase64,
-            heartbeatInterval: 1,
+            heartbeatInterval: 60,
             state: state
         )
         let (events, _) = await coordinator.start()
@@ -629,10 +631,15 @@ struct CoordinatorIntegrationTests {
             Task { await coordinator.shutdown() }
         }
 
-        let two = try await mock.waitForSnapshot(timeout: .seconds(5)) { $0.heartbeats.count >= 2 }
-        let snap = try #require(two)
-        #expect(snap.heartbeats[0].backendCapacity?.capacitySeq == 1)
-        #expect(snap.heartbeats[1].backendCapacity?.capacitySeq == 2)
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let one = try await mock.waitForSnapshot(timeout: .seconds(5)) { !$0.heartbeats.isEmpty }
+        let snap = try #require(one, "no on-connect heartbeat")
+        #expect(snap.heartbeats.first?.backendCapacity?.capacitySeq == 1)
+        // Nothing else follows inside the interval: still exactly one.
+        try await Task.sleep(for: .seconds(2))
+        #expect(mock.snapshot().heartbeats.count == 1, "on-connect heartbeat was doubled")
+        #expect(mock.snapshot().heartbeats.first?.backendCapacity?.capacitySeq == 1)
     }
 
     /// First boot: nothing has been rebuilt yet, so the on-connect heartbeat

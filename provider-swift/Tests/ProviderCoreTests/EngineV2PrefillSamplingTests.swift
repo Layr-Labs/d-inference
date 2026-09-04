@@ -1349,8 +1349,15 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(engine.deadlineAdmissions.count == 1)
     }
 
-    @Test("a full batch fails open: the request waits under the engine's admission lease instead of a projected refusal")
-    func fullBatchFailsOpen() async throws {
+    @Test("a full batch is refused in milliseconds, never parked in the engine queue past its deadline")
+    func fullBatchIsRefusedNotParked() async throws {
+        // Review fix (S1 P1): the full-batch fail-open sent a deadline-bearing
+        // request down the ordinary submit path at a full batch, where it
+        // sat in the engine's waiting queue with nothing on the provider
+        // bounding that wait against its first-content expiry — the
+        // coordinator's absolute clock then ended it as an uptime-counting
+        // `first_chunk_timeout` instead of the health-neutral, rerouted
+        // `deadline_unreachable` the projected refusal produces.
         let engine = PrefillScriptEngine()
         let bridge = makeBridge(engine: engine, mode: .enforce, maxConcurrentRequests: 1)
         _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
@@ -1360,17 +1367,25 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let row = await holdOpenRow(bridge: bridge, engine: engine, requestId: "occupant")
         #expect(await bridge._testCounters().active == 1)
         let ordinaryBefore = engine.ordinarySubmissionCount
-        let queued = try await bridge.submitTokenized(
-            promptTokens: promptTokens,
-            request: request,
-            requestId: "queued-behind-full-batch",
-            firstContentDeadline: deadline())
-        #expect(engine.deadlineAdmissions.isEmpty)
-        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
-        try await finishLatestSubmission(queued, engine: engine)
+        // The batch is full (1/1): the arrival is PROJECTED — the engine's
+        // verdict decides, and here it refuses — not parked behind the
+        // occupant. Nothing entered the engine; the occupant is still the
+        // only row; the refusal counts toward the probe threshold.
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "refused-at-full-batch",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        }
+        #expect(engine.deadlineAdmissions.count == 1)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore)
+        #expect(await bridge._testActiveRequestIds() == ["occupant"])
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 1)
         await finishHeldRow(row)
 
-        // Batch has room again: projection resumes.
+        // Batch has room again: still projected (and, with this script,
+        // still refused) — the verdict never depended on the branch.
         await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
             _ = try await bridge.submitTokenized(
                 promptTokens: promptTokens,
@@ -1378,7 +1393,8 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                 requestId: "room-again",
                 firstContentDeadline: deadline())
         }
-        #expect(engine.deadlineAdmissions.count == 1)
+        #expect(engine.deadlineAdmissions.count == 2)
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore)
     }
 
     /// Record one decode-rate sample (three tokens across a 20 ms window)
@@ -1492,7 +1508,8 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(peerEngine.ordinarySubmissionCount == ordinaryBeforePeer)
         await finishHeldRow(peerRow)
 
-        // Full batch.
+        // Full batch (refused by projection, never a fail-open branch; the
+        // expired request is still rejected before projection is consulted).
         let fullEngine = PrefillScriptEngine()
         let fullBridge = makeBridge(engine: fullEngine, mode: .enforce, maxConcurrentRequests: 1)
         _ = try await measureColdPrefillRate(bridge: fullBridge, engine: fullEngine)

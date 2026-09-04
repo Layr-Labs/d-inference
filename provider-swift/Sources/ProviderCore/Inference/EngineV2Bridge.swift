@@ -1130,9 +1130,10 @@ public actor EngineV2Bridge {
                 // Projection fails open when mode is off, too few isolated
                 // samples exist, the refusal-driven probe is due, the engine
                 // would price a posture as `.unbounded` (decode rate unmeasured
-                // with rows running, a multimodal peer row, a full batch), or
-                // media makes token projection incomplete. Absolute expiry
-                // does not: it was checked immediately above.
+                // with rows running, a multimodal peer row), or media makes
+                // token projection incomplete. Absolute expiry does not: it
+                // was checked immediately above. A full batch is refused, not
+                // parked (see `firstTokenDeadlineAdmission`).
                 events = try engine.submit(engineRequest)
                 consecutiveDeadlineRefusals = 0
                 if let profile {
@@ -1272,10 +1273,20 @@ public actor EngineV2Bridge {
     /// - a posture the engine would price as `.unbounded` although it is not
     ///   a first-content fact about THIS request: the decode rate is still
     ///   unmeasured while rows are running (their decode phase cannot be
-    ///   priced), a running row carries media (its steps cannot be priced),
-    ///   or the batch is full (the projection then jumps by
-    ///   `count × min(maxTokens − generated)` — minutes for gpt-oss — and
-    ///   the request waits under the engine's own admission lease instead).
+    ///   priced), or a running row carries media (its steps cannot be
+    ///   priced).
+    ///
+    /// A FULL batch is deliberately NOT a fail-open posture. The engine
+    /// prices it as a bounded (if huge) projection and refuses in
+    /// milliseconds — a health-neutral `deadline_unreachable` the
+    /// coordinator reroutes inside the same budget. Admitting instead would
+    /// park the request in the engine's waiting queue with nothing on the
+    /// provider bounding that wait against its first-content expiry (the
+    /// engine admission lease is 120 s; the handler re-checks the deadline
+    /// only when a frame arrives, and a queued row produces none), so the
+    /// coordinator's absolute clock would end it as an uptime-counting
+    /// `first_chunk_timeout` — and every later deadline arrival on the slot
+    /// would follow it into the queue until the engine's queue bound.
     private func firstTokenDeadlineAdmission(
         deadline: FirstContentDeadline?,
         isMultimodal: Bool,
@@ -1316,10 +1327,6 @@ public actor EngineV2Bridge {
         }
         if active.values.contains(where: { $0.isMultimodal }) {
             logDeadlineFailOpen("multimodal_peer")
-            return nil
-        }
-        if active.count >= maxConcurrentRequests {
-            logDeadlineFailOpen("full_batch")
             return nil
         }
 

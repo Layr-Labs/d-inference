@@ -373,11 +373,13 @@ func (r *Registry) releaseBudgetClampsOnHeartbeat(providerID string, heartbeatAt
 		return
 	}
 	r.mu.Lock()
+	r.outcomeMu.Lock() // budgetClamps writers hold both (see Registry.outcomeMu)
 	now := time.Now()
 	for _, slot := range found {
 		rawRemaining := slot.ActiveTokenBudgetMax - slot.ActiveTokenBudgetUsed - slot.QueuedTokenBudget
 		r.dropInactiveBudgetClampSnapshotLocked(providerID, slot.Model, heartbeatAt, rawRemaining, slot.ActiveTokenBudgetMax > 0, now)
 	}
+	r.outcomeMu.Unlock()
 	r.mu.Unlock()
 }
 

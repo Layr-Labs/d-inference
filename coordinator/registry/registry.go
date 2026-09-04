@@ -2147,6 +2147,27 @@ type Registry struct {
 	// (lock_metrics.go); scanStats counts the fleet walks.
 	mu        registryMutex
 	scanStats scanCounters
+	// outcomeMu is the LEAF lock for the outcome windows the success-path
+	// recorders write on EVERY served request: providerOutcomes,
+	// healthEjectionWindows, healthEjectionCapacityStreaks and
+	// capacityRateAccepts. Those four maps are read and written under
+	// outcomeMu only. Lock order is mu -> Provider.mu -> outcomeMu; nothing
+	// acquires mu or a Provider.mu while holding outcomeMu.
+	//
+	// The rare fault maps (providerBreakerOpenUntil / providerBreakerTrips,
+	// healthEjectionUntil / Trips / LastTripCapacity, capacityRejectStrikes /
+	// capacityCooldowns / capacityCooldownTrips, budgetClamps) stay under mu
+	// for the routing scan, but every WRITE to them also holds outcomeMu
+	// (failure recorders, the accept's clear section, the heartbeat clamp
+	// release, identity migration, Disconnect). A success recorder can
+	// therefore record its outcome AND probe those maps under outcomeMu
+	// alone, upgrading to mu only when an entry to clear exists — so the
+	// three always-write recorders no longer queue behind reader batches on
+	// mu, and outcome order is exactly outcomeMu order: a trip serialized
+	// before a success is closed by it, one serialized after already
+	// accounted for it. See provider_breaker.go / health_ejection.go /
+	// capacity_cooldown.go.
+	outcomeMu sync.RWMutex
 	providers map[string]*Provider
 
 	queue *RequestQueue
@@ -5178,9 +5199,11 @@ func (r *Registry) Disconnect(id string) {
 		if sid := stableProviderIdentityLocked(p); sid != "" {
 			r.rememberDisconnectedStableIDLocked(id, sid)
 		} else {
+			r.outcomeMu.Lock()
 			delete(r.providerOutcomes, id)
 			delete(r.providerBreakerOpenUntil, id)
 			delete(r.providerBreakerTrips, id)
+			r.outcomeMu.Unlock()
 			for key := range r.inferenceErrorStrikes {
 				if key.ProviderID == id {
 					delete(r.inferenceErrorStrikes, key)

@@ -83,8 +83,10 @@ func loadCapacityRateConfig() capacityRateConfig {
 }
 
 // recordCapacityRateRejectLocked appends one capacity-503 outcome for the pair
-// and prunes the window. Caller holds the r.mu write lock (called from
-// RecordCapacityReject).
+// and prunes the window. Caller holds the r.mu write lock AND outcomeMu
+// (called from RecordCapacityReject): the reject window stays under r.mu so
+// the scan's rejects == 0 fast exit needs no leaf lock; the accept window it
+// prunes is leaf-locked.
 func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now time.Time) {
 	if r.capacityRateCfg.PenaltyMs <= 0 {
 		return
@@ -116,7 +118,8 @@ func (r *Registry) recordCapacityRateRejectLocked(key capacityRejectKey, now tim
 // The rate/penalty read paths still return zero while no reject is in-window, so
 // this healthy history is observationally dormant. Returns whether the accept
 // was stored so the api layer can stamp the request (MarkRateOutcomeCounted)
-// and prevent completion from double-counting it. Caller holds r.mu for write.
+// and prevent completion from double-counting it. Caller holds outcomeMu for
+// writing (the accept window is leaf-locked; see Registry.outcomeMu).
 func (r *Registry) recordCapacityRateAcceptLocked(key capacityRejectKey, now time.Time) (recorded bool) {
 	if r.capacityRateCfg.PenaltyMs <= 0 {
 		return false
@@ -185,7 +188,10 @@ func countInWindow(outcomes []time.Time, now time.Time) int {
 // holds at least capacityRateMinSample outcomes AND the rate exceeds
 // capacityRateThreshold; the rate is returned whenever computable so callers
 // can expose it for observability. READ-ONLY — callers hold r.mu in either
-// mode (buildCandidateWithReason runs under the selection locks).
+// mode (buildCandidateInto runs under the selection locks). The reject window
+// is read under r.mu, so the rejects == 0 fast exit — every healthy pair,
+// ~1,260 candidates per fleet scan — never touches the leaf lock; only a pair
+// with in-window rejects reads its accept window under outcomeMu.RLock.
 func (r *Registry) capacityRatePenaltyLocked(providerID, modelID string, now time.Time) (penaltyMs, rate float64) {
 	if r.capacityRateCfg.PenaltyMs <= 0 {
 		return 0, 0
@@ -195,7 +201,9 @@ func (r *Registry) capacityRatePenaltyLocked(providerID, modelID string, now tim
 	if rejects == 0 {
 		return 0, 0 // hot-path fast exit: healthy pairs pay nothing
 	}
+	r.outcomeMu.RLock()
 	accepts := countInWindow(r.capacityRateAccepts[key], now)
+	r.outcomeMu.RUnlock()
 	total := rejects + accepts
 	rate = float64(rejects) / float64(total)
 	if total < capacityRateMinSample || rate <= capacityRateThreshold {
@@ -215,7 +223,9 @@ func (r *Registry) CapacityRejectRate(providerID, modelID string) (rate float64,
 	if rejects == 0 {
 		return 0, 0
 	}
+	r.outcomeMu.RLock()
 	accepts := countInWindow(r.capacityRateAccepts[key], now)
+	r.outcomeMu.RUnlock()
 	total := rejects + accepts
 	if total == 0 {
 		return 0, 0

@@ -185,14 +185,34 @@ func (w *providerHealthWindow) windowStats(now time.Time, window time.Duration) 
 //   - Fault (COUNTED): 500/502/504 always; a 503 whose message indicates a real
 //     fault, and — by default — any 503 not recognized as a capacity shed.
 //   - Success (ok==true): clears the breaker if it had tripped.
+//
+// Locking: the SUCCESS path (every served request) records into the health
+// ring under the leaf outcomeMu only and takes r.mu for writing solely to
+// close a breaker that was open when the success was serialized. Healthy
+// sheds take no lock. The FAULT path holds r.mu and outcomeMu for its whole
+// section (it writes the open/trip maps the success path probes under
+// outcomeMu), and it alone runs the opportunistic map sweeps — an expired
+// open entry now lingers until the next fault rather than the next success,
+// which is harmless (providerBreakerOpenLocked compares against now).
 func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode int, errStr string) (opened bool, closed bool) {
 	if providerID == "" {
+		return false, false
+	}
+	now := time.Now()
+	if ok {
+		return false, r.recordProviderSuccess(providerID, now)
+	}
+	// FAILURE: ignore healthy sheds entirely — only genuine faults touch the
+	// ring / consecutive-fault counter, so a busy fleet (429 / capacity-503) can
+	// never be quarantined.
+	if !providerOutcomeIsFault(statusCode, errStr) {
 		return false, false
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
 	// Key by the stable fault key (serial/SE-key when bound, session id
 	// otherwise) so breaker state survives reconnect churn — a zombie that
 	// bounces its connection between faults must keep accumulating.
@@ -217,25 +237,6 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 		}
 	}
 
-	// SUCCESS: a served request proves the node is healthy. Record it, reset the
-	// consecutive-fault counter, and CLOSE the breaker (clearing the exponential
-	// backoff) if it had ever tripped — this is the auto-re-admit on recovery.
-	if ok {
-		r.providerHealthWindowLocked(providerID).record(true, now)
-		if _, had := r.providerBreakerOpenUntil[providerID]; had {
-			delete(r.providerBreakerOpenUntil, providerID)
-			delete(r.providerBreakerTrips, providerID)
-			return false, true
-		}
-		return false, false
-	}
-
-	// FAILURE: ignore healthy sheds entirely — only genuine faults touch the
-	// ring / consecutive-fault counter, so a busy fleet (429 / capacity-503) can
-	// never be quarantined.
-	if !providerOutcomeIsFault(statusCode, errStr) {
-		return false, false
-	}
 	w := r.providerHealthWindowLocked(providerID)
 	w.record(false, now)
 
@@ -265,8 +266,44 @@ func (r *Registry) RecordProviderOutcome(providerID string, ok bool, statusCode 
 	return true, false
 }
 
+// recordProviderSuccess is the served-path success: a served request proves
+// the node is healthy. It records into the ring (resetting the consecutive-
+// fault counter) under outcomeMu, probes the open map under the same lock —
+// every writer of that map holds outcomeMu, so the probe is serialized with
+// the trips — and only when the breaker was open at that instant takes r.mu
+// to CLOSE it (clearing the exponential backoff): the auto-re-admit on
+// recovery. A trip serialized after this success already saw it in the ring
+// and is left alone. The stable fault key is resolved under r.mu.RLock; a
+// rebind racing between that read and the record mis-keys one outcome, which
+// the next outcome under the new key corrects (bounded, harmless).
+func (r *Registry) recordProviderSuccess(providerID string, now time.Time) (closed bool) {
+	r.mu.RLock()
+	key := r.faultKeyLocked(providerID)
+	r.mu.RUnlock()
+
+	r.outcomeMu.Lock()
+	r.providerHealthWindowLocked(key).record(true, now)
+	_, open := r.providerBreakerOpenUntil[key]
+	r.outcomeMu.Unlock()
+	if !open {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
+	key = r.faultKeyLocked(providerID)
+	if _, had := r.providerBreakerOpenUntil[key]; !had {
+		return false
+	}
+	delete(r.providerBreakerOpenUntil, key)
+	delete(r.providerBreakerTrips, key)
+	return true
+}
+
 // providerHealthWindowLocked returns the provider's health ring, creating it on
-// first use. Caller holds r.mu.
+// first use. Caller holds outcomeMu for writing.
 func (r *Registry) providerHealthWindowLocked(providerID string) *providerHealthWindow {
 	w := r.providerOutcomes[providerID]
 	if w == nil {

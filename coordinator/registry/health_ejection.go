@@ -200,11 +200,15 @@ func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
 // take the max, timestamp histories merge chronologically (their bounded-map
 // sweeps use the tail as the newest entry), and health windows are merged in
 // timestamp order bounded by the ring size (providerHealthWindow.merge) so an
-// in-progress consecutive-fault streak survives the rebind. Caller holds r.mu.
+// in-progress consecutive-fault streak survives the rebind. Caller holds r.mu
+// for writing; outcomeMu is taken here for the whole migration since it moves
+// both the leaf-locked outcome windows and the rare fault maps.
 func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	if oldKey == "" || newKey == "" || oldKey == newKey {
 		return
 	}
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
 
 	// Dispatch-load cooldowns: struct keys per (fault key, model).
 	for k, expiry := range r.dispatchLoadCooldowns {
@@ -447,28 +451,31 @@ func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string
 //     can never trip;
 //   - everything else (client 4xx, request-shape context overflows,
 //     unattributed codes): neutral.
+//
+// Locking (see Registry.outcomeMu): the SUCCESS path records under the leaf
+// lock only and takes r.mu solely to lift an ejection that was open when the
+// success was serialized; neutral outcomes take no lock; the two failure
+// paths hold r.mu and outcomeMu for their whole section and alone run the
+// bounded sweep.
 func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
 	if stableID == "" || !healthEjectionEnabled() {
 		return false, false
 	}
+	now := time.Now()
+	if ok {
+		return false, r.recordServeSuccess(stableID, now)
+	}
+	fault := providerOutcomeIsFault(statusCode, errStr)
+	if !fault && !isNodeCapacityRejectStrike(statusCode, errStr) {
+		return false, false // neutral: client 4xx, request-shape overflow, unattributed
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
 	r.healthEjectionSweepLocked(now)
 
-	if ok {
-		r.healthEjectionWindowLocked(stableID).record(true, now)
-		delete(r.healthEjectionCapacityStreaks, stableID)
-		if _, had := r.healthEjectionUntil[stableID]; had {
-			delete(r.healthEjectionUntil, stableID)
-			delete(r.healthEjectionTrips, stableID)
-			delete(r.healthEjectionLastTripCapacity, stableID)
-			return false, true // half-open probe succeeded → recover
-		}
-		return false, false
-	}
-
-	if providerOutcomeIsFault(statusCode, errStr) {
+	if fault {
 		w := r.healthEjectionWindowLocked(stableID)
 		w.record(false, now)
 
@@ -489,35 +496,60 @@ func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCo
 		return true, false
 	}
 
-	if isNodeCapacityRejectStrike(statusCode, errStr) {
-		s := r.healthEjectionCapacityStreaks[stableID]
-		if s.n > 0 && now.Sub(s.last) > healthEjectionWindow {
-			s.n = 0 // stale streak: never combine old strikes with a fresh blip
-		}
-		s.n++
-		s.last = now
-		r.healthEjectionCapacityStreaks[stableID] = s
-
-		if until, had := r.healthEjectionUntil[stableID]; had && now.Before(until) {
-			return false, false // already ejected; stragglers don't re-arm until cooldown
-		}
-		trips := r.healthEjectionTrips[stableID]
-		// Half-open instant re-arm applies ONLY when the previous trip was
-		// itself capacity-shaped (the black-hole probe failing again): a single
-		// capacity shed is legitimate for a healthy-but-full box and must not
-		// re-arm a FAULT ejection whose cooldown just expired — that identity
-		// needs the full zero-success streak like a fresh one.
-		capacityHalfOpen := trips > 0 && r.healthEjectionLastTripCapacity[stableID]
-		if !capacityHalfOpen && s.n < healthEjectionCapacityConsecTrip {
-			return false, false
-		}
-		r.healthEjectionUntil[stableID] = now.Add(healthEjectionBackoff(trips))
-		r.healthEjectionTrips[stableID] = trips + 1
-		r.healthEjectionLastTripCapacity[stableID] = true
-		return true, false
+	// Capacity-shaped strike.
+	s := r.healthEjectionCapacityStreaks[stableID]
+	if s.n > 0 && now.Sub(s.last) > healthEjectionWindow {
+		s.n = 0 // stale streak: never combine old strikes with a fresh blip
 	}
+	s.n++
+	s.last = now
+	r.healthEjectionCapacityStreaks[stableID] = s
 
-	return false, false
+	if until, had := r.healthEjectionUntil[stableID]; had && now.Before(until) {
+		return false, false // already ejected; stragglers don't re-arm until cooldown
+	}
+	trips := r.healthEjectionTrips[stableID]
+	// Half-open instant re-arm applies ONLY when the previous trip was
+	// itself capacity-shaped (the black-hole probe failing again): a single
+	// capacity shed is legitimate for a healthy-but-full box and must not
+	// re-arm a FAULT ejection whose cooldown just expired — that identity
+	// needs the full zero-success streak like a fresh one.
+	capacityHalfOpen := trips > 0 && r.healthEjectionLastTripCapacity[stableID]
+	if !capacityHalfOpen && s.n < healthEjectionCapacityConsecTrip {
+		return false, false
+	}
+	r.healthEjectionUntil[stableID] = now.Add(healthEjectionBackoff(trips))
+	r.healthEjectionTrips[stableID] = trips + 1
+	r.healthEjectionLastTripCapacity[stableID] = true
+	return true, false
+}
+
+// recordServeSuccess is the served-path success: record into the ring, clear
+// the capacity streak, and probe the ejection map — all under outcomeMu, so
+// the probe is serialized with the trips (every writer of the map holds
+// outcomeMu). Only when the identity was ejected at that instant is r.mu
+// taken to lift the ejection (the half-open probe succeeded → recover). No
+// fault-key resolution is needed here: the caller passes the stable id.
+func (r *Registry) recordServeSuccess(stableID string, now time.Time) (recovered bool) {
+	r.outcomeMu.Lock()
+	r.healthEjectionWindowLocked(stableID).record(true, now)
+	delete(r.healthEjectionCapacityStreaks, stableID)
+	_, ejected := r.healthEjectionUntil[stableID]
+	r.outcomeMu.Unlock()
+	if !ejected {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
+	if _, had := r.healthEjectionUntil[stableID]; !had {
+		return false
+	}
+	delete(r.healthEjectionUntil, stableID)
+	delete(r.healthEjectionTrips, stableID)
+	delete(r.healthEjectionLastTripCapacity, stableID)
+	return true
 }
 
 // healthEjectionOpenLocked reports whether routing should skip this stable
@@ -538,6 +570,8 @@ func (r *Registry) HealthEjectionOpen(stableID string) bool {
 	return r.healthEjectionOpenLocked(stableID, time.Now())
 }
 
+// healthEjectionWindowLocked returns the identity's ring, creating it on first
+// use. Caller holds outcomeMu for writing.
 func (r *Registry) healthEjectionWindowLocked(stableID string) *providerHealthWindow {
 	w := r.healthEjectionWindows[stableID]
 	if w == nil {
@@ -550,7 +584,9 @@ func (r *Registry) healthEjectionWindowLocked(stableID string) *providerHealthWi
 // healthEjectionSweepLocked bounds the maps. Stable ids persist across reconnects
 // by design, so only entries idle for longer than the window (no windowed
 // outcomes, no fresh capacity streak, not currently ejected) are reaped, once
-// the maps grow large.
+// the maps grow large. Caller holds r.mu and outcomeMu for writing (it deletes
+// from both the outcome windows and the ejection maps); it runs on the
+// failure paths only.
 func (r *Registry) healthEjectionSweepLocked(now time.Time) {
 	if len(r.healthEjectionWindows) > 2048 {
 		for id, w := range r.healthEjectionWindows {

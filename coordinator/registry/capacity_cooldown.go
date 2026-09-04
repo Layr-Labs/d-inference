@@ -245,6 +245,11 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// The reject path writes the rate window (leaf-locked) and the strike /
+	// cooldown / trip / clamp maps the accept path probes under outcomeMu, so
+	// it holds both for its whole section (see Registry.outcomeMu).
+	r.outcomeMu.Lock()
+	defer r.outcomeMu.Unlock()
 	now := time.Now()
 
 	// Gray-box trackers ride the SAME classified entry point but have their own
@@ -394,33 +399,42 @@ func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcome
 // that never commit content without double-counting streamed requests. The
 // cooldown/streak/clamp accept semantics below are identical for both values
 // (belt-and-braces accepts stay harmless there).
+//
+// Locking (see Registry.outcomeMu): the accept is recorded into the rate
+// window and the node capacity streak is cleared under the leaf lock, where
+// the rare maps (strikes, cooldown, trips, clamp, capacity-shaped last trip)
+// are probed in the same critical section — every writer of those maps holds
+// outcomeMu, so the probe is serialized with the rejects. Only when one of
+// them holds an entry is r.mu taken to clear it, so the common served-path
+// accept never queues behind a reader batch on Registry.mu.
 func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	// The rate config is immutable after Registry construction. An enabled
-	// offered outcome is the common path and already requires the write lock, so
-	// skip a redundant read-lock probe. Completion calls that already counted
-	// their rate outcome retain the old healthy fast path: use the read lock to
-	// avoid write acquisition when there is no cooldown/clamp state to clear.
-	shouldRecordRate := countRateOutcome && r.capacityRateCfg.PenaltyMs > 0
-	if !shouldRecordRate {
-		r.mu.RLock()
-		key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-		_, hasStrikes := r.capacityRejectStrikes[key]
-		_, hasCooldown := r.capacityCooldowns[key]
-		_, hasTrips := r.capacityCooldownTrips[key]
-		_, hasClamp := r.budgetClamps[key]
-		_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
-		capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
-		r.mu.RUnlock()
-		if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasNodeStreak && !capacityTripped {
-			return false
-		}
-	}
-	r.mu.Lock()
-	now := time.Now()
+	r.mu.RLock()
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+	r.mu.RUnlock()
+	now := time.Now()
+
+	r.outcomeMu.Lock()
+	if countRateOutcome {
+		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
+	}
+	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
+	_, hasStrikes := r.capacityRejectStrikes[key]
+	_, hasCooldown := r.capacityCooldowns[key]
+	_, hasTrips := r.capacityCooldownTrips[key]
+	_, hasClamp := r.budgetClamps[key]
+	capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
+	r.outcomeMu.Unlock()
+	if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !capacityTripped {
+		return rateOutcomeRecorded
+	}
+
+	r.mu.Lock()
+	r.outcomeMu.Lock()
+	// Re-resolve: the fault key may have been rebound since the probe.
+	key = capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	delete(r.capacityRejectStrikes, key)
 	delete(r.capacityCooldowns, key)
 	delete(r.capacityCooldownTrips, key)
@@ -437,14 +451,11 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 		r.noteBudgetClampAcceptLocked(key)
 		r.dropInactiveBudgetClampLocked(providerID, modelID, now)
 	}
-	if countRateOutcome {
-		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
-	}
-	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
 	if r.healthEjectionLastTripCapacity[key.ProviderID] {
 		delete(r.healthEjectionTrips, key.ProviderID)
 		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
+	r.outcomeMu.Unlock()
 	r.mu.Unlock()
 	return rateOutcomeRecorded
 }

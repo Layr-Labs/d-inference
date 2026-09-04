@@ -68,6 +68,10 @@ struct ModelLoadStageTelemetryLiveTests {
         let peakBefore = MLX.Memory.peakMemory
         try await loop.ensureModelLoaded(modelId: Self.gptossID)
         let report = try #require(await loop.loadStageReportForTesting(modelId: Self.gptossID))
+        // Surface the measured stages on stdout so a quiet re-run of this
+        // test IS the before/after measurement (the log line goes to the
+        // unified log, not the test output).
+        print("MODEL_LOAD_STAGES \(Self.gptossID): \(report.logSummary)")
 
         // Timing invariants: the heartbeat window covers container load +
         // engine build; every stage ran.

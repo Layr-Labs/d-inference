@@ -237,6 +237,7 @@ type Server struct {
 	mux                           *http.ServeMux
 	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
 	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
+	challengeResponseTimeout      time.Duration   // 0 means ChallengeResponseTimeout (testing only)
 	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
 	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)

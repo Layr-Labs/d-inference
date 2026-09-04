@@ -626,13 +626,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
+			// The pre-heartbeat snapshot is the baseline for the MLX reclaimer
+			// counter deltas (recordMLXCacheTelemetry); nil on the session's
+			// first heartbeat.
+			prevCapacity := provider.BackendCapacitySnapshot()
 			s.registry.Heartbeat(providerID, hbMsg)
 			// Emit only from the accepted registry snapshot: malformed values
 			// have been clamped and slot model IDs constrained to this
 			// connection's coordinator-known inventory.
 			capacity := provider.BackendCapacitySnapshot()
 			s.recordBackendWedgeTelemetry(capacity)
-			s.recordMLXCacheTelemetry(providerID, capacity)
+			s.recordMLXCacheTelemetry(provider, prevCapacity, capacity)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -1092,6 +1096,9 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 
 	// Wait for response with timeout.
 	timeout := ChallengeResponseTimeout
+	if s.challengeResponseTimeout > 0 {
+		timeout = s.challengeResponseTimeout
+	}
 	select {
 	case <-ctx.Done():
 		tracker.remove(nonce)
@@ -1100,14 +1107,35 @@ func (s *Server) sendChallenge(ctx context.Context, providerID string, provider 
 		tracker.remove(nonce)
 		if resp == nil {
 			// Channel closed without response
+			s.recordChallengeRTT(provider, pc, "timeout")
 			s.handleTransientChallengeFailure(provider.Conn, providerID, "no response")
 			return
 		}
-		s.verifyChallengeResponse(providerID, provider, pc, resp)
+		outcome := "invalid"
+		if s.verifyChallengeResponse(providerID, provider, pc, resp) {
+			outcome = "ok"
+		}
+		s.recordChallengeRTT(provider, pc, outcome)
 	case <-time.After(timeout):
 		tracker.remove(nonce)
+		s.recordChallengeRTT(provider, pc, "timeout")
 		s.handleTransientChallengeFailure(provider.Conn, providerID, "timeout")
 	}
+}
+
+// recordChallengeRTT publishes the challenge round trip once per challenge
+// outcome — sent-to-answered for ok/invalid, sent-to-deadline for timeout —
+// so challenge latency, the head-of-line wedge behind a cold model load and
+// reconnect-to-routable time become visible in prod (sendChallenge stamped
+// sentAt but never emitted the delta). Tagged with the bounded outcome and
+// the fenced provider version; never a provider id.
+func (s *Server) recordChallengeRTT(provider *registry.Provider, pc *pendingChallenge, outcome string) {
+	if pc == nil || pc.sentAt.IsZero() {
+		return
+	}
+	s.ddHistogram("attestation.challenge_rtt_ms",
+		float64(time.Since(pc.sentAt))/float64(time.Millisecond),
+		[]string{"outcome:" + outcome, "provider_version:" + providerVersionTag(provider)})
 }
 
 // handleAttestationResponse processes an attestation response from a provider.
@@ -1136,7 +1164,9 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 // In addition to verifying the nonce and signature, it checks the fresh
 // SIP status reported by the provider. If SIP has been disabled since
 // registration, the provider is marked untrusted immediately.
-func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) {
+// verifyChallengeResponse reports whether the challenge passed (every early
+// return is a failure that handleChallengeFailure has already recorded).
+func (s *Server) verifyChallengeResponse(providerID string, provider *registry.Provider, pc *pendingChallenge, resp *protocol.AttestationResponseMessage) (passed bool) {
 	provider.ClearApplicationEvidence()
 	defer provider.SignalApplicationProofSettled()
 	// Verify the nonce matches.
@@ -1591,6 +1621,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		provider.Mu().Unlock()
 		s.sendTrustStatus(provider, trustLevel, "online", "recovered after transient deroute")
 	}
+	passed = true
 	s.ddIncr("attestation.challenges", []string{"outcome:passed"})
 	s.logger.Info("attestation challenge verified",
 		"provider_id", providerID,
@@ -1657,6 +1688,7 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 			}
 		}
 	}
+	return passed
 }
 
 // verificationSubmitPriority classifies this connection's durable SecurityInfo

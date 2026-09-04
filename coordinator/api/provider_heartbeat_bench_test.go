@@ -137,16 +137,17 @@ func benchLocalStatsd(tb testing.TB) *datadog.Client {
 // providerReadLoop for a baseline heartbeat (no prefix-cache fields, so
 // UpdatePrefixCacheSnapshot is skipped exactly as in production).
 func runHeartbeatBranch(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+	prev := provider.BackendCapacitySnapshot()
 	s.registry.Heartbeat(providerID, hb)
-	runHeartbeatTail(ctx, s, providerID, provider, hb)
+	runHeartbeatTail(ctx, s, providerID, provider, hb, prev)
 }
 
 // runHeartbeatTail is the API-side tail after registry ingest, exactly as the
 // branch runs it today.
-func runHeartbeatTail(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+func runHeartbeatTail(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage, prev *protocol.BackendCapacity) {
 	capacity := provider.BackendCapacitySnapshot()
 	s.recordBackendWedgeTelemetry(capacity)
-	s.recordMLXCacheTelemetry(providerID, capacity)
+	s.recordMLXCacheTelemetry(provider, prev, capacity)
 	s.maybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
@@ -184,10 +185,11 @@ func BenchmarkHeartbeatBranchTelemetryOnly(b *testing.B) {
 	s, p := benchHeartbeatServer(b)
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
+	prev := p.BackendCapacitySnapshot()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb, prev)
 	}
 }
 
@@ -198,9 +200,10 @@ func BenchmarkHeartbeatBranchTelemetryOnlyStatsd(b *testing.B) {
 	s.SetDatadog(benchLocalStatsd(b))
 	hb := benchHeartbeatMessage()
 	ctx := context.Background()
+	prev := p.BackendCapacitySnapshot()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb, prev)
 	}
 }

@@ -341,9 +341,16 @@ Canonical wire definitions: `coordinator/protocol/messages.go:363-394` and
 | `last_reclaimed_bytes` | integer | Observed reduction around the latest reclaim |
 | `last_reclaim_duration_ms` | integer | Blocking synchronize + clear duration |
 
-The coordinator publishes these heartbeat values as Datadog gauges under
-`provider.mlx_memory.*` and `provider.mlx_cache.*`, tagged by `provider_id`
-(`coordinator/api/provider_mlx_cache_telemetry.go:13-32`).
+The coordinator publishes these heartbeat values to Datadog under
+`provider.mlx_memory.*` and `provider.mlx_cache.*`, tagged only by the bounded
+`chip_family` and `provider_version` (never a provider id — the per-session
+UUID tag minted a churning series per reconnect). Point-in-time values
+(`mlx_memory.{active,peak,cache}_gb`, `mlx_cache.limit_bytes`) are DogStatsD
+histograms (fleet distribution per tag set); the cumulative reclaimer counters
+are emitted as per-heartbeat deltas on the counts `mlx_cache.sweep_signals`,
+`mlx_cache.reclaims`, `mlx_cache.reclaimed_bytes`, and the `last_*` fields are
+sampled as histograms only on heartbeats where a reclaim happened
+(`coordinator/api/provider_mlx_cache_telemetry.go`).
 
 ### `BackendSlotCapacity`
 

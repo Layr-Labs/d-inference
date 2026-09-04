@@ -49,9 +49,10 @@ type Ledger struct {
 	store store.Store
 
 	// in-memory usage log per consumer (keyed by consumer ID), oldest first,
-	// at most usageHistoryLimit entries. The backing array is allocated once at
-	// the limit and shifted in place when full, so the per-consumer footprint
-	// is fixed (see RecordUsage).
+	// at most usageHistoryLimit entries. The backing array grows with the
+	// consumer's history up to the limit and is then shifted in place, so a
+	// consumer's footprint is proportional to its entries and never exceeds
+	// the limit (see RecordUsage). Nothing evicts an inactive consumer.
 	usage map[string][]UsageEntry
 }
 
@@ -82,25 +83,43 @@ func (l *Ledger) LedgerHistory(consumerID string) []store.LedgerEntry {
 // RecordUsage appends a usage entry for a consumer's history, keeping only the
 // newest usageHistoryLimit entries in insertion order.
 //
-// The slice is pre-sized to the limit on the consumer's first entry and, once
-// full, shifted in place (copy(s, s[1:])) before the new entry is written into
-// the last slot. Never use append(s[1:], entry) here: reslicing off the front
-// leaks the dropped prefix until the next growth and reallocates the whole
-// backing array every call once the slice is full, which defeats the bound.
+// The backing array starts at one entry and doubles as the consumer's history
+// grows, never past the limit: the consumer map is never pruned, so a
+// low-volume account must cost its entries, not a full 100-entry array
+// (~8 KiB) from its first request. Once full, the slice is shifted in place
+// (copy(s, s[1:])) before the new entry is written into the last slot. Never
+// use append(s[1:], entry) here: reslicing off the front leaks the dropped
+// prefix until the next growth and reallocates the whole backing array every
+// call once the slice is full, which defeats the bound.
 func (l *Ledger) RecordUsage(consumerID string, entry UsageEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entries := l.usage[consumerID]
-	if entries == nil {
-		entries = make([]UsageEntry, 0, usageHistoryLimit)
-	}
 	if len(entries) < usageHistoryLimit {
+		if len(entries) == cap(entries) {
+			grown := make([]UsageEntry, len(entries), usageHistoryGrowth(cap(entries)))
+			copy(grown, entries)
+			entries = grown
+		}
 		l.usage[consumerID] = append(entries, entry)
 		return
 	}
 	copy(entries, entries[1:])
 	entries[len(entries)-1] = entry
 	l.usage[consumerID] = entries
+}
+
+// usageHistoryGrowth returns the next backing-array capacity for a consumer's
+// usage history: double the current one (from 1), capped at usageHistoryLimit.
+func usageHistoryGrowth(current int) int {
+	next := 2 * current
+	if next == 0 {
+		next = 1
+	}
+	if next > usageHistoryLimit {
+		next = usageHistoryLimit
+	}
+	return next
 }
 
 // Usage returns a copy of usage history for a consumer.

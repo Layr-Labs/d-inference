@@ -316,3 +316,56 @@ func TestRecordUsageBoundedHistory(t *testing.T) {
 			stored[0].JobID, stored[usageHistoryLimit-1].JobID)
 	}
 }
+
+// TestRecordUsageGrowsPerConsumerLazily: the consumer map is never pruned, so
+// a consumer's backing array must cost its entries, not the full limit from
+// its first request — it doubles from one entry and stops at the limit, after
+// which the in-place shift never reallocates.
+func TestRecordUsageGrowsPerConsumerLazily(t *testing.T) {
+	l := newTestLedger()
+	capOf := func(consumerID string) int {
+		l.mu.RLock()
+		defer l.mu.RUnlock()
+		return cap(l.usage[consumerID])
+	}
+
+	// Many low-volume consumers: one entry each must not allocate the limit.
+	for i := range 1_000 {
+		id := "consumer-" + strconv.Itoa(i)
+		l.RecordUsage(id, UsageEntry{JobID: "job"})
+		if got := capOf(id); got != 1 {
+			t.Fatalf("cap after one entry for %s = %d, want 1", id, got)
+		}
+	}
+
+	// Growth is geometric and never overshoots the limit.
+	const heavy = "consumer-heavy"
+	for i := 1; i <= usageHistoryLimit; i++ {
+		l.RecordUsage(heavy, UsageEntry{JobID: "job-" + strconv.Itoa(i)})
+		if got := capOf(heavy); got < i || got > usageHistoryLimit {
+			t.Fatalf("cap after %d entries = %d, want in [%d, %d]", i, got, i, usageHistoryLimit)
+		}
+	}
+	if got := capOf(heavy); got != usageHistoryLimit {
+		t.Fatalf("cap at the limit = %d, want exactly %d", got, usageHistoryLimit)
+	}
+
+	// Full: the shift reuses the same backing array.
+	l.mu.RLock()
+	before := &l.usage[heavy][0]
+	l.mu.RUnlock()
+	for i := range 10_000 {
+		l.RecordUsage(heavy, UsageEntry{JobID: "late-" + strconv.Itoa(i)})
+	}
+	l.mu.RLock()
+	after := &l.usage[heavy][0]
+	stored := l.usage[heavy]
+	l.mu.RUnlock()
+	if before != after || cap(stored) != usageHistoryLimit || len(stored) != usageHistoryLimit {
+		t.Fatalf("full history reallocated: same array=%v len=%d cap=%d, want same array at %d/%d",
+			before == after, len(stored), cap(stored), usageHistoryLimit, usageHistoryLimit)
+	}
+	if got := l.Usage(heavy); got[0].JobID != "late-9900" || got[usageHistoryLimit-1].JobID != "late-9999" {
+		t.Fatalf("history window = [%s .. %s], want [late-9900 .. late-9999]", got[0].JobID, got[usageHistoryLimit-1].JobID)
+	}
+}

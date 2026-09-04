@@ -12,8 +12,8 @@ after the human redeploy at 21:13 UTC) and against master `5d400cf75` in the rep
 | #818 | `perf/coordinator-tier1-2026-09-03` | Tier 1 (13 commits) + rollout runbook | master | green |
 | #820 | `perf/coordinator-store-api-2026-09-03` | Tier 2 PR A: perf program store/api half | master | green after a test fix (batched outcome flush) |
 | #819 | `perf/coordinator-registry-scan-2026-09-03` | Tier 2 PR B: perf program registry half (4–8× on fleet benches) | master | green |
-| #822 | `perf/coordinator-registry-lock-2026-09-03` | Tier 3: per-identity gate state + commit under the read lock; `EIGENINFERENCE_RESERVE_COMMIT_MODE` (`shared` default, `global` kill switch) | #819's branch | pending |
-| #823 | `perf/coordinator-wave-fixes-2026-09-03` | Tier 2 C/D: WS fragmentation, queue-drain bound, drain-neutral faults, cancel hygiene, single-pass chunk decode, telemetry re-key (9 commits; Retry-After policy and Tier 5.1 ranking deliberately excluded) | `perf/coordinator-tier2-base-2026-09-03` (A+B) | pending |
+| #822 | `perf/coordinator-registry-lock-2026-09-03` | Tier 3: per-identity gate state + commit under the read lock; `EIGENINFERENCE_RESERVE_COMMIT_MODE` (`shared` default, `global` kill switch) | #819's branch | green |
+| #823 | `perf/coordinator-wave-fixes-2026-09-03` | Tier 2 C/D: WS fragmentation, queue-drain bound, drain-neutral faults, cancel hygiene, single-pass chunk decode, telemetry re-key (9 commits; Retry-After policy and Tier 5.1 ranking deliberately excluded) | `perf/coordinator-tier2-base-2026-09-03` (A+B) | green (one re-run: the #821 flake) |
 
 Merge order: #821 → #818 → #820 → #819 → #822 → #823 (retarget #823 to master after #820/#819 merge). The Threat Model
 CI check fails on every PR with an invalid Anthropic API key in CI (infra, not code). Human-only items

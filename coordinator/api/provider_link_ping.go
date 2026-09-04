@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -27,14 +28,33 @@ import (
 // RTT is recorded per provider (EWMA) and published as a fleet histogram. It
 // is observability only: routing does not read it.
 //
-// The CLOSE action is behind EIGENINFERENCE_LINK_PING_CLOSE and defaults to
-// OFF: pongs are consumed on the coordinator's read goroutine, so under a
-// coordinator-side CPU collapse (the #799 regime) a 15 s / 10 s / 2-miss
-// policy could reap healthy providers faster than evictStale's two-strike
-// protection — a false close takes the abrupt disconnect path (502 flush
-// plus strikes). Observe-only first: ping, sample RTT, count ping_failed and
-// ping_would_close; enable the close once those series show the false-miss
-// rate under load.
+// The whole loop is behind ONE switch, EIGENINFERENCE_LINK_PING:
+//
+//	unset / anything else  off (default): no coordinator pings at all
+//	observe                ping, sample RTT, count ping_failed / ping_would_close
+//	close                  observe + close the socket after linkPingFailuresToClose misses
+//
+// Why the default is OFF rather than observe (review finding, G4 P2):
+// nhooyr v1.8.17 Conn.Ping always sends the ping with a NON-EMPTY payload —
+// strconv.Itoa(pingCounter) (conn.go:210-213) — because that payload is the
+// only way it correlates the echoed pong (read.go: activePings[string(b)]).
+// The library exposes no other ping writer and no pong hook, so an
+// empty-payload ping with coordinator-side RTT correlation is not
+// implementable without forking it (a raw or MessageType(9) write would take
+// the data-lane mutex and still leave the pong unobservable). On the
+// provider, NWProtocolWebSocket delivers inbound control frames to the
+// receive loop, and CoordinatorClient+Connection.swift skips .ping/.pong only
+// inside its empty-data guard: a payload-bearing ping falls through to the
+// JSON decoder and logs "Failed to parse coordinator message" — every 15 s on
+// every provider (~90/s fleet-wide) with no provider-side switch. The
+// durable fix is provider-side (move the opcode check ahead of the
+// empty-data guard); until that release is fleet-wide the loop stays off.
+// Flip to observe once it is, and to close only after observe shows the
+// false-miss rate under load: pongs are consumed on the coordinator's read
+// goroutine, so under a coordinator-side CPU collapse (the #799 regime) a
+// 15 s / 10 s / 2-miss policy could reap healthy providers faster than
+// evictStale's two-strike protection — a false close takes the abrupt
+// disconnect path (502 flush plus strikes).
 const (
 	// linkPingInterval is the steady-state ping cadence per connection. Fleet
 	// cost at ~1,300 providers is ~90 control frames/s each way.
@@ -56,21 +76,41 @@ const (
 	linkPingRetryWhileWriting = 1 * time.Second
 )
 
-// SetLinkPingForTesting overrides the ping cadence and timeout (zero keeps
-// the default). Test-only.
+// linkPingModeFromEnv maps the EIGENINFERENCE_LINK_PING value to the two
+// loop flags: enabled (observe or close) and close (close only). Any other
+// value, including unset, is off.
+func linkPingModeFromEnv(mode string) (enabled, closeAction bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "observe":
+		return true, false
+	case "close":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// SetLinkPingForTesting enables the loop (EIGENINFERENCE_LINK_PING=observe)
+// and overrides the ping cadence and timeout (zero keeps the default).
+// Test-only.
 func (s *Server) SetLinkPingForTesting(interval, timeout time.Duration) {
+	s.linkPingEnabled = true
 	s.linkPingInterval = interval
 	s.linkPingTimeout = timeout
 }
 
 // SetDisableLinkPing turns the server-side keepalive off (testing only).
 func (s *Server) SetDisableLinkPing(disable bool) {
-	s.disableLinkPing = disable
+	s.linkPingEnabled = !disable
 }
 
-// SetLinkPingCloseForTesting sets the close action (the
-// EIGENINFERENCE_LINK_PING_CLOSE switch) for tests.
+// SetLinkPingCloseForTesting sets the close action
+// (EIGENINFERENCE_LINK_PING=close) for tests; enabling it also enables the
+// loop, as the env switch does.
 func (s *Server) SetLinkPingCloseForTesting(enabled bool) {
+	if enabled {
+		s.linkPingEnabled = true
+	}
 	s.linkPingClose = enabled
 }
 
@@ -79,10 +119,11 @@ func (s *Server) SetLinkPingCloseForTesting(enabled bool) {
 // linkPingFailuresToClose-th consecutive failure it marks the provider (so the
 // read loop labels the disconnect "ping_timeout") and closes the socket, which
 // unblocks the read loop and triggers normal teardown. With the close action
-// off (the default) the same point emits provider.ws.ping_would_close, resets
-// the streak, and keeps probing.
+// off the same point emits provider.ws.ping_would_close, resets the streak,
+// and keeps probing. With the loop itself off (the default) it returns at
+// once and the connection is never pinged.
 func (s *Server) linkPingLoop(ctx context.Context, providerID string, provider *registry.Provider, conn *websocket.Conn) {
-	if s.disableLinkPing || conn == nil || provider == nil {
+	if !s.linkPingEnabled || conn == nil || provider == nil {
 		return
 	}
 	interval := s.linkPingInterval

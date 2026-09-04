@@ -122,6 +122,12 @@ func newSessionReasonHarnessWith(t *testing.T, ctx context.Context, wrap func(*r
 // newSessionReasonHarnessDial additionally lets the test control how the
 // provider WebSocket is dialed (e.g. to capture the underlying net.Conn).
 func newSessionReasonHarnessDial(t *testing.T, ctx context.Context, wrap func(*registry.Registry, *store.MemoryStore) store.Store, dialOpts *websocket.DialOptions) *sessionReasonHarness {
+	return newSessionReasonHarnessConfigure(t, ctx, wrap, dialOpts, nil)
+}
+
+// newSessionReasonHarnessConfigure additionally runs configure on the server
+// before it starts serving (test-only switches such as the link keepalive).
+func newSessionReasonHarnessConfigure(t *testing.T, ctx context.Context, wrap func(*registry.Registry, *store.MemoryStore) store.Store, dialOpts *websocket.DialOptions, configure func(*Server)) *sessionReasonHarness {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -131,6 +137,9 @@ func newSessionReasonHarnessDial(t *testing.T, ctx context.Context, wrap func(*r
 		serverStore = wrap(reg, st)
 	}
 	srv := NewServer(reg, serverStore, ServerConfig{}, logger)
+	if configure != nil {
+		configure(srv)
+	}
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

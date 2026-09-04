@@ -77,15 +77,18 @@ func TestWarmPoolOneLoadForOneQueuedColdRequest(t *testing.T) {
 
 // TestWarmPoolRatchetBounded (promoted TestC2_RatchetSelfSustaining, prod
 // values): ONE capacity reject at t=0, 12 idle cold providers, no further
-// demand, loads completing 30 s after being sent. Interval 30 s (window 120 s),
-// QueueAgeThreshold 5 s, MaxLoadsPerTick 8, BurstBuffer 1. Before: load
-// completions refreshed the demand window and every tick re-applied warm+1 to
-// a gap that ignored in-flight loads, so the ratchet was self-sustaining and
-// all 12 boxes were loaded. After: the demand window closes 120 s after the
-// reject regardless of the loads, and the reactive warm+1 floor applies once
-// per demand event: t=0 floor → 1 load; t=30 Little's law (one arrival over
-// 30 s × E[S]) + burst → 2; then the gap stays closed and the window closes
-// at t=120. Exactly 2 loads (5 with in-flight counting alone, 12 before).
+// demand, loads landing 31 s after being sent so the tick 30 s later still
+// sees them in flight. Interval 30 s (window 120 s), QueueAgeThreshold 5 s,
+// MaxLoadsPerTick 8, BurstBuffer 1. Before: load completions refreshed the
+// demand window and every tick re-applied warm+1 to a gap that ignored
+// in-flight loads, so the ratchet was self-sustaining and all 12 boxes were
+// loaded. The 12 → 5 reduction came from the demand window closing 120 s
+// after the reject regardless of the loads; the rest from the reactive floor
+// applying once per demand event and from in-flight loads counting toward
+// the gap: t=0 floor → 1 load; t=30 Little's law (one arrival over 30 s ×
+// E[S]) + burst → target 2 with the first load still in flight → 1 more
+// (not 2); t=60 one warm, one in flight, gap closed; the window closes at
+// t=120. Exactly 2 loads.
 func TestWarmPoolRatchetBounded(t *testing.T) {
 	reg, sent := inflightFixture(t, 12)
 	cfg := ReadConfig().WarmPool
@@ -120,13 +123,16 @@ func TestWarmPoolRatchetBounded(t *testing.T) {
 		pending = still
 		snaps := reg.warmPool.tick(now)
 		for _, a := range (*sent)[seen:] {
-			pending = append(pending, inflight{pid: a.providerID, done: now.Add(30 * time.Second)})
+			pending = append(pending, inflight{pid: a.providerID, done: now.Add(31 * time.Second)})
 		}
 		seen = len(*sent)
 		for _, s := range snaps {
 			if s.Model == inflightModel {
 				trajectory += fmt.Sprintf("t=%3ds warm=%d pending=%d target=%d sends=%d cum=%d\n",
 					k*30, s.WarmProviders, s.PendingLoads, s.TargetWarm, len(s.Actions), len(*sent))
+				if k == 1 && (s.PendingLoads != 1 || len(s.Actions) != 1) {
+					t.Fatalf("t=30s: pending=%d sends=%d, want 1/1 (the in-flight load must close half the gap)", s.PendingLoads, len(s.Actions))
+				}
 			}
 		}
 	}

@@ -537,6 +537,133 @@ struct CoordinatorIntegrationTests {
         #expect(elapsed >= .seconds(2), "ratcheted delay should be ≥2 s, took \(elapsed)")
     }
 
+    // MARK: 3d. Event heartbeat the moment a session registers (T13-03)
+
+    /// The register frame carries no `backend_capacity`, `resetCapacitySession`
+    /// nils the published snapshot, and the baseline heartbeat task sleeps a
+    /// full interval before its first send — so a (re)connected box was
+    /// capacity-blind on the coordinator until the next capacity tick. The
+    /// client now sends an event heartbeat right after `.connected`. Fails on
+    /// the pre-fix client: with a 60 s interval no heartbeat arrives inside
+    /// 500 ms of the register.
+    @Test("an event heartbeat follows the register frame immediately, seq restarts at 1")
+    func heartbeatFollowsRegisterImmediately() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let state = ProviderState()
+        // The last tick's payload survives a reconnect (only the published
+        // snapshot is reset), so the first heartbeat of the new session
+        // carries it with a fresh seq.
+        state.backendCapacity = BackendCapacity(
+            slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 1, gpuMemoryCacheGb: 0,
+            totalMemoryGb: 128)
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60,
+            state: state
+        )
+        let (events, _) = await coordinator.start()
+        let drainTask = Task { for await _ in events {} }
+        defer {
+            drainTask.cancel()
+            Task { await coordinator.shutdown() }
+        }
+
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let afterRegister = try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+            !$0.heartbeats.isEmpty
+        }
+        let snap = try #require(afterRegister, "no heartbeat within 500 ms of register")
+        #expect(snap.heartbeats.first?.backendCapacity?.capacitySeq == 1)
+
+        // Reconnect: the new session restarts the seq at 1 and is again
+        // capacity-visible right after its register.
+        let heartbeatsBeforeDrop = mock.snapshot().heartbeats.count
+        let registersBeforeDrop = mock.snapshot().registers.count
+        await mock.dropActiveWebSocket()
+        let reRegistered = try await mock.waitForSnapshot(timeout: .seconds(10)) {
+            $0.registers.count > registersBeforeDrop
+        }
+        try #require(reRegistered != nil)
+        let afterReconnect = try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+            $0.heartbeats.dropFirst(heartbeatsBeforeDrop).contains {
+                $0.backendCapacity?.capacitySeq == 1
+            }
+        }
+        #expect(afterReconnect != nil, "no seq-1 heartbeat within 500 ms of the re-register")
+    }
+
+    /// Client-only ordering: the on-connect send burns seq 1 and the baseline
+    /// task's first send is seq 2 — one heartbeat per build, strictly
+    /// monotonic, no double-send. (In production a capacity tick landing
+    /// between the register and the on-connect send can emit seq 1 and 2
+    /// back-to-back; the coordinator only requires monotonic seq.)
+    @Test("the baseline heartbeat follows the on-connect heartbeat with the next seq")
+    func baselineHeartbeatFollowsWithNextSeq() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let state = ProviderState()
+        state.backendCapacity = BackendCapacity(
+            slots: [], gpuMemoryActiveGb: 1, gpuMemoryPeakGb: 1, gpuMemoryCacheGb: 0,
+            totalMemoryGb: 128)
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 1,
+            state: state
+        )
+        let (events, _) = await coordinator.start()
+        let drainTask = Task { for await _ in events {} }
+        defer {
+            drainTask.cancel()
+            Task { await coordinator.shutdown() }
+        }
+
+        let two = try await mock.waitForSnapshot(timeout: .seconds(5)) { $0.heartbeats.count >= 2 }
+        let snap = try #require(two)
+        #expect(snap.heartbeats[0].backendCapacity?.capacitySeq == 1)
+        #expect(snap.heartbeats[1].backendCapacity?.capacitySeq == 2)
+    }
+
+    /// First boot: nothing has been rebuilt yet, so the on-connect heartbeat
+    /// carries no `backend_capacity` and burns no seq — identical to today's
+    /// idle heartbeat, just sent at once.
+    @Test("first-boot on-connect heartbeat carries no capacity and burns no seq")
+    func firstBootHeartbeatHasNoCapacity() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        let (events, _) = await coordinator.start()
+        let drainTask = Task { for await _ in events {} }
+        defer {
+            drainTask.cancel()
+            Task { await coordinator.shutdown() }
+        }
+
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let snap = try #require(try await mock.waitForSnapshot(timeout: .milliseconds(500)) {
+            !$0.heartbeats.isEmpty
+        }, "no heartbeat within 500 ms of register")
+        #expect(snap.heartbeats.first?.backendCapacity == nil)
+        #expect(snap.registers.count == 1)
+    }
+
     // MARK: 4. EnrollmentService round-trip
 
     @Test("EnrollmentService either fetches the mocked profile or short-circuits as already-enrolled")
@@ -697,7 +824,8 @@ struct CoordinatorIntegrationTests {
 private func makeClient(
     url: String,
     publicKey: String,
-    heartbeatInterval: TimeInterval = 0.5
+    heartbeatInterval: TimeInterval = 0.5,
+    state: ProviderState = ProviderState()
 ) -> CoordinatorClient {
     let cfg = CoordinatorClientConfig(
         url: url,
@@ -720,7 +848,7 @@ private func makeClient(
     return CoordinatorClient(
         config: cfg,
         stats: AtomicProviderStats(),
-        state: ProviderState()
+        state: state
     )
 }
 

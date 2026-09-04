@@ -210,6 +210,17 @@ extension CoordinatorClient {
 
         eventContinuation?.yield(.connected)
 
+        // The register frame carries no backend_capacity and the baseline
+        // heartbeat task sleeps a full interval before its first send, so a
+        // (re)connected box was capacity-blind on the coordinator until the
+        // next capacity tick (interval/2 = up to 2 s). Send the event
+        // heartbeat now: sessionRegistered is true and the seq session was
+        // just reset, so this is seq 1 of the new session (Task 3's baseline
+        // follows as seq 2). state.backendCapacity still holds the last
+        // rebuild — nil on the very first boot connect, which yields the same
+        // idle heartbeat the baseline would have sent, without burning a seq.
+        sendEventHeartbeat()
+
         try await sessionLoop(
             connection: connection,
             outboundStream: outboundStream,

@@ -32,8 +32,11 @@ extension ProviderLoop {
         // stalled bridge (the same shape as `startPreloadLivenessRefresh`).
         // The tick still writes at its end so the diagnostic payload is fresh
         // the moment a rebuild completes; both writes run on the actor, so
-        // they are serialized and `written_at` never regresses.
-        daemonStateLivenessTask = Task.detached(priority: .utility) {
+        // they are serialized and `written_at` never regresses. Default
+        // priority, not `.utility`: this stamp is what keeps the watchdog
+        // from restarting a busy daemon, so it must not be the first thing a
+        // saturated cooperative pool starves.
+        daemonStateLivenessTask = Task.detached {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: pollIntervalNs)
                 if Task.isCancelled { break }

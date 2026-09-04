@@ -48,8 +48,11 @@ struct LinkClockTests {
         let before = tracker.elapsed()
         try await Task.sleep(for: .milliseconds(20))
         let after = tracker.elapsed()
+        // Only monotonicity is asserted: on a loaded machine the sleep can
+        // return seconds late, and an upper bound would measure the
+        // scheduler, not the clock.
         #expect(after > before)
-        #expect(after < .seconds(5))
+        #expect(after >= .milliseconds(20))
     }
 
     @Test("suspension is a tick gap beyond three ping intervals")

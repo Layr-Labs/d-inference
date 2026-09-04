@@ -11,18 +11,25 @@ Everything under **Human-only** mutates production and is executed only by a
 human operator or a human-approved agent with per-action approval. The agent
 that prepared this branch has **not** added any env line to any prod file.
 
-Canonical code (code wins over this doc):
+Canonical code (code wins over this doc; line numbers are those of the branch
+head — re-run `grep -n` on the symbol if a later change moves them):
 
 | Behavior | Code |
 |---|---|
-| Bounded in-memory usage history (100/consumer) | `coordinator/payments/payments.go:RecordUsage` |
-| Stats / network-totals cache refreshers | `coordinator/api/stats.go:StartCacheRefreshers`, `coordinator/api/leaderboard.go:refreshNetworkTotals` |
-| Analytics `SET LOCAL work_mem` transaction | `coordinator/store/postgres.go:withAnalyticsTx` |
-| Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go:shouldLoadDueRows`, `nextDispatchDelay` |
-| Dashboard rolling windows / batched reputation | `coordinator/store/*:AccountEarningsWindows`, `GetReputations`; `coordinator/api/me_handlers.go` |
-| Capacity accept off the first-byte path | `coordinator/api/dispatch.go:commitFirstContent` |
-| Throttled reputation persist, single frame decode, no cancel after terminal, no shed-path fleet walk | `coordinator/registry/registry.go:RecordJobSuccess`, `coordinator/api/provider.go:providerReadLoop`, `coordinator/api/dispatch.go:writeCommittedResponse`, `coordinator/api/inference_admission.go` |
-| Lock-wait histogram, scan counter, contention profiles | `coordinator/registry/registry.go:lockWrite`, `coordinator/registry/scheduler.go:RoutingDecision.ScanCount`, `coordinator/cmd/coordinator/main.go:enableContentionProfiling` |
+| Bounded in-memory usage history (100/consumer) | `coordinator/payments/payments.go:90` (`Ledger.RecordUsage`) |
+| Stats / network-totals cache refreshers | `coordinator/api/stats.go:201` (`StartCacheRefreshers`), `:128` (`refreshCachedEntry`, coalescing), `:160` (`storeCachedEntry`, degraded keeps the last good value), `:250` (`computeStats`), `:216` (`handleStats`); `coordinator/api/leaderboard.go:183` (`refreshNetworkTotals`), `:123` (`handleNetworkTotals`) |
+| Analytics `SET LOCAL work_mem` transaction | `coordinator/store/postgres.go:2239` (`withAnalyticsTx`) |
+| Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go:47` (`shouldLoadDueRows`), `:57` (`nextDispatchDelay`) |
+| Dashboard rolling windows (one aggregate, 15 s per-account cache) | `coordinator/store/postgres.go:4458` and `coordinator/store/memory.go:2897` (`AccountEarningsWindows`); `coordinator/api/me_handlers.go:151` (`handleMySummary`), `:210` (`accountEarningsWindows`, the cache) |
+| Batched reputation reads | `coordinator/store/postgres.go:5163` and `coordinator/store/memory.go:3361` (`GetReputations`); `coordinator/api/me_handlers.go:338` (`handleMyProviders`, one `GetReputations` call at `:454`) |
+| Capacity accept off the first-byte path | `coordinator/api/dispatch.go:600` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go:431` (`RecordCapacityAcceptObserved`, applies an accept stamped with its observation time) |
+| Throttled reputation persist | `coordinator/registry/registry.go:5789` (`RecordJobSuccess`) → `coordinator/registry/persistence.go:218` (`persistReputationThrottled`); `coordinator/registry/registry.go:4941` (`Disconnect`) flushes unconditionally at `:5081` |
+| Single provider-frame decode | `coordinator/api/provider.go:193` (`providerReadLoop`, one `msg.UnmarshalJSON` at `:319`) |
+| No cancel frame after a settled terminal | `coordinator/api/dispatch.go:3740` (`writeCommittedResponse`, `terminalSettled` gate at `:3812-3814`) |
+| No shed-path fleet walk | `coordinator/api/inference_admission.go:243` (`runInferenceAdmission`; the `routing_saturated` rejection is recorded with `servabilityComputed: true` at `:334-343`) |
+| Lock-wait histogram by call site | `coordinator/registry/registry.go:5190` (`lockWrite`); `coordinator/api/server.go:850` (`registry.mu.write_wait_ms` emission) |
+| Scan counter | `coordinator/registry/scheduler.go:423` (`RoutingDecision.ScanCount`, set at `:523`); `coordinator/api/dispatch.go:450` (`routing.scans` emission) |
+| Contention profiles | `coordinator/cmd/coordinator/main.go:1108` (`enableContentionProfiling`) |
 
 ## Prerequisites
 
@@ -192,9 +199,9 @@ process start.
 
 | # | Knob | Value | Effect (from the proposal) |
 |---|---|---|---|
-| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go`, "NOT auto-derived from the latest release"). |
-| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; `coordinator/cmd/coordinator/main.go`). Risk removal for the 2026-08-31 class of incident. |
-| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
+| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go:2080`, "NOT auto-derived from the latest release"). |
+| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed at `coordinator/cmd/coordinator/main.go:682`). Risk removal for the 2026-08-31 class of incident. |
+| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go:12-13` for the knobs, `:165` for `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
 
 Commands for one knob (repeat per key; values are the ones from the table):
 

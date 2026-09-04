@@ -27,11 +27,15 @@ import (
 // strike — a deliberate narrowing; watch ws.disconnects{reason:peer_close}
 // per stable identity rather than adding a limiter here.
 //
-// NOTE: the Swift provider's auto-update restart (ProcessLifecycle.
-// restartAfterUpdate → launchctl kickstart -k → exit) and the manual
-// `darkbloom update` path send NO close frame today, so an upgrade wave still
-// reaches the coordinator as read_error and is NOT covered by this path until
-// the provider awaits its goingAway close before restarting.
+// NOTE: providers at or above the release carrying
+// CoordinatorClient.closeForRestart() (provider-swift CoordinatorClient.swift;
+// the auto-update restart and `darkbloom update`/`stop` drain and send a
+// bounded goingAway close before exiting) reach the coordinator as
+// ws_close_1001 → peer_close → provider_restart, so an upgrade wave on that
+// fleet is health-neutral here. Providers below that release still send NO
+// close frame on restart and surface as read_error (abrupt, strikes) until
+// they are updated — the first fleet update after this coordinator deploys
+// is the one wave that still strikes.
 
 const (
 	// DisconnectReasonPeerClose: the provider sent a graceful WebSocket close

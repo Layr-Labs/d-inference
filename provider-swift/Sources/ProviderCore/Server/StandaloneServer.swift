@@ -1573,7 +1573,6 @@ public actor StandaloneServer {
             // BEFORE survivor grants are restored/regrown. Never bind
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
-            let peakBeforeLoadBytes = MLX.Memory.peakMemory
             let containerLoadStartedAt = ContinuousClock.now
             // Load-transient measurement (T3-08; mirrors ProviderLoop): reset
             // MLX's peak right before shard staging, log peak-over-steady
@@ -1582,7 +1581,7 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
-            stages.recordPeak(beforeBytes: peakBeforeLoadBytes, afterBytes: MLX.Memory.peakMemory)
+            stages.recordPeak(beforeBytes: Int(loadTransient.activeAtResetBytes), afterBytes: MLX.Memory.peakMemory)
             try Task.checkCancellation()
             let postLoadHashStartedAt = ContinuousClock.now
             let postLoadCacheHash = reusableSSDRequested

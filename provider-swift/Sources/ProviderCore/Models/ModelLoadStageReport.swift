@@ -61,9 +61,11 @@ struct ModelLoadStageReport: Sendable, Equatable {
             + Double(duration.components.attoseconds) / 1e15
     }
 
-    /// Record the peak read around `loadModelContainer` without resetting
-    /// the process-wide counter (see the call site for why a reset is
-    /// wrong: three other readers report "peak since process start").
+    /// Record the peak read around `loadModelContainer`. `beforeBytes` is
+    /// the residency at the moment `ModelLoadTransientProbe.begin()` reset
+    /// the process-wide peak, so `afterBytes > beforeBytes` holds for any
+    /// load that raised memory at all; `peak_masked` now only means the
+    /// counter did not move (nothing was staged).
     mutating func recordPeak(beforeBytes: Int, afterBytes: Int) {
         peakBaselineGb = Double(max(0, beforeBytes)) / 1_073_741_824.0
         peakActiveGb = afterBytes > beforeBytes

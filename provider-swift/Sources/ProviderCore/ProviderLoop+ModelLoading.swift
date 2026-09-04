@@ -499,15 +499,13 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
-            // Peak residency across the container load, READ not reset:
-            // `MLX.Memory.peakMemory` is process-wide and three other readers
-            // (heartbeat capacity, the request profiler, the OOM marker)
-            // report it as "peak since process start". A reset here would
-            // silently re-base all three, so the load's peak is reported only
-            // when it visibly rose above the pre-load high-water mark (always
-            // true for the first load in a fresh process, i.e. the startup
-            // preload — the common cold load); otherwise `peak_masked`.
-            let peakBeforeLoadBytes = MLX.Memory.peakMemory
+            // Peak residency across the container load. The transient probe
+            // below resets `MLX.Memory.peakMemory` right before shard staging,
+            // so every later reader (heartbeat capacity, the request profiler,
+            // the OOM marker) reports "peak since last load" and the stage
+            // report's baseline is the residency at that reset, not the
+            // process-lifetime high-water mark (which would mask every load
+            // whose own peak sits below an earlier one).
             let containerLoadStartedAt = ContinuousClock.now
             // Load-transient measurement (T3-08): reset MLX's peak right
             // before the shards start staging so `peak − steady` after the
@@ -517,7 +515,7 @@ extension ProviderLoop {
             let loadTransient = ModelLoadTransientProbe.begin()
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
             stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
-            stages.recordPeak(beforeBytes: peakBeforeLoadBytes, afterBytes: MLX.Memory.peakMemory)
+            stages.recordPeak(beforeBytes: Int(loadTransient.activeAtResetBytes), afterBytes: MLX.Memory.peakMemory)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 

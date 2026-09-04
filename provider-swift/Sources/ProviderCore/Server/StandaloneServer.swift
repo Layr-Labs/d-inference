@@ -1575,6 +1575,10 @@ public actor StandaloneServer {
             // alive past `release()`.
             let peakBeforeLoadBytes = MLX.Memory.peakMemory
             let containerLoadStartedAt = ContinuousClock.now
+            // Load-transient measurement (T3-08; mirrors ProviderLoop): reset
+            // MLX's peak right before shard staging, log peak-over-steady
+            // once the weights are resident.
+            let loadTransient = ModelLoadTransientProbe.begin()
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
@@ -1615,6 +1619,9 @@ public actor StandaloneServer {
                 container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.slotDefaultMaxTokens)
+            let loadTransientLine = loadTransient.end(diskBytes: modelInfo.sizeBytes)
+                .logLine(modelId: modelId)
+            standaloneLogger.info("\(loadTransientLine, privacy: .public)")
             // The loaded weights are now reflected in MLX memory, so transfer
             // accounting from the pending estimate to the live memory snapshot.
             await kvBudget.replacePendingLoadReservation(

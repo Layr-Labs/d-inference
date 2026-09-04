@@ -509,6 +509,12 @@ extension ProviderLoop {
             // preload — the common cold load); otherwise `peak_masked`.
             let peakBeforeLoadBytes = MLX.Memory.peakMemory
             let containerLoadStartedAt = ContinuousClock.now
+            // Load-transient measurement (T3-08): reset MLX's peak right
+            // before the shards start staging so `peak − steady` after the
+            // load is THIS load's overshoot — the figure the disk × 1.2 admit
+            // padding is meant to cover and nothing measured. Every later
+            // reader of `MLX.Memory.peakMemory` sees "peak since last load".
+            let loadTransient = ModelLoadTransientProbe.begin()
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
             stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
             stages.recordPeak(beforeBytes: peakBeforeLoadBytes, afterBytes: MLX.Memory.peakMemory)
@@ -598,6 +604,11 @@ extension ProviderLoop {
                 container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
+            // Weights are resident: read the load's peak against steady
+            // residency (clean only on an idle load — see the log line's
+            // active_at_reset). Log-first; no wire field.
+            logger.info(
+                loadTransient.end(diskBytes: modelInfo.sizeBytes).logLine(modelId: modelId))
 
             // Weights are resident now (reflected in MLX active/cache), so hand
             // off from the pending-load reservation to the live mlxUsed view —

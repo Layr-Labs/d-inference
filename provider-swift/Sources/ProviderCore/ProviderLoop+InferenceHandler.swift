@@ -669,6 +669,8 @@ extension ProviderLoop {
                 let thermal = ProfileThermalState(ProcessInfo.processInfo.thermalState)
                 let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
                 let mlxActive = Int64(max(0, MLX.Memory.activeMemory))
+                // Peak since the LAST MODEL LOAD (the load path resets the
+                // counter to measure its transient, T3-08), not since start.
                 let mlxPeak = Int64(max(0, MLX.Memory.peakMemory))
                 profile.update { f, now in
                     f.set(.framesEmitted, Int64(framesEmitted))

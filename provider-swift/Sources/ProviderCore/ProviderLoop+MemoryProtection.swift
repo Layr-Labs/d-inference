@@ -58,6 +58,9 @@ extension ProviderLoop {
                 let marker = OOMDetector.Marker(
                     pid: ProcessInfo.processInfo.processIdentifier,
                     epochSeconds: Date().timeIntervalSince1970,
+                    // Peak since the LAST MODEL LOAD (the load path resets
+                    // MLX's peak counter to measure its transient, T3-08),
+                    // not since process start.
                     peakMemoryBytes: UInt64(max(0, MLX.Memory.peakMemory)),
                     availableBytesAtEvent: SystemMemory.availableBytes() ?? 0)
                 OOMDetector.writeMarker(marker)

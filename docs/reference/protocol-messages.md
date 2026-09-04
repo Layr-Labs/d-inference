@@ -307,7 +307,7 @@ Go: [`BackendCapacity`](../../coordinator/protocol/messages.go); Swift: `Backend
 |---|---|
 | `slots` | array | [`BackendSlotCapacity`](#backendslotcapacity) |
 | `gpu_memory_active_gb` | number |
-| `gpu_memory_peak_gb` | number |
+| `gpu_memory_peak_gb` | number — MLX peak active memory since the provider's last model load (the load path resets the counter to measure the load transient); process-lifetime peak on older providers |
 | `gpu_memory_cache_gb` | number |
 | `total_memory_gb` | number |
 | `free_for_load_gb` | number, optional |

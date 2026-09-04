@@ -324,3 +324,82 @@ func TestExpectedCompletionNeverReachesFinishReason(t *testing.T) {
 		}
 	}
 }
+
+// TestAdmissionGatesNeverReceiveExpectedCompletion pins the CALL SITES the
+// registry leak table cannot: QuickCapacityCheck*, PredictServable /
+// shedIfUnservable, the token gate and the first-content deadline take the
+// max-tokens bound as a plain int, so a caller in the allowlisted routing
+// files could hand them the routing-only expected value and every registry
+// row would still pass. Every such call in api/ must be argument-free of
+// expectedCompletionTokens / ExpectedCompletionTokens.
+func TestAdmissionGatesNeverReceiveExpectedCompletion(t *testing.T) {
+	gates := []string{
+		"QuickCapacityCheck", "PredictServable", "shedIfUnservable", "shedIfModelRejected",
+		"applyTokenRateLimitWithAdmission", "applyTokenRateLimit(", "FirstContentDeadline(",
+		"reserveInferenceBalance", "topUpReservationForInlinedMedia",
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Clean(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(raw)
+		for _, gate := range gates {
+			for from := 0; ; {
+				i := strings.Index(src[from:], gate)
+				if i < 0 {
+					break
+				}
+				start := from + i
+				open := strings.Index(src[start:], "(")
+				if open < 0 {
+					break
+				}
+				open += start
+				// Skip the definition line ("func (s *Server) gate(") — only
+				// call sites carry arguments the gate would act on.
+				lineStart := strings.LastIndex(src[:start], "\n") + 1
+				if strings.HasPrefix(strings.TrimSpace(src[lineStart:start]), "func ") {
+					from = open + 1
+					continue
+				}
+				depth, end := 0, -1
+				for j := open; j < len(src); j++ {
+					switch src[j] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+						if depth == 0 {
+							end = j
+						}
+					}
+					if end >= 0 {
+						break
+					}
+				}
+				if end < 0 {
+					break
+				}
+				args := src[open : end+1]
+				if strings.Contains(args, "xpectedCompletionTokens") {
+					t.Fatalf("%s passes the routing-only expected completion into %s: %s", name, gate, strings.TrimSpace(args))
+				}
+				checked++
+				from = end + 1
+			}
+		}
+	}
+	if checked < 8 {
+		t.Fatalf("only %d admission-gate call sites scanned; the gate list no longer matches the code", checked)
+	}
+}

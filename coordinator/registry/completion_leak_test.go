@@ -48,11 +48,17 @@ func TestExpectedCompletionNeverReachesAdmission(t *testing.T) {
 			}
 			return sel == nil && dec.CapacityRejections > 0, fmt.Sprintf("selected=%v decision=%+v", sel != nil, dec)
 		}},
-		{"QuickCapacityCheck preflight", func() (bool, string) {
+		// The preflight and the servability gate take the max-tokens bound as
+		// a plain int and never see a PendingRequest, so these two rows only
+		// show that a bound which does not fit is rejected — they cannot, by
+		// construction, prove the routing-only value is not passed in. The
+		// call-site pin in api (TestAdmissionGatesNeverReceiveExpectedCompletion)
+		// is what proves every caller passes requestedMaxTokens.
+		{"QuickCapacityCheck preflight (bound rejected)", func() (bool, string) {
 			cc, capRej, _, _, _ := reg.QuickCapacityCheckWithTTFTForRequest(model, prompt, bound, RequestTraits{}, false)
 			return cc == 0 && capRej == 1, fmt.Sprintf("candidates=%d capacityRejections=%d", cc, capRej)
 		}},
-		{"PredictServable", func() (bool, string) {
+		{"PredictServable (bound rejected)", func() (bool, string) {
 			v := reg.PredictServable(model, prompt, prompt, bound, 0, RequestTraits{}, false)
 			return !v.Servable, fmt.Sprintf("verdict=%+v", v)
 		}},

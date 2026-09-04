@@ -81,7 +81,7 @@ Go: [`InferenceResponseChunkMessage`](../../coordinator/protocol/messages.go); S
 | `type` | `"inference_response_chunk"` |
 | `request_id` | string | |
 | `data` | string | SSE chunk (plaintext) |
-| `encrypted_data` | object | [`EncryptedPayload`](#encryptedpayload) when E2E active |
+| `encrypted_data` | object | [`EncryptedPayload`](#encryptedpayload) when E2E active. On THIS message `ephemeral_public_key` is optional: the coordinator derives the chunk key from the provider's registered public key, so an absent or empty field means "the registered key" and a present field must equal it. Coordinator → provider payloads still require the 32-byte key. |
 
 This is the one provider → coordinator frame that arrives once per streamed
 token. The coordinator's read loop decodes it with a hand-written single-pass

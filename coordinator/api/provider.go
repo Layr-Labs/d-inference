@@ -2009,7 +2009,14 @@ func (s *Server) decryptTextResponseChunk(provider *registry.Provider, pr *regis
 	if provider.PublicKey == "" {
 		return "", errTextChunkViolation("provider missing registered public key")
 	}
-	if msg.EncryptedData.EphemeralPublicKey != provider.PublicKey {
+	// The chunk's ephemeral_public_key carries no information after
+	// registration: the shared key is derived from the provider's REGISTERED
+	// key below, so a chunk sealed under any other key fails the symmetric
+	// open regardless. An absent (empty) field therefore means "the registered
+	// key" — a strict superset of the equality check — which lets a later
+	// provider release stop sending the ~70 B field per token; a present
+	// field must still match.
+	if k := msg.EncryptedData.EphemeralPublicKey; k != "" && k != provider.PublicKey {
 		return "", errTextChunkViolation("chunk sender key mismatch")
 	}
 	if pr.SessionPrivKey == nil {
@@ -2033,7 +2040,7 @@ func (s *Server) decryptTextResponseChunk(provider *registry.Provider, pr *regis
 		pr.SharedKey = shared
 	}
 	payload := e2e.EncryptedPayload{
-		EphemeralPublicKey: msg.EncryptedData.EphemeralPublicKey,
+		EphemeralPublicKey: provider.PublicKey,
 		Ciphertext:         msg.EncryptedData.Ciphertext,
 	}
 	plaintext, err := e2e.DecryptWithSharedKey(&payload, shared)

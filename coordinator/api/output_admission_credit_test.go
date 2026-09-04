@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/billing"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -239,5 +240,53 @@ func TestRefundPathCreditsTheChargedAmountNotTheAdmission(t *testing.T) {
 	srv.creditUnusedOutputAdmission("acct-refund", "", adm)
 	if got := remainingOutput(t, tl, "acct-refund"); got < 59_000-5 || got > 59_000+5 {
 		t.Fatalf("remaining after the refund = %d, want ~59,000 (64,000 charged back, 5,000 overage kept); the unclamped 100,000 credit would read 64,000", got)
+	}
+}
+
+// TestBalanceRefusalCreditsTheOTPMChargeLive drives the REAL route chain for
+// both handlers with billing on and a zero balance: the token gate commits
+// the injected bound (8,192) and the balance reservation then answers 402.
+// The 402 is written before the handler's refundReservation closure exists,
+// so before the fix the charge stayed: a low-balance consumer bouncing on
+// insufficient_funds burned 8,192 OTPM per 402 and was 429'd on
+// output_tokens once funded. Each 402 must leave the bucket where it was.
+func TestBalanceRefusalCreditsTheOTPMChargeLive(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
+	// Billing on, balance 0 → every reservation is refused with 402.
+	srv.SetBilling(billing.NewService(st, srv.ledger, logger, billing.Config{MockMode: true}))
+	tl := consumerOTPMLimiter()
+	srv.SetTokenLimiters(tl, nil)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const model = "broke-otpm-model"
+	// The seeded admin key is an unlinked legacy key: requireAuth keys the
+	// consumer (balance, token buckets) on LegacyAccountID(token), not the
+	// raw token.
+	account := store.LegacyAccountID("test-key")
+	if got := srv.ledger.Balance(account); got != 0 {
+		t.Fatalf("initial balance = %d, want 0", got)
+	}
+	for _, tc := range []struct{ name, endpoint, body string }{
+		{"chat", "/v1/chat/completions", chatBodyWithoutMaxTokens(t, model, 0)},
+		{"completions", "/v1/completions", `{"model":"` + model + `","prompt":"hello"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body, err := postGenericInference(ctx, ts.URL, tc.endpoint, tc.body)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			if status != http.StatusPaymentRequired {
+				t.Fatalf("status = %d, want 402 (zero balance); body=%s", status, body)
+			}
+			if got := remainingOutput(t, tl, account); got < 64_000-5 {
+				t.Fatalf("remaining output after the 402 = %d, want the full 64,000: the upfront OTPM charge of a request the balance gate refused was never credited back", got)
+			}
+		})
 	}
 }

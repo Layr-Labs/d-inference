@@ -2209,6 +2209,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		policy:                policy,
 	})
 	if reserveHandled {
+		// The 402/503 was written before refundReservation exists, but the
+		// token gate has already committed the upfront OTPM charge for a
+		// request that never ran: return it, or a low-balance consumer's
+		// retries turn into output_tokens 429s that mask the real 402.
+		s.creditUnusedOutputAdmission(consumerKeyFromContext(r.Context()), keyIDFromContext(r.Context()), tokenAdmission)
 		return
 	}
 	timing.ReservedAt = time.Now()
@@ -4639,6 +4644,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		policy:                policy,
 	})
 	if reserveHandled {
+		// See handleChatCompletions: the committed OTPM charge of a request
+		// the balance gate refused must not stay charged.
+		s.creditUnusedOutputAdmission(consumerKey, keyIDFromContext(r.Context()), tokenAdmission)
 		return
 	}
 	refundReservation := func() {

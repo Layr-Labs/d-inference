@@ -294,6 +294,12 @@ public actor EngineV2Bridge {
     /// is registered so a test can interleave a cancel with a suspended
     /// submission. nil unless a test installed it (no suspension).
     var _testPreSubmitGate: (@Sendable () async -> Void)?
+    /// TEST SEAM (debug builds only): when set, the pump does NOT publish
+    /// the admission prompt count into the request's usage signal — the
+    /// "wiring broken" shape (the handler reads a signal the pump never
+    /// wrote) whose cancel settlement must fall back to the re-template
+    /// floor. false unless a test armed it.
+    var _testPromptCountPublishSuppressed = false
     #endif
     /// Engine identities reserved across async atomic admission. Provider
     /// request IDs are distinct: two concurrent deterministic seeded requests
@@ -2015,7 +2021,7 @@ public actor EngineV2Bridge {
         // chat template to recover it. `active[id]` is seeded at admission,
         // strictly before the pump task starts.
         if let usageSignal, let promptTokens = active[id]?.promptTokens {
-            usageSignal.recordPromptTokens(promptTokens)
+            publishPromptCount(promptTokens, into: usageSignal)
         }
         // Pump-local running completion count (one lock write per delta).
         var forwardedTokens = 0
@@ -2254,6 +2260,17 @@ public actor EngineV2Bridge {
     }
 
     // MARK: - Bookkeeping
+
+    /// Publish the admission prompt count into the request's usage signal
+    /// (pump start). Debug builds can suppress it
+    /// (`_testPromptCountPublishSuppressed`) to drive the handler's
+    /// re-template fallback through the real request path.
+    private func publishPromptCount(_ count: Int, into signal: EngineV2RequestUsageSignal) {
+        #if DEBUG
+        if _testPromptCountPublishSuppressed { return }
+        #endif
+        signal.recordPromptTokens(count)
+    }
 
     private func recordFirstToken(
         id: String, emissionTokens: Int, profileNow: SuspendingClock.Instant? = nil
@@ -2708,6 +2725,11 @@ public actor EngineV2Bridge {
     /// registered in `submitTokenized` (see `_testPreSubmitGate`).
     func _testInstallPreSubmitGate(_ gate: @escaping @Sendable () async -> Void) {
         _testPreSubmitGate = gate
+    }
+    /// Make every pump of this bridge skip publishing its admission prompt
+    /// count (see `_testPromptCountPublishSuppressed`).
+    func _testSuppressPromptCountPublish() {
+        _testPromptCountPublishSuppressed = true
     }
     /// Seed the isolated cold-prefill EWMA so `firstTokenDeadlineAdmission`
     /// takes the atomic deadline-submit path against a fake engine.

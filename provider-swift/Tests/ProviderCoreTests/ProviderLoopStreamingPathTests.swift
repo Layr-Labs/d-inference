@@ -131,7 +131,20 @@ private final class HarnessEngine: CBv2Engine, @unchecked Sendable {
 
 // MARK: - Stub weights
 
+/// Counts chat-template renders across every `HarnessTokenizer` copy a
+/// harness hands out (container, bridge and slot), so a test can assert how
+/// many times the request path rendered the prompt — once at admission, and
+/// never again during a cancel settlement that bills the engine's count.
+private final class ChatTemplateRenderCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.withLock { _count } }
+    func bump() { lock.withLock { _count += 1 } }
+}
+
 private struct HarnessTokenizer: MLXLMCommon.Tokenizer {
+    var renders = ChatTemplateRenderCounter()
+
     /// One token per whitespace-separated word: the cancelled-mid-stream
     /// settle re-tokenizes the delivered text as its completion floor, so the
     /// engine's one-token-per-word deltas below bill as one token each.
@@ -146,11 +159,17 @@ private struct HarnessTokenizer: MLXLMCommon.Tokenizer {
     var bosToken: String? { nil }
     var eosToken: String? { "</s>" }
     var unknownToken: String? { nil }
+    /// Five prompt tokens per render, counted: the admission render is the
+    /// count the bridge seeds into `active[id]` (and publishes to the usage
+    /// signal); any later render is the `promptTokenFloor` fallback.
     func applyChatTemplate(
         messages: [[String: any Sendable]],
         tools: [[String: any Sendable]]?,
         additionalContext: [String: any Sendable]?
-    ) throws -> [Int] { [1, 2, 3, 4, 5] }
+    ) throws -> [Int] {
+        renders.bump()
+        return [1, 2, 3, 4, 5]
+    }
 }
 
 private final class HarnessLanguageModel: Module, LanguageModel {
@@ -166,13 +185,15 @@ private struct HarnessProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw HarnessProcessorError() }
 }
 
-private func makeHarnessContainer() -> ModelContainer {
+private func makeHarnessContainer(
+    renders: ChatTemplateRenderCounter = ChatTemplateRenderCounter()
+) -> ModelContainer {
     ModelContainer(
         context: ModelContext(
             configuration: ModelConfiguration(id: "test/stub-model"),
             model: HarnessLanguageModel(),
             processor: HarnessProcessor(),
-            tokenizer: HarnessTokenizer()))
+            tokenizer: HarnessTokenizer(renders: renders)))
 }
 
 // MARK: - Outbound recorder
@@ -254,6 +275,9 @@ private struct Harness {
     let runtime: EngineV2Runtime
     let engine: HarnessEngine
     let bridge: EngineV2Bridge
+    /// Chat-template renders across the slot, bridge and container
+    /// tokenizers (one shared counter).
+    let renders: ChatTemplateRenderCounter
     let modelId = "stub-model"
 
     static func make(
@@ -277,10 +301,11 @@ private struct Harness {
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
         let engine = HarnessEngine()
+        let renders = ChatTemplateRenderCounter()
         let bridge = EngineV2Bridge(
             engine: engine,
             modelId: "stub-model",
-            tokenizer: TokenizerHandle(HarnessTokenizer()),
+            tokenizer: TokenizerHandle(HarnessTokenizer(renders: renders)),
             eosTokenIds: [],
             prefillDeadlineMode: deadlineMode)
         #if DEBUG
@@ -291,10 +316,11 @@ private struct Harness {
         await runtime.register(modelId: "stub-model", bridge: bridge)
         await loop.installModelSlotForTesting(
             modelId: "stub-model",
-            container: makeHarnessContainer(),
-            tokenizer: TokenizerHandle(HarnessTokenizer()),
+            container: makeHarnessContainer(renders: renders),
+            tokenizer: TokenizerHandle(HarnessTokenizer(renders: renders)),
             engineV2: bridge)
-        return Harness(loop: loop, runtime: runtime, engine: engine, bridge: bridge)
+        return Harness(
+            loop: loop, runtime: runtime, engine: engine, bridge: bridge, renders: renders)
     }
 
     /// Seal a chat body exactly as the coordinator does and hand it to the
@@ -429,6 +455,11 @@ struct ProviderLoopStreamingPathTests {
             }
         }
 
+        // Admission rendered the prompt exactly once — the count the bridge
+        // seeded into `active[id]` and published to the usage signal.
+        let rendersAtCancel = h.renders.count
+        #expect(rendersAtCancel == 1)
+
         // The coordinator's cancel lands: the loop cancels the task first,
         // Task propagation reaches the bridge and the engine drops the row.
         await h.loop.handleCancellation(requestId: "req-mid-stream")
@@ -441,7 +472,13 @@ struct ProviderLoopStreamingPathTests {
         #expect(recorder.errors.isEmpty)
         let completion = try #require(recorder.completions.first)
         #expect(completion.usage.completionTokens == 3)
+        // T5-02: the prompt side is the engine's admission count read from
+        // the usage signal, so settlement never re-renders the chat template
+        // (the `promptTokenFloor` autoclosure stays unevaluated). Without the
+        // handler's signal read the render count reads 2 — the floor
+        // re-rendered — even though the number billed is the same 5.
         #expect(completion.usage.promptTokens == 5)
+        #expect(h.renders.count == rendersAtCancel, "settlement re-rendered the prompt")
         let content = try recorder.chunkPayloads.map { payload -> String in
             let data = try sender.decryptPayload(payload)
             return String(decoding: data, as: UTF8.self)
@@ -459,6 +496,42 @@ struct ProviderLoopStreamingPathTests {
         #expect(abortNs > 0)
         #expect(profile.wireObject().cancelStage != nil)
     }
+
+    #if DEBUG
+    @Test("a cancel whose usage signal carries no engine prompt count falls back to the re-template floor")
+    func midStreamCancelWithoutEngineCountReRendersPrompt() async throws {
+        // Counterpart of the render assertion above: with the pump's publish
+        // suppressed (the bridge seam stands in for a handler reading a
+        // signal the pump never wrote) the settlement MUST evaluate
+        // `promptTokenFloor` — one more chat-template render — and bill the
+        // rendered count. Pins that the render counter really observes the
+        // floor path the positive test claims is skipped.
+        let h = try await Harness.make()
+        await h.bridge._testSuppressPromptCountPublish()
+        let recorder = OutboundRecorder()
+        let sender = NodeKeyPair.generate()
+        let handler = try await h.submit(
+            requestId: "req-no-engine-count", recorder: recorder, sender: sender)
+        _ = await handler.value
+        try await h.wait("engine submission") { h.engine.ordinarySubmits == 1 }
+        h.engine.emit(.delta(text: "Hello", tokens: [10], logprobs: nil))
+        try await h.wait("first content chunk", recorder: recorder) {
+            recorder.chunkPayloads.count >= 2
+        }
+        let rendersAtCancel = h.renders.count
+        #expect(rendersAtCancel == 1)
+
+        await h.loop.handleCancellation(requestId: "req-no-engine-count")
+        try await h.wait("terminal after cancel", recorder: recorder) { recorder.terminalAt != nil }
+        try await h.wait("engine cancel", recorder: recorder) { !h.engine.cancelled.isEmpty }
+
+        #expect(recorder.kinds.last == "complete", "kinds: \(recorder.kinds)")
+        let completion = try #require(recorder.completions.first)
+        #expect(completion.usage.completionTokens == 1)
+        #expect(completion.usage.promptTokens == 5)
+        #expect(h.renders.count == rendersAtCancel + 1, "floor was not evaluated")
+    }
+    #endif
 
     @Test("a cancel for an id the loop never saw costs nothing: no runtime consult, no capacity rebuild")
     func unknownIdCancelIsFree() async throws {

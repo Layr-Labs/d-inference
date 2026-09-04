@@ -23,7 +23,27 @@ Merge order: #821 → #818 → #820 → #819 → #822 → #823 (retarget #823 to
 `stats:v1` line (noted on #820). Everything else is docs-only (`coordinator-deploy.md`, operations `README.md`,
 `system-profiler.md`): keep both sides. The stacked tree builds and vets.
 
-**Codex review round (2026-09-04 06:00 UTC):** #819 and #821 clean. Eleven findings on the other four, all
+**Master sync (2026-09-04 ~18:00 UTC):** master moved to f127f43a2 (#824 docs overhaul, #813, #815). #821 and #818
+rebased (docs-only conflicts, resolved for master's rewrite); #820 and #819 (merge-shaped) merged master in; the
+A+B integration base was rebuilt; #822 and #823 merged their refreshed bases. All six are 0 behind master. The
+new Docs Lint CI job (freshness stamps + orphan links) required stamping every report file and indexing them
+(`docs/reports/README.md` "Coordinator performance program (2026-09)" section, one row per PR body).
+
+**Codex review round 2 (2026-09-04 18:04–18:43 UTC, auto-triggered by the pushes):** 19 more findings —
+#818 ×5, #819 ×5, #822 ×2, #823 ×7. All verified; 17 fixed with regression tests, 2 refuted with evidence and a
+pinning test (#819 version-memo reset premise; #823 version-floor half of the drain finding). Highlights:
+#822 split `gate_state.go` into six files and closed the stale-reader race on the routing read path
+(`gateView` revalidation); #823 fixed a drain-pass race the dominance skip had widened (per-model pass
+coalescing), the Swift fallback heartbeat discarding `draining`, the throttle timestamp lost on rebind,
+cancel-delivery accounting, and bounded the `provider_version` tag; #819's were docs (stamps, index,
+`scheduling.md`, the health-ejection "live" contract) plus one refutation. The #823 Swift CI failure
+(`MTPPostureTelemetryTests`) is a pre-existing ~6 s test-runner stall also visible on master, where those
+tests pass with under 0.5 s of margin. **#818's round-2 work is paused at the user's request**: two commits
+(strict cooldown preservation after a late accept; lazy usage-history growth) and an uncommitted refresher
+extraction sit unpushed in `.worktrees/coordinator-perf-tier1`; the runbook line-number and 503-docs findings
+are not started.
+
+**Codex review round 1 (2026-09-04 06:00 UTC):** #819 and #821 clean. Eleven findings on the other four, all
 verified legitimate (one partially) and fixed with regression tests, each thread answered on GitHub:
 
 | PR | Finding | Verdict | Fix |

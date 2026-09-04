@@ -49,18 +49,18 @@ func TestCapacityRateFirstRejectPrunesExpiredAccepts(t *testing.T) {
 	r := New(testLogger())
 	const provider, model = "prov-accept-window", "gemma-4-26b-qat-4bit"
 	now := time.Now()
-	key := capacityRejectKey{ProviderID: provider, ModelID: model}
 
-	r.mu.Lock()
-	r.capacityRateAccepts[key] = []time.Time{
-		now.Add(-capacityRateWindow - time.Nanosecond),
-		now.Add(-capacityRateWindow),
-		now.Add(-capacityRateWindow + time.Nanosecond),
-	}
-	r.recordCapacityRateRejectLocked(key, now)
-	rejects := countInWindow(r.capacityRateRejects[key], now)
-	accepts := countInWindow(r.capacityRateAccepts[key], now)
-	r.mu.Unlock()
+	var rejects, accepts int
+	withGateForSession(r, provider, func(g *gateState) {
+		g.capacityRateAccepts[model] = []time.Time{
+			now.Add(-capacityRateWindow - time.Nanosecond),
+			now.Add(-capacityRateWindow),
+			now.Add(-capacityRateWindow + time.Nanosecond),
+		}
+		g.recordCapacityRateRejectLocked(r.capacityRateCfg, model, now)
+		rejects = countInWindow(g.capacityRateRejects[model], now)
+		accepts = countInWindow(g.capacityRateAccepts[model], now)
+	})
 
 	if rejects != 1 || accepts != 1 {
 		t.Fatalf("windowed outcomes = rejects %d accepts %d, want 1/1", rejects, accepts)
@@ -142,9 +142,9 @@ func TestCapacityRateIsIndependentOfOutcomeOrder(t *testing.T) {
 
 // Identity enrichment can merge a stale source history into a destination
 // that already has fresh state from a previous connection. Every timestamp
-// history must remain oldest-to-newest because the bounded-map sweeps use the
-// tail as the newest outcome. This exercises the real sekey -> serial rebind
-// and the >1024 cleanup consequence for both rate maps.
+// history must remain oldest-to-newest because the gate sweep uses the tail as
+// the newest outcome. This exercises the real sekey -> serial rebind and the
+// sweep's consequence for both rate windows.
 func TestFaultTimestampHistoriesStayOrderedAcrossIdentityRebind(t *testing.T) {
 	r := New(testLogger())
 	const (
@@ -165,26 +165,27 @@ func TestFaultTimestampHistoriesStayOrderedAcrossIdentityRebind(t *testing.T) {
 	now := time.Now()
 	expired := now.Add(-capacityRateWindow - time.Minute)
 	fresh := now.Add(-time.Minute)
-	oldRateKey := capacityRejectKey{ProviderID: oldID, ModelID: model}
-	newRateKey := capacityRejectKey{ProviderID: newID, ModelID: model}
-	oldInferenceKey := inferenceErrorKey{ProviderID: oldID, ModelID: model, Shape: "base"}
-	newInferenceKey := inferenceErrorKey{ProviderID: newID, ModelID: model, Shape: "base"}
+	shapeKey := modelShapeKey{Model: model, Shape: "base"}
 
-	r.mu.Lock()
-	r.inferenceErrorStrikes[oldInferenceKey] = []time.Time{expired}
-	r.inferenceErrorStrikes[newInferenceKey] = []time.Time{fresh}
-	r.capacityRejectStrikes[oldRateKey] = []time.Time{expired}
-	r.capacityRejectStrikes[newRateKey] = []time.Time{fresh}
-	r.capacityRateRejects[oldRateKey] = []time.Time{expired}
-	r.capacityRateRejects[newRateKey] = []time.Time{fresh}
-	r.capacityRateAccepts[oldRateKey] = []time.Time{expired}
-	r.capacityRateAccepts[newRateKey] = []time.Time{fresh}
+	withGateForKey(r, oldID, func(g *gateState) {
+		g.inferenceErrorStrikes[shapeKey] = []time.Time{expired}
+		g.capacityRejectStrikes[model] = []time.Time{expired}
+		g.capacityRateRejects[model] = []time.Time{expired}
+		g.capacityRateAccepts[model] = []time.Time{expired}
+	})
+	withGateForKey(r, newID, func(g *gateState) {
+		g.inferenceErrorStrikes[shapeKey] = []time.Time{fresh}
+		g.capacityRejectStrikes[model] = []time.Time{fresh}
+		g.capacityRateRejects[model] = []time.Time{fresh}
+		g.capacityRateAccepts[model] = []time.Time{fresh}
+	})
 	for i := 0; i < 1024; i++ {
-		key := capacityRejectKey{ProviderID: fmt.Sprintf("expired-rate-%d", i), ModelID: model}
-		r.capacityRateRejects[key] = []time.Time{expired}
-		r.capacityRateAccepts[key] = []time.Time{expired}
+		withGateForKey(r, fmt.Sprintf("expired-rate-%d", i), func(g *gateState) {
+			g.capacityRateRejects[model] = []time.Time{expired}
+			g.capacityRateAccepts[model] = []time.Time{expired}
+			g.touched = now.Add(-gateIdleGrace - time.Minute)
+		})
 	}
-	r.mu.Unlock()
 
 	p.SetAttestationResult(&attestation.VerificationResult{
 		Valid: true, PublicKey: publicKey, SerialNumber: serial,
@@ -193,20 +194,36 @@ func TestFaultTimestampHistoriesStayOrderedAcrossIdentityRebind(t *testing.T) {
 		t.Fatalf("enriched fault key = %q, want %q", got, newID)
 	}
 
-	r.mu.Lock()
-	mergedInference := append([]time.Time(nil), r.inferenceErrorStrikes[newInferenceKey]...)
-	mergedCapacity := append([]time.Time(nil), r.capacityRejectStrikes[newRateKey]...)
-	mergedRejects := append([]time.Time(nil), r.capacityRateRejects[newRateKey]...)
-	mergedAccepts := append([]time.Time(nil), r.capacityRateAccepts[newRateKey]...)
-	_, oldInferenceRemains := r.inferenceErrorStrikes[oldInferenceKey]
-	_, oldCapacityRemains := r.capacityRejectStrikes[oldRateKey]
-	_, oldRejectsRemain := r.capacityRateRejects[oldRateKey]
-	_, oldAcceptsRemain := r.capacityRateAccepts[oldRateKey]
-	sweepCapacityRateMapLocked(r.capacityRateRejects, now)
-	sweepCapacityRateMapLocked(r.capacityRateAccepts, now)
-	freshRejects := countInWindow(r.capacityRateRejects[newRateKey], now)
-	freshAccepts := countInWindow(r.capacityRateAccepts[newRateKey], now)
-	r.mu.Unlock()
+	var mergedInference, mergedCapacity, mergedRejects, mergedAccepts []time.Time
+	readGateForKey(r, newID, func(g *gateState) {
+		mergedInference = append([]time.Time(nil), g.inferenceErrorStrikes[shapeKey]...)
+		mergedCapacity = append([]time.Time(nil), g.capacityRejectStrikes[model]...)
+		mergedRejects = append([]time.Time(nil), g.capacityRateRejects[model]...)
+		mergedAccepts = append([]time.Time(nil), g.capacityRateAccepts[model]...)
+	})
+	// The source identity's gate is orphaned and gone from the index after
+	// the migration; any residue would be filed under its raw key.
+	var oldInferenceRemains, oldCapacityRemains, oldRejectsRemain, oldAcceptsRemain bool
+	if g := rawGateForKey(r, oldID); g != nil {
+		g.mu.Lock()
+		_, oldInferenceRemains = g.inferenceErrorStrikes[shapeKey]
+		_, oldCapacityRemains = g.capacityRejectStrikes[model]
+		_, oldRejectsRemain = g.capacityRateRejects[model]
+		_, oldAcceptsRemain = g.capacityRateAccepts[model]
+		g.mu.Unlock()
+	}
+	r.sweepGates(now)
+	var freshRejects, freshAccepts int
+	readGateForKey(r, newID, func(g *gateState) {
+		if g == nil {
+			t.Fatal("the live identity's gate must survive the sweep")
+		}
+		freshRejects = countInWindow(g.capacityRateRejects[model], now)
+		freshAccepts = countInWindow(g.capacityRateAccepts[model], now)
+	})
+	if n := r.gateCount(); n > 8 {
+		t.Fatalf("expired identities not swept: %d gates remain", n)
+	}
 
 	for name, history := range map[string][]time.Time{
 		"inference strikes": mergedInference,

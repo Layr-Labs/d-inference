@@ -2,9 +2,11 @@ package registry
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/attestation"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
@@ -554,5 +556,79 @@ func TestMergeProviderModelsRejectsNonCatalogBuild(t *testing.T) {
 	makeProviderRoutable(registerProviderWithModel(devReg, "p1", aliasFP8))
 	if m, _ := devReg.MergeProviderModels("p1", []protocol.ModelInfo{{ID: "anything/goes"}}); len(m) != 1 {
 		t.Fatalf("nil catalog should keep permissive merge, got %v", m)
+	}
+}
+
+// The alias resolver decides Desired vs Previous from providerCanRouteBuildLocked,
+// whose dispatch-load cooldown read is the session's cached gate. A session
+// rebinding away from an identity it SHARES with a sibling moves its cooldown
+// to the new gate and resets the shared source, so a read that loaded the
+// source just before the move would say "not cooled" and resolve the alias to
+// a Desired build whose only provider is cooled; dispatch then observes the
+// real cooldown and queues or rejects instead of taking the routable Previous
+// build. The read runs under p.mu and the bind holds p.mu, so the resolver
+// sees one consistent gate: while the Desired-only session flaps between the
+// shared identity and its own serial carrying a cooldown that travels with it,
+// every resolution must pick Previous.
+func TestResolveModelReadsTheSessionsCurrentGateAcrossRebinds(t *testing.T) {
+	reg := New(testLogger())
+	desired := makeSchedulerProvider(t, reg, "alias-desired", aliasQAT, 100)
+	// The sibling keeps the shared gate live (so a rebind resets it instead of
+	// orphaning it) and serves neither build, so its clean gate cannot make
+	// Desired routable.
+	sibling := makeSchedulerProvider(t, reg, "alias-sibling", "other-model", 100)
+	previous := makeSchedulerProvider(t, reg, "alias-previous", aliasFP8, 100)
+	shared := &attestation.VerificationResult{Valid: true, PublicKey: "PK-ALIAS"}
+	enriched := &attestation.VerificationResult{Valid: true, PublicKey: "PK-ALIAS", SerialNumber: "SER-ALIAS"}
+	desired.SetAttestationResult(shared)
+	sibling.SetAttestationResult(shared)
+	previous.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "SER-PREVIOUS"})
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+	})
+	if build, _, _ := reg.ResolveModel("gemma-4-26b"); build != aliasQAT {
+		t.Fatalf("precondition: with a clean Desired provider the alias must resolve to it, got %q", build)
+	}
+	// The Desired provider's pair is cooled for longer than the test runs; the
+	// cooldown follows the session through every rebind (mergeLocked keeps the
+	// later expiry both ways).
+	withGateForSession(reg, desired.ID, func(g *gateState) {
+		g.dispatchLoadCooldowns[aliasQAT] = time.Now().Add(time.Hour)
+	})
+	if build, _, _ := reg.ResolveModel("gemma-4-26b"); build != aliasFP8 {
+		t.Fatalf("precondition: with Desired cooled the alias must fall back to Previous, got %q", build)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var wrong []string
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if build, _, ok := reg.ResolveModel("gemma-4-26b"); !ok || build != aliasFP8 {
+				wrong = append(wrong, build)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 3000; i++ {
+			desired.SetAttestationResult(enriched)
+			desired.SetAttestationResult(shared)
+		}
+		close(stop)
+	}()
+	wg.Wait()
+	if len(wrong) > 0 {
+		t.Fatalf("%d resolutions picked %q while its only provider was cooled (first: %q)", len(wrong), aliasQAT, wrong[0])
+	}
+	if !reg.dispatchLoadCooled(desired.ID, aliasQAT, time.Now()) || sibling.gate.Load() != desired.gate.Load() {
+		t.Fatal("postcondition: the cooldown must still follow the Desired session, back on the shared gate")
 	}
 }

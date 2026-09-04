@@ -100,6 +100,16 @@ func (hint cacheRoutingHint) currentForProvider(provider *Provider, model string
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	return hint.currentForProviderLocked(provider, model)
+}
+
+// currentForProviderLocked is currentForProvider for a caller that already
+// holds provider.mu (the reservation commit evaluates the discount inside its
+// p.mu section).
+func (hint cacheRoutingHint) currentForProviderLocked(provider *Provider, model string) bool {
+	if provider == nil || hint.Provider != provider {
+		return false
+	}
 	capability, ok := provider.PrefixCacheV2Models[model]
 	return ok &&
 		provider.PrefixCacheProtocol >= 2 &&

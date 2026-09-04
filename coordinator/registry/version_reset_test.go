@@ -200,9 +200,7 @@ func TestVersionChangedReconnect_ResetIsRateLimitedPerIdentity(t *testing.T) {
 	assertIdentityQuarantine(t, r, "s3", true)
 
 	// Once the interval has elapsed the reset is available again.
-	r.mu.Lock()
-	r.identityVersionResetAt[versionResetStable] = time.Now().Add(-identityVersionResetMinInterval - time.Second)
-	r.mu.Unlock()
+	withGateForKey(r, versionResetStable, func(g *gateState) { g.versionResetAt = time.Now().Add(-identityVersionResetMinInterval - time.Second) })
 	bindVersionedSession(t, r, "s4", "0.9.3", false)
 	assertIdentityQuarantine(t, r, "s4", false)
 }
@@ -218,7 +216,8 @@ func TestVersionChangedReconnect_ResetIsRateLimitedPerIdentity(t *testing.T) {
 func TestInferenceFlushStrikes_BoundedForSameVersionIdentity(t *testing.T) {
 	r := New(testLogger())
 	bindVersionedSession(t, r, "s1", "0.9.0", true)
-	key := inferenceErrorKey{ProviderID: versionResetStable, ModelID: "m", Shape: "base"}
+	key := modelShapeKey{Model: "m", Shape: "base"}
+	g := r.gateForSession("s1").g
 
 	const flushed = 10_000
 	now := time.Now()
@@ -228,20 +227,22 @@ func TestInferenceFlushStrikes_BoundedForSameVersionIdentity(t *testing.T) {
 		// breaker window, the rest are hours old.
 		seed = append(seed, now.Add(-time.Duration(flushed-i)*2*time.Second))
 	}
-	r.mu.Lock()
-	r.inferenceErrorStrikes[key] = append([]time.Time(nil), seed...)
-	if r.inferenceErrorFlushStrikes == nil {
-		r.inferenceErrorFlushStrikes = make(map[inferenceErrorKey][]time.Time)
+	g.mu.Lock()
+	g.inferenceErrorStrikes[key] = append([]time.Time(nil), seed...)
+	if g.inferenceErrorFlushStrikes == nil {
+		g.inferenceErrorFlushStrikes = make(map[modelShapeKey][]time.Time)
 	}
-	r.inferenceErrorFlushStrikes[key] = append([]time.Time(nil), seed...)
-	r.mu.Unlock()
+	g.inferenceErrorFlushStrikes[key] = append([]time.Time(nil), seed...)
+	g.publishLocked()
+	g.mu.Unlock()
 
 	r.RecordInferenceError("s1", "m", 502, "base")
 
-	r.mu.Lock()
-	strikes := append([]time.Time(nil), r.inferenceErrorStrikes[key]...)
-	flush := append([]time.Time(nil), r.inferenceErrorFlushStrikes[key]...)
-	r.mu.Unlock()
+	g.mu.Lock()
+	strikes := append([]time.Time(nil), g.inferenceErrorStrikes[key]...)
+	flush := append([]time.Time(nil), g.inferenceErrorFlushStrikes[key]...)
+	g.publishLocked()
+	g.mu.Unlock()
 	if len(strikes) == 0 {
 		t.Fatal("main strike list is empty after a recorded flush")
 	}
@@ -268,10 +269,11 @@ func TestInferenceFlushStrikes_BoundedForSameVersionIdentity(t *testing.T) {
 
 	// A served request clears the shape's history — tags included.
 	r.RecordInferenceSuccess("s1", "m", "base")
-	r.mu.Lock()
-	_, strikesLeft := r.inferenceErrorStrikes[key]
-	_, flushLeft := r.inferenceErrorFlushStrikes[key]
-	r.mu.Unlock()
+	g.mu.Lock()
+	_, strikesLeft := g.inferenceErrorStrikes[key]
+	_, flushLeft := g.inferenceErrorFlushStrikes[key]
+	g.publishLocked()
+	g.mu.Unlock()
 	if strikesLeft || flushLeft {
 		t.Fatalf("after success: strikes present=%v flush tags present=%v, want both cleared", strikesLeft, flushLeft)
 	}
@@ -283,19 +285,22 @@ func TestInferenceFlushStrikes_BoundedForSameVersionIdentity(t *testing.T) {
 func TestInferenceFlushStrikes_NonFlushStrikePrunesTags(t *testing.T) {
 	r := New(testLogger())
 	bindVersionedSession(t, r, "s1", "0.9.0", true)
-	key := inferenceErrorKey{ProviderID: versionResetStable, ModelID: "m", Shape: "base"}
+	key := modelShapeKey{Model: "m", Shape: "base"}
+	g := r.gateForSession("s1").g
 
 	stale := time.Now().Add(-2 * inferenceErrorWindow)
-	r.mu.Lock()
-	r.inferenceErrorStrikes[key] = []time.Time{stale}
-	r.inferenceErrorFlushStrikes = map[inferenceErrorKey][]time.Time{key: {stale}}
-	r.mu.Unlock()
+	g.mu.Lock()
+	g.inferenceErrorStrikes[key] = []time.Time{stale}
+	g.inferenceErrorFlushStrikes = map[modelShapeKey][]time.Time{key: {stale}}
+	g.publishLocked()
+	g.mu.Unlock()
 
 	r.RecordInferenceError("s1", "m", 500, "base")
 
-	r.mu.Lock()
-	flush, present := r.inferenceErrorFlushStrikes[key]
-	r.mu.Unlock()
+	g.mu.Lock()
+	flush, present := g.inferenceErrorFlushStrikes[key]
+	g.publishLocked()
+	g.mu.Unlock()
 	if present {
 		t.Fatalf("stale flush tag survived a non-flush strike: %v", flush)
 	}
@@ -389,10 +394,9 @@ func TestVersionResetThrottle_FollowsIdentityRebind(t *testing.T) {
 	s3.SetVersion("0.9.2")
 	assertIdentityQuarantineKeyed(t, r, "s3", serialID, true)
 
-	r.mu.RLock()
-	_, orphan := r.identityVersionResetAt[sekeyID]
-	_, moved := r.identityVersionResetAt[serialID]
-	r.mu.RUnlock()
+	orphan := rawGateForKey(r, sekeyID) != nil
+	moved := false
+	readGateForKey(r, serialID, func(g *gateState) { moved = g != nil && !g.versionResetAt.IsZero() })
 	if orphan || !moved {
 		t.Fatalf("reset timestamp after rebind: under old key=%v, under new key=%v; want moved", orphan, moved)
 	}
@@ -412,12 +416,14 @@ func TestMigrateFaultState_ResetTimestampKeepsLater(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := New(testLogger())
-			r.mu.Lock()
-			r.identityVersionResetAt = map[string]time.Time{"old": tc.src, "new": tc.dst}
-			r.migrateFaultStateLocked("old", "new")
-			got, ok := r.identityVersionResetAt["new"]
-			_, orphan := r.identityVersionResetAt["old"]
-			r.mu.Unlock()
+			withGateForKey(r, "old", func(g *gateState) { g.versionResetAt = tc.src })
+			withGateForKey(r, "new", func(g *gateState) { g.versionResetAt = tc.dst })
+			r.gatesMu.Lock()
+			r.migrateGateLocked(&Provider{}, r.gates["old"], r.gates["new"], true)
+			got := r.gates["new"].versionResetAt
+			ok := !got.IsZero()
+			_, orphan := r.gates["old"]
+			r.gatesMu.Unlock()
 			if !ok || !got.Equal(newer) {
 				t.Fatalf("merged reset timestamp = %v (present=%v), want %v", got, ok, newer)
 			}

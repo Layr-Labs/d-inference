@@ -3464,19 +3464,18 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 // sole lock guarding p.Models, so every reader that ranges p.Models must hold
 // p.mu (see providerModelIDs and the *Locked helpers). Do not rely on r.mu to
 // serialize reads against this write: it does not.
-func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]string) {
+func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]string) (changed bool) {
 	if len(hashes) == 0 {
-		return
+		return false
 	}
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
 	if !ok {
-		return
+		return false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	changed := false
 	models := make([]protocol.ModelInfo, len(p.Models))
 	copy(models, p.Models)
 	for i := range models {
@@ -3489,6 +3488,7 @@ func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]
 		p.Models = models
 		p.syncModelIndexLocked() // ids unchanged; keeps the invariant explicit
 	}
+	return changed
 }
 
 // CatalogWeightHash returns the expected weight hash for a model, or empty
@@ -5678,6 +5678,15 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 // online. The caller uses that to push a fresh "online" trust_status so the
 // provider's locally persisted operator state reflects recovery.
 func (r *Registry) RecordChallengeSuccess(providerID string) bool {
+	return r.RecordChallengeSuccessEx(providerID, false)
+}
+
+// RecordChallengeSuccessEx is RecordChallengeSuccess with the caller's own
+// routing-input transition folded in: weightHashesChanged is the verdict of
+// the UpdateModelWeightHashes call the challenge path makes just before this
+// (a refreshed per-model hash re-admits queued requests through the catalog
+// filter, so it must drain like any other transition).
+func (r *Registry) RecordChallengeSuccessEx(providerID string, weightHashesChanged bool) bool {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	r.mu.RUnlock()
@@ -5701,19 +5710,24 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	// A success that flips something routing can see — recovery from a
 	// transient deroute, a stale or never-set challenge freshness (the
-	// liveness gate's challenge-age check), or the FIRST success after
+	// liveness gate's challenge-age check), the FIRST success after
 	// registration, which flips ChallengeVerifiedSIP and with it the
 	// private-text gate even though registration already stamped
-	// LastChallengeVerified — persists the full provider row now and drains
-	// the queues it may have unlocked. A steady-state success on an
-	// already-fresh, already-SIP-verified provider (~4.3/s fleet-wide on the
-	// 5-minute cadence) changes nothing a queued waiter could use: the 30 s
-	// heartbeat persist carries LastChallengeVerified, and the heartbeat drain
-	// covers the queue, so it skips the full-row marshal and the
-	// one-ReserveProviderEx-per-waiter drain pass. Reputation is persisted on
-	// the same 30 s throttle the heartbeat path uses.
+	// LastChallengeVerified, or a refreshed per-model weight hash — persists
+	// the full provider row now and drains the queues it may have unlocked.
+	// The SIP flip is only observable here because the api-side caller
+	// leaves ChallengeVerifiedSIP to this method (api.verifyChallengeResponse
+	// used to pre-write it, so prevSIP read true on every first success and
+	// the transition was never detected on the production path). A
+	// steady-state success on an already-fresh, already-SIP-verified provider
+	// (~4.3/s fleet-wide on the 5-minute cadence) changes nothing a queued
+	// waiter could use: the 30 s heartbeat persist carries
+	// LastChallengeVerified, and the heartbeat drain covers the queue, so it
+	// skips the full-row marshal and the one-ReserveProviderEx-per-waiter
+	// drain pass. Reputation is persisted on the same 30 s throttle the
+	// heartbeat path uses.
 	wasFresh := !prevVerified.IsZero() && now.Sub(prevVerified) <= challengeFreshnessMaxAge
-	transition := recovered || !wasFresh || !prevSIP
+	transition := recovered || !wasFresh || !prevSIP || weightHashesChanged
 	if transition {
 		r.persistProviderNow(p)
 	}

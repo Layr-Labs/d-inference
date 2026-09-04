@@ -207,4 +207,40 @@ func TestRecordChallengeSuccessRecoveryPersistsAndDrains(t *testing.T) {
 	}
 }
 
+// TestRecordChallengeSuccessWeightHashChangeIsTransition: a steady-state
+// success whose challenge response refreshed a per-model weight hash
+// (UpdateModelWeightHashes reported a change) is a routing transition — the
+// catalog filter admits queued requests against the new hash — so it persists
+// the row and drains, while the same call with hashes unchanged stays steady
+// state.
+func TestRecordChallengeSuccessWeightHashChangeIsTransition(t *testing.T) {
+	h := newChallengeSuccessHarness(t)
+	h.setFreshness(time.Now(), true)
+
+	if changed := h.reg.UpdateModelWeightHashes("p1", map[string]string{challengeSuccessModel: "hash-a"}); !changed {
+		t.Fatal("first hash refresh must report a change")
+	}
+	h.reg.RecordChallengeSuccessEx("p1", true)
+	h.awaitWrites(1)
+	if got := h.upserts(); got != 1 {
+		t.Errorf("UpsertProvider calls = %d, want 1 on a weight-hash transition", got)
+	}
+	if h.scans.Load() == 0 {
+		t.Error("weight-hash refresh did not drain the queue")
+	}
+
+	scansAfter := h.scans.Load()
+	if changed := h.reg.UpdateModelWeightHashes("p1", map[string]string{challengeSuccessModel: "hash-a"}); changed {
+		t.Fatal("an identical hash must not report a change")
+	}
+	h.reg.RecordChallengeSuccessEx("p1", false)
+	h.awaitWrites(1)
+	if got := h.upserts(); got != 1 {
+		t.Errorf("UpsertProvider calls after an unchanged-hash success = %d, want still 1", got)
+	}
+	if got := h.scans.Load(); got != scansAfter {
+		t.Errorf("unchanged-hash success ran %d extra scans, want 0", got-scansAfter)
+	}
+}
+
 var _ = protocol.TypeRegister

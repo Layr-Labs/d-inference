@@ -1610,13 +1610,20 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// Override the self-reported SIP capability with the coordinator-verified
 	// value from the challenge response. The coordinator independently checks
 	// SIP during each attestation challenge.
+	//
+	// ChallengeVerifiedSIP itself is NOT written here: the SIP checks above
+	// fail the challenge when resp.SIPEnabled is absent or false, so at this
+	// point it is always true, and RecordChallengeSuccess sets the flag
+	// itself. Writing it first hid the first-success transition (a fresh
+	// registration starts with the flag false; RecordChallengeSuccess must
+	// read that BEFORE the flip so the success persists the row and drains
+	// the queues the private-text gate was holding).
 	provider.Mu().Lock()
 	if provider.PrivacyCapabilities != nil {
 		if resp.SIPEnabled != nil {
 			provider.PrivacyCapabilities.SIPEnabled = *resp.SIPEnabled
 		}
 	}
-	provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
 	provider.Mu().Unlock()
 
 	releaseFact := approvedReleaseTransitionFact{}
@@ -1643,10 +1650,12 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 	// hashes when it (re)loads a model from disk (e.g. after a model
 	// re-publish), so the registration-time value can go stale mid-connection,
 	// which would silently fail the per-model catalog routing filter until the
-	// next reconnect.
-	s.registry.UpdateModelWeightHashes(providerID, resp.ModelHashes)
+	// next reconnect. A changed hash is a routing transition in its own right:
+	// RecordChallengeSuccessEx drains only on a transition, so the refresh's
+	// verdict is passed through rather than relying on the steady-state path.
+	hashesChanged := s.registry.UpdateModelWeightHashes(providerID, resp.ModelHashes)
 
-	recovered := s.registry.RecordChallengeSuccess(providerID)
+	recovered := s.registry.RecordChallengeSuccessEx(providerID, hashesChanged)
 	if recovered {
 		// The provider was transiently untrusted and is now back online. Push a
 		// fresh status so its locally persisted operator state reflects recovery.

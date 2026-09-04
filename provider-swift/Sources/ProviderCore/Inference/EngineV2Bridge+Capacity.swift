@@ -285,6 +285,23 @@ extension EngineV2Bridge {
         active.count
     }
 
+    /// The heartbeat slot and the active count in ONE actor turn
+    /// (`EngineV2Runtime.capacitySummary`): the rebuild runs on every
+    /// request and every tick, and this actor also runs every pump of the
+    /// model, so a hop saved here is a hop not queued behind token delivery.
+    public func backendSlotCapacityWithActiveCount(
+        now: ContinuousClock.Instant = .now,
+        kvBytesBudgetClamp: Int? = nil
+    ) -> (slot: BackendSlotCapacity, activeRequests: Int) {
+        (backendSlotCapacity(now: now, kvBytesBudgetClamp: kvBytesBudgetClamp), active.count)
+    }
+
+    /// The live budget clamp's two inputs in ONE actor turn (see
+    /// `backendSlotCapacityWithActiveCount`).
+    public func capacityInputs() -> (engineKVBytesCapacity: Int, slotKVBytesClaim: Int) {
+        (engineKVBytesCapacity(), slotKVBytesClaim())
+    }
+
     /// This engine's live-KV admission ceiling in bytes.
     /// The heartbeat (`EngineV2Runtime.capacitySummary`) uses it as the
     /// grant input to the live budget clamp

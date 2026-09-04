@@ -101,12 +101,17 @@ public actor EngineV2Runtime {
         guard !bridges.isEmpty else { return .empty }
         // Snapshot every bridge's current admission grant and physical total
         // claim first: bridge i's clamp subtracts the other bridges' claims.
+        // Two hops per bridge, not four: the grant/claim pair and the
+        // slot/active-count pair each ride one actor turn. The bridge actor
+        // also runs every pump of its model, so each hop here queues behind
+        // token delivery.
         var grants: [String: Int] = [:]
         var totalClaims: [String: Int] = [:]
         if fleetKV != nil {
             for (modelId, bridge) in bridges {
-                grants[modelId] = await bridge.engineKVBytesCapacity()
-                totalClaims[modelId] = await bridge.slotKVBytesClaim()
+                let inputs = await bridge.capacityInputs()
+                grants[modelId] = inputs.engineKVBytesCapacity
+                totalClaims[modelId] = inputs.slotKVBytesClaim
             }
         }
         var slots: [BackendSlotCapacity] = []
@@ -126,8 +131,10 @@ public actor EngineV2Runtime {
                     configReserveBytes: fleetKV.configReserveBytes,
                     physicalBytes: fleetKV.physicalBytes)
             }
-            slots.append(await bridge.backendSlotCapacity(kvBytesBudgetClamp: clamp))
-            activeRequests += await bridge.activeRequestCount()
+            let (slot, active) = await bridge.backendSlotCapacityWithActiveCount(
+                kvBytesBudgetClamp: clamp)
+            slots.append(slot)
+            activeRequests += active
         }
         return CapacitySummary(slots: slots, activeRequests: activeRequests)
     }

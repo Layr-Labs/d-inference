@@ -970,7 +970,15 @@ extension ProviderLoop {
                 return
             }
 
-            await me.updateAggregateCapacity()
+            // Post-submit capacity refresh (the "request admitted" event
+            // heartbeat trigger). Fire-and-forget: the rebuild is 2 bridge
+            // hops per slot plus a kvBudget hop and memory syscalls on the
+            // loop actor, and this request never reads its result — awaiting
+            // it here put that latency between the engine's first token and
+            // the first frame on the wire. The accept→heartbeat race already
+            // exists (inference_accepted left before the load), so this
+            // widens nothing; materiality still fires the admission heartbeat.
+            Task { await me.updateAggregateCapacity() }
             if rejectExpiredDeadline() { return }
 
             var fullResponseText = ""
@@ -1421,8 +1429,12 @@ extension ProviderLoop {
                     ttftMs: ttftMs)
             }
 
-            // Update state
-            await me.updateAggregateCapacity()
+            // No capacity rebuild here: the task's defer runs
+            // `finishInflightRequest`, which rebuilds right after this
+            // terminal (and covers the error paths too). The coordinator
+            // holds finish/usage/[DONE] until `inference_complete`, so the
+            // rebuild used to sit between the last delta and the client's
+            // final frame for nothing — `recordFinish` already freed the row.
 
             // Send completion
             let seSignStart = SuspendingClock.now

@@ -14,7 +14,9 @@
 //   * a coordinator cancel mid-stream settles as a partial completion with
 //     the delivered tokens, cancel stamps in order, and no usage gap (T1-01);
 //   * cancels for unknown ids and disconnect-driven cancel-all never consult
-//     the runtime or rebuild capacity (T1-01).
+//     the runtime or rebuild capacity (T1-01);
+//   * the per-request capacity rebuilds never sit between the engine and the
+//     first chunk or the terminal (T1-02).
 
 import Foundation
 import MLXLMCommon
@@ -208,7 +210,9 @@ private final class OutboundRecorder: @unchecked Sendable {
     }
 
     var chunkCount: Int { lock.withLock { chunkSeenAt.count } }
-    var firstChunkAt: ContinuousClock.Instant? { lock.withLock { chunkSeenAt.first } }
+    func chunkAt(index: Int) -> ContinuousClock.Instant? {
+        lock.withLock { index < chunkSeenAt.count ? chunkSeenAt[index] : nil }
+    }
     var terminalAt: ContinuousClock.Instant? { lock.withLock { terminalSeenAt } }
 
     var errors: [(failure: InferenceFailure, profile: RequestProfileBuilder?)] {
@@ -524,6 +528,87 @@ struct ProviderLoopStreamingPathTests {
         #expect(await h.runtime.consultCount == before)
         #expect(h.engine.capacityCalls == 0)
         #expect(await h.loop.hasInflightWork == false)
+    }
+
+    // MARK: T1-02 — capacity rebuilds off the request path
+
+
+    @Test("a slow co-resident slot delays neither the first chunk nor the terminal; the rebuild still happens off-path")
+    func capacityRebuildsNeverGateChunksOrTerminal() async throws {
+        let h = try await Harness.make()
+        // A co-resident slot whose bridge actor is busy (its own pumps): every
+        // capacity read on it blocks 400 ms. The rebuild must visit it (two
+        // hops per bridge ⇒ ≥ 800 ms per rebuild); this request's pump never
+        // does. Before the change the detached task awaited that rebuild
+        // before consuming its first frame and again before its terminal.
+        let busyEngine = HarnessEngine()
+        busyEngine.blockCapacity(seconds: 0.4)
+        let busyBridge = EngineV2Bridge(
+            engine: busyEngine,
+            modelId: "busy-neighbour",
+            tokenizer: TokenizerHandle(HarnessTokenizer()),
+            eosTokenIds: [])
+        await h.runtime.register(modelId: "busy-neighbour", bridge: busyBridge)
+        let recorder = OutboundRecorder()
+        let sender = NodeKeyPair.generate()
+        let handler = try await h.submit(
+            requestId: "req-latency", recorder: recorder, sender: sender)
+        _ = await handler.value
+        try await h.wait("engine submission") { h.engine.ordinarySubmits == 1 }
+
+        let emittedFirst = ContinuousClock.now
+        h.engine.emit(.delta(text: "Hello", tokens: [10], logprobs: nil))
+        // The role preamble is chunk #1; the first CONTENT chunk is #2.
+        try await h.wait("first content chunk", recorder: recorder) { recorder.chunkCount >= 2 }
+        let firstChunkAt = try #require(recorder.chunkAt(index: 1))
+        let firstChunkMs = ms(firstChunkAt - emittedFirst)
+
+        h.engine.emit(.delta(text: " world", tokens: [11], logprobs: nil))
+        try await h.wait("second content chunk", recorder: recorder) { recorder.chunkCount >= 3 }
+        let emittedFinish = ContinuousClock.now
+        h.engine.emit(.finished(
+            reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)))
+        h.engine.finishStream()
+        try await h.wait("terminal", recorder: recorder) { recorder.terminalAt != nil }
+        let terminalAt = try #require(recorder.terminalAt)
+        let terminalMs = ms(terminalAt - emittedFinish)
+
+        // Neither hop paid the neighbour's ≥ 800 ms rebuild (loaded machine:
+        // generous bound, still far below one blocked read).
+        #expect(firstChunkMs < 300, "first chunk took \(firstChunkMs) ms")
+        #expect(terminalMs < 300, "terminal took \(terminalMs) ms")
+        #expect(recorder.kinds.last == "complete")
+        let completion = try #require(recorder.completions.first)
+        #expect(completion.usage.completionTokens == 2)
+        #expect(completion.usage.promptTokens == 5)
+        #expect(completion.hash != nil)
+
+        // The post-submit rebuild and the finish rebuild still run — off the
+        // request path: exactly two runtime consults per request, each
+        // visiting the busy neighbour twice (2 hops per bridge).
+        try await h.wait("post-request rebuilds", timeout: .seconds(30), recorder: recorder) {
+            busyEngine.capacityCalls >= 4
+        }
+        #expect(await h.runtime.consultCount == 2)
+        #expect(busyEngine.capacityCalls == 4)
+    }
+
+    @Test("the per-slot MTP/KV-backend posture is sampled by the capacity tick, not by per-request rebuilds")
+    func slotPosturesSampledOnTickOnly() async throws {
+        let h = try await Harness.make()
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dstate-tick-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: stateURL) }
+        await h.loop.setDaemonStateFileForTesting(stateURL)
+
+        // The per-request rebuild leaves the posture untouched (no
+        // `mtpStatusSnapshot` hop per slot on the request path).
+        await h.loop.updateAggregateCapacity()
+        #expect(await h.loop.lastLiveSlotPostures.isEmpty)
+        // The tick samples it — one entry per loaded slot.
+        await h.loop.capacityRefreshTick()
+        let postures = await h.loop.lastLiveSlotPostures
+        #expect(postures.map(\.model) == [h.modelId])
     }
 }
 

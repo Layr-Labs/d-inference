@@ -2067,7 +2067,13 @@ struct EngineV2RuntimeGuardTests {
                 modelType: "gemma4")
         }
 
+        // The MTP/KV-backend posture is sampled on the capacity TICK
+        // (`sampleLiveSlotPostures`, one actor hop per slot, diagnostics
+        // only) — not by the per-request rebuild `updateAggregateCapacity`
+        // also serves. Driven directly here so the test never writes the
+        // real daemon state file.
         await loop.updateAggregateCapacity()
+        await loop.sampleLiveSlotPostures()
         let slots = try #require(await loop.currentDaemonState().slots)
         #expect(slots.map(\.model) == ["gemma-4-26b-qat-4bit", "gpt-oss-20b"])
         #expect(slots[0].kvBackend == "paged")

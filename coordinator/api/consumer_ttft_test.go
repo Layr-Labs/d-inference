@@ -285,7 +285,14 @@ func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
 	srv.Handler().ServeHTTP(w, req)
 
 	// The nil test conn resolves to the send-failed ladder's own 429 ("no
-	// provider accepted the request"); only a TTFT-shaped rejection fails this.
+	// provider accepted the request"); only a TTFT-shaped rejection fails
+	// this — by vocabulary, and by status for a hard-gate regression that
+	// drops every candidate and surfaces as a generic capacity 429 without
+	// the TTFT wording (the sibling soft-gate test keeps the same scoped
+	// status check).
+	if w.Code == http.StatusTooManyRequests && !strings.Contains(w.Body.String(), "no provider accepted the request") {
+		t.Fatalf("hard gate shed media on a text-only estimate with 429; body=%s", w.Body.String())
+	}
 	if strings.Contains(w.Body.String(), "TTFT target") || strings.Contains(w.Body.String(), "temporarily rate-limited") {
 		t.Fatalf("hard gate used a text-only estimate to reject media: status=%d body=%s", w.Code, w.Body.String())
 	}

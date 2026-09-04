@@ -230,10 +230,8 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		// registry-side state is gone or belongs to a new session — drop it.
 		return rows[:start]
 	}
-	gate := r.gateOf(p)
-	nowNS := now.UnixNano()
-	breakerOpen := gate.breakerOpenAt(nowNS)
-	ejected := r.ejectionOpenFor(gate, stableID, nowNS)
+	breakerOpen := r.providerBreakerOpenLocked(p.ID, now)
+	ejected := stableID != "" && r.healthEjectionOpenLocked(stableID, now)
 	if scratch == nil {
 		row := &rows[start]
 		row.BreakerOpen = breakerOpen
@@ -256,10 +254,10 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 		row.BreakerOpen = breakerOpen
 		row.Ejected = ejected
 		row.EffectiveCap = r.effectiveMaxConcurrencyForModelResolvedLocked(p, raw)
-		row.CooldownActive = gate.dispatchLoadCooled(raw, now) ||
-			gate.inferenceErrorCooled(raw, shape, now) ||
-			gate.capacityCooled(raw, now)
-		row.ClampActive = gate.budgetClampActive(r.budgetClampCfg, raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
+		row.CooldownActive = r.dispatchLoadCooldownActiveLocked(p.ID, raw, now) ||
+			r.inferenceErrorCooldownActiveLocked(p.ID, raw, shape, now) ||
+			r.capacityCooldownActiveLocked(p.ID, raw, now)
+		row.ClampActive = r.budgetClampActiveLocked(p.ID, raw, heartbeatAt, scratch[i].rawRemaining, scratch[i].budgetReported, now)
 	}
 	p.mu.Unlock()
 	// Eligibility via the real routing gates (the snapshot helper takes p.mu
@@ -313,13 +311,11 @@ func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe 
 // a provider with no resident slot to evaluate a model against. Caller holds
 // r.mu (read) and p.mu.
 func (r *Registry) providerLevelGateReasonLocked(p *Provider, now time.Time) (bool, GateReason) {
-	g := r.gateOf(p)
-	nowNS := now.UnixNano()
-	if g.breakerOpenAt(nowNS) {
+	if r.providerBreakerOpenLocked(p.ID, now) {
 		return false, GateBreaker
 	}
 	if healthEjectionEnabled() {
-		if r.ejectionOpenFor(g, stableProviderIdentityLocked(p), nowNS) {
+		if sid := stableProviderIdentityLocked(p); sid != "" && r.healthEjectionOpenLocked(sid, now) {
 			return false, GateEjection
 		}
 	}

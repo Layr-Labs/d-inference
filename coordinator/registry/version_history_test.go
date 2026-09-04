@@ -11,31 +11,38 @@ func TestVersionHistoryRetentionKeepsLiveRecentAndQuarantinedIdentities(t *testi
 	live := bindVersionedSession(t, r, "live-history", "0.9.0", false)
 	now := time.Now()
 	stale := now.Add(-identityVersionRetention - time.Minute)
-	for _, id := range []string{versionResetStable, "departed", "recent", "quarantined", "recent-reset", "fault-window"} {
-		withGateForKey(r, id, func(g *gateState) {
-			g.identityVersion = "0.9.0"
-			g.touched = stale
-		})
+	r.mu.Lock()
+	r.identityVersionSeenAt[versionResetStable] = stale
+	for _, id := range []string{"departed", "recent", "quarantined", "recent-reset", "fault-window"} {
+		r.identityVersions[id] = "0.9.0"
+		r.identityVersionSeenAt[id] = stale
 	}
-	withGateForKey(r, "recent", func(g *gateState) { g.touched = now })
-	withGateForKey(r, "departed", func(g *gateState) { g.versionResetAt = stale })
-	withGateForKey(r, "recent-reset", func(g *gateState) { g.versionResetAt = now })
-	withGateForKey(r, "quarantined", func(g *gateState) { g.breakerUntil = now.Add(time.Minute) })
-	withGateForKey(r, "fault-window", func(g *gateState) { g.healthWindowLocked().recordFault(now, false) })
-	r.sweepGates(now)
+	r.identityVersionSeenAt["recent"] = now
+	r.identityVersionResetAt = map[string]time.Time{"departed": stale, "recent-reset": now}
+	r.providerBreakerOpenUntil["quarantined"] = now.Add(time.Minute)
+	r.providerOutcomes["fault-window"] = &providerHealthWindow{}
+	r.providerOutcomes["fault-window"].recordFault(now, false)
+	r.identityVersionSweepAt = time.Time{}
+	r.mu.Unlock()
+	r.sweepIdentityVersionHistory(now)
+	r.mu.RLock()
 	for _, id := range []string{versionResetStable, "recent", "quarantined", "recent-reset", "fault-window"} {
-		if rawGateForKey(r, id) == nil {
+		if _, kept := r.identityVersions[id]; !kept {
 			t.Errorf("active or recent identity %q was removed", id)
 		}
 	}
-	if rawGateForKey(r, "departed") != nil {
+	if _, kept := r.identityVersions["departed"]; kept || len(r.identityVersionResetAt) != 1 {
 		t.Error("departed version/reset history was retained")
 	}
-	// The reconnect grace starts at disconnect, even if the live provider's
-	// last version observation and outcome were older than the retention.
+	r.mu.RUnlock()
+	// A long-lived session starts its reconnect grace when it disconnects,
+	// not when it originally announced the version.
 	r.Disconnect(live.ID)
-	r.sweepGates(now.Add(time.Minute))
-	if rawGateForKey(r, versionResetStable) == nil {
+	r.sweepIdentityVersionHistory(now.Add(identityVersionSweepInterval))
+	r.mu.RLock()
+	_, kept := r.identityVersions[versionResetStable]
+	r.mu.RUnlock()
+	if !kept {
 		t.Fatal("disconnect did not preserve the recent reconnect window")
 	}
 }
@@ -43,23 +50,27 @@ func TestVersionHistoryRetentionKeepsLiveRecentAndQuarantinedIdentities(t *testi
 func TestVersionHistoryChurnDoesNotRetainDepartedVersionsForever(t *testing.T) {
 	r := New(testLogger())
 	now := time.Now()
+	r.mu.Lock()
+	r.identityVersions = make(map[string]string)
+	r.identityVersionResetAt = make(map[string]time.Time)
 	for minute := range 120 {
 		at := now.Add(time.Duration(minute) * time.Minute)
 		for i := range 100 {
 			id := fmt.Sprintf("departed-%d-%d", minute, i)
-			withGateForKey(r, id, func(g *gateState) {
-				g.identityVersion = "0.9.1"
-				g.touched = at
-				g.versionResetAt = at
-			})
+			r.identityVersions[id] = "0.9.1"
+			r.identityVersionResetAt[id] = at
+			r.touchIdentityVersionLocked(id, at)
 		}
-		r.sweepGates(at)
-		if count := r.gateCount(); count > 2100 {
-			t.Fatalf("version history grew past its retention window: %d", count)
+		r.pruneIdentityVersionsLocked(at)
+		if len(r.identityVersions) > 2100 {
+			t.Fatalf("version history grew past its retention window: %d", len(r.identityVersions))
 		}
 	}
-	r.sweepGates(now.Add(3 * time.Hour))
-	if r.gateCount() != 0 {
+	r.mu.Unlock()
+	r.sweepIdentityVersionHistory(now.Add(3 * time.Hour))
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.identityVersions)+len(r.identityVersionSeenAt)+len(r.identityVersionResetAt) != 0 {
 		t.Fatal("idle sweep did not release departed version metadata")
 	}
 }

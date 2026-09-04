@@ -7,22 +7,24 @@ import (
 )
 
 func inferenceCooldownActiveAt(r *Registry, providerID, modelID, shape string, now time.Time) bool {
-	return r.inferenceErrorCooled(providerID, modelID, shape, now)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.inferenceErrorCooldownActiveLocked(providerID, modelID, shape, now)
 }
 
 // ageInferenceStrikes rewinds every recorded strike for the (provider, model,
 // shape) triple by d, simulating the passage of time without sleeping in the
 // test.
 func ageInferenceStrikes(r *Registry, providerID, modelID, shape string, d time.Duration) {
-	withGateForSession(r, providerID, func(g *gateState) {
-		key := modelShapeKey{Model: modelID, Shape: shape}
-		strikes := g.inferenceErrorStrikes[key]
-		aged := make([]time.Time, len(strikes))
-		for i, ts := range strikes {
-			aged[i] = ts.Add(-d)
-		}
-		g.inferenceErrorStrikes[key] = aged
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := inferenceErrorKey{ProviderID: providerID, ModelID: modelID, Shape: shape}
+	strikes := r.inferenceErrorStrikes[key]
+	aged := make([]time.Time, len(strikes))
+	for i, ts := range strikes {
+		aged[i] = ts.Add(-d)
+	}
+	r.inferenceErrorStrikes[key] = aged
 }
 
 // Regression for the prod incident: a deterministic provider-side failure
@@ -267,35 +269,41 @@ func TestInferenceErrorShapeKeyedBucketsIndependent(t *testing.T) {
 
 func TestInferenceErrorMapsBounded(t *testing.T) {
 	r := New(testLogger())
-	// Trip the breaker for >1024 distinct dead identities, then let everything
-	// expire — the gate sweep must drop every idle gate, while a connected
-	// provider's gate keeps its (pruned) state.
+	// Trip the breaker for >1024 distinct dead pairs so both maps grow, then
+	// force everything past expiry — the opportunistic sweep must drop them.
 	for i := 0; i < 1100; i++ {
 		id := fmt.Sprintf("dead-provider-%d", i)
 		r.RecordInferenceError(id, "m", 500, "base")
 		r.RecordInferenceError(id, "m", 500, "base")
 	}
-	if n := r.gateCount(); n < 1000 {
-		t.Fatalf("setup produced too few distinct gates: %d", n)
+	r.mu.Lock()
+	for k := range r.inferenceErrorCooldowns {
+		r.inferenceErrorCooldowns[k] = time.Now().Add(-time.Second)
 	}
-	live := makeSchedulerProvider(t, r, "live", "m", 50)
-	r.RecordInferenceError(live.ID, "m", 500, "base")
-
-	future := time.Now().Add(gateIdleGrace + inferenceErrorCooldownTTL + time.Second)
-	r.sweepGates(future)
-
-	if after := r.gateCount(); after != 1 {
-		t.Fatalf("sweep should leave only the live provider's gate, got %d", after)
+	for k, strikes := range r.inferenceErrorStrikes {
+		aged := make([]time.Time, len(strikes))
+		for i, ts := range strikes {
+			aged[i] = ts.Add(-(inferenceErrorWindow + time.Second))
+		}
+		r.inferenceErrorStrikes[k] = aged
 	}
-	readGateForSession(r, live.ID, func(g *gateState) {
-		if g == nil {
-			t.Fatal("the connected provider's gate must never be swept")
-		}
-		if len(g.inferenceErrorStrikes) != 0 || len(g.inferenceErrorCooldowns) != 0 {
-			t.Fatalf("expired strikes/cooldowns must be pruned from a live gate: strikes=%d cooldowns=%d",
-				len(g.inferenceErrorStrikes), len(g.inferenceErrorCooldowns))
-		}
-	})
+	cooldowns, strikes := len(r.inferenceErrorCooldowns), len(r.inferenceErrorStrikes)
+	r.mu.Unlock()
+	if cooldowns < 1000 || strikes < 1000 {
+		t.Fatalf("setup produced too few distinct entries: cooldowns=%d strikes=%d", cooldowns, strikes)
+	}
+
+	r.RecordInferenceError("live", "m", 500, "base")
+
+	r.mu.Lock()
+	cooldownsAfter, strikesAfter := len(r.inferenceErrorCooldowns), len(r.inferenceErrorStrikes)
+	r.mu.Unlock()
+	if cooldownsAfter != 0 {
+		t.Fatalf("cooldown sweep should drop every expired entry (live pair has no cooldown yet), got %d", cooldownsAfter)
+	}
+	if strikesAfter != 1 {
+		t.Fatalf("strike sweep should leave only the live entry, got %d", strikesAfter)
+	}
 }
 
 // End-to-end through the production dispatch hot path (ReserveProviderEx): a

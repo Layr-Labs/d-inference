@@ -6,7 +6,9 @@ import (
 )
 
 func cooldownActive(r *Registry, providerID, modelID string, now time.Time) bool {
-	return r.dispatchLoadCooled(providerID, modelID, now)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dispatchLoadCooldownActiveLocked(providerID, modelID, now)
 }
 
 // Regression for the prod fleet outage: providers wedged on "insufficient
@@ -100,24 +102,27 @@ func TestDispatchLoadCooldownSurvivesRegister(t *testing.T) {
 
 func TestDispatchLoadCooldownSweepBoundsMap(t *testing.T) {
 	r := New(testLogger())
-	// >1024 identity-less sessions record a load failure and vanish. Once the
-	// cooldowns expire and the idle grace passes, the gate sweep must drop
-	// every one of their gates; a connected provider's gate always survives.
+	// Insert >1024 entries, then force them all past expiry by recording a
+	// fresh failure after the TTL — the opportunistic sweep must drop them.
 	for i := 0; i < 1100; i++ {
 		r.RecordDispatchLoadFailure("dead-provider-"+string(rune('a'+i%26))+string(rune('0'+i%10))+string(rune('0'+(i/10)%10))+string(rune('0'+(i/100)%10)), "m")
 	}
-	if n := r.gateCount(); n < 1000 {
-		t.Fatalf("setup produced too few distinct gates: %d", n)
+	r.mu.Lock()
+	for k := range r.dispatchLoadCooldowns {
+		r.dispatchLoadCooldowns[k] = time.Now().Add(-time.Second)
 	}
-	live := makeSchedulerProvider(t, r, "live", "m", 50)
-	r.RecordDispatchLoadFailure(live.ID, "m")
-
-	r.sweepGates(time.Now().Add(gateIdleGrace + dispatchLoadCooldownTTL + time.Second))
-
-	if after := r.gateCount(); after != 1 {
-		t.Fatalf("sweep should leave only the live provider's gate, got %d", after)
+	size := len(r.dispatchLoadCooldowns)
+	r.mu.Unlock()
+	if size < 1000 {
+		t.Fatalf("setup produced too few distinct entries: %d", size)
 	}
-	if rawGateForKey(r, live.ID) == nil {
-		t.Fatal("the connected provider's gate must never be swept")
+
+	r.RecordDispatchLoadFailure("live", "m")
+
+	r.mu.Lock()
+	after := len(r.dispatchLoadCooldowns)
+	r.mu.Unlock()
+	if after != 1 {
+		t.Fatalf("sweep should leave only the live entry, got %d", after)
 	}
 }

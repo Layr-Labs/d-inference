@@ -5,10 +5,9 @@ import (
 	"time"
 )
 
-// TestPairKeysCannotAliasAcrossDelimiter pins the guarantee the old
-// "providerID:modelID" strings lacked: ("a:b", "c") and ("a", "b:c") are
-// different pairs for both the dispatch-load cooldown (now a per-identity gate
-// keyed inside by model) and pending model loads (a struct key).
+// TestPairKeysCannotAliasAcrossDelimiter pins the struct-key guarantee the
+// old "providerID:modelID" strings lacked: ("a:b", "c") and ("a", "b:c") are
+// different pairs for both the dispatch-load cooldown and pending model loads.
 func TestPairKeysCannotAliasAcrossDelimiter(t *testing.T) {
 	r := New(testLogger())
 	makeSchedulerProvider(t, r, "a:b", "c", 50)
@@ -17,8 +16,10 @@ func TestPairKeysCannotAliasAcrossDelimiter(t *testing.T) {
 	if !r.RecordDispatchLoadFailure("a:b", "c") {
 		t.Fatal("first failure must start a cooldown")
 	}
-	aliased := r.dispatchLoadCooled("a", "b:c", time.Now())
-	direct := r.dispatchLoadCooled("a:b", "c", time.Now())
+	r.mu.RLock()
+	aliased := r.dispatchLoadCooldownActiveLocked("a", "b:c", time.Now())
+	direct := r.dispatchLoadCooldownActiveLocked("a:b", "c", time.Now())
+	r.mu.RUnlock()
 	if aliased || !direct {
 		t.Fatalf("dispatch-load cooldown aliased across ':' (aliased=%v direct=%v)", aliased, direct)
 	}
@@ -33,28 +34,20 @@ func TestPairKeysCannotAliasAcrossDelimiter(t *testing.T) {
 }
 
 // TestDispatchLoadCooldownGateAllocatesNothing pins the hot-path contract for
-// the per-provider cooldown gate, on both the scan's cached-gate path and the
-// session-resolving path.
+// the per-provider cooldown gate.
 func TestDispatchLoadCooldownGateAllocatesNothing(t *testing.T) {
 	r := New(testLogger())
-	p1 := makeSchedulerProvider(t, r, "p1", "m", 50)
-	p2 := makeSchedulerProvider(t, r, "p2", "m", 50)
+	makeSchedulerProvider(t, r, "p1", "m", 50)
 	r.RecordDispatchLoadFailure("p1", "m")
 	now := time.Now()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	hits := 0
 	allocs := testing.AllocsPerRun(200, func() {
-		if r.gateOf(p1).dispatchLoadCooled("m", now) {
+		if r.dispatchLoadCooldownActiveLocked("p1", "m", now) {
 			hits++
 		}
-		if r.gateOf(p2).dispatchLoadCooled("m", now) {
-			hits++
-		}
-		if r.dispatchLoadCooled("p1", "m", now) {
-			hits++
-		}
-		if r.dispatchLoadCooled("p2", "m", now) {
+		if r.dispatchLoadCooldownActiveLocked("p2", "m", now) {
 			hits++
 		}
 	})
@@ -91,10 +84,12 @@ func TestDisconnectDropsOnlyThatProvidersPendingLoads(t *testing.T) {
 	if !r.HasPendingModelLoad("p10", "m") {
 		t.Fatal("prefix-sharing provider's pending load was dropped")
 	}
-	if r.dispatchLoadCooled("p1", "m", now) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.dispatchLoadCooldownActiveLocked("p1", "m", now) {
 		t.Fatal("identity-less disconnected provider's cooldown residue survived")
 	}
-	if !r.dispatchLoadCooled("p10", "m", now) {
+	if !r.dispatchLoadCooldownActiveLocked("p10", "m", now) {
 		t.Fatal("prefix-sharing provider's cooldown was dropped")
 	}
 }

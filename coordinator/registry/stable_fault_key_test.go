@@ -29,10 +29,12 @@ func attestSchedulerProvider(t *testing.T, reg *Registry, sessionID, model, seri
 }
 
 func faultKeyOf(r *Registry, sessionID string) string {
-	return r.faultKeyForSession(sessionID)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.faultKeyLocked(sessionID)
 }
 
-// faultKeyForSession precedence: bound identity → disconnect cache → session id.
+// faultKeyLocked precedence: bound identity → disconnect cache → session id.
 func TestFaultKeyBindingLifecycle(t *testing.T) {
 	reg := New(testLogger())
 	p := attestSchedulerProvider(t, reg, "sess-bind", "m", "SER-BIND", 50)
@@ -59,7 +61,10 @@ func TestFaultKeyBindingLifecycle(t *testing.T) {
 	// resolves the trailing ErrorCh-flush faults.
 	p.SetAttestationResult(&attestation.VerificationResult{Valid: true, SerialNumber: "SER-BIND"})
 	reg.Disconnect("sess-bind")
-	if sessionIndexed(reg, "sess-bind") {
+	reg.mu.RLock()
+	_, hasBinding := reg.faultKeyBySession["sess-bind"]
+	reg.mu.RUnlock()
+	if hasBinding {
 		t.Fatal("Disconnect must remove the live session binding")
 	}
 	if got := faultKeyOf(reg, "sess-bind"); got != "serial:SER-BIND" {
@@ -91,8 +96,10 @@ func TestInvalidAttestationDoesNotBindStableFaultKey(t *testing.T) {
 	for i := 0; i < providerBreakerConsecTrip; i++ {
 		reg.RecordProviderOutcome("sess-evil", false, 500, "internal error")
 	}
-	victimPoisoned := gateHasBreakerWindow(reg, "serial:"+victim)
-	sessionKeyed := gateHasBreakerWindow(reg, "sess-evil")
+	reg.mu.RLock()
+	_, victimPoisoned := reg.providerOutcomes["serial:"+victim]
+	_, sessionKeyed := reg.providerOutcomes["sess-evil"]
+	reg.mu.RUnlock()
 	if victimPoisoned {
 		t.Fatal("faults from an invalid attestation poisoned the victim's serial-keyed state")
 	}
@@ -106,7 +113,10 @@ func TestInvalidAttestationDoesNotBindStableFaultKey(t *testing.T) {
 	if got := faultKeyOf(reg, "sess-evil"); got != "serial:SER-REAL" {
 		t.Fatalf("valid attestation must bind, got %q", got)
 	}
-	if !gateHasBreakerWindow(reg, "serial:SER-REAL") {
+	reg.mu.RLock()
+	_, migrated := reg.providerOutcomes["serial:SER-REAL"]
+	reg.mu.RUnlock()
+	if !migrated {
 		t.Fatal("session-keyed fault state must migrate on the first valid bind")
 	}
 
@@ -157,8 +167,10 @@ func TestFaultStateMigratesOnIdentityRebind(t *testing.T) {
 	}
 
 	// Old keys must not retain orphaned state.
-	sekeyOrphan := gateHasBreakerWindow(reg, "sekey:PK-MIG")
-	sessOrphan := gateHasBreakerWindow(reg, "sess-mig")
+	reg.mu.RLock()
+	_, sekeyOrphan := reg.providerOutcomes["sekey:PK-MIG"]
+	_, sessOrphan := reg.providerOutcomes["sess-mig"]
+	reg.mu.RUnlock()
 	if sekeyOrphan || sessOrphan {
 		t.Fatalf("fault state orphaned under old keys (sekey=%v session=%v)", sekeyOrphan, sessOrphan)
 	}
@@ -326,20 +338,14 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	reg.Disconnect("sess-1")
 
 	stableKey := "serial:" + serial
-	var hasWin, hasOpen, hasStrikes, hasDLC bool
-	readGateForKey(reg, stableKey, func(g *gateState) {
-		if g == nil {
-			return
-		}
-		hasWin = g.outcomes != nil
-		hasOpen = !g.breakerUntil.IsZero()
-		_, hasStrikes = g.inferenceErrorStrikes[modelShapeKey{Model: model, Shape: "base"}]
-		_, hasDLC = g.dispatchLoadCooldowns[model]
-	})
 	reg.mu.RLock()
+	_, hasWin := reg.providerOutcomes[stableKey]
+	_, hasOpen := reg.providerBreakerOpenUntil[stableKey]
+	_, hasStrikes := reg.inferenceErrorStrikes[inferenceErrorKey{ProviderID: stableKey, ModelID: model, Shape: "base"}]
+	_, hasDLC := reg.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: stableKey, ModelID: model}]
 	_, hasPending := reg.pendingModelLoads[modelLoadKey{ProviderID: "sess-1", ModelID: model}]
+	_, hasBinding := reg.faultKeyBySession["sess-1"]
 	reg.mu.RUnlock()
-	hasBinding := sessionIndexed(reg, "sess-1")
 	if !hasWin || !hasOpen || !hasStrikes || !hasDLC {
 		t.Fatalf("identity-keyed fault state must survive Disconnect: win=%v open=%v strikes=%v dlc=%v",
 			hasWin, hasOpen, hasStrikes, hasDLC)
@@ -357,39 +363,43 @@ func TestDisconnectKeepsStableFaultStateCleansSessionState(t *testing.T) {
 	reg.RecordInferenceError("sess-anon", model, 500, "base")
 	reg.RecordDispatchLoadFailure("sess-anon", model)
 	reg.Disconnect("sess-anon")
-	if g := rawGateForKey(reg, "sess-anon"); g != nil {
-		t.Fatalf("session-keyed residue of an identity-less provider must be dropped, gate still filed: %+v", g)
-	}
-	if reg.ProviderBreakerOpen("sess-anon") || reg.InferenceErrorCooldownActive("sess-anon", model, "base") ||
-		reg.dispatchLoadCooled("sess-anon", model, time.Now()) {
-		t.Fatal("session-keyed residue of an identity-less provider must not gate")
+	reg.mu.RLock()
+	_, anonWin := reg.providerOutcomes["sess-anon"]
+	_, anonStrikes := reg.inferenceErrorStrikes[inferenceErrorKey{ProviderID: "sess-anon", ModelID: model, Shape: "base"}]
+	_, anonDLC := reg.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: "sess-anon", ModelID: model}]
+	reg.mu.RUnlock()
+	if anonWin || anonStrikes || anonDLC {
+		t.Fatalf("session-keyed residue of an identity-less provider must be dropped: win=%v strikes=%v dlc=%v",
+			anonWin, anonStrikes, anonDLC)
 	}
 }
 
-// REQUIRED: stale identities expire — an identity whose only state is a
-// capacity streak older than the window is idle, and the gate sweep drops it
-// once no live session references it and the idle grace has passed.
+// REQUIRED: stale identities expire — the capacity-streak map is bounded by
+// the health-ejection sweep once it grows past its cap.
 func TestHealthEjectionCapacityStreakSweep(t *testing.T) {
 	reg := New(testLogger())
 	const rejectStr = "token_budget_exhausted: request exceeds active token budget"
 	for i := 0; i < 2100; i++ {
 		reg.RecordProviderServeOutcome(fmt.Sprintf("serial:churned-%d", i), false, 503, rejectStr)
 	}
-	if n := reg.gateCount(); n < 2050 {
-		t.Fatalf("setup produced too few streak gates: %d", n)
+	reg.mu.Lock()
+	for id, s := range reg.healthEjectionCapacityStreaks {
+		s.last = s.last.Add(-(healthEjectionWindow + time.Second))
+		reg.healthEjectionCapacityStreaks[id] = s
+	}
+	size := len(reg.healthEjectionCapacityStreaks)
+	reg.mu.Unlock()
+	if size < 2050 {
+		t.Fatalf("setup produced too few streak entries: %d", size)
 	}
 
-	// A live identity records just before the sweep runs far enough in the
-	// future for the churned streaks to have aged out; its own fresh streak
-	// (touched now) keeps it.
-	future := time.Now().Add(gateIdleGrace + healthEjectionWindow + time.Second)
-	withGateForKey(reg, "serial:live", func(g *gateState) {
-		g.ejectionCapacityStreak = capacityStreak{n: 1, last: future}
-		g.touched = future
-	})
-	reg.sweepGates(future)
+	// The next record sweeps the stale identities before recording.
+	reg.RecordProviderServeOutcome("serial:live", false, 503, rejectStr)
 
-	if after := reg.gateCount(); after != 1 {
+	reg.mu.RLock()
+	after := len(reg.healthEjectionCapacityStreaks)
+	reg.mu.RUnlock()
+	if after != 1 {
 		t.Fatalf("sweep must drop every stale identity, leaving only the live one; got %d", after)
 	}
 }
@@ -403,9 +413,11 @@ func TestHealthEjectionCapacityStreakStaleReset(t *testing.T) {
 	for i := 0; i < healthEjectionCapacityConsecTrip-1; i++ {
 		reg.RecordProviderServeOutcome(sid, false, 503, rejectStr)
 	}
-	withGateForKey(reg, sid, func(g *gateState) {
-		g.ejectionCapacityStreak.last = g.ejectionCapacityStreak.last.Add(-(healthEjectionWindow + time.Second))
-	})
+	reg.mu.Lock()
+	s := reg.healthEjectionCapacityStreaks[sid]
+	s.last = s.last.Add(-(healthEjectionWindow + time.Second))
+	reg.healthEjectionCapacityStreaks[sid] = s
+	reg.mu.Unlock()
 
 	if ejected, _ := reg.RecordProviderServeOutcome(sid, false, 503, rejectStr); ejected {
 		t.Fatal("a fresh strike after a stale streak must restart the count, not eject")
@@ -440,8 +452,10 @@ func TestAccountLinkageBindsStableFaultKey(t *testing.T) {
 	if got := faultKeyOf(reg, "sess-acct-1"); got != "acct:"+acct {
 		t.Fatalf("account linkage must bind the acct: fallback, got %q", got)
 	}
-	migrated := gateHasBreakerWindow(reg, "acct:"+acct)
-	sessOrphan := gateHasBreakerWindow(reg, "sess-acct-1")
+	reg.mu.RLock()
+	_, migrated := reg.providerOutcomes["acct:"+acct]
+	_, sessOrphan := reg.providerOutcomes["sess-acct-1"]
+	reg.mu.RUnlock()
 	if !migrated || sessOrphan {
 		t.Fatalf("pre-link session-keyed faults must migrate to the acct: key (migrated=%v orphan=%v)", migrated, sessOrphan)
 	}
@@ -494,7 +508,10 @@ func TestInvalidReattestationKeepsAccountBinding(t *testing.T) {
 	if got := faultKeyOf(reg, "sess-acct-reatt"); got != "serial:SER-REAL-REATT" {
 		t.Fatalf("valid attestation must upgrade the binding, got %q", got)
 	}
-	if !gateHasBreakerWindow(reg, "serial:SER-REAL-REATT") {
+	reg.mu.RLock()
+	_, migrated := reg.providerOutcomes["serial:SER-REAL-REATT"]
+	reg.mu.RUnlock()
+	if !migrated {
 		t.Fatal("acct:-keyed fault state must migrate to the upgraded serial: key")
 	}
 }
@@ -532,19 +549,12 @@ func TestFaultStreakSurvivesIdentityEnrichmentMidStreak(t *testing.T) {
 		t.Fatalf("enrichment must rebind to the serial key, got %q", got)
 	}
 
-	var w, he *providerHealthWindow
-	readGateForKey(reg, "serial:"+serial, func(g *gateState) {
-		if g != nil {
-			w, he = g.outcomes, g.ejection
-		}
-	})
-	orphan := gateHasBreakerWindow(reg, "sekey:PK-MERGE")
-	heOrphan := false
-	if g := rawGateForKey(reg, "sekey:PK-MERGE"); g != nil {
-		g.mu.Lock()
-		heOrphan = g.ejection != nil
-		g.mu.Unlock()
-	}
+	reg.mu.RLock()
+	w := reg.providerOutcomes["serial:"+serial]
+	he := reg.healthEjectionWindows["serial:"+serial]
+	_, orphan := reg.providerOutcomes["sekey:PK-MERGE"]
+	_, heOrphan := reg.healthEjectionWindows["sekey:PK-MERGE"]
+	reg.mu.RUnlock()
 	if orphan || heOrphan {
 		t.Fatalf("source windows must be deleted after the merge (breaker=%v ejection=%v)", orphan, heOrphan)
 	}

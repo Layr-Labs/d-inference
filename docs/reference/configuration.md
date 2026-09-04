@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-04 · commit `4e7a68739`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -151,12 +151,6 @@ Capacity breakers:
 | `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS` | seconds | `120` | `coordinator/registry/capacity_cooldown.go` | Initial cooldown; doubles on each failed probe. |
 | `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS` | seconds | `600` | `coordinator/registry/capacity_cooldown.go` | Ceiling of the exponential cooldown. |
 | `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS` | milliseconds (≤ 0 disables) | `15000` | `coordinator/registry/capacity_rate.go` | Scores a penalty proportional to a provider's recent capacity-reject rate. |
-
-Reservation commit lock:
-
-| Variable | Values / type | Default | Read in | Effect |
-|---|---|---|---|---|
-| `EIGENINFERENCE_RESERVE_COMMIT_MODE` | `shared`, `global` (trimmed, case-insensitive; any other value is treated as `shared` and logged as unknown) | `shared` | `coordinator/registry/gate_commit_mode.go` (`loadReserveCommitMode`, `parseReserveCommitMode`); read once at `registry.New` | How the reservation commit (`commitProviderReservation`, `ReserveNextFromPlan`) holds the registry lock. `shared` commits under `r.mu.RLock` plus the winner's `p.mu`; `global` is the kill switch that restores the fleet-wide `r.mu.Lock()` commit serialization. The fault-tracker recorders stay on their per-identity gates in both modes; see [`../architecture/routing.md`](../architecture/routing.md). |
 
 Quality concurrency cap:
 

@@ -870,12 +870,6 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
-	// The per-identity gate locks that replaced the request-path registry
-	// write lock (registry/gate_state.go) report any acquisition wait above
-	// 1 ms here, tagged by recorder site, so the new locks stay observable.
-	reg.SetGateWaitObserver(func(site string, wait time.Duration) {
-		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
-	})
 	s.profiler = newProfilerFromEnv(s)
 	s.registerDefaultGauges()
 	s.routes()

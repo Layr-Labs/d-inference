@@ -1042,17 +1042,9 @@ type Provider struct {
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
-	// identity so the fault-tracking state (breakers/cooldowns) keys by identity
-	// and survives reconnect churn. Read-only after Register.
+	// identity so the fault-tracking maps (breakers/cooldowns) key by identity
+	// and survive reconnect churn. Read-only after Register.
 	registry *Registry
-	// gate is this session's current routing-gate state (gate_state.go): the
-	// session-keyed gate from Register until attestation binds the stable
-	// identity, then the identity's gate. Atomic so the scan (under p.mu) and
-	// the recorders (without p.mu) read it without another lock; written only
-	// under r.gatesMu (attachSessionGate / bindStableFaultKey). nil for a bare
-	// test Provider — every gate read treats nil as "no state".
-	gate                 atomic.Pointer[gateState]
-	gateDisconnectedAtNS atomic.Int64
 }
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
@@ -1926,7 +1918,6 @@ func (p *Provider) HardUntrustEpoch() uint64 {
 // marshal the Provider snapshot.
 func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if result == nil {
 		p.AttestationResult = nil
 	} else {
@@ -1935,17 +1926,16 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 			[]string(nil), result.RuntimeCapabilities...)
 		p.AttestationResult = &snapshot
 	}
-	// Re-derive the stable identity and bind it while p.mu is STILL held
-	// (lock order r.mu → p.mu → gatesMu → gate.mu; bindStableFaultKey takes the
-	// last two). The bind — which repoints p.gate — must not land inside a
-	// section that reads p.gate and acts on it under p.mu: the reservation
-	// commit's admit re-check through its pending debit, the scan's gate chain,
-	// the alias resolver's routability read. Binding at attestation time is what
-	// re-attaches a reconnecting machine's fault state (breakers/cooldowns keyed
-	// by serial/SE-key) to its fresh session id BEFORE it becomes routable —
-	// public routing requires attestation.
-	if r := p.registry; r != nil {
-		r.bindStableFaultKey(p, stableProviderIdentityLocked(p))
+	// Re-derive the stable identity while p.mu is held, then bind it OUTSIDE
+	// p.mu (bindStableFaultKey takes r.mu; the established order is r.mu →
+	// p.mu, so taking r.mu here while holding p.mu could deadlock). Binding at
+	// attestation time is what re-attaches a reconnecting machine's fault
+	// state (breakers/cooldowns keyed by serial/SE-key) to its fresh session
+	// id BEFORE it becomes routable — public routing requires attestation.
+	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
+	p.mu.Unlock()
+	if r != nil {
+		r.bindStableFaultKey(id, stableID)
 	}
 }
 
@@ -1956,12 +1946,14 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 // identity resolves to the ACCOUNT fallback — attestation absent (Open Mode)
 // or invalid — would otherwise never bind: all its fault state would key by
 // session UUID and be wiped on reconnect. Same lock discipline as
-// SetAttestationResult: derive AND bind under p.mu.
+// SetAttestationResult: derive under p.mu, bind OUTSIDE it (bindStableFaultKey
+// takes r.mu; the established order is r.mu → p.mu).
 func (p *Provider) RebindStableFaultKey() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if r := p.registry; r != nil {
-		r.bindStableFaultKey(p, stableProviderIdentityLocked(p))
+	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
+	p.mu.Unlock()
+	if r != nil {
+		r.bindStableFaultKey(id, stableID)
 	}
 }
 
@@ -2264,45 +2256,143 @@ type Registry struct {
 	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
 	pendingModelLoadStarted map[modelLoadKey]time.Time
 
-	// Per-identity routing-gate state (gate_state.go). Every fault tracker —
-	// the dispatch-load cooldown, the shape-keyed inference-error breaker
-	// (error_cooldown.go), the node-health breaker (provider_breaker.go), the
-	// capacity cooldown / rate window / budget clamp (capacity_cooldown.go,
-	// capacity_rate.go, budget_clamp.go) and stable-identity health ejection
-	// (health_ejection.go) — lives on the gateState of the provider's STABLE
-	// fault key (serial → SE key → account → session id), each gate with its
-	// own mutex. Recorders take gate.mu only, never r.mu: the six per-request
-	// write acquisitions of r.mu that convoyed behind the fleet-scan readers
-	// are gone. gates is keyed by fault key; sessions indexes LIVE session ids
-	// to their Provider (whose p.gate caches the current gate) so recorders
-	// resolve a session without r.mu; disconnectedStableIDs caches a
-	// provider's stable identity at Disconnect time, keyed by its now-removed
-	// session id, so the trailing pending-request ErrorCh flush — which
-	// carries the 502 "provider disconnected" faults that define a
-	// reconnecting zombie — still resolves the identity. All three under
-	// gatesMu: RLock to resolve, Lock only in Register / Disconnect / the
-	// attestation-time bind / the periodic sweep. Fault state is keyed by
-	// identity and NOT cleared on Disconnect — it re-attaches on reconnect
-	// (the prod zombie exploit: median 18 sessions/machine/week reset every
-	// session-keyed breaker before it could trip).
-	gatesMu               sync.RWMutex
-	gates                 map[string]*gateState
-	sessions              map[string]*Provider
-	disconnectedStableIDs map[string]disconnectedStableID
-	gateSweepAt           time.Time
-	// gateWaitObserver, when set, is told about gate.mu acquisition waits above
-	// gateWaitReportThreshold, tagged by recorder site (SetGateWaitObserver).
-	gateWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
+	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
+	// load failure ("insufficient memory"). Routing skips the pair until expiry —
+	// it would instant-503 again, and without this the scheduler re-picks it
+	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
+	// on re-registration and on a served request for the pair.
+	dispatchLoadCooldowns map[dispatchLoadKey]time.Time // value: expiry (see pair_keys.go)
 
-	// reserveCommitMode selects whether the reservation commit holds r.mu for
-	// reading (shared, default) or writing (global — the kill switch). Read
-	// once from EIGENINFERENCE_RESERVE_COMMIT_MODE at construction.
-	reserveCommitMode reserveCommitMode
+	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
+	// circuit breaker for provider-side inference failures: a (provider, model,
+	// shape) triple that returns repeated 5xx errors (e.g. the deterministic
+	// Gemma chat-template render crash on tool schemas) enters a routing
+	// cool-down so retries fall to OTHER providers instead of burning every
+	// attempt on the same broken pair. 4xx (client-shape) errors never count.
+	//
+	// The key is SHAPE-KEYED (inferenceErrorKey) rather than a "providerID:modelID"
+	// string concat. Shape-keying fixes the root bug where a clean non-tool
+	// success reset the SHARED strike counter, so in mixed traffic a deterministic
+	// tool/template failure interleaved with text successes never reached the
+	// 2-strike threshold and the broken provider was never quarantined for tools.
+	// Strikes now accumulate per shape ("tools" independent of "base"), a success
+	// clears only its own shape bucket, and the struct key also closes the
+	// threat-model colon-collision note (a provider or model id containing ':'
+	// could previously alias another pair). Strikes slide over inferenceErrorWindow.
+	// Guarded by r.mu like dispatchLoadCooldowns. See error_cooldown.go.
+	inferenceErrorStrikes   map[inferenceErrorKey][]time.Time // recent 5xx strike times per (provider, model, shape)
+	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
 
-	// Env-tunable tracker configs, read once at construction.
-	capacityCooldownCfg capacityCooldownConfig
-	budgetClampCfg      budgetClampConfig
+	// providerOutcomes / providerBreakerOpenUntil / providerBreakerTrips
+	// implement the per-provider (node-health) circuit breaker, SEPARATE from
+	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
+	// quarantines a whole provider that returns GENUINE-FAULT errors
+	// (500/502/504, or a fault-shaped 503 — internal error, crash, the opaque
+	// Foundation string) for ~all of its requests, regardless
+	// of model/shape — the case the inference-error breaker misses because it
+	// skips 503. After an exponential cooldown it re-probes and auto-re-admits
+	// on the first success. Capacity-class sheds (4xx/429 and token-budget /
+	// KV-headroom / draining 503s) never count — a healthy-but-busy provider.
+	// The breaker FAILS OPEN: when it would deroute every provider for a model,
+	// selection re-scans with it bypassed (selectBestCandidateLockedFull) so a
+	// bad fleet-wide rollout cannot zero out routing. Guarded by r.mu like the
+	// maps above. Keyed by the stable fault key (faultKeyLocked) and NOT
+	// cleared on Disconnect — state re-attaches on reconnect; only a provider
+	// with no stable identity has its session-keyed residue dropped. See
+	// provider_breaker.go.
+	providerOutcomes         map[string]*providerHealthWindow // per-provider sliding fault/success ring
+	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
+	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
+
+	// capacityRejectStrikes / capacityCooldowns / capacityCooldownTrips
+	// implement the capacity-reject routing cooldown (capacity_cooldown.go),
+	// SEPARATE from every breaker above — all of which deliberately IGNORE
+	// capacity-class rejections (sound for occasional sheds from a busy box,
+	// catastrophic for a box that capacity-rejects EVERYTHING while its
+	// idle-looking heartbeats keep winning the cost scheduler: the 2026-07
+	// black-hole incident, 7 boxes, ~9k rejects/30min, zero successes). A
+	// (provider, model) pair that accumulates threshold-many capacity rejects
+	// inside the window with ZERO interleaved accepts enters a routing
+	// cooldown with exponential re-trip backoff; any accept (first content
+	// chunk or clean completion) clears all three entries. Config is
+	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
+	// construction. Guarded by r.mu like the maps above.
+	capacityCooldownCfg   capacityCooldownConfig
+	capacityRejectStrikes map[capacityRejectKey][]time.Time            // recent capacity-reject strikes per (provider, model)
+	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
+	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
+
+	// budgetClamps implements the gray-box budget clamp (budget_clamp.go):
+	// after a capacity-shaped 503, admission stops believing the pair's
+	// stale-optimistic heartbeat budget and treats the slot as FULL until the
+	// provider proves recovery (fresh heartbeat with headroom + an accept) or
+	// the clamp TTL fail-opens. Keyed by stable fault identity; migrated on
+	// rebind; NOT cleared on Disconnect. Guarded by r.mu.
+	budgetClampCfg budgetClampConfig
+	budgetClamps   map[capacityRejectKey]*budgetClampEntry
+
+	// capacityRateRejects / capacityRateAccepts implement the capacity-503
+	// rate penalty (capacity_rate.go): sliding windows of capacity rejects and
+	// served dispatches per (stable identity, model). Unlike every breaker
+	// above there is NO accept-triggered reset — the rate is exactly the
+	// gray-box signal the zero-interleaved-accepts discriminators are blind
+	// to. Keyed by stable fault identity; migrated on rebind; NOT cleared on
+	// Disconnect. Guarded by r.mu.
 	capacityRateCfg     capacityRateConfig
+	capacityRateRejects map[capacityRejectKey][]time.Time
+	capacityRateAccepts map[capacityRejectKey][]time.Time
+
+	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
+	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
+	// NOT deleted on Disconnect — so a zombie that fails ~every request while
+	// reconnecting constantly still accumulates to the ejection threshold.
+	healthEjectionWindows map[string]*providerHealthWindow // stable-id sliding fault/success ring
+	healthEjectionUntil   map[string]time.Time             // ejection-open expiry per stable id
+	healthEjectionTrips   map[string]int                   // trip count per stable id (exponential backoff)
+	// healthEjectionCapacityStreaks counts CONSECUTIVE capacity-shaped 5xx
+	// rejections (zero interleaved successes) per stable identity — the
+	// capacity black-hole signature that every fault breaker deliberately
+	// ignores (prod: 13,333 "token_budget"-shaped 503s, 100% error rate, 90
+	// min, never ejected). Any success clears the streak, so a busy-but-
+	// serving box can never trip. See health_ejection.go.
+	healthEjectionCapacityStreaks map[string]capacityStreak
+	// healthEjectionLastTripCapacity records whether an identity's most recent
+	// ejection came from the capacity streak (true) or the fault path (false).
+	// The capacity branch's half-open instant re-arm applies only to capacity
+	// trips: a single capacity shed — legitimate for a healthy-but-full box —
+	// must not re-arm a FAULT ejection whose cooldown just expired.
+	healthEjectionLastTripCapacity map[string]bool
+	// disconnectedStableIDs caches a provider's stable identity at Disconnect time,
+	// keyed by its (now-removed) session id, so the pending-request ErrorCh flush —
+	// which runs AFTER Disconnect deletes the provider and carries the 502 "provider
+	// disconnected" faults that define a reconnecting zombie — can still resolve the
+	// identity and record those faults against the stable-identity breaker. The
+	// entry also dates the drop: a flush strike from a session dropped at or
+	// before the identity's last version-changed reset is discarded as already
+	// accounted for (version_reset.go, IsSupersededDisconnectFlush).
+	disconnectedStableIDs map[string]disconnectedStableID
+	// faultKeyBySession maps a LIVE session id to its stable identity
+	// (serial/SE-key/account). Bound by SetAttestationResult, removed on
+	// Disconnect (the disconnectedStableIDs cache covers the trailing flush).
+	// Every fault-tracking map above (inference-error cooldowns, node-health
+	// breaker, dispatch-load cooldowns) keys by faultKeyLocked(sessionID) —
+	// the stable identity when bound, the session id itself otherwise — so a
+	// reconnecting machine re-attaches its accumulated fault state instead of
+	// wiping it (the prod zombie exploit: median 18 sessions/machine/week
+	// reset every session-keyed breaker before it could trip).
+	faultKeyBySession map[string]string
+	// identityVersions / inferenceErrorFlushStrikes back the version-changed
+	// reconnect reset (version_reset.go): the last binary version seen per
+	// stable identity, the time of its last reset (rate limit), and the subset
+	// of inferenceErrorStrikes that came from the disconnect flush (502) so
+	// exactly those can be removed when the identity returns on a new binary.
+	// Lazily created; guarded by r.mu; migrated on rebind; NOT cleared on
+	// Disconnect.
+	identityVersions           map[string]string
+	identityVersionResetAt     map[string]time.Time
+	identityVersionSeenAt      map[string]time.Time
+	identityVersionSweepAt     time.Time
+	inferenceErrorFlushStrikes map[inferenceErrorKey][]time.Time
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -2381,27 +2471,42 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:                   make(map[string]*Provider),
-		queue:                       NewRequestQueueFromEnv(),
-		MinTrustLevel:               TrustHardware,
-		tpsRegistry:                 NewTPSRegistry(),
-		modelProviders:              make(map[string]*atomic.Int64),
-		pendingModelLoads:           make(map[modelLoadKey]time.Time),
-		pendingModelLoadStarted:     make(map[modelLoadKey]time.Time),
-		gates:                       make(map[string]*gateState),
-		sessions:                    make(map[string]*Provider),
-		disconnectedStableIDs:       make(map[string]disconnectedStableID),
-		reserveCommitMode:           loadReserveCommitMode(logger),
-		capacityCooldownCfg:         loadCapacityCooldownConfig(),
-		budgetClampCfg:              loadBudgetClampConfig(),
-		capacityRateCfg:             loadCapacityRateConfig(),
-		evictStrikes:                make(map[string]int),
-		cacheRouting:                newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
-		cacheActivation:             newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
-		cacheRoutingMode:            CacheRoutingOff,
-		cacheRoutingMaxDiscountMs:   defaultCacheRoutingMaxDiscountMs,
-		cacheRoutingMaxCostFraction: defaultCacheRoutingMaxCostFraction,
-		logger:                      logger,
+		providers:                      make(map[string]*Provider),
+		queue:                          NewRequestQueueFromEnv(),
+		MinTrustLevel:                  TrustHardware,
+		tpsRegistry:                    NewTPSRegistry(),
+		modelProviders:                 make(map[string]*atomic.Int64),
+		pendingModelLoads:              make(map[modelLoadKey]time.Time),
+		pendingModelLoadStarted:        make(map[modelLoadKey]time.Time),
+		dispatchLoadCooldowns:          make(map[dispatchLoadKey]time.Time),
+		inferenceErrorStrikes:          make(map[inferenceErrorKey][]time.Time),
+		inferenceErrorCooldowns:        make(map[inferenceErrorKey]time.Time),
+		providerOutcomes:               make(map[string]*providerHealthWindow),
+		providerBreakerOpenUntil:       make(map[string]time.Time),
+		providerBreakerTrips:           make(map[string]int),
+		capacityCooldownCfg:            loadCapacityCooldownConfig(),
+		capacityRejectStrikes:          make(map[capacityRejectKey][]time.Time),
+		capacityCooldowns:              make(map[capacityRejectKey]*capacityCooldownEntry),
+		capacityCooldownTrips:          make(map[capacityRejectKey]int),
+		budgetClampCfg:                 loadBudgetClampConfig(),
+		budgetClamps:                   make(map[capacityRejectKey]*budgetClampEntry),
+		capacityRateCfg:                loadCapacityRateConfig(),
+		capacityRateRejects:            make(map[capacityRejectKey][]time.Time),
+		capacityRateAccepts:            make(map[capacityRejectKey][]time.Time),
+		healthEjectionWindows:          make(map[string]*providerHealthWindow),
+		healthEjectionUntil:            make(map[string]time.Time),
+		healthEjectionTrips:            make(map[string]int),
+		healthEjectionCapacityStreaks:  make(map[string]capacityStreak),
+		healthEjectionLastTripCapacity: make(map[string]bool),
+		disconnectedStableIDs:          make(map[string]disconnectedStableID),
+		faultKeyBySession:              make(map[string]string),
+		evictStrikes:                   make(map[string]int),
+		cacheRouting:                   newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:                newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
+		cacheRoutingMode:               CacheRoutingOff,
+		cacheRoutingMaxDiscountMs:      defaultCacheRoutingMaxDiscountMs,
+		cacheRoutingMaxCostFraction:    defaultCacheRoutingMaxCostFraction,
+		logger:                         logger,
 	}
 }
 
@@ -2457,56 +2562,42 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
 // after the provider rejected a dispatch with a load failure. Returns true
 // when this call started a new cool-down (false when one was already live),
-// so callers can emit metrics without double-counting the retry storm. Lives
-// on the provider's stable-identity gate (gate_state.go) so the cool-down
-// survives a reconnect within its TTL; takes only gate.mu.
+// so callers can emit metrics without double-counting the retry storm. Keyed
+// by the provider's stable fault key (faultKeyLocked) so the cool-down
+// survives a reconnect within its TTL.
 func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
-	hold := r.lockGate(r.gateForSession(providerID), "dispatch_load_failure")
+	hold := r.lockWrite("dispatch_load_failure")
 	defer hold.unlock()
-	g := hold.g
 	now := time.Now()
-	expiry, active := g.dispatchLoadCooldowns[modelID]
+	// Opportunistic sweep: bound the map by dropping expired entries when it
+	// grows (churned identities are never re-keyed).
+	if len(r.dispatchLoadCooldowns) > 1024 {
+		for key, expiry := range r.dispatchLoadCooldowns {
+			if !now.Before(expiry) {
+				delete(r.dispatchLoadCooldowns, key)
+			}
+		}
+	}
+	key := dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}
+	expiry, active := r.dispatchLoadCooldowns[key]
 	active = active && now.Before(expiry)
-	g.dispatchLoadCooldowns[modelID] = now.Add(dispatchLoadCooldownTTL)
-	g.updatedLocked(now)
+	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
 	return !active
 }
 
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
-// Runs at request completion; takes only the identity's gate.mu.
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
-	ref, has := r.refHasPairState(r.lookupSessionGateRef(providerID), gateFlagDispatchLoad)
-	if !has {
-		return // nothing to clear — the common case, one lock-free flag load
-	}
-	hold := r.lockGate(ref, "dispatch_load_clear")
+	hold := r.lockWrite("dispatch_load_cooldown")
 	defer hold.unlock()
-	g := hold.g
-	if g == nil {
-		return
-	}
-
-	delete(g.dispatchLoadCooldowns, modelID)
-	g.updatedLocked(time.Now())
+	delete(r.dispatchLoadCooldowns, dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID})
 }
 
-// dispatchLoadCooled reports whether routing should skip the pair. Resolves
-// the session's gate; the scan uses the cached p.gate directly.
-func (r *Registry) dispatchLoadCooled(providerID, modelID string, now time.Time) bool {
-	return r.lookupGateForSession(providerID).dispatchLoadCooled(modelID, now)
-}
-
-// dispatchLoadCooled is the gate-level check: lock-free "no cooldown on any
-// model" fast path, otherwise one short gate.mu section. READ-ONLY (no lazy
-// delete). nil-safe.
-func (g *gateState) dispatchLoadCooled(modelID string, now time.Time) bool {
-	if !g.hasPairState(gateFlagDispatchLoad) {
-		return false
-	}
-	g = g.lockResolved()
-	expiry, ok := g.dispatchLoadCooldowns[modelID]
-	g.mu.Unlock()
+// dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
+// READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
+// r.mu in either mode.
+func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
+	expiry, ok := r.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}]
 	return ok && now.Before(expiry)
 }
 
@@ -2891,15 +2982,7 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	) {
 		return false
 	}
-	// The session's current gate, read under p.mu — which the identity bind
-	// also holds (bindStableFaultKey) — so a rebind cannot repoint p.gate, or
-	// migrate the cooldown away from the gate read here, mid-check. Without
-	// that, a read of a shared source gate emptied by this session's own
-	// rebind would say "not cooled" and let an alias resolve to a Desired
-	// build whose only provider is cooled (the request then queues or 429s
-	// instead of taking the routable Previous build). No gateView
-	// confirmation is needed under p.mu.
-	if r.gateOf(p).dispatchLoadCooled(buildID, now) {
+	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -3796,7 +3879,6 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		return existing
 	}
 	r.providers[id] = p
-	r.attachSessionGate(p)
 	p.mu.Lock()
 	r.modelIndex.sync(p)
 	p.mu.Unlock()
@@ -5017,18 +5099,47 @@ func (r *Registry) disconnectProvider(id string, expected *Provider, timeout tim
 			}
 		}
 		p.detachModelIndexLocked(r)
-		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault tracker
+		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
-		// cooldowns, health ejection, capacity trackers) lives on the STABLE
-		// identity's gate when one is bound, so it must survive reconnect
-		// churn — wiping it here was the zombie exploit. detachSessionGate
-		// caches the identity (keyed by this session id) before the pending
-		// flush below so the 502 "provider disconnected" faults — the dominant
-		// reconnecting-zombie signal — still resolve to it even though the
-		// provider is already gone from r.providers; only a provider that never
-		// had a stable identity (sid == "": its gate WAS this session id, which
-		// never recurs) has its session-keyed residue dropped for hygiene.
-		r.detachSessionGate(p, stableProviderIdentityLocked(p))
+		// cooldowns, health ejection) keys by the STABLE identity when one is
+		// bound, so it must survive reconnect churn — wiping it here was the
+		// zombie exploit. Only when the provider never had a stable identity
+		// (sid == "": its fault key WAS this session id, which never recurs)
+		// is the session-keyed residue dropped for hygiene.
+		//
+		// Cache the stable identity (keyed by this session id) before the pending
+		// flush below: GetProviderStableIdentity and faultKeyLocked fall back to it
+		// so the 502 "provider disconnected" faults — the dominant reconnecting-
+		// zombie signal — are still recorded against the stable-identity state even
+		// though the provider is already gone from r.providers.
+		if sid := stableProviderIdentityLocked(p); sid != "" {
+			r.rememberDisconnectedStableIDLocked(id, sid)
+		} else {
+			delete(r.providerOutcomes, id)
+			delete(r.providerBreakerOpenUntil, id)
+			delete(r.providerBreakerTrips, id)
+			for key := range r.inferenceErrorStrikes {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorStrikes, key)
+				}
+			}
+			for key := range r.inferenceErrorCooldowns {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorCooldowns, key)
+				}
+			}
+			for key := range r.inferenceErrorFlushStrikes {
+				if key.ProviderID == id {
+					delete(r.inferenceErrorFlushStrikes, key)
+				}
+			}
+			for key := range r.dispatchLoadCooldowns {
+				if key.FaultKey == id {
+					delete(r.dispatchLoadCooldowns, key)
+				}
+			}
+		}
+		delete(r.faultKeyBySession, id)
 		disconnectedModels = make([]string, 0, len(p.Models))
 		for _, m := range p.Models {
 			disconnectedModels = append(disconnectedModels, m.ID)
@@ -6406,6 +6517,7 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 				return
 			case <-ticker.C:
 				r.evictStale(timeout)
+				r.sweepIdentityVersionHistory(time.Now())
 			}
 		}
 	})
@@ -6489,11 +6601,6 @@ func (r *Registry) evictStale(timeout time.Duration) {
 			r.logger.Warn("evicted stale provider", "provider_id", p.ID, "timeout", timeout)
 		}
 	}
-
-	// Bound the per-identity gate index on the same cadence (gate_state.go):
-	// prunes dead per-model entries and drops gates no live session references
-	// once idle. Off the request path and outside r.mu.
-	r.sweepGates(now)
 }
 
 // evictStrikeThreshold is how many consecutive stale sweeps trigger eviction.

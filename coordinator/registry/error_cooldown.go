@@ -12,10 +12,10 @@ import "time"
 // provider-side (5xx) errors so routing falls to other providers — and, paired
 // with version-diverse retry, to other binary versions.
 //
-// SHAPE-KEYED. The breaker is keyed by (provider, model, shape) — the
-// provider's gate is its STABLE fault key (faultKeyForSession: serial/SE-key
-// when bound, session id otherwise), so strikes and cooldowns survive
-// reconnect churn, and inside the gate a modelShapeKey names the bucket. Shape ("tools" / "base", from
+// SHAPE-KEYED. The breaker is keyed by (provider, model, shape) rather than a
+// "providerID:modelID" string — where "provider" is the STABLE fault key
+// (faultKeyLocked: serial/SE-key when bound, session id otherwise), so strikes
+// and cooldowns survive reconnect churn. Shape ("tools" / "base", from
 // RequestTraits.CooldownShape) closes the root bug behind the prod incident: a
 // deterministic tool/template failure that fails EVERY tool request can be
 // interleaved with clean non-tool text successes for the same pair. With a
@@ -24,11 +24,11 @@ import "time"
 // was never quarantined for tools. Per-shape buckets make tool failures
 // accumulate in the "tools" bucket independent of "base" successes, and a
 // success clears ONLY its own shape bucket. The struct key also closes the
-// threat-model colon-collision note (a model id containing ':' could alias a
-// different pair under the old concat key).
+// threat-model colon-collision note (a provider/model id containing ':' could
+// alias a different pair under the old concat key).
 //
-// Modeled on the dispatch-load cooldown (registry.go): per-identity gate
-// state (gate_state.go), window-rebuild-on-write. Only sickness-shaped
+// Modeled on dispatchLoadCooldowns (registry.go): same r.mu discipline, same
+// opportunistic map bounding, window-rebuild-on-write. Only sickness-shaped
 // status codes (500/502/504) count toward quarantine: 4xx are client-shape
 // failures (bad request, context too long) and 503 is the provider's
 // capacity/lifecycle signal (token budget, request rejected, update drain) —
@@ -47,6 +47,19 @@ const (
 	// own even without a served request.
 	inferenceErrorCooldownTTL = 5 * time.Minute
 )
+
+// inferenceErrorKey identifies a circuit-breaker bucket. ProviderID holds the
+// provider's STABLE fault key (faultKeyLocked: serial/SE-key when bound, the
+// session id otherwise) so buckets survive reconnect churn. Shape is the
+// request dimension from RequestTraits.CooldownShape ("tools" / "base"), so a
+// failure that only affects one shape quarantines only that shape. A struct
+// key (vs a delimiter-joined string) cannot alias across ids that contain the
+// delimiter.
+type inferenceErrorKey struct {
+	ProviderID string
+	ModelID    string
+	Shape      string
+}
 
 // RecordInferenceError records a provider-side inference failure for the
 // (provider, model, shape) triple. Only statusCodes that indicate provider
@@ -67,9 +80,6 @@ const (
 // inferenceErrorCooldownTTL; further strikes while cooling extend the expiry.
 // Returns true ONLY on the transition into cool-down so callers can emit
 // metrics without double-counting (mirrors RecordDispatchLoadFailure).
-//
-// State lives on the identity's gate (gate_state.go), keyed inside it by
-// (model, shape); only gate.mu is taken, never r.mu.
 func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode int, shape string) (enteredCooldown bool) {
 	switch statusCode {
 	case 500, 502, 504:
@@ -78,24 +88,39 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 		return false
 	}
 
-	var source disconnectSource
-	if statusCode == disconnectFlushStatusCode {
-		source = r.captureDisconnectSource(providerID)
-	}
-	hold := r.lockGate(r.gateForSession(providerID), "inference_error")
+	hold := r.lockWrite("inference_error")
 	defer hold.unlock()
-	g := hold.g
-	if statusCode == disconnectFlushStatusCode && source.supersededBy(g) {
+	// Recheck under the mutation lock: a version reset can race any API-side check.
+	if statusCode == disconnectFlushStatusCode && r.supersededDisconnectFlushLocked(providerID) {
 		return false
 	}
-
 	now := time.Now()
-	defer g.updatedLocked(now)
+	// Key by the stable fault key (serial/SE-key when bound, session id
+	// otherwise) so strikes and cooldowns survive reconnect churn.
+	providerID = r.faultKeyLocked(providerID)
 
-	key := modelShapeKey{Model: modelID, Shape: shape}
+	// Opportunistic sweep, mirroring dispatchLoadCooldowns: churned identities
+	// are never re-keyed — bound both maps by dropping expired ones once they
+	// grow.
+	if len(r.inferenceErrorCooldowns) > 1024 {
+		for key, expiry := range r.inferenceErrorCooldowns {
+			if !now.Before(expiry) {
+				delete(r.inferenceErrorCooldowns, key)
+			}
+		}
+	}
+	if len(r.inferenceErrorStrikes) > 1024 {
+		for key, strikes := range r.inferenceErrorStrikes {
+			if len(strikes) == 0 || !strikes[len(strikes)-1].Add(inferenceErrorWindow).After(now) {
+				delete(r.inferenceErrorStrikes, key)
+			}
+		}
+	}
+
+	key := inferenceErrorKey{ProviderID: providerID, ModelID: modelID, Shape: shape}
 
 	// Slide the window: keep only strikes still inside it, then add this one.
-	strikes := g.inferenceErrorStrikes[key]
+	strikes := r.inferenceErrorStrikes[key]
 	kept := strikes[:0]
 	for _, ts := range strikes {
 		if now.Sub(ts) < inferenceErrorWindow {
@@ -103,21 +128,27 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 		}
 	}
 	kept = append(kept, now)
-	g.inferenceErrorStrikes[key] = kept
-	g.pruneInferenceFlushStrikesLocked(key, now)
+	r.inferenceErrorStrikes[key] = kept
+	// The disconnect-flush tags (version_reset.go) must stay a subset of the
+	// live strikes: slide their window with the strikes, or an identity that
+	// churns on the SAME version for weeks — the reset never fires for it —
+	// keeps every flushed request's timestamp forever.
+	r.pruneInferenceFlushStrikesLocked(key, now)
+	// Tag the disconnect-flush strike so a version-changed reconnect can
+	// remove exactly it (version_reset.go).
 	if statusCode == disconnectFlushStatusCode {
-		g.noteInferenceFlushStrikeLocked(key, now)
+		r.noteInferenceFlushStrikeLocked(key, now)
 	}
 
 	if len(kept) < inferenceErrorThreshold {
 		return false
 	}
 
-	expiry, active := g.inferenceErrorCooldowns[key]
+	expiry, active := r.inferenceErrorCooldowns[key]
 	active = active && now.Before(expiry)
 	// Threshold met: (re-)arm the cool-down. Repeated failures extend an
 	// active cool-down, but only the transition reports true.
-	g.inferenceErrorCooldowns[key] = now.Add(inferenceErrorCooldownTTL)
+	r.inferenceErrorCooldowns[key] = now.Add(inferenceErrorCooldownTTL)
 	return !active
 }
 
@@ -129,41 +160,28 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 // deterministic tool failure interleaved with text traffic could never trip
 // the breaker (the original incident).
 func (r *Registry) RecordInferenceSuccess(providerID, modelID, shape string) {
-	hold := r.lockGate(r.lookupSessionGateRef(providerID), "inference_success")
+	hold := r.lockWrite("inference_success")
 	defer hold.unlock()
-	g := hold.g
-	if g == nil {
-		return
-	}
-
-	key := modelShapeKey{Model: modelID, Shape: shape}
-	delete(g.inferenceErrorStrikes, key)
-	delete(g.inferenceErrorCooldowns, key)
-	delete(g.inferenceErrorFlushStrikes, key)
-	g.updatedLocked(time.Now())
+	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
+	delete(r.inferenceErrorStrikes, key)
+	delete(r.inferenceErrorCooldowns, key)
+	// The flush tags mark strikes that no longer exist.
+	delete(r.inferenceErrorFlushStrikes, key)
 }
 
 // InferenceErrorCooldownActive reports whether the (provider, model, shape)
 // triple is currently quarantined by the inference-error circuit breaker.
 func (r *Registry) InferenceErrorCooldownActive(providerID, modelID, shape string) bool {
-	return r.inferenceErrorCooled(providerID, modelID, shape, time.Now())
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.inferenceErrorCooldownActiveLocked(providerID, modelID, shape, time.Now())
 }
 
-// inferenceErrorCooled reports whether routing should skip the triple.
-// Resolves the session's gate; the scan uses the cached p.gate directly.
-func (r *Registry) inferenceErrorCooled(providerID, modelID, shape string, now time.Time) bool {
-	return r.lookupGateForSession(providerID).inferenceErrorCooled(modelID, shape, now)
-}
-
-// inferenceErrorCooled is the gate-level check: lock-free "no cooldown on any
-// shape" fast path, otherwise one short gate.mu section. READ-ONLY (no lazy
-// delete). nil-safe.
-func (g *gateState) inferenceErrorCooled(modelID, shape string, now time.Time) bool {
-	if !g.hasPairState(gateFlagErrorCooldown) {
-		return false
-	}
-	g = g.lockResolved()
-	expiry, ok := g.inferenceErrorCooldowns[modelShapeKey{Model: modelID, Shape: shape}]
-	g.mu.Unlock()
+// inferenceErrorCooldownActiveLocked reports whether routing should skip the
+// triple. READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock.
+// Caller holds r.mu in either mode (mirrors dispatchLoadCooldownActiveLocked).
+func (r *Registry) inferenceErrorCooldownActiveLocked(providerID, modelID, shape string, now time.Time) bool {
+	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
+	expiry, ok := r.inferenceErrorCooldowns[key]
 	return ok && now.Before(expiry)
 }

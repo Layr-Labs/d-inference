@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-04 · commit `a50f61560`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -451,18 +451,16 @@ at most once per `identityVersionResetMinInterval = 10 * time.Minute`.
 Genuine 500/504 faults survive. Each tracker discards a late 502 from a session
 dropped before that reset while holding its mutation lock; request goroutines
 cannot reopen the new binary's quarantine after the reset. Same-version churn
-and a drop after a throttled reset keep their strikes
-(`coordinator/registry/version_reset.go`, `disconnectSource.supersededBy`).
-The reset and each fault mutation share the identity's `gateState.mu`; both
-live references and the disconnect cache use the same timestamp recorded by
-`detachSessionGate`. These request terminal paths never acquire `Registry.mu`.
-Cached disconnected identities follow enrichment without changing their drop
-times. Version metadata for departed identities remains for
-`identityVersionRetention = 20 * time.Minute` after the last activity or
-disconnect; live identities, recent resets and active fault state retain their
-gate. The existing eviction-loop gate sweep handles this cleanup
-(`coordinator/registry/version_history.go`, `versionHistoryActive`;
-`coordinator/registry/gate_sweep.go`, `sweepGates`).
+and a drop after a throttled reset keep their strikes. Cached disconnected
+identities follow identity enrichment without changing their original drop
+time, so a later weaker-identity reconnect cannot resurrect superseded faults
+(`coordinator/registry/version_reset.go`, `supersededDisconnectFlushLocked`;
+`coordinator/registry/health_ejection.go`, `migrateFaultStateLocked`).
+Version metadata for departed identities expires after
+`identityVersionRetention = 20 * time.Minute`; live identities, recent reset
+throttles, active fault windows and quarantines are retained. Disconnect
+starts a fresh reconnect grace window, and the eviction loop performs
+periodic cleanup (`coordinator/registry/version_history.go`).
 
 ## Invariants
 
@@ -489,10 +487,6 @@ gate. The existing eviction-loop gate sweep handles this cleanup
 9. **Control frames never wait behind queued data frames** — lane priority
    in `providerWriter`.
 10. **Disconnect preserves stable-identity fault state** — `Disconnect`.
-11. **A provider is never double-booked** — the admit re-check and the
-    pending debit run under one `p.mu` hold in `commitProviderReservation`
-    and `ReserveNextFromPlan`; the locking model is in
-    [`routing.md`](routing.md#concurrency-scan-commit-and-fault-state-gates).
 
 ## Failure modes
 

@@ -688,7 +688,7 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
 		return warmPoolCandidate{}, warmColdOfflineUntrust
 	}
-	if r.providerHasPendingLoad(p.ID) || r.gateOf(p).dispatchLoadCooled(model, now) {
+	if r.providerHasPendingLoad(p.ID) || r.dispatchLoadCooldownActiveLocked(p.ID, model, now) {
 		return warmPoolCandidate{}, warmColdPendingLoad
 	}
 	if p.pendingCount() != 0 || warmPoolBackendSlotBusyLocked(p) {

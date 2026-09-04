@@ -7,29 +7,28 @@ import (
 )
 
 // capacityStrikesOf returns the pair's recorded reject strikes (chronological).
-func capacityStrikesOf(r *Registry, providerID, modelID string) (out []time.Time) {
-	readGateForSession(r, providerID, func(g *gateState) {
-		if g != nil {
-			out = append([]time.Time(nil), g.capacityRejectStrikes[modelID]...)
-		}
-	})
-	return
+func capacityStrikesOf(r *Registry, providerID, modelID string) []time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	strikes := r.capacityRejectStrikes[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+	return append([]time.Time(nil), strikes...)
 }
 
 // TestCapacityAcceptAppliedLateKeepsStrikeRecordedAfterObservation: the
 // commit-time accept is observed at the first content chunk but applied when
-// its goroutine finally holds the identity gate lock. A capacity reject for the same pair recorded in that
+// its goroutine finally holds the registry write lock (~190 ms behind queued
+// writers in production). A capacity reject for the same pair recorded in that
 // gap happened AFTER the accept and must survive it; a strike recorded before
-// the observation is still cleared. The test holds the gate lock, starts the
+// the observation is still cleared. The test holds the write lock, starts the
 // accept, records one older and one newer strike while the accept is blocked,
 // then releases the lock.
 func TestCapacityAcceptAppliedLateKeepsStrikeRecordedAfterObservation(t *testing.T) {
 	r := New(nil)
 	const provider, model = "prov-late-accept", "gemma-4-26b-8bit"
-	g := r.gateForSession(provider).g
+	key := capacityRejectKey{ProviderID: provider, ModelID: model}
 
 	observedAt := time.Now()
-	g.mu.Lock()
+	r.mu.Lock()
 	applied := make(chan struct{})
 	go func() {
 		defer close(applied)
@@ -40,9 +39,8 @@ func TestCapacityAcceptAppliedLateKeepsStrikeRecordedAfterObservation(t *testing
 	older := observedAt.Add(-time.Second)
 	time.Sleep(2 * time.Millisecond)
 	newer := time.Now()
-	g.capacityRejectStrikes[model] = []time.Time{older, newer}
-	g.publishLocked()
-	g.mu.Unlock()
+	r.capacityRejectStrikes[key] = []time.Time{older, newer}
+	r.mu.Unlock()
 	<-applied
 
 	got := capacityStrikesOf(r, provider, model)
@@ -115,13 +113,10 @@ func TestCapacityAcceptObservedBeforeClampDoesNotProveRelease(t *testing.T) {
 
 // capacityTripsOf returns the pair's cooldown trip count (0 = never tripped or
 // accept-cleared).
-func capacityTripsOf(r *Registry, providerID, modelID string) (out int) {
-	readGateForSession(r, providerID, func(g *gateState) {
-		if g != nil {
-			out = g.capacityCooldownTrips[modelID]
-		}
-	})
-	return
+func capacityTripsOf(r *Registry, providerID, modelID string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.capacityCooldownTrips[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
 }
 
 // TestCapacityAcceptAppliedLateKeepsCooldownArmedByNewerStrikes: while the
@@ -239,26 +234,25 @@ func TestCapacityAcceptRebuildsNewCooldownWithFreshBackoff(t *testing.T) {
 		t.Run(fmt.Sprintf("old_active_%v", active), func(t *testing.T) {
 			r := New(nil)
 			const provider, model = "old-backoff", "model"
-			g := r.gateForSession(provider).g
+			key := capacityRejectKey{ProviderID: provider, ModelID: model}
 			observed := time.Now().Add(-time.Second)
 			oldExpiry := time.Now().Add(-time.Second)
 			if active {
 				oldExpiry = time.Now().Add(5 * time.Minute)
 			}
-			g.mu.Lock()
-			g.capacityCooldownTrips[model] = 4
-			g.capacityCooldowns[model] = &capacityCooldownEntry{expiry: oldExpiry}
-			g.publishLocked()
-			g.mu.Unlock()
+			r.mu.Lock()
+			r.capacityCooldownTrips[key] = 4
+			r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: oldExpiry}
+			r.mu.Unlock()
 			for range r.capacityCooldownCfg.Threshold {
 				r.RecordCapacityReject(provider, model)
 			}
 			strikes := capacityStrikesOf(r, provider, model)
 			wantExpiry := strikes[r.capacityCooldownCfg.Threshold-1].Add(r.capacityCooldownCfg.BaseTTL)
 			r.RecordCapacityAcceptObserved(provider, model, observed, true)
-			g.mu.Lock()
-			got, trips := *g.capacityCooldowns[model], g.capacityCooldownTrips[model]
-			g.mu.Unlock()
+			r.mu.RLock()
+			got, trips := *r.capacityCooldowns[key], r.capacityCooldownTrips[key]
+			r.mu.RUnlock()
 			if trips != 1 || !got.expiry.Equal(wantExpiry) {
 				t.Fatalf("rebuilt cooldown: trips=%d expiry=%v, want 1/%v", trips, got.expiry, wantExpiry)
 			}
@@ -268,19 +262,18 @@ func TestCapacityAcceptRebuildsNewCooldownWithFreshBackoff(t *testing.T) {
 
 func TestCapacityAcceptRebuildPreservesNewProbe(t *testing.T) {
 	r := New(nil)
-	const provider, model = "probe", "model"
-	g := r.gateForSession(provider).g
+	key := capacityRejectKey{ProviderID: "probe", ModelID: "model"}
 	now := time.Now()
 	r.capacityCooldownCfg = capacityCooldownConfig{Threshold: 2, Window: time.Minute, BaseTTL: time.Second, MaxTTL: time.Minute}
-	g.capacityRejectStrikes[model] = []time.Time{now.Add(-4 * time.Second), now.Add(-3 * time.Second)}
+	r.capacityRejectStrikes[key] = []time.Time{now.Add(-4 * time.Second), now.Add(-3 * time.Second)}
 	probeAt := now.Add(-time.Second)
-	g.capacityCooldowns[model] = &capacityCooldownEntry{expiry: now.Add(-2 * time.Second), probeAt: probeAt}
-	g.capacityCooldownTrips[model] = 4
-	r.RecordCapacityAcceptObserved(provider, model, now.Add(-5*time.Second), false)
-	if entry := g.capacityCooldowns[model]; entry == nil || !entry.probeAt.Equal(probeAt) {
+	r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: now.Add(-2 * time.Second), probeAt: probeAt}
+	r.capacityCooldownTrips[key] = 4
+	r.RecordCapacityAcceptObserved(key.ProviderID, key.ModelID, now.Add(-5*time.Second), false)
+	if entry := r.capacityCooldowns[key]; entry == nil || !entry.probeAt.Equal(probeAt) {
 		t.Fatalf("lost current probe: %+v", entry)
 	}
-	if !r.CapacityCooldownActive(provider, model) {
+	if !r.CapacityCooldownActive(key.ProviderID, key.ModelID) {
 		t.Fatal("rebuild allowed a second probe while the first is pending")
 	}
 }

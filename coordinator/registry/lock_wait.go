@@ -28,9 +28,9 @@ type writeHold struct {
 	obs  *func(site string, wait time.Duration)
 }
 
-// lockWrite measures the remaining global write acquisitions, including
-// reservation commits in global compatibility mode. Per-identity recorders
-// use lockGate and its separate observer. With no observer registered it costs one atomic load; with one,
+// lockWrite is r.mu.Lock() for the request-path recorders (commit, capacity
+// accept/reject, error cooldown, breaker, health ejection, dispatch-load
+// cooldown). With no observer registered it costs one atomic load; with one,
 // it measures the acquisition wait for the returned hold to report on unlock.
 func (r *Registry) lockWrite(site string) writeHold {
 	obs := r.lockWaitObserver.Load()

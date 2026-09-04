@@ -41,7 +41,6 @@ func newBreakerExemptionHarness(t *testing.T, name string) (*Server, *registry.R
 	provider.Mu().Lock()
 	provider.AccountID = "acct-" + name
 	provider.Mu().Unlock()
-	provider.RebindStableFaultKey()
 	pr := &registry.PendingRequest{
 		RequestID: "req-" + name,
 		Model:     "test-model",

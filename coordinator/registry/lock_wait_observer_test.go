@@ -37,50 +37,58 @@ func (r *lockWaitRecorder) bySite(site string) []lockWaitSample {
 	return out
 }
 
-// Global compatibility mode retains the write-wait observer. Per-identity
-// recorders use their separate gate observer in both commit modes.
+// TestLockWriteReportsWaitBySite: every request-path recorder reports its
+// write-lock acquisition to the observer tagged with its own site, and the
+// reported wait reflects time actually spent blocked behind a reader.
 func TestLockWriteReportsWaitBySite(t *testing.T) {
-	t.Setenv(envReserveCommitMode, "global")
 	reg := New(testLogger())
 	model := "lock-wait-model"
 	p := planTestProvider(t, reg, "lock-wait-provider", model, 0)
-	other := planTestProvider(t, reg, "lock-wait-other", model, 400)
+
+	// No observer registered: the sites still work.
+	reg.ClearDispatchLoadCooldown(p.ID, model)
+
 	rec := &lockWaitRecorder{}
 	reg.SetLockWaitObserver(rec.observe)
-	reg.mu.RLock()
-	go func() { time.Sleep(100 * time.Millisecond); reg.mu.RUnlock() }()
-	lock := reg.commitLock("commit")
-	lock.lock()
-	lock.unlock()
-	got := rec.bySite("commit")
-	if len(got) != 1 || got[0].wait < 30*time.Millisecond {
-		t.Fatalf("global commit wait: %+v", got)
+
+	// Hold the lock for reading while a recorder tries to write.
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		reg.mu.RLock()
+		close(held)
+		<-release
+		reg.mu.RUnlock()
+	}()
+	<-held
+	const hold = 100 * time.Millisecond
+	go func() {
+		time.Sleep(hold)
+		close(release)
+	}()
+	reg.ClearDispatchLoadCooldown(p.ID, model)
+	got := rec.bySite("dispatch_load_cooldown")
+	if len(got) != 1 {
+		t.Fatalf("dispatch_load_cooldown samples = %d, want 1", len(got))
 	}
-	primary, _, plan := reg.ReserveProviderWithPlan(model, planTestRequest("global-primary", 10, 10))
-	if primary == nil || plan == nil {
-		t.Fatal("primary reservation failed")
+	// Generous floor: the acquisition blocks for close to the whole hold, but
+	// a loaded -race run can delay the caller a few tens of milliseconds.
+	if got[0].wait < 30*time.Millisecond {
+		t.Fatalf("reported wait %s, want at least 30ms (the acquisition blocked behind a reader for %s)", got[0].wait, hold)
 	}
-	next, _, _ := reg.ReserveNextFromPlan(planTestRequest("global-next", 10, 10), plan, primary.ID)
-	if next == nil {
-		t.Fatal("plan reservation failed")
-	}
-	if len(rec.bySite("commit_plan")) != 1 {
-		t.Fatal("global plan commit omitted write-wait sample")
-	}
+
+	// Each recorder reports under its own site tag.
 	reg.RecordCapacityAcceptOutcome(p.ID, model, true)
 	reg.RecordInferenceSuccess(p.ID, model, RequestTraits{}.CooldownShape())
 	reg.RecordProviderOutcome(p.ID, true, 200, "")
 	reg.RecordProviderServeOutcome("stable-"+p.ID, true, 200, "")
-	reg.ClearDispatchLoadCooldown(p.ID, model)
-	for _, site := range []string{"capacity_accept", "inference_success", "breaker", "health_ejection", "dispatch_load_cooldown"} {
-		if len(rec.bySite(site)) != 0 {
-			t.Fatalf("gate recorder %s reported a global write wait", site)
+	reg.ReserveProviderWithPlan(model, planTestRequest("lock-wait-req", 10, 10))
+	for _, site := range []string{"capacity_accept", "inference_success", "breaker", "health_ejection", "commit"} {
+		if len(rec.bySite(site)) == 0 {
+			t.Fatalf("site %q reported no lock-wait sample", site)
 		}
 	}
-	for _, provider := range []*Provider{p, other} {
-		provider.RemovePending("global-primary")
-		provider.RemovePending("global-next")
-	}
+	p.RemovePending("lock-wait-req")
 }
 
 // TestReserveProviderCountsScans: a clean reservation is one scan, a failed
@@ -159,16 +167,14 @@ func TestReserveProviderCountsScans(t *testing.T) {
 	}
 }
 
-func TestDispatchLoadFailureReportsGateWait(t *testing.T) {
+func TestDispatchLoadFailureReportsLockWait(t *testing.T) {
 	reg := New(testLogger())
 	rec := &lockWaitRecorder{}
-	reg.SetGateWaitObserver(rec.observe)
-	release := reg.HoldGateForTest("load-failure")
-	go func() { time.Sleep(30 * time.Millisecond); release() }()
+	reg.SetLockWaitObserver(rec.observe)
 	if !reg.RecordDispatchLoadFailure("load-failure", "model") {
 		t.Fatal("first failure did not start a cooldown")
 	}
 	if got := rec.bySite("dispatch_load_failure"); len(got) != 1 {
-		t.Fatalf("failure gate samples = %d, want 1", len(got))
+		t.Fatalf("failure lock samples = %d, want 1", len(got))
 	}
 }

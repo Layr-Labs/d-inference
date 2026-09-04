@@ -35,10 +35,10 @@ import (
 //
 // RE-PROBE + BACKOFF — TRUE HALF-OPEN. A trip quarantines the pair for
 // BaseTTL (default 120s). After expiry EXACTLY ONE request passes as the
-// probe: the routing gate opens only while no probe claim is fresh, and the
-// reservation commit claims the probe (tryClaimCapacityProbe — check and claim
-// in one gate.mu section, so concurrent reservations for the identity
-// serialize there) the moment it reserves the pair — every other request keeps
+// probe: the routing gate opens only while no probe claim is fresh, and
+// ReserveProviderEx claims the probe (claimCapacityProbeLocked, under the
+// r.mu write lock held for the whole reservation, so concurrent reservations
+// serialize) the moment it reserves the pair — every other request keeps
 // seeing the cooldown until the probe's outcome lands. Accept → all state
 // cleared, the pair is fully re-admitted (a genuinely-full box that recovered
 // gets traffic back). Reject → immediate re-arm with an exponentially doubled
@@ -54,11 +54,12 @@ import (
 // truthful outcome is the queue/429 path, not a guaranteed-reject dispatch.
 // TTLs stagger, so re-probes trickle back on their own.
 //
-// State lives on the provider's STABLE fault identity gate (gate_state.go:
+// State is keyed by the provider's STABLE fault identity (faultKeyLocked:
 // serial → SE-key → account → session fallback), so a reconnect cannot reset
 // a black hole's streak, cooldown, or backoff trip count — the same
-// reconnect-proofing as error_cooldown.go and provider_breaker.go. Guarded by
-// gate.mu; the transition-bool return mirrors error_cooldown.go.
+// reconnect-proofing as error_cooldown.go and provider_breaker.go. Maps are
+// bounded by the same opportunistic >1024 sweep. r.mu discipline and the
+// transition-bool return also mirror error_cooldown.go.
 
 // Env tunables — read ONCE at Registry construction (coordinator restart
 // applies changes). All values have safe defaults; setting the threshold to 0
@@ -90,8 +91,9 @@ const (
 const capacityProbeOutcomeWindow = 30 * time.Second
 
 // capacityCooldownEntry is one pair's active (or expired-awaiting-probe)
-// cooldown. Fields are written and read ONLY under the identity's gate.mu
-// (arm/re-arm in RecordCapacityReject, probe claim in tryClaimCapacityProbe).
+// cooldown. Fields are written ONLY under the r.mu write lock (arm/re-arm in
+// RecordCapacityReject, probe claim in claimCapacityProbeLocked); the routing
+// gate reads them under either lock mode.
 type capacityCooldownEntry struct {
 	// expiry is when the quarantine TTL lapses and the pair becomes eligible
 	// for a single half-open probe.
@@ -136,6 +138,13 @@ func loadCapacityCooldownConfig() capacityCooldownConfig {
 		cfg.MaxTTL = cfg.BaseTTL
 	}
 	return cfg
+}
+
+// capacityRejectKey identifies a capacity-cooldown bucket. A struct key (vs a
+// delimiter-joined string) cannot alias across ids containing the delimiter.
+type capacityRejectKey struct {
+	ProviderID string
+	ModelID    string
 }
 
 // RecordCapacityReject records one capacity-class rejection (token budget /
@@ -232,24 +241,13 @@ func (r *Registry) RecordCapacityRejectBusy(providerID, modelID string) (tripped
 // armClamp gates the budget clamp (false only for request-deterministic
 // rejects, which indict the request rather than the provider). The cooldown
 // strike is fed on all paths.
-//
-// The pair's budget snapshot (does the provider currently report a token
-// budget for the model?) is read under p.mu BEFORE the gate is taken — the
-// lock order is p.mu → gate.mu, never the reverse. Only gate.mu is then held;
-// never r.mu.
 func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, armClamp bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	budgetReported := false
-	if armClamp {
-		budgetReported = providerReportsTokenBudget(r.sessionProvider(providerID), modelID)
-	}
-	hold := r.lockGate(r.gateForSession(providerID), "capacity_reject")
+	hold := r.lockWrite("capacity_reject")
 	defer hold.unlock()
-	g := hold.g
 	now := time.Now()
-	defer g.updatedLocked(now)
 
 	// Gray-box trackers ride the SAME classified entry point but have their own
 	// kill switches, independent of the cooldown threshold: the budget clamp
@@ -262,11 +260,12 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	// never reset off. The clamp is armed only when the reject indicts the
 	// PROVIDER (armClamp=false for request-deterministic rejects — an oversized
 	// prompt says nothing about the pair's budget honesty).
+	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	if armClamp {
-		g.recordBudgetClampLocked(r.budgetClampCfg, modelID, budgetReported, now)
+		r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
 	}
 	if deratePair {
-		g.recordCapacityRateRejectLocked(r.capacityRateCfg, modelID, now)
+		r.recordCapacityRateRejectLocked(clampKey, now)
 	}
 
 	cfg := r.capacityCooldownCfg
@@ -274,8 +273,36 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 		return false // disabled via EIGENINFERENCE_CAPACITY_COOLDOWN_THRESHOLD=0
 	}
 
+	// Opportunistic sweep (mirrors error_cooldown.go): session provider ids are
+	// per-connection UUIDs that never get re-keyed — bound the maps by dropping
+	// expired/idle entries once they grow.
+	if len(r.capacityCooldowns) > 1024 {
+		for key, e := range r.capacityCooldowns {
+			// Half-open entries live PAST their expiry by design: the fresh
+			// probe claim (probeAt) is the only thing keeping the gate closed
+			// while the single probe's outcome is pending. Sweeping such an
+			// entry would reopen the gate mid-probe and leak a thundering herd
+			// through the post-expiry window — keep entries whose claim is
+			// still fresh; they self-resolve within capacityProbeOutcomeWindow.
+			if !now.Before(e.expiry) &&
+				(e.probeAt.IsZero() || !now.Before(e.probeAt.Add(capacityProbeOutcomeWindow))) {
+				delete(r.capacityCooldowns, key)
+				delete(r.capacityCooldownTrips, key)
+			}
+		}
+	}
+	if len(r.capacityRejectStrikes) > 1024 {
+		for key, strikes := range r.capacityRejectStrikes {
+			if len(strikes) == 0 || !strikes[len(strikes)-1].Add(cfg.Window).After(now) {
+				delete(r.capacityRejectStrikes, key)
+			}
+		}
+	}
+
+	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+
 	// Slide the window: keep only strikes still inside it, then add this one.
-	strikes := g.capacityRejectStrikes[modelID]
+	strikes := r.capacityRejectStrikes[key]
 	kept := strikes[:0]
 	for _, ts := range strikes {
 		if now.Sub(ts) < cfg.Window {
@@ -283,14 +310,14 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 		}
 	}
 	kept = append(kept, now)
-	g.capacityRejectStrikes[modelID] = kept
+	r.capacityRejectStrikes[key] = kept
 
 	// Active cooldown: record only — never extend or re-arm (see doc above).
-	if e, ok := g.capacityCooldowns[modelID]; ok && now.Before(e.expiry) {
+	if e, ok := r.capacityCooldowns[key]; ok && now.Before(e.expiry) {
 		return false
 	}
 
-	trips := g.capacityCooldownTrips[modelID]
+	trips := r.capacityCooldownTrips[key]
 	// A fresh pair (trips == 0) needs the full threshold inside the window. A
 	// half-open pair (trips > 0: tripped before, no accept since, cooldown
 	// expired → this reject IS the failed re-probe) re-arms immediately.
@@ -299,85 +326,28 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	}
 
 	// Arm/re-arm: fresh entry with an unclaimed probe slot for the NEXT expiry.
-	g.capacityCooldowns[modelID] = &capacityCooldownEntry{expiry: now.Add(capacityCooldownBackoff(cfg, trips))}
-	g.capacityCooldownTrips[modelID] = trips + 1
+	r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: now.Add(capacityCooldownBackoff(cfg, trips))}
+	r.capacityCooldownTrips[key] = trips + 1
 	return true
 }
 
-// tryClaimCapacityProbe claims the single half-open probe for an EXPIRED
-// cooldown entry, called by the reservation commit (under p.mu, in both
-// commit modes) at the moment a request is actually bound to the pair. The
-// check and the claim are ONE gate.mu section, so concurrent commits for the
-// same identity serialize here even though the commit itself no longer holds
-// the registry write lock: the first to reserve the pair claims the probe and
-// every later one sees the fresh claim.
-//
-// Returns false when the pair's gate is CLOSED right now — inside its TTL, or
-// expired with another request's probe claim still fresh — so the caller
-// rejects the reservation instead of leaking a second probe through the
-// post-expiry window. Returns true (a no-op) for a pair with no cooldown entry
-// — the overwhelmingly common case, one lock-free flag load — and true after
-// claiming an unclaimed or stale slot. nil-safe (a bare Provider has no gate).
-//
-// The claim is a mutation, so it goes through lockGate like the recorders: a
-// rebind that lands between loading p.gate and taking the lock moves the
-// cooldown entry to the session's new gate, and a claim made on the old
-// (emptied) gate would find no entry and admit — a leaked probe through a
-// cooled pair. lockGate sees p.gate moved and re-resolves. Lock order: the
-// caller holds p.mu; gatesMu (on a re-resolve) and gate.mu nest under it.
-func (r *Registry) tryClaimCapacityProbe(p *Provider, model string, now time.Time) bool {
-	return r.claimCapacityProbeRef(r.probeGateRef(p), model, now)
-}
-
-// probeGateRef resolves the gate the commit's probe claim targets: the
-// connected Provider's cached p.gate (no lock), remembering p so lockGate can
-// tell when the session rebound between this load and the lock. A Provider
-// that was never registered (bare test objects) falls back to the session
-// lookup; nil resolves to no gate.
-func (r *Registry) probeGateRef(p *Provider) gateRef {
-	if p == nil {
-		return gateRef{}
-	}
-	if g := p.gate.Load(); g != nil {
-		return gateRef{g: g.resolve(), p: p, session: p.ID}
-	}
-	return r.lookupSessionGateRef(p.ID)
-}
-
-// claimCapacityProbeRef is tryClaimCapacityProbe on an already-resolved ref
-// (split out so a test can interpose a rebind between resolution and claim).
-func (r *Registry) claimCapacityProbeRef(ref gateRef, model string, now time.Time) bool {
-	ref, has := r.refHasPairState(ref, gateFlagCapacityCooldown)
-	if !has {
-		return true
-	}
-	hold := r.lockGate(ref, "capacity_probe")
-	if hold.g == nil {
-		return true
-	}
-	// Release directly, not via hold.unlock(): the caller holds p.mu (and
-	// r.mu in global commit mode), and the observer's DogStatsD emit must
-	// never run inside those sections. The probe's gate wait is therefore not
-	// reported; the recorders' waits on the same gates are.
-	defer hold.g.mu.Unlock()
-	return hold.g.tryClaimCapacityProbeLocked(model, now)
-}
-
-// tryClaimCapacityProbeLocked is the check-and-claim itself. Caller holds
-// g.mu (lockGate has validated the gate is the session's current one).
-func (g *gateState) tryClaimCapacityProbeLocked(model string, now time.Time) bool {
-	e, ok := g.capacityCooldowns[model]
-	if !ok {
-		return true
-	}
-	if now.Before(e.expiry) {
-		return false
+// claimCapacityProbeLocked claims the single half-open probe for an EXPIRED
+// cooldown entry, called by ReserveProviderEx at reservation commit — the
+// moment a request is actually bound to the pair. Caller MUST hold the r.mu
+// WRITE lock (ReserveProviderEx does, for the whole selection+reservation), so
+// concurrent reservations serialize: the first to reserve the pair claims the
+// probe, and the gate (capacityCooldownActiveLocked) closes for everyone else
+// until the probe's outcome lands or the claim goes stale. A no-op for pairs
+// with no cooldown entry (the overwhelmingly common case — one map lookup) or
+// one still inside its TTL (unreachable via routing, but harmless).
+func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time.Time) {
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}]
+	if !ok || now.Before(e.expiry) {
+		return
 	}
 	if e.probeAt.IsZero() || !now.Before(e.probeAt.Add(capacityProbeOutcomeWindow)) {
 		e.probeAt = now
-		return true
 	}
-	return false
 }
 
 // RecordCapacityAccept records that the (provider, model) pair ACCEPTED work —
@@ -402,9 +372,9 @@ func (g *gateState) tryClaimCapacityProbeLocked(model string, now time.Time) boo
 // first content says nothing about fault behavior, and wiping the exponential
 // backoff on any served chunk would let a flapping node reset it forever;
 // RecordProviderServeOutcome(ok=true) at clean completion is the fault-recovery
-// signal. An ACTIVE ejection window (ejectionUntil still in the future) is
-// also left untouched: ejection doesn't cancel in-flight work, so content can
-// flow from an ejected node, and lifting the quarantine early on it would
+// signal. An ACTIVE ejection window (healthEjectionUntil still in the future)
+// is also left untouched: ejection doesn't cancel in-flight work, so content
+// can flow from an ejected node, and lifting the quarantine early on it would
 // defeat the cooldown — recovery goes through the half-open success probe.
 // It returns whether a capacity-503 RATE outcome was recorded for this accept
 // (see RecordCapacityAcceptOutcome) so commit-time callers can stamp the request
@@ -426,128 +396,134 @@ func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcome
 // that never commit content without double-counting streamed requests. The
 // cooldown/streak/clamp accept semantics below are identical for both values
 // (belt-and-braces accepts stay harmless there).
-//
-// This takes ONLY the identity's gate.mu
-// — never r.mu. The one provider read it may need (the live budget snapshot
-// that decides whether an accept RELEASES a clamp) happens under p.mu before
-// the gate is taken, and only when the gate's flag word says a clamp exists.
 func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	return r.RecordCapacityAcceptObserved(providerID, modelID, time.Now(), countRateOutcome)
 }
 
-// RecordCapacityAcceptObserved applies a first-content accept at its original
-// observation time. A delayed recorder retains newer strikes, rebuilds their
-// cooldown with fresh backoff, and proves clamp release only if observed after
-// the clamp was armed. The rate window records apply time to stay ordered.
-// All fault-state mutations remain under gate.mu, never the global registry
-// lock. A zero or future observation is treated as now.
+// RecordCapacityAcceptObserved is RecordCapacityAcceptOutcome for an accept
+// that was OBSERVED at observedAt but is being applied now — the commit-time
+// accept runs off the dispatch goroutine so the first client byte never waits
+// for the registry write lock, and even a synchronous caller waits behind
+// every queued writer (~190 ms at the production median) before its accept
+// lands. In that gap a capacity reject for the SAME pair can be recorded. It
+// happened AFTER the accept, so it is not "a reject with no accept after it"
+// erased by the accept; it is the first strike of a possible new streak and
+// must survive. Concretely:
+//
+//   - reject STRIKES stamped after observedAt are kept (their timestamps are
+//     the existing per-strike window stamps); older ones are cleared;
+//   - the budget clamp's accept proof (release condition b) is granted only
+//     when the clamp was armed at or before observedAt — a clamp re-armed by
+//     a later reject keeps waiting for an accept that follows it;
+//   - cooldown history is rebuilt from the surviving strikes with fresh
+//     backoff: an observed accept resets every earlier trip. Retaining the
+//     previous trip count would incorrectly lengthen a newly justified trip;
+//   - the node-level capacity streak is always cleared: it is a bare count
+//     that cannot be split by time; keeping it would over-count toward
+//     ejection of a node that has just served content, and completion
+//     (RecordProviderServeOutcome ok=true) clears it anyway;
+//   - the capacity-503 RATE outcome is stamped with the apply time: the rate
+//     window is order-independent by design and its histories must stay
+//     chronological.
+//
+// A zero or future observedAt means "observed now".
 func (r *Registry) RecordCapacityAcceptObserved(providerID, modelID string, observedAt time.Time, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	// An identity with no gate has nothing to clear; create one only when
-	// there is a rate outcome to record, so a straggling accept for a dead
-	// session does not file a gate under its id.
-	ref := r.lookupSessionGateRef(providerID)
-	if ref.g == nil {
-		if !countRateOutcome || r.capacityRateCfg.PenaltyMs <= 0 {
+	// The rate config is immutable after Registry construction. An enabled
+	// offered outcome is the common path and already requires the write lock, so
+	// skip a redundant read-lock probe. Completion calls that already counted
+	// their rate outcome retain the old healthy fast path: use the read lock to
+	// avoid write acquisition when there is no cooldown/clamp state to clear.
+	shouldRecordRate := countRateOutcome && r.capacityRateCfg.PenaltyMs > 0
+	if !shouldRecordRate {
+		r.mu.RLock()
+		key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+		_, hasStrikes := r.capacityRejectStrikes[key]
+		_, hasCooldown := r.capacityCooldowns[key]
+		_, hasTrips := r.capacityCooldownTrips[key]
+		_, hasClamp := r.budgetClamps[key]
+		_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
+		capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
+		r.mu.RUnlock()
+		if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasNodeStreak && !capacityTripped {
 			return false
 		}
-		ref = r.gateForSession(providerID)
 	}
-	var heartbeatAt time.Time
-	var rawRemaining int64
-	var budgetReported bool
-	ref, hasClamp := r.refHasPairState(ref, gateFlagBudgetClamp)
-	if hasClamp {
-		heartbeatAt, rawRemaining, budgetReported = providerBudgetSnapshot(r.sessionProvider(providerID), modelID)
-	}
-	hold := r.lockGate(ref, "capacity_accept")
-	defer hold.unlock()
-	g := hold.g
-	if g == nil {
-		return false
-	}
-
+	hold := r.lockWrite("capacity_accept")
 	now := time.Now()
 	if observedAt.IsZero() || observedAt.After(now) {
 		observedAt = now
 	}
-	if strikes := g.capacityRejectStrikes[modelID]; len(strikes) > 0 {
+	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
+	// Clear the strikes this accept answers — those recorded up to the instant
+	// it was observed. Strikes are chronological, so the survivors are a suffix.
+	if strikes := r.capacityRejectStrikes[key]; len(strikes) > 0 {
 		kept := strikes[:0]
-		for _, stamp := range strikes {
-			if stamp.After(observedAt) {
-				kept = append(kept, stamp)
+		for _, ts := range strikes {
+			if ts.After(observedAt) {
+				kept = append(kept, ts)
 			}
 		}
 		if len(kept) == 0 {
-			delete(g.capacityRejectStrikes, modelID)
+			delete(r.capacityRejectStrikes, key)
 		} else {
-			g.capacityRejectStrikes[modelID] = kept
+			r.capacityRejectStrikes[key] = kept
 		}
 	}
-	g.rebuildCapacityCooldownLocked(r.capacityCooldownCfg, modelID)
+	r.rebuildCapacityCooldownLocked(key)
 	// Gray-box trackers: the accept is PROOF for the clamp's release condition
 	// (b) — never an instant release, which still needs a strictly-fresher
 	// heartbeat with meaningful headroom — and ONE served outcome for the rate
 	// window (which deliberately has NO reset semantics: the accept/reject mix
 	// IS the signal). Then drop the entry if it is now inactive (this accept
 	// completed the release proof, the TTL lapsed, or it was armed budgetless):
-	// a lingering inactive entry would keep re-blocking the identity's next
-	// budgetless reconnect window. The snapshot was read before the gate was
-	// taken (lock order p.mu → gate.mu), so two benign races exist: a clamp
-	// armed in between sees a zero snapshot and keeps holding, and a heartbeat
-	// delivered in between already ran its own release pass before
-	// acceptedSince was set, so the release lands on the NEXT heartbeat or
-	// accept. Neither can release early.
-	if e, hasClamp := g.budgetClamps[modelID]; hasClamp {
+	// a lingering inactive entry would keep every later accept for the pair off
+	// the read-lock fast path above and would re-block the identity's next
+	// budgetless reconnect window.
+	if e, hasClamp := r.budgetClamps[key]; hasClamp {
+		// An accept observed BEFORE the clamp armed is not proof the clamp
+		// has released; only a clamp armed at or before the observation is.
 		if !e.clampedAt.After(observedAt) {
-			e.acceptedSince = true
+			r.noteBudgetClampAcceptLocked(key)
 		}
-		g.dropInactiveBudgetClampLocked(r.budgetClampCfg, modelID, heartbeatAt, rawRemaining, budgetReported, now)
+		r.dropInactiveBudgetClampLocked(providerID, modelID, now)
 	}
 	if countRateOutcome {
-		rateOutcomeRecorded = g.recordCapacityRateAcceptLocked(r.capacityRateCfg, modelID, now)
+		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)
 	}
-	g.ejectionCapacityStreak = capacityStreak{}
-	if g.ejectionLastTripCapacity {
-		g.ejectionTrips = 0
-		g.ejectionLastTripCapacity = false
+	delete(r.healthEjectionCapacityStreaks, key.ProviderID)
+	if r.healthEjectionLastTripCapacity[key.ProviderID] {
+		delete(r.healthEjectionTrips, key.ProviderID)
+		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
-	g.updatedLocked(now)
+	hold.unlock()
 	return rateOutcomeRecorded
 }
 
 // CapacityCooldownActive reports whether the (provider, model) pair is
 // currently quarantined by the capacity-reject cooldown. Exposed for tests and
-// observability.
+// observability; the routing hot path uses capacityCooldownActiveLocked under
+// the already-held r.mu.
 func (r *Registry) CapacityCooldownActive(providerID, modelID string) bool {
-	return r.capacityCooled(providerID, modelID, time.Now())
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.capacityCooldownActiveLocked(providerID, modelID, time.Now())
 }
 
-// capacityCooled resolves the session's gate; the scan uses the cached p.gate
-// directly.
-func (r *Registry) capacityCooled(providerID, modelID string, now time.Time) bool {
-	return r.lookupGateForSession(providerID).capacityCooled(modelID, now)
-}
-
-// capacityCooled reports whether routing should skip the pair. READ-ONLY (no
-// lazy delete, no claim): lock-free "no cooldown entry on any model" fast
-// path, otherwise one short gate.mu section. nil-safe.
+// capacityCooldownActiveLocked reports whether routing should skip the pair.
+// READ-ONLY (no lazy delete, no claim) — some callers hold only r.mu.RLock.
+// Caller holds r.mu in either mode (mirrors inferenceErrorCooldownActiveLocked).
 //
 // Half-open semantics: inside the TTL the gate is closed. Once now reaches the
 // expiry it opens ONLY while no probe claim is fresh — the first reservation
-// through claims the probe (tryClaimCapacityProbe, at commit), which closes
-// the gate again for everyone else until the probe's outcome lands (accept
-// deletes the entry; reject re-arms it) or the claim goes stale after
+// through claims the probe (claimCapacityProbeLocked, write lock), which
+// closes the gate again for everyone else until the probe's outcome lands
+// (accept deletes the entry; reject re-arms it) or the claim goes stale after
 // capacityProbeOutcomeWindow (a lost probe must not wedge the pair).
-func (g *gateState) capacityCooled(modelID string, now time.Time) bool {
-	if !g.hasPairState(gateFlagCapacityCooldown) {
-		return false
-	}
-	g = g.lockResolved()
-	defer g.mu.Unlock()
-	e, ok := g.capacityCooldowns[modelID]
+func (r *Registry) capacityCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
+	e, ok := r.capacityCooldowns[capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}]
 	if !ok {
 		return false
 	}
@@ -576,11 +552,12 @@ func capacityCooldownBackoff(cfg capacityCooldownConfig, trips int) time.Duratio
 
 // rebuildCapacityCooldownLocked applies the post-accept strike history from a
 // fresh breaker. The caller has removed every strike answered by the accept.
-func (g *gateState) rebuildCapacityCooldownLocked(cfg capacityCooldownConfig, modelID string) {
-	previous := g.capacityCooldowns[modelID]
-	delete(g.capacityCooldowns, modelID)
-	delete(g.capacityCooldownTrips, modelID)
-	strikes := g.capacityRejectStrikes[modelID]
+func (r *Registry) rebuildCapacityCooldownLocked(key capacityRejectKey) {
+	previous := r.capacityCooldowns[key]
+	delete(r.capacityCooldowns, key)
+	delete(r.capacityCooldownTrips, key)
+	cfg := r.capacityCooldownCfg
+	strikes := r.capacityRejectStrikes[key]
 	if cfg.Threshold <= 0 || len(strikes) < cfg.Threshold {
 		return
 	}
@@ -597,6 +574,6 @@ func (g *gateState) rebuildCapacityCooldownLocked(cfg capacityCooldownConfig, mo
 	if previous != nil && !previous.probeAt.IsZero() && !previous.probeAt.Before(expiry) {
 		entry.probeAt = previous.probeAt
 	}
-	g.capacityCooldowns[modelID] = entry
-	g.capacityCooldownTrips[modelID] = trips
+	r.capacityCooldowns[key] = entry
+	r.capacityCooldownTrips[key] = trips
 }

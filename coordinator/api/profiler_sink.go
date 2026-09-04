@@ -65,7 +65,7 @@ func (p *profileSink) submit(rp *registry.RequestProfile, ap *registry.AttemptPr
 		return true
 	default:
 		n := p.dropped.Add(1)
-		if isPowerOfTen(n) && p.s != nil && p.s.logger != nil {
+		if crossesPowerOfTen(n-1, n) && p.s != nil && p.s.logger != nil {
 			p.s.logger.Warn("profile sink dropping records (buffer full) — inference is unaffected",
 				"dropped_total", n, "capacity", cap(p.ch))
 		}

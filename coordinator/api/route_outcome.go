@@ -151,19 +151,9 @@ func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt 
 	}
 	s.emitInferenceErrorMetric(model, outcome)
 	s.emitTimingDecompositionMetric(model, outcome.FinalStatus, outcome)
-	s.submitTelemetry("updateInferenceRoute", func() {
-		if err := s.store.UpdateInferenceRouteOutcome(requestID, attempt, outcome); err != nil && s.logger != nil {
-			s.logger.Error("inference_routes outcome update failed",
-				"request_id", requestID,
-				"attempt", attempt,
-				"model", model,
-				"final_status", outcome.FinalStatus,
-				"error_class", outcome.ErrorClass,
-				"error_reason", outcome.ErrorReason,
-				"error", err,
-			)
-		}
-	})
+	// Off the request path: the batching sink pipelines this update with its
+	// neighbours after the group's route inserts (route_telemetry_submit.go).
+	s.submitRouteOutcome(requestID, attempt, model, outcome)
 }
 
 func (s *Server) emitInferenceErrorMetric(model string, outcome *store.InferenceRouteOutcome) {

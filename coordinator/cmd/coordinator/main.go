@@ -131,6 +131,17 @@ func main() {
 		})
 	}
 
+	// Read-through cache for the per-request user and model-registry lookups
+	// (one Postgres round trip each, 4-5 per inference request). Wraps both
+	// backends so dev/test and prod behave identically. Invalidation is
+	// in-process -- correct because this single process serves every admin and
+	// publish mutation; the TTLs only bound staleness from out-of-band DB edits.
+	cacheCfg := store.DefaultCacheConfig()
+	st = store.NewCached(st, cacheCfg)
+	logger.Info("store read-through cache enabled",
+		"user_ttl", cacheCfg.UserTTL, "model_ttl", cacheCfg.ModelTTL, "negative_ttl", cacheCfg.NegativeTTL,
+		"max_users", cacheCfg.MaxUsers, "max_models", cacheCfg.MaxModels)
+
 	// Reconcile provider sessions left open by a previous coordinator process
 	// (durable uptime history). Best-effort + time-bounded — neither an error nor
 	// a slow/unresponsive DB must block startup. Only sessions whose last

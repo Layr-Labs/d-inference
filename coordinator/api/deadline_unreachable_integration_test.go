@@ -70,11 +70,27 @@ func waitForDeadlineTelemetry(
 	minRoutes, minRejections int,
 ) ([]store.InferenceRouteRecord, []store.RejectionRecord) {
 	t.Helper()
+	return waitForDeadlineTelemetryWhere(t, st, minRoutes, minRejections, nil)
+}
+
+// waitForDeadlineTelemetryWhere waits for the row counts AND, when given, for
+// the route rows to satisfy settled. The route sink writes the attempt record
+// and its outcome as separate batched statements, so a row can be visible
+// before its final_status/error_reason are; callers that assert on outcome
+// fields must wait for them explicitly.
+func waitForDeadlineTelemetryWhere(
+	t *testing.T,
+	st *store.MemoryStore,
+	minRoutes, minRejections int,
+	settled func(routes []store.InferenceRouteRecord) bool,
+) ([]store.InferenceRouteRecord, []store.RejectionRecord) {
+	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		routes := st.InferenceRouteRecordsSince(time.Time{})
 		rejections := st.RejectionRecordsSince(time.Time{})
-		if len(routes) >= minRoutes && len(rejections) >= minRejections {
+		if len(routes) >= minRoutes && len(rejections) >= minRejections &&
+			(settled == nil || settled(routes)) {
 			return routes, rejections
 		}
 		if time.Now().After(deadline) {
@@ -218,7 +234,14 @@ func TestDeadlineUnreachableFailoverCarriesDecreasingBudgets(t *testing.T) {
 	assertDeadlineRefusalDidNotFeedCapacity(
 		t, reg, byName[attempts[0].provider], model)
 
-	routes, _ := waitForDeadlineTelemetry(t, st, 2, 0)
+	routes, _ := waitForDeadlineTelemetryWhere(t, st, 2, 0, func(routes []store.InferenceRouteRecord) bool {
+		for _, route := range routes {
+			if route.ErrorReason == errorReasonDeadlineUnreachable {
+				return true
+			}
+		}
+		return false
+	})
 	deadlineRoutes := 0
 	for _, route := range routes {
 		if route.ErrorReason != errorReasonDeadlineUnreachable {

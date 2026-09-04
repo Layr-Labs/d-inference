@@ -10,6 +10,12 @@ package api
 // helpers preserve EXACT behavior — identical error types, messages, params, and
 // status codes — and write the terminal response themselves, signalling the
 // caller to return via ok=false / handled=true.
+//
+// The prelude parses the body exactly once. Every later rewrite (stop
+// normalization, alias resolution, reasoning policy, runtime defaults,
+// max_tokens bound, …) mutates the decoded map and marks the forwardBody
+// dirty; the bytes are serialized once, lazily, when the first consumer of
+// the provider-bound body asks for them.
 
 import (
 	"bytes"
@@ -19,6 +25,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -70,22 +77,68 @@ func marshalForwardBody(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
+// forwardBody is the provider-bound request as the handler reshapes it: the
+// decoded map every rewrite is applied to, plus the bytes that map was last
+// serialized to. bytes starts as the caller's verbatim input, so a request
+// that needs no rewrite at all reaches the provider byte-for-byte as sent;
+// after any mutation the handler marks the body dirty and current() serializes
+// once, however many rewrites preceded it.
+type forwardBody struct {
+	parsed map[string]any
+	bytes  []byte
+	dirty  bool
+	// serialized reports that bytes is a coordinator serialization of parsed
+	// (marshalForwardBody output) rather than the caller's verbatim input. Only
+	// such bytes may stand in for a candidateProviderBody: a verbatim body can
+	// differ from its re-serialization in whitespace, key order and string
+	// escapes, and the size verdicts must keep measuring the serialized form.
+	serialized bool
+}
+
+// markDirty records that parsed has diverged from bytes.
+func (b *forwardBody) markDirty() { b.dirty = true }
+
+// current returns bytes reflecting every mutation so far, serializing only when
+// something changed since the last serialization (or since the input was read).
+func (b *forwardBody) current() ([]byte, error) {
+	if !b.dirty {
+		return b.bytes, nil
+	}
+	out, err := marshalForwardBody(b.parsed)
+	if err != nil {
+		return nil, err
+	}
+	b.bytes, b.dirty, b.serialized = out, false, true
+	return out, nil
+}
+
+// replace adopts bytes a helper already serialized from parsed (remote media
+// inlining re-marshals after mutating parsed in place).
+func (b *forwardBody) replace(serialized []byte) {
+	b.bytes, b.dirty, b.serialized = serialized, false, true
+}
+
 // inferencePrelude carries the parsed request shape produced by the shared
-// prelude: the (tool-schema-normalized) raw body and its parsed map, plus the
-// consumer-requested model name (alias or raw build id, pre-resolution).
+// prelude: the forward body (decoded map + lazily serialized bytes), the
+// untouched input bytes, and the consumer-requested model name (alias or raw
+// build id, pre-resolution). originalTools is the caller's pre-normalization
+// tools value when the prelude repaired a tool schema (nil otherwise); the
+// tool-constraint validator must judge that view, never the repaired copy.
 type inferencePrelude struct {
-	rawBody         []byte
+	body            forwardBody
 	originalRawBody []byte
 	parsed          map[string]any
 	model           string
+	originalTools   []any
 }
 
 // parseInferencePrelude runs the request prelude shared verbatim by
-// handleChatCompletions and handleGenericInference: read the body, normalize tool
-// JSON-Schemas (so pre-0.6.3 providers never see chat-template-crashing shapes),
-// parse JSON, require a model, and enforce the per-key model allowlist. On any
-// failure it writes the exact OpenAI-compatible error response and returns
-// ok=false; the caller must then return immediately.
+// handleChatCompletions and handleGenericInference: read the body, parse JSON
+// (once), normalize tool JSON-Schemas on the decoded map (so pre-0.6.3
+// providers never see chat-template-crashing shapes), require a model, and
+// enforce the per-key model allowlist. On any failure it writes the exact
+// OpenAI-compatible error response and returns ok=false; the caller must then
+// return immediately.
 func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (inferencePrelude, bool) {
 	// Read the raw request body so we can forward it as-is to the provider.
 	// We only parse minimally to extract model/stream/messages for routing.
@@ -104,23 +157,23 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		return inferencePrelude{}, false
 	}
 
-	originalRawBody := rawBody
-
-	// Normalize tool JSON-Schemas before parsing and dispatch so providers
-	// running binaries older than 0.6.3 (which normalize provider-side, #310)
-	// never see the schema shapes that crash Gemma-style chat templates
-	// ("upper filter requires string" — nullable array types, missing types).
-	// Centralizing this in the coordinator covers the whole fleet the moment
-	// the coordinator deploys, instead of waiting out provider update lag.
-	rawBody = NormalizeToolSchemas(rawBody)
-
 	parsed, ok := parseJSONBody(w, rawBody)
 	if !ok {
 		return inferencePrelude{}, false
 	}
+
+	// Normalize tool JSON-Schemas before dispatch so providers running binaries
+	// older than 0.6.3 (which normalize provider-side, #310) never see the
+	// schema shapes that crash Gemma-style chat templates ("upper filter
+	// requires string" — nullable array types, missing types). Centralizing
+	// this in the coordinator covers the whole fleet the moment the
+	// coordinator deploys, instead of waiting out provider update lag. The
+	// repair runs on the decoded map (one parse per request); the caller's
+	// original tools are kept for constraint validation.
+	originalTools, dirty := normalizeParsedToolSchemas(parsed, rawBody)
 	if stop, ok := parsed["stop"].(string); ok {
 		parsed["stop"] = []any{stop}
-		rawBody, _ = marshalForwardBody(parsed)
+		dirty = true
 	}
 
 	model, _ := parsed["model"].(string)
@@ -138,8 +191,11 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	}
 
 	return inferencePrelude{
-		rawBody: rawBody, originalRawBody: originalRawBody,
-		parsed: parsed, model: model,
+		body:            forwardBody{parsed: parsed, bytes: rawBody, dirty: dirty},
+		originalRawBody: rawBody,
+		parsed:          parsed,
+		model:           model,
+		originalTools:   originalTools,
 	}, true
 }
 
@@ -174,6 +230,70 @@ func decodeInferenceJSONObject(rawBody []byte) (map[string]any, error) {
 		return nil, err
 	}
 	return parsed, nil
+}
+
+// resolveRequestedBuild maps the consumer-requested model — which may be a
+// public alias like "gemma-4-26b" — to the concrete build id used for routing,
+// billing, and serving, returning the public name to echo back to the consumer.
+// When the request used an alias it rewrites parsed["model"] to the build and
+// reports rewrote=true so the caller marks its forward body dirty; it never
+// serializes (the chat handler marshals once, later). Raw build ids pass
+// through unchanged (publicModel == buildModel). ok=false means the alias
+// currently has no usable build; the caller should surface a model_unavailable
+// error. resolveRequestedModel is the body-threading variant the generic
+// handler still uses.
+func (s *Server) resolveRequestedBuild(
+	parsed map[string]any,
+	requested string,
+	allowedProviderSerials []string,
+	policy selfRoutePolicy,
+	traits registry.RequestTraits,
+) (buildModel, publicModel string, rewrote, ok bool) {
+	buildID, isAlias, resolved := s.registry.ResolveModelConstrainedWithTraits(
+		requested, allowedProviderSerials, policy.ownerAccountID,
+		policy.enabled, policy.prefer, traits)
+	if !resolved {
+		return "", requested, false, false
+	}
+	if !isAlias {
+		return requested, requested, false, true
+	}
+	parsed["model"] = buildID
+	return buildID, requested, true, true
+}
+
+// candidateProviderBody derives the provider-bound body the chat handler would
+// send for candidateModel — the alias fallback build the admission preflight
+// probes, or the resolved build itself — from the current parsed request:
+// model rewritten, that build's catalog runtime defaults reconciled, the
+// service reasoning policy applied, and (Responses surface) the input→chat
+// lowering. It works on a shallow copy so parsed is never mutated, serializes
+// once, and is memoized per request by providerBodyMemo.
+func (s *Server) candidateProviderBody(
+	parsed map[string]any,
+	runtimeDefaults modelRuntimeDefaults,
+	candidateModel string,
+	serviceConsumer, reasoningProvided, isResponsesAPI bool,
+) ([]byte, error) {
+	candidateParsed := make(map[string]any, len(parsed)+1)
+	for key, value := range parsed {
+		candidateParsed[key] = value
+	}
+	candidateParsed["model"] = candidateModel
+	if rec, err := s.store.GetModelRegistryRecord(candidateModel); err == nil {
+		runtimeDefaults.apply(candidateParsed, rec.RuntimeParameters)
+	} else {
+		runtimeDefaults.apply(candidateParsed, nil)
+	}
+	applyResolvedModelReasoningPolicy(candidateParsed, candidateModel, serviceConsumer, reasoningProvided)
+	candidateBody, err := marshalForwardBody(candidateParsed)
+	if err != nil {
+		return nil, err
+	}
+	if isResponsesAPI {
+		return promptcontract.LowerProviderBody(promptcontract.EndpointResponses, candidateBody)
+	}
+	return candidateBody, nil
 }
 
 // visionToolsFailFast is the shared media/tools capability fast-fail (mirrored

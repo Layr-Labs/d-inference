@@ -255,6 +255,79 @@ func TestSettlementQueuedRequestDrainsBeforeProviderCredit(t *testing.T) {
 	}
 }
 
+// TestSettlementConsumerReleasedWhileQueueDrainParked: the queue drain that
+// SetProviderIdle runs after RemovePending is off the consumer's [DONE] path.
+// A queued waiter with an UNBUFFERED ResponseCh parks the drain on its
+// assignment send (registry/scheduler.go, `case req.ResponseCh <- provider`)
+// until the test reads it, standing in for the fleet scans a deep queue
+// costs; the consumer must be released while the drain is parked, and the
+// waiter is still assigned this provider's freed slot afterwards. Before the
+// change the drain ran inline between RemovePending and signalConsumer, so
+// [DONE] waited behind it (this test times out on that tree).
+func TestSettlementConsumerReleasedWhileQueueDrainParked(t *testing.T) {
+	srv, _, _, ledger := delayedBillingServer(t, 0)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	model := "parked-drain-model"
+	conn, providerID, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	provider := srv.registry.GetProvider(providerID)
+
+	for i := 0; i < registry.DefaultMaxConcurrent-1; i++ {
+		provider.AddPending(&registry.PendingRequest{RequestID: fmt.Sprintf("filler-%d", i), ProviderID: provider.ID, Model: model})
+	}
+	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50}
+	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	if err := ledger.Charge(testConsumerID, cost*2, "reserve:parked-drain"); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	pr := pendingForSettlement("parked-drain-req", model, cost*2)
+	provider.AddPending(pr)
+	if found := findRoutableProvider(srv.registry, model); found != nil {
+		t.Fatal("provider at max concurrency should not be routable")
+	}
+	// Unbuffered: the drain blocks on the assignment send until the test reads.
+	queued := &registry.QueuedRequest{RequestID: "queued-behind-parked", Model: model, ResponseCh: make(chan *registry.Provider)}
+	if err := srv.registry.Queue().Enqueue(queued); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	completed := make(chan struct{})
+	go func() {
+		defer close(completed)
+		srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+			Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage,
+		})
+	}()
+	// The consumer is released while the drain is still parked on its send.
+	select {
+	case got := <-pr.CompleteCh:
+		if got.CompletionTokens != usage.CompletionTokens {
+			t.Fatalf("consumer received usage %+v, want %+v", got, usage)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("consumer was not released while the queue drain was parked — the drain is on the [DONE] path")
+	}
+	select {
+	case <-pr.ChunkCh:
+		// closed by signalConsumer
+	default:
+		t.Fatal("ChunkCh still open after CompleteCh was signalled")
+	}
+	// Now let the drain finish: the waiter gets this provider's freed slot.
+	select {
+	case assigned := <-queued.ResponseCh:
+		if assigned == nil || assigned.ID != provider.ID {
+			t.Fatalf("queued request assigned %v, want %s", assigned, provider.ID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued request was never drained")
+	}
+	<-completed
+}
+
 // TestSettlementRefundRaceExactlyOneWinner: a consumer-side refund (the
 // post-terminal sweep's action) races the provider terminal on the same
 // reservation. Exactly one wins the finalize gate: either the consumer is

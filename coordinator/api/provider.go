@@ -2380,11 +2380,21 @@ func (s *Server) handleCompleteAt(
 	// Serving this model proves the pair can load — lift any cool-down early.
 	s.registry.ClearDispatchLoadCooldown(providerID, pr.Model)
 	// The request left the provider's pending set at RemovePending above, so
-	// its slot is free NOW: flip the provider back to Online and drain queued
-	// requests onto it before the settlement round trips below, not after
-	// them (the post-terminal sweep in dispatch.go already idles immediately
-	// after its RemovePending). Nothing below reads or writes provider status.
-	s.registry.SetProviderIdle(providerID)
+	// its slot is free NOW (the routing scans admit on the pending count, not
+	// on Status): flip the provider back to Online and drain queued requests
+	// onto it before the settlement round trips below, not after them (the
+	// post-terminal sweep in dispatch.go already idles immediately after its
+	// RemovePending). The drain is one fleet scan per served model per pass
+	// (registry/queue_drain_dominance.go) — 1.3–6 ms on a saturated 1,300-box
+	// fleet, 60–70 ms without the dominance skip — so it runs detached rather
+	// than on this goroutine's path from the provider's terminal frame to the
+	// consumer's [DONE] (signalConsumer below). Detaching keeps the ordering
+	// that matters (idle before any settlement DB write) and additionally
+	// keeps a drain panic from aborting the settlement. Nothing below reads
+	// or writes provider status.
+	saferun.Go(s.logger, "setProviderIdle", func() {
+		s.registry.SetProviderIdle(providerID)
+	})
 
 	// signalConsumer releases the consumer response handler ([DONE] / the
 	// non-stream body) exactly once. It runs as soon as the CONSUMER's money

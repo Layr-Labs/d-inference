@@ -3191,8 +3191,15 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 	}
 	for _, model := range models {
 		var skipped []*QueuedRequest
-		// Per-pass tallies for the queue.drain.* series (registry_metrics.go).
-		popped, scanned, admitted := 0, 0, 0
+		// rejected anchors the per-pass dominance skip (queue_drain_dominance.go)
+		// and deliberately survives requeueSkipped: an admission only removes
+		// capacity, so this pass's verdicts stay valid for the requeued waiters
+		// the next PopNextFresh hands back.
+		var rejected []drainRejectionRecord
+		// Per-pass tallies for the queue.drain.* series (registry_metrics.go)
+		// and the heartbeat suppressor (queue_drain_suppress.go).
+		popped, scanned, admitted, dominated := 0, 0, 0, 0
+		saturated := false
 		requeueSkipped := func() {
 			for i := len(skipped) - 1; i >= 0; i-- {
 				queue.RequeueFront(skipped[i])
@@ -3202,6 +3209,9 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 		for {
 			req := queue.PopNextFresh(model)
 			if req == nil {
+				if r.drainPassBeforeRequeue != nil {
+					r.drainPassBeforeRequeue(model)
+				}
 				requeueSkipped()
 				break
 			}
@@ -3219,6 +3229,15 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 			// enqueue-time ceiling.
 			if !req.Pending.RefreshFirstContentBudget(time.Now()) {
 				req.failWithReason(ErrQueueFirstContentDeadline)
+				continue
+			}
+			// A waiter at least as demanding as one this pass already rejected
+			// purely on capacity/TTFT gets the same verdict from the same fleet
+			// state; requeue it without paying for another full fleet scan.
+			if !r.drainDominanceDisabled && drainDominated(req.Pending, rejected) {
+				dominated++
+				saturated = true
+				skipped = append(skipped, req)
 				continue
 			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
@@ -3248,6 +3267,10 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 					req.failWithReason(ErrQueueTTFTTooSlow)
 					continue
 				}
+				if rec, ok := drainRejectionRecordFor(req.Pending, decision); ok {
+					rejected = append(rejected, rec)
+				}
+				saturated = saturated || drainPureCapacityRejection(decision)
 				skipped = append(skipped, req)
 				continue
 			}
@@ -3278,15 +3301,26 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 				continue
 			}
 		}
-		r.emitDrainPassMetrics(reason, popped, scanned, admitted)
+		// Heartbeat-triggered passes are suppressed for a short window after
+		// a saturated pass (queue_drain_suppress.go); an admission proves
+		// capacity moved and lifts the mark.
+		switch {
+		case admitted > 0:
+			r.drainSuppress.clear(model)
+		case saturated:
+			r.drainSuppress.markSaturated(model)
+		}
+		r.emitDrainPassMetrics(reason, popped, scanned, admitted, dominated, saturated)
 	}
 }
 
 // emitDrainPassMetrics records one drain pass for a model. A pass that popped
 // nothing is the empty-queue probe every heartbeat runs and is not counted —
 // keeping that path allocation-free matters more than a series that would
-// only ever read "empty".
-func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted int) {
+// only ever read "empty". Outcomes: admitted (a waiter was handed a
+// provider), saturated (a waiter was rejected purely on capacity/TTFT and
+// none admitted), empty (every popped waiter expired or failed terminally).
+func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted, dominated int, saturated bool) {
 	if popped == 0 || r.metricsSink() == nil {
 		return
 	}
@@ -3294,10 +3328,11 @@ func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted
 	switch {
 	case admitted > 0:
 		outcome = drainOutcomeAdmitted
-	case scanned > 0:
+	case saturated:
 		outcome = drainOutcomeSaturated
 	}
 	trigger := "trigger:" + reason
 	r.metricIncr("queue.drain.pass", []string{trigger, "outcome:" + outcome})
 	r.metricCount("queue.drain.scans", int64(scanned), []string{trigger})
+	r.metricCount("queue.drain.dominated", int64(dominated), []string{trigger})
 }

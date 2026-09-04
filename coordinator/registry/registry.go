@@ -2198,6 +2198,20 @@ type Registry struct {
 	// shared reading after winner selection and before the serialized commit.
 	// Production leaves it nil; tests set it before starting concurrent scans.
 	reservationAfterScan func(model string)
+	// drainPassBeforeRequeue is a test-only seam invoked when a drain pass
+	// has popped every waiter for a model and is about to requeue the ones it
+	// could not place — the window in which a concurrent capacity-freeing
+	// drain finds the queue empty (queue_drain_dominance.go). Production
+	// leaves it nil.
+	drainPassBeforeRequeue func(model string)
+
+	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
+	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
+	drainSuppress queueDrainSuppressor
+	// drainDominanceDisabled (tests/benchmarks only) makes every drain pass
+	// scan every waiter, so the pre-dominance cost can be measured on the
+	// same tree (queue_drain_bench_test.go). Same idiom as modelIndexDisabled.
+	drainDominanceDisabled bool
 
 	// modelIndex maps advertised model id → providers advertising it, so the
 	// per-request fleet walks visit only providers that can pass the first
@@ -4167,8 +4181,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
-	// rather than the legacy direct queue assignment path.
-	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
+	// rather than the legacy direct queue assignment path. Heartbeats are the
+	// one trigger that is rate-limited after a saturated pass
+	// (queue_drain_suppress.go); every capacity-freeing trigger drains at once.
+	r.drainQueuedRequestsForHeartbeat(providerModelIDs(p))
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
 	// check if a cold provider should swap models to serve queued demand —

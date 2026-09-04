@@ -105,16 +105,20 @@ func TestDrainMetricsSaturatedPass(t *testing.T) {
 
 	reg.SetProviderIdle("sat-0")
 	expectMetric(t, sink, 1, "queue.drain.pass", "trigger:idle", "outcome:saturated")
-	if got := sink.get("queue.drain.scans", "trigger:idle"); got < 1 || got > depth {
-		t.Fatalf("queue.drain.scans{trigger:idle} = %d, want 1..%d", got, depth)
-	}
+	// One scan anchors the verdict; the other three identical waiters are
+	// requeued on it without a scan (queue_drain_dominance.go).
+	expectMetric(t, sink, 1, "queue.drain.scans", "trigger:idle")
+	expectMetric(t, sink, depth-1, "queue.drain.dominated", "trigger:idle")
 	if depthNow := reg.Queue().QueueSize(metricsTestModel); depthNow != depth {
 		t.Fatalf("queue depth = %d after a saturated pass, want %d", depthNow, depth)
 	}
-	// A heartbeat carries its own trigger label.
+	// A heartbeat carries its own trigger label (after the suppression window).
+	clock := drainTestClock(reg)
+	clock.Add(heartbeatDrainSuppressWindow)
 	reg.Heartbeat("sat-1", drainTestHeartbeatFor(metricsTestModel, 1000, 1000))
 	expectMetric(t, sink, 1, "queue.drain.pass", "trigger:heartbeat", "outcome:saturated")
-	sink.total("queue.drain.scans")
+	expectMetric(t, sink, 1, "queue.drain.scans", "trigger:heartbeat")
+	expectMetric(t, sink, depth-1, "queue.drain.dominated", "trigger:heartbeat")
 }
 
 // TestDrainMetricsAdmittingPass: a pass that hands a waiter to a provider is

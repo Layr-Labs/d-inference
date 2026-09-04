@@ -1,159 +1,194 @@
 # Telemetry
 
-Client-supplied telemetry is disabled. Provider and browser events are dropped
-locally, and both compatibility HTTP endpoints return `410 Gone` before reading
-a request body. The retained event types, allowlists, queue methods, and facade
-APIs are compatibility surfaces; they are not an active provider/browser data
-path.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-Coordinator-generated operational telemetry is separate and remains active. It
-is created inside the coordinator, mirrored to the process logger and metrics,
-and may be forwarded to Datadog. It does not accept provider or browser event
-payloads ([`coordinator/telemetry/emitter.go`, `Emitter.Emit`](../../coordinator/telemetry/emitter.go#L61-L119)).
+How operational data leaves a provider, what the coordinator does with it, and
+why nothing on that path can carry a prompt or slow a request. The heartbeat is
+the diagnostic channel; Datadog is the sink; the coordinator is the only
+process that emits telemetry *events*. The field-by-field catalogue is in
+[`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md)
+and the event contract in [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md).
 
-## Canonical code
+## Context
 
-### Disabled client-ingestion path
+Providers run on machines the project does not own, next to prompts the
+project must never see. The first telemetry design gave every client (Swift
+provider, console, app) a free-form event API posted to
+`POST /v1/telemetry/events` (now `410 Gone`), sanitized and stored by the coordinator.
+That path is retired: the route answers `410` without reading the body, the Swift
+`TelemetryClient` and console `telemetry.ts` are no-op facades, and the
+`telemetry_events` table is gone. What replaced it is narrower and structural:
 
-- Coordinator route wiring: [`coordinator/api/server.go`](../../coordinator/api/server.go#L1919-L1922)
-- Coordinator `410` handler: [`handleTelemetryIngest`](../../coordinator/api/telemetry_handlers.go#L261-L269)
-- Swift disabled client: [`TelemetryClient`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
-- Swift disabled compatibility queue: [`TelemetryOverflowQueue`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L11-L59)
-- Common locked startup cleanup: [`ProcessLifecycle.acquireMediaServingLock`](../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104)
-- Swift crash hook: [`PanicHook`](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L19-L101)
-- TypeScript disabled facade: [`console-ui/src/lib/telemetry.ts`](../../console-ui/src/lib/telemetry.ts#L1-L26)
-- TypeScript `410` route: [`console-ui/src/app/api/telemetry/route.ts`](../../console-ui/src/app/api/telemetry/route.ts#L1-L17)
+- the **heartbeat** already carries every operational fact the coordinator
+  needs (status, slot capacity, engine health, GPU memory, allocator counters),
+  in a typed shape with no free-text fields except the bounded
+  `kv_backend_fallback_reason`;
+- the **coordinator** emits its own events about provider connections and
+  dispatch failures, from code the project controls;
+- **per-request rows** (`inference_routes`, `request_rejections`,
+  `request_profiles`) and the profiler's `profile` object hold request-level
+  timing without any request content.
 
-### Retained compatibility schema
+The event shape and allowlist survive because they still bound the coordinator
+emitter and both client-side filters, and because reviving ingestion would have
+to start from them.
 
-- Canonical Go wire types: [`coordinator/protocol/telemetry.go`](../../coordinator/protocol/telemetry.go#L15-L146)
-- Swift mirror: [`provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift#L14-L317)
-- TypeScript mirror: [`console-ui/src/lib/telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts#L1-L172)
-- Historical Go parser and field allowlist: [`coordinator/api/telemetry_handlers.go`](../../coordinator/api/telemetry_handlers.go#L31-L190)
+## Mechanism
 
-The Go, Swift, and TypeScript event definitions remain aligned because old
-binaries and source call sites still compile against them. Their parity tests
-protect that compatibility contract. They do **not** imply that client event
-ingestion is enabled.
+### Heartbeat telemetry
 
-## Disabled flow
-
-```mermaid
-flowchart LR
-    P[Swift provider call site] --> PC[TelemetryClient.emit]
-    PC --> PD[Drop in process]
-    B[Browser call site] --> BF[telemetry.ts emit]
-    BF --> BD[Drop in process]
-    OP[Old provider or browser bundle] --> E[Compatibility HTTP endpoint]
-    E --> G[410 Gone before body read]
+```
+provider (5 s baseline, event heartbeats ≤ 2/s)
+  → GET /ws/provider frame `heartbeat`
+  → providerReadLoop            validate prefix-cache telemetry; reject → routing.cache_telemetry_rejected
+  → Registry.Heartbeat          clamp system_metrics to [0,1]; canonicalHeartbeatModelState → clampBackendCapacity;
+                                 drop stale capacity_seq (only LastHeartbeat advances); delta-merge stats
+  → BackendCapacitySnapshot     the accepted, clamped copy
+  → recordBackendWedgeTelemetry provider.first_token_wedge_suspected{model}, provider.eval_in_flight_long
+  → recordMLXCacheTelemetry     provider.mlx_memory.*{provider_id}, provider.mlx_cache.*{provider_id}
+  → PersistProviderThrottled    providers / provider_reputation rows, at most every 30 s
 ```
 
-The coordinator registers `POST /v1/telemetry/events` directly to
-`handleTelemetryIngest` ([route wiring](../../coordinator/api/server.go#L1919-L1922)).
-That handler writes only the fixed `telemetry_ingest_disabled` error response;
-it does not read, decode, store, log, or forward the body
-([handler](../../coordinator/api/telemetry_handlers.go#L261-L269)).
+Metrics are emitted only from the accepted registry snapshot, never from the
+raw frame: values have been clamped (`maxDecodeTPS = 500`, `maxPrefillTPS =
+5000`, `maxReportedMaxConcurrency = 24`, …) and slot model IDs constrained to
+the connection's coordinator-known inventory. Every 60 s the fleet sampler
+(`StartProfilerLoops`) turns the same snapshots into `fleet_snapshots` rows
+through the real routing gates; every 15 s `StartDDGaugeLoop` pushes the
+platform gauges (`providers.online`, `utilization.*`, `capacity.*`,
+`request_queue.depth`). How the scheduler reads the capacity fields:
+[`scheduling.md`](scheduling.md); the gate vocabulary: [`routing.md`](routing.md).
 
-The browser compatibility route behaves the same way. Its `POST` function does
-not access the `NextRequest`; it returns the fixed error with status 410
-([route](../../console-ui/src/app/api/telemetry/route.ts#L5-L16)). The browser
-facade's `emit`, global-handler installation, and test reset methods are no-ops,
-and its reported buffer size is always zero
-([facade](../../console-ui/src/lib/telemetry.ts#L17-L26)).
+### Datadog transport
 
-## Swift client and legacy queue
+`datadog.Client` (`coordinator/datadog/datadog.go`) is constructed in
+`coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
+is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
+(`coordinator/api/server.go`) is a no-op. Configuration is environment only:
 
-`TelemetryClient` retains configuration and emission signatures so existing
-call sites keep compiling, but both `emit` overloads discard their arguments.
-`setAuthToken`, `setMachineId`, and `setAccountId` also retain compatibility
-signatures without storing their values
-([`TelemetryClient`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L57-L82)).
-No event is encoded, buffered, written to disk, or sent over the network.
+| Variable | Default | Role |
+|---|---|---|
+| `DD_API_KEY` | unset | enables the HTTPS paths (series, logs, events) |
+| `DD_AGENT_HOST` | unset | alternative trigger for constructing the client and starting the tracer |
+| `DD_DOGSTATSD_URL` | `localhost:8125` | DogStatsD UDP address |
+| `DD_SITE` | `datadoghq.com` | intake site for the HTTPS URLs |
+| `DD_ENV`, `DD_SERVICE` | `production`, `d-inference-coordinator` | constant tags on every metric and log |
+| `DD_HOSTNAME` | `DD_SERVICE` | host on the HTTPS series |
 
-Legacy cleanup is intentionally narrow and shared by both serving modes:
+All metric names take the `d_inference.` namespace (`statsd.WithNamespace`).
+Which leg carries a metric depends on kind and on whether an API key is set
+(`httpMetrics`):
 
-- `ProcessLifecycle.acquireMediaServingLock` acquires the single-instance lock,
-  then purges the legacy telemetry queue and legacy video files in that order.
-  Both standalone and coordinator-connected startup call this common seam
-  ([locked housekeeping](../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104),
-  [standalone call](../../provider-swift/Sources/darkbloom/StartCommand+Modes.swift#L78-L82),
-  [connected call](../../provider-swift/Sources/darkbloom/StartCommand+Modes.swift#L182-L187)).
-- `TelemetryClient.configure`, `shutdown`, and `shutdownSync` are compatibility
-  no-ops; they cannot create a second cleanup path or revive persistence
-  ([disabled client](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L57-L85)).
-- `push` drops its event and `drain` always returns an empty array
-  ([queue no-ops](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L27-L36)).
-- `purge` removes only the historical `telemetry-queue.jsonl` path and its exact
-  `.tmp` companion when each is a regular, non-symlink file. It does not create
-  a directory, lock file, or replacement artifact when neither exists
-  ([queue purge](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L38-L59)).
+| Kind | `DD_API_KEY` unset | `DD_API_KEY` set |
+|---|---|---|
+| counter, gauge | DogStatsD UDP, best effort | buffered in `seriesBuffer` and POSTed to `https://api.<site>/api/v1/series` every 5 s (`metrics_http.go`); the DogStatsD leg is skipped so an agent appearing later cannot double-count |
+| histogram | DogStatsD UDP | DogStatsD UDP only — percentiles are aggregated agent-side and the HTTPS path does not replicate them |
+| telemetry event log | dropped | batched (100 or 5 s) to `https://http-intake.logs.<site>/api/v2/logs`; `fatal` also posts a Datadog Event (`emitDDEvent`) for monitors |
 
-`TelemetryClient.ingestEndpoint` remains only for compatibility tests and UI
-that displays the historical URL; production code does not send to the returned
-endpoint ([`ingestEndpoint`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L87-L102)).
+The HTTPS series path is therefore a **replacement** for the UDP leg when a key
+is present, not a fallback behind it.
 
-## Panic hook
+### Coordinator events and logs
 
-`PanicHook.install` registers handlers for `SIGSEGV`, `SIGBUS`, `SIGILL`,
-`SIGABRT`, and `SIGFPE`, plus an uncaught Objective-C exception handler
-([installation](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L24-L48)).
-The recording path constructs a compatibility `TelemetryEvent`, but
-`TelemetryOverflowQueue.push` is a no-op and
-`TelemetryClient.shutdownSync` is also a no-op. The common locked startup seam
-has already removed eligible legacy queue artifacts. No crash event or stack is
-persisted or transmitted
-([recording calls](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L79-L99),
-[disabled queue](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L27-L35),
-[disabled shutdown](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L83-L85),
-[startup cleanup](../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104)).
+`Emitter.Emit` (`coordinator/telemetry/emitter.go`) forces `source =
+coordinator`, defaults `kind` to `custom` and `severity` to `info`, then writes
+to three sinks in order: `slog` (`telemetry: <message>` with every field as an
+attribute), the in-process counter `telemetry_events_total{source, severity,
+kind}` (`GET /v1/admin/metrics`), and the Datadog Logs API. The call sites
+(`s.emit`, `s.emitRequest`, `s.emitPanic`) are enumerated in the
+[inventory](../reference/telemetry-inventory.md#coordinator-emitted-events).
 
-The remaining local output is one bounded stderr marker with a fixed format:
-`FATAL panic kind=<closed category> message=<closed signal/exception label>`.
-It includes a local timestamp but never an Objective-C exception reason, request
-value, URL, model identifier, or stack
-([marker](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L95-L100),
-[exception redaction](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L37-L46)).
+Logging is JSON to stdout (`slog.NewJSONHandler`). When Datadog is configured
+the handler is wrapped in `datadog.TraceHandler` (`coordinator/datadog/slog.go`),
+which adds `dd.trace_id` and `dd.span_id` to any record whose context carries
+an active APM span, and `ddtracer.Start` runs for the process lifetime. No
+coordinator code creates spans at this commit, so those attributes never
+appear; request correlation uses `request_id` (`X-Request-ID`) instead.
 
-For POSIX signals, the handler then restores the default disposition and
-re-raises the same signal. The process therefore retains its real signal exit
-status and Apple's CrashReporter can write the authoritative crash report
-([re-raise](../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L68-L75)).
-The Objective-C exception callback records the same bounded marker; the signal
-re-raise sequence applies specifically to the POSIX handler.
+### Request-level sinks
 
-## Explicit provider support reports
+Two bounded, non-blocking sinks (`telemetrySink`, `coordinator/api/telemetry_sink.go`;
+`profileSink`, `coordinator/api/profiler_sink.go`) carry `inference_routes`
+outcome writes and `request_profiles` rows off the request path. Each has a
+4096-slot channel and a single worker; a full channel drops the write and
+counts it (`telemetry.sink_dropped{sink:profile}`, or the route sink's atomic
+surfaced as `fleet_snapshots.route_sink_dropped_total`). The `X-Timing` header
+([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers))
+and the `inference.timing.*` histograms are built from the same
+`RequestTimingDetails`. The profiler's own path is described in
+[`system-profiler.md`](system-profiler.md); the outcome vocabularies behind
+`inference.request_outcome` and `inference.error` in
+[`request-outcome-observability.md`](request-outcome-observability.md).
 
-`darkbloom report` is a separate, operator-initiated support path; it is not
-client telemetry. The command runs `/usr/bin/log show` only for the
-`dev.darkbloom.provider` subsystem, includes info-level output without debug
-events, and preserves macOS unified-log privacy redaction. `--dry-run` prints the
-exact report without uploading it. There is no trust-triggered or background
-auto-report path
-([command scope](../../provider-swift/Sources/darkbloom/ReportCommand.swift#L5-L44),
-[review and upload flow](../../provider-swift/Sources/darkbloom/ReportCommand.swift#L78-L159),
-[provider logging privacy contract](../../provider-swift/Sources/ProviderCore/ProviderLogger.swift#L6-L95),
-[trust-status runtime](../../provider-swift/Sources/ProviderCore/ProviderLoop+Trust.swift#L1-L24)).
+## Invariants
 
-An authenticated provider upload is capped at 10 MiB and stored for explicit
-admin-only list/retrieval. The coordinator does not ingest these reports into
-the telemetry event pipeline or forward them to Datadog. This is an intentional
-support action controlled by the provider operator, while routine client
-telemetry remains disabled
-([route wiring](../../coordinator/api/server.go#L1924-L1927),
-[upload and retrieval handlers](../../coordinator/api/log_report_handlers.go#L16-L112)).
+1. **No prompt or completion text on any telemetry path.** The field allowlist
+   (`telemetryFieldAllowlist`, `coordinator/api/telemetry_handlers.go`) admits
+   only bounded enums, counters, byte counts and durations; media, prompt,
+   token and cache-key content are excluded by construction and the comments
+   at each group say so. `sanitizeProviderInferenceError`
+   (`coordinator/api/inference_error_sanitize.go`) never reads the provider's
+   `error` string. The `profile` object is length-checked opaque bytes on the
+   read loop and decoded only on the sink worker. Swift free-form log strings
+   are `privacy: .private`.
+2. **Three mirrors, one set.** The Go allowlist, Swift
+   `TelemetryFieldFilter.allowed` and TS `TELEMETRY_ALLOWED_FIELDS` are parsed
+   from source and compared by `TestTelemetryAllowlistThreeWayParity`
+   (`coordinator/api/telemetry_allowlist_parity_test.go`); the enums and JSON
+   encoding by `coordinator/protocol/telemetry_symmetry_test.go` and
+   `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift`. The
+   five shipped gaps are enumerated in `telemetryKnownMirrorGaps` and a stale
+   entry fails the build.
+3. **Telemetry never changes control flow.** Nil emitter, nil Datadog client,
+   full sink and unreachable intake are all silent no-ops or counted drops.
+   Engine-health, `kv_backend` and `telemetry` heartbeat fields are
+   measurement only; the scheduler does not gate on them.
+4. **Tags come from the accepted snapshot and closed folds.** `SlotStateFold`,
+   `ThermalStateFold`, `ProviderVersionFold` (`coordinator/registry/gate_reason.go`)
+   and `KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) bound
+   every provider-supplied string before it becomes a tag; `provider_id`
+   appears only on the per-provider memory gauges.
+5. **Client ingestion is off, and stays off without reading a byte.**
+   `handleTelemetryIngest` returns `410` before touching the body
+   (`TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`).
 
-## Historical schema and allowlists
+## Failure modes
 
-`TelemetryEvent`, `TelemetryBatch`, enum mirrors, parser caps, rate limiter, and
-field allowlists remain in source for compatibility. Because active endpoints
-return 410 before body access, those parser limits and filters are not an active
-confidentiality control. Phrases such as "accepted field," "server cap," or
-"coerced enum" in the schema reference describe how the retired parser would
-process an event if ingestion were deliberately re-enabled after a new privacy
-review.
+| Condition | Effect | Where to look |
+|---|---|---|
+| Neither `DD_API_KEY` nor `DD_AGENT_HOST` set | no Datadog client; every metric and forwarded event is dropped; `slog` mirror and in-process counters still work | startup log lacks `datadog integration enabled` |
+| `DD_API_KEY` set, no local agent | counters and gauges arrive via HTTPS; **histograms** (`inference.ttft_ms`, `http.latency_ms`, `inference.timing.*`) are lost | `datadog: DogStatsD client init failed` or silent UDP drops |
+| Series or Logs intake returns ≥ 400 or times out (10 s) | batch dropped; one `Warn` per batch | `datadog: series API returned error`, `datadog: logs API request failed` |
+| Profile or route sink full | write dropped and counted; request unaffected | `telemetry.sink_dropped{sink:profile}`, `route_sink_dropped_total` in `fleet_snapshots` |
+| Stale or reordered `capacity_seq` | frame ignored except `LastHeartbeat`; metrics not re-emitted | registry debug log |
+| Heartbeat prefix-cache telemetry fails validation | dropped for that frame | `routing.cache_telemetry_rejected{source:heartbeat}` |
+| Provider older than the profiler slice | `slots[].telemetry` absent; wedge metrics silent for all-zero slots; `fleet_snapshots` telemetry columns zero | `provider_version` column |
+| Abrupt disconnect at high memory pressure | classified OOM (`≥ 0.90`, or `≥ 0.80` with in-flight work) | `provider.oom_suspected`, `ws.disconnects`, `provider_sessions.disconnect_reason` |
+| Allowlist edited in one mirror only | CI fails | `TestTelemetryAllowlistThreeWayParity` |
+| Expecting trace correlation | `dd.trace_id` never present (no spans) | use `request_id` |
 
-The historical schema includes free-form `message` and `stack` fields plus
-arbitrary field values. A field-name allowlist cannot prove those values are
-safe. Re-enabling client ingestion requires closed, per-kind value schemas and a
-new confidentiality review; changing only the retained allowlists is
-insufficient.
+## Code map
+
+| Concern | Path |
+|---|---|
+| Heartbeat ingest and metric emission | `coordinator/api/provider.go` (`providerReadLoop`), `coordinator/api/provider_wedge_telemetry.go`, `coordinator/api/provider_mlx_cache_telemetry.go` |
+| Clamping and canonical snapshot | `coordinator/registry/registry.go` (`Registry.Heartbeat`, `clampBackendCapacity`), `coordinator/registry/heartbeat_model_state.go` |
+| Persistence throttle | `coordinator/registry/persistence.go` |
+| Datadog client, HTTPS series, trace-aware slog | `coordinator/datadog/datadog.go`, `coordinator/datadog/metrics_http.go`, `coordinator/datadog/slog.go` |
+| Wiring and env | `coordinator/cmd/coordinator/main.go` |
+| Coordinator event emitter | `coordinator/telemetry/emitter.go`; helpers and gauge loop in `coordinator/api/server.go` |
+| In-process metrics registry | `coordinator/api/metrics.go`; `handleAdminMetrics` in `coordinator/api/server.go` |
+| Event shape, allowlist, retired ingest | `coordinator/protocol/telemetry.go`, `coordinator/api/telemetry_handlers.go` |
+| Sinks | `coordinator/api/telemetry_sink.go`, `coordinator/api/profiler_sink.go`, `coordinator/api/profiler_fleet.go` |
+| Disconnect classification | `coordinator/registry/disconnect_classify.go` |
+| Provider side | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift` (`buildHeartbeatJSON`), `provider-swift/Sources/ProviderCore/CapacityEventHeartbeats.swift`, `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift` (no-op facade) |
+| Tests | `coordinator/api/telemetry_allowlist_parity_test.go`, `coordinator/api/telemetry_handlers_test.go`, `coordinator/protocol/telemetry_symmetry_test.go`, `coordinator/datadog/datadog_test.go`, `coordinator/datadog/metrics_http_test.go`, `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` |
+
+## Related
+
+- [`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md) — every datum, metric name, tag, cadence and retention
+- [`../reference/telemetry-schema.md`](../reference/telemetry-schema.md) — event fields, enums, allowlist, symmetry tests
+- [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — heartbeat wire shape
+- [`system-profiler.md`](system-profiler.md) — per-attempt `profile`, `request_profiles`, `fleet_snapshots`
+- [`request-outcome-observability.md`](request-outcome-observability.md) — outcome taxonomy behind the request metrics
+- [`scheduling.md`](scheduling.md), [`routing.md`](routing.md) — what the heartbeat fields decide

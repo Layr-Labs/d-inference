@@ -1,461 +1,547 @@
-# Provider ↔ Coordinator Protocol Messages
+# Provider ↔ coordinator protocol messages
 
-The provider WebSocket is mounted at `GET /ws/provider`. All messages are JSON with a top-level `type` discriminator. Canonical Go definitions live in [`coordinator/protocol/messages.go`](../../coordinator/protocol/messages.go); the Swift mirror lives in [`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`](../../provider-swift/Sources/ProviderCore/Protocol/Messages.swift) and shared types in [`provider-swift/Sources/ProviderCore/Protocol/Types.swift`](../../provider-swift/Sources/ProviderCore/Protocol/Types.swift).
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## Message direction summary
+Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
+type, the Swift type, and the presence rule for each field. Go is the canon
+(`coordinator/protocol/messages.go`, `capacity.go`, `profile.go`); Swift mirrors
+it (`provider-swift/Sources/ProviderCore/Protocol/Messages.swift`, `Types.swift`,
+`InferenceProfile.swift`). There are 16 provider→coordinator and 10
+coordinator→provider message types; nothing else is accepted.
 
-| Direction | Types |
-|---|---|
-| Provider → Coordinator | `register`, `heartbeat`, `inference_accepted`, `inference_response_chunk`, `inference_complete`, `inference_error`, `attestation_response`, `code_attestation_response`, `load_model_status`, `prefetch_model_status`, `models_update` |
-| Coordinator → Provider | `inference_request`, `cancel`, `attestation_challenge`, `runtime_status`, `load_model`, `prefetch_model`, `desired_models`, `trust_status` |
+Conventions: **req** = always present; **opt** = Go `omitempty`, Swift
+`encodeIfPresent` (absent when nil, and for scalars when zero/empty unless a
+row says otherwise); **ptr** = Go pointer with `omitempty`, so absent ≠ zero.
+JSON keys are snake_case and identical in the Go tags and the Swift
+`CodingKeys`.
 
-Unknown provider→coordinator types are rejected by [`ProviderMessage.UnmarshalJSON`](../../coordinator/protocol/messages.go).
+## Envelope and the single-parse rule
 
-## Provider → Coordinator messages
+| Rule | Go | Swift |
+|---|---|---|
+| Discriminator | top-level `"type"` string | same |
+| Decode | `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`) reads `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
+| Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
+| Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
+| Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift` |
+
+## Message inventory
+
+| Direction | `type` | Go struct | Swift case |
+|---|---|---|---|
+| provider → coordinator | `register` | `RegisterMessage` | `ProviderMessage.register` (`Register`) |
+| provider → coordinator | `heartbeat` | `HeartbeatMessage` | `.heartbeat` (`Heartbeat`) |
+| provider → coordinator | `inference_accepted` | `InferenceAcceptedMessage` | `.inferenceAccepted` |
+| provider → coordinator | `inference_response_chunk` | `InferenceResponseChunkMessage` | `.inferenceResponseChunk` |
+| provider → coordinator | `inference_complete` | `InferenceCompleteMessage` | `.inferenceComplete` |
+| provider → coordinator | `inference_error` | `InferenceErrorMessage` | `.inferenceError` |
+| provider → coordinator | `attestation_response` | `AttestationResponseMessage` | `.attestationResponse` |
+| provider → coordinator | `code_attestation_response` | `CodeAttestationResponseMessage` | `.codeAttestationResponse` |
+| provider → coordinator | `load_model_status` | `LoadModelStatusMessage` | `.loadModelStatus` |
+| provider → coordinator | `prefetch_model_status` | `PrefetchModelStatusMessage` | `.prefetchModelStatus` |
+| provider → coordinator | `models_update` | `ModelsUpdateMessage` | `.modelsUpdate` |
+| provider → coordinator | `prefix_cache_lookup` | `PrefixCacheLookupMessage` | `.prefixCacheLookup` |
+| provider → coordinator | `prefix_cache_ready` | `PrefixCacheReadyMessage` | `.prefixCacheReady` |
+| provider → coordinator | `prefix_cache_lookup_v2` | `PrefixCacheLookupV2Message` | `.prefixCacheLookupV2` |
+| provider → coordinator | `prefix_cache_ready_v2` | `PrefixCacheReadyV2Message` | `.prefixCacheReadyV2` |
+| provider → coordinator | `capacity_quote` | `CapacityQuoteMessage` (`capacity.go`) | `.capacityQuote` |
+| coordinator → provider | `inference_request` | `InferenceRequestMessage` | `CoordinatorMessage.inferenceRequest` |
+| coordinator → provider | `cancel` | `CancelMessage` | `.cancel` |
+| coordinator → provider | `attestation_challenge` | `AttestationChallengeMessage` | `.attestationChallenge` |
+| coordinator → provider | `code_attestation_resume_challenge` | `CodeAttestationResumeChallenge` | `.codeAttestationResumeChallenge` |
+| coordinator → provider | `runtime_status` | `RuntimeStatusMessage` | `.runtimeStatus` |
+| coordinator → provider | `load_model` | `LoadModelMessage` | `.loadModel` |
+| coordinator → provider | `prefetch_model` | `PrefetchModelMessage` | `.prefetchModel` |
+| coordinator → provider | `desired_models` | `DesiredModelsMessage` | `.desiredModels` |
+| coordinator → provider | `trust_status` | `TrustStatusMessage` | `.trustStatus` |
+| coordinator → provider | `capacity_probe` | `CapacityProbeMessage` (`capacity.go`) | `.capacityProbe` |
+
+There is no `unload` or `unload_model` message; see
+[Model unloading](#model-unloading-no-message).
+
+## Provider → coordinator
 
 ### `register`
 
-Sent on WebSocket connect. Go: [`RegisterMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.Register`.
+Go `RegisterMessage` · Swift `ProviderMessage.Register`. Sent once per
+connection, first.
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `type` | string | yes | `"register"` |
-| `hardware` | object | yes | [`Hardware`](#hardware) |
-| `models` | array | yes | [`ModelInfo`](#modelinfo) list |
-| `backend` | string | yes | e.g. `"mlx-swift"` |
-| `version` | string | no | Provider binary semver |
-| `public_key` | string | no | Base64 X25519 public key for E2E encryption |
-| `encrypted_response_chunks` | bool | no | Whether text response chunks are returned encrypted |
-| `attestation` | raw JSON | no | Signed Secure Enclave attestation blob |
-| `prefill_tps` / `decode_tps` | number | no | Benchmark throughput |
-| `auth_token` | string | no | Device-linked provider token from `darkbloom login` |
-| `private_only` | bool | no | `true` ⇒ only owner's self-route requests |
-| `apns_device_token` / `apns_environment` | string | no | APNs code-identity attestation (v0.6.0+) |
-| `python_hash` / `runtime_hash` | string | no | Runtime integrity hashes |
-| `template_hashes` | object | no | `name → SHA-256` |
-| `privacy_capabilities` | object | no | [`PrivacyCapabilities`](#privacycapabilities) |
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `hardware` | `Hardware` | `HardwareInfo` | req | [`hardware`](#hardware) |
+| `models` | `[]ModelInfo` | `[ModelInfo]` | req | [`models[]`](#models) |
+| `backend` | `string` | `String` | req | e.g. `"mlx-swift"`; the coordinator sends `load_model`, `prefetch_model` and `desired_models` only to `backend == "mlx-swift"` |
+| `runtime_capabilities` | `[]string` | `[ProviderRuntimeCapability]` | opt | connection-scoped runtime capabilities; Swift omits when empty |
+| `version` | `string` | `String?` | opt | provider binary version, e.g. `"0.2.31"` |
+| `public_key` | `string` | `String?` | opt | base64 X25519 public key `K` for E2E encryption |
+| `encrypted_response_chunks` | `bool` | `Bool` | opt | Swift encodes only when `true` |
+| `attestation` | `json.RawMessage` | `RawJSON?` | opt | Secure Enclave attestation blob; raw bytes kept for signature verification |
+| `prefill_tps`, `decode_tps` | `float64` | `Double?` | opt | benchmark figures. The v0.8.16 provider never sets them (`registrationMessage`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift`); the scheduler falls back to `defaultPrefillToDecodeRatio` |
+| `auth_token` | `string` | `String?` | opt | device-linked provider token |
+| `private_only` | `bool` | `Bool` | opt | owner self-route only; Swift encodes only when `true` |
+| `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
+| `prefix_cache_v2_models` | `[]PrefixCacheV2Capability` | `[PrefixCacheV2Capability]?` | opt | [prefix-cache objects](#prefix-cache-objects) |
+| `prefix_cache_statuses` | `*[]PrefixCacheModelStatus` | `[PrefixCacheModelStatus]?` | ptr | omitted (legacy provider) ≠ `[]` (authoritative empty set) |
+| `prefix_cache_donation_outcomes` | `*[]PrefixCacheDonationOutcomeCount` | `[PrefixCacheDonationOutcomeCount]?` | ptr | same pointer rule |
+| `tool_constraint_protocol` | `int` | `Int?` | opt | forced-tool grammar protocol version; Swift omits nil/0 |
+| `tool_constraint_models` | `[]string` | `[String]?` | opt | concrete model IDs the provider enforces |
+| `apns_device_token` | `string` | `String?` | opt | hex APNs token for the `E_K(nonce)` code-identity push |
+| `apns_environment` | `string` | `String?` | opt | `"production"` or `"development"` |
+| `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `template_hashes` | `map[string]string` | `[String: String]` | opt | template name → SHA-256; Swift omits when empty |
+| `privacy_capabilities` | `*PrivacyCapabilities` | `PrivacyCapabilities?` | opt | [`privacy_capabilities`](#privacy_capabilities); providers `< v0.6.31` also send `hypervisor_active` inside it, which Go drops |
+| `wallet_address` | — | `String?` | Swift only | legacy key; Go has no field and drops it |
+
+#### `hardware`
+
+Go `Hardware` · Swift `HardwareInfo`. All fields required.
+
+| JSON key | Go | Swift |
+|---|---|---|
+| `machine_model` | `string` | `String` |
+| `chip_name` | `string` | `String` |
+| `chip_family` | `string` | `ChipFamily` (`"M1"`, `"M2"`, `"M3"`, `"M4"`, `"M5"`, `"Unknown"`; `Protocol/Enums.swift`) |
+| `chip_tier` | `string` | `ChipTier` (`"Base"`, `"Pro"`, `"Max"`, `"Ultra"`, `"Unknown"`) |
+| `memory_gb` | `int` | `UInt64` |
+| `memory_available_gb` | `float64` | `UInt64` |
+| `cpu_cores` | `CPUCores` `{total, performance, efficiency}` (`int`) | `CpuCores` |
+| `gpu_cores` | `int` | `UInt32` |
+| `memory_bandwidth_gbs` | `float64` | `UInt32` |
+
+#### `models[]`
+
+Go `ModelInfo` · Swift `ModelInfo` (`Types.swift`).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `id` | `string` | `String` | req | catalog build id |
+| `size_bytes` | `int64` | `UInt64` | req | |
+| `model_type` | `string` | `String?` | req in Go | |
+| `quantization` | `string` | `String?` | req in Go | |
+| `weight_hash` | `string` | `String?` | opt | SHA-256 of the weight files |
+| `is_vision` | `bool` | `Bool?` | opt | v0.6.0+; Swift encodes only `true`; absent decodes `false` → never selected for media |
+| `template_render_ok` | `*bool` | `Bool?` | ptr | 0.6.5+; **explicit `false` survives the wire** and excludes the model from tool requests; absent = no opinion |
+| `tool_constraint_template_hash` | `string` | `String?` | opt | binds grammar capability to the loaded template bytes |
+| `estimated_memory_gb`, `parameters` | — | `Double`, `UInt64?` | Swift only | encoded by Swift, dropped by Go |
+
+#### `privacy_capabilities`
+
+Go `PrivacyCapabilities` · Swift `PrivacyCapabilities`. Eight required
+booleans: `text_backend_inprocess`, `text_proxy_disabled`,
+`python_runtime_locked`, `dangerous_modules_blocked`, `sip_enabled`,
+`anti_debug_enabled`, `core_dumps_disabled`, `env_scrubbed`.
+
+#### Prefix-cache objects
+
+| Object | Fields |
+|---|---|
+| `PrefixCacheV2Capability` | `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `block_hash_version` (`string`); `block_size` (`uint32`); `cache_epoch` (`string`); `enabled`, `ready` (`bool`). All required |
+| `PrefixCacheModelStatus` | `model_id`; `backend` ∈ {`contiguous`, `paged`, `unknown`}; `replay_strategy` ∈ {`direct`, `frozen_full`, `tail_replay`, `none`, `unknown`}; `state` ∈ {`ready`, `pending`, `disabled`, `error`}; `reason` ∈ {`ready`, `config_disabled`, `weight_hash_unavailable`, `runtime_identity_unavailable`, `unsupported_layout`, `unsupported_backend`, `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`, `disk_unavailable`, `cache_init_failed`}. Enums validated at the coordinator boundary; Swift `PrefixCacheStatusBackend` / `ReplayStrategy` / `State` / `Reason` (`Messages.swift`) |
+| `PrefixCacheDonationOutcomeCount` | `outcome` ∈ {`donated`, `below_effective_token_floor`, `no_complete_block`, `lossy_snapshot` (pre-0.8.0 compat), `incomplete_layer_state`, `stage_size_exceeded`, `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`, `cache_closed`, `disk_unavailable`, `write_failed`}; `count` (`uint64`, monotonic per process) |
+| `PrefixCacheAnchor` | `chain_hash` (lowercase SHA-256 hex), `token_count` (block-aligned `int`) |
 
 ### `heartbeat`
 
-Go: [`HeartbeatMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.Heartbeat`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | string | `"heartbeat"` |
-| `status` | string | Provider status string |
-| `active_model` | string / null | Currently loaded model id; `null` means none loaded |
-| `stats` | object | `requests_served`, `tokens_generated`, cancel/error counters, plus the [profiler counters](#profiler-counters-in-stats) below |
-| `warm_models` | array | Models currently resident in GPU memory |
-| `system_metrics` | object | `memory_pressure`, `cpu_usage`, `thermal_state` |
-| `backend_capacity` | object / null | [`BackendCapacity`](#backendcapacity); nil for legacy providers |
-
-#### Profiler counters in `stats`
-
-Go: `HeartbeatStats` in [`messages.go`](../../coordinator/protocol/messages.go). Cumulative per provider session and delta-merged like the counters above; omitted when zero and absent on providers that predate them. A non-monotonic value is flagged, never rejected.
-
-| Field | Type | Notes |
-|---|---|---|
-| `cancel_stage_pre_accept_total` | integer | Cancels received before the `inference_accepted` frame was sent |
-| `cancel_stage_pre_engine_total` | integer | Cancels received after accept, before engine submit |
-| `cancel_stage_prefill_total` | integer | Cancels received during prefill (no first token yet) |
-| `cancel_stage_decode_total` | integer | Cancels received during decode |
-| `cancel_stage_post_terminal_total` | integer | Cancels that arrived after the terminal frame |
-| `tokens_after_cancel_total` | integer | Tokens the engine still produced after a cancel was received |
-| `cancel_abort_ns_sum` | integer | Σ cancel-receipt → engine-abort latency, nanoseconds |
-
-### `inference_accepted`
-
-Go: [`InferenceAcceptedMessage`](../../coordinator/protocol/messages.go).
-
-| Field | Type |
-|---|---|
-| `type` | `"inference_accepted"` |
-| `request_id` | string |
-
-### `inference_response_chunk`
-
-Go: [`InferenceResponseChunkMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.InferenceResponseChunk`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"inference_response_chunk"` |
-| `request_id` | string | |
-| `data` | string | SSE chunk (plaintext) |
-| `encrypted_data` | object | [`EncryptedPayload`](#encryptedpayload) when E2E active |
-
-### `inference_complete`
-
-Go: [`InferenceCompleteMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.InferenceComplete`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"inference_complete"` |
-| `request_id` | string | |
-| `usage` | object | [`UsageInfo`](#usageinfo) |
-| `se_signature` | string | SE-signed response hash |
-| `response_hash` | string | SHA-256 of response data |
-| `profile` | object, optional | [`InferenceProfile`](#inferenceprofile), ≤ 4096 bytes, carried as raw JSON; see [System profiler objects](#system-profiler-objects) |
-
-### `inference_error`
-
-Go: [`InferenceErrorMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.InferenceError`.
-
-| Field | Type |
-|---|---|
-| `type` | `"inference_error"` |
-| `request_id` | string |
-| `error` | string |
-| `status_code` | integer |
-| `profile` | object, optional: [`InferenceProfile`](#inferenceprofile) of the failed attempt; passes through the error sanitizer as an opaque byte copy |
-
-### `attestation_response`
-
-Go: [`AttestationResponseMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.AttestationResponse`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"attestation_response"` |
-| `nonce` | string | Echoed challenge nonce |
-| `signature` | string | Base64 signature of `nonce+timestamp` |
-| `status_signature` | string | Base64 signature of canonical status JSON (v0.3.11+) |
-| `public_key` | string | Base64 X25519 public key |
-| `hypervisor_active` | bool / null | Legacy: hardcoded-`false` stub, no longer sent by current providers; accepted in older providers' signed payloads for verification compat only |
-| `rdma_disabled` | bool / null | |
-| `sip_enabled` | bool / null | |
-| `secure_boot_enabled` | bool / null | |
-| `binary_hash` | string | SHA-256 of provider binary |
-| `active_model_hash` | string | SHA-256 weight fingerprint of loaded model |
-| `python_hash` / `runtime_hash` | string | Fresh runtime hashes |
-| `template_hashes` | object | `name → SHA-256` |
-| `model_hashes` | object | `model_id → SHA-256` for all active models |
-
-### `code_attestation_response`
-
-Reply to the APNs-delivered code-identity challenge. Go: [`CodeAttestationResponseMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.CodeAttestationResponse`.
-
-| Field | Type |
-|---|---|
-| `type` | `"code_attestation_response"` |
-| `nonce` | string | Decrypted nonce |
-| `signature` | string | SE P-256 signature over nonce bytes |
-
-### `load_model_status`
-
-Go: [`LoadModelStatusMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.LoadModelStatus`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"load_model_status"` |
-| `model_id` | string | |
-| `status` | string | `started`, `succeeded`, `failed` |
-| `error` | string | Human-readable reason on failure |
-
-The well-known transient error `"provider draining for update"` is matched by the coordinator for short retry backoffs ([`messages.go:66-73`](../../coordinator/protocol/messages.go)).
-
-### `prefetch_model_status`
-
-Go: [`PrefetchModelStatusMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.PrefetchModelStatus`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"prefetch_model_status"` |
-| `model_id` | string | |
-| `status` | string | `started`, `downloading`, `verified`, `failed` |
-| `bytes_done` | integer | Best-effort progress |
-| `bytes_total` | integer | Best-effort total |
-| `error` | string | Failure reason |
-
-### `models_update`
-
-Authoritative out-of-band update to advertised model inventory after a prefetch is verified on disk. Go: [`ModelsUpdateMessage`](../../coordinator/protocol/messages.go); Swift: `ProviderMessage.ModelsUpdate`.
-
-| Field | Type |
-|---|---|
-| `type` | `"models_update"` |
-| `models` | array | [`ModelInfo`](#modelinfo) list |
-
-## Coordinator → Provider messages
-
-### `inference_request`
-
-Go: [`InferenceRequestMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.InferenceRequest`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"inference_request"` |
-| `request_id` | string | UUID |
-| `body` | object | Plain JSON request body (legacy / testing) |
-| `encrypted_body` | object | [`EncryptedPayload`](#encryptedpayload) — mandatory when provider has a public key |
-
-The provider-side Swift struct uses `JSONValue` for `body` and `EncryptedPayload?` for `encrypted_body`.
-
-### `cancel`
-
-Go: [`CancelMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.Cancel`.
-
-| Field | Type |
-|---|---|
-| `type` | `"cancel"` |
-| `request_id` | string |
-
-### `attestation_challenge`
-
-Go: [`AttestationChallengeMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.AttestationChallenge`.
-
-| Field | Type |
-|---|---|
-| `type` | `"attestation_challenge"` |
-| `nonce` | string | Base64 random 32-byte nonce |
-| `timestamp` | string | ISO 8601 timestamp |
-
-### `runtime_status`
-
-Go: [`RuntimeStatusMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.RuntimeStatus`.
-
-| Field | Type |
-|---|---|
-| `type` | `"runtime_status"` |
-| `verified` | bool |
-| `mismatches` | array | [`RuntimeMismatch`](#runtimemismatch) list |
-
-### `load_model`
-
-Coordinator-driven eager model load. Only sent to Swift-runtime providers. Go: [`LoadModelMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.LoadModel`.
-
-| Field | Type |
-|---|---|
-| `type` | `"load_model"` |
-| `model_id` | string |
-
-### `prefetch_model`
-
-Coordinator-driven background download + verify (no GPU load). Go: [`PrefetchModelMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.PrefetchModel`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"prefetch_model"` |
-| `model_id` | string | |
-| `priority` | integer | Advisory ordering hint; omitted when zero |
-
-### `desired_models`
-
-Declarative desired-state map sent after register and on alias changes. Only sent to Swift providers ≥ v0.5.17. Go: [`DesiredModelsMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.DesiredModels`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"desired_models"` |
-| `models` | array | [`DesiredModelEntry`](#desiredmodelentry) list |
-
-#### `DesiredModelEntry`
-
-| Field | Type | Notes |
-|---|---|---|
-| `model_name` | string | Public alias, e.g. `gemma-4-26b` |
-| `desired_build` | string | Concrete build id to converge to |
-| `previous_build` | string | Still-acceptable build during rollout |
-
-### `trust_status`
-
-Go: [`TrustStatusMessage`](../../coordinator/protocol/messages.go); Swift: `CoordinatorMessage.TrustStatus`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `type` | `"trust_status"` |
-| `trust_level` | string | `none`, `self_signed`, `hardware` |
-| `status` | string | `online`, `untrusted`, etc. |
-| `reason` | string | Optional reason |
-
-## Shared structs
-
-### `Hardware`
-
-Go: [`Hardware`](../../coordinator/protocol/messages.go); Swift: `HardwareInfo`.
-
-| Field | Type |
-|---|---|
-| `machine_model` | string |
-| `chip_name` | string |
-| `chip_family` | string |
-| `chip_tier` | string |
-| `memory_gb` | integer |
-| `memory_available_gb` | number |
-| `cpu_cores` | object | `total`, `performance`, `efficiency` |
-| `gpu_cores` | integer |
-| `memory_bandwidth_gbs` | number |
-
-### `ModelInfo`
-
-Go: [`ModelInfo`](../../coordinator/protocol/messages.go); Swift: `ModelInfo`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `id` | string | Model id |
-| `size_bytes` | integer | |
-| `model_type` | string | |
-| `quantization` | string | |
-| `weight_hash` | string | SHA-256 fingerprint of weight files; optional |
-| `is_vision` | bool | Only emitted when `true`; pre-0.6.0 providers omit |
-| `template_render_ok` | bool / null | `false` excludes provider from tool requests; `null` omitted |
-
-Swift's `ModelInfo` additionally carries `estimated_memory_gb` and `parameters` for local use; they are not sent to the coordinator.
-
-### `BackendCapacity`
-
-Go: [`BackendCapacity`](../../coordinator/protocol/messages.go); Swift: `BackendCapacity`.
-
-| Field | Type |
-|---|---|
-| `slots` | array | [`BackendSlotCapacity`](#backendslotcapacity) |
-| `gpu_memory_active_gb` | number |
-| `gpu_memory_peak_gb` | number |
-| `gpu_memory_cache_gb` | number |
-| `total_memory_gb` | number |
-| `free_for_load_gb` | number, optional |
-| `mlx_cache_reclaimer` | [`MLXCacheReclaimerTelemetry`](#mlxcachereclaimertelemetry), optional |
-| `telemetry` | [`CapacityTelemetry`](#capacitytelemetry), optional |
-
-### `MLXCacheReclaimerTelemetry`
-
-Allocator telemetry carried by instrumented providers. Counters are cumulative
-for one provider process and reset on restart; older providers omit the object.
-
-Canonical wire definitions: `coordinator/protocol/messages.go:363-394` and
-`provider-swift/Sources/ProviderCore/Protocol/Types.swift:707-802`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `cache_limit_bytes` | integer | Configured MLX reusable-buffer cache ceiling |
-| `sweep_signals` | integer | Periodic proactive sweep signals received |
-| `reclaims` | integer | `clearCache()` operations actually performed |
-| `reclaimed_bytes` | integer | Cumulative observed cache reduction |
-| `last_reclaimed_bytes` | integer | Observed reduction around the latest reclaim |
-| `last_reclaim_duration_ms` | integer | Blocking synchronize + clear duration |
-
-The coordinator publishes these heartbeat values as Datadog gauges under
-`provider.mlx_memory.*` and `provider.mlx_cache.*`, tagged by `provider_id`
-(`coordinator/api/provider_mlx_cache_telemetry.go:13-32`).
-
-### `BackendSlotCapacity`
-
-Go: [`BackendSlotCapacity`](../../coordinator/protocol/messages.go); Swift: `BackendSlotCapacity`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `model` | string | |
-| `state` | string | `running`, `idle` (loaded, no active requests), `idle_shutdown`, `crashed`, `reloading` |
-| `num_running` | integer | |
-| `num_waiting` | integer | |
-| `max_concurrency` | integer | Optional provider-reported cap |
-| `active_tokens` | integer | |
-| `max_tokens_potential` | integer | |
-| `observed_decode_tps` | number | EWMA decode TPS |
-| `active_token_budget_used` | integer | |
-| `active_token_budget_max` | integer | |
-| `queued_token_budget` | integer | |
-| `kv_bytes_per_token` | integer | Provider-side only |
-| `telemetry` | object, optional | [`SlotTelemetry`](#slottelemetry); presence marks a profiler-aware provider |
-
-`"idle"` means the model **is loaded**; treat it as warm for routing decisions.
-
-### `EncryptedPayload`
-
-Go: [`EncryptedPayload`](../../coordinator/protocol/messages.go); Swift: `EncryptedPayload`.
-
-| Field | Type |
-|---|---|
-| `ephemeral_public_key` | string | Base64 X25519 public key |
-| `ciphertext` | string | Base64 `nonce || encrypted data` |
-
-### `UsageInfo`
-
-Go: [`UsageInfo`](../../coordinator/protocol/messages.go); Swift: `UsageInfo`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `prompt_tokens` | integer | |
-| `completion_tokens` | integer | |
-| `reasoning_tokens` | integer | Subset of `completion_tokens`; omitted when zero |
-
-### `RuntimeMismatch`
-
-Go: [`RuntimeMismatch`](../../coordinator/protocol/messages.go); Swift: `RuntimeMismatch`.
-
-| Field | Type |
-|---|---|
-| `component` | string |
-| `expected` | string |
-| `got` | string |
-
-### `PrivacyCapabilities`
-
-Go: [`PrivacyCapabilities`](../../coordinator/protocol/messages.go); Swift: `PrivacyCapabilities`.
-
-| Field | Type |
-|---|---|
-| `text_backend_inprocess` | bool |
-| `text_proxy_disabled` | bool |
-| `python_runtime_locked` | bool |
-| `dangerous_modules_blocked` | bool |
-| `sip_enabled` | bool |
-| `anti_debug_enabled` | bool |
-| `core_dumps_disabled` | bool |
-| `env_scrubbed` | bool |
-
-## System profiler objects
-
-Go: [`coordinator/protocol/profile.go`](../../coordinator/protocol/profile.go); Swift: [`provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift`](../../provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift). Design and ingestion rules: [`docs/architecture/system-profiler.md`](../architecture/system-profiler.md) §6. All three objects are measurement only: nothing in them influences routing, health, billing, deadlines or client output.
-
-Mixed-fleet rule:
-
-- Every field is optional (`omitempty` / `encodeIfPresent`). An absent object means an older provider. Inside a present `profile`, an absent numeric means "did not happen" or unknown and is never read as `0`; inside a present `telemetry` object an absent numeric reads as `0`.
-- Every string field is a closed enum. The coordinator folds an unknown value to `other` (counted, never rejected); the Swift decoder does the same.
-- `profile` is carried as raw JSON (Go `json.RawMessage`), so its contents can never fail the envelope decode of a terminal frame. The WebSocket read loop only checks its length (> 4096 bytes drops the profile with reason `size`); decode, `schema`, range and order validation run later on the profile sink worker and can only mark the profile invalid (`decode`, `schema`, `range`, `order`). The terminal is processed identically either way.
-- Two-way sync: a key added to `profile.go` must be added to `InferenceProfile.swift` in the same change, and vice versa. The shared fixture [`coordinator/protocol/testdata/profiler_wire_fixture.json`](../../coordinator/protocol/testdata/profiler_wire_fixture.json) is written by Go and loaded by Swift; both sides assert the key sets. Unlike telemetry events there is no TypeScript mirror and no allowlist.
-
-### `InferenceProfile`
-
-`profile` on `inference_complete` / `inference_error`. Offsets are microseconds from `t0p` = WebSocket frame receipt on the provider's `SuspendingClock`; durations are microseconds; the `engine` sub-object is nanoseconds from engine enqueue (`DispatchTime`). Never subtract across the two domains. Accepted ranges: `_us` ∈ [0, 3.6e9], `_ns` ∈ [0, 3.6e12], counts ∈ [0, 1e9], bytes ∈ [0, 2^48], `wall_ms` within 24 h of receipt; anything outside is clamped and the profile is marked `range`.
+Go `HeartbeatMessage` · Swift `ProviderMessage.Heartbeat`. Built by
+`buildHeartbeatJSON` (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`);
+consumed by `Registry.Heartbeat` (`coordinator/registry/registry.go`). Cadence
+and sinks: [`telemetry-inventory.md`](telemetry-inventory.md).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `status` | `string` | `ProviderStatus` | req | `"idle"` or `"serving"` (`Protocol/Enums.swift`) |
+| `active_model` | `*string` (**no** `omitempty`) | `String?` (`encodeIfPresent`) | see note | **Intentional asymmetry.** Go always emits the key and writes `null` when nil; Swift omits the key when nil. Both decode to nil = no model is generating right now, and the coordinator treats `null` and absent identically |
+| `stats` | `HeartbeatStats` | `ProviderStats` | req | [`stats`](#stats) |
+| `warm_models` | `[]string` | `[String]` | opt | resident models; Swift omits when empty |
+| `system_metrics` | `SystemMetrics` | `SystemMetrics` | req | `memory_pressure` (`float64`, 0–1), `cpu_usage` (`float64`, 0–1), `thermal_state` ∈ {`nominal`, `fair`, `serious`, `critical`} |
+| `backend_capacity` | `*BackendCapacity` | `BackendCapacity?` | opt | nil on old providers; [`backend_capacity`](#backend_capacity) |
+| `prefix_cache_protocol` | `int` | `Int?` | opt | Swift omits nil/0 |
+| `prefix_cache_v2_models` | `*[]PrefixCacheV2Capability` | `[…]?` | ptr | omitted (old provider) vs authoritative `[]` (v2 provider clearing its live set) |
+| `prefix_cache_statuses`, `prefix_cache_donation_outcomes` | `*[]…` | `[…]?` | ptr | same pointer rule |
+| `apns_device_token`, `apns_environment` | `string` | `String?` | opt | late or rotated APNs token so the coordinator can re-arm a code challenge without a reconnect; the token alone never grants `CodeAttested` |
+
+#### `stats`
+
+Go `HeartbeatStats` · Swift `ProviderStats`. All `int64` in Go, `UInt64` in
+Swift; cumulative per provider session and delta-merged by the registry.
+`requests_served` and `tokens_generated` are required; the rest are `omitempty`.
 
 | Group | Keys |
 |---|---|
-| Header | `schema` (must be `1`), `wall_ms` (untrusted wall-clock anchor, Unix ms) |
-| Offsets (µs from `t0p`) | `dequeued_us`, `decrypted_us`, `parsed_us`, `admission_us`, `accepted_sent_us`, `load_wait_start_us`, `load_wait_end_us`, `task_spawned_us`, `prompt_prep_start_us`, `prompt_prep_end_us`, `engine_submit_us`, `engine_admitted_us`, `first_delta_us`, `first_frame_us`, `last_delta_us`, `terminal_built_us`, `terminal_sent_us`, `cancel_received_us`, `cancel_aborted_us`, `total_us` |
-| Durations (µs) | `tool_constraint_us`, `vision_prep_us`, `ssd_stage_us`, `kv_reserve_us`, `flush_us`, `se_sign_us`, `slept_us`, `projected_service_us`, `budget_remaining_at_admit_us` |
-| Counts | `prompt_tokens`, `frames_emitted`, `running_at_admit`, `waiting_at_admit`, `queued_prefill_tokens_at_admit`, `steps_at_submit`, `steps_at_finish`, `projected_prefill_tokens`, `projected_decode_tokens`, `partial_prefill_cap`, `tokens_after_cancel` |
-| Bytes | `bytes_emitted`, `kv_bytes_in_use_at_admit`, `kv_bytes_capacity`, `mlx_active_bytes_at_finish`, `mlx_peak_bytes` |
-| Flags (bool) | `usage_recovered`, `load_cold`, `load_parked`, `mtp_active`, `low_power_mode` |
-| Enums | `deadline_mode` ∈ {`none`, `projected`, `legacy`, `other`}; `thermal_state` ∈ {`nominal`, `fair`, `serious`, `critical`, `other`}; `cancel_stage` ∈ {`none`, `pre_accept`, `pre_engine`, `prefill`, `decode`, `post_terminal`, `other`} |
-| `engine` (object, optional) | Stamps (ns): `admitted_ns`, `kv_allocated_ns`, `prefill_first_launch_ns`, `prompt_computed_ns`, `first_token_ns`, `finished_ns`. Counts: `readmissions`, `preemptions`, `capacity_requeues`, `prefill_chunks`, `packed_prefill_chunks`, `vision_chunks`, `solo_stripe_chunks`, `prefill_chunk_tokens_max`, `decode_steps`, `chained_decode_steps`, `batch_rows_sum`, `batch_rows_min`, `batch_rows_max`, `mtp_rounds`, `mtp_proposed`, `mtp_accepted`, `pause_count`. Durations (ns): `step_latency_ns_sum`, `step_latency_ns_max`, `paused_ns`, `detok_delay_first_ns`, `prefix_lookup_ns`, `prefix_adoption_ns`. Enum: `finish_reason` ∈ {`stop`, `length`, `stop_sequence`, `cancelled`, `error`, `other`} |
+| Serving | `requests_served`, `tokens_generated` |
+| Cancels and errors | `cancellations_received`, `cancellations_before_output`, `cancellations_partial_complete`, `generation_errors_after_output`, `chunk_encryption_errors`, `stream_closed_without_terminal`, `cancel_during_model_load`, `usage_gaps` |
+| Profiler cancel accounting (absent on pre-profiler providers) | `cancel_stage_pre_accept_total`, `cancel_stage_pre_engine_total`, `cancel_stage_prefill_total`, `cancel_stage_decode_total`, `cancel_stage_post_terminal_total`, `tokens_after_cancel_total`, `cancel_abort_ns_sum` |
 
-Order invariants over the stamps that are present (a violation marks the profile `order`): `dequeued ≤ decrypted ≤ parsed ≤ admission ≤ engine_submit ≤ engine_admitted ≤ first_delta ≤ last_delta ≤ terminal_built ≤ terminal_sent ≤ total`; `load_wait_start ≤ load_wait_end`; `prompt_prep_start ≤ prompt_prep_end`; `cancel_received ≤ cancel_aborted`; `steps_at_submit ≤ steps_at_finish`; engine `admitted ≤ kv_allocated ≤ prefill_first_launch ≤ prompt_computed ≤ first_token ≤ finished`, `mtp_accepted ≤ mtp_proposed`, `batch_rows_min ≤ batch_rows_max`, `step_latency_ns_max ≤ step_latency_ns_sum`.
+#### `backend_capacity`
 
-### `SlotTelemetry`
+Go `BackendCapacity` · Swift `BackendCapacity` (`Types.swift`). Slot semantics
+and how the scheduler reads them: [`../architecture/scheduling.md`](../architecture/scheduling.md).
 
-`telemetry` on [`BackendSlotCapacity`](#backendslotcapacity). Sent on every heartbeat by profiler-aware providers, possibly sparse. Clamped silently in `registry.clampBackendCapacity` (negative → `0`; counts ≤ 1e12, bytes ≤ 2^48, `eval_in_flight_ms` ≤ 3.6e6, `step_wall_ns_total` ≤ 1e18, `isolated_prefill_tps` ≤ 20000 with NaN/Inf dropped as unreported).
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
+| `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
+| `total_memory_gb` | `float64` | `Double` | req | |
+| `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the 90 % unified-memory cap, the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
+| `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
+| `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
+| `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
 
-| Field | Type | Notes |
+#### `slots[]`
+
+Go `BackendSlotCapacity` · Swift `BackendSlotCapacity`. One entry per loaded
+model. Every engine-health, `kv_backend` and `telemetry` field is **measurement
+only**: the coordinator decodes them into the routing snapshot but does not gate
+routing on them.
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `model` | `string` | `String` | req | |
+| `state` | `string` | `String` | req | Coordinator accepts `running`, `idle`, `idle_shutdown`, `crashed`, `reloading`; `registry.SlotStateFold` (`coordinator/registry/gate_reason.go`) folds anything else to `other`. The v0.8.16 provider emits `running`, `idle`, `crashed`, `reloading` (`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+Capacity.swift`); `idle_shutdown` stays accepted for older providers. `idle` means the model **is loaded** (`slotStateModelLoaded`, `coordinator/registry/scheduler.go`); `reloading`/`crashed` make the slot unroutable |
+| `num_running`, `num_waiting` | `int` | `UInt32` | req | |
+| `max_concurrency` | `int` | `UInt32` | opt | |
+| `active_tokens` | `int64` | `Int64` | req | Σ (prompt + completion) tokens over running requests |
+| `max_tokens_potential` | `int64` | `Int64` | req | Σ `max_tokens` over running requests |
+| `observed_decode_tps` | `float64` | `Double` | opt | EWMA of per-request decode TPS |
+| `observed_prefill_tps` | `float64` | `Double` | opt | EWMA (admission → first token); omitted when unmeasured |
+| `active_token_budget_used`, `active_token_budget_max`, `queued_token_budget` | `int64` | `Int64` | opt | `queued_token_budget` is hard-coded `0` by the v0.8.16 provider (`backendSlotCapacity`, `EngineV2Bridge+Capacity.swift`), so it is always omitted |
+| `kv_bytes_per_token` | `int64` | `Int64` | opt | |
+| `model_load_time_ms` | `int64` | `Int64` | opt | measured cold load; omitted when unmeasured |
+| `kv_backend` | `*string` | `String?` | ptr | resolved KV kind `"paged"` or `"contiguous"`. **Nil = unknown** (pre-0.8.0 provider), never read as `contiguous`; a non-nil `""` still marshals as `"kv_backend":""` |
+| `kv_backend_fallback_reason` | `*string` | `String?` | ptr | why the slot is not on the requested backend: `kill_switch`, `"kernel_preflight: …"`, `"physical_capacity: …"`, `"ineligible: …"`, `"pool_construction_capacity: …"`. **Absent = did not degrade** (the opposite rule to `kv_backend`). Untrusted free text; `registry.KVBackendFallbackTag` (`coordinator/registry/kv_backend.go`) folds it to a bounded class before any metric tag |
+| `steps_executed`, `admits`, `first_tokens_emitted` | `int64` | `Int64` | opt | cumulative engine-health counters |
+| `seconds_since_last_step`, `seconds_since_last_first_token` | `float64` | `Double` | opt | |
+| `wedge_suspected` | `bool` | `Bool` | opt | provider-computed: ≥ N consecutive admits, 0 first tokens, ≥ T s |
+| `eval_in_flight_ms`, `idle_clear_in_flight_ms` | `int64` | `Int64` | opt | ms the current blocking eval / idle clear has run. `eval_in_flight_ms` comes from `EvalProbe.currentEvalElapsedMs`; `idle_clear_in_flight_ms` is never set by v0.8.16 |
+| `telemetry` | `*SlotTelemetry` | `SlotTelemetry?` | opt | [`slots[].telemetry`](#slotstelemetry); **presence is the "profiler-aware provider" sentinel** — omission ≠ empty object |
+
+#### `slots[].telemetry`
+
+Go `SlotTelemetry` (`coordinator/protocol/profile.go`) · Swift `SlotTelemetry`
+(`InferenceProfile.swift`). Every numeric is `*T` + `omitempty` in Go and
+optional in Swift; inside a present object an absent numeric reads as 0.
+Clamped by `registry.clampBackendCapacity`; persisted to `fleet_snapshots`
+([`../architecture/system-profiler.md`](../architecture/system-profiler.md)).
+
+| JSON key | Type | Meaning |
 |---|---|---|
-| `queued_prefill_tokens` | integer | Σ prompt tokens of requests whose engine submit has not returned |
-| `partial_prefill_rows` | integer | Admitted rows with no first token yet |
-| `prefill_tokens_total` | integer | Cumulative Σ(prompt − cached) tokens over finished requests |
-| `isolated_prefill_tps` | number | Isolated prefill throughput EWMA; `0` until `ewma_initialized` |
-| `ewma_initialized` | bool | Whether `isolated_prefill_tps` has a sample |
-| `pump_tasks` | integer | Live stream-pump tasks on the slot |
-| `mtp_rounds_total`, `mtp_proposed_total`, `mtp_accepted_total` | integer | Cumulative MTP rounds / proposed / accepted draft tokens |
-| `kv_bytes_in_use` | integer | `CBv2CapacitySnapshot.kvBytesInUse`, raw bytes |
-| `kv_bytes_capacity` | integer | `CBv2CapacitySnapshot.kvBytesCapacity` (admission ledger) bounded by `kvBytesBackendCapacity` when that is known, raw bytes |
-| `eval_in_flight_ms` | integer | Same `EvalProbe.currentEvalElapsedMs` read as the slot-level `eval_in_flight_ms`: ms the current blocking eval has run, process-global |
-| `step_wall_ns_total` | integer | Cumulative engine step wall time, ns |
-| `decode_rows_total` | integer | Cumulative decode rows stepped |
+| `queued_prefill_tokens` | `int64` | Σ prompt tokens of requests whose engine submit has not returned |
+| `partial_prefill_rows` | `int64` | admitted rows with no first token yet |
+| `prefill_tokens_total` | `int64` | cumulative |
+| `isolated_prefill_tps` | `float64` | isolated prefill EWMA |
+| `ewma_initialized` | `bool` | whether `isolated_prefill_tps` has a sample |
+| `pump_tasks` | `int64` | live stream-pump tasks |
+| `mtp_rounds_total`, `mtp_proposed_total`, `mtp_accepted_total` | `int64` | cumulative MTP counters |
+| `kv_bytes_in_use`, `kv_bytes_capacity` | `int64` | raw bytes |
+| `eval_in_flight_ms` | `int64` | same read as the slot-level key |
+| `step_wall_ns_total`, `decode_rows_total` | `int64` | cumulative engine counters (slice 3) |
 
-### `CapacityTelemetry`
+#### `backend_capacity.telemetry`
 
-`telemetry` on [`BackendCapacity`](#backendcapacity). Same presence and clamp rules as `SlotTelemetry` (counts ≤ 1e12; `memory_pressure_level` folded to `other`).
+Go `CapacityTelemetry` · Swift `CapacityTelemetry`. Same presence rules as
+`slots[].telemetry`.
 
-| Field | Type | Notes |
+| JSON key | Type | Meaning |
 |---|---|---|
-| `low_power_mode` | bool | `ProcessInfo.isLowPowerModeEnabled` at heartbeat time |
-| `memory_pressure_level` | string | `normal`, `warning`, `critical`, `other`: last kernel level seen by `MemoryPressureMonitor` |
-| `mlx_num_resources` | integer | `MLX.Memory.numResources` (live MLX buffers) |
-| `in_admission` | integer | Coordinator requests accepted but not yet finished |
-| `inflight_tasks` | integer | Detached inference tasks registered |
+| `low_power_mode` | `*bool` | `ProcessInfo.isLowPowerModeEnabled` |
+| `memory_pressure_level` | `MemoryPressureLevel` ∈ {`normal`, `warning`, `critical`, `other`}; `""` = absent | last kernel memory-pressure level |
+| `mlx_num_resources` | `*int64` | live MLX buffers |
+| `in_admission` | `*int64` | requests accepted but not finished |
+| `inflight_tasks` | `*int64` | detached inference tasks |
+
+### `inference_accepted`
+
+Go `InferenceAcceptedMessage` · Swift `InferenceAccepted`. `request_id`
+(`string`, req). The provider accepted the request (it may still be reloading);
+the coordinator extends the wait window to the full inference timeout but may
+still retry before the first chunk.
+
+### `inference_response_chunk`
+
+Go `InferenceResponseChunkMessage` · Swift `InferenceResponseChunk`.
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `data` | `string` | `String` | opt | SSE chunk text; empty when E2E encryption is active |
+| `encrypted_data` | `*EncryptedPayload` | `EncryptedPayload?` | opt | [`EncryptedPayload`](#encryptedpayload) |
+
+### `inference_complete`
+
+Go `InferenceCompleteMessage` · Swift `InferenceComplete`.
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `usage` | `UsageInfo` | `UsageInfo` | req | [`UsageInfo`](#usageinfo) |
+| `stop_sequence` | `string` | `String?` | opt | exact caller stop string matched |
+| `se_signature` | `string` | `String?` | opt | Secure Enclave signature over `response_hash` |
+| `response_hash` | `string` | `String?` | opt | SHA-256 of the response data |
+| `profile` | `json.RawMessage` | `InferenceProfile?` (encoded via `saturatedToWireRanges()`) | opt | the system-profiler per-attempt object. Go keeps the **raw bytes**: the WS read loop only length-checks it (`MaxInferenceProfileBytes = 4096`) so a malformed profile can never fail the terminal decode; the typed decode runs on the profile-sink worker (`coordinator/api/profiler_provider.go`). Observability only. Field list and validation: [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
+
+### `inference_error`
+
+Go `InferenceErrorMessage` · Swift `InferenceError`. Outcome classification of
+these fields: [`../architecture/request-outcome-observability.md`](../architecture/request-outcome-observability.md).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | |
+| `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
+| `status_code` | `int` | `UInt16` | req | |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `cancelled`, `client_error`, `tool_noncompliance`. The well-known string `"provider draining for update"` (`ProviderDrainingForUpdate`) marks a transient drain and earns a short backoff |
+| `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
+| `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
+| `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |
+| `rejection_reason` | `CapacityRejectionReason` | `CapacityRejectionReason?` | opt | routing-v2 enriched rejection; enum shared with [`capacity_quote`](#capacity_quote) |
+| `available_token_budget` | `*int64` | `Int64?` | ptr | **an explicit zero is encoded** (busy slot, zero free tokens); nil/absent = legacy frame |
+| `feasible_after_ms` | `int64` | `Int64?` | opt | duration forecast, never a wall clock; Swift omits 0 |
+| `capacity_seq` | `uint64` | `UInt64?` | opt | the snapshot the gate decided from; Swift omits 0 |
+| `profile` | `json.RawMessage` | `InferenceProfile?` | opt | same contract as `inference_complete`; the sanitizer passes it through as opaque bytes |
+| — (`CoordinatorCause`) | `json:"-"` | — | never on the wire | coordinator-synthetic only (`provider_disconnected`) |
+
+### `attestation_response`
+
+Go `AttestationResponseMessage` · Swift `AttestationResponse`. Reply to
+[`attestation_challenge`](#attestation_challenge).
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `nonce` | `string` | `String` | req | echoed |
+| `signature` | `string` | `String` | req | base64 SE signature over nonce + timestamp (liveness) |
+| `status_signature` | `string` | `String?` | opt | v0.3.11+; signature over the canonical JSON of nonce + timestamp + all status fields (`attestation.BuildStatusCanonical`, `coordinator/attestation/`); absent ⇒ status fields are advisory only |
+| `public_key` | `string` | `String` | req | base64 |
+| `hypervisor_active` | `*bool` | — | legacy | `< v0.6.31` providers only; Swift omits it; Go keeps decoding it so their status signature verifies |
+| `rdma_disabled`, `sip_enabled`, `secure_boot_enabled` | `*bool` | `Bool?` | opt | fresh posture at challenge time |
+| `binary_hash`, `active_model_hash`, `python_hash`, `runtime_hash` | `string` | `String?` | opt | SHA-256 |
+| `template_hashes`, `model_hashes` | `map[string]string` | `[String: String]` | opt | Swift omits when empty |
+
+### `code_attestation_response`
+
+Go `CodeAttestationResponseMessage` · Swift `CodeAttestationResponse`. `nonce`
+(decrypted pushed nonce, base64) and `signature` (SE P-256 signature over the
+nonce bytes), both required. Verified against the SE key bound at registration,
+never a key carried in this message.
+
+### `load_model_status`
+
+Go `LoadModelStatusMessage` · Swift `LoadModelStatus`. `model_id` (req);
+`status` ∈ {`started`, `succeeded`, `failed`} (`LoadModelStatus*` constants,
+req); `error` (`string`, opt). `"provider draining for update"` in `error` is
+matched as a transient failure.
+
+### `prefetch_model_status`
+
+Go `PrefetchModelStatusMessage` · Swift `PrefetchModelStatus`. `model_id`
+(req); `status` ∈ {`started`, `downloading`, `verified`, `failed`} — `verified`
+is the terminal success: on disk, hash-checked, **not** loaded; `bytes_done`,
+`bytes_total` (`int64`, opt; Swift omits 0); `error` (opt).
+
+### `models_update`
+
+Go `ModelsUpdateMessage` · Swift `ModelsUpdate`. `models` (`[]ModelInfo`, same
+encoding as `register`); `tool_constraint_protocol` (`int`, opt);
+`tool_constraint_models` (`[]string`, opt). The coordinator cross-checks each
+`weight_hash` against the catalog before merging, so a verified build becomes
+routable without a re-register.
+
+### `prefix_cache_lookup`
+
+Go `PrefixCacheLookupMessage` · Swift `PrefixCacheLookup`.
+
+| JSON key | Go | Swift | Presence |
+|---|---|---|---|
+| `request_id`, `cache_receipt_nonce` | `string` | `String` | req |
+| `outcome` | `string` | `PrefixCacheLookupOutcome` (`hit`, `miss_absent`, `miss_corrupt`, `skipped_capacity`, `skipped_cost`, `skipped_policy`) | req |
+| `tier` | `string` | `PrefixCacheTier?` (`memory`, `ssd`) | opt |
+| `cached_tokens`, `prefill_tokens_saved` | `int` | `UInt64?` | opt |
+| `stage_ms` | `float64` | `Double?` | opt |
+
+### `prefix_cache_ready`
+
+Go `PrefixCacheReadyMessage` · Swift `PrefixCacheReady`. May arrive after
+`inference_complete`.
+
+| JSON key | Go | Swift | Presence |
+|---|---|---|---|
+| `request_id`, `cache_receipt_nonce` | `string` | `String` | req |
+| `ready_tokens` | `int` | `UInt64` | req |
+| `required_recompute_tokens`, `expected_prefill_tokens_saved` | `int` | `UInt64` (always encoded) | opt in Go |
+| `tier` | `string` | `PrefixCacheTier` (always encoded) | opt in Go |
+| `stage_ms` | `float64` | `Double` | opt; Swift clamps to `[0, PrefixCacheReadyResult.maxStageMs]` |
+
+### `prefix_cache_lookup_v2`
+
+Go `PrefixCacheLookupV2Message` · Swift `PrefixCacheLookupV2`.
+
+| JSON key | Go | Presence |
+|---|---|---|
+| `request_id`, `cache_receipt_nonce`, `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `cache_epoch` | `string` | req |
+| `cache_seq` | `uint64` | req |
+| `prompt_anchor` | `PrefixCacheAnchor` | req |
+| `matched_anchor` | `*PrefixCacheAnchor` | opt |
+| `outcome` | `string` | req |
+| `tier` | `string` | opt |
+| `required_recompute_tokens`, `expected_prefill_tokens_saved` | `int` | opt |
+| `stage_ms` | `float64` | opt |
+
+### `prefix_cache_ready_v2`
+
+Go `PrefixCacheReadyV2Message` · Swift `PrefixCacheReadyV2`. Emitted only after
+durable SSD settlement.
+
+| JSON key | Go | Presence |
+|---|---|---|
+| `request_id`, `cache_receipt_nonce`, `model_id`, `model_aggregate_hash`, `prompt_contract_id`, `cache_epoch` | `string` | req |
+| `cache_seq` | `uint64` | req |
+| `outcome` | `string` | req (Swift default `"ready"`) |
+| `tier` | `string` | req |
+| `ready_anchors` | `[]PrefixCacheAnchor` | req; Swift caps at 2 (prompt anchor + final continuation) |
+| `required_recompute_tokens`, `expected_prefill_tokens_saved` | `int` | opt |
+| `stage_ms` | `float64` | opt |
+
+### `capacity_quote`
+
+Go `CapacityQuoteMessage` (`coordinator/protocol/capacity.go`) · Swift
+`CapacityQuote`. Answer to one [`capacity_probe`](#capacity_probe). Quotes are
+drift correction for the coordinator's ledger, not reservations.
+
+| JSON key | Go | Presence | Notes |
+|---|---|---|---|
+| `quote_id` | `string` | req | echo of the probe's random, request-local id |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the 250 ms probe window and does not compare seqs |
+| `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
+| `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
+| `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |
+| `queue_est_ms` | `float64` | req | |
+| `available_token_budget` | `int64` | req | |
+| `confidence` | `string` | req | `high` or `low` (`CapacityConfidenceHigh`/`Low`) |
+
+## Coordinator → provider
+
+### `inference_request`
+
+Go `InferenceRequestMessage` · Swift `CoordinatorMessage.InferenceRequest`.
+
+| JSON key | Go | Swift | Presence | Notes |
+|---|---|---|---|---|
+| `request_id` | `string` | `String` | req | attempt UUID |
+| `body` | `InferenceRequestBody` | `JSONValue` | opt | plain body: `model`, `messages[]{role, content}`, `stream` (`bool`), `max_tokens` (`*int`, opt), `temperature` (`*float64`, opt), `endpoint` (`string`, opt; defaults to `/v1/chat/completions`). Empty when `encrypted_body` is set |
+| `encrypted_body` | `*EncryptedPayload` | `EncryptedPayload?` | opt | NaCl box; set whenever the provider registered a `public_key` |
+| `first_content_budget_ms` | `int64` | `Int64?` | opt | positive time left for this attempt to produce its first content chunk; 0 omitted |
+| `cache_receipt_nonce` | `string` | `String?` | opt | binds the prefix-cache receipts to this attempt |
+| `cache_scope` | `string` | `String?` | opt | |
+| `prefix_cache_protocol` | `int` | `Int?` | opt | |
+| `tool_schema_metadata_protocol` | `int` | `Int?` | opt | `1` = the coordinator rejected client-forged reserved keys before normalisation |
+
+### `cancel`
+
+Go `CancelMessage` · Swift `Cancel`. `request_id` (req). Sent on the strict
+control lane.
+
+### `attestation_challenge`
+
+Go `AttestationChallengeMessage` · Swift `AttestationChallenge`. `nonce`
+(base64, 32 random bytes) and `timestamp` (ISO 8601), both required.
+
+### `code_attestation_resume_challenge`
+
+Go `CodeAttestationResumeChallenge` · Swift `CodeAttestationResumeChallenge`.
+`code_challenge` (`EncryptedPayload`, req). Proves possession of the cached
+registration X25519 key over the live WebSocket without spending an APNs push.
+
+### `runtime_status`
+
+Go `RuntimeStatusMessage` · Swift `RuntimeStatus`. `verified` (`bool`, req);
+`mismatches` (`[]RuntimeMismatch{component, expected, got}`, opt in Go, always
+encoded by Swift as `[RuntimeMismatch]`).
+
+### `load_model`
+
+Go `LoadModelMessage` · Swift `LoadModel`. `model_id` (req). Sent only to
+`backend == "mlx-swift"`; the provider replies with `load_model_status`.
+
+### `prefetch_model`
+
+Go `PrefetchModelMessage` · Swift `PrefetchModel`. `model_id` (req); `priority`
+(`int`, opt, advisory). Download + verify only, no GPU load; the provider
+replies with `prefetch_model_status` and then `models_update`.
+
+### `desired_models`
+
+Go `DesiredModelsMessage` · Swift `DesiredModels`. `models` (`[]DesiredModelEntry`):
+`model_name` (public alias), `desired_build` (concrete build id),
+`previous_build` (opt; still acceptable mid-rollout). Sent once right after
+`register` and again whenever a desired build changes. The provider reconciles:
+background-prefetch any missing desired build, hard-swap, emit `models_update`.
+
+### `trust_status`
+
+Go `TrustStatusMessage` · Swift `TrustStatus`. `trust_level` ∈ {`none`,
+`self_signed`, `hardware`}; `status` (`online`, `untrusted`, …); `reason`
+(opt in Go, `String` in Swift). Operator diagnostics only.
+
+### `capacity_probe`
+
+Go `CapacityProbeMessage` (`coordinator/protocol/capacity.go`) · Swift
+`CapacityProbe`. Sent on the bounded data lane to shortlist candidates in
+parallel with the primary dispatch. Carries request **shape** only; the field
+set is pinned by `TestCapacityProbeShapeClosed` (`coordinator/protocol/capacity_test.go`).
+
+| JSON key | Go | Presence | Notes |
+|---|---|---|---|
+| `quote_id` | `string` | req | random, request-local; never the request id |
+| `model` | `string` | req | |
+| `prompt_tokens_bucket` | `int` | req | prompt estimate rounded **up** to a multiple of `CapacityProbePromptBucketTokens = 512` |
+| `max_output_tokens` | `int` | req | |
+| `requires_vision` | `bool` | opt | |
+| `vision_image_count` | `int` | opt | count only |
+| `deadline_remaining_ms` | `int64` | req | duration on the first-content clock, never a wall clock |
+
+## Shared objects
+
+### `EncryptedPayload`
+
+Go `EncryptedPayload` · Swift `EncryptedPayload`. `ephemeral_public_key`
+(base64 X25519) and `ciphertext` (base64 `nonce || box`), both required.
+
+### `UsageInfo`
+
+Go `UsageInfo` · Swift `UsageInfo`.
+
+| JSON key | Go | Swift | Presence |
+|---|---|---|---|
+| `prompt_tokens`, `completion_tokens` | `int` | `UInt64` | req |
+| `reasoning_tokens` | `int` | `UInt64` | opt; subset of `completion_tokens` |
+| `cache_outcome` | `string` | `PrefixCacheLookupOutcome?` | opt |
+| `cache_tier` | `string` | `PrefixCacheTier?` | opt |
+| `cached_tokens`, `prefill_tokens_saved` | `int` | `UInt64?` | opt |
+| `cache_stage_ms` | `float64` | `Double?` | opt — the one provider-side duration outside `profile` |
+
+## Model unloading (no message)
+
+The coordinator never tells a provider to unload. Residency changes reach a
+provider only as a `desired_models` reconciliation (prefetch → hard-swap →
+`models_update`) and through the provider's own idle timeout
+(`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`;
+`idle_timeout_mins` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
+default `60`, `0` disables). The coordinator observes the result on the next
+heartbeat (`warm_models`, `slots[]`); its 1 h idle-unload assumption lives in
+`coordinator/registry/capacity_cooldown.go`.
+
+## Tests that pin the wire
+
+| Layer | Files |
+|---|---|
+| Go shape and envelope | `coordinator/protocol/messages_register_heartbeat_test.go`, `messages_backend_capacity_test.go`, `messages_inference_test.go`, `messages_terminal_cause_test.go`, `messages_attestation_test.go`, `messages_model_lifecycle_test.go`, `messages_envelope_test.go`, `prefix_cache_v2_test.go`, `prefix_cache_telemetry_test.go`, `capacity_test.go`, `inference_failure_test.go`, `tool_constraints_test.go`, `type_scan_test.go` |
+| Go ↔ Swift key pinning | `coordinator/api/provider_wire_test.go`; `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift`, `CapacityQuoteProtocolTests.swift` |
+| `profile` fixture | `coordinator/protocol/testdata/profiler_wire_fixture.json` — written by Go, loaded by Swift |
+
+## Related
+
+- [`../architecture/scheduling.md`](../architecture/scheduling.md) — how slot state and budgets drive admission
+- [`../architecture/routing.md`](../architecture/routing.md) — gate reasons and candidate selection
+- [`../architecture/system-profiler.md`](../architecture/system-profiler.md) — the `profile` object, `request_profiles`, `fleet_snapshots`
+- [`../architecture/telemetry.md`](../architecture/telemetry.md) — what the coordinator does with heartbeat data
+- [`telemetry-inventory.md`](telemetry-inventory.md) — producer, sink and cadence of every datum
+- [`api-contracts.md#headers`](api-contracts.md#headers) — the `X-Timing` header

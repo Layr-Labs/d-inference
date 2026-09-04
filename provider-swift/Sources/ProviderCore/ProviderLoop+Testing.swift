@@ -354,7 +354,9 @@ extension ProviderLoop {
         modelType: String?,
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        loadedWeightHash: String? = nil,
+        loadStages: ModelLoadStageReport? = nil
     ) async throws -> EngineV2Bridge {
         await acquireResliceGate()
         let newcomer = EngineV2NewcomerBox(container)
@@ -375,10 +377,12 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: nil,
+                loadedWeightHash: loadedWeightHash,
                 isVLM: false,
                 modelType: modelType,
                 lastInferenceAt: .now
             )
+            modelSlots[modelId]?.loadStages = loadStages
         } catch {
             releaseResliceGate()
             throw error

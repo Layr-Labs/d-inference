@@ -460,6 +460,43 @@ struct EngineV2LivenessRecoveryTests {
         #expect(sawChunk)
     }
 
+    @Test("recovery carries the slot's published weight hash and load stages onto the rebuilt slot")
+    func recoveryCarriesLoadedWeightHashAndStages() async throws {
+        let (loop, runtime, factory, telemetry) = try makeHarness(
+            scripts: [
+                .hang,
+                .stream([
+                    .delta(text: "back", tokens: [10], logprobs: nil),
+                    .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 1)),
+                ]),
+            ])
+        await installHooks(loop, runtime: runtime, factory: factory, telemetry: telemetry)
+
+        var stages = ModelLoadStageReport(diskGb: 12.1, estimatedGb: 12.1 * 1.2)
+        stages.totalMs = 1_234
+        let oldBridge = try await loop.loadV2SlotForTesting(
+            modelId: Self.modelA,
+            modelType: "gemma4",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: makeSizing(weightsGiB: 15),
+            loadedWeightHash: "h-loaded-before-wedge",
+            loadStages: stages)
+        #expect(await loop.loadedWeightHashForTesting(modelId: Self.modelA) == "h-loaded-before-wedge")
+
+        let t0 = ContinuousClock.Instant.now
+        await injectWedge(bridge: oldBridge, modelId: Self.modelA, at: t0)
+        await loop.recoverWedgedEngineV2SlotsForTesting(now: t0.advanced(by: .seconds(130)))
+        let newBridge = try #require(await loop.slotBridgeForTesting(modelId: Self.modelA))
+        #expect(newBridge !== oldBridge)
+
+        // The rebuilt slot serves the same bytes: a self-test failure after a
+        // recovery must record THIS hash, never the "" sentinel that refuses
+        // every same-id build until restart; the stage report survives too.
+        #expect(await loop.loadedWeightHashForTesting(modelId: Self.modelA) == "h-loaded-before-wedge")
+        #expect(await loop.loadStageReportForTesting(modelId: Self.modelA)?.totalMs == 1_234)
+    }
+
     @Test("regression: SSD-only recovery preserves the full live KV grant")
     func recoveryPreservesSSDOnlyGrant() async throws {
         let (loop, runtime, factory, telemetry) = try makeHarness(

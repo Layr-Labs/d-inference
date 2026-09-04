@@ -309,10 +309,16 @@ extension ProviderLoop {
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
                 cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
+                loadedWeightHash: slot.loadedWeightHash,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,
                 lastInferenceAt: .now
             )
+            // The rebuilt slot serves the SAME bytes: carry the published
+            // hash (the startup self-test retirement record keys on it — nil
+            // here would record the "" sentinel and refuse every same-id
+            // build until restart) and the cold load's stage report.
+            modelSlots[modelId]?.loadStages = slot.loadStages
             if rebuiltSizing.auxiliaryWeightBytes != slot.sizing.auxiliaryWeightBytes {
                 // The assistant bytes just left residency. Publish the new
                 // target-only posture and recompute every live grant while the

@@ -137,7 +137,7 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.refreshNetworkTotals(window)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network totals are not available yet"))
+		writeRefreshUnavailable(w, "network totals are not available yet")
 		return
 	}
 	writeCachedJSON(w, body)

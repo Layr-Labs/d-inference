@@ -102,7 +102,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.refreshStats(context.Background())
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network stats are not available yet"))
+		writeRefreshUnavailable(w, "network stats are not available yet")
 		return
 	}
 	writeCachedJSON(w, body)

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -446,6 +447,28 @@ func TestStatsRefreshRecoversBuildPanic(t *testing.T) {
 	}
 	if code, _ := getNetworkTotals(t, srv, "24h"); code != http.StatusOK {
 		t.Fatalf("totals after recovery = %d, want 200", code)
+	}
+}
+
+// A cold miss whose refresh fails is a 503 that cannot succeed again inside
+// the failure hold, so it carries Retry-After = the hold, on both endpoints.
+func TestStatsUnavailableCarriesRetryAfter(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 1)
+	st.failAnalytics.Store(true)
+	st.failTotals.Store(true)
+
+	want := strconv.Itoa(int(refreshFailureHold / time.Second))
+	for _, path := range []string{"/v1/stats", "/v1/network/totals?window=24h"} {
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status %d, want 503", path, rr.Code)
+		}
+		if got := rr.Header().Get("Retry-After"); got != want {
+			t.Fatalf("%s: Retry-After = %q, want %q", path, got, want)
+		}
 	}
 }
 

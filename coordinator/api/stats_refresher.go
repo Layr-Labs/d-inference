@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -214,6 +216,15 @@ func (s *Server) refreshStatsCaches(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+}
+
+// writeRefreshUnavailable answers a cold miss whose refresh failed. The
+// flight holds that failure for refreshFailureHold, so no retry inside it
+// can succeed: say so with Retry-After (whole seconds, as the header
+// requires) instead of leaving clients to poll a fixed 503.
+func writeRefreshUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(refreshFailureHold/time.Second)))
+	writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", msg))
 }
 
 func (s *Server) warnRefreshFailed(ctx context.Context, key string, err error) {

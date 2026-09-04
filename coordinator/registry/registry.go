@@ -889,9 +889,12 @@ type Provider struct {
 	// distinguish "never enrolled" from "enrolled but unresponsive".
 	MDMFailureReason string
 
-	Status           ProviderStatus
-	Conn             *websocket.Conn
-	writer           *providerWriter
+	Status ProviderStatus
+	Conn   *websocket.Conn
+	writer *providerWriter
+	// link holds the inbound half of this connection's link counters; the
+	// outbound half lives on writer. See link_stats.go.
+	link             linkCounters
 	LastHeartbeat    time.Time
 	Stats            protocol.HeartbeatStats // lifetime counters shown to users
 	lastSessionStats protocol.HeartbeatStats // raw counters from the current provider process
@@ -2441,6 +2444,10 @@ type Registry struct {
 	// reset every session-keyed breaker before it could trip).
 	faultKeyBySession map[string]string
 
+	// linkTotals accumulates per-connection teardown events (dropped
+	// fire-and-forget frames, write timeouts) registry-wide; see link_stats.go.
+	linkTotals linkTotals
+
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
 	// transient coordinator stall (which ages many LastHeartbeat values at once)
@@ -3950,7 +3957,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		TemplateHashes:              CloneStringMap(msg.TemplateHashes),
 		Status:                      StatusOnline,
 		Conn:                        conn,
-		writer:                      newProviderWriter(conn),
+		writer:                      newProviderWriterWithTotals(conn, &r.linkTotals),
 		LastHeartbeat:               time.Now(),
 		Reputation:                  NewReputation(),
 		pendingReqs:                 make(map[string]*PendingRequest),

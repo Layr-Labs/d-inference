@@ -3102,11 +3102,13 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	linkMetrics := newLinkMetricsEmitter()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			linkMetrics.emit(s)
 			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
 			// APNs code-identity coverage — watch this climb during the grace
 			// window before letting APNS_ENFORCE_AFTER pass.

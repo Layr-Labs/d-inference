@@ -162,20 +162,52 @@ const maxProviderVersionLength = 128
 //   - "ws_close_<code>" — the peer sent a WebSocket close frame (1000 = normal
 //     shutdown, 1001 = going away, 1006/close codes from intermediaries, ...);
 //   - "read_error"      — the socket died without a close frame (TCP reset,
-//     NAT/LB teardown, machine went to sleep mid-write).
+//     NAT/LB teardown, machine went to sleep mid-write);
+//   - "read_error_control_frame" — nhooyr failed while handling a peer
+//     control frame (see readErrorDisconnectReason).
+//
+// readReason is the frame-less classification from readErrorDisconnectReason
+// and is used only when neither stronger signal applies.
 //
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool) string {
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
 	default:
-		return "read_error"
+		return readReason
 	}
+}
+
+const (
+	readErrorReasonGeneric      = "read_error"
+	readErrorReasonControlFrame = "read_error_control_frame"
+)
+
+// readErrorDisconnectReason classifies a frame-less provider Read failure
+// into a fixed two-value vocabulary shared by the ws_disconnects metric, the
+// telemetry event, and the provider_sessions disconnect_reason column.
+//
+// nhooyr answers peer pings on its READ goroutine, with a 5s budget to take
+// the connection's per-frame write lock and put the pong on the wire. When
+// that fails, the library fails the Read with "failed to handle control frame
+// opPing: failed to write control frame opPong: failed to acquire lock: ..."
+// — the peer was alive (it just pinged us), so this is a coordinator-side
+// write stall, not a network drop, and must not be counted with real drops
+// (registry.TestUnfragmentedConnWriteStallsPeerPing reproduces the chain; the
+// fragmented data-lane writer is what keeps it from happening). The same
+// prefix covers any other control-frame handling failure (e.g. a malformed
+// control frame); close frames are never wrapped this way (they surface as a
+// CloseError on the peer_close branch).
+func readErrorDisconnectReason(err error) string {
+	if err != nil && strings.Contains(err.Error(), "failed to handle control frame") {
+		return readErrorReasonControlFrame
+	}
+	return readErrorReasonGeneric
 }
 
 // closeSessionWithReason closes this connection's provider_sessions row with a
@@ -231,6 +263,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		if err != nil {
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
+			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
@@ -247,20 +280,23 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"code:" + strconv.Itoa(int(closeStatus)),
 				})
 			} else {
-				s.logger.Error("provider websocket read error", "provider_id", providerID, "error", err)
+				readReason = readErrorDisconnectReason(err)
+				s.logger.Error("provider websocket read error",
+					"provider_id", providerID, "error", err, "reason", readReason)
 				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
 					"provider websocket read error",
 					map[string]any{
 						"provider_id": providerID,
 						"ws_state":    "read_error",
+						"reason":      readReason,
 						"last_error":  err.Error(),
 					})
 				if s.metrics != nil {
 					s.metrics.IncCounter("ws_disconnects_total",
-						MetricLabel{"reason", "read_error"},
+						MetricLabel{"reason", readReason},
 					)
 				}
-				s.ddIncr("ws.disconnects", []string{"reason:read_error"})
+				s.ddIncr("ws.disconnects", []string{"reason:" + readReason})
 
 				// An abrupt read_error under high last-known memory pressure with
 				// active inference is very likely a jetsam OOM (the kill leaves no
@@ -317,7 +353,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected))
+				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
 			}
 			return
 		}
@@ -329,6 +365,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
 			continue
 		}
+		// Link accounting (frames/bytes by kind) — atomics only, no lock.
+		// Nil-safe: frames before registration are simply not counted.
+		provider.RecordInboundFrame(msg.Type, len(data))
 
 		switch msg.Type {
 		case protocol.TypeRegister:
@@ -359,6 +398,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			provider = s.registry.Register(providerID, conn, regMsg)
+			// The register frame itself arrived before the provider existed
+			// to account it; book it now so the connection's inbound totals
+			// include their first (and largest control) frame.
+			provider.RecordInboundFrame(protocol.TypeRegister, len(data))
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 

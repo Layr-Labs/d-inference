@@ -11,19 +11,48 @@ import (
 )
 
 const (
-	providerWriteQueueSize        = 128
-	providerControlQueueSize      = 64
+	providerWriteQueueSize = 128
+	// providerControlQueueSize bounds the priority lane. Its frames are tiny
+	// (cancel / challenge / status, ~100 B) so the cost of depth is nil, while a
+	// full lane rejects a cancel — the one loss path on the coordinator side of
+	// cancel delivery (provider.enqueue_failed{msg:cancel} then the blocking
+	// fallback in api.sendProviderCancel).
+	providerControlQueueSize      = 256
 	providerWriteMinTimeout       = 5 * time.Second
 	providerWriteMaxTimeout       = 30 * time.Second
 	providerWriteBytesPerSecond   = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
 	providerControlWriteTimeout   = 5 * time.Second
 	providerWriteWatchdogInterval = 250 * time.Millisecond
 	providerWriteDrainErrorString = "provider websocket writer stopped"
+	// providerWriteFragmentBytes is the payload size above which a data-lane
+	// message is written as multiple WebSocket fragments instead of one frame.
+	//
+	// nhooyr holds the connection's frame mutex for the whole of a single-frame
+	// write, and it answers the peer's pings from inside the read loop through
+	// that same mutex with a fixed 5s budget. A multi-MiB sealed vision request
+	// on a slow provider downlink therefore starved the pong for longer than 5s,
+	// the library treated that as a fatal read error, and every in-flight
+	// request on the connection was 502'd. Fragmenting releases the mutex
+	// between fragments so control frames interleave (RFC 6455 §5.4 permits
+	// control frames between fragments). Reassembly is transparent to the
+	// provider: Network.framework delivers one complete message.
+	providerWriteFragmentBytes = 64 << 10
 )
 
 var errProviderWriterStopped = errors.New(providerWriteDrainErrorString)
 var errProviderWriterQueueFull = errors.New("provider websocket writer queue full")
 var errProviderWriteTimeout = errors.New("provider websocket write timeout")
+
+// Exported forms of the writer's sentinel errors so callers can classify a
+// best-effort control-frame failure with errors.Is: ErrProviderWriterQueueFull
+// is returned by the non-blocking send paths (EnqueueText, WriteText,
+// WriteTextControl) when the target lane has no free slot, so a caller can
+// choose a fallback instead of dropping the frame; ErrProviderWriterStopped
+// means the writer (and its socket) is gone.
+var (
+	ErrProviderWriterQueueFull = errProviderWriterQueueFull
+	ErrProviderWriterStopped   = errProviderWriterStopped
+)
 
 // TextFrameWriteMetadata describes the writer-owned handoff of a deferred
 // frame. The caller receives it synchronously and remains the sole owner of any
@@ -49,6 +78,9 @@ type providerWriteRequest struct {
 	done       chan error
 	handoff    chan TextFrameWriteMetadata
 	handoffAck chan struct{}
+	// control records which lane the request was submitted on, for link
+	// accounting only; lane membership itself is decided by the channel.
+	control bool
 	// 0 queued, 1 canceled, 2 building, 3 awaiting owner ack, 4 writing,
 	// 5 write completed.
 	state atomic.Int32
@@ -96,6 +128,15 @@ type providerWriter struct {
 	// the generic connection-closed error.
 	writeTimedOut atomic.Bool
 
+	// link holds the outbound half of this connection's link counters
+	// (frames/bytes per lane, queue-full rejections, timeouts, drops). The
+	// inbound half lives on the owning Provider; see link_stats.go.
+	link linkCounters
+	// totals, when set, receives the teardown-time events (drops, timeouts)
+	// that the per-connection counters cannot surface once the connection
+	// has left the registry. Nil in tests that construct writers directly.
+	totals *linkTotals
+
 	// timeoutFor overrides the per-frame write timeout in tests. Nil means
 	// the default providerWriteTimeout schedule.
 	timeoutFor func(frameBytes int) time.Duration
@@ -107,6 +148,10 @@ type providerWriter struct {
 }
 
 func newProviderWriter(conn *websocket.Conn) *providerWriter {
+	return newProviderWriterWithTotals(conn, nil)
+}
+
+func newProviderWriterWithTotals(conn *websocket.Conn, totals *linkTotals) *providerWriter {
 	if conn == nil {
 		return nil
 	}
@@ -116,6 +161,7 @@ func newProviderWriter(conn *websocket.Conn) *providerWriter {
 		control: make(chan *providerWriteRequest, providerControlQueueSize),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
+		totals:  totals,
 	}
 	go w.run()
 	return w
@@ -138,7 +184,40 @@ func (w *providerWriter) submit(lane chan *providerWriteRequest, req *providerWr
 		return errProviderWriterStopped
 	default:
 		w.acceptMu.Unlock()
+		if lane == w.control {
+			w.link.controlQueueFull.Add(1)
+		} else {
+			w.link.dataQueueFull.Add(1)
+		}
 		return errProviderWriterQueueFull
+	}
+}
+
+// submitBlocking is submit for callers that would rather wait for a slot than
+// be rejected. It blocks until the lane accepts the request, ctx expires, or
+// the writer stops. acceptMu is NOT held while waiting so closeNow can still
+// mark the writer dead; the post-wait dead check keeps the "never enqueue on a
+// dead writer" invariant that submit enforces under the mutex.
+func (w *providerWriter) submitBlocking(ctx context.Context, lane chan *providerWriteRequest, req *providerWriteRequest) error {
+	if lane == nil {
+		return errProviderWriterQueueFull
+	}
+	if w.dead.Load() {
+		return errProviderWriterStopped
+	}
+	select {
+	case lane <- req:
+		if w.dead.Load() {
+			// The writer died while we were enqueuing; run's drain will publish
+			// errProviderWriterStopped on req.done if anyone is waiting. Report
+			// it here too so fire-and-forget callers learn the frame is lost.
+			return errProviderWriterStopped
+		}
+		return nil
+	case <-w.done:
+		return errProviderWriterStopped
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -202,6 +281,7 @@ func (w *providerWriter) writeRequest(
 	}
 	req.ctx = ctx
 	req.done = make(chan error, 1)
+	req.control = control
 	if req.builder != nil {
 		req.handoff = make(chan TextFrameWriteMetadata, 1)
 		req.handoffAck = make(chan struct{})
@@ -339,10 +419,36 @@ func (w *providerWriter) enqueue(ctx context.Context, data []byte) error {
 		return err
 	}
 	req := &providerWriteRequest{
-		ctx:  context.Background(),
-		data: append([]byte(nil), data...),
+		ctx:     context.Background(),
+		data:    append([]byte(nil), data...),
+		control: true,
 	}
 	return w.submit(w.control, req)
+}
+
+// enqueueOrWait is enqueue with a blocking fallback: when the control lane is
+// full it waits (bounded by ctx) for a slot instead of rejecting the frame.
+// Reports whether the fallback path was taken.
+func (w *providerWriter) enqueueOrWait(ctx context.Context, data []byte) (fellBack bool, err error) {
+	ctx, err = w.checkAccept(ctx)
+	if err != nil {
+		return false, err
+	}
+	req := &providerWriteRequest{
+		ctx:     context.Background(),
+		data:    append([]byte(nil), data...),
+		control: true,
+	}
+	if err := w.submit(w.control, req); err != errProviderWriterQueueFull {
+		return false, err
+	}
+	if err := w.submitBlocking(ctx, w.control, req); err != nil {
+		return true, err
+	}
+	// Counted only once the frame actually landed on the lane; a fallback
+	// that timed out is a drop, not a delivery.
+	w.link.controlFallbacks.Add(1)
+	return true, nil
 }
 
 func (w *providerWriter) closeNow() {
@@ -364,6 +470,12 @@ func (w *providerWriter) closeNow() {
 func (w *providerWriter) run() {
 	defer w.dead.Store(true)
 	defer close(w.done)
+	// Every exit path drains both lanes so queued owners are answered and
+	// fire-and-forget frames are counted; the stop path drains explicitly
+	// too, which is harmless on empty lanes. The writer is already dead
+	// (closeNow) on every path that returns from serve, so no submit can
+	// slip in behind the drain.
+	defer w.drainAll(errProviderWriterStopped)
 	watchdogStop := make(chan struct{})
 	go w.watchWrites(watchdogStop)
 	defer close(watchdogStop)
@@ -492,6 +604,16 @@ func (w *providerWriter) serve(req *providerWriteRequest) bool {
 		}
 		return false
 	}
+	if req.control {
+		w.link.controlFramesOut.Add(1)
+		w.link.controlBytesOut.Add(uint64(len(data)))
+	} else {
+		w.link.dataFramesOut.Add(1)
+		w.link.dataBytesOut.Add(uint64(len(data)))
+		if len(data) > providerWriteFragmentBytes {
+			w.link.fragmentedFramesOut.Add(1)
+		}
+	}
 	if w.afterWriteCompleteForTest != nil {
 		w.afterWriteCompleteForTest()
 	}
@@ -512,6 +634,15 @@ func (w *providerWriter) drainLane(lane chan *providerWriteRequest, err error) {
 		case req := <-lane:
 			if req.done != nil {
 				req.done <- err
+			} else {
+				// Fire-and-forget frame with no owner to notify: count it so a
+				// dropped cancel/trust_status is at least visible in metrics —
+				// on the connection AND registry-wide, because this runs at
+				// teardown after the connection has left the live map.
+				w.link.droppedOnClose.Add(1)
+				if w.totals != nil {
+					w.totals.droppedOnClose.Add(1)
+				}
 			}
 		default:
 			return
@@ -557,12 +688,53 @@ func (w *providerWriter) writeFrame(data []byte) error {
 		timeout = w.timeoutFor(len(data))
 	}
 	w.writeDeadline.Store(time.Now().Add(timeout).UnixNano())
-	err := w.conn.Write(context.Background(), websocket.MessageText, data)
+	var err error
+	if len(data) > providerWriteFragmentBytes {
+		err = writeFragmented(w.conn, data, providerWriteFragmentBytes)
+	} else {
+		err = w.conn.Write(context.Background(), websocket.MessageText, data)
+	}
 	w.writeDeadline.Store(0)
 	if err != nil && w.writeTimedOut.Load() {
+		w.link.writeTimeouts.Add(1)
+		if w.totals != nil {
+			w.totals.writeTimeouts.Add(1)
+		}
 		return errProviderWriteTimeout
 	}
 	return err
+}
+
+// writeFragmented writes one text message as a sequence of WebSocket
+// fragments of at most fragmentBytes each. nhooyr emits one frame per Write
+// call on a message writer (first frame text, the rest continuation) and a
+// final empty FIN frame on Close, releasing the connection's frame mutex
+// between calls so interleaved control frames (pongs, close) get through.
+func writeFragmented(conn *websocket.Conn, data []byte, fragmentBytes int) error {
+	if fragmentBytes <= 0 {
+		fragmentBytes = providerWriteFragmentBytes
+	}
+	wr, err := conn.Writer(context.Background(), websocket.MessageText)
+	if err != nil {
+		return err
+	}
+	for off := 0; off < len(data); off += fragmentBytes {
+		end := off + fragmentBytes
+		if end > len(data) {
+			end = len(data)
+		}
+		if _, err := wr.Write(data[off:end]); err != nil {
+			// nhooyr releases the message writer's mutex only on a
+			// successful FIN write; after a mid-message failure Close fails
+			// again and the mutex stays held, so this connection can never
+			// carry another message. That is fine ONLY because serve()
+			// closes the writer (and the socket) on any write error — do not
+			// retry a failed frame on the same connection.
+			_ = wr.Close()
+			return err
+		}
+	}
+	return wr.Close()
 }
 
 func providerWriteTimeout(frameBytes int) time.Duration {
@@ -659,6 +831,25 @@ func (p *Provider) EnqueueText(ctx context.Context, data []byte) error {
 	return w.enqueue(ctx, data)
 }
 
+// EnqueueControlOrWait is EnqueueText with a blocking fallback. When the
+// control lane has a free slot it behaves exactly like EnqueueText (queued,
+// returns immediately). When the lane is full it waits — bounded by ctx — for
+// a slot rather than rejecting the frame, so a burst of control traffic
+// degrades to latency instead of a silently dropped cancel. fellBack reports
+// whether the blocking path was taken so callers can meter it.
+func (p *Provider) EnqueueControlOrWait(ctx context.Context, data []byte) (fellBack bool, err error) {
+	if p == nil {
+		return false, errors.New("provider is nil")
+	}
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	if w == nil {
+		return false, errProviderWriterStopped
+	}
+	return w.enqueueOrWait(ctx, data)
+}
+
 func (p *Provider) closeWriterNow() {
 	if p == nil {
 		return
@@ -667,7 +858,34 @@ func (p *Provider) closeWriterNow() {
 	w := p.writer
 	p.writer = nil
 	p.mu.Unlock()
-	if w != nil {
-		w.closeNow()
+	if w == nil {
+		return
 	}
+	w.closeNow()
+	// Freeze the outbound counters on the provider so LinkStats keeps
+	// reporting this connection's totals after the writer is gone. The
+	// metrics emitter diffs per-connection totals; a provider caught between
+	// "still in the registry map" and "writer detached" must not read back
+	// as zero and produce a wrapped-around negative delta. Frozen AFTER
+	// closeNow so the in-flight frame's completion is included; the drain
+	// that follows on the writer goroutine reports its drops through
+	// linkTotals instead (see drainLane).
+	var final LinkStatsSnapshot
+	w.fillLinkStats(&final)
+	final.DataQueueDepth, final.ControlQueueDepth = 0, 0
+	p.mu.Lock()
+	p.link.finalOutbound = &final
+	p.mu.Unlock()
+}
+
+// WriteInFlight reports whether the writer goroutine is currently inside a
+// socket write (a data or control frame is being pushed to the kernel).
+func (p *Provider) WriteInFlight() bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	w := p.writer
+	p.mu.Unlock()
+	return w != nil && w.writeDeadline.Load() != 0
 }

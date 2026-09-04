@@ -36,6 +36,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 
@@ -193,11 +194,17 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 }
 
 // sendProviderCancel sends a Cancel message for the given request to the
-// provider with a bounded timeout so a half-dead WebSocket doesn't hang the
-// caller. Errors are logged at debug level because a disconnect race is the
-// expected case — the provider may already be gone.
+// provider. The fast path is a non-blocking enqueue on the writer's control
+// lane; a writer that is already gone is logged at debug level because a
+// disconnect race is the expected case — the provider may already be gone.
+// A FULL control lane takes a bounded blocking fallback instead of dropping
+// the cancel (see below).
 func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) {
 	if provider == nil || provider.Conn == nil {
+		return
+	}
+	if len(requestID) > maxCancelRequestIDLen {
+		s.ddIncr("provider.cancel_dropped", []string{"reason:oversized_id"})
 		return
 	}
 	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
@@ -206,13 +213,50 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 		s.logger.Error("failed to marshal cancel message", "request_id", requestID, "error", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
-	defer cancel()
-	if err := provider.EnqueueText(ctx, cancelData); err != nil {
+	// EnqueueText never blocks and never waits on ctx (the writer only reads
+	// ctx.Err() at accept), so there is nothing for a timeout to bound here.
+	err = provider.EnqueueText(context.Background(), cancelData)
+	if err == nil {
+		return
+	}
+	if !errors.Is(err, registry.ErrProviderWriterQueueFull) {
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
+		return
 	}
+	// The control lane is full: the writer is wedged behind a slow data write
+	// and providerControlQueueSize control frames are already waiting.
+	// Dropping the cancel here (the old behavior) left the provider decoding
+	// into a stream nobody reads, burning GPU and token-budget admission until
+	// the generation ran out on its own. Retry with a bounded wait, off the
+	// caller's goroutine so neither an HTTP handler nor the provider read loop
+	// stalls behind it.
+	//
+	// Bounded per connection: a provider that stops draining while emitting
+	// chunks for unique unknown request IDs would otherwise park one goroutine
+	// per cancel for the fallback timeout each. Past the cap the cancel is
+	// dropped and counted; the provider is misbehaving in that case anyway.
+	s.ddIncr("provider.enqueue_failed", []string{"msg:cancel"})
+	if !provider.TryAcquireControlFallback() {
+		s.ddIncr("provider.cancel_dropped", []string{"reason:fallback_cap"})
+		return
+	}
+	saferun.Go(s.logger, "provider.cancelFallback", func() {
+		defer provider.ReleaseControlFallback()
+		ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
+		defer cancel()
+		if _, err := provider.EnqueueControlOrWait(ctx, cancelData); err != nil {
+			s.ddIncr("provider.cancel_dropped", []string{"reason:fallback_timeout"})
+			s.logger.Warn("cancel dropped after control-lane fallback",
+				"request_id", requestID, "error", err)
+		}
+	})
 }
+
+// maxCancelRequestIDLen bounds the request_id echoed back in a cancel. Real
+// request IDs are UUIDs; a provider-controlled unknown-request ID (the zombie
+// path) must not be able to turn every cancel into an oversized frame.
+const maxCancelRequestIDLen = 256
 
 func writeProviderInferenceRequestDeferred(
 	ctx context.Context,

@@ -14,7 +14,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func testWebSocketPair(t *testing.T) (*websocket.Conn, *websocket.Conn) {
+func testWebSocketPair(t testing.TB) (*websocket.Conn, *websocket.Conn) {
 	t.Helper()
 	serverConnCh := make(chan *websocket.Conn, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -106,4 +107,40 @@ func TestRecoverNilLogger(t *testing.T) {
 		defer Recover(nil, "test-nil")
 		panic("should be swallowed")
 	}()
+}
+
+// Report logs a value the caller recovered itself, so callers that need the
+// panic as a return value get the same log line and observer notification.
+func TestReportLogsRecoveredValue(t *testing.T) {
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, nil))
+	var observed atomic.Int32
+	SetPanicObserver(func(string) { observed.Add(1) })
+	defer SetPanicObserver(nil)
+
+	var got any
+	func() {
+		defer func() {
+			got = recover()
+			Report(logger, "test-report", got)
+		}()
+		panic("kaboom")
+	}()
+	if got != "kaboom" {
+		t.Fatalf("recovered %v, want kaboom", got)
+	}
+	logged := buf.String()
+	for _, want := range []string{"panic in goroutine", "goroutine=test-report", "kaboom", "stack="} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log missing %q: %s", want, logged)
+		}
+	}
+	if observed.Load() != 1 {
+		t.Fatalf("observer calls = %d, want 1", observed.Load())
+	}
+
+	Report(logger, "test-nil", nil)
+	if strings.Count(buf.String(), "panic in goroutine") != 1 || observed.Load() != 1 {
+		t.Fatalf("Report(nil) logged or observed: %s", buf.String())
+	}
 }

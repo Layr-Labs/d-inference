@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,8 @@ type gatedAnalyticsStore struct {
 	totalsCalls    atomic.Int64
 	failAnalytics  atomic.Bool
 	failTotals     atomic.Bool
+	panicAnalytics atomic.Bool // the read panics (a latent nil-map/row-shape bug)
+	panicTotals    atomic.Bool
 
 	mu      sync.Mutex
 	hold    chan struct{} // when non-nil, analytics calls block until it is closed
@@ -64,6 +67,9 @@ func (g *gatedAnalyticsStore) arm() (release func()) {
 
 func (g *gatedAnalyticsStore) UsageAnalyticsSince(ctx context.Context, since time.Time, locs map[string]*store.ProviderLocation) (store.UsageAnalytics, error) {
 	g.analyticsCalls.Add(1)
+	if g.panicAnalytics.Load() {
+		panic("boom: analytics row shape")
+	}
 	if g.failAnalytics.Load() {
 		return store.UsageAnalytics{}, context.DeadlineExceeded
 	}
@@ -79,6 +85,9 @@ func (g *gatedAnalyticsStore) UsageAnalyticsSince(ctx context.Context, since tim
 
 func (g *gatedAnalyticsStore) NetworkTotals(since time.Time) (store.NetworkTotalsRow, error) {
 	g.totalsCalls.Add(1)
+	if g.panicTotals.Load() {
+		panic("boom: totals scan")
+	}
 	if g.failTotals.Load() {
 		return store.NetworkTotalsRow{}, context.DeadlineExceeded
 	}
@@ -101,7 +110,14 @@ func (k *keyedFlights) expireFailureHoldForTest() {
 
 func newRefresherTestServer(t *testing.T, inner store.Store) (*Server, *gatedAnalyticsStore) {
 	t.Helper()
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return newRefresherTestServerLogging(t, inner, io.Discard)
+}
+
+// newRefresherTestServerLogging is newRefresherTestServer with the server's
+// log output directed at w (slog handlers serialize their writes).
+func newRefresherTestServerLogging(t *testing.T, inner store.Store, w io.Writer) (*Server, *gatedAnalyticsStore) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(w, nil))
 	st := newGatedAnalyticsStore(inner)
 	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
 	return srv, st
@@ -370,6 +386,66 @@ func TestStatsFailureHoldStopsPipelineStacking(t *testing.T) {
 	}
 	if got := st.analyticsCalls.Load(); got != 2 {
 		t.Fatalf("analytics executions after hold expiry = %d, want 2", got)
+	}
+}
+
+// A panic inside a build is contained by the refresh: it becomes that key's
+// failure (previous body kept, failure hold set, cold requests inside the
+// hold share the 503 without re-running the build), the flight is released
+// for the next run, and it is logged like every other background panic.
+// Before this fix the tick took the process down — and re-fired at boot.
+func TestStatsRefreshRecoversBuildPanic(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	var logs bytes.Buffer
+	srv, st := newRefresherTestServerLogging(t, mem, &logs)
+	seedUsage(mem, 3)
+	srv.refreshStatsCaches(context.Background())
+	_, statsBefore := getStats(t, srv)
+	_, totalsBefore := getNetworkTotals(t, srv, "24h")
+
+	st.panicAnalytics.Store(true)
+	st.panicTotals.Store(true)
+	calls := st.analyticsCalls.Load()
+	srv.refreshStatsCaches(context.Background()) // returns instead of crashing
+	if got := st.analyticsCalls.Load(); got != calls+1 {
+		t.Fatalf("analytics calls after the panicking tick = %d, want %d", got, calls+1)
+	}
+	if code, body := getStats(t, srv); code != http.StatusOK || !bytes.Equal(body, statsBefore) {
+		t.Fatalf("stats after a panicking refresh: status %d, previous body kept=%v", code, bytes.Equal(body, statsBefore))
+	}
+	if code, body := getNetworkTotals(t, srv, "24h"); code != http.StatusOK || !bytes.Equal(body, totalsBefore) {
+		t.Fatalf("totals after a panicking refresh: status %d, previous body kept=%v", code, bytes.Equal(body, totalsBefore))
+	}
+	logged := logs.String()
+	for _, want := range []string{"panic in goroutine", "goroutine=stats_refresher.stats:v1", "goroutine=stats_refresher.network_totals:24h", "boom: analytics row shape", "boom: totals scan", "stack="} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log missing %q:\n%s", want, logged)
+		}
+	}
+
+	// The panic set the failure hold: cold misses inside it share the error
+	// and do not re-run the (still panicking) build.
+	srv.readCache.expireAllForTest()
+	codes, _ := concurrentStats(t, srv, 50)
+	for i, code := range codes {
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("cold stats request %d inside the hold = %d, want 503", i, code)
+		}
+	}
+	if got := st.analyticsCalls.Load(); got != calls+1 {
+		t.Fatalf("analytics calls after 50 cold misses inside the hold = %d, want %d", got, calls+1)
+	}
+
+	// The flight was released: once the hold expires and the bug is gone,
+	// the next request recomputes.
+	st.panicAnalytics.Store(false)
+	st.panicTotals.Store(false)
+	srv.refreshFlights.expireFailureHoldForTest()
+	if code, _ := getStats(t, srv); code != http.StatusOK {
+		t.Fatalf("stats after recovery = %d, want 200", code)
+	}
+	if code, _ := getNetworkTotals(t, srv, "24h"); code != http.StatusOK {
+		t.Fatalf("totals after recovery = %d, want 200", code)
 	}
 }
 

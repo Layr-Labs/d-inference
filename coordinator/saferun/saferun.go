@@ -30,7 +30,15 @@ func Go(logger *slog.Logger, name string, fn func()) {
 // Prometheus counter without taking a metrics import in this package —
 // import direction must stay one-way).
 func Recover(logger *slog.Logger, name string) {
-	r := recover()
+	Report(logger, name, recover())
+}
+
+// Report logs an already-recovered panic value exactly as Recover does and
+// notifies the observer. For code that must both contain a panic and turn
+// it into a return value (recover only works in the deferred function
+// itself, so Recover cannot hand the value back): call recover() in your
+// own deferred func, then Report the result. No-op when r is nil.
+func Report(logger *slog.Logger, name string, r any) {
 	if r == nil {
 		return
 	}

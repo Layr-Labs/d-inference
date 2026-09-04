@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 // The stats refresher owns the readCache entries behind the public
@@ -224,12 +227,14 @@ func (s *Server) warnRefreshFailed(ctx context.Context, key string, err error) {
 // it on success. Returns the body that callers on the cold path should serve.
 func (s *Server) refreshStats(ctx context.Context) ([]byte, error) {
 	return s.refreshFlights.get(statsCacheKey).do(func() ([]byte, error) {
-		body, err := s.buildStatsBody(ctx)
-		if err != nil {
-			return nil, err
-		}
-		s.readCacheSet(statsCacheKey, body, statsCacheTTL)
-		return body, nil
+		return s.buildRecovered(statsCacheKey, func() ([]byte, error) {
+			body, err := s.buildStatsBody(ctx)
+			if err != nil {
+				return nil, err
+			}
+			s.readCacheSet(statsCacheKey, body, statsCacheTTL)
+			return body, nil
+		})
 	})
 }
 
@@ -239,11 +244,33 @@ func (s *Server) refreshStats(ctx context.Context) ([]byte, error) {
 func (s *Server) refreshNetworkTotals(window string) ([]byte, error) {
 	key := networkTotalsCacheKey(window)
 	return s.refreshFlights.get(key).do(func() ([]byte, error) {
-		body, err := s.buildNetworkTotalsBody(window)
-		if err != nil {
-			return nil, err
-		}
-		s.readCacheSet(key, body, statsCacheTTL)
-		return body, nil
+		return s.buildRecovered(key, func() ([]byte, error) {
+			body, err := s.buildNetworkTotalsBody(window)
+			if err != nil {
+				return nil, err
+			}
+			s.readCacheSet(key, body, statsCacheTTL)
+			return body, nil
+		})
 	})
+}
+
+// buildRecovered runs one key's build and turns a panic into that key's
+// error. The builds used to run only inside HTTP handlers, where
+// recoverMiddleware made a panic one logged 500; on the refresher they run
+// in background goroutines every tick, and the boot refresh re-runs them on
+// every restart, so an unrecovered panic would crash-loop the coordinator
+// and disconnect the fleet. Converting inside the flight's fn (not at the
+// goroutine) keeps the flight's contract: the previous body stays, the
+// failure hold is set, and waiters share the error instead of re-running
+// the panicking build themselves. Logged like every other background panic
+// (saferun: stack trace plus the panic counter).
+func (s *Server) buildRecovered(key string, build func() ([]byte, error)) (body []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			saferun.Report(s.logger, "stats_refresher."+key, r)
+			body, err = nil, fmt.Errorf("stats refresh %s: panic: %v", key, r)
+		}
+	}()
+	return build()
 }

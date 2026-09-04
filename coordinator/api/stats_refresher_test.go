@@ -501,6 +501,33 @@ func TestNetworkTotalsAliasWindowsHitWarmKeys(t *testing.T) {
 	}
 }
 
+// The flight's stale-miss window: a cold caller whose cache lookup missed
+// just before a run's Set but whose generation sample came just after it
+// passes the generation check. Re-doing the lookup under the mutex shares
+// the stored body instead of running a second pipeline; the timer path
+// (nil lookup) always recomputes; a genuine miss runs.
+func TestRefreshFlightServesBodyStoredDuringStaleMiss(t *testing.T) {
+	var f refreshFlight
+	runs := 0
+	run := func(body string) func() ([]byte, error) {
+		return func() ([]byte, error) { runs++; return []byte(body), nil }
+	}
+	if body, err := f.do(nil, run("a")); err != nil || string(body) != "a" || runs != 1 {
+		t.Fatalf("first run: body %q err %v runs %d", body, err, runs)
+	}
+	hit := func() ([]byte, bool) { return []byte("a"), true }
+	if body, err := f.do(hit, run("b")); err != nil || string(body) != "a" || runs != 1 {
+		t.Fatalf("stale miss ran a second pipeline: body %q err %v runs %d", body, err, runs)
+	}
+	if body, err := f.do(nil, run("b")); err != nil || string(body) != "b" || runs != 2 {
+		t.Fatalf("timer path did not recompute: body %q err %v runs %d", body, err, runs)
+	}
+	miss := func() ([]byte, bool) { return nil, false }
+	if body, err := f.do(miss, run("c")); err != nil || string(body) != "c" || runs != 3 {
+		t.Fatalf("genuine miss did not run: body %q err %v runs %d", body, err, runs)
+	}
+}
+
 type stubGeoResolver struct{ loc *store.ProviderLocation }
 
 func (s stubGeoResolver) Lookup(*http.Request) *store.ProviderLocation { return s.loc }

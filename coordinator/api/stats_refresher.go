@@ -88,13 +88,26 @@ type refreshFlight struct {
 	failedAt time.Time // when err was recorded; zero after a success
 }
 
-func (f *refreshFlight) do(fn func() ([]byte, error)) ([]byte, error) {
+// do runs fn under the flight, or shares the outcome of a run that completed
+// while this caller waited. cached, when non-nil, is the caller's cache
+// lookup re-done under the mutex: a cold-path caller that missed the cache
+// just before a run's Set but sampled the generation just after it would
+// otherwise pass the generation check and run a second pipeline. The timer
+// passes nil — a tick always recomputes.
+func (f *refreshFlight) do(cached func() ([]byte, bool), fn func() ([]byte, error)) ([]byte, error) {
 	seen := f.gen.Load()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.gen.Load() != seen {
 		// A refresh completed while this caller waited for the lock: share it.
 		return f.body, f.err
+	}
+	if cached != nil {
+		if body, ok := cached(); ok {
+			// The caller's miss was stale: a run stored this body between
+			// its lookup and its generation sample. Share it.
+			return body, nil
+		}
 	}
 	if f.err != nil && time.Since(f.failedAt) < refreshFailureHold {
 		// The last run failed moments ago: do not stack another pipeline on
@@ -235,9 +248,19 @@ func (s *Server) warnRefreshFailed(ctx context.Context, key string, err error) {
 }
 
 // refreshStats recomputes the /v1/stats body through its flight and stores
-// it on success. Returns the body that callers on the cold path should serve.
+// it on success (the timer path: always recomputes).
 func (s *Server) refreshStats(ctx context.Context) ([]byte, error) {
-	return s.refreshFlights.get(statsCacheKey).do(func() ([]byte, error) {
+	return s.refreshStatsWith(ctx, nil)
+}
+
+// statsOnMiss is the cold path for a handler that missed the cache: it
+// shares a body another caller stored meanwhile, or recomputes.
+func (s *Server) statsOnMiss(ctx context.Context) ([]byte, error) {
+	return s.refreshStatsWith(ctx, func() ([]byte, bool) { return s.readCacheGet(statsCacheKey) })
+}
+
+func (s *Server) refreshStatsWith(ctx context.Context, cached func() ([]byte, bool)) ([]byte, error) {
+	return s.refreshFlights.get(statsCacheKey).do(cached, func() ([]byte, error) {
 		return s.buildRecovered(statsCacheKey, func() ([]byte, error) {
 			body, err := s.buildStatsBody(ctx)
 			if err != nil {
@@ -251,10 +274,20 @@ func (s *Server) refreshStats(ctx context.Context) ([]byte, error) {
 
 // refreshNetworkTotals recomputes one /v1/network/totals window through its
 // own flight (each window is an independent, slow statement) and stores it
-// on success.
+// on success (the timer path: always recomputes).
 func (s *Server) refreshNetworkTotals(window string) ([]byte, error) {
+	return s.refreshNetworkTotalsWith(window, nil)
+}
+
+// networkTotalsOnMiss is the cold path for a handler that missed the cache.
+func (s *Server) networkTotalsOnMiss(window string) ([]byte, error) {
 	key := networkTotalsCacheKey(window)
-	return s.refreshFlights.get(key).do(func() ([]byte, error) {
+	return s.refreshNetworkTotalsWith(window, func() ([]byte, bool) { return s.readCacheGet(key) })
+}
+
+func (s *Server) refreshNetworkTotalsWith(window string, cached func() ([]byte, bool)) ([]byte, error) {
+	key := networkTotalsCacheKey(window)
+	return s.refreshFlights.get(key).do(cached, func() ([]byte, error) {
 		return s.buildRecovered(key, func() ([]byte, error) {
 			body, err := s.buildNetworkTotalsBody(window)
 			if err != nil {

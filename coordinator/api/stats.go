@@ -100,7 +100,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeCachedJSON(w, cached)
 		return
 	}
-	body, err := s.refreshStats(context.Background())
+	body, err := s.statsOnMiss(context.Background())
 	if err != nil {
 		writeRefreshUnavailable(w, "network stats are not available yet")
 		return

@@ -2008,10 +2008,11 @@ public actor EngineV2Bridge {
         var sawTerminal = false
         // Bounded stop-string replay tail (see `stopTailTokenLimit`): only
         // the last few filtered tokens are retained, never the whole
-        // output.
+        // output. No eager reserve: the limit scales with the caller's
+        // longest stop string (uncapped on the generic path), while the
+        // array itself never grows past min(limit, generated tokens).
         let stopTailLimit = Self.stopTailTokenLimit(for: stopSequences)
         var generatedTokens: [Int] = []
-        generatedTokens.reserveCapacity(stopTailLimit)
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?

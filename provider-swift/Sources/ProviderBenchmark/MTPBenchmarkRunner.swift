@@ -737,7 +737,9 @@ public enum MTPBenchmarkRunner {
               metrics.costInputs.isEmpty,
               metrics.totalRoundWallTimeNanos == nil,
               metrics.assistantTimeNanos == nil,
-              metrics.targetVerifyTimeNanos == nil
+              metrics.targetVerifyTimeNanos == nil,
+              // A round that never ran cannot have per-stage round timing.
+              metrics.roundTiming == nil
         else {
             throw MTPBenchmarkError.invalidMetrics(
                 "\(context) reported speculative work")

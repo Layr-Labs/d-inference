@@ -24,7 +24,7 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 7
+REPORT_SCHEMA_VERSION = 8
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
@@ -46,6 +46,9 @@ PERFORMANCE_KEYS = {
     "lastTokenLatencyMs",
     "ewmaRoundWallTimeNanos",
     "totalRoundWallTimeNanos",
+    # Per-stage round timing is wall-clock measurement, so it is stripped
+    # from every non-performance report exactly like the fields above it.
+    "roundTiming",
     "assistantTimeNanos",
     "targetVerifyTimeNanos",
 }

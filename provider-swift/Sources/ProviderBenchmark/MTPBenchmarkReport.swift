@@ -346,6 +346,73 @@ public struct MTPBenchmarkHardware: Codable, Sendable {
 /// Stable benchmark-side projection of the engine's lock-safe MTP metrics.
 /// Optional timing/controller fields remain nil until the production engine
 /// exposes them; the report never invents values.
+/// Per-stage HOST timing for MTP rounds, summed over the run, projected from
+/// the engine's `CBv2MTPRoundTiming`.
+///
+/// The stages are cut where the GPU's view of the round changes, because what
+/// decides whether speculation pays is not the round's wall clock but how much
+/// of it the GPU spends idle: MTP rounds never chain, so everything between
+/// the acceptance readback and the next round's submit is dead GPU time.
+///
+/// This is the column that would have caught the 20 ms-per-draft-step
+/// instrumentation tax in one look, instead of by fitting round deltas across
+/// two reports after the fact.
+public struct MTPBenchmarkRoundTiming: Codable, Sendable, Equatable {
+    public let rounds: UInt64
+    /// Previous round's finalize end to this round's submit — the dead window.
+    public let hostGapNanos: UInt64
+    public let captureNanos: UInt64
+    /// k drafter forwards, graph build only. A per-draft-step regression shows
+    /// up here first.
+    public let draftBuildNanos: UInt64
+    public let verifyBuildNanos: UInt64
+    public let submitNanos: UInt64
+    /// The blocking acceptance-packet readback: the round's GPU time as the
+    /// host sees it.
+    public let packetWaitNanos: UInt64
+    public let acceptWalkNanos: UInt64
+    public let rowFinalizeNanos: UInt64
+    /// Spread of the accounted round wall clock, so a reader can tell a
+    /// single-shape run from one that mixed prompt lengths before believing a
+    /// mean of it.
+    public let minRoundNanos: UInt64
+    public let maxRoundNanos: UInt64
+
+    public init(
+        rounds: UInt64, hostGapNanos: UInt64, captureNanos: UInt64,
+        draftBuildNanos: UInt64, verifyBuildNanos: UInt64, submitNanos: UInt64,
+        packetWaitNanos: UInt64, acceptWalkNanos: UInt64, rowFinalizeNanos: UInt64,
+        minRoundNanos: UInt64, maxRoundNanos: UInt64
+    ) {
+        self.rounds = rounds
+        self.hostGapNanos = hostGapNanos
+        self.captureNanos = captureNanos
+        self.draftBuildNanos = draftBuildNanos
+        self.verifyBuildNanos = verifyBuildNanos
+        self.submitNanos = submitNanos
+        self.packetWaitNanos = packetWaitNanos
+        self.acceptWalkNanos = acceptWalkNanos
+        self.rowFinalizeNanos = rowFinalizeNanos
+        self.minRoundNanos = minRoundNanos
+        self.maxRoundNanos = maxRoundNanos
+    }
+
+    /// Mean accounted round wall clock, milliseconds. Nil before any round.
+    public var meanRoundMs: Double? {
+        guard rounds > 0 else { return nil }
+        let wall = hostGapNanos &+ packetWaitNanos &+ acceptWalkNanos &+ rowFinalizeNanos
+        return Double(wall) / Double(rounds) / 1_000_000
+    }
+
+    /// Mean host cost per round, milliseconds — everything that is NOT waiting
+    /// on the GPU. The number a 200 tok/s target has to drive down.
+    public var meanFixedCostMs: Double? {
+        guard rounds > 0 else { return nil }
+        let fixed = hostGapNanos &+ acceptWalkNanos &+ rowFinalizeNanos
+        return Double(fixed) / Double(rounds) / 1_000_000
+    }
+}
+
 public struct MTPBenchmarkMetrics: Codable, Sendable {
     public struct CostInput: Codable, Sendable {
         public let decodeRowBucket: Int
@@ -398,6 +465,10 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     public let totalRoundWallTimeNanos: UInt64?
     public let assistantTimeNanos: UInt64?
     public let targetVerifyTimeNanos: UInt64?
+    /// Per-stage host timing for the run's MTP rounds. Nil when the engine
+    /// reported none (target-only, timing switched off) or when the report is
+    /// not performance-eligible.
+    public let roundTiming: MTPBenchmarkRoundTiming?
 
     public init(
         active: Bool,
@@ -421,7 +492,8 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
         costInputs: [CostInput] = [],
         totalRoundWallTimeNanos: UInt64? = nil,
         assistantTimeNanos: UInt64? = nil,
-        targetVerifyTimeNanos: UInt64? = nil
+        targetVerifyTimeNanos: UInt64? = nil,
+        roundTiming: MTPBenchmarkRoundTiming? = nil
     ) {
         self.active = active
         self.verificationMode = verificationMode
@@ -445,6 +517,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
         self.totalRoundWallTimeNanos = totalRoundWallTimeNanos
         self.assistantTimeNanos = assistantTimeNanos
         self.targetVerifyTimeNanos = targetVerifyTimeNanos
+        self.roundTiming = roundTiming
     }
 
     public static let inactive = MTPBenchmarkMetrics(active: false)
@@ -707,7 +780,7 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 7
+    public static let currentSchemaVersion = 8
 
     public let schemaVersion: Int
     public let runFingerprint: String

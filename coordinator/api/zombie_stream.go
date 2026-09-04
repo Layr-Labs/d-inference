@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -224,7 +225,13 @@ func (z *zombieStreamCanceller) strayChunk(requestID string, now time.Time) stra
 	if e == nil {
 		res.expired = append(res.expired, z.makeRoomLocked(now)...)
 		e = &zombieEntry{cause: cancelCauseStrayChunk, firstCancelAt: now}
-		z.entries[requestID] = e
+		// The id of a scanned chunk frame is a substring of ONE allocation
+		// holding the whole frame (request id + data + ephemeral key +
+		// ciphertext, protocol.buildChunkFrame). A map key aliasing it would
+		// pin that frame for the entry's TTL — up to zombieMaxEntries
+		// frame-sized retentions for a provider streaming unknown ids with
+		// large ciphertexts. Own the id.
+		z.entries[strings.Clone(requestID)] = e
 	}
 	e.strayChunks++
 	e.lastStrayAt = now

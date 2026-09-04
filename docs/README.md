@@ -64,7 +64,7 @@
 - [`reference/protocol-messages.md`](reference/protocol-messages.md): every WebSocket message between coordinator and provider, field by field, Go ↔ Swift.
 - [`reference/configuration.md`](reference/configuration.md): every environment variable of the coordinator, provider, console, and admin UI, with defaults.
 - [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types, field allowlist, symmetry rules.
-- [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected, its producer, sink, and cadence.
+- [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected, its producer, sink, and cadence; the Datadog metric-name inventory (`d_inference.*`) with tags and emitting file.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, fees, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.

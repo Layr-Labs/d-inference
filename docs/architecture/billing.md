@@ -494,3 +494,4 @@ All names carry the `d_inference.` namespace (`coordinator/datadog/datadog.go`).
 - [`design/base-rewards.md`](../design/base-rewards.md) — the base-rewards design record (status: implemented, disabled by default)
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
+- [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart

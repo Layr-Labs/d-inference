@@ -3,8 +3,9 @@
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
 From a fresh Apple Silicon Mac to a provider that is registered with the
-coordinator, linked to your account and serving. For operators; the whole path
-is five `darkbloom` commands.
+coordinator, linked to your account and serving. For operators; install, check,
+log in, pick models, start — then enrol for the `hardware` trust level that
+public traffic requires.
 
 ## Prerequisites
 
@@ -87,6 +88,19 @@ watchdog `io.darkbloom.watchdog`
 (`provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`). The service
 starts again at every login.
 
+### 6. Enrol for public traffic
+
+```bash
+darkbloom enroll
+```
+
+A freshly started provider is `self_signed`; the coordinator sends public
+requests only to `hardware`-level machines, which requires MDM enrolment of
+this Mac. What the command does, how long the upgrade takes and how to read the
+result are in [attestation → Reaching `hardware`](./attestation.md#reaching-hardware).
+Until then only your own [self-route](./self-route.md) requests reach the
+machine.
+
 ## Verify
 
 ```bash
@@ -96,10 +110,10 @@ darkbloom logs --last 1h    # unified logs, subsystem dev.darkbloom.provider
 ```
 
 `status` (`provider-swift/Sources/darkbloom/StatusCommand.swift`) and `doctor`
-read the daemon's snapshot `~/.darkbloom/daemon-state.json`, rewritten every
-`max(1, heartbeat_interval_secs / 2)` s — 2 s at the default heartbeat of 5 s
-(`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`). A snapshot
-older than 90 s is reported as stale
+read the daemon's snapshot `~/.darkbloom/daemon-state.json`; its refresh period
+and the stale threshold are in
+[troubleshooting → Doctor checks](./troubleshooting.md#doctor-checks). A stale
+snapshot is reported as such
 (`provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `isStale`).
 
 The provider is earning once `doctor` shows the trust level the coordinator
@@ -140,7 +154,10 @@ Every key, env var and default is in
 
 Prices, the platform fee and payout rules are defined once, in
 [`architecture/billing.md`](../architecture/billing.md#invariants). There is no
-`darkbloom earnings` command; usage and payouts are in the console. Requests you
+`darkbloom earnings` command; usage and payouts are in the console at
+`https://console.darkbloom.dev/providers/earnings` (page described in
+[`architecture/components/console-ui.md`](../architecture/components/console-ui.md)).
+Requests you
 send to your own machine through [self-route](./self-route.md) or
 [direct mode](./direct-mode.md) are not billed.
 

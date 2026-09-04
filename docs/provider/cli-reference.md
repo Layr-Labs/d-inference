@@ -30,7 +30,7 @@ Declaration order of `Darkbloom.configuration.subcommands` (21):
 | `start` | Serve. Default: install and start the LaunchAgent; `--local` for a coordinator-less server | ✓ | `StartCommand.swift` (`Start`) |
 | `stop` | Stop the LaunchAgent; `--uninstall` removes both plists | | `StopCommand.swift` (`Stop`) |
 | `restart` | Restart the service in place and re-arm the watchdog | ✓ | `RestartCommand.swift` (`Restart`) |
-| `status` | Config, hardware, schedule, live daemon state, per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
+| `status` | Config, hardware, schedule, live daemon state (including the coordinator's last `Trust: <level> / <status>` message), per-slot KV/MTP posture | ✓ | `StatusCommand.swift` (`Status`) |
 | `doctor` | Diagnostics (see [troubleshooting](./troubleshooting.md#doctor-checks)) | ✓ | `DoctorCommand.swift` (`Doctor`) |
 | `models` | `list`, `catalog`, `download`, `remove` | ✓ | `ModelsCommand.swift` (`Models`) |
 | `local` | Print the direct-mode endpoint and API key | | `LocalCommand.swift` (`Local`) |
@@ -88,7 +88,10 @@ disarms it when `false`.
 
 ### `darkbloom status`
 
-Only `--config`. Read-only.
+Only `--config`. Read-only. Prints the daemon snapshot (refresh cadence under
+[Runtime constants](#runtime-constants)) and the last trust message the
+coordinator sent; what the levels mean is in
+[attestation](./attestation.md#trust-levels).
 
 ### `darkbloom doctor`
 

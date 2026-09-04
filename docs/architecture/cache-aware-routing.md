@@ -290,10 +290,12 @@ only after SSD scan readiness
 (`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift`)
-under the `cbv2-frozen-full-3` contiguous native-float block contract
-(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift`); paged
-hybrid slots remain v1/cold
-(`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`).
+under the `cbv2-frozen-full-3|native-fp|…` on-disk block contract
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift`). The
+cache is live only on slots whose resolved KV backend is `paged`; a
+`contiguous` slot gets no cache object and reports `unsupportedBackend`, so its
+models stay v1/cold (`PrefixCachePolicy.adoptionIsExact`, explained in
+[prefix-cache.md](prefix-cache.md)).
 Registration and every current-provider heartbeat carry an optional
 `prefix_cache_statuses` replacement snapshot and cumulative
 `prefix_cache_donation_outcomes`. An explicit empty status array clears the
@@ -334,6 +336,7 @@ prompt artifacts, routing-mode enablement, and a separately provisioned
 
 - [`routing.md`](routing.md) — the cost model this feature discounts and the selection tiebreak.
 - [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) — the local planner that produces exact token boundaries.
-- [`storage.md`](storage.md) — the provider's SSD prefix cache.
+- [`prefix-cache.md`](prefix-cache.md) — the provider side: when a request is a hit, hashing, gates and tiers.
+- [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — on-disk layout and cryptography of the SSD cache.
 - [`../reference/configuration.md`](../reference/configuration.md) — coordinator environment reference.
 - [`../reports/2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md`](../reports/2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md), [`../reports/2026-07-19-frozen-full-prefix-cache-proof.md`](../reports/2026-07-19-frozen-full-prefix-cache-proof.md) — the analyses that led to this design.

@@ -86,7 +86,7 @@ lists every name).
 | `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/or_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
 | `inference.completions` | count | `model` | each `inference_complete` |
 | `inference.dispatches` | count | `status:success`, `failure`, `timeout`, `retry`, `retry_precontent` | each attempt |
-| `inference.ttft_ms`, `inference.decode_tps` | histogram | `model`, `kv_backend`, `kv_backend_fallback` | each completion with a positive finite value (`coordinator/api/kv_backend_metrics.go`) |
+| `inference.ttft_ms`, `inference.decode_tps` | histogram | `model`, `kv_backend`, `kv_backend_fallback` | Measured on the coordinator's clock, not reported by the provider: TTFT is dispatch → first content chunk, the same value `handleComplete` persists as `inference_routes.actual_ttft_ms`; decode TPS is the outcome row's `actual_decode_tps`. Emitted once per completion with a positive finite value (`coordinator/api/kv_backend_metrics.go`) |
 | `inference.timing.parse_ms`, `.reserve_ms`, `.route_ms`, `.encrypt_ms`, `.queue_wait_ms`, `.dispatch_ms`, `.total_duration_ms` | histogram | `model`, `final_status` | each finalized route (`coordinator/api/timing_metrics.go`); the same segments ride the `X-Timing` header ([`api-contracts.md#headers`](api-contracts.md#headers)) |
 | `inference.error` | count | `reason`, `model` | non-success final status with a normalized `error_reason` |
 | `inference.partial_success` | count | `model`, `error_class` | client gone after commit |

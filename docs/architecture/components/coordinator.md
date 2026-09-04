@@ -101,7 +101,7 @@ failure in any step marked *fatal* exits the process before it listens.
    and verification scheduler, profile signer, APNs attestor and the
    code-attestation cache, the trust-reuse cache (*fatal* if its revocation
    journal is unusable).
-8. **Background loops.** Provider eviction every 90 s; DogStatsD gauge loop;
+8. **Background loops.** Provider eviction sweep (`StartEvictionLoop`, cadence and timeout in [scheduling.md](../scheduling.md#heartbeat-cadence-and-eviction)); DogStatsD gauge loop;
    profiler fleet sampler and retention sweep; read-cache janitor; throughput
    anomaly detector; base-rewards settlement (when enabled); Stripe payout
    reconciler; the prompt sidecar supervisor and preloader.

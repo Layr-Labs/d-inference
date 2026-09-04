@@ -1043,20 +1043,33 @@ public actor EngineV2Bridge {
                         profile.update { f, _ in
                             f.mark(.engineAdmitted,
                                    offsetUs: max(admittedOffset, f.offset(.engineSubmit) ?? 0))
-                            if case .bounded(let work, let serviceDuration) = projectedWork {
-                                f.set(.projectedPrefillTokens, Int64(work.prefillTokens))
-                                f.set(.projectedDecodeTokens, Int64(work.decodeTokens))
-                                f.set(.projectedServiceUs,
-                                      RequestProfileBuilder.microseconds(serviceDuration))
-                            }
-                            if let remainingUs { f.set(.budgetRemainingAtAdmitUs, remainingUs) }
+                            Self.stampProjection(
+                                &f, projectedWork: projectedWork, remainingUs: remainingUs)
                         }
                     }
-                case .deadlineUnreachable:
+                case .deadlineUnreachable(let projectedWork):
                     // Counted where the verdict is produced: a refusal leaves
                     // no `active` row, no sample and no other trace, so this
                     // counter is the only thing that can break a wedge.
                     consecutiveDeadlineRefusals += 1
+                    // The engine's verdict is the one fact a refusal has.
+                    // Stamp it on the profile that rides the 503 terminal —
+                    // projected_* for a bounded projection, only the
+                    // remaining budget for `.unbounded` — and NEVER
+                    // `engine_admitted` (its absence is how the coordinator
+                    // tells a refusal from an admit-then-expire).
+                    let remaining = firstContentDeadline?.remainingDuration()
+                    if let profile {
+                        let remainingUs = remaining.map(RequestProfileBuilder.budgetRemainingUs)
+                        profile.update { f, _ in
+                            Self.stampProjection(
+                                &f, projectedWork: projectedWork, remainingUs: remainingUs)
+                        }
+                    }
+                    logDeadlineRefusal(
+                        projectedWork: projectedWork,
+                        promptTokens: promptTokens.count,
+                        remaining: remaining)
                     if Task.isCancelled || pendingCancellationIDs.contains(id) {
                         // Refused at admission after a latched cancel: nothing
                         // was generated, record the explicit 0 (see the
@@ -1288,6 +1301,50 @@ public actor EngineV2Bridge {
         #if canImport(os)
         Self.logger.debug(
             "engine_v2: deadline projection fails open posture=\(posture, privacy: .public) model=\(self.modelId, privacy: .public) running=\(self.active.count) isolated_samples=\(self.isolatedPrefillSampleCount) refusals=\(self.consecutiveDeadlineRefusals)"
+        )
+        #endif
+    }
+
+    /// The engine's first-token projection, on the profile. Shared by the
+    /// `.admitted` and `.deadlineUnreachable` arms so a refusal carries the
+    /// same `projected_*` fields as an admit; `.unbounded` leaves them absent
+    /// (there is no finite projection to report). `budget_remaining_at_admit_us`
+    /// is the deadline's remaining window at the verdict instant.
+    private static func stampProjection(
+        _ f: inout RequestProfileBuilder.Fields,
+        projectedWork: CBv2FirstTokenProjectedWork,
+        remainingUs: Int64?
+    ) {
+        if case .bounded(let work, let serviceDuration) = projectedWork {
+            f.set(.projectedPrefillTokens, Int64(work.prefillTokens))
+            f.set(.projectedDecodeTokens, Int64(work.decodeTokens))
+            f.set(.projectedServiceUs,
+                  RequestProfileBuilder.microseconds(serviceDuration))
+        }
+        if let remainingUs { f.set(.budgetRemainingAtAdmitUs, remainingUs) }
+    }
+
+    /// One line per refusal with the posture the verdict was based on —
+    /// the numbers the profile now carries, readable on the box.
+    private func logDeadlineRefusal(
+        projectedWork: CBv2FirstTokenProjectedWork,
+        promptTokens: Int,
+        remaining: Duration?
+    ) {
+        #if canImport(os)
+        let projectedMs: Int64
+        let posture: String
+        switch projectedWork {
+        case .bounded(let work, let serviceDuration):
+            projectedMs = RequestProfileBuilder.microseconds(serviceDuration) / 1_000
+            posture = "bounded(prefill=\(work.prefillTokens),decode=\(work.decodeTokens))"
+        case .unbounded:
+            projectedMs = -1
+            posture = "unbounded"
+        }
+        let budgetMs = remaining.map { RequestProfileBuilder.microseconds($0) / 1_000 } ?? -1
+        Self.logger.info(
+            "engine_v2: deadline refused model=\(self.modelId, privacy: .public) posture=\(posture, privacy: .public) projected_ms=\(projectedMs) prompt_tokens=\(promptTokens) budget_ms=\(budgetMs) running=\(self.active.count) refusals=\(self.consecutiveDeadlineRefusals)"
         )
         #endif
     }

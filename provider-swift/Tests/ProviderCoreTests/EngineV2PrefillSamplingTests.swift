@@ -55,6 +55,10 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
     enum DeadlineBehavior: Equatable {
         case admit
         case reject
+        /// Refuse with `.unbounded` (ledger `canGuarantee` failure, nil
+        /// decode rate with decode work, multimodal peer — no finite
+        /// projection exists).
+        case rejectUnbounded
         case suspendThenAdmit
         case suspendThenReject
     }
@@ -168,6 +172,8 @@ private final class PrefillScriptEngine: CBv2Engine, @unchecked Sendable {
                 retirement: retirement)
         case .reject, .suspendThenReject:
             return .deadlineUnreachable(projectedWork: projectedWork)
+        case .rejectUnbounded:
+            return .deadlineUnreachable(projectedWork: .unbounded)
         }
     }
 
@@ -1625,6 +1631,98 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(await second.value == .deadlineUnreachable)
         #expect(await bridge._testPendingEngineIDCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 0)
+    }
+
+    // MARK: - The refusal carries the engine's projection (T2-02)
+
+    private func makeProfile() -> RequestProfileBuilder {
+        let profile = RequestProfileBuilder()
+        profile.update { f, now in f.mark(.dequeued, offsetUs: now) }
+        profile.mark(.acceptedSent)
+        return profile
+    }
+
+    @Test("a bounded refusal stamps projected_* and the remaining budget on the profile, never engine_admitted")
+    func boundedRefusalStampsProjection() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.reject)
+        let profile = makeProfile()
+
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "bounded-refusal",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000),
+                profile: profile)
+        }
+        let wire = profile.wireObject()
+        #expect(wire.deadlineMode == .projected)
+        #expect(wire.engineSubmitUs != nil)
+        #expect(wire.engineAdmittedUs == nil, "a refusal is not an admission")
+        #expect(wire.projectedPrefillTokens == Int64(promptTokens.count))
+        #expect(wire.projectedDecodeTokens == 0)
+        #expect(wire.projectedServiceUs == 1_000, "the script's 1 ms projection")
+        let remaining = try #require(wire.budgetRemainingAtAdmitUs)
+        #expect(remaining >= 0 && remaining <= 9_000_000)
+        #expect(wire.tokensAfterCancel == nil)
+        // The bridge retains nothing for the refused request.
+        #expect(await bridge._testPendingProfileCount() == 0)
+        #expect(await bridge._testCounters().active == 0)
+    }
+
+    @Test("an unbounded refusal stamps only the remaining budget (no finite projection exists)")
+    func unboundedRefusalStampsBudgetOnly() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        engine.setDeadlineBehavior(.rejectUnbounded)
+        let profile = makeProfile()
+
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "unbounded-refusal",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000),
+                profile: profile)
+        }
+        let wire = profile.wireObject()
+        #expect(wire.deadlineMode == .projected)
+        #expect(wire.engineAdmittedUs == nil)
+        #expect(wire.projectedPrefillTokens == nil)
+        #expect(wire.projectedDecodeTokens == nil)
+        #expect(wire.projectedServiceUs == nil)
+        let remaining = try #require(wire.budgetRemainingAtAdmitUs)
+        #expect(remaining >= 0 && remaining <= 9_000_000)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 1)
+    }
+
+    @Test("an admitted projection still stamps projected_* with engine_admitted (the #809 admit path is unchanged)")
+    func admitStampsProjectionUnchanged() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        _ = try await measureColdPrefillRate(bridge: bridge, engine: engine)
+        let profile = makeProfile()
+
+        let stream = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "admitted-with-profile",
+            firstContentDeadline: deadline(budgetMilliseconds: 9_000),
+            profile: profile)
+        let wire = profile.wireObject()
+        #expect(wire.deadlineMode == .projected)
+        let submit = try #require(wire.engineSubmitUs)
+        let admitted = try #require(wire.engineAdmittedUs)
+        #expect(submit <= admitted)
+        #expect(wire.projectedPrefillTokens == Int64(promptTokens.count))
+        #expect(wire.projectedDecodeTokens == 0)
+        #expect(wire.projectedServiceUs == 1_000)
+        #expect(wire.budgetRemainingAtAdmitUs != nil)
+        try await finishLatestSubmission(stream, engine: engine)
     }
 
     @Test("typed deadline failure keeps retryable compatibility fields")

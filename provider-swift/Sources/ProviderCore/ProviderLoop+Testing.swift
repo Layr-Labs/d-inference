@@ -456,6 +456,12 @@ extension ProviderLoop {
     ) {
         engineV2LastRecoveryAt[modelId] = instant
     }
+
+    // MARK: - Coordinator request-path seams
+
+    /// Test seam: the loop's X25519 public key, so a test can seal a request
+    /// body exactly as the coordinator does.
+    func publicKeyBytesForTesting() -> Data { keyPair.publicKeyBytes }
 }
 
 extension ProviderLoop {

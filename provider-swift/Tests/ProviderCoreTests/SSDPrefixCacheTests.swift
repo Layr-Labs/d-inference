@@ -1549,11 +1549,12 @@ struct SSDPrefixCacheReadyReceiptTests {
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 64)
         #expect(await box.waitForCount(1))
-        #expect(box.snapshot[0].readyTokens == 64)
-        #expect(box.snapshot[0].requiredRecomputeTokens == 0)
-        #expect(box.snapshot[0].expectedPrefillTokensSaved == 64)
-        #expect(try #require(box.snapshot[0].stageMs) > 0)
-        #expect(try #require(box.snapshot[0].stageMs) <= PrefixCacheReadyResult.maxStageMs)
+        let first = try #require(box.snapshot.first, "no ready receipt was delivered (SSD writes refused? low-disk floor)")
+        #expect(first.readyTokens == 64)
+        #expect(first.requiredRecomputeTokens == 0)
+        #expect(first.expectedPrefillTokensSaved == 64)
+        #expect(try #require(first.stageMs) > 0)
+        #expect(try #require(first.stageMs) <= PrefixCacheReadyResult.maxStageMs)
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 72)
         #expect(await box.waitForCount(2))

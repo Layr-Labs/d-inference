@@ -117,6 +117,16 @@ func heterogeneousSpreadFleet(reg *Registry, model string) ([]string, map[string
 	})
 }
 
+// spreadDecodeFloorTPS is the per-request decode-quality floor the replay
+// carries (production: EIGENINFERENCE_MIN_DECODE_TPS=15, consumer.go sets
+// PendingRequest.MinDecodeTPS). It is what keeps the 14 tok/s tier of the
+// heterogeneous fleet idle: with the coordinator's in-gap pending charge
+// (buildCandidateInto charges a reserved request's prompt + max_tokens to its
+// box exactly as the box's next heartbeat will), a fast box holding a few
+// in-gap pendings prices above an idle slow box, so only the soft quality
+// preference — not cost — keeps the slow tier out, as in production.
+const spreadDecodeFloorTPS = 15
+
 // replayArrivals reserves arrivals sequentially with NO completions (one
 // heartbeat gap) and returns per-provider load, the number of rejected
 // arrivals, and the Gini coefficient of the load vector.
@@ -131,6 +141,7 @@ func replayArrivals(t *testing.T, reg *Registry, model string, ids []string, arr
 			EstimatedPromptTokens:    prompt,
 			RequestedMaxTokens:       maxTokens,
 			ExpectedCompletionTokens: expected,
+			MinDecodeTPS:             spreadDecodeFloorTPS,
 		}
 		p, _ := reg.ReserveProviderEx(model, pr)
 		if p == nil {
@@ -242,7 +253,7 @@ func TestDispatchSpreadHomogeneousFleetAtLargeMaxTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("calibration_off_herds_to_fastest_tier", func(t *testing.T) {
+	t.Run("calibration_off_still_spreads_via_in_gap_charge", func(t *testing.T) {
 		t.Setenv("EIGENINFERENCE_COMPLETION_CALIBRATION", "off")
 		reg := New(testLogger())
 		ids := homogeneousSpreadFleet(reg, model)
@@ -259,13 +270,20 @@ func TestDispatchSpreadHomogeneousFleetAtLargeMaxTokens(t *testing.T) {
 		if rejected != 0 {
 			t.Fatalf("rejected=%d, want 0", rejected)
 		}
-		// Documents the pre-P1 failure mode: max_tokens/effectiveTPS dwarfs the
-		// tie window, so the fastest tier fills to its concurrency cap first.
-		if gini < 0.5 {
-			t.Fatalf("gini=%.2f, want >= 0.5 (herding) with calibration off", gini)
+		// The pre-P1 failure mode (max_tokens/effectiveTPS dwarfing the tie
+		// window, the fastest tier filling to its concurrency cap of 8 with a
+		// Gini >= 0.5) no longer reproduces with the calibration off: the
+		// coordinator's in-gap pending charge (buildCandidateInto) prices each
+		// reserved request's prompt + max_tokens onto its box immediately, so a
+		// box with one in-gap 16K pending costs more than an idle peer and the
+		// cohort spreads on its own. The calibration and the in-gap charge are
+		// complementary fixes for the same herd; with the switch off the
+		// remaining spread comes from the charge alone.
+		if gini > 0.1 {
+			t.Fatalf("gini=%.2f, want <= 0.1: the in-gap pending charge must spread the cohort even with calibration off", gini)
 		}
-		if maxLoad(counts) != 8 {
-			t.Fatalf("max_load=%d, want the per-slot cap 8", maxLoad(counts))
+		if maxLoad(counts) > 2 {
+			t.Fatalf("max_load=%d, want <= 2 (no box fills toward its cap of 8)", maxLoad(counts))
 		}
 	})
 }

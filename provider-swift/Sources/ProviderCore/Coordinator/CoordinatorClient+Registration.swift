@@ -111,7 +111,8 @@ extension CoordinatorClient {
             prefixCacheV2Models: prefixCache.protocolVersion == 2
                 ? prefixCache.models : nil,
             prefixCacheStatuses: prefixCache.statuses,
-            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes,
+            idleUnloadMins: config.idleUnloadMins
         )
 
         do {

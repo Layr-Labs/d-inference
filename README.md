@@ -228,8 +228,9 @@ Zero prerequisites and no `sudo`. The installer fetches the latest signed releas
 ### First run
 
 ```bash
-darkbloom start              # background launchd service (interactive model picker)
+darkbloom start              # background launchd service (interactive model picker + memory policy)
 darkbloom start --foreground # run attached to the terminal
+darkbloom idle keep-loaded   # keep models loaded while idle (instant responses); default frees after 60 min
 darkbloom login              # link your account (RFC 8628 device-code flow)
 darkbloom status             # config, hardware, schedule, live trust verdict
 darkbloom doctor             # local diagnostics + coordinator's trust view
@@ -267,7 +268,7 @@ auto_restart = true
 
 [backend]
 enabled_models = []        # empty = advertise all downloaded models
-idle_timeout_mins = 60     # unload an idle model after N minutes (0 = never)
+idle_timeout_mins = 60     # free when idle: unload after N idle minutes, reload on demand (0 = always ready)
 max_model_slots = 3        # max models resident at once
 continuous_batching = true
 

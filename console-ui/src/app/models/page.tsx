@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { TopBar } from "@/components/TopBar";
 import { fetchModels, fetchPricing, type Model, type PricingResponse } from "@/lib/api";
+import { providerRequirementBadge, providerRequirementTitle } from "@/lib/provider-capabilities";
 import {
   Cpu,
   Shield,
@@ -139,6 +140,8 @@ export default function ModelsPage() {
                 const org = model.id.includes("/")
                   ? model.id.split("/")[0]
                   : undefined;
+                const requirementBadge = providerRequirementBadge(model.required_provider_capabilities);
+                const requirementTitle = providerRequirementTitle(model.required_provider_capabilities);
 
                 return (
                   <div
@@ -187,6 +190,14 @@ export default function ModelsPage() {
                           {formatContextLength(model.context_length ?? model.max_context_length)} ctx
                         </span>
                       ) : null}
+                      {requirementBadge && (
+                        <span
+                          title={requirementTitle ?? undefined}
+                          className="px-2 py-0.5 rounded bg-accent-amber-dim/30 text-xs font-mono text-accent-amber border border-accent-amber/20"
+                        >
+                          {requirementBadge}
+                        </span>
+                      )}
                     </div>
 
                     {/* Pricing */}

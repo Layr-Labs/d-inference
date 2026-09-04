@@ -126,6 +126,10 @@ export interface MyProvider {
 
   system_metrics?: MySystemMetrics;
   backend_capacity?: MyBackendCapacity;
+  /** Idle-memory policy reported in heartbeats: 0 = always ready (models
+   *  stay loaded), N = unloaded after N idle minutes and reloaded on demand.
+   *  Absent for offline machines and providers too old to report it. */
+  idle_unload_mins?: number;
   warm_models?: string[];
   current_model?: string;
   pending_requests: number;

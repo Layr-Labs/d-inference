@@ -293,3 +293,46 @@ func TestFindProviderPrefersCrashedLast(t *testing.T) {
 		t.Errorf("expected hot-provider, got %q", found.ID)
 	}
 }
+
+// The idle-memory policy is provider config, reported in every heartbeat by
+// providers that know it and never by legacy ones: 0 must be stored as a real
+// value, negatives are ignored, and a heartbeat without the field keeps the
+// last reported policy rather than clearing it.
+func TestHeartbeatIdleUnloadMinsIsStickyAndValidated(t *testing.T) {
+	reg := New(testLogger())
+	reg.Register("p1", nil, testRegisterMessage())
+
+	policy := func() *int {
+		p := reg.GetProvider("p1")
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.IdleUnloadMins
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+	if policy() != nil {
+		t.Fatalf("legacy heartbeat set a policy: %d", *policy())
+	}
+
+	zero := 0
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle", IdleUnloadMins: &zero})
+	if got := policy(); got == nil || *got != 0 {
+		t.Fatalf("always-ready policy = %v, want 0", got)
+	}
+	// Registry owns its copy; mutating the message must not leak in.
+	zero = 99
+	if got := policy(); *got != 0 {
+		t.Fatalf("policy aliased the heartbeat message: %d", *got)
+	}
+
+	negative := -5
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle", IdleUnloadMins: &negative})
+	if got := policy(); *got != 0 {
+		t.Fatalf("negative policy accepted: %d", *got)
+	}
+
+	reg.Heartbeat("p1", &protocol.HeartbeatMessage{Type: protocol.TypeHeartbeat, Status: "idle"})
+	if got := policy(); got == nil || *got != 0 {
+		t.Fatalf("field-less heartbeat cleared the policy: %v", got)
+	}
+}

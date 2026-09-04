@@ -283,6 +283,12 @@ public enum ProviderMessage: Sendable, Equatable {
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
         public var prefixCacheStatuses: [PrefixCacheModelStatus]?
         public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
+        /// The operator's idle-memory policy (`[backend] idle_timeout_mins`):
+        /// minutes without requests before this box unloads a model, or 0 when
+        /// models stay resident. Lets the coordinator (and the owner's
+        /// dashboard) tell "unloaded on purpose, wakes on demand" apart from
+        /// "should be loaded and isn't". nil/omitted from older providers.
+        public var idleUnloadMins: UInt64?
 
         public init(
             status: ProviderStatus,
@@ -296,7 +302,8 @@ public enum ProviderMessage: Sendable, Equatable {
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
             prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
-            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
+            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
+            idleUnloadMins: UInt64? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -310,6 +317,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.prefixCacheV2Models = prefixCacheV2Models
             self.prefixCacheStatuses = prefixCacheStatuses
             self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
+            self.idleUnloadMins = idleUnloadMins
         }
     }
 
@@ -863,6 +871,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case idleUnloadMins = "idle_unload_mins"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -992,6 +1001,9 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(h.prefixCacheStatuses, forKey: .prefixCacheStatuses)
             try container.encodeIfPresent(
                 h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
+            // 0 ("always ready") is a real value and MUST reach the wire; only
+            // nil (policy not reported) is omitted — Go decodes into *int.
+            try container.encodeIfPresent(h.idleUnloadMins, forKey: .idleUnloadMins)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -1233,7 +1245,8 @@ extension ProviderMessage: Codable {
                     [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
                 prefixCacheDonationOutcomes: try container.decodeIfPresent(
                     [PrefixCacheDonationOutcomeCount].self,
-                    forKey: .prefixCacheDonationOutcomes)
+                    forKey: .prefixCacheDonationOutcomes),
+                idleUnloadMins: try container.decodeIfPresent(UInt64.self, forKey: .idleUnloadMins)
             ))
 
         case .inferenceAccepted:

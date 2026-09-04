@@ -395,3 +395,38 @@ describe("ProvidersPage", () => {
     expect(screen.getAllByText("darkbloom start").length).toBeGreaterThan(0);
   });
 });
+
+// =========================================================================
+// Models page
+// =========================================================================
+
+describe("ModelsPage", () => {
+  it("shows the provider hardware requirement badge only on gated models", async () => {
+    const api = await import("@/lib/api");
+    vi.mocked(api.fetchModels).mockResolvedValueOnce([
+      {
+        id: "qwen3.8-27b",
+        object: "model",
+        display_name: "Qwen 3.8 27B",
+        required_provider_capabilities: ["apple_m5", "mlx_nax"],
+      },
+      {
+        id: "gemma-4-26b",
+        object: "model",
+        display_name: "Gemma 4 26B",
+        required_provider_capabilities: [],
+      },
+    ]);
+    const ModelsPage = (await import("@/app/models/page")).default;
+    render(<ModelsPage />);
+
+    const badge = await screen.findByText("Apple M5 + NAX runtime only");
+    expect(badge).toHaveAttribute(
+      "title",
+      "Served only by providers with: Apple M5, NAX runtime"
+    );
+    // The ungated card renders no requirement pill.
+    expect(screen.getAllByText(/ only$/)).toHaveLength(1);
+    expect(screen.getByText("gemma-4-26b")).toBeInTheDocument();
+  });
+});

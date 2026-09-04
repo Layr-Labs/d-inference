@@ -22,8 +22,18 @@ is updated afterwards, and how to remove everything. For operators; at the end
 
 ### 1. Run the installer
 
-```bash
-curl -fsSL https://api.darkbloom.dev/install.sh | bash
+[backend]
+enabled_models = []
+idle_timeout_mins = 60   # free when idle; 0 = always ready (see `darkbloom idle`)
+max_model_slots = 3
+
+[gemma_optimizations]
+prefill_layer18 = true
+weighted_r1 = true
+
+[coordinator]
+url = "wss://api.darkbloom.dev/ws/provider"
+private_only = false
 ```
 
 The coordinator serves `scripts/install.sh` at `/install.sh` with its own base

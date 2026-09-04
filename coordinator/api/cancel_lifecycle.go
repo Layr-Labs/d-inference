@@ -90,8 +90,11 @@ func (s *Server) sendRecordedCancel(provider *registry.Provider, pr *registry.Pe
 	s.zombieCanceller.markSent(pr.RequestID, now)
 	pr.Profile.Mark(registry.StampCancelSent)
 	s.ddIncr(metricCancelSent, []string{"cause:" + cause, "model:" + modelTag(pr.Model)})
-	if !s.sendProviderCancel(provider, pr.RequestID) {
-		s.zombieCanceller.noteSendFailed(pr.RequestID, now)
+	requestID := pr.RequestID
+	if !s.sendProviderCancel(provider, requestID, func(error) {
+		s.zombieCanceller.noteSendFailed(requestID, time.Now())
+	}) {
+		s.zombieCanceller.noteSendFailed(requestID, now)
 	}
 }
 
@@ -120,6 +123,21 @@ func (s *Server) cancelAbortedProviderWrite(provider *registry.Provider, pr *reg
 	}
 	s.ddIncr("provider.writer_inflight_abort", []string{"reason:" + reason})
 	s.sendAbandonCancel(provider, pr, cancelCauseWriteAborted)
+}
+
+// cancelFallbackDropReason maps the error of a control-lane fallback that
+// dropped its cancel to the bounded provider.cancel_dropped reason.
+// fallback_timeout is the only control-lane capacity signal;
+// fallback_writer_stopped is connection teardown.
+func cancelFallbackDropReason(err error) string {
+	switch {
+	case errors.Is(err, registry.ErrProviderWriterStopped):
+		return "fallback_writer_stopped"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return "fallback_timeout"
+	default:
+		return "fallback_" + cancelSendFailureReason(err)
+	}
 }
 
 // cancelSendFailureReason maps an EnqueueText error to a bounded tag value.
@@ -169,7 +187,9 @@ func (s *Server) noteStrayChunk(provider *registry.Provider, providerID, request
 		// path's own send may also lose this race by microseconds).
 		s.ddIncr(metricCancelSent, []string{"cause:" + res.cause, "model:" + modelTag(res.model)})
 	}
-	if !s.sendProviderCancel(provider, requestID) {
+	if !s.sendProviderCancel(provider, requestID, func(error) {
+		s.zombieCanceller.noteSendFailed(requestID, time.Now())
+	}) {
 		s.zombieCanceller.noteSendFailed(requestID, now)
 	}
 	s.ddIncr(metricZombieStreamCancel, []string{"resend_index:" + strconv.Itoa(res.resendIndex)})

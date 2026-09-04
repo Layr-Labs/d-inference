@@ -52,7 +52,7 @@ func TestSendProviderCancelMetersDeliveryFailure(t *testing.T) {
 	// Connected as far as the Server can tell (Conn set) but its writer has
 	// been torn down: EnqueueText fails with the writer-stopped sentinel.
 	p := &registry.Provider{ID: "p-dead", Conn: &websocket.Conn{}}
-	if srv.sendProviderCancel(p, "req-1") {
+	if srv.sendProviderCancel(p, "req-1", nil) {
 		t.Fatal("sendProviderCancel must report failure when the writer is gone")
 	}
 	_ = dd.Statsd.Flush()
@@ -68,7 +68,7 @@ func TestSendProviderCancelMetersDeliveryFailure(t *testing.T) {
 	}
 
 	// No socket at all is a test fixture, not a delivery failure: no metric.
-	if srv.sendProviderCancel(&registry.Provider{ID: "p-nosock"}, "req-2") {
+	if srv.sendProviderCancel(&registry.Provider{ID: "p-nosock"}, "req-2", nil) {
 		t.Fatal("provider without a socket cannot succeed")
 	}
 	_ = dd.Statsd.Flush()

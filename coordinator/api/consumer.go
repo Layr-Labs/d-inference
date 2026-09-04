@@ -206,7 +206,14 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 // This is the raw primitive. Abandon paths that may leave the provider
 // generating go through sendAbandonCancel / cancelDispatch so the cancel is
 // recorded for terminal correlation and zombie re-sends.
-func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) bool {
+//
+// A true return means the frame reached the writer OR the bounded fallback
+// was spawned for it; the fallback's own outcome is only known later. A
+// frame the fallback then drops (timeout, or the writer going away) is
+// reported through onFallbackDropped, off the caller's goroutine, so the
+// zombie tracker can pull the re-send forward exactly as it does for a
+// synchronous drop. nil is allowed.
+func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string, onFallbackDropped func(error)) bool {
 	if provider == nil || provider.Conn == nil {
 		return false
 	}
@@ -252,10 +259,26 @@ func (s *Server) sendProviderCancel(provider *registry.Provider, requestID strin
 		defer provider.ReleaseControlFallback()
 		ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
 		defer cancel()
-		if _, err := provider.EnqueueControlOrWait(ctx, cancelData); err != nil {
-			s.ddIncr("provider.cancel_dropped", []string{"reason:fallback_timeout"})
+		_, err := provider.EnqueueControlOrWait(ctx, cancelData)
+		if err == nil {
+			return
+		}
+		// Tag by cause: only a wait that ran out of cancelWriteTimeout is a
+		// control-lane capacity signal (fallback_timeout). A writer that went
+		// away while the cancel was parked is connection teardown
+		// (fallback_writer_stopped) — the frame may additionally show up in
+		// provider.ws.dropped_on_close when it had already landed on the lane
+		// (submitBlocking's post-send dead check) and was drained there.
+		s.ddIncr("provider.cancel_dropped", []string{"reason:" + cancelFallbackDropReason(err)})
+		if errors.Is(err, registry.ErrProviderWriterStopped) {
+			s.logger.Debug("cancel dropped: provider writer stopped during control-lane fallback",
+				"request_id", requestID, "error", err)
+		} else {
 			s.logger.Warn("cancel dropped after control-lane fallback",
 				"request_id", requestID, "error", err)
+		}
+		if onFallbackDropped != nil {
+			onFallbackDropped(err)
 		}
 	})
 	return true

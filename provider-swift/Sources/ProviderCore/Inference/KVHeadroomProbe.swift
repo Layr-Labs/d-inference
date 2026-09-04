@@ -35,13 +35,18 @@ public enum KVHeadroomProbe {
     /// advertised, and then have the live gate reject every request: the
     /// loaded-but-unserveable black hole the guard exists to prevent. 0 for
     /// a budget that carries no operator reserve (standalone direct mode).
+    /// Deliberately NOT defaulted (review fix, S4 P2): every load-path site
+    /// must name the reserve it measures against, so a re-ordered parameter
+    /// list or a new probe site cannot silently re-open the band — the
+    /// self-restart site is driven with a real reserve by
+    /// `EngineV2LivenessRecoveryTests.recoveryProbeHonoursConfigReserve`.
     ///
     /// `physicalBytes`, `mlxUsedBytes` and `systemAvailableBytes` default to
     /// the live counters; tests inject them so the parity with the gate is
     /// checked without touching MLX globals.
     public static func measuredLiveKVHeadroomBytes(
         activationReserveBytes: UInt64? = nil,
-        configReserveBytes: UInt64 = 0,
+        configReserveBytes: UInt64,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         mlxUsedBytes: UInt64? = nil,
         systemAvailableBytes: UInt64? = nil
@@ -65,7 +70,7 @@ public enum KVHeadroomProbe {
     /// model. Same injectable inputs as `measuredLiveKVHeadroomBytes`.
     public static func hasServeableKVHeadroom(
         activationReserveBytes: UInt64? = nil,
-        configReserveBytes: UInt64 = 0,
+        configReserveBytes: UInt64,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         mlxUsedBytes: UInt64? = nil,
         systemAvailableBytes: UInt64? = nil
@@ -101,7 +106,7 @@ public enum KVHeadroomProbe {
         kvBackendKind: EngineV2KVBackendKind,
         pagedPoolBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
-        configReserveBytes: UInt64 = 0,
+        configReserveBytes: UInt64,
         measuredHeadroomBytes: @autoclosure () -> UInt64? = nil
     ) -> Bool {
         let measured = measuredHeadroomBytes()

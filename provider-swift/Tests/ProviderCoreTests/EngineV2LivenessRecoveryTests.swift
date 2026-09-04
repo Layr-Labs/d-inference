@@ -194,18 +194,20 @@ private let livenessGiB: UInt64 = 1024 * 1024 * 1024
 private let livenessPhysicalBytes: UInt64 = 64 * livenessGiB
 private let livenessReserveBytes: UInt64 = 1 * livenessGiB
 
-private func makeLivenessLoop() throws -> ProviderLoop {
+private func makeLivenessLoop(
+    memoryReserveGB: UInt64 = 1, memoryGb: UInt64 = 128
+) throws -> ProviderLoop {
     let config = ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/ignored",
         hardware: HardwareInfo(
             machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
-            memoryGb: 128, memoryAvailableGb: 124,
+            memoryGb: memoryGb, memoryAvailableGb: max(1, memoryGb - 4),
             cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
             gpuCores: 40, memoryBandwidthGbs: 546
         ),
         models: [],
         config: ProviderConfig(
-            provider: ProviderSettings(name: "engine-v2-liveness-test", memoryReserveGB: 1),
+            provider: ProviderSettings(name: "engine-v2-liveness-test", memoryReserveGB: memoryReserveGB),
             backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 3),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
@@ -372,14 +374,15 @@ struct EngineV2LivenessRecoveryTests {
 
     private func installHooks(
         _ loop: ProviderLoop, runtime: EngineV2Runtime,
-        factory: EngineFactoryScript, telemetry: LivenessTelemetrySink
+        factory: EngineFactoryScript, telemetry: LivenessTelemetrySink,
+        physicalMemoryBytes: UInt64 = livenessPhysicalBytes
     ) async {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
-                physicalMemoryBytes: livenessPhysicalBytes,
+                physicalMemoryBytes: physicalMemoryBytes,
                 makeEngine: { modelId, grant in try factory.make(modelId: modelId, grant: grant) }))
     }
 
@@ -673,6 +676,61 @@ struct EngineV2LivenessRecoveryTests {
             $0.fields?["operation"]?.description == "engine_v2_refusal"
         }
         #expect(refusal?.fields?["reason"]?.description == "engine_init_failed")
+    }
+
+    @Test("the self-restart post-build guard measures against the operator memory reserve (real load-path probe site)")
+    func recoveryProbeHonoursConfigReserve() async throws {
+        // Review fix (S4 P2, T3-03 lockstep): the reserve pair reaches every
+        // `KVHeadroomProbe` site only through explicit arguments, and nothing
+        // drove a real load-path site with a non-zero reserve — a dropped
+        // argument (re-ordered parameters, a new site) compiled and stayed
+        // green. This drives the self-restart's `postBuildServeable`, the one
+        // production probe site reachable without weights, with a reserve
+        // that makes the honest measurement refuse while the reserve-blind
+        // one passes:
+        //   honest cap = min(0.9 × real, real − reserve) = 6 GiB
+        //                → headroom < the 1 GiB serveable minimum → refuse;
+        //   blind cap  = 0.9 × real → headroom ≥ 1 GiB on any box ≥ ~8 GB
+        //                → the restart would SUCCEED with the argument gone.
+        // The re-slice budget uses the HOOKED physical (reserve + 64 GiB),
+        // so the load and the engine rebuild themselves get a healthy grant
+        // and the only refusal is the guard's.
+        let realGiB = ProcessInfo.processInfo.physicalMemory / livenessGiB
+        try #require(realGiB >= 8)
+        let reserveGiB = realGiB - 6
+        let loop = try makeLivenessLoop(memoryReserveGB: reserveGiB, memoryGb: realGiB)
+        let runtime = EngineV2Runtime()
+        let factory = EngineFactoryScript(scripts: [
+            .hang,  // load-time engine (wedges)
+            .stream([  // recovery rebuild (healthy engine; the guard refuses it)
+                .delta(text: "back", tokens: [10], logprobs: nil),
+                .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 1)),
+            ]),
+        ])
+        let telemetry = LivenessTelemetrySink()
+        await installHooks(
+            loop, runtime: runtime, factory: factory, telemetry: telemetry,
+            physicalMemoryBytes: (reserveGiB + 64) * livenessGiB)
+
+        let bridge = try await loadSlot(
+            loop, modelId: Self.modelA, modelType: "gemma4", sizing: makeSizing(weightsGiB: 15))
+        #expect(await bridge.engineKVBytesCapacity() > 0)
+        let t0 = ContinuousClock.Instant.now
+        await injectWedge(bridge: bridge, modelId: Self.modelA, at: t0)
+        await loop.recoverWedgedEngineV2SlotsForTesting(now: t0.advanced(by: .seconds(130)))
+
+        // The engine rebuild itself succeeded (a second engine was built);
+        // the post-build guard then refused against the operator reserve and
+        // the slot was unloaded — never a half-alive slot.
+        #expect(factory.built.count == 2)
+        #expect(await loop.slotBridgeForTesting(modelId: Self.modelA) == nil)
+        #expect(await runtime.bridge(forModel: Self.modelA) == nil)
+        #expect(telemetry.operations().contains("engine_v2_self_restart_failed"))
+        let loadError = await loop.lastModelLoadError
+        #expect(loadError?.model == Self.modelA)
+        #expect(
+            loadError?.message.contains("insufficient KV headroom") == true,
+            "\(String(describing: loadError))")
     }
 
     @Test("recovery window: a new submission on the drained bridge is a 429, never a 500")

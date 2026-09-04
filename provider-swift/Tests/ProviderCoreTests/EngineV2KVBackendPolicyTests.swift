@@ -170,28 +170,28 @@ struct EngineV2KVBackendPolicyTests {
             KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .paged,
                 pagedPoolBytes: 8 * gib,
-                measuredHeadroomBytes: 2 * gib))
+                configReserveBytes: 0, measuredHeadroomBytes: 2 * gib))
         #expect(
             !KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .paged,
                 pagedPoolBytes: 8 * gib,
-                measuredHeadroomBytes: 0))
+                configReserveBytes: 0, measuredHeadroomBytes: 0))
         #expect(
             !KVHeadroomProbe.postBuildServeable(
-                kvBackendKind: .paged, pagedPoolBytes: gib / 2, measuredHeadroomBytes: 100 * gib))
+                kvBackendKind: .paged, pagedPoolBytes: gib / 2, configReserveBytes: 0, measuredHeadroomBytes: 100 * gib))
         // Exactly at both floors serves (>= comparator).
         #expect(
             KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .paged,
                 pagedPoolBytes: UnifiedMemoryCap.minimumLoadKVBytes,
-                measuredHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
+                configReserveBytes: 0, measuredHeadroomBytes: UnifiedMemoryCap.minimumLoadKVBytes))
         // Contiguous: classic measured-headroom semantics, pool ignored.
         #expect(
             KVHeadroomProbe.postBuildServeable(
-                kvBackendKind: .contiguous, pagedPoolBytes: 0, measuredHeadroomBytes: 2 * gib))
+                kvBackendKind: .contiguous, pagedPoolBytes: 0, configReserveBytes: 0, measuredHeadroomBytes: 2 * gib))
         #expect(
             !KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: .contiguous, pagedPoolBytes: 100 * gib,
-                measuredHeadroomBytes: gib / 2))
+                configReserveBytes: 0, measuredHeadroomBytes: gib / 2))
     }
 }

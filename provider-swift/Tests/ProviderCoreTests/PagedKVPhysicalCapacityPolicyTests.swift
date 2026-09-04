@@ -236,6 +236,7 @@ struct PagedKVPhysicalCapacityPolicyTests {
         outcome.serveable = KVHeadroomProbe.postBuildServeable(
             kvBackendKind: kind,
             pagedPoolBytes: UInt64(outcome.poolBytes),
+            configReserveBytes: 0,
             measuredHeadroomBytes: outcome.measuredHeadroomBytes)
         return outcome
     }

@@ -26,11 +26,13 @@ Two flags travel with the level and never change it:
 | `mda_verified` | Apple Managed Device Attestation proved which Apple device holds your SE key. Informational; requires `hardware` first. |
 | `code_attested` | The running process proved it is the genuine Darkbloom binary via an APNs code-identity challenge. Required for private-text routing once enforcement is switched on. |
 
-The public routing floor is `Registry.MinTrustLevel`, default `hardware`
-(`EIGENINFERENCE_MIN_TRUST`, `coordinator/registry/config.go`). Routing your own
-requests to your own machine (self-route) relaxes only the trust floor and the
-private-only rule; every privacy gate below still applies, including code
-identity once it is enforced.
+Public traffic only reaches machines at or above the coordinator's trust floor,
+which is `hardware` unless the operator lowers it (`EIGENINFERENCE_MIN_TRUST`;
+the gate-by-gate rule is in
+[Routing gate](../architecture/security/attestation.md#routing-gate)). Routing
+your own requests to your own machine (self-route) relaxes only the trust floor
+and the private-only rule; every privacy gate below still applies, including
+code identity once it is enforced.
 
 `darkbloom status` prints the last `trust_status` message the coordinator sent
 (`Trust: <level> / <status>`); the reasons are `"SE attestation verified,

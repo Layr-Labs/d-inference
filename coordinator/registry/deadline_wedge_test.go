@@ -21,9 +21,24 @@ func wedgeFixture(t *testing.T, enabled bool) (*Registry, *Provider, string) {
 	return reg, p, model
 }
 
+// wedgeRefusal is a refused dispatch that satisfies every discriminator:
+// short prompt, empty slot, primary attempt, and a 9 s first-content clock of
+// which the coordinator consumed 50 ms before dispatch.
+func wedgeRefusal(model string) *PendingRequest {
+	now := time.Now()
+	return &PendingRequest{
+		RequestID:             "wedge-refusal",
+		Model:                 model,
+		EstimatedPromptTokens: 100,
+		Timing:                &RequestTiming{ReceivedAt: now},
+		FirstContentDeadline:  now.Add(9 * time.Second),
+		FirstContentBudgetMS:  8_950,
+	}
+}
+
 func refuseN(reg *Registry, p *Provider, model string, n int) (last DeadlineWedgeEvent) {
 	for i := 0; i < n; i++ {
-		last = reg.NoteDeadlineRefusal(p.ID, model, 100, 0)
+		last = reg.NoteDeadlineRefusal(p.ID, wedgeRefusal(model))
 	}
 	return last
 }
@@ -51,10 +66,14 @@ func TestDeadlineWedgeArmsOnlyAtThreshold(t *testing.T) {
 func TestDeadlineWedgeIgnoresOccupiedSlotsAndLongPrompts(t *testing.T) {
 	reg, p, model := wedgeFixture(t, true)
 	for i := 0; i < 3*deadlineWedgeThreshold; i++ {
-		if ev := reg.NoteDeadlineRefusal(p.ID, model, 100, 1); ev != DeadlineWedgeIgnored {
+		occupied := wedgeRefusal(model)
+		occupied.ReserveOccupancy = 1
+		if ev := reg.NoteDeadlineRefusal(p.ID, occupied); ev != DeadlineWedgeIgnored {
 			t.Fatalf("occupied-slot refusal event = %v, want ignored", ev)
 		}
-		if ev := reg.NoteDeadlineRefusal(p.ID, model, deadlineWedgeMaxPromptTokens, 0); ev != DeadlineWedgeIgnored {
+		long := wedgeRefusal(model)
+		long.EstimatedPromptTokens = deadlineWedgeMaxPromptTokens
+		if ev := reg.NoteDeadlineRefusal(p.ID, long); ev != DeadlineWedgeIgnored {
 			t.Fatalf("long-prompt refusal event = %v, want ignored", ev)
 		}
 	}
@@ -118,7 +137,7 @@ func TestDeadlineWedgeHalfOpenProbe(t *testing.T) {
 	}
 	got.RemovePending(pr.RequestID)
 	// The probe refuses: re-armed with the doubled TTL.
-	if ev := reg.NoteDeadlineRefusal(p.ID, model, 100, 0); ev != DeadlineWedgeRearmed {
+	if ev := reg.NoteDeadlineRefusal(p.ID, wedgeRefusal(model)); ev != DeadlineWedgeRearmed {
 		t.Fatalf("refused probe event = %v, want rearmed", ev)
 	}
 	reg.deadlineWedge.mu.Lock()
@@ -250,5 +269,51 @@ func TestReserveOccupancyStampedOnBothPaths(t *testing.T) {
 	}
 	if retry.ReserveOccupancy != 2 {
 		t.Fatalf("plan-path ReserveOccupancy=%d, want 2 (one pending for the model + one total pending)", retry.ReserveOccupancy)
+	}
+}
+
+// TestDeadlineWedgeIgnoresRefusalsThatDoNotIndictTheSlot: a retry attempt
+// (its clock already shrunk by the first refuser's round trip), a primary
+// attempt whose clock the coordinator had mostly consumed before dispatch
+// (queue wait / Registry.mu writer wait), and a request with no clock or no
+// attached budget are all ignored — three times the threshold of each arms
+// nothing — while the same refusal with a full clock counts. Fails before
+// the fix (every short empty-slot refusal counted regardless of attempt or
+// budget).
+func TestDeadlineWedgeIgnoresRefusalsThatDoNotIndictTheSlot(t *testing.T) {
+	reg, p, model := wedgeFixture(t, true)
+	retry := func() *PendingRequest { pr := wedgeRefusal(model); pr.Attempt = 1; return pr }
+	eaten := func() *PendingRequest {
+		pr := wedgeRefusal(model)
+		// 9 s clock, 1.5 s consumed coordinator-side before dispatch.
+		pr.FirstContentBudgetMS = 7_500
+		return pr
+	}
+	noClock := func() *PendingRequest { pr := wedgeRefusal(model); pr.Timing = nil; return pr }
+	noBudget := func() *PendingRequest { pr := wedgeRefusal(model); pr.FirstContentBudgetMS = 0; return pr }
+	for name, mk := range map[string]func() *PendingRequest{"retry": retry, "clock eaten": eaten, "no clock": noClock, "no budget": noBudget} {
+		for i := 0; i < 3*deadlineWedgeThreshold; i++ {
+			if ev := reg.NoteDeadlineRefusal(p.ID, mk()); ev != DeadlineWedgeIgnored {
+				t.Fatalf("%s refusal event = %v, want ignored", name, ev)
+			}
+		}
+		if reg.DeadlineWedgeSkipActive(p.ID, model) {
+			t.Fatalf("%s refusals armed the skip", name)
+		}
+	}
+	// The lag allowance is inclusive: exactly deadlineWedgeMaxCoordinatorLag
+	// consumed still counts, one millisecond more does not.
+	atLag := wedgeRefusal(model)
+	atLag.FirstContentBudgetMS = 9_000 - deadlineWedgeMaxCoordinatorLag.Milliseconds()
+	if ev := reg.NoteDeadlineRefusal(p.ID, atLag); ev != DeadlineWedgeRun {
+		t.Fatalf("refusal at the lag allowance = %v, want run", ev)
+	}
+	pastLag := wedgeRefusal(model)
+	pastLag.FirstContentBudgetMS = atLag.FirstContentBudgetMS - 1
+	if ev := reg.NoteDeadlineRefusal(p.ID, pastLag); ev != DeadlineWedgeIgnored {
+		t.Fatalf("refusal past the lag allowance = %v, want ignored", ev)
+	}
+	if ev := refuseN(reg, p, model, deadlineWedgeThreshold-1); ev != DeadlineWedgeArmed {
+		t.Fatalf("full-clock primary refusals must still arm (event %v)", ev)
 	}
 }

@@ -16,6 +16,11 @@ import (
 // tracker is the only consumer). Emits routing.deadline_wedge_skip{model,
 // event} so the shadow census is visible before the switch is flipped.
 //
+// The registry applies the slot discriminators (registry.
+// deadlineRefusalIndictsSlot: short prompt, empty slot, primary attempt, a
+// first-content clock the coordinator had barely consumed at dispatch), so
+// retry cascades and budget eaten coordinator-side never count.
+//
 // Only a PROVIDER-originated refusal counts. The coordinator synthesizes the
 // same deadline_unreachable capacity 503 itself when an ADMITTED attempt's
 // first content (or clean empty completion) lands after the request-absolute
@@ -35,6 +40,6 @@ func (d *dispatchState) noteDeadlineWedgeRefusal(provider *registry.Provider, pr
 	if pr.Profile != nil && pr.Profile.BackupOf != "" {
 		return
 	}
-	event := d.s.registry.NoteDeadlineRefusal(provider.ID, pr.Model, pr.EstimatedPromptTokens, pr.ReserveOccupancy)
+	event := d.s.registry.NoteDeadlineRefusal(provider.ID, pr)
 	d.s.ddIncr("routing.deadline_wedge_skip", []string{"model:" + pr.Model, "event:" + string(event)})
 }

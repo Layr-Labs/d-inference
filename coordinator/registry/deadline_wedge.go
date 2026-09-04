@@ -24,13 +24,21 @@ import (
 // wedge_suspected bit cannot see this (it needs admits; refusals never
 // admit).
 //
-// DISCRIMINATOR. A refusal counts ONLY when the request was SHORT (prompt
-// < deadlineWedgeMaxPromptTokens) and was dispatched onto an EMPTY slot
-// (zero coordinator occupancy at reservation: no pending for the provider,
-// nothing running or waiting per its heartbeat). The baseline refusal rate
-// there is 0.5-3.5%, so deadlineWedgeThreshold consecutive such refusals
-// with no accept in between is the wedge signature; a busy box legitimately
-// refusing long prompts is never counted. This must never grow into a
+// DISCRIMINATOR. A refusal counts ONLY when it can indict the slot: the
+// request was SHORT (prompt < deadlineWedgeMaxPromptTokens), was dispatched
+// onto an EMPTY slot (zero coordinator occupancy at reservation: no pending
+// for the provider, nothing running or waiting per its heartbeat), was the
+// PRIMARY attempt (Attempt == 0 — a retry lands with a clock already shrunk
+// by the refuser's round trip, so a healthy second choice refusing it says
+// nothing), and carried a first-content budget the coordinator had consumed
+// at most deadlineWedgeMaxCoordinatorLag of before dispatch (queue wait or
+// a Registry.mu writer-wait episode eats the clock; a slot refusing what is
+// left is the coordinator's latency, not a wedge). The baseline refusal
+// rate there is 0.5-3.5%, so deadlineWedgeThreshold consecutive such
+// refusals with no accept in between is the wedge signature; a busy box
+// legitimately refusing long prompts is never counted. The research numbers
+// behind the feature are all attempt-0 dispatches with full clocks, so the
+// narrowing loses no target signal. This must never grow into a
 // refusal-rate derater: refusal rate is a lagging load signal active on 93%
 // of gpt-oss provider×5-min cells.
 //
@@ -62,6 +70,13 @@ const (
 	// deadlineWedgeMaxPromptTokens: refusals of prompts at or above this
 	// are never counted (a long prompt can legitimately miss the deadline).
 	deadlineWedgeMaxPromptTokens = 2_048
+	// deadlineWedgeMaxCoordinatorLag is the most of the request-absolute
+	// first-content clock the coordinator may have consumed before dispatch
+	// (ingress → the budget attached to the attempt) for the refusal to
+	// count: normal routing costs milliseconds, while queue wait and
+	// Registry.mu writer waits (0.5-2.5 s in the 2026-08-31 regime) leave a
+	// budget a healthy slot can legitimately refuse.
+	deadlineWedgeMaxCoordinatorLag = time.Second
 	// deadlineWedgeBaseTTL / MaxTTL bound the quarantine: base 120 s (the
 	// research ceiling), doubling per re-trip, capped at 10 min.
 	deadlineWedgeBaseTTL = 120 * time.Second
@@ -143,10 +158,11 @@ func loadDeadlineWedgeSkipEnabled() bool {
 	return env.EnvBool(envDeadlineWedgeSkip, false)
 }
 
-// note records one deadline refusal outcome for the pair. emptySlot and
-// promptTokens describe the dispatch that was refused. Returns the event.
-func (w *deadlineWedgeTracker) note(key deadlineWedgeKey, emptySlot bool, promptTokens int, now time.Time) DeadlineWedgeEvent {
-	if !emptySlot || promptTokens >= deadlineWedgeMaxPromptTokens {
+// note records one deadline refusal outcome for the pair. indicts reports
+// whether the refused dispatch satisfies every discriminator
+// (deadlineRefusalIndictsSlot). Returns the event.
+func (w *deadlineWedgeTracker) note(key deadlineWedgeKey, indicts bool, now time.Time) DeadlineWedgeEvent {
+	if !indicts {
 		return DeadlineWedgeIgnored
 	}
 	w.mu.Lock()
@@ -329,21 +345,41 @@ func deadlineWedgeBackoff(trips int) time.Duration {
 
 // ---- Registry surface ----
 
-// NoteDeadlineRefusal records a deadline_unreachable refusal of the
-// (provider, model) pair. reserveOccupancy is the winner's coordinator-side
-// occupancy at reservation (PendingRequest.ReserveOccupancy: pending +
-// running + waiting before this request); promptTokens the estimated prompt.
-// Called by the api layer from the dispatch loop's pre-content error funnel
-// for the primary attempt (speculative backups are excluded by the caller:
-// their remaining budget is shrunken by construction).
-func (r *Registry) NoteDeadlineRefusal(providerID, modelID string, promptTokens, reserveOccupancy int) DeadlineWedgeEvent {
-	if providerID == "" || modelID == "" {
+// NoteDeadlineRefusal records a provider-originated deadline_unreachable
+// refusal of pr's dispatch onto providerID. pr is the refused attempt's
+// pending request as the dispatch loop holds it after the terminal: its
+// Attempt, ReserveOccupancy (stamped at reservation commit), estimated
+// prompt and the first-content clock (Timing.ReceivedAt, FirstContentDeadline
+// and the FirstContentBudgetMS attached at dispatch) are the discriminators
+// (deadlineRefusalIndictsSlot). Called by the api layer from the dispatch
+// loop's pre-content error funnel; speculative backups and the coordinator's
+// own late-content conversions are excluded by the caller.
+func (r *Registry) NoteDeadlineRefusal(providerID string, pr *PendingRequest) DeadlineWedgeEvent {
+	if providerID == "" || pr == nil || pr.Model == "" {
 		return DeadlineWedgeIgnored
 	}
 	r.mu.RLock()
-	key := deadlineWedgeKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}
+	key := deadlineWedgeKey{FaultKey: r.faultKeyLocked(providerID), ModelID: pr.Model}
 	r.mu.RUnlock()
-	return r.deadlineWedge.note(key, reserveOccupancy == 0, promptTokens, time.Now())
+	return r.deadlineWedge.note(key, deadlineRefusalIndictsSlot(pr), time.Now())
+}
+
+// deadlineRefusalIndictsSlot applies the DISCRIMINATOR (file comment): short
+// prompt, empty slot, primary attempt, and a first-content clock of which
+// the coordinator consumed at most deadlineWedgeMaxCoordinatorLag before the
+// attempt was dispatched. A request without a clock (no ingress stamp or no
+// deadline) or without an attached budget never indicts: the provider was
+// not handed a budget it could refuse.
+func deadlineRefusalIndictsSlot(pr *PendingRequest) bool {
+	if pr.Attempt != 0 || pr.ReserveOccupancy != 0 || pr.EstimatedPromptTokens >= deadlineWedgeMaxPromptTokens {
+		return false
+	}
+	if pr.Timing == nil || pr.Timing.ReceivedAt.IsZero() || pr.FirstContentDeadline.IsZero() || pr.FirstContentBudgetMS <= 0 {
+		return false
+	}
+	clockMS := pr.FirstContentDeadline.Sub(pr.Timing.ReceivedAt).Milliseconds()
+	consumedMS := clockMS - pr.FirstContentBudgetMS
+	return consumedMS <= deadlineWedgeMaxCoordinatorLag.Milliseconds()
 }
 
 // DeadlineWedgeSkipActive reports whether the pair is currently skipped

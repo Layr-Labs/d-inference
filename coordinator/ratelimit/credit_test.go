@@ -94,3 +94,74 @@ func TestKeyTokenLimiterCreditOutput(t *testing.T) {
 	kt.CreditOutput("k", 5, 0, 0)
 	kt.CreditOutput("", 5, rps, burst)
 }
+
+// tokensAt reads the raw bucket level (negative while in debt) — Stat clamps
+// at zero, so it cannot tell a dropped credit from a landed one.
+func tokensAt(t *testing.T, l *Limiter, key string) float64 {
+	t.Helper()
+	l.mu.Lock()
+	e := l.buckets[key]
+	l.mu.Unlock()
+	if e == nil {
+		t.Fatalf("no bucket for %q", key)
+	}
+	return e.limiter.TokensAt(time.Now())
+}
+
+// TestCreditNLandsWhileInDebt: a bucket driven negative (the always-landing
+// Commit, an overage DebitOutput) must still absorb a partial credit. Before
+// the fix CreditN went through AllowN, whose zero future-reserve refuses a
+// reservation that leaves the bucket negative, so the credit was dropped
+// while the counter still reported it: 64K burst, 5,000 left, DebitN 11,000
+// → −6,000; CreditN 1,700 stayed at −6,000 instead of −4,300.
+func TestCreditNLandsWhileInDebt(t *testing.T) {
+	// A negligible refill so the arithmetic below is exact over the test.
+	l := New(Config{RPS: 0.001, Burst: 64_000})
+	if ok, _ := l.AllowN("acct", 59_000); !ok {
+		t.Fatal("initial 59,000 admission rejected on a full 64,000 bucket")
+	}
+	l.DebitN("acct", 11_000)
+	if got := tokensAt(t, l, "acct"); got > -5_990 || got < -6_010 {
+		t.Fatalf("after the debit tokens = %.0f, want ~-6,000", got)
+	}
+	l.CreditN("acct", 1_700)
+	if got := tokensAt(t, l, "acct"); got > -4_290 || got < -4_310 {
+		t.Fatalf("partial credit into debt: tokens = %.0f, want ~-4,300 (the credit was dropped)", got)
+	}
+	// Behavioural twin: three partial credits reach +100 only if each landed.
+	l.CreditN("acct", 4_300)
+	l.CreditN("acct", 100)
+	if !l.CanN("acct", 100) {
+		t.Fatalf("after crediting back to +100 CanN(100) is false: tokens = %.0f", tokensAt(t, l, "acct"))
+	}
+	if l.CanN("acct", 101) {
+		t.Fatalf("CanN(101) true: credited more than the sum of credits (tokens = %.0f)", tokensAt(t, l, "acct"))
+	}
+}
+
+// TestCreditNWithRateLandsWhileInDebt is the per-key twin.
+func TestCreditNWithRateLandsWhileInDebt(t *testing.T) {
+	const rps, burst = 0.001, 10_000
+	l := New(Config{})
+	if ok, _ := l.AllowNWithRate("k", 9_000, rps, burst); !ok {
+		t.Fatal("initial admission rejected")
+	}
+	l.DebitNWithRate("k", 3_000, rps, burst) // → -2,000
+	if got := tokensAt(t, l, "k"); got > -1_990 || got < -2_010 {
+		t.Fatalf("after the debit tokens = %.0f, want ~-2,000", got)
+	}
+	l.CreditNWithRate("k", 500, rps, burst)
+	if got := tokensAt(t, l, "k"); got > -1_490 || got < -1_510 {
+		t.Fatalf("partial credit into debt: tokens = %.0f, want ~-1,500 (the credit was dropped)", got)
+	}
+	l.CreditNWithRate("k", 1_500, rps, burst)
+	l.CreditNWithRate("k", 50, rps, burst)
+	if !l.CanNWithRate("k", 50, rps, burst) || l.CanNWithRate("k", 51, rps, burst) {
+		t.Fatalf("credits did not sum: tokens = %.0f, want ~50", tokensAt(t, l, "k"))
+	}
+	// Still clamped at the burst on the way up.
+	l.CreditNWithRate("k", 1_000_000, rps, burst)
+	if got := tokensAt(t, l, "k"); got > burst+1 {
+		t.Fatalf("credit above burst: tokens = %.0f, want <= %d", got, burst)
+	}
+}

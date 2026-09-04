@@ -143,15 +143,23 @@ func (l *Limiter) DebitN(accountID string, n int) {
 // reserveN), so the credit lands atomically under the bucket's own lock and
 // is clamped at the burst on the next advance(): a bucket never exceeds its
 // capacity, and a credit larger than what was consumed is simply lost at the
-// top. Bypasses AllowN's n <= 0 short-circuit deliberately. Empty accountID
-// or n <= 0 is a no-op.
+// top.
+//
+// The credit goes through ReserveN, never AllowN: AllowN is reserveN with a
+// zero maxFutureReserve, and reserveN refuses (and leaves the bucket
+// untouched) whenever the post-credit level is still negative — precisely
+// the in-debt state the always-landing Commit and an overage DebitOutput put
+// a busy account in. A partial credit into debt was silently dropped that
+// way. ReserveN's infinite future-reserve accepts any negative n, so the
+// credit always lands. Bypasses AllowN's n <= 0 short-circuit deliberately.
+// Empty accountID or n <= 0 is a no-op.
 func (l *Limiter) CreditN(accountID string, n int) {
 	if accountID == "" || n <= 0 {
 		return
 	}
 	now := time.Now()
 	e := l.bucketFor(accountID, now)
-	e.limiter.AllowN(now, -n)
+	_ = e.limiter.ReserveN(now, -n).OK()
 }
 
 // CreditNWithRate is CreditN against a per-key bucket configured with the
@@ -162,7 +170,7 @@ func (l *Limiter) CreditNWithRate(key string, n int, rps float64, burst int) {
 	}
 	now := time.Now()
 	e := l.bucketForWithRate(key, rps, burst, now)
-	e.limiter.AllowN(now, -n)
+	_ = e.limiter.ReserveN(now, -n).OK()
 }
 
 // CanN reports whether n units are currently available for the account WITHOUT

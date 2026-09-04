@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `075d37a91`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -23,6 +23,7 @@ pieces fit together, and what they guarantee, is explained in
 
 | Constant | Value | Meaning | Citation |
 |---|---|---|---|
+| `usageHistoryLimit` | `100` | Newest in-process usage entries per consumer, oldest first; capacity grows lazily to the limit. Does not prune durable usage or change balances. | `coordinator/payments/payments.go` (`Ledger.RecordUsage`) |
 | `DefaultInputPricePerMillion` | `50_000` | fallback input price ($0.05 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `DefaultOutputPricePerMillion` | `200_000` | fallback output price ($0.20 / 1M tokens) | `coordinator/payments/pricing.go` |
 | `minimumChargeMicroUSD` | `100` | per-request floor ($0.0001) applied by `CalculateCostWithOverrides`; not applied to service accounts | `coordinator/payments/pricing.go` |

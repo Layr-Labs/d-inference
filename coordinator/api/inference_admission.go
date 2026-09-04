@@ -331,6 +331,9 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			hasTools:              p.hasTools,
 			retryAfterMs:          retryAfter * 1000,
 			params:                rejectionSamplingParams(parsed),
+			// Do not add another fleet scan while the scan semaphore is full.
+			// recordRejection persists could_have_served=null for this unknown.
+			skipServability: true,
 		})
 		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 			"the coordinator is at routing capacity — please retry",

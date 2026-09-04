@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
 
@@ -111,7 +111,14 @@ The full column list, retention and export rules are in [system-profiler.md](./s
 
 ### Pre-dispatch rejections
 
-A request that never reaches a provider has no route row. `recordRejection` (`coordinator/api/rejection_telemetry.go`) writes a `store.RejectionRecord` with `stage`, `reason_code`, `http_status`, the request shape (token estimates, flags, non-content params) and a counterfactual servability snapshot (`could_have_served = candidate_count > 0`, `warm_provider_existed`, `best_ttft_ms`).
+A request that never reaches a provider has no route row. `recordRejection` (`coordinator/api/rejection_telemetry.go`) writes a `store.RejectionRecord` with `stage`, `reason_code`, `http_status`, the request shape (token estimates, flags, non-content params) and a counterfactual servability snapshot (`could_have_served = candidate_count > 0` when evaluated; `null` when skipped, plus `warm_provider_existed` and `best_ttft_ms`).
+
+Routing-saturation shedding sets `skipServability` so the telemetry worker does
+not run another fleet scan under overload. `could_have_served` is then SQL NULL
+and JSON `null`, or an empty CSV cell. The admin `could_have_served=true|false`
+filters exclude unknown samples (`coordinator/api/admin_telemetry.go`,
+`filterRejectionRecords`, `csvOptionalBool`). Count only non-NULL values when
+computing the false-rejection rate; unknown is not a necessary rejection.
 
 | `stage` | `reason_code` values written today |
 |---|---|

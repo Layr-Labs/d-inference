@@ -442,7 +442,7 @@ func testRejectionStore(t *testing.T, s Store) {
 		Params:                  json.RawMessage(`{"temperature":0.7}`),
 		RequestBodyBytes:        2048,
 		RetryAfterMs:            1500,
-		CouldHaveServed:         true,
+		CouldHaveServed:         boolPointer(true),
 		CandidateCount:          4,
 		CapacityRejections:      3,
 		ModelTooLargeRejections: 1,
@@ -476,7 +476,7 @@ func testRejectionStore(t *testing.T, s Store) {
 	if got.RequestedModel != rec.RequestedModel {
 		t.Errorf("requested_model = %q, want %q", got.RequestedModel, rec.RequestedModel)
 	}
-	if !got.CouldHaveServed {
+	if got.CouldHaveServed == nil || !*got.CouldHaveServed {
 		t.Error("could_have_served = false, want true")
 	}
 	if got.CandidateCount != 4 {
@@ -517,5 +517,36 @@ func testRejectionStore(t *testing.T, s Store) {
 	}
 	if all[1].RequestID != "req-rej-1" {
 		t.Errorf("second record request_id = %q, want req-rej-1", all[1].RequestID)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func TestRejectionServabilityStatesRoundTrip(t *testing.T) {
+	for name, st := range storeBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			states := []*bool{nil, boolPointer(false), boolPointer(true)}
+			for i, state := range states {
+				if err := st.RecordRejection(&RejectionRecord{RequestID: fmt.Sprintf("state-%d", i), CouldHaveServed: state, CreatedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			records := st.RejectionRecordsSince(time.Now().Add(-time.Minute))
+			found := 0
+			for _, rec := range records {
+				for i, want := range states {
+					if rec.RequestID != fmt.Sprintf("state-%d", i) {
+						continue
+					}
+					found++
+					if (rec.CouldHaveServed == nil) != (want == nil) || (want != nil && *rec.CouldHaveServed != *want) {
+						t.Fatalf("%s servability = %v, want %v", rec.RequestID, rec.CouldHaveServed, want)
+					}
+				}
+			}
+			if found != len(states) {
+				t.Fatalf("round-tripped %d states, want %d", found, len(states))
+			}
+		})
 	}
 }

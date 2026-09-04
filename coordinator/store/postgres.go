@@ -50,6 +50,13 @@ type cachedPrice struct {
 // NewPostgres creates a new PostgresStore connected to the given database URL.
 // It runs schema migrations on startup.
 func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
+	return newPostgresWithPoolConfig(ctx, scfg, nil)
+}
+
+// newPostgresWithPoolConfig is NewPostgres with a hook that may adjust the
+// parsed pool configuration before the pool is created. Production passes nil;
+// package tests use it to attach a pgx query tracer.
+func newPostgresWithPoolConfig(ctx context.Context, scfg Config, tune func(*pgxpool.Config)) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
@@ -68,6 +75,9 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
+	if tune != nil {
+		tune(cfg)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -2210,121 +2220,6 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 	return records
 }
 
-// UsageLocationBuckets aggregates usage by approximate request origin.
-func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			COALESCE(request_location->>'city', '') AS city,
-			COALESCE(request_location->>'region', '') AS region,
-			COALESCE(request_location->>'region_code', '') AS region_code,
-			COALESCE(request_location->>'country', '') AS country,
-			COALESCE(request_location->>'country_code', '') AS country_code,
-			COALESCE(AVG(NULLIF(request_location->>'latitude', '')::double precision), 0),
-			COALESCE(AVG(NULLIF(request_location->>'longitude', '')::double precision), 0),
-			COUNT(*),
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COUNT(DISTINCT provider_id)
-		 FROM usage
-		 WHERE request_location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR created_at >= $1)
-		 GROUP BY city, region, region_code, country, country_code
-		 ORDER BY COUNT(*) DESC`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var buckets []UsageLocationBucket
-	for rows.Next() {
-		var b UsageLocationBucket
-		if err := rows.Scan(
-			&b.City,
-			&b.Region,
-			&b.RegionCode,
-			&b.Country,
-			&b.CountryCode,
-			&b.Latitude,
-			&b.Longitude,
-			&b.Requests,
-			&b.PromptTokens,
-			&b.CompletionTokens,
-			&b.Providers,
-		); err != nil {
-			continue
-		}
-		buckets = append(buckets, b)
-	}
-	return buckets
-}
-
-// UsageFlowBuckets aggregates directional consumer→provider flows by JOINing
-// the usage table with providers in SQL. This replaces loading all rows into
-// Go and doing the aggregation in-process. The query only returns the top 50
-// flows (by request count) so the result set is bounded.
-func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*ProviderLocation) []UsageFlowBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := s.pool.Query(ctx,
-		`SELECT
-			COALESCE(u.request_location->>'city', '')         AS c_city,
-			COALESCE(u.request_location->>'region', '')       AS c_region,
-			COALESCE(u.request_location->>'region_code', '')  AS c_region_code,
-			COALESCE(u.request_location->>'country', '')      AS c_country,
-			COALESCE(u.request_location->>'country_code', '') AS c_country_code,
-			COALESCE(AVG(NULLIF(u.request_location->>'latitude',  '')::double precision), 0) AS c_lat,
-			COALESCE(AVG(NULLIF(u.request_location->>'longitude', '')::double precision), 0) AS c_lng,
-			COALESCE(p.location->>'city', '')         AS p_city,
-			COALESCE(p.location->>'region', '')       AS p_region,
-			COALESCE(p.location->>'region_code', '')  AS p_region_code,
-			COALESCE(p.location->>'country', '')      AS p_country,
-			COALESCE(p.location->>'country_code', '') AS p_country_code,
-			COALESCE(AVG(NULLIF(p.location->>'latitude',  '')::double precision), 0) AS p_lat,
-			COALESCE(AVG(NULLIF(p.location->>'longitude', '')::double precision), 0) AS p_lng,
-			COUNT(*)                              AS requests,
-			COALESCE(SUM(u.prompt_tokens), 0)     AS prompt_tokens,
-			COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens
-		 FROM usage u
-		 JOIN providers p ON p.id = u.provider_id
-		 WHERE u.request_location IS NOT NULL
-		   AND p.location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR u.created_at >= $1)
-		 GROUP BY c_city, c_region, c_region_code, c_country, c_country_code,
-		          p_city, p_region, p_region_code, p_country, p_country_code
-		 ORDER BY requests DESC
-		 LIMIT 50`,
-		nullSince(since),
-	)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var buckets []UsageFlowBucket
-	for rows.Next() {
-		var b UsageFlowBucket
-		if err := rows.Scan(
-			&b.ConsumerCity, &b.ConsumerRegion, &b.ConsumerRegionCode,
-			&b.ConsumerCountry, &b.ConsumerCountryCode,
-			&b.ConsumerLatitude, &b.ConsumerLongitude,
-			&b.ProviderCity, &b.ProviderRegion, &b.ProviderRegionCode,
-			&b.ProviderCountry, &b.ProviderCountryCode,
-			&b.ProviderLatitude, &b.ProviderLongitude,
-			&b.Requests, &b.PromptTokens, &b.CompletionTokens,
-		); err != nil {
-			continue
-		}
-		buckets = append(buckets, b)
-	}
-	return buckets
-}
-
 func nullSince(since time.Time) any {
 	if since.IsZero() {
 		return nil
@@ -2349,56 +2244,71 @@ func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amount
 }
 
 // UsageCountSince returns the number of usage records created at or after the
-// given time. Uses idx_usage_created for an index-only count.
-func (s *PostgresStore) UsageCountSince(since time.Time) int64 {
+// given time. Uses idx_usage_created for an index-only count. A statement that
+// cannot complete is reported as an error, never as a zero count.
+func (s *PostgresStore) UsageCountSince(since time.Time) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var count int64
-	_ = s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM usage
 		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)`,
 		nullSince(since),
-	).Scan(&count)
-	return count
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: usage count: %w", err)
+	}
+	return count, nil
 }
 
 // UsageTotals returns aggregated lifetime totals from the materialized
 // usage_totals counter row. This is a single PK lookup — O(1) regardless
-// of how many rows exist in the usage table.
-func (s *PostgresStore) UsageTotals() UsageTotals {
+// of how many rows exist in the usage table. A statement that cannot complete
+// is reported as an error, never as zero totals; a database with no counter
+// row yet (before the usage_totals migration) genuinely has zero totals.
+func (s *PostgresStore) UsageTotals() (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var t UsageTotals
-	_ = s.pool.QueryRow(ctx,
+	err := s.pool.QueryRow(ctx,
 		`SELECT total_requests, total_prompt_tokens, total_completion_tokens
 		 FROM usage_totals WHERE id = 1`,
 	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
-	return t
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UsageTotals{}, nil
+	}
+	if err != nil {
+		return UsageTotals{}, fmt.Errorf("store: usage totals: %w", err)
+	}
+	return t, nil
 }
 
-// UsageTotalsSince returns aggregate usage at or after `since`.
-func (s *PostgresStore) UsageTotalsSince(since time.Time) UsageTotals {
+// UsageTotalsSince returns aggregate usage at or after `since`. A statement
+// that cannot complete is reported as an error, never as zero totals.
+func (s *PostgresStore) UsageTotalsSince(since time.Time) (UsageTotals, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var t UsageTotals
-	_ = s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COUNT(*),
 		        COALESCE(SUM(prompt_tokens), 0),
 		        COALESCE(SUM(completion_tokens), 0)
 		 FROM usage
 		 WHERE created_at >= $1`,
 		since,
-	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens)
-	return t
+	).Scan(&t.Requests, &t.PromptTokens, &t.CompletionTokens); err != nil {
+		return UsageTotals{}, fmt.Errorf("store: usage totals since: %w", err)
+	}
+	return t, nil
 }
 
 // UsageTimeSeries returns usage buckets at or after `since` using a bounded,
 // caller-selected interval so long windows do not return tens of thousands of
-// minute rows.
-func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket {
+// minute rows. A statement that cannot complete — including one that times
+// out mid-iteration — is reported as an error, never as a partial series.
+func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error) {
 	since, until, bucketSize = normalizeUsageTimeSeriesRequest(since, until, bucketSize, time.Now())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2426,7 +2336,7 @@ func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.
 		usageTimeSeriesMaxBuckets,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: usage time series: %w", err)
 	}
 	defer rows.Close()
 
@@ -2434,11 +2344,14 @@ func (s *PostgresStore) UsageTimeSeries(since, until time.Time, bucketSize time.
 	for rows.Next() {
 		var b UsageBucket
 		if err := rows.Scan(&b.Minute, &b.Requests, &b.PromptTokens, &b.CompletionTokens); err != nil {
-			continue
+			return nil, fmt.Errorf("store: usage time series: scan: %w", err)
 		}
 		buckets = append(buckets, b)
 	}
-	return limitUsageTimeSeriesBuckets(buckets)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: usage time series: %w", err)
+	}
+	return limitUsageTimeSeriesBuckets(buckets), nil
 }
 
 // rewardLedgerTypesSQLList renders RewardLedgerTypes as a comma-separated list
@@ -2540,62 +2453,6 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 		out = append(out, r)
 	}
 	return out
-}
-
-// NetworkTotals returns aggregated metrics across all earnings for the given
-// time window. Zero `since` means all-time. Totals combine inference work
-// (provider_earnings) with non-inference reward ledger entries (referral_reward,
-// admin_reward), but rewards are only counted for provider accounts (those with
-// inference work in the window) so consumer-only reward recipients don't inflate
-// network provider totals. ActiveAccounts counts distinct provider accounts.
-func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// `since`, when set, is bound once as $1 and referenced in the work,
-	// base_reward, providers, and reward subqueries.
-	args := []any{}
-	workWhere := ` WHERE model <> 'base_reward'`
-	baseRewardWhere := ` WHERE model = 'base_reward'`
-	providerSince := ""
-	rewardSince := ""
-	if !since.IsZero() {
-		args = append(args, since)
-		workWhere += ` AND created_at >= $1`
-		baseRewardWhere += ` AND created_at >= $1`
-		providerSince = ` AND created_at >= $1`
-		rewardSince = ` AND le.created_at >= $1`
-	}
-
-	rewardTypes := rewardLedgerTypesSQLList()
-	q := `WITH work AS (
-	          SELECT COALESCE(SUM(amount_micro_usd),0)                  AS work_micro,
-	                 COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
-		                 COUNT(*)                                           AS jobs
-		          FROM provider_earnings` + workWhere + `
-		      ),
-		      base_reward AS (
-		          SELECT COALESCE(SUM(amount_micro_usd),0) AS reward_micro
-		          FROM provider_earnings` + baseRewardWhere + `
-		      ),
-		      providers AS (
-		          SELECT DISTINCT account_id FROM provider_earnings WHERE account_id != ''` + providerSince + `
-	      ),
-	      reward AS (
-	          SELECT COALESCE(SUM(le.amount_micro_usd),0) AS reward_micro
-	          FROM ledger_entries le
-	          JOIN providers p ON p.account_id = le.account_id
-	          WHERE le.entry_type IN (` + rewardTypes + `)` + rewardSince + `
-	      )
-	      SELECT work.work_micro + base_reward.reward_micro + reward.reward_micro AS earnings_micro,
-	             work.work_micro, base_reward.reward_micro + reward.reward_micro, work.tokens, work.jobs,
-	             (SELECT COUNT(*) FROM providers)        AS active_accounts
-	      FROM work, base_reward, reward`
-
-	var t NetworkTotalsRow
-	_ = s.pool.QueryRow(ctx, q, args...).
-		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
-	return t
 }
 
 // UsageRecords returns usage records from the database, ordered by creation time.
@@ -5689,6 +5546,9 @@ func (s *PostgresStore) ListDueVerificationJobs(
 	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
 }
 
+// verificationDuePageHint caps the initial capacity of a due-rows page.
+const verificationDuePageHint = 256
+
 func (s *PostgresStore) ListDueVerificationJobsPage(
 	ctx context.Context,
 	now time.Time,
@@ -5713,7 +5573,11 @@ func (s *PostgresStore) ListDueVerificationJobsPage(
 		return nil, fmt.Errorf("store: list due verification jobs: %w", err)
 	}
 	defer rows.Close()
-	out := make([]VerificationJob, 0, limit)
+	// The page is sized for the common case, not the limit: the caller asks
+	// for its whole queue capacity (4,096) every poll while only a few dozen
+	// rows are usually due, and a 4,096-row pre-allocation per poll was 16 %
+	// of all bytes the coordinator allocated. append grows it when needed.
+	out := make([]VerificationJob, 0, min(limit, verificationDuePageHint))
 	for rows.Next() {
 		rec, scanErr := scanVerificationJob(rows)
 		if scanErr != nil {

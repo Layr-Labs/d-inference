@@ -2350,6 +2350,9 @@ type Registry struct {
 	// restarts. Keyed by the device's Secure Enclave public key. Set once at
 	// startup; nil = no-op. Guarded by r.mu (set + read).
 	onHardUntrust func(seKey string)
+	// lockWaitObserver, when set, is told how long each request-path write
+	// acquisition of r.mu waited, tagged by call site (see lockWrite).
+	lockWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
 }
 
 // pendingModelLoadTTL bounds how long an outstanding (or failed) load_model
@@ -2485,8 +2488,8 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 // by the provider's stable fault key (faultKeyLocked) so the cool-down
 // survives a reconnect within its TTL.
 func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	hold := r.lockWrite("dispatch_load_failure")
+	defer hold.unlock()
 	now := time.Now()
 	// Opportunistic sweep: bound the map by dropping expired entries when it
 	// grows (churned identities are never re-keyed).
@@ -2507,8 +2510,8 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	hold := r.lockWrite("dispatch_load_cooldown")
+	defer hold.unlock()
 	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
 }
 
@@ -5086,6 +5089,11 @@ func (r *Registry) Disconnect(id string) {
 	// outside r.mu so it can't stall the registry.
 	p.closeWriterNow()
 
+	// Final reputation persist: job successes are persisted on a 30 s throttle
+	// (RecordJobSuccess), so flush whatever accumulated since the last window
+	// before the row goes cold. Async, like every other persist.
+	r.persistReputation(p)
+
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
 	if r.store != nil {
@@ -5732,7 +5740,17 @@ func trustRank(t TrustLevel) int {
 // reputation. latency is the per-request responsiveness sample (time to first
 // content, with the prompt-size prefill removed); a non-positive value records
 // the success without touching the latency EWMA. Both updates happen under one
-// lock and a single persist.
+// lock.
+//
+// Persistence is throttled to the same 30 s window the heartbeat path uses:
+// an unthrottled upsert per completion was ~46 statements and goroutines per
+// second in production for a row nothing reads until the provider's next
+// registration. The in-memory counters keep accumulating and the next window
+// (or Disconnect's final persist) writes them. What can be lost is the last
+// <=30 s of counts for a provider whose connection ends without Disconnect —
+// a coordinator shutdown, which drains without disconnecting providers — the
+// same exposure the uptime counter already had. Failures still persist
+// immediately (RecordJobFailure).
 func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
@@ -5746,8 +5764,7 @@ func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
 
-	// Persist reputation.
-	r.persistReputation(p)
+	r.persistReputationThrottled(p)
 }
 
 // RecordLatency folds a per-request responsiveness sample into the provider's
@@ -5771,10 +5788,31 @@ func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
 	if !ok {
 		return
 	}
+	p.RecordLatency(latency)
+}
 
+// RecordLatency is Registry.RecordLatency for a provider the caller already
+// holds: it touches only p.mu, never the registry lock. The api layer uses it
+// on the first-byte path, where even a shared registry acquisition would put
+// the first client write behind every queued registry writer. A non-positive
+// latency is ignored; see Registry.RecordLatency for the persistence contract.
+func (p *Provider) RecordLatency(latency time.Duration) {
+	if p == nil || latency <= 0 {
+		return
+	}
 	p.mu.Lock()
 	p.Reputation.RecordLatency(latency)
 	p.mu.Unlock()
+}
+
+// HoldWriteLockForTest acquires the registry write lock and returns the
+// function that releases it. Test-only, in the spirit of reservationAfterScan:
+// it lets api-package tests prove that a request-path step no longer waits on
+// r.mu (for example that the first client byte is written while a writer holds
+// the lock). Production code never calls it.
+func (r *Registry) HoldWriteLockForTest() (release func()) {
+	r.mu.Lock()
+	return r.mu.Unlock
 }
 
 // RecordJobFailure records a failed job for the provider's reputation.

@@ -25,10 +25,12 @@ import (
 // DISCRIMINATOR — zero interleaved accepts. Transient fullness is NORMAL: a
 // saturated box legitimately capacity-rejects while it is ALSO serving. What
 // separates pathology from fullness is that a serving box keeps producing
-// accepts (first content chunk / clean completion), and any accept resets the
-// pair's strike streak (RecordCapacityAccept). Only Threshold-many capacity
-// rejects inside Window with NO accept in between — the black-hole signature —
-// trip the cooldown. Keyed per (provider, model) with a struct key (no
+// accepts (first content chunk / clean completion), and any accept clears the
+// strikes recorded up to the instant it was OBSERVED (RecordCapacityAccept /
+// RecordCapacityAcceptObserved — a strike recorded after that instant is not
+// "before an accept" and survives an accept that is applied late). Only
+// Threshold-many capacity rejects inside Window with NO accept in between —
+// the black-hole signature — trip the cooldown. Keyed per (provider, model) with a struct key (no
 // delimiter aliasing), mirroring error_cooldown.go.
 //
 // RE-PROBE + BACKOFF — TRUE HALF-OPEN. A trip quarantines the pair for
@@ -243,8 +245,8 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	if providerID == "" || modelID == "" {
 		return false
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	hold := r.lockWrite("capacity_reject")
+	defer hold.unlock()
 	now := time.Now()
 
 	// Gray-box trackers ride the SAME classified entry point but have their own
@@ -379,7 +381,7 @@ func (r *Registry) claimCapacityProbeLocked(providerID, modelID string, now time
 // (MarkRateOutcomeCounted) and the completion-time accept can decide whether the
 // request still owes its one rate outcome.
 func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcomeRecorded bool) {
-	return r.RecordCapacityAcceptOutcome(providerID, modelID, true)
+	return r.RecordCapacityAcceptObserved(providerID, modelID, time.Now(), true)
 }
 
 // RecordCapacityAcceptOutcome is RecordCapacityAccept with explicit control
@@ -395,6 +397,37 @@ func (r *Registry) RecordCapacityAccept(providerID, modelID string) (rateOutcome
 // cooldown/streak/clamp accept semantics below are identical for both values
 // (belt-and-braces accepts stay harmless there).
 func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, countRateOutcome bool) (rateOutcomeRecorded bool) {
+	return r.RecordCapacityAcceptObserved(providerID, modelID, time.Now(), countRateOutcome)
+}
+
+// RecordCapacityAcceptObserved is RecordCapacityAcceptOutcome for an accept
+// that was OBSERVED at observedAt but is being applied now — the commit-time
+// accept runs off the dispatch goroutine so the first client byte never waits
+// for the registry write lock, and even a synchronous caller waits behind
+// every queued writer (~190 ms at the production median) before its accept
+// lands. In that gap a capacity reject for the SAME pair can be recorded. It
+// happened AFTER the accept, so it is not "a reject with no accept after it"
+// erased by the accept; it is the first strike of a possible new streak and
+// must survive. Concretely:
+//
+//   - reject STRIKES stamped after observedAt are kept (their timestamps are
+//     the existing per-strike window stamps); older ones are cleared;
+//   - the budget clamp's accept proof (release condition b) is granted only
+//     when the clamp was armed at or before observedAt — a clamp re-armed by
+//     a later reject keeps waiting for an accept that follows it;
+//   - cooldown history is rebuilt from the surviving strikes with fresh
+//     backoff: an observed accept resets every earlier trip. Retaining the
+//     previous trip count would incorrectly lengthen a newly justified trip;
+//   - the node-level capacity streak is always cleared: it is a bare count
+//     that cannot be split by time; keeping it would over-count toward
+//     ejection of a node that has just served content, and completion
+//     (RecordProviderServeOutcome ok=true) clears it anyway;
+//   - the capacity-503 RATE outcome is stamped with the apply time: the rate
+//     window is order-independent by design and its histories must stay
+//     chronological.
+//
+// A zero or future observedAt means "observed now".
+func (r *Registry) RecordCapacityAcceptObserved(providerID, modelID string, observedAt time.Time, countRateOutcome bool) (rateOutcomeRecorded bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
@@ -418,12 +451,28 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 			return false
 		}
 	}
-	r.mu.Lock()
+	hold := r.lockWrite("capacity_accept")
 	now := time.Now()
+	if observedAt.IsZero() || observedAt.After(now) {
+		observedAt = now
+	}
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
-	delete(r.capacityRejectStrikes, key)
-	delete(r.capacityCooldowns, key)
-	delete(r.capacityCooldownTrips, key)
+	// Clear the strikes this accept answers — those recorded up to the instant
+	// it was observed. Strikes are chronological, so the survivors are a suffix.
+	if strikes := r.capacityRejectStrikes[key]; len(strikes) > 0 {
+		kept := strikes[:0]
+		for _, ts := range strikes {
+			if ts.After(observedAt) {
+				kept = append(kept, ts)
+			}
+		}
+		if len(kept) == 0 {
+			delete(r.capacityRejectStrikes, key)
+		} else {
+			r.capacityRejectStrikes[key] = kept
+		}
+	}
+	r.rebuildCapacityCooldownLocked(key)
 	// Gray-box trackers: the accept is PROOF for the clamp's release condition
 	// (b) — never an instant release, which still needs a strictly-fresher
 	// heartbeat with meaningful headroom — and ONE served outcome for the rate
@@ -433,8 +482,12 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	// a lingering inactive entry would keep every later accept for the pair off
 	// the read-lock fast path above and would re-block the identity's next
 	// budgetless reconnect window.
-	if _, hasClamp := r.budgetClamps[key]; hasClamp {
-		r.noteBudgetClampAcceptLocked(key)
+	if e, hasClamp := r.budgetClamps[key]; hasClamp {
+		// An accept observed BEFORE the clamp armed is not proof the clamp
+		// has released; only a clamp armed at or before the observation is.
+		if !e.clampedAt.After(observedAt) {
+			r.noteBudgetClampAcceptLocked(key)
+		}
 		r.dropInactiveBudgetClampLocked(providerID, modelID, now)
 	}
 	if countRateOutcome {
@@ -445,7 +498,7 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 		delete(r.healthEjectionTrips, key.ProviderID)
 		delete(r.healthEjectionLastTripCapacity, key.ProviderID)
 	}
-	r.mu.Unlock()
+	hold.unlock()
 	return rateOutcomeRecorded
 }
 
@@ -495,4 +548,32 @@ func capacityCooldownBackoff(cfg capacityCooldownConfig, trips int) time.Duratio
 		ttl = cfg.MaxTTL
 	}
 	return ttl
+}
+
+// rebuildCapacityCooldownLocked applies the post-accept strike history from a
+// fresh breaker. The caller has removed every strike answered by the accept.
+func (r *Registry) rebuildCapacityCooldownLocked(key capacityRejectKey) {
+	previous := r.capacityCooldowns[key]
+	delete(r.capacityCooldowns, key)
+	delete(r.capacityCooldownTrips, key)
+	cfg := r.capacityCooldownCfg
+	strikes := r.capacityRejectStrikes[key]
+	if cfg.Threshold <= 0 || len(strikes) < cfg.Threshold {
+		return
+	}
+	var expiry time.Time
+	trips := 0
+	for i, strike := range strikes {
+		if strike.Before(expiry) || (trips == 0 && i+1 < cfg.Threshold) {
+			continue
+		}
+		expiry = strike.Add(capacityCooldownBackoff(cfg, trips))
+		trips++
+	}
+	entry := &capacityCooldownEntry{expiry: expiry}
+	if previous != nil && !previous.probeAt.IsZero() && !previous.probeAt.Before(expiry) {
+		entry.probeAt = previous.probeAt
+	}
+	r.capacityCooldowns[key] = entry
+	r.capacityCooldownTrips[key] = trips
 }

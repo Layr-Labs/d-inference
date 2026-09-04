@@ -54,6 +54,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"golang.org/x/mod/semver"
+	"golang.org/x/sync/singleflight"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -419,6 +420,17 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
+	// statsRefresh owns the stats:v1 readCache entry (stats.go);
+	// networkTotalsRefresh owns one network_totals:<window> entry per window
+	// (network_totals.go). Both are driven by the refresher machinery in
+	// cache_refresher.go.
+	summaryWindowsFlights singleflight.Group
+	statsRefresh          cacheRefresher
+	networkTotalsRefresh  struct {
+		queryMu sync.Mutex
+		mu      sync.Mutex
+		entries map[string]*cacheRefresher
+	}
 
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
@@ -835,6 +847,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 			"reason", "a contiguous offline gap must stay below the RecoveryOS round-trip floor (Threat-Model T-036)",
 		)
 	}
+	// Registry write-lock wait, by call site. This is the acceptance metric
+	// for taking the recorders off the request path: today the wait is only
+	// inferable from goroutine dumps.
+	reg.SetLockWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.mu.write_wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
 	s.trustCoverage = make(map[string]string)
 	s.trustCoverageCtx, s.trustCoverageCancel = context.WithCancel(context.Background())
 	saferun.Go(logger, "trustCoverageLoop", s.trustCoverageLoop)
@@ -1271,7 +1289,9 @@ func (s *Server) invalidateCatalogCache() {
 			s.readCache.Invalidate(modelCatalogCacheKey(typeFilter, includeAliases))
 		}
 	}
-	s.readCache.Invalidate("stats:v1")
+	// stats:v1 is deliberately NOT evicted here: the stats refresher recomputes
+	// it every minute, and evicting it made every concurrent /v1/stats request
+	// rerun the multi-second usage analytics statements.
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.

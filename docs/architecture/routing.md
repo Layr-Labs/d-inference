@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -412,6 +412,17 @@ accept is gated (`capacity_cooldown`) for `defaultCapacityCooldownTTL =
 `EIGENINFERENCE_CAPACITY_COOLDOWN_WINDOW_SECONDS`,
 `EIGENINFERENCE_CAPACITY_COOLDOWN_TTL_SECONDS`,
 `EIGENINFERENCE_CAPACITY_COOLDOWN_MAX_TTL_SECONDS`.
+
+First-content accepts carry their observation time from
+`coordinator/api/dispatch.go` (`commitFirstContent`) to
+`coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
+The recorder runs asynchronously so the first client byte does not wait for
+`registry.mu`. Reject strikes after the observation survive a delayed accept;
+a cooldown is rebuilt from fresh backoff when those surviving strikes
+independently reach the threshold. Old exponential trip history is reset,
+and a valid newer half-open probe remains claimed. A later budget clamp also requires a later accept to prove release.
+The request is stamped before scheduling the recorder to count its capacity-rate
+outcome exactly once at first content or completion.
 
 ### Cooldowns, breakers and ejection
 

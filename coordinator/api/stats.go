@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -80,16 +82,45 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
+// statsCacheKey is the readCache entry for GET /v1/stats. One background
+// goroutine (StartCacheRefreshers, cache_refresher.go) owns it; handlers only
+// read it.
+const statsCacheKey = "stats:v1"
+
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
-// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
-// endpoint is hit by every dashboard refresh and the homepage live ticker.
+// The response is served from the stats:v1 read-cache entry, which the
+// refresher recomputes every cacheRefreshInterval. A handler only computes on
+// a cold start (no entry at all), and concurrent cold misses share one
+// computation.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "stats:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCache.Get(statsCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, ok := s.getCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+	if !ok {
+		// Nothing cached and the computation could not produce a body (or a
+		// coalesced computation failed for this waiter).
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "stats are temporarily unavailable"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
+
+// runStatsRefresher owns the stats:v1 entry with an injectable interval.
+func (s *Server) runStatsRefresher(ctx context.Context, interval time.Duration) {
+	s.runCacheRefreshLoop(ctx, interval, func() { s.refreshStats() })
+}
+
+// refreshStats recomputes stats, retaining an unexpired success on failure.
+func (s *Server) refreshStats() ([]byte, bool) {
+	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
+}
+
+// computeStats returns a complete stats response. An empty successful query
+// is valid data; any failed input prevents publication of a partial response.
+func (s *Server) computeStats() ([]byte, error) {
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -188,7 +219,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read historical totals via SQL aggregation (no per-row wire transfer).
-	totals := s.store.UsageTotals()
+	totals, totalsErr := s.store.UsageTotals()
 	if totals.Requests > totalRequests {
 		totalRequests = totals.Requests
 	}
@@ -210,8 +241,8 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	timeSeriesCutoff := now.Add(-30 * time.Minute)
 	analyticsCutoff := now.Add(-24 * time.Hour)
-	buckets := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
-	last24h := s.store.UsageTotalsSince(analyticsCutoff)
+	buckets, seriesErr := s.store.UsageTimeSeries(timeSeriesCutoff, now, time.Minute)
+	last24h, last24hErr := s.store.UsageTotalsSince(analyticsCutoff)
 
 	timeSeries := make([]map[string]any, 0, len(buckets))
 	for _, b := range buckets {
@@ -228,10 +259,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
 	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs, locationErr := s.aggregateRequestLocations(analyticsCutoff)
 
 	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
+	requestFlows, flowErr := s.aggregateRequestFlows(analyticsCutoff)
+	if err := errors.Join(totalsErr, seriesErr, last24hErr, locationErr, flowErr); err != nil {
+		return nil, err
+	}
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
@@ -292,13 +326,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 		"request_flows": requestFlows,
 	}
-	body, err := json.Marshal(resp)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
-	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	return json.Marshal(resp)
 }
 
 // aggregateProviderLocations builds privacy-floored city and region
@@ -441,14 +469,19 @@ func (s *Server) aggregateProviderLocations() (
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations.
+// buckets from usage records with request-origin locations. A failed query
+// aborts aggregation so the refresher retains the last complete response.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
+	err error,
 ) {
-	locBuckets := s.store.UsageLocationBuckets(since)
+	locBuckets, err := s.store.UsageLocationBuckets(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
 
 	// Count requests without any location by subtracting located requests
 	// from total requests in the window.
@@ -457,8 +490,12 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 		locatedRequests += b.Requests
 	}
 	// Total usage records in the window (SQL COUNT, no row transfer).
-	totalInWindow := s.store.UsageCountSince(since)
-	unknownRequests = totalInWindow - locatedRequests
+	var totalInWindow int64
+	totalInWindow, err = s.store.UsageCountSince(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	unknownRequests = max(0, totalInWindow-locatedRequests)
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string
@@ -574,7 +611,7 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 // consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
 // avoid loading all usage rows + all provider rows into Go memory (the
 // previous approach held two pool connections for up to 10s each).
-func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
+func (s *Server) aggregateRequestFlows(since time.Time) ([]publicRequestFlowBucket, error) {
 	// Build live provider location map from the registry so recently-
 	// connected providers (not yet persisted) are included.
 	providerLocs := make(map[string]*store.ProviderLocation)
@@ -585,7 +622,10 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 		}
 	})
 
-	buckets := s.store.UsageFlowBuckets(since, providerLocs)
+	buckets, err := s.store.UsageFlowBuckets(since, providerLocs)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]publicRequestFlowBucket, 0, len(buckets))
 	for _, b := range buckets {
@@ -621,7 +661,7 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 	if len(out) > 24 {
 		out = out[:24]
 	}
-	return out
+	return out, nil
 }
 
 // locationKey builds a stable, lowercase key from country/region/city parts.

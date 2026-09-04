@@ -120,25 +120,32 @@ type UsageStore interface {
 
 	// UsageCountSince returns the number of usage records created at or after
 	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
-	// avoid transferring rows over the wire.
-	UsageCountSince(since time.Time) int64
+	// avoid transferring rows over the wire. It returns an error (never a
+	// zero count) when the statement could not be completed, so callers do
+	// not cache or display zeros for a statement that timed out.
+	UsageCountSince(since time.Time) (int64, error)
 
 	// UsageTotals returns aggregated lifetime totals across all usage records
-	// without transferring per-row data over the wire.
-	UsageTotals() UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotals() (UsageTotals, error)
 
 	// UsageTotalsSince returns aggregate usage at or after the given time
-	// without transferring per-row data over the wire.
-	UsageTotalsSince(since time.Time) UsageTotals
+	// without transferring per-row data over the wire. It returns an error
+	// (never zero totals) when the statement could not be completed.
+	UsageTotalsSince(since time.Time) (UsageTotals, error)
 
 	// UsageTimeSeries returns aggregates for the given time window using the
 	// requested bucket size. Implementations enforce a one-minute minimum,
-	// thirty-day maximum lookback, and bounded result cardinality.
-	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket
+	// thirty-day maximum lookback, and bounded result cardinality. It returns
+	// an error (never a partial or empty series) when the statement could
+	// not be completed.
+	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error)
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.
-	UsageLocationBuckets(since time.Time) []UsageLocationBucket
+	// An error distinguishes query failure from a successful empty window.
+	UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error)
 
 	// UsageFlowBuckets returns aggregated directional flow buckets between
 	// consumer and provider regions. providerLocs supplies live provider
@@ -146,15 +153,18 @@ type UsageStore interface {
 	// haven't been persisted yet are included. PostgresStore uses a SQL
 	// JOIN with the providers table and merges the live map; MemoryStore
 	// uses providerLocs directly.
-	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket
+	// Query and iteration failures return an error, never partial buckets.
+	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
 
 	// NetworkTotals returns aggregated metrics across the network for the
-	// given window. Zero `since` means all-time.
-	NetworkTotals(since time.Time) NetworkTotalsRow
+	// given window. Zero `since` means all-time. It returns an error (never a
+	// zero row) when the aggregate could not be computed, so callers do not
+	// cache or display zeros for a statement that timed out.
+	NetworkTotals(since time.Time) (NetworkTotalsRow, error)
 
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord
@@ -554,6 +564,12 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// AccountEarningsWindows returns the account's last-24h and last-7d row
+	// count and micro-USD sum as of now, aggregated by the store over the
+	// 7 d window only. Every provider_earnings row counts (base_reward rows
+	// included), matching the dashboard header's historical semantics.
+	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
+
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
 
@@ -682,6 +698,11 @@ type ProviderStore interface {
 
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
+
+	// GetReputations returns the reputation records that exist for the given
+	// provider IDs, keyed by provider ID, in one lookup. Unknown IDs are
+	// simply absent from the result.
+	GetReputations(ctx context.Context, providerIDs []string) (map[string]*ReputationRecord, error)
 
 	// --- APNs code-identity attestation reuse cache (survives deploys) ---
 

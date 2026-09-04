@@ -8,10 +8,22 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
+// mdmSchedulerBusyRetryDelay is the dispatcher's wake interval while due work
+// exists but every worker is busy. A freed worker signals the dispatcher
+// directly (finishAttempt → signal), so this timer is only a safety net and
+// need not spin at the 1 ms retry cadence used when a worker may be free.
+const mdmSchedulerBusyRetryDelay = 250 * time.Millisecond
+
 func (s *mdmVerificationScheduler) dispatcher() {
 	defer s.wg.Done()
+	// lastLoad is wall-clock so the reload cadence holds under test clocks
+	// that do not advance; the due-time arithmetic itself stays on deps.now.
+	var lastLoad time.Time
 	for {
-		s.loadDueRows()
+		if s.shouldLoadDueRows(lastLoad) {
+			s.loadDueRows()
+			lastLoad = time.Now()
+		}
 		s.dispatchDueRows()
 		s.publishDogStatsDGauges()
 		timer := s.deps.newTimer(s.nextDispatchDelay())
@@ -26,22 +38,61 @@ func (s *mdmVerificationScheduler) dispatcher() {
 	}
 }
 
+// shouldLoadDueRows says whether this dispatcher pass re-reads the durable
+// due rows: on the first pass, once per mdmSchedulerDispatchInterval, and
+// whenever the in-memory queue is empty (so newly persisted rows are picked
+// up promptly). Retry wakes — a due job that cannot run yet — used to reload
+// on every 1 ms pass, which re-scanned the verification table ~34 times a
+// second in production and pre-allocated a 4,096-row page each time.
+func (s *mdmVerificationScheduler) shouldLoadDueRows(lastLoad time.Time) bool {
+	if lastLoad.IsZero() || time.Since(lastLoad) >= mdmSchedulerDispatchInterval {
+		return true
+	}
+	s.mu.Lock()
+	queued := len(s.jobs)
+	s.mu.Unlock()
+	return queued == 0
+}
+
 func (s *mdmVerificationScheduler) nextDispatchDelay() time.Duration {
 	now := s.deps.now()
 	delay := mdmSchedulerDispatchInterval
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Same worker arithmetic as dispatchDueRows: the reserved urgent slot is
+	// not available to refresh/recovery work, so a due non-urgent job with
+	// only that slot free cannot dispatch and must not spin at 1 ms.
+	available := s.cfg.Workers
+	for _, count := range s.active {
+		available -= count
+	}
+	reservedFree := s.reservedUrgentSlots() - s.activeUrgent
+	if reservedFree < 0 {
+		reservedFree = 0
+	}
+	generalAvailable := available - reservedFree
+	dueBlocked := false
 	for _, job := range s.jobs {
 		if job.running || (job.record.State != store.VerificationStatePending && job.record.State != store.VerificationStateBackoff) {
 			continue
 		}
 		candidate := job.record.NextAttemptAt.Sub(now)
 		if candidate <= 0 {
-			return time.Millisecond
+			if available > 0 && (isUrgentVerification(job.record) || generalAvailable > 0) {
+				return time.Millisecond
+			}
+			dueBlocked = true
+			continue
 		}
 		if candidate < delay {
 			delay = candidate
 		}
+	}
+	// The busy floor is a ceiling on the wake interval, not a replacement for
+	// it: a job that becomes due sooner (an urgent one may take the reserved
+	// slot) still gets its own timer instead of waiting out the floor.
+	if dueBlocked && delay > mdmSchedulerBusyRetryDelay {
+		return mdmSchedulerBusyRetryDelay
 	}
 	return delay
 }

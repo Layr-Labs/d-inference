@@ -269,8 +269,9 @@ type RejectionRecord struct {
 	RequestBodyBytes      int             `json:"request_body_bytes,omitempty"`
 	RetryAfterMs          int             `json:"retry_after_ms,omitempty"`
 
-	// Counterfactual servability — "could it have produced output?"
-	CouldHaveServed         bool    `json:"could_have_served"`
+	// Counterfactual servability: nil means not evaluated; only a non-nil
+	// value answers whether the fleet could have produced output.
+	CouldHaveServed         *bool   `json:"could_have_served"`
 	CandidateCount          int     `json:"candidate_count"`
 	CapacityRejections      int     `json:"capacity_rejections"`
 	ModelTooLargeRejections int     `json:"model_too_large_rejections"`
@@ -825,6 +826,16 @@ type ProviderEarningsSummary struct {
 	TotalMicroUSD    int64 `json:"total_micro_usd"`
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+}
+
+// AccountEarningsWindows holds an account's rolling-window earnings (row count
+// and micro-USD sum over the last 24 h and the last 7 d) as computed by the
+// store, so the dashboard header never sums a truncated row page.
+type AccountEarningsWindows struct {
+	Last24hMicroUSD int64 `json:"last_24h_micro_usd"`
+	Last24hJobs     int64 `json:"last_24h_jobs"`
+	Last7dMicroUSD  int64 `json:"last_7d_micro_usd"`
+	Last7dJobs      int64 `json:"last_7d_jobs"`
 }
 
 // ProviderPayout records a provider payout event. This is separate from

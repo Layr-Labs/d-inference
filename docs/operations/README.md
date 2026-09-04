@@ -1,6 +1,6 @@
 # Operations runbooks
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `075d37a91`
 
 Procedures for deploying, migrating, and operating Darkbloom production
 infrastructure. Every runbook has the same shape — when to use, prerequisites,
@@ -20,6 +20,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
 | [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
+| [`coordinator-perf-tier1-rollout.md`](coordinator-perf-tier1-rollout.md) | Roll out the 2026-09 coordinator performance Tier 1 branch: `GOGC` gate, Tier 0 env knobs, before/after checks |
 
 The EigenCloud → GCP move is a frozen report, not a live runbook:
 [`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md).

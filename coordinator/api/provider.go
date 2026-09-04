@@ -312,7 +312,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		}
 
 		var msg protocol.ProviderMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
+		// Call the typed decoder directly: json.Unmarshal would first validate
+		// the whole frame (a full scan) and then invoke this same method, which
+		// decodes the frame again. The typed decode still rejects malformed
+		// input, an unknown type, and a type-mismatched payload.
+		if err := msg.UnmarshalJSON(data); err != nil {
 			// Decoder errors may quote provider-controlled fields (notably an
 			// unknown message type). Never reflect the detail into logs.
 			s.logger.Warn("invalid provider message", "provider_id", providerID)
@@ -920,9 +924,10 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 	provider.Location = loc
 	provider.Mu().Unlock()
 	s.registry.PersistProvider(provider)
-	if s.readCache != nil {
-		s.readCache.Invalidate("stats:v1")
-	}
+	// The stats:v1 read-cache entry is owned by the stats refresher (stats.go)
+	// and is NOT evicted here. Evicting it on every registration (~1,400/hour
+	// in production) turned its 60 s TTL into ~2.6 s and made every /v1/stats
+	// request rerun the multi-second usage analytics statements.
 	s.logger.Info("provider location resolved",
 		"provider_id", providerID,
 		"city", loc.City,
@@ -1786,6 +1791,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"error", err,
 		)
 		s.registry.MarkUntrusted(providerID)
+		// The provider is still generating: the synthesized terminal below
+		// settles the request on our side, so the committed writer's exit
+		// will not send a cancel for it (a settled terminal means "nothing
+		// left to stop"). Stop the real work here, like the deadline and
+		// overflow branches do.
+		s.sendProviderCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,

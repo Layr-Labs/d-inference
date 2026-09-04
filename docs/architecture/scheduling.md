@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `075d37a91`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -456,3 +456,16 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — `heartbeat`, `load_model`, `BackendCapacity`.
 - [`../reference/configuration.md`](../reference/configuration.md) — coordinator environment reference.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the queue, cold-dispatch and warm-pool flags.
+
+## Verification dispatcher cadence
+
+The verification scheduler is separate from inference admission. Its dispatcher
+reloads durable due rows at `mdmSchedulerDispatchInterval = time.Second` or on a
+wake with an empty queue (`coordinator/api/mdm_scheduler_exec.go`,
+`shouldLoadDueRows`). A due job blocked by occupied workers or the reserved urgent
+slot waits at most `mdmSchedulerBusyRetryDelay = 250 * time.Millisecond`; an
+earlier future job retains its shorter timer (`nextDispatchDelay`). Worker
+completion signals the dispatcher immediately. Due-row pages start at
+`min(limit, verificationDuePageHint)` with `verificationDuePageHint = 256`
+and grow to the requested limit (`coordinator/store/postgres.go`,
+`ListDueVerificationJobsPage`); the initial allocation does not truncate a page.

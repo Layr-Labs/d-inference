@@ -661,11 +661,11 @@ func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
 }
 
 // UsageCountSince returns the number of usage records created at or after the given time.
-func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
+func (s *MemoryStore) UsageCountSince(since time.Time) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if since.IsZero() {
-		return int64(len(s.usage))
+		return int64(len(s.usage)), nil
 	}
 	var count int64
 	for _, r := range s.usage {
@@ -677,11 +677,11 @@ func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
 			count++
 		}
 	}
-	return count
+	return count, nil
 }
 
 // UsageTotals returns aggregated lifetime totals.
-func (s *MemoryStore) UsageTotals() UsageTotals {
+func (s *MemoryStore) UsageTotals() (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -690,11 +690,11 @@ func (s *MemoryStore) UsageTotals() UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTotalsSince returns aggregate usage at or after `since`.
-func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
+func (s *MemoryStore) UsageTotalsSince(since time.Time) (UsageTotals, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t UsageTotals
@@ -710,11 +710,11 @@ func (s *MemoryStore) UsageTotalsSince(since time.Time) UsageTotals {
 		t.PromptTokens += int64(r.PromptTokens)
 		t.CompletionTokens += int64(r.CompletionTokens)
 	}
-	return t
+	return t, nil
 }
 
 // UsageTimeSeries buckets usage records by the requested duration since `since`.
-func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket {
+func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Duration) ([]UsageBucket, error) {
 	since, until, bucketSize = normalizeUsageTimeSeriesRequest(since, until, bucketSize, time.Now())
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -743,7 +743,7 @@ func (s *MemoryStore) UsageTimeSeries(since, until time.Time, bucketSize time.Du
 		out = append(out, *b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Minute.Before(out[j].Minute) })
-	return limitUsageTimeSeriesBuckets(out)
+	return limitUsageTimeSeriesBuckets(out), nil
 }
 
 // Leaderboard ranks accounts by the chosen metric, splitting inference work from
@@ -829,7 +829,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 // rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
 // Ledger rewards are only counted for accounts that also have provider earnings
 // rows in the window, so consumer-only reward recipients do not inflate totals.
-func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+func (s *MemoryStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
@@ -862,7 +862,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	}
 	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
 	t.ActiveAccounts = int64(len(providers))
-	return t
+	return t, nil
 }
 
 // UsageByConsumer returns usage records for a specific consumer key.
@@ -1231,7 +1231,7 @@ func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time
 }
 
 // UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
-func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+func (s *MemoryStore) UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1307,13 +1307,13 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucke
 			Providers:        len(b.providers),
 		})
 	}
-	return out
+	return out, nil
 }
 
 // UsageFlowBuckets aggregates directional consumer→provider flows in memory.
 // providerLocs supplies live provider locations from the registry; the store's
 // own providerRecords are used as a fallback for disconnected providers.
-func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
+func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1403,7 +1403,7 @@ func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]
 		}
 		out = append(out, b)
 	}
-	return out
+	return out, nil
 }
 
 // KeyCount returns the number of active API keys.

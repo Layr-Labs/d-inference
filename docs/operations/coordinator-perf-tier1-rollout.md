@@ -103,9 +103,8 @@ swings with the GC cycle.
 a **new** `docker run`. Docker does not reread the env file on restart
 (`coordinator-deploy.md`, "Exact-cache promotion gate").
 
-1. Add the key to the reviewed release defaults so `refresh-env.sh` installs
-   it (the script appends absent keys and prints `ADD GOGC=400`;
-   `deploy/gcp/prod/refresh-env.sh`):
+1. Add the key to **both** release manifests in the same release
+   (`deploy/gcp/prod/refresh-env.sh` reads both):
 
    ```text
    # deploy/gcp/prod/release-env-defaults — append
@@ -114,9 +113,28 @@ a **new** `docker run`. Docker does not reread the env file on restart
    GOGC=400
    ```
 
-   Do **not** list it in `deploy/gcp/prod/required-env-keys.txt` in the same
-   release: the manifest is enforced against the live env *before* defaults
-   are merged, so a key no host has yet would fail `--check`.
+   ```text
+   # deploy/gcp/prod/required-env-keys.txt — append
+   GOGC
+   ```
+
+   Listing a brand-new key in both is supported. The required-key pass that
+   runs against the live env *before* the merge exempts every key the
+   defaults file supplies (`deploy/gcp/prod/refresh-env.sh:63-72`, call at
+   `:92`), so a host that has no `GOGC` yet is not failed for lacking it; the
+   merge appends the default and prints `ADD GOGC=400` (`:133-141`). The
+   post-merge pass then enforces the whole manifest with no exemption
+   (`:145`), and it runs before the `--check` early exit (`:155`).
+   `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` shipped this way.
+
+   The manifest entry is what makes a blank value fail closed. The merge adds
+   only *absent* keys, so a host carrying an empty `GOGC=` line keeps it.
+   Without the manifest entry that host passes `--check`, and the Go runtime
+   treats an empty `GOGC` as unset (`runtime.readGOGC` falls back to 100): the
+   default GC rate is silently restored while the env file looks configured.
+   With the entry, `--check` and `--apply` both stop with
+   `required existing variables are missing or empty: GOGC`, and the operator
+   fixes the line by hand before the swap.
 
 2. Mirror the key in the sanitized reference `deploy/environments/prod.env`
    so the file keeps matching the live env (it seeds nothing; see the
@@ -156,14 +174,21 @@ done
 
 ### Rollback
 
-Remove the `GOGC` line from `/etc/d-inference/env` (and from the two repo
-files) and run the §4 swap again; there is no in-place way to change it.
+Remove the `GOGC` line from `/etc/d-inference/env` and the key from the three
+repo files (`release-env-defaults`, `required-env-keys.txt`,
+`deploy/environments/prod.env`), then run the §4 swap again; there is no
+in-place way to change it. Drop the manifest entry in the same change as the
+default: a manifest that requires a key the defaults no longer supply fails
+every later `--check` on a host where the line was removed.
 
 ## Human-only — Tier 0 environment knobs
 
-Each is one env line in the same three places as above (`release-env-defaults`
+Each is one env line taking the same path as `GOGC` above (`release-env-defaults`
 → `refresh-env.sh --apply` → `/etc/d-inference/env` → new `docker run`).
-Every one is read once at process start.
+Whether to list a knob in `required-env-keys.txt` as well is decided per key:
+do it when a blank value must fail closed (the `GOGC` reasoning), leave it out
+when the knob's absence is the intended default. Every one is read once at
+process start.
 
 | # | Knob | Value | Effect (from the proposal) |
 |---|---|---|---|

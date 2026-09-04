@@ -17,6 +17,12 @@ after the human redeploy at 21:13 UTC) and against master `5d400cf75` in the rep
 
 Merge order: #821 → #818 → #820 → #819 → #822 → #823 (retarget #823 to master after #820/#819 merge).
 
+**Merge-sequence dry run (2026-09-04, all six branches stacked onto master in order):** one code conflict,
+`coordinator/api/server.go` `invalidateCatalogCache` between #818 (deletes `Invalidate("stats:v1")`) and #820
+(adds three model-catalog invalidations beside it) → keep #820's three lines and #818's comment, drop the
+`stats:v1` line (noted on #820). Everything else is docs-only (`coordinator-deploy.md`, operations `README.md`,
+`system-profiler.md`): keep both sides. The stacked tree builds and vets.
+
 **Codex review round (2026-09-04 06:00 UTC):** #819 and #821 clean. Eleven findings on the other four, all
 verified legitimate (one partially) and fixed with regression tests, each thread answered on GitHub:
 

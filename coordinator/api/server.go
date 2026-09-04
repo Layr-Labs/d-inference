@@ -1183,11 +1183,12 @@ func (s *Server) SyncModelCatalog() {
 			continue
 		}
 		entries = append(entries, registry.CatalogEntry{
-			ID:          row.ID,
-			DisplayName: row.DisplayName,
-			WeightHash:  row.ActiveVersion.AggregateSHA256,
-			SizeGB:      float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
-			MinRAMGB:    row.MinRAMGB,
+			ID:           row.ID,
+			DisplayName:  row.DisplayName,
+			Quantization: row.Quantization,
+			WeightHash:   row.ActiveVersion.AggregateSHA256,
+			SizeGB:       float64(row.ActiveVersion.TotalSizeBytes) / 1e9,
+			MinRAMGB:     row.MinRAMGB,
 			RequiredProviderCapabilities: append(
 				[]string{}, row.RequiredProviderCapabilities...),
 		})

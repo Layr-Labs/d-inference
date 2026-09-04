@@ -69,9 +69,9 @@ func TestMyProvidersModelDisplayNames(t *testing.T) {
 	}
 }
 
-// TestMyProvidersModelDisplayNamesAlwaysObject: consoles index into the map
-// unconditionally, so a coordinator without a catalog must still send {} — never
-// null and never a missing key.
+// TestMyProvidersModelDisplayNamesAlwaysObject pins the response contract: the
+// key is always an object — never null, never missing — so an empty catalog and
+// an unnamed model look the same to a client (no entry → raw-id fallback).
 func TestMyProvidersModelDisplayNamesAlwaysObject(t *testing.T) {
 	srv, _ := newKeyTestServer(t)
 	w := httptest.NewRecorder()

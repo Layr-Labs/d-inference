@@ -54,12 +54,37 @@ const (
 	privateSlotGrantsMinVersion = "0.7.5"
 )
 
+// slotBudgetLayoutForVersion selects the pooled-budget layout for a provider
+// binary version. It runs once per provider per routing scan via
+// fillSnapshotPendingAndPool, so the result is memoized (version_memo.go) —
+// keyed on the NORMALIZED numeric core ("1.0.0" for "v1.0.0-rc1+meta"), so
+// suffix variants of one version share an entry and an oversized suffix can
+// never be retained; a core longer than maxMemoizedVersionLen is computed
+// without caching.
 func slotBudgetLayoutForVersion(version string) slotBudgetLayout {
+	return slotBudgetLayoutMemo.get(versionNumericCore(version), parseSlotBudgetLayoutCore)
+}
+
+// versionNumericCore strips surrounding whitespace and any pre-release/build
+// suffix ("-…" / "+…") from a version, leaving the dotted numeric core.
+func versionNumericCore(version string) string {
 	version = strings.TrimSpace(version)
 	if suffix := strings.IndexAny(version, "-+"); suffix >= 0 {
 		version = version[:suffix]
 	}
-	if CompareVersions(version, privateSlotGrantsMinVersion) >= 0 {
+	return version
+}
+
+// parseSlotBudgetLayout is the uncached selection behind
+// slotBudgetLayoutForVersion: a pre-release/build suffix is ignored and the
+// numeric core compared against privateSlotGrantsMinVersion.
+func parseSlotBudgetLayout(version string) slotBudgetLayout {
+	return parseSlotBudgetLayoutCore(versionNumericCore(version))
+}
+
+// parseSlotBudgetLayoutCore compares an already-normalized numeric core.
+func parseSlotBudgetLayoutCore(core string) slotBudgetLayout {
+	if CompareVersions(core, privateSlotGrantsMinVersion) >= 0 {
 		return privateSlotGrants
 	}
 	return sharedSlotHeadroom
@@ -96,7 +121,7 @@ func clampKVBytesPerToken(r int64) int64 {
 // not loaded yet, while retaining a higher observed resident rate avoids
 // weakening the fallback. Legacy/non-reconstructable pools return 0 and retain
 // token accounting.
-func resolvedPooledKVBytesPerToken(pool pooledTokenBudget, reportedRate int64) int64 {
+func resolvedPooledKVBytesPerToken(pool *pooledTokenBudget, reportedRate int64) int64 {
 	if !pool.byteMode {
 		return 0
 	}
@@ -168,10 +193,16 @@ type pooledTokenBudget struct {
 	// slot reports KVBytesPerToken > 0, i.e. the pool can be reconstructed in
 	// bytes. False ⇒ pooledBudgetAdmits uses token accounting exactly.
 	byteMode bool
-	// kvBytesPerToken maps each budget slot's model to its reported per-token
-	// KV rate, for normalizing coordinator-pending charges into bytes. Nil
-	// when no budget slot reports a rate.
-	kvBytesPerToken map[string]int64
+	// kvRates holds each budget slot's model and its reported (clamped)
+	// per-token KV rate, for normalizing coordinator-pending charges into
+	// bytes — a fixed inline table (a box serves a handful of co-resident
+	// models) that spills to a heap slice only past pooledKVRateInline entries,
+	// so reconstructing a pool once per provider per routing scan allocates
+	// nothing (pooled_kv_rates.go). Read through kvRateFor; empty when no
+	// budget slot reports a rate.
+	kvRates      [pooledKVRateInline]slotKVRate
+	kvRateCount  int
+	kvRatesSpill []slotKVRate
 	// maxResidentKVBytesPerToken is the largest clamped rate among budget
 	// slots. It can raise, but never lower, the conservative cold-model default.
 	maxResidentKVBytesPerToken int64
@@ -214,10 +245,7 @@ func providerPooledTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, l
 			// token-mode behavior for the whole provider.
 			pool.byteMode = false
 		} else {
-			if pool.kvBytesPerToken == nil {
-				pool.kvBytesPerToken = make(map[string]int64, len(slots))
-			}
-			pool.kvBytesPerToken[slot.Model] = rate
+			pool.setKVRate(slot.Model, rate)
 			if rate > pool.maxResidentKVBytesPerToken {
 				pool.maxResidentKVBytesPerToken = rate
 			}
@@ -300,8 +328,8 @@ func providerPooledTokenBudgetWithLayout(slots []protocol.BackendSlotCapacity, l
 // at least the conservative default, never a cheap resident-only estimate.
 // Token accounting is used only when the pool is not byte-reconstructable or
 // the snapshot predates/omits byte accumulation.
-func pooledBudgetAdmits(snap routingSnapshot, requestTokens int64) bool {
-	pool := snap.pooledTokenBudget
+func pooledBudgetAdmits(snap *routingSnapshot, requestTokens int64) bool {
+	pool := &snap.pooledTokenBudget
 	if !pool.hasBudgetReport {
 		return true
 	}
@@ -355,7 +383,7 @@ func pooledRemainingTokens(pool pooledTokenBudget, pendingTokensAllModels int, p
 		return 0
 	}
 	if pool.byteMode && pendingBytesKnown {
-		rate := resolvedPooledKVBytesPerToken(pool, modelRate)
+		rate := resolvedPooledKVBytesPerToken(&pool, modelRate)
 		if rate > 0 {
 			extra := pendingBytesAllModels - pool.committedBytes
 			if extra < 0 {

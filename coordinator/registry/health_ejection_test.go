@@ -178,7 +178,7 @@ func TestHealthEjection_SurvivesSessionChurn(t *testing.T) {
 }
 
 func TestHealthEjection_KillSwitch(t *testing.T) {
-	t.Setenv("EIGENINFERENCE_HEALTH_EJECTION", "off")
+	setHealthEjectionEnabledForTest(t, false)
 	reg := New(testLogger())
 	const sid = "serial:OFF"
 	for i := 0; i < healthEjectionConsecTrip+5; i++ {

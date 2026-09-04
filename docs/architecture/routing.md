@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-04 · commit `4e7a68739`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -46,8 +46,9 @@ content beyond that. See [`data-flow.md`](data-flow.md) and
 
 `ReserveProviderWithPlan` (`coordinator/registry/scheduler.go`) is the
 dispatch-time entry point. It scans the fleet
-(`scanCandidatesLocked`), gates and prices each provider
-(`buildCandidateGateLocked`), selects a winner (`selectRoutingCandidate`) and
+(`scanCandidatesLocked`), gates each provider
+(`snapshotProviderIntoLockedEx`), prices it (`buildCandidateInto`), selects a
+winner (`selectRoutingCandidate`) and
 returns a bounded **dispatch plan** (`coordinator/registry/dispatch_plan.go`)
 holding the winner plus up to `dispatchPlanMaxAlternates = 8` retained
 alternates. The API layer (`coordinator/api/dispatch.go`) consumes the plan:
@@ -69,7 +70,7 @@ flowchart TD
     G -->|not_serving_model, dedicated, cooldowns, breaker, ejection, liveness, trait_floor| X2[tallyGate]
     G --> V{RequiresVision?}
     V -->|provider lacks vision| X3[tallyGate vision]
-    V --> B[buildCandidateGateLocked]
+    V --> B[buildCandidateInto]
     B -->|slot_crashed / slot_reloading / no_headroom / thermal_critical / model_too_large / free_memory| X4[tallyGate]
     B --> C[cost = state + queue + pending + backlog + thisReq + health + capacityRate]
     C -->|ttft_ceiling| X5[tallyGate]
@@ -111,10 +112,10 @@ Gates run in the order below. The first failing gate names the rejection;
 | 16 | `GateChallengeStale` | `challenge_stale` | `providerLivenessGateReasonLocked` | Last passed challenge is missing or older than `challengeFreshnessMaxAge` ([below](#challenge-freshness)). |
 | 17 | `GateTraitFloor` | `trait_floor` | `providerRoutingGateReasonLockedEx` | Provider cannot satisfy a request trait (for example inference-time tool constraints). |
 | 18 | `GateVision` | `vision` | `providerServesVisionModelLocked` | Request `RequiresVision` and the provider's build of the model does not serve vision. |
-| 19 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateGateLocked` / `slotStatePenalty` | Slot state `crashed`. |
-| 20 | `GateSlotReloading` | `slot_reloading` | `buildCandidateGateLocked` / `slotStatePenalty` | Slot state `reloading`. |
+| 19 | `GateSlotCrashed` | `slot_crashed` | `buildCandidateInto` / `slotStatePenalty` | Slot state `crashed`. |
+| 20 | `GateSlotReloading` | `slot_reloading` | `buildCandidateInto` / `slotStatePenalty` | Slot state `reloading`. |
 | 21 | `GateNoHeadroom` | `no_headroom` | `hasConcurrencyHeadroomForModelCapResolvedLocked` | Provider or slot is at its concurrency cap ([`scheduling.md`](scheduling.md#concurrency-caps)). |
-| 22 | `GateThermalCritical` | `thermal_critical` | `buildCandidateGateLocked` | `SystemMetrics.ThermalState == "critical"`. |
+| 22 | `GateThermalCritical` | `thermal_critical` | `buildCandidateInto` | `SystemMetrics.ThermalState == "critical"`. |
 | 23 | `GateModelTooLarge` | `model_too_large` | `modelFitsHardware` | Model is not resident and cannot fit the node's total memory. Permanent, not capacity. |
 | 24 | `GateFreeMemory` | `free_memory` | `freeMemoryAdmits` | Token-budget or memory admission fails, or the pair is budget-clamped. |
 | 25 | `GateTTFTCeiling` | `ttft_ceiling` | `scanCandidatesLocked` | Estimated TTFT exceeds `pr.MaxTTFTMs` (public non-vision requests with a ceiling only). |
@@ -162,7 +163,7 @@ seconds earlier. Both paths also record the failure into reputation.
 
 ### Cost model
 
-`buildCandidateGateLocked` prices an eligible provider as
+`buildCandidateInto` prices an eligible provider as
 
 ```text
 cost = statePenalty + queueMs + pendingMs + backlogMs + thisReqMs + healthMs + capacityRateMs
@@ -460,7 +461,7 @@ score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × respo
 
 A provider with no history scores `0.5`. The score is exposed on the
 provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
-persisted; **it is not a term in the routing cost** — `buildCandidateGateLocked`
+persisted; **it is not a term in the routing cost** — `buildCandidateInto`
 never reads it. The header comment in `reputation.go` still says the score
 factors into routing; the code does not. Reputation inputs do reach routing
 indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
@@ -526,11 +527,11 @@ must not run in parallel with other scheduler tests in the same process.
 3. **No provider is routed without a fresh passed challenge** —
    `providerLivenessGateReasonLocked` with `challengeFreshnessMaxAge`.
 4. **A model that is not resident is never routed to hardware it cannot
-   fit** — `modelFitsHardware` in `buildCandidateGateLocked`; resident slots
+   fit** — `modelFitsHardware` in `buildCandidateInto`; resident slots
    (`slotStateModelLoaded`) are exempt because they have demonstrably fit.
 5. **Every scanned provider is accounted for exactly once**: as a candidate
    or under one `GateReason` — `scanCandidatesLocked.tallyGate`.
-6. **The cost breakdown sums to the total** — `buildCandidateGateLocked`
+6. **The cost breakdown sums to the total** — `buildCandidateInto`
    folds `longPromptPenalty` into `ThisReqMs` and sets `Total = cost`.
 7. **Pool narrowing never empties the pool** — each `PreferOwner`,
    `AvoidVersion` and `MinDecodeTPS` filter in `scanCandidatesLocked` is
@@ -560,7 +561,7 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Concern | File / symbol |
 |---|---|
-| Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `buildCandidateGateLocked`, `selectRoutingCandidate`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
+| Dispatch-time selection, cost model, TTFT estimate | `coordinator/registry/scheduler.go` — `ReserveProviderWithPlan`, `scanCandidatesLocked`, `snapshotProviderIntoLockedEx`, `buildCandidateInto`, `selectRoutingCandidate`, `slotStatePenalty`, `healthPenaltyMs`, `resolveEffectiveTPS`, `ttftMsFromSnapshot`, `longPromptPenalty` |
 | Shared gate primitives | `coordinator/registry/routing_eligibility.go` — `providerLivenessGateReasonLocked`, `providerServesRoutableModelLocked` |
 | Closed vocabularies | `coordinator/registry/gate_reason.go` — `GateReason`, `SelectionPath`, `SlotState` |
 | Trust floor, challenge failures, dispatch-load cooldown, `Disconnect` | `coordinator/registry/registry.go` — `MinTrustLevel`, `MaxFailedChallenges`, `RecordChallengeFailure`, `dispatchLoadCooldownTTL` |

@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-04 · commit `3f3fe7f00`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -222,18 +222,36 @@ states and, when it asks for a load, relies on the provider to evict.
 | `pendingModelLoadDrainBackoff` | `30 * time.Second` | Provider rejected the load because it is draining for an auto-update restart. |
 | `pendingModelLoadMemoryBackoff` | `30 * time.Second` | Proactive load failed for a non-draining reason (typically transient memory pressure). |
 | `dispatchLoadCooldownTTL` | see [`routing.md`](routing.md#cooldowns-breakers-and-ejection) | Routing skips the pair after a *dispatch-time* load failure (`dispatch_load_cooldown` gate). |
+| `modelSwapPlanInterval` | `250 * time.Millisecond` | Minimum spacing between heartbeat-triggered swap plans, fleet-wide (`coordinator/registry/model_swap_coalesce.go`). |
 
 Pending entries are cleared when the load completes, when the provider
 disconnects (`Disconnect`), and by the warm-pool sweep as they expire.
 
 **Model swaps.** `TriggerModelSwaps` (`coordinator/registry/registry.go`)
-runs after every heartbeat and queue drain. For each model with queued
-requests and no warm provider, it picks a cold provider that has the model
-on disk (`bestModelLoadProviderLocked`) and sends `load_model`, so demand
-that no resident slot can satisfy pulls the model in rather than waiting out
-the queue. Cold dispatch ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
-`coordinator/api/cold_dispatch.go`) additionally kicks this machinery the
-moment a request is enqueued.
+plans one swap per model with queued requests and no warm provider: it picks
+a cold provider that has the model on disk (`bestModelLoadProviderLocked`)
+and sends `load_model`, so demand that no resident slot can satisfy pulls the
+model in rather than waiting out the queue. It has two entry points:
+
+- **Heartbeat** — after its queue drain, `Registry.Heartbeat` calls
+  `triggerModelSwapsFromHeartbeat` (`coordinator/registry/model_swap_coalesce.go`),
+  which returns without planning while the queue is empty and otherwise
+  admits at most one plan per `modelSwapPlanInterval` across all heartbeats
+  (`modelSwapPlanGate`). The planner walks the fleet per queued model, so N
+  heartbeats inside the window would each re-derive the same plan. A
+  heartbeat the window refuses is coalesced, not dropped: it arms one
+  trailing plan for the end of the window (`armTrailing`,
+  `trailingModelSwapPlan`), so a provider that heartbeat made loadable waits
+  at most `modelSwapPlanInterval` for the planner rather than for the next
+  heartbeat; the trailing plan claims the same gate, so the planner still
+  runs at most once per window. If a delayed timer finds that a heartbeat
+  opened a newer window, it rearms for that window to preserve any later
+  suppressed state change. The queue *drain* is per-heartbeat and is not
+  coalesced.
+- **Cold dispatch** ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
+  `coordinator/api/cold_dispatch.go`) calls `TriggerModelSwaps` directly the
+  moment a request is enqueued; that kick is immediate and not subject to
+  the heartbeat gate.
 
 ### Warm-pool controller
 
@@ -325,7 +343,11 @@ Each heartbeat (`Registry.Heartbeat`) refreshes `LastHeartbeat`,
 `SystemMetrics` and `BackendCapacity`, credits uptime for the gap since the
 previous heartbeat when that gap is at most `maxUptimeCredit =
 2 * time.Minute`, releases satisfied budget clamps, drains the provider's
-model queues with `DrainTriggerHeartbeat`, and calls `TriggerModelSwaps`.
+model queues with `DrainTriggerHeartbeat`, and calls
+`triggerModelSwapsFromHeartbeat`, which runs the swap planner only when the
+queue is non-empty and at most once per `modelSwapPlanInterval` fleet-wide,
+a heartbeat the window refuses arming one trailing plan for the window's end
+([above](#model-slots-pending-loads-and-swaps)).
 
 The provider CLI heartbeats every
 [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
@@ -342,6 +364,10 @@ A provider whose heartbeat age exceeds the timeout earns a strike; at
 `evictStrikeThreshold = 2` consecutive strikes it is disconnected. A provider
 must therefore be silent past the timeout at two successive sweeps — at
 least ~120 s — before eviction, which rides out a single delayed heartbeat.
+The read scan retains each candidate's exact provider pointer. Before removal,
+`disconnectProvider` rechecks that pointer and the latest heartbeat under the
+registry and provider locks. A heartbeat that recovered after the scan, or a
+replacement session registered under the same ID, cancels the stale eviction.
 
 ### Provider writer: two lanes
 
@@ -410,7 +436,8 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 7. **Warm-pool loads per tick are bounded** — `rampLoadsThisTick`,
    `MaxGlobalPendingLoads`.
 8. **A provider is evicted only after `evictStrikeThreshold` consecutive stale
-   sweeps** — `evictStale` ([above](#heartbeat-cadence-and-eviction)).
+   sweeps and a fresh identity/heartbeat recheck at removal** — `evictStale`,
+   `disconnectProvider` ([above](#heartbeat-cadence-and-eviction)).
 9. **Control frames never wait behind queued data frames** — lane priority
    in `providerWriter`.
 10. **Disconnect preserves stable-identity fault state** — `Disconnect`.
@@ -438,10 +465,10 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 | Heartbeat payload | `coordinator/protocol/messages.go` — `BackendCapacity`, `BackendSlotCapacity` |
 | Token-budget and memory admission | `coordinator/registry/scheduler.go` — `freeMemoryAdmits`, `pooledBudgetAdmits`, `knownZeroTokenBudget`, `committedTokenBudget` |
 | Concurrency caps | `coordinator/registry/registry.go` — `maxConcurrency`, `maxConcurrencyForModelLocked`, `DefaultMaxConcurrent`; `coordinator/registry/concurrency_cap.go` — `SetQualityConcurrencyCap`, `effectiveMaxConcurrencyForModelRateLocked`, `hasConcurrencyHeadroomForModelCapResolvedLocked` |
-| Pending loads and swaps | `coordinator/registry/registry.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`, `SendLoadModel` |
+| Pending loads and swaps | `coordinator/registry/registry.go` — `pendingModelLoadTTL`, `TriggerModelSwaps`, `bestModelLoadProviderLocked`, `SendLoadModel`; `coordinator/registry/model_swap_coalesce.go` — `modelSwapPlanInterval`, `modelSwapPlanGate`, `triggerModelSwapsFromHeartbeat` |
 | Warm pool | `coordinator/registry/warm_pool_controller.go` — `tick`, `plan`, `hasDemandPressure`, `targetWarm`, `WarmPoolSnapshot`; `coordinator/registry/warm_pool_target.go` — `warmTarget`, `qualityConcurrency`, `estimateServiceTime`, `rampLoadsThisTick`; `coordinator/registry/warm_pool_state.go` — `warmPoolArrivalEWMAAlpha` |
 | Warm-pool and quality-cap configuration | `coordinator/registry/config.go` — `WarmPoolConfig`, `QualityCapConfig`, `ReadConfig` |
-| Eviction | `coordinator/registry/registry.go` — `StartEvictionLoop`, `evictStale`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
+| Eviction | `coordinator/registry/registry.go` — `StartEvictionLoop`, `evictStale`, `disconnectProvider`, `evictStrikeThreshold`; wired in `coordinator/cmd/coordinator/main.go` |
 | Provider writer | `coordinator/registry/provider_writer.go` — `providerWriter`, `providerWriteTimeout`, `watchWrites` |
 | Teardown | `coordinator/registry/registry.go` — `Disconnect` |
 | Cold dispatch and queue-before-shed flags | `coordinator/api/cold_dispatch.go` |

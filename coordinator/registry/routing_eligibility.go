@@ -65,7 +65,7 @@ func (r *Registry) providerLivenessGateReasonLocked(p *Provider, minTrust TrustL
 	if !p.RuntimeVerified {
 		return false, GateRuntimeUnverified
 	}
-	if !r.providerSupportsPrivateTextLocked(p) {
+	if !r.providerSupportsPrivateTextAtLocked(p, now) {
 		return false, GatePrivateText
 	}
 	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {

@@ -430,6 +430,7 @@ func TestMergeProviderModelsDoesNotDropSiblingForUnrelatedSharedAlias(t *testing
 		protocol.ModelInfo{ID: shared, ModelType: "gemma"},
 		protocol.ModelInfo{ID: other, ModelType: "gemma"},
 	)
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 	makeProviderRoutable(p)
 	reg.SetModelCatalog([]CatalogEntry{{ID: oldA}, {ID: shared}, {ID: other}})

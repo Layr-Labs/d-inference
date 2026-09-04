@@ -110,7 +110,7 @@ var qualityCapOvercommitByModel map[string]float64
 // rate. Nested rather than flat-with-a-composite-key because the flat form
 // forced soloTPSSeedForClass to BUILD "model@class" on every probe — and that
 // probe runs once per candidate provider per request inside
-// snapshotProviderLocked, under both r.mu and p.mu, ~94 times on a full fleet.
+// snapshotProviderIntoLockedEx, under both r.mu and p.mu, ~94 times on a full fleet.
 // Two map reads allocate nothing; one string concatenation allocates every
 // time.
 //
@@ -319,7 +319,7 @@ func soloSeedFleetFallbacks(seed map[string]float64) map[string]float64 {
 // "Unknown|Unknown", so it matches no class-qualified entry and takes (2) or
 // (3). Both are floors, never the fast class's rate.
 // HOT PATH: once per candidate provider per request, inside
-// snapshotProviderLocked under both r.mu and p.mu. Every lookup here is a map
+// snapshotProviderIntoLockedEx under both r.mu and p.mu. Every lookup here is a map
 // read against an already-lowered key; nothing is concatenated and nothing is
 // allocated when the strings are already lower-case ASCII (strings.ToLower
 // returns its argument unchanged in that case, which is the common one — the

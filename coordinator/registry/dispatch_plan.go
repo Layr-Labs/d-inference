@@ -336,7 +336,7 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 //   - identity: r.providers[id] must still be the exact retained *Provider
 //     (a reconnect registers a new object under the same ID — its slot state,
 //     trust, and capacity are a stranger's; see Register/Disconnect);
-//   - snapshotProviderLocked → providerPassesRoutingGatesLocked (every
+//   - snapshotProviderIntoLockedEx → providerPassesRoutingGatesLocked (every
 //     structural/privacy/cooldown/trait gate);
 //   - buildCandidateWithReason (slot state, concurrency headroom, thermal,
 //     hardware fit, freeMemoryAdmits — including the in-flight pending debit
@@ -405,6 +405,8 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
 		id := entry.view.ProviderID
 		p := entry.provider
+		// One clock read per revalidated entry (snapshot, cost, admit, claim).
+		now := time.Now()
 		skip := func(reason PlanSkipReason) {
 			skips = append(skips, PlanSkip{ProviderID: id, Reason: reason})
 		}
@@ -420,12 +422,12 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			return nil, RoutingDecision{}, false
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
-		snap, ok := r.snapshotProviderLocked(p, model, pr.Traits, relaxTrust)
+		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, false, now)
 		if !ok {
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
-		candidate, _, ok := r.buildCandidateWithReason(snap, pr)
+		candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
 		if !ok {
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
@@ -436,10 +438,10 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		}
 
 		// Final admit + reservation under p.mu — the same commit sequence as
-		// reserveProvider (snapshotProviderLocked released p.mu, so the admit
+		// reserveProvider (snapshotProviderIntoLockedEx released p.mu, so the admit
 		// re-check closes the snapshot→reserve gap, including the vision gate).
 		p.mu.Lock()
-		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false) ||
+		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
 			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
@@ -449,7 +451,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		p.addPendingLocked(pr)
 		// Half-open capacity probe claim: identical to the primary reservation
 		// path (the r.mu write lock held across this loop serializes claims).
-		r.claimCapacityProbeLocked(p.ID, model, time.Now())
+		r.claimCapacityProbeLocked(p.ID, model, now)
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
 			p.Status = StatusServing
 		}

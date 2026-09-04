@@ -215,7 +215,7 @@ func TestRequestProfileRecordHasNoFreeFormProviderBytes(t *testing.T) {
 }
 
 func TestRequestProfileInsertShapes(t *testing.T) {
-	for n, want := range map[int]int{1: 1, 2: 8, 8: 8, 9: 64, 64: 64} {
+	for n, want := range map[int]int{1: 1, 2: 8, 8: 8, 9: 16, 16: 16, 17: 32, 32: 32, 33: 64, 64: 64, 65: 64} {
 		if got := profileInsertShape(n); got != want {
 			t.Errorf("profileInsertShape(%d) = %d, want %d", n, got, want)
 		}

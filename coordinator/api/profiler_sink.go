@@ -33,12 +33,16 @@ type profileJob struct {
 }
 
 type profileSink struct {
-	s         *Server
-	ch        chan profileJob
-	done      chan struct{}
-	dropped   atomic.Int64
-	written   atomic.Int64
-	closeOnce sync.Once
+	s       *Server
+	ch      chan profileJob
+	done    chan struct{}
+	dropped atomic.Int64
+	written atomic.Int64
+	// built counts rows flattened; sampledOut counts jobs discarded before
+	// flattening (tests pin that a sampled-out clean success never builds).
+	built      atomic.Int64
+	sampledOut atomic.Int64
+	closeOnce  sync.Once
 }
 
 func newProfileSink(s *Server, capacity int) *profileSink {
@@ -132,18 +136,21 @@ func (p *profileSink) worker() {
 	}
 }
 
-// build flattens a job into a row and applies the sampling rule. Runs on the
-// sink worker; panics are contained by the caller's Recover.
+// build applies the sampling rule on the live profile and only then
+// flattens the job into a row (sampled-out jobs never pay the flatten). Runs
+// on the sink worker; panics are contained by the caller's Recover.
 func (p *profileSink) build(job profileJob) *store.RequestProfileRecord {
 	defer saferun.Recover(p.s.logger, "profileSink.build")
+	if !p.s.profiler.shouldRecord(job.rp, job.ap) {
+		p.sampledOut.Add(1)
+		p.s.ddIncr("profiler.records", []string{"status:sampled_out"})
+		return nil
+	}
 	rec := p.s.buildProfileRecord(job.rp, job.ap)
 	if rec == nil {
 		return nil
 	}
-	if !p.s.profiler.alwaysRecord(rec) && !p.s.profiler.sampled(job.rp.CoordRequestID) {
-		p.s.ddIncr("profiler.records", []string{"status:sampled_out"})
-		return nil
-	}
+	p.built.Add(1)
 	return rec
 }
 

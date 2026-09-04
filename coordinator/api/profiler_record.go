@@ -133,16 +133,7 @@ func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.At
 		return nil
 	}
 	finalStatus, errorReason, terminalCause, providerOutcome, clientOutcome := ap.Outcome()
-	if finalStatus == "" {
-		// No phase-aware classifier wrote a status (e.g. consumer gone before
-		// the provider terminal): derive a closed value from the terminal.
-		switch providerOutcome {
-		case "completed":
-			finalStatus = finalStatusSuccess
-		case "error", "no_terminal", "not_dispatched":
-			finalStatus = providerOutcome
-		}
-	}
+	finalStatus = deriveFinalStatus(finalStatus, providerOutcome)
 	rec := &store.RequestProfileRecord{
 		CoordRequestID:        rp.CoordRequestID,
 		RequestID:             ap.RequestID,
@@ -294,6 +285,23 @@ func (s *Server) buildProfileRecord(rp *registry.RequestProfile, ap *registry.At
 	return rec
 }
 
+// deriveFinalStatus is the row's final_status: the classifier's value when
+// one was written, else a closed value derived from the provider terminal
+// (e.g. consumer gone before the terminal). Shared by the flattened record
+// and the pre-flatten sampling predicate so the two can never disagree.
+func deriveFinalStatus(finalStatus, providerOutcome string) string {
+	if finalStatus != "" {
+		return finalStatus
+	}
+	switch providerOutcome {
+	case "completed":
+		return finalStatusSuccess
+	case "error", "no_terminal", "not_dispatched":
+		return providerOutcome
+	}
+	return ""
+}
+
 // profileTimingAnomaly flags non-monotonic coordinator stamps (a retried
 // attempt that re-stamped, a clock issue, or a bug). Never rejects the row.
 func profileTimingAnomaly(rec *store.RequestProfileRecord) bool {
@@ -302,20 +310,99 @@ func profileTimingAnomaly(rec *store.RequestProfileRecord) bool {
 		rec.EncryptedUS, rec.WriteSubmittedUS, rec.WriteDequeuedUS, rec.WriteDoneUS,
 		rec.FirstChunkIngressUS, rec.FirstContentUS, rec.CompleteIngressUS,
 	}
+	values := make([]int64, len(order))
+	for i, p := range order {
+		if p != nil {
+			values[i] = *p
+		}
+	}
+	return stampsOutOfOrder(values)
+}
+
+// profileTimingAnomalyRaw is profileTimingAnomaly evaluated on the live
+// stamps, in the same order, before the row is flattened (an unset stamp is
+// 0 here and nil there — usPtr maps <= 0 to nil).
+func profileTimingAnomalyRaw(rp *registry.RequestProfile, ap *registry.AttemptProfile) bool {
+	return stampsOutOfOrder([]int64{
+		rp.HandlerEntryUS.Load(), rp.ParsedUS.Load(), rp.ReservedUS.Load(), ap.AttemptStartUS.Load(), ap.ReserveDoneUS.Load(),
+		ap.EncryptedUS.Load(), ap.WriteSubmittedUS.Load(), ap.WriteDequeuedUS.Load(), ap.WriteDoneUS.Load(),
+		ap.FirstChunkIngressUS.Load(), ap.FirstContentUS.Load(), ap.CompleteIngressUS.Load(),
+	})
+}
+
+// stampsOutOfOrder reports whether the set (> 0) stamps are non-monotonic.
+func stampsOutOfOrder(values []int64) bool {
 	var last int64
-	for _, p := range order {
-		if p == nil {
+	for _, v := range values {
+		if v <= 0 {
 			continue
 		}
-		if *p < last {
+		if v < last {
 			return true
 		}
-		last = *p
+		last = v
 	}
 	return false
 }
 
-// alwaysRecord reports whether a record bypasses sampling.
+// shouldRecord decides, BEFORE the row is flattened, whether an attempt is
+// persisted: the deterministic per-request sample, or one of the
+// always-record predicates evaluated on the live profile. ~90% of clean
+// successes are sampled out at the default rate; they no longer pay
+// buildProfileRecord (~150 field copies, two decision JSON marshals) on the
+// sink worker only to be discarded.
+func (p *profiler) shouldRecord(rp *registry.RequestProfile, ap *registry.AttemptProfile) bool {
+	if p == nil || rp == nil || ap == nil {
+		return false
+	}
+	return p.sampled(rp.CoordRequestID) || p.alwaysRecordRaw(rp, ap)
+}
+
+// alwaysRecordRaw is alwaysRecord evaluated on the live profile: the same
+// predicates, read from the fields buildProfileRecord would copy. The
+// provider-profile predicate runs the retained raw profile through the same
+// decoder (one <= 4 KB Unmarshal) so an invalid profile on a clean success
+// is still force-recorded. TestAlwaysRecordRawMatchesFlattened pins parity.
+func (p *profiler) alwaysRecordRaw(rp *registry.RequestProfile, ap *registry.AttemptProfile) bool {
+	finalStatus, _, _, providerOutcome, _ := ap.Outcome()
+	if deriveFinalStatus(finalStatus, providerOutcome) != finalStatusSuccess {
+		return true
+	}
+	if v := ap.FirstContentUS.Load(); v > profileSlowFirstContent.Microseconds() {
+		return true
+	}
+	if v := ap.FinalizedUS.Load(); v > profileSlowTotal.Microseconds() {
+		return true
+	}
+	if rp.DispatchedAttempts() > 1 || ap.BackupLaunched.Load() || rp.ClientGonePhase() != "" {
+		return true
+	}
+	if profileTimingAnomalyRaw(rp, ap) {
+		return true
+	}
+	raw, late := ap.ProviderProfileRaw()
+	switch {
+	case len(raw) > 0:
+		receivedAt := rp.T0
+		if receivedAt.IsZero() {
+			receivedAt = time.Now()
+		}
+		_, valid, _, _ := decodeInferenceProfile(raw, receivedAt)
+		return !valid
+	case late:
+		return true
+	default:
+		switch ap.ProviderProfileIngressStatus() {
+		case registry.ProviderProfileTooLarge, registry.ProviderProfileDuplicate:
+			return true
+		}
+		return false
+	}
+}
+
+// alwaysRecord reports whether a flattened record bypasses sampling. The
+// sink decides on the live profile (alwaysRecordRaw); this is the reference
+// form the parity test checks it against.
 func (p *profiler) alwaysRecord(rec *store.RequestProfileRecord) bool {
 	if rec == nil {
 		return false

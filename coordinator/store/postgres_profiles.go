@@ -14,13 +14,15 @@ import (
 
 // profileInsertShapes are the only multi-row INSERT arities ever sent for
 // request_profiles, so the per-connection prepared-statement cache holds at
-// most three distinct statements. Input is chunked to the largest shape and
+// most five distinct statements. Input is chunked to the largest shape and
 // each chunk is padded (by repeating its last row) up to the next shape;
 // padded duplicates are absorbed by ON CONFLICT DO NOTHING inside the same
-// statement. Skipped rows still consume BIGSERIAL values, so ids can have
-// gaps — harmless: the retention sweep walks id ranges bounded by the time
-// index and never assumes density.
-var profileInsertShapes = [...]int{1, 8, 64}
+// statement. The 16 and 32 shapes keep a typical 250 ms batch (a few to a
+// few dozen rows) from shipping 64 rows x ~150 params and up to 55 conflict
+// probes. Skipped rows still consume BIGSERIAL values, so ids can have gaps
+// — harmless: the retention sweep walks id ranges bounded by the time index
+// and never assumes density.
+var profileInsertShapes = [...]int{1, 8, 16, 32, 64}
 
 // defaultTelemetryPruneBatch is the per-transaction DELETE window used when
 // PruneTelemetry is called with batch <= 0.

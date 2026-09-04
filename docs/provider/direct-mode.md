@@ -1,162 +1,162 @@
-# Direct / local mode — talk to your own Mac, no relay
+# Direct mode: a local OpenAI-compatible endpoint
 
-[self-route](./self-route.md) routes "use my own machine, for free" requests
-through the coordinator (the only rendezvous point, since the provider is an
-outbound-only WebSocket client behind NAT). **Direct mode** removes the relay
-entirely for the case where the client can reach the Mac itself — same machine,
-LAN, or tailnet:
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-- **Lower latency** — localhost/LAN, no WAN round-trip to the coordinator.
-- **Works offline** — your own inference keeps running with no internet.
-- **Bytes never leave your network** — stronger than E2E-through-relay.
+Run the provider's inference engine as an OpenAI-compatible HTTP server on your
+own Mac, either standalone (`darkbloom start --local`, no coordinator, no
+earnings) or alongside fleet serving (`darkbloom start --local-endpoint`). For
+operators who want their own tools to call the models they already host.
+Requests never leave the machine and are never billed.
 
-The provider already ships an OpenAI-compatible HTTP server backed by the same
-MLX engine (`StandaloneServer`); direct mode makes it **secure** (a local API
-key) and **discoverable**, and adds a client that prefers it with automatic
-fallback to the relayed self-route.
+## Prerequisites
 
-## Run it
+- Provider installed ([installation](./installation.md)); no account or
+  `darkbloom login` is needed for `--local`.
+- At least one model downloaded with an engine-v2 adapter (gpt-oss, gemma-4
+  families); `darkbloom models list`.
+- Port `8000` free, or choose another with `--port`.
 
-```bash
-darkbloom start --local                 # local server ONLY (no coordinator)
-darkbloom start --local --port 8080     # custom port
-darkbloom start --local --bind 100.x.y.z  # bind a tailnet IP for same-account devices
-darkbloom start --local --no-auth       # disable the API key (trusted/airgapped only)
+## Steps
 
-# Unified mode: serve the public fleet AND a local endpoint at once, off the
-# SAME loaded models (weights load once; local + coordinator requests share one
-# continuous-batching engine and KV budget):
-darkbloom start --local-endpoint                 # coordinator + local on :8000
-darkbloom start --local-endpoint --port 8080 --bind 100.x.y.z
-```
+1. Pick a mode. The two flags are mutually exclusive; `darkbloom start`
+   rejects the combination with exit 1
+   (`provider-swift/Sources/darkbloom/StartCommand.swift`, `Start.run`).
 
-`--local` runs the OpenAI server **only** (no coordinator connection).
-`--local-endpoint` runs it **alongside** the coordinator connection. Both mint a
-persistent bearer token (`~/.darkbloom/local_token`, `0600`); `--local` also
-writes a discovery record (`~/.darkbloom/local.json`, `0600`).
+   | Mode | Command | Coordinator | Models come from | Earns |
+   |---|---|---|---|---|
+   | Standalone | `darkbloom start --local` | not contacted | `StandaloneServer`'s own slot cache (`provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`) | no |
+   | Unified | `darkbloom start --local-endpoint` | connected as usual | the live `ProviderLoop` slots — weights load once and local + fleet requests share one continuous-batching engine and KV budget (`provider-swift/Sources/ProviderCore/ProviderLoop+LocalEndpoint.swift`) | yes, for fleet traffic |
 
-These flags are implemented in `provider-swift/Sources/darkbloom/StartCommand.swift`.
+2. Start standalone. This runs in the current terminal (no LaunchAgent) and
+   installs no service:
 
-## Find the endpoint
+   ```bash
+   darkbloom start --local --model <model-id>          # or --all, or the picker
+   darkbloom start --local --port 8080 --bind 0.0.0.0  # other port / all interfaces
+   ```
 
-```bash
-darkbloom local            # prints base URL + API key + ready-to-paste examples
-darkbloom local --json     # machine-readable discovery record
-```
+   `--port` defaults to `8000`, `--bind` to `127.0.0.1`. Before serving,
+   `Start.runLocalServe` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
+   loads or creates the API token, filters the chosen models to those with an
+   engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
+   serve.` if none remain), waits up to 5 s for the socket to bind (`Local
+   server failed to bind <addr>:<port> within 5s` otherwise), writes the
+   discovery file and holds a fan-control lease while running
+   ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
+   discovery file.
 
-Point any OpenAI client at it:
+3. Or start unified. This goes through the normal LaunchAgent path, so the
+   flags are recorded in the plist and survive reboots:
 
-```bash
-export OPENAI_BASE_URL=http://127.0.0.1:8000/v1
-export OPENAI_API_KEY=dk-local-…      # from `darkbloom local`
-```
+   ```bash
+   darkbloom start --local-endpoint --port 8000
+   ```
 
-```python
-from openai import OpenAI
-client = OpenAI()  # picks up OPENAI_BASE_URL / OPENAI_API_KEY
-client.chat.completions.create(model="…", messages=[{"role": "user", "content": "hi"}])
-```
+   The provider daemon starts the local server in a child task once it is
+   running. If the port is busy the daemon logs `Local OpenAI endpoint did NOT
+   bind on <host>:<port> (port already in use?)` and keeps serving the fleet;
+   restart with a free `--port`. The discovery file is written only after the
+   provider's own socket is bound, never on a probe another process could
+   answer (`ProviderLoop.onLocalEndpointBound`). In unified mode a local
+   request first loads the model if needed and then holds a reservation until
+   its stream ends, so the coordinator's advertised capacity reflects local
+   load too.
 
-## Discover from Node (`~/.darkbloom/local.json`)
+4. Get the endpoint and key:
 
-```ts
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+   ```bash
+   darkbloom local          # Base URL, API key, model list, curl example
+   darkbloom local --json   # the raw ~/.darkbloom/local.json record
+   ```
 
-export function discoverLocalEndpoint() {
-  try {
-    const info = JSON.parse(readFileSync(join(homedir(), ".darkbloom", "local.json"), "utf8"));
-    return { baseURL: info.base_url as string, apiKey: info.api_key as string | undefined };
-  } catch {
-    return null; // local mode not running
-  }
-}
-```
+   `Local` (`provider-swift/Sources/darkbloom/LocalCommand.swift`) reads the
+   discovery file through `LocalEndpoint.readLiveInfo`, which checks the
+   recorded `pid` is alive so a crashed server is never advertised; with no
+   live server it exits 1 (`{}` under `--json`).
 
-## Local-first with coordinator fallback
+5. Call it with any OpenAI client:
 
-The recommended client pattern: prefer the local endpoint and fall back to the
-coordinator self-route on a connection failure (the Mac is asleep, you're away,
-or local mode isn't running). Fallback should fire **only** on a
-connection-level error — a reachable-but-erroring local server returns its own
-error rather than silently rerouting. Both paths are free.
+   ```bash
+   export OPENAI_BASE_URL=$(darkbloom local --json | jq -r .base_url)
+   export OPENAI_API_KEY=$(darkbloom local --json | jq -r .api_key)
+   curl -s "$OPENAI_BASE_URL/chat/completions" \
+     -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" \
+     -d '{"model":"<model-id>","messages":[{"role":"user","content":"hi"}]}'
+   ```
 
-The console UI does not ship this helper today (a ready-made
-`chatCompletionWithFallback` prototype lived at `console-ui/src/lib/localFirst.ts`
-until it was removed as unwired code — recover it from git history if useful).
-The pattern is a few lines:
+## Authentication and files
 
-```ts
-async function chatCompletionWithFallback(body: object, local: { baseURL: string; apiKey?: string } | null) {
-  if (local) {
-    try {
-      return { via: "local", response: await postChat(`${local.baseURL}/v1/chat/completions`, body, local.apiKey) };
-    } catch (err) {
-      if (!isConnectionError(err)) throw err; // reachable-but-erroring: surface it
-    }
-  }
-  // Coordinator fallback MUST self-route to stay free: without the
-  // X-Darkbloom-Route: self header the request goes to the public paid fleet.
-  return {
-    via: "coordinator",
-    response: await postChat("/api/chat", body, coordinatorApiKey, {
-      "X-Darkbloom-Route": "self",
-    }),
-  };
-}
-```
-
-## Security
-
-- **API key, not just loopback.** A loopback server with no auth is reachable by
-  any local process and — because it sends `Access-Control-Allow-Origin: *` — by
-  a hostile web page. The bearer token is the boundary. Every inference route
-  requires `Authorization: Bearer <token>`; `OPTIONS` (CORS preflight) and
-  `GET /health` / `GET /` are exempt. Comparison is constant-time; the 401
-  carries a CORS header so browsers can read it.
-- **`--bind` exposes the server to the network** (still token-gated). Prefer a
-  tailnet IP over `0.0.0.0`. The discovery record always advertises a dialable
-  loopback URL when bound to a wildcard.
-- The token persists across restarts (so existing clients keep working) and is
-  written atomically at `0600` (no umask window). The discovery file is removed
-  on graceful shutdown; because a Ctrl-C/SIGKILL/crash skips that cleanup, the
-  record carries the server `pid` and `darkbloom local` (via `readLiveInfo`)
-  treats a stale file whose process is gone as "not running" rather than
-  advertising a dead endpoint.
-
-## How it relates to self-route
-
-| | Direct (local) | Self-route (relayed) |
+| Item | Value | Source |
 |---|---|---|
-| Path | client → your Mac | client → coordinator → your Mac |
-| Best for | same machine / LAN / tailnet | remote, away from your Mac |
-| Coordinator needed | no | yes |
-| Auth | local API key | your Darkbloom API key + `X-Darkbloom-Route: self` |
-| Cost | free | free |
-| Code-identity gate | N/A — no coordinator | applies once enforced |
+| API key | `~/.darkbloom/local_token`, mode `0600`; `dk-local-` + base64url of 32 random bytes; created once, reused across restarts | `provider-swift/Sources/ProviderCore/Server/LocalEndpoint.swift` (`loadOrCreateToken`, `tokenPrefix`) |
+| Discovery record | `~/.darkbloom/local.json`, mode `0600`: `base_url`, `api_key`, `host`, `port`, `pid`, `version`, `updated_at`; removed on graceful shutdown | `LocalEndpoint.Info`, `writeInfo`, `removeInfo` |
+| Directory override | `DARKBLOOM_LOCAL_DIR` replaces `~/.darkbloom` for both files | `LocalEndpoint.directory` |
+| `--bind 0.0.0.0` | Advertised `base_url` uses `127.0.0.1`; other hosts use the machine's address | `LocalEndpoint.Info.init` |
+| `--no-auth` | No token check; `api_key` is empty in the discovery record | `LocalInferenceHTTPConfig.authToken == nil` |
 
-They are complementary modes a client picks by reachability — the local-first
-fallback pattern above does exactly that.
+`LocalAuthResponder` (`provider-swift/Sources/ProviderCore/Server/LocalAuthResponder.swift`)
+is the outermost layer: `OPTIONS` preflights, `GET /health`, `GET /v1/health`
+and `GET /` pass without a token; everything else needs
+`Authorization: Bearer <token>`, compared in constant time; failures return
+`401` with an OpenAI-style error envelope and `Access-Control-Allow-Origin: *`
+so browser clients can read it. There is no rate limiting and no TLS: keep the
+default loopback bind, or put a reverse proxy in front before exposing it.
 
-## Serve publicly AND locally at once (`--local-endpoint`)
+## Routes
 
-`--local-endpoint` is the unified mode: the provider keeps its coordinator
-connection (serving the public fleet) **and** exposes the local OpenAI endpoint
-off the **same** loaded models. There is no double-load: both front-ends route
-to the same per-model `EngineV2Bridge` instances and `GlobalKVCacheBudget`, so a
-local request and a coordinator request feed the same continuous-batching engine
-and count against the same capacity the coordinator sees. Local in-flight
-requests hold a reservation that keeps the idle monitor / load-gate from evicting
-a model mid-stream. The HTTP layer is identical to `--local` (shared builder), so
-auth, CORS, and error mapping behave the same.
+The responder stack is auth → CORS → `/metrics` → chat-upload interception →
+the upstream `MLXLMServer` router
+(`provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`,
+`makeLocalInferenceApplication`). Routes are registered in
+`libs/mlx-swift-lm/Libraries/MLXLMServer/HTTP/MLXServerApplication.swift`
+(`buildRouter`):
 
-## Limitations / future
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/health`, `/v1/health` | Unauthenticated |
+| GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
+| GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
+| POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; **32 MiB** body cap |
+| POST | `/v1/chat/completions/batch` | Same cap |
+| POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
+| POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
+| GET / POST | `/v1/responses/:response_id`, `/v1/responses/:response_id/cancel` | |
+| POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
+| POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |
 
-- `--local` and `--local-endpoint` mint the same bearer token, but only `--local`
-  writes the `~/.darkbloom/local.json` discovery record today; for unified mode
-  the endpoint URL is printed at startup. Writing the discovery record from
-  unified mode (so `darkbloom local` finds it too) is a small follow-on.
-- The hosted browser console can't read `~/.darkbloom/local.json`; a settings
-  field to paste the `darkbloom local` URL + token (then prefer it via the
-  local-first fallback pattern above) is a natural follow-on.
+The cap `localInferenceMaxUploadBytes = 32 * 1024 * 1024`
+(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`)
+matches the coordinator WebSocket frame allowance. Per-image, per-video and
+per-audio limits are the same as fleet serving and are configured through the
+variables in [`reference/configuration.md`](../reference/configuration.md).
+`max_tokens` defaults to the scheduler's default when a request omits it.
+
+## Verify
+
+```bash
+darkbloom local
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $(cat ~/.darkbloom/local_token)"
+```
+
+`darkbloom status` shows the local endpoint in unified mode; in standalone mode
+the process prints its listening address and the daemon-state file is not used.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `--local and --local-endpoint are mutually exclusive` | Use one flag |
+| `401 Unauthorized` | Send `Authorization: Bearer $(cat ~/.darkbloom/local_token)`; the token in `local.json` is authoritative |
+| `413` on a chat request with images | Body above 32 MiB; downscale or send fewer images |
+| `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
+| Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
+| Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |
+
+## Related
+
+- [Self-route](./self-route.md) — route your *fleet* requests to your own
+  provider through the coordinator instead of a local socket.
+- [CLI reference](./cli-reference.md) — `start`, `local` flags and paths.
+- [Beta features](./beta-features.md) — MTP and paged KV apply to local serving too.
+- [`reference/configuration.md`](../reference/configuration.md) — media limits and engine variables.

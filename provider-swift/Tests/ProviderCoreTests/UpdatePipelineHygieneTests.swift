@@ -176,9 +176,12 @@ struct UpdatePipelineHygieneTests {
         }
     }
 
-    /// The stage/commit steps go through this helper: a blocking step no
-    /// longer parks the loop actor, so an actor call issued during the step
-    /// is answered at once instead of after the step.
+    /// The stage/commit steps go through this helper FROM the loop actor:
+    /// a blocking step no longer parks the actor, so an actor call issued
+    /// during the step is answered at once instead of after the step. The
+    /// step is launched through an actor-isolated seam (the same isolation
+    /// `stageUpdateBundle`/`commitStagedUpdateBundle` run under); with the
+    /// work inlined on the actor the probe call waits the whole second.
     @Test("a blocking update step leaves the loop actor responsive")
     func blockingStepLeavesActorResponsive() async throws {
         let config = ProviderLoopConfig(
@@ -195,17 +198,31 @@ struct UpdatePipelineHygieneTests {
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
         let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
 
+        let stepStarted = Flag()
         let step = Task {
-            await ProviderLoop.runUpdateWorkOffActor { () -> Int in
+            await loop.runBlockingUpdateStepForTesting { () -> Int in
+                stepStarted.set()
                 Thread.sleep(forTimeInterval: 1.0)  // tar/codesign/smoke stand-in
                 return 42
             }
         }
-        try await Task.sleep(for: .milliseconds(100))
+        // Probe only once the blocking work is actually running.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !stepStarted.value, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(stepStarted.value, "the update step never started")
         let asked = ContinuousClock.now
         _ = await loop.isShuttingDownForTesting()
         let latency = ContinuousClock.now - asked
         #expect(latency < .milliseconds(500), "actor call waited \(latency) behind the update step")
         #expect(await step.value == 42)
     }
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+    var value: Bool { lock.withLock { _value } }
+    func set() { lock.withLock { _value = true } }
 }

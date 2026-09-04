@@ -166,6 +166,16 @@ extension ProviderLoop {
     /// Test seam: stand in for the background auto-update cycle task.
     func installAutoUpdateTaskForTesting(_ task: Task<Void, Never>) { autoUpdateTask = task }
 
+    /// Test seam: run a blocking update step FROM the loop actor, exactly as
+    /// `stageUpdateBundle`/`commitStagedUpdateBundle` do, so a test can
+    /// prove the step leaves the actor responsive (an inline `work()` here
+    /// would park every actor call behind it).
+    func runBlockingUpdateStepForTesting<T: Sendable>(
+        _ work: @escaping @Sendable () -> T
+    ) async -> T {
+        await Self.runUpdateWorkOffActor(work)
+    }
+
     // MARK: - Liveness seams
 
     /// Test seam: how long the capacity tick may go without completing

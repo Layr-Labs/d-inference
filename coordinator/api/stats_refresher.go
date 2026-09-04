@@ -34,6 +34,13 @@ const (
 	// keeps serving the previous body for this long, after which the next
 	// request falls back to the coalesced cold path.
 	statsCacheTTL = 5 * time.Minute
+	// refreshFailureHold is how long a key's flight answers with its last
+	// error instead of running again. With nothing cached, every cold request
+	// would otherwise start a fresh pipeline the moment the previous one
+	// failed — on a database that is timing out, that stacks full scans
+	// back-to-back. The hold is shorter than the tick so the timer always
+	// retries; failed pipelines are capped at two per minute per key.
+	refreshFailureHold = statsRefreshInterval / 2
 )
 
 // networkTotalsWindows are the /v1/network/totals windows kept warm — the
@@ -49,10 +56,11 @@ func networkTotalsCacheKey(window string) string { return "network_totals:" + wi
 // the whole contract needed (x/sync/singleflight is only an indirect
 // dependency of this module).
 type refreshFlight struct {
-	mu   sync.Mutex
-	gen  atomic.Uint64
-	body []byte
-	err  error
+	mu       sync.Mutex
+	gen      atomic.Uint64
+	body     []byte
+	err      error
+	failedAt time.Time // when err was recorded; zero after a success
 }
 
 func (f *refreshFlight) do(fn func() ([]byte, error)) ([]byte, error) {
@@ -63,7 +71,17 @@ func (f *refreshFlight) do(fn func() ([]byte, error)) ([]byte, error) {
 		// A refresh completed while this caller waited for the lock: share it.
 		return f.body, f.err
 	}
+	if f.err != nil && time.Since(f.failedAt) < refreshFailureHold {
+		// The last run failed moments ago: do not stack another pipeline on
+		// a failing database. The timer (or a later request) retries once
+		// the hold expires.
+		return nil, f.err
+	}
 	f.body, f.err = fn()
+	f.failedAt = time.Time{}
+	if f.err != nil {
+		f.failedAt = time.Now()
+	}
 	f.gen.Add(1)
 	return f.body, f.err
 }

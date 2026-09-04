@@ -85,6 +85,20 @@ func (g *gatedAnalyticsStore) NetworkTotals(since time.Time) (store.NetworkTotal
 	return g.Store.NetworkTotals(since)
 }
 
+// expireFailureHoldForTest backdates every flight's last failure so the next
+// call runs again — deterministic hold expiry without sleeping.
+func (k *keyedFlights) expireFailureHoldForTest() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, f := range k.m {
+		f.mu.Lock()
+		if !f.failedAt.IsZero() {
+			f.failedAt = time.Now().Add(-2 * refreshFailureHold)
+		}
+		f.mu.Unlock()
+	}
+}
+
 func newRefresherTestServer(t *testing.T, inner store.Store) (*Server, *gatedAnalyticsStore) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -286,14 +300,76 @@ func TestStatsRefreshFailureKeepsPreviousBody(t *testing.T) {
 		t.Fatal("a failed cold refresh cached a totals body")
 	}
 
-	// Recovery: the next request recomputes and serves the new data.
+	// Recovery: once the failure hold has expired, the next request
+	// recomputes and serves the new data.
 	st.failAnalytics.Store(false)
 	st.failTotals.Store(false)
+	srv.refreshFlights.expireFailureHoldForTest()
 	if code, body := getStats(t, srv); code != http.StatusOK || bytes.Equal(body, statsBefore) {
 		t.Fatalf("recovered stats: status %d, body unchanged=%v", code, bytes.Equal(body, statsBefore))
 	}
 	if code, _ := getNetworkTotals(t, srv, "24h"); code != http.StatusOK {
 		t.Fatalf("recovered totals: status %d", code)
+	}
+}
+
+// With nothing cached and a failing store, cold requests inside the failure
+// hold do not stack pipelines: 50 concurrent misses run one execution, all
+// answer 503, and a tick inside the hold runs nothing either; once the hold
+// expires the next request executes again.
+func TestStatsFailureHoldStopsPipelineStacking(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 2)
+	st.failAnalytics.Store(true)
+	st.failTotals.Store(true)
+
+	const n = 50
+	codes, _ := concurrentStats(t, srv, n)
+	for i, code := range codes {
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("cold stats request %d during failure = %d, want 503", i, code)
+		}
+	}
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("analytics executions for %d cold misses on a failing store = %d, want 1", n, got)
+	}
+	var wg sync.WaitGroup
+	totalsCodes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			totalsCodes[i], _ = getNetworkTotals(t, srv, "24h")
+		}()
+	}
+	wg.Wait()
+	for i, code := range totalsCodes {
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("cold totals request %d during failure = %d, want 503", i, code)
+		}
+	}
+	if got := st.totalsCalls.Load(); got != 1 {
+		t.Fatalf("totals executions for %d cold misses on a failing store = %d, want 1", n, got)
+	}
+
+	// A tick inside the hold runs nothing for the held keys (the other
+	// windows, never attempted, run once each).
+	srv.refreshStatsCaches(context.Background())
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("analytics executions after a tick inside the hold = %d, want 1", got)
+	}
+	if got := st.totalsCalls.Load(); got != int64(len(networkTotalsWindows)) {
+		t.Fatalf("totals executions after a tick inside the hold = %d, want %d (24h held, other windows once)", got, len(networkTotalsWindows))
+	}
+
+	// Hold expired: the next request tries again.
+	srv.refreshFlights.expireFailureHoldForTest()
+	if code, _ := getStats(t, srv); code != http.StatusServiceUnavailable {
+		t.Fatalf("stats after hold expiry with the store still failing = %d, want 503", code)
+	}
+	if got := st.analyticsCalls.Load(); got != 2 {
+		t.Fatalf("analytics executions after hold expiry = %d, want 2", got)
 	}
 }
 

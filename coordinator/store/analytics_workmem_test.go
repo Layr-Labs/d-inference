@@ -178,14 +178,20 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 	since := time.Now().Add(-24 * time.Hour)
 
 	tracer.reset()
-	locations := s.UsageLocationBuckets(since)
+	locations, err := s.UsageLocationBuckets(since)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(locations) != 1 || locations[0].Requests != 3 || locations[0].Providers != 1 {
 		t.Fatalf("location buckets = %+v, want one NY bucket with 3 requests from 1 provider", locations)
 	}
 	assertAnalyticsTx(t, tracer.snapshot(), "COUNT(DISTINCT provider_id)")
 
 	tracer.reset()
-	flows := s.UsageFlowBuckets(since, nil)
+	flows, err := s.UsageFlowBuckets(since, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(flows) != 1 || flows[0].Requests != 3 || flows[0].ProviderCity != "San Francisco" {
 		t.Fatalf("flow buckets = %+v, want one NY->SF flow with 3 requests", flows)
 	}
@@ -214,7 +220,7 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 	}
 
 	// The window predicate is a real cutoff: rows older than since are excluded.
-	if got := s.UsageLocationBuckets(time.Now().Add(time.Hour)); len(got) != 0 {
+	if got, err := s.UsageLocationBuckets(time.Now().Add(time.Hour)); err != nil || len(got) != 0 {
 		t.Fatalf("future cutoff returned %d buckets, want 0", len(got))
 	}
 }
@@ -237,6 +243,12 @@ func TestNetworkTotalsReturnsErrorWhenUnavailable(t *testing.T) {
 func TestUsageAggregatesReturnErrorWhenUnavailable(t *testing.T) {
 	s := testPostgresStore(t)
 	s.Close()
+	if _, err := s.UsageLocationBuckets(time.Now()); err == nil {
+		t.Error("UsageLocationBuckets on a closed pool returned no error")
+	}
+	if _, err := s.UsageFlowBuckets(time.Now(), nil); err == nil {
+		t.Error("UsageFlowBuckets on a closed pool returned no error")
+	}
 	since := time.Now().Add(-24 * time.Hour)
 	if _, err := s.UsageTotals(); err == nil {
 		t.Error("UsageTotals on a closed pool returned no error")

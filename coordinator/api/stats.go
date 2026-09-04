@@ -3,14 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -83,129 +82,10 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
-const (
-	// statsCacheKey is the readCache entry for GET /v1/stats. One background
-	// goroutine (StartCacheRefreshers) owns it; handlers only read it.
-	statsCacheKey = "stats:v1"
-	// cacheRefreshInterval is how often a refresher recomputes its entries —
-	// the staleness contract the public pages have always had.
-	cacheRefreshInterval = time.Minute
-	// refreshedCacheTTL is the safety TTL on a good refreshed value. It is
-	// deliberately longer than the refresh interval so a slow or failed
-	// refresh serves the last good value instead of letting the entry expire
-	// and every request recompute it.
-	refreshedCacheTTL = 5 * time.Minute
-	// refreshedDegradedTTL is the TTL when the only value available is
-	// degraded (a usage analytics statement returned nothing or reported a
-	// failure, typically a store timeout). It is short so the next tick or
-	// miss retries, but longer than the refresh interval so the entry cannot
-	// expire between ticks.
-	refreshedDegradedTTL = 2 * time.Minute
-)
-
-// cacheRefresher coalesces computations of one readCache entry and remembers
-// whether the cached value is a good one. It exists because the statements
-// behind /v1/stats and /v1/network/totals each take seconds on the primary:
-// before it, every provider registration evicted stats:v1 (~1,400 times/hour
-// in production), every concurrent miss ran its own copy of the pipeline, and
-// a timed-out statement was cached as empty or all-zero data.
-type cacheRefresher struct {
-	mu sync.Mutex
-	// inflight is non-nil while a computation is running and is closed when it
-	// finishes; concurrent cold misses wait on it instead of computing again.
-	inflight chan struct{}
-	// haveGood records that the value currently cached (if any) was computed
-	// with every statement returning data.
-	haveGood bool
-}
-
-// refreshCachedEntry runs compute — coalescing concurrent callers onto one
-// run — and stores the result under key. compute returns the body, whether it
-// is degraded (see storeCachedEntry), and an error when there is nothing to
-// cache at all (a store error: the entry is left untouched so the previous
-// good value keeps serving until its safety TTL lapses). It returns the body
-// to serve and false when nothing could be produced.
-func (s *Server) refreshCachedEntry(entry *cacheRefresher, key string, compute func() ([]byte, bool, error)) ([]byte, bool) {
-	entry.mu.Lock()
-	if wait := entry.inflight; wait != nil {
-		entry.mu.Unlock()
-		<-wait
-		cached, ok := s.readCache.Get(key)
-		return cached, ok
-	}
-	done := make(chan struct{})
-	entry.inflight = done
-	entry.mu.Unlock()
-	defer func() {
-		entry.mu.Lock()
-		entry.inflight = nil
-		entry.mu.Unlock()
-		close(done)
-	}()
-
-	body, degraded, err := compute()
-	if err != nil {
-		s.logger.Warn("cache refresh failed; keeping previous value", "key", key, "error", err)
-		s.ddIncr("cache.refresh_failed", []string{"key:" + key})
-		cached, ok := s.readCache.Get(key)
-		return cached, ok
-	}
-	return s.storeCachedEntry(entry, key, body, degraded), true
-}
-
-// storeCachedEntry caches a computed body and returns the body to serve. A
-// good value is cached with the safety TTL. A degraded value never replaces a
-// good value that is still cached; it is cached only when nothing better
-// exists, with a short TTL so it is retried soon.
-func (s *Server) storeCachedEntry(entry *cacheRefresher, key string, body []byte, degraded bool) []byte {
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	if degraded {
-		if previous, ok := s.readCache.Get(key); ok && entry.haveGood {
-			s.logger.Warn("cache refresh degraded; keeping previous value", "key", key)
-			s.ddIncr("cache.refresh_degraded", []string{"key:" + key, "action:kept_previous"})
-			return previous
-		}
-		s.ddIncr("cache.refresh_degraded", []string{"key:" + key, "action:cached"})
-		s.readCache.Set(key, body, refreshedDegradedTTL)
-		entry.haveGood = false
-		return body
-	}
-	s.readCache.Set(key, body, refreshedCacheTTL)
-	entry.haveGood = true
-	return body
-}
-
-// runCacheRefreshLoop computes once at start and then every interval until
-// ctx is cancelled.
-func (s *Server) runCacheRefreshLoop(ctx context.Context, interval time.Duration, refresh func()) {
-	if s.readCache == nil {
-		return
-	}
-	refresh()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			refresh()
-		}
-	}
-}
-
-// StartCacheRefreshers starts the goroutines that own the refreshed read-cache
-// entries (stats:v1 and network_totals:*). Each loop is independent so a slow
-// statement in one never delays the other. Stops when ctx is cancelled.
-func (s *Server) StartCacheRefreshers(ctx context.Context) {
-	saferun.Go(s.logger, "api.statsRefresher", func() {
-		s.runStatsRefresher(ctx, cacheRefreshInterval)
-	})
-	saferun.Go(s.logger, "api.networkTotalsRefresher", func() {
-		s.runNetworkTotalsRefresher(ctx, cacheRefreshInterval)
-	})
-}
+// statsCacheKey is the readCache entry for GET /v1/stats. One background
+// goroutine (StartCacheRefreshers, cache_refresher.go) owns it; handlers only
+// read it.
+const statsCacheKey = "stats:v1"
 
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
@@ -218,7 +98,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeCachedJSON(w, cached)
 		return
 	}
-	body, ok := s.refreshStats()
+	body, ok := s.getCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
 	if !ok {
 		// Nothing cached and the computation could not produce a body (or a
 		// coalesced computation failed for this waiter).
@@ -233,21 +113,14 @@ func (s *Server) runStatsRefresher(ctx context.Context, interval time.Duration) 
 	s.runCacheRefreshLoop(ctx, interval, func() { s.refreshStats() })
 }
 
-// refreshStats computes the stats body (coalesced) and stores it under
-// statsCacheKey. It returns the body to serve — the freshly computed one, or
-// the retained previous good value when the new one is degraded — and false
-// only when the response could not be encoded.
+// refreshStats recomputes stats, retaining an unexpired success on failure.
 func (s *Server) refreshStats() ([]byte, bool) {
 	return s.refreshCachedEntry(&s.statsRefresh, statsCacheKey, s.computeStats)
 }
 
-// computeStats builds the /v1/stats body. degraded reports that a usage
-// statement did not complete: the two analytics statements (request
-// locations, request flows) produced no rows — indistinguishable at the store
-// boundary from a timeout — or one of the usage aggregates (lifetime totals,
-// 24 h totals and count, 30 min series) reported an error. storeCachedEntry
-// decides what to do with it.
-func (s *Server) computeStats() (body []byte, degraded bool, err error) {
+// computeStats returns a complete stats response. An empty successful query
+// is valid data; any failed input prevents publication of a partial response.
+func (s *Server) computeStats() ([]byte, error) {
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -386,10 +259,13 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
 	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs, countErr := s.aggregateRequestLocations(analyticsCutoff)
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs, locationErr := s.aggregateRequestLocations(analyticsCutoff)
 
 	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
+	requestFlows, flowErr := s.aggregateRequestFlows(analyticsCutoff)
+	if err := errors.Join(totalsErr, seriesErr, last24hErr, locationErr, flowErr); err != nil {
+		return nil, err
+	}
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
@@ -450,34 +326,7 @@ func (s *Server) computeStats() (body []byte, degraded bool, err error) {
 
 		"request_flows": requestFlows,
 	}
-	body, err = json.Marshal(resp)
-	if err != nil {
-		return nil, false, err
-	}
-	// Both analytics statements ran against a window that, in production,
-	// always has located usage and located providers; nothing at all from
-	// either one means the statement did not complete.
-	noLocations := len(requestLocations) == 0 && len(requestRegions) == 0
-	degraded = noLocations || len(requestFlows) == 0
-	// The usage aggregates report failure explicitly. The store used to fold a
-	// timeout into zeros, which this body would have carried as the 24 h
-	// headline totals and a negative unknown-location count, and the refresher
-	// would have cached over the last good value.
-	for _, st := range []struct {
-		name string
-		err  error
-	}{
-		{"usage_totals", totalsErr},
-		{"usage_time_series", seriesErr},
-		{"usage_totals_24h", last24hErr},
-		{"usage_count_24h", countErr},
-	} {
-		if st.err != nil {
-			s.logger.Warn("cache refresh: usage statement failed", "key", statsCacheKey, "statement", st.name, "error", st.err)
-			degraded = true
-		}
-	}
-	return body, degraded, nil
+	return json.Marshal(resp)
 }
 
 // aggregateProviderLocations builds privacy-floored city and region
@@ -620,17 +469,19 @@ func (s *Server) aggregateProviderLocations() (
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations. countErr reports
-// that the window's request count could not be read; unknownRequests is then
-// 0 (it cannot be derived) and the caller treats the result as degraded.
+// buckets from usage records with request-origin locations. A failed query
+// aborts aggregation so the refresher retains the last complete response.
 func (s *Server) aggregateRequestLocations(since time.Time) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
-	countErr error,
+	err error,
 ) {
-	locBuckets := s.store.UsageLocationBuckets(since)
+	locBuckets, err := s.store.UsageLocationBuckets(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
 
 	// Count requests without any location by subtracting located requests
 	// from total requests in the window.
@@ -640,9 +491,11 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 	}
 	// Total usage records in the window (SQL COUNT, no row transfer).
 	var totalInWindow int64
-	if totalInWindow, countErr = s.store.UsageCountSince(since); countErr == nil {
-		unknownRequests = totalInWindow - locatedRequests
+	totalInWindow, err = s.store.UsageCountSince(since)
+	if err != nil {
+		return nil, nil, 0, 0, err
 	}
+	unknownRequests = max(0, totalInWindow-locatedRequests)
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string
@@ -758,7 +611,7 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 // consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
 // avoid loading all usage rows + all provider rows into Go memory (the
 // previous approach held two pool connections for up to 10s each).
-func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
+func (s *Server) aggregateRequestFlows(since time.Time) ([]publicRequestFlowBucket, error) {
 	// Build live provider location map from the registry so recently-
 	// connected providers (not yet persisted) are included.
 	providerLocs := make(map[string]*store.ProviderLocation)
@@ -769,7 +622,10 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 		}
 	})
 
-	buckets := s.store.UsageFlowBuckets(since, providerLocs)
+	buckets, err := s.store.UsageFlowBuckets(since, providerLocs)
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]publicRequestFlowBucket, 0, len(buckets))
 	for _, b := range buckets {
@@ -805,7 +661,7 @@ func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucke
 	if len(out) > 24 {
 		out = out[:24]
 	}
-	return out
+	return out, nil
 }
 
 // locationKey builds a stable, lowercase key from country/region/city parts.

@@ -20,14 +20,15 @@ import (
 )
 
 // countingStatsStore counts the usage analytics statements behind /v1/stats
-// and can make them return nothing, the way the postgres store does on its
-// 10 s statement timeout.
+// and injects query failures or valid empty results independently.
 type countingStatsStore struct {
 	store.Store
 	locationCalls atomic.Int64
 	flowCalls     atomic.Int64
 	totalsCalls   atomic.Int64
 	fail          atomic.Bool
+	flowFail      atomic.Bool
+	empty         atomic.Bool
 	totalsFail    atomic.Bool
 	// The four usage aggregates behind the /v1/stats headline figures report
 	// failure explicitly (the postgres store used to fold a timeout into
@@ -76,18 +77,24 @@ func (c *countingStatsStore) NetworkTotals(since time.Time) (store.NetworkTotals
 	return c.Store.NetworkTotals(since)
 }
 
-func (c *countingStatsStore) UsageLocationBuckets(since time.Time) []store.UsageLocationBucket {
+func (c *countingStatsStore) UsageLocationBuckets(since time.Time) ([]store.UsageLocationBucket, error) {
 	c.locationCalls.Add(1)
 	if c.fail.Load() {
-		return nil
+		return nil, errUsageStatementTimeout
+	}
+	if c.empty.Load() {
+		return nil, nil
 	}
 	return c.Store.UsageLocationBuckets(since)
 }
 
-func (c *countingStatsStore) UsageFlowBuckets(since time.Time, locs map[string]*store.ProviderLocation) []store.UsageFlowBucket {
+func (c *countingStatsStore) UsageFlowBuckets(since time.Time, locs map[string]*store.ProviderLocation) ([]store.UsageFlowBucket, error) {
 	c.flowCalls.Add(1)
-	if c.fail.Load() {
-		return nil
+	if c.fail.Load() || c.flowFail.Load() {
+		return nil, errUsageStatementTimeout
+	}
+	if c.empty.Load() {
+		return nil, nil
 	}
 	return c.Store.UsageFlowBuckets(since, locs)
 }
@@ -242,138 +249,81 @@ func TestStatsColdMissCoalescesConcurrentRequests(t *testing.T) {
 	}
 }
 
-// TestStatsRefreshKeepsPreviousValueWhenAnalyticsReturnNothing: a refresh
-// whose analytics statements return nothing (store timeout) leaves the last
-// good value in place; a degraded value is cached only when nothing better
-// exists and is replaced by the next good refresh.
-func TestStatsRefreshKeepsPreviousValueWhenAnalyticsReturnNothing(t *testing.T) {
+// A failed aggregate must never overwrite a good entry or become a successful
+// cold response, even when the other aggregates return nonempty data.
+func TestStatsRefreshQueryFailures(t *testing.T) {
 	srv, _, st := newStatsRefresherFixture(t)
-
-	good, ok := srv.refreshStats()
-	if !ok || statsBodyLocations(t, good) == 0 {
-		t.Fatalf("first refresh: ok=%v body=%s", ok, good)
-	}
-
-	st.fail.Store(true)
-	served, ok := srv.refreshStats()
-	if !ok {
-		t.Fatal("degraded refresh reported failure")
-	}
-	if !bytes.Equal(served, good) {
-		t.Fatalf("degraded refresh served a new body instead of the previous good one:\n%s", served)
-	}
-	cached, ok := srv.readCache.Get(statsCacheKey)
-	if !ok || !bytes.Equal(cached, good) {
-		t.Fatalf("degraded refresh replaced the cached good value (ok=%v)", ok)
-	}
-	if !srv.statsRefresh.haveGood {
-		t.Fatal("haveGood cleared by a degraded refresh that kept the previous value")
-	}
-
-	// Handlers keep serving the good value while the store is failing.
-	rr := httptest.NewRecorder()
-	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
-	if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), good) {
-		t.Fatalf("handler during degraded refresh: code=%d body=%s", rr.Code, rr.Body.String())
-	}
-
-	// Cold cache + degraded result: nothing better exists, so it is cached
-	// (short TTL) and flagged not-good; the next good refresh replaces it.
-	srv.readCache.Invalidate(statsCacheKey)
-	degraded, ok := srv.refreshStats()
-	if !ok {
-		t.Fatal("cold degraded refresh reported failure")
-	}
-	if cached, ok := srv.readCache.Get(statsCacheKey); !ok || !bytes.Equal(cached, degraded) {
-		t.Fatal("cold degraded refresh did not cache its value")
-	}
-	if srv.statsRefresh.haveGood {
-		t.Fatal("haveGood set by a degraded value")
-	}
-	st.fail.Store(false)
-	recovered, ok := srv.refreshStats()
-	if !ok || statsBodyLocations(t, recovered) == 0 {
-		t.Fatalf("recovery refresh: ok=%v body=%s", ok, recovered)
-	}
-	if !srv.statsRefresh.haveGood {
-		t.Fatal("haveGood not set after a good refresh")
-	}
-}
-
-// TestStatsRefreshKeepsPreviousValueWhenUsageAggregateFails: the four usage
-// aggregates behind the headline figures (lifetime totals, 24 h totals, the
-// 30 min series, the 24 h request count) report failure explicitly, and any
-// one failing marks the refresh degraded — so the last good value stays cached
-// instead of a body with zero 24 h totals and a negative unknown-location
-// count. The two analytics statements still return rows in every case here;
-// before the fix that alone made the refresh count as good.
-func TestStatsRefreshKeepsPreviousValueWhenUsageAggregateFails(t *testing.T) {
-	srv, _, st := newStatsRefresherFixture(t)
-	// One request without a location, so the good body carries a non-zero
-	// unknown-location count that a failed window count would change.
-	st.RecordUsageWithCostAndLocation("provider-sf", "consumer", "model", "req-unlocated", 10, 20, 0, nil)
-
-	good, ok := srv.refreshStats()
-	if !ok || statsBodyLocations(t, good) == 0 {
-		t.Fatalf("first refresh: ok=%v body=%s", ok, good)
-	}
-	var goodParsed struct {
-		Unknown int64 `json:"unknown_request_location_requests"`
-	}
-	if err := json.Unmarshal(good, &goodParsed); err != nil || goodParsed.Unknown != 1 {
-		t.Fatalf("good body unknown_request_location_requests = %d (err=%v), want 1", goodParsed.Unknown, err)
-	}
-
 	cases := []struct {
 		name string
 		flag *atomic.Bool
 	}{
-		{"UsageTotals", &st.usageTotalsFail},
-		{"UsageTotalsSince", &st.usageTotalsSinceFail},
-		{"UsageTimeSeries", &st.usageTimeSeriesFail},
-		{"UsageCountSince", &st.usageCountFail},
+		{"locations", &st.fail},
+		{"flows", &st.flowFail},
+		{"lifetime", &st.usageTotalsFail},
+		{"last24h", &st.usageTotalsSinceFail},
+		{"series", &st.usageTimeSeriesFail},
+		{"count", &st.usageCountFail},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			good, ok := srv.refreshStats()
+			if !ok || statsBodyLocations(t, good) == 0 {
+				t.Fatalf("prime: ok=%v body=%s", ok, good)
+			}
 			tc.flag.Store(true)
 			defer tc.flag.Store(false)
 			served, ok := srv.refreshStats()
-			if !ok {
-				t.Fatal("degraded refresh reported failure")
+			if !ok || !bytes.Equal(served, good) {
+				t.Fatalf("failed refresh replaced good stats: ok=%v body=%s", ok, served)
 			}
-			if !bytes.Equal(served, good) {
-				t.Fatalf("refresh with a failing %s served a new body instead of the previous good one:\n%s", tc.name, served)
+			// An unexpired success still serves during the outage.
+			rr := httptest.NewRecorder()
+			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), good) {
+				t.Fatalf("warm response: %d %s", rr.Code, rr.Body.String())
 			}
-			cached, ok := srv.readCache.Get(statsCacheKey)
-			if !ok || !bytes.Equal(cached, good) {
-				t.Fatalf("refresh with a failing %s replaced the cached good value (ok=%v)", tc.name, ok)
+			// Expiry is a hard bound on staleness. Failed data must not be cached.
+			srv.readCache.Set(statsCacheKey, good, -time.Second)
+			rr = httptest.NewRecorder()
+			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("cold query failure: %d %s", rr.Code, rr.Body.String())
 			}
-			if !srv.statsRefresh.haveGood {
-				t.Fatalf("haveGood cleared by a refresh with a failing %s", tc.name)
+			if _, ok := srv.readCache.Get(statsCacheKey); ok {
+				t.Fatal("cached a failed query")
+			}
+			tc.flag.Store(false)
+			rr = httptest.NewRecorder()
+			srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("recovery: %d %s", rr.Code, rr.Body.String())
 			}
 		})
 	}
+}
 
-	// Cold cache + failing count: the only value available is degraded and is
-	// flagged so; it never carries a negative unknown-location count.
-	st.usageCountFail.Store(true)
-	defer st.usageCountFail.Store(false)
-	srv.readCache.Invalidate(statsCacheKey)
-	degraded, ok := srv.refreshStats()
-	if !ok {
-		t.Fatal("cold degraded refresh reported failure")
+// Traffic aging out of the analytics window is valid empty data. It must
+// replace the previous populated map and still refresh the live fleet.
+func TestStatsRefreshAcceptsEmptyAnalytics(t *testing.T) {
+	srv, _, st := newStatsRefresherFixture(t)
+	good, ok := srv.refreshStats()
+	if !ok || statsBodyLocations(t, good) == 0 {
+		t.Fatal("fixture must contain located traffic")
 	}
-	if srv.statsRefresh.haveGood {
-		t.Fatal("haveGood set by a refresh whose request count failed")
+	st.empty.Store(true)
+	body, ok := srv.refreshStats()
+	var empty struct {
+		Locations []publicRequestLocationBucket `json:"request_locations"`
+		Flows     []publicRequestFlowBucket     `json:"request_flows"`
 	}
-	var parsed struct {
-		Unknown int64 `json:"unknown_request_location_requests"`
+	if err := json.Unmarshal(body, &empty); err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(degraded, &parsed); err != nil {
-		t.Fatalf("decode degraded stats: %v", err)
+	if !ok || len(empty.Locations) != 0 || len(empty.Flows) != 0 {
+		t.Fatalf("empty analytics kept stale locations: ok=%v body=%s", ok, body)
 	}
-	if parsed.Unknown < 0 {
-		t.Fatalf("unknown_request_location_requests = %d with a failed count, want >= 0", parsed.Unknown)
+	if cached, ok := srv.readCache.Get(statsCacheKey); !ok || !bytes.Equal(cached, body) {
+		t.Fatal("empty result not cached")
 	}
 }
 

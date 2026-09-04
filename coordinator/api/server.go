@@ -419,9 +419,10 @@ type Server struct {
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.
 	readCache *ttlCache
-	// statsRefresh owns the stats:v1 readCache entry (see stats.go);
+	// statsRefresh owns the stats:v1 readCache entry (stats.go);
 	// networkTotalsRefresh owns one network_totals:<window> entry per window
-	// (see leaderboard.go).
+	// (network_totals.go). Both are driven by the refresher machinery in
+	// cache_refresher.go.
 	statsRefresh         cacheRefresher
 	networkTotalsRefresh struct {
 		mu      sync.Mutex

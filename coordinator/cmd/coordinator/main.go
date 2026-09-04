@@ -1103,8 +1103,8 @@ func loadAPNsAttestor(logger *slog.Logger) *apns.APNsPushAttestor {
 // enableContentionProfiling turns on the runtime's mutex and block profiles,
 // which are off by default, so /debug/pprof/mutex and /debug/pprof/block on
 // the pprof listener stop coming back empty. Sampling one in every hundred
-// mutex contention events and blocking events of at least 1 ms keeps the
-// overhead negligible. Called only together with the env-gated listener.
+// mutex contention events and an average of one blocking event per 1 ms
+// spent blocked bounds the sampling overhead. Called only together with the env-gated listener.
 func enableContentionProfiling() {
 	runtime.SetMutexProfileFraction(100)
 	runtime.SetBlockProfileRate(1_000_000)

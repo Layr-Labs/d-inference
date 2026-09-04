@@ -144,7 +144,8 @@ type UsageStore interface {
 
 	// UsageLocationBuckets returns approximate request-origin aggregates for
 	// public stats. Implementations must not store or return raw client IPs.
-	UsageLocationBuckets(since time.Time) []UsageLocationBucket
+	// An error distinguishes query failure from a successful empty window.
+	UsageLocationBuckets(since time.Time) ([]UsageLocationBucket, error)
 
 	// UsageFlowBuckets returns aggregated directional flow buckets between
 	// consumer and provider regions. providerLocs supplies live provider
@@ -152,7 +153,8 @@ type UsageStore interface {
 	// haven't been persisted yet are included. PostgresStore uses a SQL
 	// JOIN with the providers table and merges the live map; MemoryStore
 	// uses providerLocs directly.
-	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket
+	// Query and iteration failures return an error, never partial buckets.
+	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) ([]UsageFlowBucket, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.

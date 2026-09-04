@@ -78,6 +78,10 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	// ctxKeyIngressStart carries the HTTP ingress instant (loggingMiddleware's
+	// t0) to the inference handlers, always — unlike requestMeta it is not
+	// profiler-gated, because the first-content clock is anchored on it.
+	ctxKeyIngressStart
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -88,6 +92,24 @@ func requestIDFromContext(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// ingressStartFromContext returns the instant the request entered the HTTP
+// server (loggingMiddleware's t0), which is what the request-absolute
+// first-content clock must anchor on: an upstream router's ~10 s cutoff
+// counts from when IT sent the request, so every microsecond spent in
+// drainGate → requireAuth (a store read on an API-key cache miss) →
+// rateLimitConsumer → sealedTransport (decrypt of up to 16 MiB) before the
+// handler ran was silently lost from the 1 s response headroom. Falls back to
+// time.Now() when the middleware did not run (raw handler fixtures), which is
+// the pre-anchoring behaviour byte-for-byte.
+func ingressStartFromContext(ctx context.Context) time.Time {
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxKeyIngressStart).(time.Time); ok && !v.IsZero() {
+			return v
+		}
+	}
+	return time.Now()
 }
 
 // cryptoRand is a small wrapper to read random bytes. Defined as a var
@@ -3518,6 +3540,9 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, reqID)
+		// The ingress instant is always attached (the inference handlers anchor
+		// the first-content clock on it); requestMeta below stays profiler-gated.
+		ctx = context.WithValue(ctx, ctxKeyIngressStart, start)
 		// Profiler correlation id is ALWAYS coordinator-minted (the client-supplied
 		// X-Request-ID above is echoed and logged but never persisted).
 		if s.profilerEnabled() {

@@ -1755,7 +1755,10 @@ func ensureMaxTokensBound(parsed map[string]any, isResponsesAPI bool, bound int)
 // provider-facing chat shape while their original parsed form remains the
 // source for accounting and consumer-facing response conversion.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	// ReceivedAt is the HTTP ingress instant, not handler entry: the
+	// first-content clock (and the media-fetch budget derived from it) must
+	// not silently gain the pre-handler auth/rate-limit/decrypt time.
+	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context())}
 	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas, parse, require a model,
@@ -4312,7 +4315,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // final provider body to OpenAI chat format, and reuses the same E2E encryption
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
-	timing := &registry.RequestTiming{ReceivedAt: time.Now()}
+	// Ingress-anchored like the chat handler (see handleChatCompletions).
+	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context())}
 	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas (Anthropic /v1/messages

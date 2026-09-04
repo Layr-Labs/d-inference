@@ -55,6 +55,13 @@ func (d *dispatchState) applyProfileTiming(tj *types.RequestTimingDetails, pr *r
 
 	rp := d.profile
 	tj.PreHandlerUs = rp.HandlerEntryUS.Load()
+	// ReceivedAt is the ingress instant (ingressStartFromContext) — the same
+	// t0 HandlerEntryUS is measured from — so the legacy parse segment
+	// (ParsedAt − ReceivedAt) already contains the pre-handler time. Take it
+	// back out so parse_us and pre_handler_us stay additive, never overlapping.
+	if tj.PreHandlerUs > 0 && tj.ParseUs >= tj.PreHandlerUs {
+		tj.ParseUs -= tj.PreHandlerUs
+	}
 	tj.PreflightUs = rp.PreflightUS
 	ap := pr.Profile
 	if ap == nil {

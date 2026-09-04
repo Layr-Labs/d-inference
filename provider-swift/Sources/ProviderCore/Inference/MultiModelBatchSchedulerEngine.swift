@@ -456,10 +456,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // block at the prompt tail (output carries only the
                     // close). Without a synthesized open, the downstream
                     // streaming think parser buffers the whole block —
-                    // TTFT becomes the full thinking duration. Same probe
-                    // as the text path below.
+                    // TTFT becomes the full thinking duration. A prompt
+                    // that did NOT pre-open (Qwen media defaults thinking
+                    // off) gets the empty pair so tagless output streams
+                    // per token. Same probe as the text path below.
                     try checkFirstContentDeadline()
-                    let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+                    let thinkInjection = ReasoningPromptProbe.injection(
                         reasoningParser: visionRequest.reasoningParser,
                         stream: visionRequest.stream,
                         promptTokens: visionPrepared.promptTokens,
@@ -472,7 +474,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         toolHandler: nil,
                         prepared: prepared,
                         releaseBox: releaseBox,
-                        synthesizeThinkOpen: synthesizeThinkOpen
+                        thinkInjection: thinkInjection
                     )
                 } catch let failure as PreContentDeadlineFailure {
                     await mediaGate.release(requestId: mediaReqId)
@@ -598,7 +600,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // prompt tail (the model's output carries only the close). Without a
         // synthesized open, the downstream streaming think parser sits in its
         // `undecided` state buffering the ENTIRE block — the consumer's first
-        // delta (TTFT) is delayed by the whole thinking duration. See
+        // delta (TTFT) is delayed by the whole thinking duration. The same
+        // state buffers TAGLESS output whole; a prompt that did not pre-open
+        // gets the empty pair so the parser streams from the first token. See
         // `ReasoningPromptProbe`.
         do {
             try checkFirstContentDeadline()
@@ -606,7 +610,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             await releaseBox.fire()
             throw error
         }
-        let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+        let thinkInjection = ReasoningPromptProbe.injection(
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
@@ -746,7 +750,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen
+            thinkInjection: thinkInjection
         )
     }
 
@@ -776,7 +780,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        thinkInjection: ReasoningPromptProbe.Injection = .inapplicable
     ) async throws -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         do {
             try checkFirstContentDeadline()
@@ -791,7 +795,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             toolHandler: toolHandler,
             prepared: prepared,
             releaseBox: releaseBox,
-            synthesizeThinkOpen: synthesizeThinkOpen)
+            thinkInjection: thinkInjection)
         do {
             try checkFirstContentDeadline()
             return stream
@@ -814,7 +818,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
         releaseBox: OneShotRelease,
-        synthesizeThinkOpen: Bool = false
+        thinkInjection: ReasoningPromptProbe.Injection = .inapplicable
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -831,16 +835,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
                 startedAt = Date()
 
-                // Synthetic <think> open (see `ReasoningPromptProbe`): the
-                // rendered prompt already opened a think block, so hand the
-                // downstream streaming parser the marker it will never see
-                // in model output. The parser consumes it as a pure state
-                // transition — no SSE frame reaches the consumer — and then
-                // streams reasoning deltas incrementally instead of
-                // buffering until `</think>`. Deliberately BYPASSES the
-                // tool handler: the marker is not model output.
-                if synthesizeThinkOpen {
-                    continuation.yield(.content(ReasoningPromptProbe.thinkOpen))
+                // Synthetic think marker (see `ReasoningPromptProbe`): either
+                // the `<think>` open the rendered prompt already consumed
+                // (output carries only the close) or the empty pair
+                // `<think></think>` for a prompt that did NOT pre-open, so
+                // tagless output streams per token instead of buffering
+                // until end-of-stream. The parser consumes either as pure
+                // state transitions — no SSE frame reaches the consumer, so
+                // nothing enters the response hash or the frame counts —
+                // and then streams deltas incrementally. Deliberately
+                // BYPASSES the tool handler and never touches
+                // `firstTokenAt`: the marker is not model output.
+                if let marker = thinkInjection.marker {
+                    continuation.yield(.content(marker))
                 }
 
                 for await event in upstream {

@@ -197,12 +197,24 @@ func TestDrainGate_RejectsNewInferenceWhileDraining(t *testing.T) {
 	if ra == "" {
 		t.Fatal("Retry-After header missing on drain 429")
 	}
-	if secs, err := strconv.Atoi(ra); err != nil || secs < 1 {
-		t.Fatalf("Retry-After = %q, want a positive integer seconds value", ra)
+	// 3 s base, jittered +0..50% (retry_after_jitter.go): [3, 4].
+	secs, err := strconv.Atoi(ra)
+	if err != nil || secs < 3 || secs > 4 {
+		t.Fatalf("Retry-After = %q, want within [3, 4] (the 3 s drain base + jitter)", ra)
 	}
 	// The gate rejected before incrementing — nothing is in flight.
 	if n := srv.Inflight(); n != 0 {
 		t.Fatalf("Inflight() = %d after a rejected request, want 0", n)
+	}
+	// The drain 429 now lands in the rejection ledger (stage drain), with the
+	// header's own value, no model (body unread) and no fleet walk.
+	waitForRejectionCount(t, srv, 1)
+	rec := srv.store.RejectionRecordsSince(time.Time{})[0]
+	if rec.Stage != "drain" || rec.ReasonCode != "draining" || rec.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("drain ledger row = %+v, want stage drain / reason draining / 429", rec)
+	}
+	if rec.RetryAfterMs != secs*1000 || rec.RequestedModel != "" || rec.CouldHaveServed {
+		t.Fatalf("drain ledger row = %+v, want retry_after_ms %d, no model, could_have_served=false", rec, secs*1000)
 	}
 }
 

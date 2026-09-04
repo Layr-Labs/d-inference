@@ -69,8 +69,10 @@ func (s *Server) decInflight() int64 {
 // http.HandlerFunc) and is applied as the OUTERMOST wrapper on the inference
 // routes so it short-circuits before any auth/decrypt work.
 //
-// While draining it rejects the request with 429 + Retry-After (reusing
-// writeTokenRateLimited so the body/headers match the coordinator's other 429s).
+// While draining it rejects the request with 429 + Retry-After (through
+// writeRateLimited, the one rate-limit/drain writer, so the body/headers and
+// the rejection-ledger row match the coordinator's other 429s; the 3 s base
+// is jittered like every other capacity rejection).
 // Otherwise it counts the request as in-flight for the lifetime of the handler
 // so /readyz and the deploy script can wait for inflight==0 before shutdown.
 //
@@ -92,12 +94,16 @@ func (s *Server) drainGate(next http.HandlerFunc) http.HandlerFunc {
 			// Lost the race (or drain was already set): back the count out and
 			// reject. A rejected request nets zero change to Inflight().
 			s.decInflight()
-			s.writeTokenRateLimited(w, "coordinator", "draining", coordinatorDrainRetryAfter)
+			seconds := s.rateLimitRetryAfterSeconds(r, coordinatorDrainRetryAfter)
+			s.writeRateLimited(w, r, "drain", "coordinator", "draining", seconds, "",
+				tokenRateLimitMessage("coordinator", "draining", seconds))
 			return
 		}
 		if blocked, reason := s.trustSafetyStatus(); blocked {
 			s.decInflight()
-			s.writeTokenRateLimited(w, "coordinator", reason, coordinatorDrainRetryAfter)
+			seconds := s.rateLimitRetryAfterSeconds(r, coordinatorDrainRetryAfter)
+			s.writeRateLimited(w, r, "drain", "coordinator", reason, seconds, "",
+				tokenRateLimitMessage("coordinator", reason, seconds))
 			return
 		}
 		defer s.decInflight()

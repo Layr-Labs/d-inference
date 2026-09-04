@@ -2046,7 +2046,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// token throttle alongside RPM. Charged upfront from the input estimate
 	// and the bounded max_tokens (OpenAI-style). Runs before the balance
 	// reservation so a throttled request never touches billing.
-	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
+	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens, publicModel)
 	if !ok {
 		return
 	}
@@ -4466,7 +4466,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	parsed["endpoint"] = endpoint
 
 	// Per-account token rate limiting (ITPM/OTPM), before the reservation.
-	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens)
+	tokenAdmission, ok := s.applyTokenRateLimitWithAdmission(w, r, estimatedPromptTokens, requestedMaxTokens, publicModel)
 	if !ok {
 		return
 	}

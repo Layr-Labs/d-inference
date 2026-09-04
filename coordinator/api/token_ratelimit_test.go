@@ -185,7 +185,7 @@ func TestTokenExpectedOutputAdmissionDeltaConsumesFutureCapacity(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	admission, ok := s.applyTokenRateLimitWithAdmission(rec, tokenReq("openrouter", store.RoleService), 10, 80)
+	admission, ok := s.applyTokenRateLimitWithAdmission(rec, tokenReq("openrouter", store.RoleService), 10, 80, "")
 	if !ok {
 		t.Fatalf("request should pass, got %d %s", rec.Code, rec.Body.String())
 	}

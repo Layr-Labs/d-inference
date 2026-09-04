@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -598,11 +599,13 @@ func (s *Server) SetKeyLimiters(rpm *ratelimit.Limiter, tokens *ratelimit.KeyTok
 // and returns false. Admin bypasses. Standard x-ratelimit-*-{input,output}-tokens
 // headers are set on both success and rejection.
 func (s *Server) applyTokenRateLimit(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) bool {
-	_, ok := s.applyTokenRateLimitWithAdmission(w, r, inputTokens, outputTokens)
+	_, ok := s.applyTokenRateLimitWithAdmission(w, r, inputTokens, outputTokens, "")
 	return ok
 }
 
-func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int) (registry.TokenAdmission, bool) {
+// requestedModel is the public model name the caller asked for (ledger row
+// only; "" when unknown).
+func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http.Request, inputTokens, outputTokens int, requestedModel string) (registry.TokenAdmission, bool) {
 	admission := registry.TokenAdmission{AdmittedOutputTokens: outputTokens}
 	accountID := consumerKeyFromContext(r.Context())
 	if accountID == "admin" {
@@ -646,14 +649,16 @@ func (s *Server) applyTokenRateLimitWithAdmission(w http.ResponseWriter, r *http
 	// bucket rejects must not drain the key's quota, and vice-versa).
 	if keyEnforced {
 		if ok, dim, retry := s.keyTokenLimiter.Peek(keyID, inputTokens, admission.AdmittedOutputTokens, inRPS, inBurst, outRPS, outBurst); !ok {
-			s.writeTokenRateLimited(w, "key", dim, retry)
+			seconds := s.rateLimitRetryAfterSeconds(r, retry)
+			s.writeRateLimited(w, r, "ratelimit", "key", dim, seconds, requestedModel, tokenRateLimitMessage("key", dim, seconds))
 			return admission, false
 		}
 	}
 	if tl != nil {
 		if ok, dim, retry := tl.Peek(accountID, inputTokens, admission.AdmittedOutputTokens); !ok {
 			setTokenRateLimitHeaders(w, tl, accountID)
-			s.writeTokenRateLimited(w, tier, dim, retry)
+			seconds := s.rateLimitRetryAfterSeconds(r, retry)
+			s.writeRateLimited(w, r, "ratelimit", tier, dim, seconds, requestedModel, tokenRateLimitMessage(tier, dim, seconds))
 			return admission, false
 		}
 	}
@@ -716,21 +721,71 @@ func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOut
 	s.ddCount("ratelimit.output_admission.delta_tokens_total", int64(delta), tags)
 }
 
-// writeTokenRateLimited writes a 429 for a token-dimension rejection with a
-// Retry-After header and a dimension-specific message. tier is "consumer",
-// "service", or "key".
-func (s *Server) writeTokenRateLimited(w http.ResponseWriter, tier, dimension string, retryAfter time.Duration) {
-	seconds := int(retryAfter.Seconds())
+// rateLimitRetryAfterSeconds converts a limiter's time-to-refill into the
+// advertised Retry-After: CEIL of the deficit (a 3.9 s deficit answers 4, not
+// the 3 that sent an honest client back 0.9 s early into another 429), at
+// least 1, plus the same deterministic +0..50% jitter every capacity 429
+// carries (retry_after_jitter.go) keyed on the coordinator-minted request id,
+// so a burst of same-second rejections does not return as a burst.
+func (s *Server) rateLimitRetryAfterSeconds(r *http.Request, retryAfter time.Duration) int {
+	seconds := int(math.Ceil(retryAfter.Seconds()))
 	if seconds < 1 {
 		seconds = 1
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
-	msg := fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds)
-	if tier == "key" {
-		msg = fmt.Sprintf("API key %s rate limit exceeded — retry after %ds", dimension, seconds)
+	key := ""
+	if r != nil {
+		key = retryAfterJitterKey(r.Context())
 	}
-	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", msg, withCode("rate_limit_exceeded")))
+	return seconds + retryAfterJitter(seconds, key)
+}
+
+// writeRateLimited is the ONE writer for every rate-limit and drain 429 —
+// the per-key/account token gate (stage "ratelimit", dimension
+// input_tokens/output_tokens), the per-key and account RPM limiters
+// (dimension "requests") and the coordinator drain / trust-safety gate
+// (stage "drain"). Besides the Retry-After header, the metric and the body,
+// it records the rejection-ledger row these paths never wrote: the
+// utilization research ranked rejection causes from request_rejections, and
+// every rate-limit 429 was invisible there (which is why an OTPM
+// over-throttle could not be seen). servabilityComputed is set so the ledger
+// never walks the fleet for a shed that decided nothing about capacity;
+// requestedModel is "" for the RPM middleware and the drain gate (body
+// unread) and the uptime metric then tags model:unknown. Under a rate-limit
+// storm this is one row per 429 through the bounded telemetry sink (drops
+// are counted; the request path is never blocked).
+func (s *Server) writeRateLimited(w http.ResponseWriter, r *http.Request, stage, tier, dimension string, seconds int, requestedModel, message string) {
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	if r != nil {
+		stampRateLimit(r)
+	}
+	s.ddIncr("ratelimit.rejections", []string{"tier:" + tier, "dimension:" + dimension})
+	info := rejectionInfo{
+		r:                   r,
+		stage:               stage,
+		reasonCode:          dimension,
+		httpStatus:          http.StatusTooManyRequests,
+		requestedModel:      requestedModel,
+		limitKind:           tier,
+		retryAfterMs:        seconds * 1000,
+		servabilityComputed: true,
+	}
+	if r != nil {
+		info.keyID = keyIDFromContext(r.Context())
+		if key := consumerKeyFromContext(r.Context()); key != "" {
+			info.consumerKeyHash = store.HashKey(key)
+		}
+	}
+	s.recordRejection(info)
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded", message, withCode("rate_limit_exceeded")))
+}
+
+// tokenRateLimitMessage is the dimension-specific body text of a token or
+// drain rejection. tier is "consumer", "service", "key" or "coordinator".
+func tokenRateLimitMessage(tier, dimension string, seconds int) string {
+	if tier == "key" {
+		return fmt.Sprintf("API key %s rate limit exceeded — retry after %ds", dimension, seconds)
+	}
+	return fmt.Sprintf("%s rate limit exceeded — retry after %ds", dimension, seconds)
 }
 
 // setTokenRateLimitHeaders emits the standard input/output token rate-limit
@@ -767,15 +822,9 @@ func (s *Server) applyKeyRPMLimit(w http.ResponseWriter, r *http.Request) bool {
 	}
 	allowed, retryAfter := s.keyRPMLimiter.AllowNWithRate(k.ID, 1, float64(rpm)/60.0, burst)
 	if !allowed {
-		seconds := int(retryAfter.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(seconds))
-		s.ddIncr("ratelimit.rejections", []string{"tier:key", "dimension:requests"})
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-			fmt.Sprintf("API key request rate limit exceeded — retry after %ds", seconds),
-			withCode("rate_limit_exceeded")))
+		seconds := s.rateLimitRetryAfterSeconds(r, retryAfter)
+		s.writeRateLimited(w, r, "ratelimit", "key", "requests", seconds, "",
+			fmt.Sprintf("API key request rate limit exceeded — retry after %ds", seconds))
 		return false
 	}
 	return true
@@ -3433,6 +3482,10 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		}
 		accountID := consumerKeyFromContext(r.Context())
 		if accountID == "admin" {
+			// Bypass branches still stamp the profiler's rate-limit offset, so
+			// RatelimitDoneUS is never 0 for exactly the traffic that skips the
+			// limiter.
+			stampRateLimit(r)
 			next(w, r)
 			return
 		}
@@ -3444,6 +3497,7 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 		if tier == "consumer" {
 			if user := auth.UserFromContext(r.Context()); user != nil && user.Role == store.RoleService {
 				if s.serviceRateLimiter == nil {
+					stampRateLimit(r)
 					next(w, r)
 					return
 				}
@@ -3451,16 +3505,11 @@ func (s *Server) rateLimitWithTier(getLimiter func() *ratelimit.Limiter, tier st
 			}
 		}
 		if allowed, retryAfter := rl.Allow(accountID); !allowed {
-			seconds := int(retryAfter.Seconds())
-			if seconds < 1 {
-				seconds = 1
-			}
-			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(retryAfter).Unix(), 10))
+			seconds := s.rateLimitRetryAfterSeconds(r, retryAfter)
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Duration(seconds)*time.Second).Unix(), 10))
 			setRequestRateLimitHeaders(w, rl.Stat(accountID))
-			s.ddIncr("ratelimit.rejections", []string{"tier:" + tier})
-			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-				"too many requests — slow down and retry after the Retry-After interval", withCode("rate_limit_exceeded")))
+			s.writeRateLimited(w, r, "ratelimit", tier, "requests", seconds, "",
+				"too many requests — slow down and retry after the Retry-After interval")
 			return
 		}
 		setRequestRateLimitHeaders(w, rl.Stat(accountID))

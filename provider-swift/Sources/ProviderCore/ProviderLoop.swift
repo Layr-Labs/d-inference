@@ -733,6 +733,9 @@ public actor ProviderLoop {
         /// Hash verified for the exact bytes bracketed around this slot's load.
         /// Reused only when rebuilding the engine over the retained container.
         let cacheEligibleWeightHash: String?
+        /// Stage timings + residency of the cold load that installed this
+        /// slot (T4-04); nil for test-installed slots.
+        var loadStages: ModelLoadStageReport? = nil
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
         let isVLM: Bool

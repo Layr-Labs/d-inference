@@ -1453,6 +1453,12 @@ public actor StandaloneServer {
 
         let pendingLoadID = "pending-load:\(modelId)"
         modelsLoading.insert(modelId)
+        // Cold-load stage clock (T4-04) — same fields as ProviderLoop's
+        // `Model loaded:` line.
+        let evictStartedAt = ContinuousClock.now
+        var stages = ModelLoadStageReport(
+            diskGb: Double(modelInfo.sizeBytes) / 1_073_741_824.0,
+            estimatedGb: modelInfo.estimatedMemoryGb)
         // The marker joins the reserve basis: push the (possibly raised)
         // floor to the KV budget actor BEFORE the gate and allocation, as
         // the provider does at its modelsLoading transitions, so KV admitted
@@ -1505,10 +1511,15 @@ public actor StandaloneServer {
                 requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
+            let loadStartedAt = ContinuousClock.now
+            stages.evictMs = ModelLoadStageReport.ms(loadStartedAt - evictStartedAt)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let preLoadHashStartedAt = ContinuousClock.now
             let preLoadCacheHash = reusableSSDRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
                 : nil
+            stages.hashMs += ModelLoadStageReport.ms(.now - preLoadHashStartedAt)
+            if reusableSSDRequested { stages.hashPasses += 1 }
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1551,12 +1562,19 @@ public actor StandaloneServer {
             // BEFORE survivor grants are restored/regrown. Never bind
             // `borrow()` to a long-lived local — that would keep the weights
             // alive past `release()`.
+            let peakBeforeLoadBytes = MLX.Memory.peakMemory
+            let containerLoadStartedAt = ContinuousClock.now
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
+            stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
+            stages.recordPeak(beforeBytes: peakBeforeLoadBytes, afterBytes: MLX.Memory.peakMemory)
             try Task.checkCancellation()
+            let postLoadHashStartedAt = ContinuousClock.now
             let postLoadCacheHash = reusableSSDRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
                 : nil
+            stages.hashMs += ModelLoadStageReport.ms(.now - postLoadHashStartedAt)
+            if reusableSSDRequested { stages.hashPasses += 1 }
             let cacheEligibleWeightHash: String?
             if reusableSSDRequested {
                 switch ProviderLoop.reusableSSDWeightHashDecision(
@@ -1607,7 +1625,9 @@ public actor StandaloneServer {
             // transient buffers in MLX cacheMemory (no forward pass has trimmed
             // them yet), which would otherwise inflate "used" and false-reject a
             // serveable model. Mirrors ProviderLoop's clearCache-then-measure.
+            let postLoadProbeStartedAt = ContinuousClock.now
             MLX.Memory.clearCache()
+            stages.steadyActiveGb = Double(MLX.Memory.activeMemory) / 1_073_741_824.0
             // Post-load measured-headroom guard (mirrors ProviderLoop): the load
             // gate admitted on an estimate; now that weights are resident, reject
             // a model with no serveable KV headroom under the cap rather than
@@ -1640,6 +1660,8 @@ public actor StandaloneServer {
             // + existing grants restored inside the catch (unwind ordering)
             // — the catch below just surfaces it as a 503-shaped capacity
             // error.
+            stages.postLoadProbeMs = ModelLoadStageReport.ms(.now - postLoadProbeStartedAt)
+            let buildStartedAt = ContinuousClock.now
             var slotBuild: SlotBuild
             do {
                 slotBuild = try await resliceAndBuildBundle(
@@ -1713,6 +1735,7 @@ public actor StandaloneServer {
                     pagedPoolBytes: await bridge.kvBackendPoolBytes(),
                     activationReserveBytes: resolvedActivationReserveBytes)
             }
+            stages.buildMs = ModelLoadStageReport.ms(.now - buildStartedAt)
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
@@ -1747,7 +1770,8 @@ public actor StandaloneServer {
                 isVLM: slotIsVLM,
                 sizing: sizing,
                 lastUsedAt: .now)
-            standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2)")
+            stages.totalMs = ModelLoadStageReport.ms(.now - loadStartedAt)
+            standaloneLogger.info("Lazy-loaded model: \(modelId) (engine_v2) \(stages.logSummary)")
 
             modelsLoading.remove(modelId)
             // The marker leaves the reserve basis (the slot now carries the

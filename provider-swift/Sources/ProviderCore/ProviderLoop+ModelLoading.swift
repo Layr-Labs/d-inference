@@ -293,6 +293,13 @@ extension ProviderLoop {
             if modelSlots[modelId] != nil { return }
         }
         isLoadingAny = true
+        // Cold-load stage clock (T4-04): eviction work before the
+        // `model_load_time_ms` window opens is reported separately as
+        // `evict_ms`, never folded into the heartbeat field.
+        let evictStartedAt = ContinuousClock.now
+        var stages = ModelLoadStageReport(
+            diskGb: Double(modelInfo.sizeBytes) / 1_073_741_824.0,
+            estimatedGb: modelInfo.estimatedMemoryGb)
 
         // Re-check slot cap after gate (another load may have consumed a slot)
         if modelSlots.count >= maxModelSlots {
@@ -395,12 +402,14 @@ extension ProviderLoop {
             // here to slot install — covering the weight load, sizing, and
             // engine build the coordinator's cold-load routing pays for.
             let loadStartedAt = ContinuousClock.now
+            stages.evictMs = ModelLoadStageReport.ms(loadStartedAt - evictStartedAt)
 
             // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let preLoadHashStartedAt = ContinuousClock.now
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
                 modelPath: modelPath,
@@ -408,6 +417,8 @@ extension ProviderLoop {
             if !reusableSSDRequested {
                 await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
             }
+            stages.hashMs += ModelLoadStageReport.ms(.now - preLoadHashStartedAt)
+            if preLoadHash.recomputed { stages.hashPasses += 1 }
 
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
@@ -462,7 +473,19 @@ extension ProviderLoop {
             // weights BEFORE survivor grants are restored/regrown. Never
             // bind `borrow()` to a long-lived local — that would keep the
             // weights alive past `release()`.
+            // Peak residency across the container load, READ not reset:
+            // `MLX.Memory.peakMemory` is process-wide and three other readers
+            // (heartbeat capacity, the request profiler, the OOM marker)
+            // report it as "peak since process start". A reset here would
+            // silently re-base all three, so the load's peak is reported only
+            // when it visibly rose above the pre-load high-water mark (always
+            // true for the first load in a fresh process, i.e. the startup
+            // preload — the common cold load); otherwise `peak_masked`.
+            let peakBeforeLoadBytes = MLX.Memory.peakMemory
+            let containerLoadStartedAt = ContinuousClock.now
             let newcomer = EngineV2NewcomerBox(try await loadModelContainer(from: modelPath))
+            stages.containerLoadMs = ModelLoadStageReport.ms(.now - containerLoadStartedAt)
+            stages.recordPeak(beforeBytes: peakBeforeLoadBytes, afterBytes: MLX.Memory.peakMemory)
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -473,11 +496,13 @@ extension ProviderLoop {
             // proves artifact mutation and fails before engine construction or
             // slot installation.
             let cacheEligibleWeightHash: String?
+            let postLoadHashStartedAt = ContinuousClock.now
             if reusableSSDRequested {
                 let postLoadHash = try await captureWeightHash(
                     modelId: modelId,
                     modelPath: modelPath,
                     requireFreshCryptographicHash: true)
+                stages.hashPasses += 1
                 cacheEligibleWeightHash = try await finalizeReusableSSDLoad(
                     modelId: modelId,
                     preLoad: preLoadHash,
@@ -497,10 +522,12 @@ extension ProviderLoop {
                         modelId: modelId,
                         modelPath: modelPath,
                         fingerprint: postLoadFingerprint)
+                    stages.hashPasses += 1
                     await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
                 }
                 cacheEligibleWeightHash = nil
             }
+            stages.hashMs += ModelLoadStageReport.ms(.now - postLoadHashStartedAt)
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no
             // legacy engine left this is a load failure, not a log line.
@@ -554,7 +581,9 @@ extension ProviderLoop {
             // which the measurement counts as "used" and would false-reject a
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
+            let postLoadProbeStartedAt = ContinuousClock.now
             MLX.Memory.clearCache()
+            stages.steadyActiveGb = Double(MLX.Memory.activeMemory) / 1_073_741_824.0
             if !KVHeadroomProbe.hasServeableKVHeadroom(activationReserveBytes: resolvedActivationReserveBytes) {
                 let headroomGb = String(
                     format: "%.1f",
@@ -570,6 +599,8 @@ extension ProviderLoop {
                 recordModelLoadError(model: modelId, message: message)
                 throw InferenceError.modelLoadFailed(message)
             }
+
+            stages.postLoadProbeMs = ModelLoadStageReport.ms(.now - postLoadProbeStartedAt)
 
             let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
                 TokenizerHandle(
@@ -596,6 +627,9 @@ extension ProviderLoop {
             // appearing in `modelSlots` — it would recompute without the
             // newcomer and re-inflate survivors past the fleet budget.
             await acquireResliceGate()
+            // `build_ms` spans the first build AND the MTP target-only
+            // rebuild below when it happens.
+            let buildStartedAt = ContinuousClock.now
             var slotBuild: EngineV2SlotBuild
             do {
                 slotBuild = try await resliceAndBuildEngineV2Bundle(
@@ -705,6 +739,7 @@ extension ProviderLoop {
                     pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
                     activationReserveBytes: resolvedActivationReserveBytes)
             }
+            stages.buildMs = ModelLoadStageReport.ms(.now - buildStartedAt)
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
@@ -724,9 +759,15 @@ extension ProviderLoop {
             }
 
             // Slot-level cold-start load time (heartbeat `model_load_time_ms`).
+            // Window unchanged by T4-04: `loadStartedAt` → here, i.e. the
+            // pre-load hash (0 passes on contiguous slots with a seeded
+            // fingerprint after T4-01), container load, sizing/probes and
+            // engine build; slot-cap eviction and `evictUntilAvailable` are
+            // reported separately as `evict_ms`.
             let loadElapsed = ContinuousClock.now - loadStartedAt
             let loadMs = Double(loadElapsed.components.seconds) * 1000.0
                 + Double(loadElapsed.components.attoseconds) / 1e15
+            stages.totalMs = loadMs
             await engineV2Bridge.recordModelLoadTime(ms: Int64(max(0, loadMs.rounded())))
 
             guard let installContainer = newcomer.container else {
@@ -749,6 +790,7 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now
             )
+            modelSlots[modelId]?.loadStages = stages
             // Newcomer installed — parked regrows now see the full slot set.
             releaseResliceGate()
 
@@ -757,7 +799,9 @@ extension ProviderLoop {
             // the default startup preload plan (ProviderLoop+StartupPreload).
             persistLoadedModelSet()
             await updateAggregateCapacity()
-            logger.info("Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory)")
+            logger.info(
+                "Model loaded: \(modelId) (\(modelSlots.count) model(s) in memory) \(stages.logSummary)")
+            emitModelLoadedTelemetry(modelId: modelId, stages: stages)
 
             modelsLoading.remove(modelId)
             isLoadingAny = false
@@ -804,6 +848,27 @@ extension ProviderLoop {
             // re-offered now — the box's arithmetic is back to pre-load.
             await retryReserveDeferredPrefetches()
             throw error
+        }
+    }
+
+    // MARK: - Cold-load stage telemetry (T4-04)
+
+    /// One `.engineHealth` "model loaded" event per cold load with the
+    /// stage/residency fields of `ModelLoadStageReport`. Free-form telemetry
+    /// fields — no protocol/mirror change. Routed through the slot hooks'
+    /// sink when a test installed one, else the shared client.
+    private func emitModelLoadedTelemetry(modelId: String, stages: ModelLoadStageReport) {
+        var fields = stages.telemetryFields
+        fields["model"] = .string(modelId)
+        if let sink = engineV2SlotHooks?.emitTelemetry {
+            sink(
+                TelemetryEvent(
+                    source: .provider, severity: .info, kind: .engineHealth,
+                    message: "model loaded"
+                ).withFields(fields))
+        } else {
+            TelemetryClient.shared.emit(
+                kind: .engineHealth, severity: .info, message: "model loaded", fields: fields)
         }
     }
 

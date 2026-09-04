@@ -33,6 +33,12 @@ extension ProviderLoop {
     /// Test seam: recorded weight hash for a model (nil when unknown).
     func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
 
+    /// Test seam: the cold-load stage report of the load that installed
+    /// `modelId`'s slot (nil for test-installed slots or unloaded models).
+    func loadStageReportForTesting(modelId: String) -> ModelLoadStageReport? {
+        modelSlots[modelId]?.loadStages
+    }
+
     func liveModelHashForTesting(_ id: String) -> String? { liveModelHashes[id] }
 
     func captureWeightHashForTesting(

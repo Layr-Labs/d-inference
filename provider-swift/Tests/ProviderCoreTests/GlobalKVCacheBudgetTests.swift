@@ -426,3 +426,84 @@ private func makeAuditBudget(
     await budget.setActivationReserveBytes(7 * gib / 2, epoch: 4)
     #expect(await budget.reserve(requestID: "a", kvBytesPerToken: Int(gib), tokenCount: 1))
 }
+
+// MARK: - In-flight reservation shrink (T3-01)
+
+/// Scripted snapshot whose `active` the test raises as the request's KV
+/// "materializes" — the double count the shrink removes is exactly the
+/// bytes that appear here while the worst-case promise is still whole.
+private final class MutableSnapshot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _active: UInt64 = 0
+    var active: UInt64 {
+        get { lock.withLock { _active } }
+        set { lock.withLock { _active = newValue } }
+    }
+}
+
+@Test func reduceReservationBytesFreesTheMaterializedRemainder() async {
+    // 8 GiB box, capFraction 1.0 → hard cap = 8 − 2 (OS floor) = 6 GiB of
+    // headroom; the only other terms are `active` and the ledger.
+    let snapshot = MutableSnapshot()
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 8 * gib, active: snapshot.active, cache: 0, systemAvailable: .max)
+    }
+    let headroom = 6 * gib
+    let rate: UInt64 = 1_000
+    // Worst case promised at admission: prompt 100 + maxTokens 1000.
+    let worstCase = rate * 1_100
+    #expect(await budget.reserveBytes(requestID: "req", bytes: worstCase))
+    // Prefill lands the row (prompt + 256 slack) in MLX active, then the
+    // first token arrives: the promise still charges the whole worst case.
+    let materialized = rate * (100 + 256)
+    snapshot.active = materialized
+    let remainingAfterFirstToken = rate * 999
+    let freed = worstCase - remainingAfterFirstToken
+    // A probe sized to the post-shrink headroom does NOT fit while the
+    // promise is still the worst case (the double count is real)…
+    let probe = headroom - materialized - remainingAfterFirstToken
+    #expect(!(await budget.reserveBytes(requestID: "probe", bytes: probe)))
+    // …and fits exactly once the promise is lowered to the remainder.
+    await budget.reduceReservationBytes(requestID: "req", bytes: remainingAfterFirstToken)
+    #expect(await budget.outstandingReservedBytes() == remainingAfterFirstToken)
+    #expect(freed == rate * 101)
+    #expect(await budget.reserveBytes(requestID: "probe", bytes: probe))
+    #expect(!(await budget.reserveBytes(requestID: "one-more", bytes: 1)))
+    await budget.release(requestID: "probe")
+
+    // Shrink-only: a larger figure is a no-op, an unknown id is a no-op,
+    // and shrinking to zero keeps the entry so the terminal release still
+    // finds (and drains) it.
+    await budget.reduceReservationBytes(requestID: "req", bytes: worstCase)
+    #expect(await budget.outstandingReservedBytes() == remainingAfterFirstToken)
+    await budget.reduceReservationBytes(requestID: "missing", bytes: 1)
+    #expect(await budget.outstandingReservedBytes() == remainingAfterFirstToken)
+    await budget.reduceReservationBytes(requestID: "req", bytes: 0)
+    #expect(await budget.outstandingReservedBytes() == 0)
+    #expect(await budget.reservationIDsForTesting() == ["req"])
+    await budget.release(requestID: "req")
+    #expect(await budget.reservationIDsForTesting().isEmpty)
+}
+
+/// A live decode delivering tokens is progress proof: the shrink resets the
+/// sustained-rejection streak like `release` / a pending-load shrink do —
+/// but only when it actually lowers a promise, so a no-op call proves nothing.
+@Test func reduceReservationBytesResetsTheRejectionStreakOnlyWhenItShrinks() async {
+    let log = AuditEventLog()
+    let budget = makeAuditBudget(log: log)
+    #expect(await budget.reserveBytes(requestID: "live", bytes: 4_000))
+    // Wedge the box, then reject once to arm the streak.
+    await budget.reservePendingLoad(requestID: "pending-load:wedge", bytes: 6 * gib)
+    #expect(!(await budget.reserve(requestID: "storm", kvBytesPerToken: 1, tokenCount: Int(gib))))
+    #expect(await budget.rejectionStreakArmedForTesting())
+    // No-op shrinks (larger, equal, unknown id) leave the streak armed.
+    await budget.reduceReservationBytes(requestID: "live", bytes: 8_000)
+    await budget.reduceReservationBytes(requestID: "live", bytes: 4_000)
+    await budget.reduceReservationBytes(requestID: "ghost", bytes: 1)
+    #expect(await budget.rejectionStreakArmedForTesting())
+    // A real shrink disarms it.
+    await budget.reduceReservationBytes(requestID: "live", bytes: 3_000)
+    #expect(!(await budget.rejectionStreakArmedForTesting()))
+    #expect(await budget.outstandingReservedBytes() == 6 * gib + 3_000)
+}

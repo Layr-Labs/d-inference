@@ -327,6 +327,26 @@ public actor GlobalKVCacheBudget {
         }
     }
 
+    /// Shrink an existing raw-byte reservation to `bytes` as the request's KV
+    /// materializes — the bridge's in-flight release (T3-01). A contiguous
+    /// row's prompt KV, fixed state, and completion-so-far already sit in
+    /// MLX `active`, which `availableReservationBytes` re-reads on every
+    /// commit; keeping them inside the worst-case promise as well counts
+    /// every in-flight request twice. Shrink-only (a larger `bytes` is a
+    /// no-op — growth goes through `resizeReservationBytes`), never fails,
+    /// keeps `createdAt` (a shrink is not a new promise), and resets the
+    /// sustained-rejection streak ONLY when it actually shrank: like
+    /// `replacePendingLoadReservation`'s shrink, a live decode delivering
+    /// tokens is progress proof, and without the reset a long live decode
+    /// on a box rejecting everything could age into the 600 s stale-drop.
+    /// Unknown ids are ignored (paged slots never hold a reservation).
+    public func reduceReservationBytes(requestID: String, bytes: UInt64) {
+        guard let current = reservations[requestID], bytes < current.bytes else { return }
+        reservations[requestID]?.bytes = bytes
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
+    }
+
     /// Total KV bytes currently promised to in-flight requests. The model-load
     /// gate subtracts this so a new model's weights can't be loaded into memory
     /// already reserved for a request that is mid-decode (those bytes may not

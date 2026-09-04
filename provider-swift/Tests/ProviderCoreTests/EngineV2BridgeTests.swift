@@ -2978,3 +2978,123 @@ struct EngineV2BoundedStopTailTests {
         #expect(out.decodeSizes.isEmpty)
     }
 }
+
+// MARK: - In-flight reservation shrink (T3-01)
+
+@Suite("EngineV2 in-flight shared-reservation shrink")
+struct EngineV2ReservationShrinkTests {
+
+    /// Pull the next content chunk off the bridge stream. The pump lowers
+    /// the reservation BEFORE yielding the delta's chunk, so a chunk in
+    /// hand means the ledger is already current — no sleeps.
+    private func nextChunk(_ iterator: inout AsyncStream<GenerationEvent>.Iterator) async -> String? {
+        while let event = await iterator.next() {
+            if case .chunk(let text) = event { return text }
+        }
+        return nil
+    }
+
+    @Test("contiguous: promise drops to the remaining growth at first token and every 256 tokens, never grows, heartbeat `used` untouched, terminal releases")
+    func shrinksAtFirstTokenAndBoundaries() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.ample()
+        // rate 4000 B/token, 250 B of fixed (ring/recurrent) state.
+        let bridge = makeBridge(
+            engine: engine, kvBytesPerToken: 4000, fixedRequestBytes: 250, kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5],
+            request: makeRequest(maxTokens: 1000),
+            requestId: "req-shrink")
+        // Admission promises the worst case: 4000 × (5 + 1000) + 250.
+        let worstCase: UInt64 = 4_020_250
+        #expect(await budget.outstandingReservedBytes() == worstCase)
+        var iterator = stream.makeAsyncIterator()
+
+        // First token: prompt KV, slack, and the fixed state are in MLX
+        // active now — only the growth still ahead stays promised
+        // (variable bytes for 999 tokens; NO fixed term).
+        engine.manualContinuation?.yield(.delta(text: "a", tokens: [10], logprobs: nil))
+        #expect(await nextChunk(&iterator) == "a")
+        #expect(await budget.outstandingReservedBytes() == 4000 * 999)
+        #expect(await bridge.variableReservationBytes(tokenCount: 999) == 4000 * 999)
+
+        // 254 more tokens (completion 255): same 256-quotient, no shrink.
+        engine.manualContinuation?.yield(
+            .delta(text: "b", tokens: Array(repeating: 11, count: 254), logprobs: nil))
+        #expect(await nextChunk(&iterator) == "b")
+        #expect(await budget.outstandingReservedBytes() == 4000 * 999)
+
+        // A multi-token delta crossing the boundary (255 → 257): shrink to
+        // the remainder for 743 tokens. Quotient change, not a modulus.
+        engine.manualContinuation?.yield(
+            .delta(text: "c", tokens: [12, 13], logprobs: nil))
+        #expect(await nextChunk(&iterator) == "c")
+        #expect(await budget.outstandingReservedBytes() == 4000 * 743)
+
+        // Inside the next window: unchanged (monotone, never grows).
+        engine.manualContinuation?.yield(.delta(text: "d", tokens: [14], logprobs: nil))
+        #expect(await nextChunk(&iterator) == "d")
+        #expect(await budget.outstandingReservedBytes() == 4000 * 743)
+
+        // The heartbeat's committed worst case is bridge bookkeeping over
+        // `active`, not the ledger — the coordinator contract
+        // (`used` = Σ(prompt + max)) is untouched by the shrink.
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.maxTokensPotential == 1005)
+        #expect(slot.activeTokenBudgetUsed == 1006)  // ceil(4_020_250 / 4000)
+
+        // Terminal: the (already smaller) reservation drains completely.
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 258)))
+        engine.manualContinuation?.finish()
+        while await iterator.next() != nil {}
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(await budget.reservationIDsForTesting().isEmpty)
+    }
+
+    @Test("a delta past maxTokens shrinks the promise to zero growth, and the terminal still drains the entry")
+    func overrunShrinksToZeroThenReleases() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.ample()
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 4),
+            requestId: "req-overrun")
+        #expect(await budget.outstandingReservedBytes() == 4000 * 7)
+        var iterator = stream.makeAsyncIterator()
+        engine.manualContinuation?.yield(
+            .delta(text: "x", tokens: [10, 11, 12, 13, 14], logprobs: nil))
+        #expect(await nextChunk(&iterator) == "x")
+        #expect(await budget.outstandingReservedBytes() == 0)
+        // The zero-byte entry is still the request's — release finds it.
+        #expect(await budget.reservationIDsForTesting() == ["req-overrun"])
+        engine.manualContinuation?.yield(
+            .finished(reason: .length, usage: CBv2Usage(promptTokens: 3, completionTokens: 5)))
+        engine.manualContinuation?.finish()
+        while await iterator.next() != nil {}
+        #expect(await budget.reservationIDsForTesting().isEmpty)
+    }
+
+    @Test("paged slots hold no shared reservation, so deltas never touch the ledger")
+    func pagedSlotsUntouched() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.ample()
+        let bridge = makeBridge(
+            engine: engine, kvBytesPerToken: 4000, kvBudget: budget, kvBackendKind: .paged)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 500),
+            requestId: "req-paged-shrink")
+        #expect(await budget.outstandingReservedBytes() == 0)
+        var iterator = stream.makeAsyncIterator()
+        engine.manualContinuation?.yield(
+            .delta(text: "p", tokens: Array(repeating: 10, count: 300), logprobs: nil))
+        #expect(await nextChunk(&iterator) == "p")
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(await budget.reservationIDsForTesting().isEmpty)
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 3, completionTokens: 300)))
+        engine.manualContinuation?.finish()
+        while await iterator.next() != nil {}
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}

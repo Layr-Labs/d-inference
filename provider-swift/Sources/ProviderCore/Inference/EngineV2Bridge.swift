@@ -1552,6 +1552,22 @@ public actor EngineV2Bridge {
     }
 
     func requestReservationBytes(tokenCount: Int) -> Int? {
+        guard let variableBytes = variableReservationBytes(tokenCount: tokenCount) else {
+            return nil
+        }
+        let (total, totalOverflow) = variableBytes.addingReportingOverflow(fixedRequestBytes)
+        return totalOverflow ? nil : total
+    }
+
+    /// The GROWTH term of a reservation: target KV plus block-rounded
+    /// assistant state for `tokenCount` tokens, WITHOUT `fixedRequestBytes`.
+    /// `requestReservationBytes` adds the fixed term on top for the
+    /// admission-time worst case; the in-flight shrink
+    /// (`shrinkSharedReservationIfNeeded`) reserves only this term for the
+    /// tokens still to be generated, because by first token the fixed state
+    /// (recurrent conv/SSM, sliding-window rings) is materialized in MLX
+    /// `active` where the shared gate already counts it.
+    func variableReservationBytes(tokenCount: Int) -> Int? {
         guard tokenCount >= 0 else { return nil }
         let targetRate = max(0, kvBytesPerToken - auxiliaryBytesPerToken)
         let (targetBytes, targetOverflow) = targetRate.multipliedReportingOverflow(
@@ -1574,8 +1590,34 @@ public actor EngineV2Bridge {
         guard !auxiliaryOverflow else { return nil }
         let (variableBytes, variableOverflow) = targetBytes.addingReportingOverflow(
             auxiliaryBytes)
-        let (total, totalOverflow) = variableBytes.addingReportingOverflow(fixedRequestBytes)
-        return variableOverflow || totalOverflow ? nil : total
+        return variableOverflow ? nil : variableBytes
+    }
+
+    /// Shrink-only in-flight release of the shared-budget reservation
+    /// (T3-01). `submitTokenized` promises the worst case
+    /// (`prompt + maxTokens` plus fixed state) before the engine sees the
+    /// request; from prefill on, the row's KV lives in MLX `active`, which
+    /// the budget re-reads on every commit — so until the terminal release
+    /// every in-flight request was subtracted twice (once materialized,
+    /// once inside its untouched promise). At first token and at every
+    /// 256-token boundary thereafter the promise is lowered to the growth
+    /// still ahead: `variableReservationBytes(maxTokens − completion)`.
+    /// Monotone by construction (completion only grows), never fails, and
+    /// `allocated (in active) + remaining promise ≥ prompt + maxTokens`
+    /// holds at every instant. Only contiguous slots hold a reservation
+    /// (`holdsSharedReservation`); the terminal release stays the same.
+    /// Runs BEFORE the delta's chunk is yielded so the ledger is current by
+    /// the time any consumer observes the token.
+    private func shrinkSharedReservationIfNeeded(
+        id: String, budget: GlobalKVCacheBudget, progress: (before: Int, after: Int)
+    ) async {
+        guard progress.after > progress.before,
+            progress.before == 0 || progress.before / 256 != progress.after / 256,
+            let state = active[id],
+            let remaining = variableReservationBytes(
+                tokenCount: max(0, state.maxTokens - progress.after))
+        else { return }
+        await budget.reduceReservationBytes(requestID: id, bytes: UInt64(remaining))
     }
 
     func maximumRequestOverheadBytes() -> Int? {
@@ -1995,7 +2037,11 @@ public actor EngineV2Bridge {
                     recordFirstToken(
                         id: id, emissionTokens: tokens.count, profileNow: lastDeltaAt)
                 }
-                recordProgress(id: id, newTokens: tokens.count)
+                let progress = recordProgress(id: id, newTokens: tokens.count)
+                if holdsSharedReservation, let kvBudget {
+                    await shrinkSharedReservationIfNeeded(
+                        id: id, budget: kvBudget, progress: progress)
+                }
                 if stopTailLimit > 0 {
                     // EngineLoopV2 suppresses stop-token text before the
                     // stop-string holdback sees it. Exclude those raw tokens
@@ -2232,12 +2278,20 @@ public actor EngineV2Bridge {
         }
     }
 
-    private func recordProgress(id: String, newTokens: Int) {
-        // In-place `_modify` through the dictionary subscript: one hash
-        // and no copy of the state struct (which holds a class reference)
-        // per delta.
-        guard newTokens > 0 else { return }
-        active[id]?.completionTokens += newTokens
+    /// Accumulate delivered completion tokens; returns the count before and
+    /// after so the pump can test the in-flight reservation-shrink
+    /// boundary (first token / every 256 tokens — deltas may carry several
+    /// tokens, so the boundary is a quotient change, not a modulus).
+    /// In-place through `Dictionary.Values`: ONE hash (`index(forKey:)`)
+    /// and no copy of the state struct (which holds a class reference)
+    /// per delta.
+    @discardableResult
+    private func recordProgress(id: String, newTokens: Int) -> (before: Int, after: Int) {
+        guard let index = active.index(forKey: id) else { return (0, 0) }
+        let before = active.values[index].completionTokens
+        guard newTokens > 0 else { return (before, before) }
+        active.values[index].completionTokens += newTokens
+        return (before, before + newTokens)
     }
 
     /// Finish bookkeeping with the legacy billing-zero defense: the

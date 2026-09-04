@@ -76,6 +76,33 @@ func TestDecryptTextResponseChunkUsesPrecomputedSharedKey(t *testing.T) {
 	}
 }
 
+// TestDecryptTextResponseChunkWrongSharedKeyFails: a deliberately wrong
+// precomputed key on a record whose SessionPrivKey is correct must make the
+// open FAIL. A decrypt path that ignored pr.SharedKey and re-derived the
+// X25519 key from provider.PublicKey per chunk — the exact per-token cost
+// T11-06 removes — would still succeed here, so this is what pins "the field
+// is what the open uses" (the success-path test above cannot tell the two
+// apart).
+func TestDecryptTextResponseChunkWrongSharedKeyFails(t *testing.T) {
+	srv := sharedKeyTestServer(t)
+	peerPubB64, peerPub, peerPriv := testPeerKeyB64(t)
+	provider := &registry.Provider{ID: "p", PublicKey: peerPubB64}
+	session, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := new([32]byte) // all-zero: never the box key for this session
+	pr := &registry.PendingRequest{RequestID: "req", SessionPrivKey: &session.PrivateKey, SharedKey: wrong}
+
+	got, err := srv.decryptTextResponseChunk(provider, pr, sealedChunkFor(t, "tok", session, peerPub, peerPriv))
+	if err == nil {
+		t.Fatalf("decrypt succeeded (%q) with a wrong precomputed key: the path re-derived the key from provider.PublicKey instead of using pr.SharedKey", got)
+	}
+	if pr.SharedKey != wrong {
+		t.Fatal("decrypt path replaced the precomputed shared key on failure")
+	}
+}
+
 // TestDecryptTextResponseChunkDerivesSharedKeyOnceWhenAbsent: a pending
 // request built without SharedKey (tests, any future constructor) derives it
 // on the first chunk — exactly the key the dispatcher would have precomputed —

@@ -220,6 +220,33 @@ struct LaunchAgentEnvironmentTests {
         #expect(WatchdogAgent.passthroughEnvironment(from: env)
             == [KVBackendGuardStore.pathEnvKey: "/tmp/guard.json"])
     }
+
+    @Test func forwardsEngineReadInferenceKeys() {
+        // Every engine-read key parsed at engine/model construction must
+        // survive into the daemon plist, or an operator export silently
+        // no-ops on the launchd (watchdog/restart) path. Empty values are
+        // dropped; unrelated variables never leak in.
+        let env = [
+            "DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "256",
+            "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
+            "CBV2_STEP_PROFILE": "1",
+            "MLX_COMPILED_DECODE": "0",
+            "MLX_QWEN_DIRECT_EXPERT_REDUCTION": "1",
+            "DARKBLOOM_CBV2_PAGED_KV": "",
+            "PATH": "/usr/bin",
+            "HOME": "/Users/x",
+        ]
+        let out = LaunchAgent.passthroughEnvironment(from: env)
+        #expect(out == [
+            "DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "256",
+            "DARKBLOOM_CBV2_PREFILL_NARROWING": "0",
+            "CBV2_STEP_PROFILE": "1",
+            "MLX_COMPILED_DECODE": "0",
+            "MLX_QWEN_DIRECT_EXPERT_REDUCTION": "1",
+        ])
+        // The watchdog job deliberately carries none of the inference keys.
+        #expect(WatchdogAgent.passthroughEnvironment(from: env).isEmpty)
+    }
 }
 
 @Suite("LaunchAgent service plist")

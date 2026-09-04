@@ -291,9 +291,24 @@ public enum LaunchAgent: Sendable {
     /// `DARKBLOOM_PREFILL_DEADLINE_MODE`: the operator's `off` / `enforce`
     /// admission-mode control. Both must persist in the provider job because
     /// launchd restarts (including watchdog recovery) reuse this plist.
+    /// `DARKBLOOM_CBV2_MIXED_PREFILL_CAP`: the mixed-step prefill token quota
+    /// (`SchedulerV2.mixedStepPrefillTokenCap`, read once at engine
+    /// construction; default nil = off). Without passthrough the quota was
+    /// unreachable in production — set in a shell, lost by the daemon.
+    /// The remaining keys are engine reads of the same shape (parsed at
+    /// engine/model construction, foreground-only without passthrough):
+    /// `DARKBLOOM_CBV2_PREFILL_NARROWING` (`0` restores engine-sliced full
+    /// prefill), `CBV2_STEP_PROFILE` (step profiler), `MLX_COMPILED_DECODE`
+    /// (the documented Tahoe opt-out) and `MLX_QWEN_DIRECT_EXPERT_REDUCTION`.
+    /// Defaults are unchanged: nothing here is set unless an operator does.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
+        "DARKBLOOM_CBV2_MIXED_PREFILL_CAP",
+        "DARKBLOOM_CBV2_PREFILL_NARROWING",
+        "CBV2_STEP_PROFILE",
+        "MLX_COMPILED_DECODE",
+        "MLX_QWEN_DIRECT_EXPERT_REDUCTION",
     ]
 
     static let passthroughEnvKeys = [

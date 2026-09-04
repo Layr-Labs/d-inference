@@ -215,6 +215,9 @@ func readMessageSlowly(conn *websocket.Conn, bytesRead *atomic.Int64, pingGate c
 // context deadline exceeded", and the message never completed (see
 // TestUnfragmentedConnWriteStallsPeerPing, which pins that failure mode).
 func TestProviderWriterFragmentedWriteAnswersPingMidMessage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock-bounded slow-reader test (~10s; asserts a >5s stall)")
+	}
 	t.Parallel()
 	h := newPingStallHarness(t)
 	w := newProviderWriter(h.serverConn)
@@ -320,6 +323,9 @@ func TestProviderWriterFragmentedWriteAnswersPingMidMessage(t *testing.T) {
 // api.readErrorDisconnectReason classifies. It also proves the harness is
 // sensitive enough that the fragmented test above cannot pass vacuously.
 func TestUnfragmentedConnWriteStallsPeerPing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock-bounded slow-reader test (~6s; asserts a >5s stall)")
+	}
 	t.Parallel()
 	h := newPingStallHarness(t)
 	payload := stallPayload(stallMessageBytes)

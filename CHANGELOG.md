@@ -2,6 +2,7 @@
 
 ## Unreleased (2026-09-04) — console redesign
 
+- Provider onboarding specifies macOS 26 or later.
 - Added a Consumer/Provider entry page, dedicated `/chat` route, contextual workspace navigation, and public provider onboarding shared with the empty fleet. Linked providers return to their fleet and recorded earnings, including when their Macs are offline; failed discovery never implies an empty account.
 - Scoped fleet requests to the current account, cancelling late results on sign-out or account changes.
 - Redesigned console navigation, chat composition, searchable model discovery, settings, and API integration examples.

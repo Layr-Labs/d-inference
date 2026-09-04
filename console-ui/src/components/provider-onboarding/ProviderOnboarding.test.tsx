@@ -26,7 +26,7 @@ describe("ProviderOnboarding", () => {
 
     expect(screen.getByRole("heading", { name: "Put your Mac to work." })).toBeInTheDocument();
     expect(screen.getByText("48 GB or more of unified memory")).toBeInTheDocument();
-    expect(screen.getByText("macOS 14 or later")).toBeInTheDocument();
+    expect(screen.getByText("macOS 26 or later")).toBeInTheDocument();
     expect(screen.getByLabelText("Install on your Mac command")).toHaveTextContent("curl -fsSL https://api.darkbloom.dev/install.sh | bash");
     expect(screen.getByRole("link", { name: "Open the earnings calculator" })).toHaveAttribute("href", "/earn");
     fireEvent.click(screen.getByRole("button", { name: "Sign in to link your Mac" }));

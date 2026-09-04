@@ -4,7 +4,7 @@ import { MIN_PROVIDER_MEMORY_GB } from "@/app/earn/providerReadiness";
 
 const REQUIREMENTS = [
   { icon: Cpu, title: "Apple Silicon", detail: `${MIN_PROVIDER_MEMORY_GB} GB or more of unified memory` },
-  { icon: Monitor, title: "macOS 14 or later", detail: "Sonoma or a newer version" },
+  { icon: Monitor, title: "macOS 26 or later", detail: "Tahoe or a newer version" },
   { icon: PlugZap, title: "Power and a stable connection", detail: "Keep your Mac awake and online while serving" },
 ];
 

@@ -902,6 +902,11 @@ func TestDrainDeclinedOfferIsNotAnAdmission(t *testing.T) {
 	if !reg.drainSuppress.suppressed(drainTestModel) {
 		t.Fatal("declined offer lifted the heartbeat suppression mark")
 	}
+	// Scanned, nothing placed, fleet not saturated: the pass is "rejected",
+	// not "empty" (which is reserved for passes where no waiter reached a
+	// scan).
+	expectMetric(t, sink, 1, "queue.drain.pass", "trigger:idle", "outcome:rejected")
+	expectMetric(t, sink, 1, "queue.drain.scans", "trigger:idle")
 	if n := p.PendingCount(); n != 0 {
 		t.Fatalf("pending count after the declined offer = %d, want 0 (reservation released)", n)
 	}

@@ -3499,7 +3499,10 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 // keeping that path allocation-free matters more than a series that would
 // only ever read "empty". Outcomes: admitted (a waiter was handed a
 // provider), saturated (a waiter was rejected purely on capacity/TTFT and
-// none admitted), empty (every popped waiter expired or failed terminally).
+// none admitted), rejected (waiters were scanned, none admitted, no pure
+// capacity/TTFT rejection: a commit re-check race, a constrained waiter, a
+// declined offer), empty (no popped waiter reached a scan: every one expired
+// or failed terminally).
 func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted, dominated int, saturated bool) {
 	if popped == 0 || r.metricsSink() == nil {
 		return
@@ -3510,6 +3513,8 @@ func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted
 		outcome = drainOutcomeAdmitted
 	case saturated:
 		outcome = drainOutcomeSaturated
+	case scanned > 0:
+		outcome = drainOutcomeRejected
 	}
 	trigger := "trigger:" + reason
 	r.metricIncr("queue.drain.pass", []string{trigger, "outcome:" + outcome})

@@ -44,8 +44,13 @@ const (
 // Drain pass outcomes for queue.drain.pass.
 const (
 	drainOutcomeAdmitted  = "admitted"  // at least one waiter was handed a provider
-	drainOutcomeSaturated = "saturated" // waiters were scanned, none admitted
-	drainOutcomeEmpty     = "empty"     // waiters were popped but none reached a scan
+	drainOutcomeSaturated = "saturated" // a waiter was rejected purely on capacity/TTFT, none admitted
+	// rejected: waiters were scanned, none admitted, and no rejection was a
+	// pure capacity/TTFT one — a commit re-check race for the last slot, a
+	// constrained (owner/serial/cache-planned) waiter with no eligible box,
+	// or an offer declined by a waiter that had already given up.
+	drainOutcomeRejected = "rejected"
+	drainOutcomeEmpty    = "empty" // waiters were popped but none reached a scan
 )
 
 // SetMetricsSink installs the counter sink. Pass a non-nil concrete client

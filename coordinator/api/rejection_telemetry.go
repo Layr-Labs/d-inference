@@ -148,20 +148,24 @@ func (s *Server) recordRejection(info rejectionInfo) {
 			// should record) it is skipped, so the single sink worker never
 			// stalls the route/outcome batches behind it. A skipped
 			// counterfactual is marked candidate_count = -1 — distinguishable
-			// from "no provider existed" (0); could_have_served stays false.
-			if s.tryAcquireRoutingScanSlot() {
+			// from "no provider existed" (0); could_have_served stays false
+			// and readers treat the row as "not computed" (admin filter,
+			// research SQL). The slot is released by defer inside
+			// withRoutingScanSlot: this job runs under saferun.Recover, so a
+			// panic in the walk must not retire a request-path scan slot.
+			walked := s.withRoutingScanSlot(func() {
 				traits := registry.RequestTraits{HasTools: hasTools}
 				cc, capRej, tooLarge, bestTTFT, hasTTFT := reg.QuickCapacityCheckWithTTFTForRequest(
 					resolvedModel, estPrompt, reqMax, traits, requiresVision,
 				)
-				s.releaseRoutingScanSlot()
 				rec.CandidateCount = cc
 				rec.CapacityRejections = capRej
 				rec.ModelTooLargeRejections = tooLarge
 				if hasTTFT {
 					rec.BestTTFTMs = float64(bestTTFT.Milliseconds())
 				}
-			} else {
+			})
+			if !walked {
 				rec.CandidateCount = rejectionCounterfactualSkipped
 				s.ddIncr("rejection.counterfactual_skipped", []string{"model:" + resolvedModel})
 			}

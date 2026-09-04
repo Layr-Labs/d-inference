@@ -104,6 +104,43 @@ func TestRecordRejectionCounterfactualUnderScanSaturation(t *testing.T) {
 	}
 }
 
+// TestRoutingScanSlotReleasedWhenWalkPanics: the sink's counterfactual walk
+// runs under a request-path scan slot that withRoutingScanSlot releases by
+// defer, so a panic inside the walk (contained by the sink's saferun.Recover)
+// hands the slot back. With the release as a plain call after the walk, each
+// such panic retired one of NumCPU request-path slots until restart. The
+// helper is new with this change, so the test pins its contract rather than
+// reproducing a panic inside QuickCapacityCheckWithTTFTForRequest.
+func TestRoutingScanSlotReleasedWhenWalkPanics(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.SetRoutingConcurrency(1)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the walk's panic did not propagate to the recovering caller")
+			}
+		}()
+		srv.withRoutingScanSlot(func() { panic("walk") })
+	}()
+	if got := len(srv.routingScanSem); got != 0 {
+		t.Fatalf("scan slots held after a panicking walk = %d, want 0", got)
+	}
+	ran := false
+	if !srv.withRoutingScanSlot(func() { ran = true }) || !ran {
+		t.Fatal("slot not reacquirable after the panicking walk")
+	}
+	if got := len(srv.routingScanSem); got != 0 {
+		t.Fatalf("scan slots held after a clean walk = %d, want 0", got)
+	}
+	// Saturated: the walk does not run and the caller is told so.
+	release := holdRoutingScanSlots(srv)
+	defer release()
+	ran = false
+	if srv.withRoutingScanSlot(func() { ran = true }) || ran {
+		t.Fatal("walk ran while the scan slots were saturated")
+	}
+}
+
 // TestModelShedOverHTTPUnderScanSaturationDoesNotWalk drives the real
 // model_shed 429 through the handler with the semaphore saturated.
 func TestModelShedOverHTTPUnderScanSaturationDoesNotWalk(t *testing.T) {

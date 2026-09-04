@@ -1609,6 +1609,19 @@ func (s *Server) releaseRoutingScanSlot() {
 	<-s.routingScanSem
 }
 
+// withRoutingScanSlot runs fn under a request-path routing-scan slot when one
+// is free and reports whether fn ran. The slot is released by defer, so an
+// fn that panics (contained by the caller's saferun wrapper) cannot retire a
+// slot for the life of the process.
+func (s *Server) withRoutingScanSlot(fn func()) bool {
+	if !s.tryAcquireRoutingScanSlot() {
+		return false
+	}
+	defer s.releaseRoutingScanSlot()
+	fn()
+	return true
+}
+
 // SetServabilityGate toggles the smart early-429 admission gate. See the
 // servabilityGate field. Call before serving starts.
 func (s *Server) SetServabilityGate(enabled bool) {

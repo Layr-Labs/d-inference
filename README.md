@@ -1,6 +1,6 @@
 # Darkbloom
 
-> **Public Alpha** — Darkbloom is a decentralized private-inference network for Apple Silicon. Expect rough edges, breaking changes, and downtime. During the alpha, providers keep **100% of revenue** (0% platform fee).
+> **Public Alpha** — Darkbloom is a decentralized private-inference network for Apple Silicon. Expect rough edges, breaking changes, and downtime. Alpha pricing, the platform fee and payout rules are stated once, in [billing](docs/architecture/billing.md#invariants).
 
 Darkbloom turns idle Macs into a private, OpenAI-compatible inference cloud.
 
@@ -197,7 +197,7 @@ Pricing is per-token and resolved per request: a provider's custom price, else a
 | Input tokens | $0.05 / 1M |
 | Output tokens | $0.20 / 1M |
 | Minimum charge | $0.0001 / request |
-| Platform fee | **0%** during public alpha |
+| Platform fee | see [billing invariants](docs/architecture/billing.md#invariants) |
 
 Per-token rates target roughly half of comparable hosted APIs. **Live per-model pricing is always at [`GET /v1/pricing`](https://api.darkbloom.dev/v1/pricing).** Funding uses Stripe deposits into the internal micro-USD ledger; provider payouts run through Stripe Connect. Requests routed to your own machine via [self-route](#self-route--direct-mode) are **free**. See [`docs/reference/pricing-model.md`](docs/reference/pricing-model.md).
 

@@ -33,6 +33,14 @@
 // are empty) and is then in its marker-safe `content` state — tagless
 // text streams per token, and a model that later emits its own
 // `<think>…</think>` still flips to reasoning.
+//
+// Classification side effect of the pair: `content` recognises only
+// `<think>`, so a bare `</think>` from a model on a NOT-pre-opened prompt
+// is now content (the literal tag reaches the client) instead of the
+// `undecided` split into reasoning_content + content. That is the right
+// reading for a prompt that never opened a block, and it applies to every
+// model type that falls to the `.qwen3` parser default (unknown types
+// included), not only Qwen/DeepSeek.
 
 import MLXLMServer
 
@@ -52,6 +60,8 @@ enum ReasoningPromptProbe {
         /// A think-format parser will consume the stream but the prompt did
         /// not pre-open a block → inject `<think></think>` so tagless
         /// output streams per token instead of buffering until the end.
+        /// An orphan `</think>` in the output then renders as content (see
+        /// the file header).
         case notPreOpened
         /// Nothing to inject: no think-format parser downstream (a marker
         /// would leak verbatim), a non-streaming request (the collector

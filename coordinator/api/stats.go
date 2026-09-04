@@ -219,7 +219,9 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	body, ok := s.refreshStats()
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
+		// Nothing cached and the computation could not produce a body (or a
+		// coalesced computation failed for this waiter).
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "stats are temporarily unavailable"))
 		return
 	}
 	writeCachedJSON(w, body)

@@ -96,6 +96,7 @@ func assertAnalyticsTx(t *testing.T, events []tracedStatement, marker string) {
 	}
 	joined := strings.Join(onConn, " | ")
 	setIdx := indexOf(onConn, "set local work_mem = '"+strings.ToLower(analyticsWorkMem)+"'")
+	hashIdx := indexOf(onConn, "set local hash_mem_multiplier = 1.0")
 	selIdx := indexOfContains(onConn, strings.ToLower(marker))
 	beginIdx := indexOfContains(onConn, "begin")
 	commitIdx := indexOf(onConn, "commit")
@@ -104,6 +105,9 @@ func assertAnalyticsTx(t *testing.T, events []tracedStatement, marker string) {
 	}
 	if setIdx < 0 {
 		t.Fatalf("%s: SET LOCAL work_mem = '%s' not executed on the statement's connection: %s", marker, analyticsWorkMem, joined)
+	}
+	if hashIdx < 0 || hashIdx < setIdx || hashIdx > selIdx {
+		t.Fatalf("%s: SET LOCAL hash_mem_multiplier = 1.0 must run after work_mem and before the statement: %s", marker, joined)
 	}
 	if commitIdx < 0 {
 		t.Fatalf("%s: transaction not committed: %s", marker, joined)

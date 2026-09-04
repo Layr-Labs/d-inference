@@ -2220,16 +2220,22 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 	return records
 }
 
-// analyticsWorkMem is the per-transaction work_mem for the two usage
-// analytics statements behind /v1/stats. Each sorts every located usage row
-// of the last 24 h (COUNT(DISTINCT) / GROUP BY over ~3 M rows in production);
-// at the instance default of 4 MB that is an external merge sort spilling
-// >1 GB of temp files per execution. SET LOCAL scopes the raise to the one
-// read-only transaction, so the instance setting stays untouched.
+// analyticsWorkMem is the per-transaction work_mem for the analytics
+// statements behind /v1/stats and /v1/network/totals. Each sorts or hashes
+// every located usage row of the last 24 h (COUNT(DISTINCT) / GROUP BY over
+// ~3 M rows in production); at the instance default of 4 MB that is an
+// external merge sort spilling >1 GB of temp files per execution. SET LOCAL
+// scopes the raise to the one read-only transaction, so the instance setting
+// stays untouched. The budget is per sort/hash node; hash_mem_multiplier is
+// pinned to 1.0 in the same transaction so a hash aggregate cannot take
+// twice this (the PG 15+ default multiplier is 2.0). Only the cache
+// refreshers run these statements — one stats pipeline and one totals
+// window at a time — so the transient memory is bounded to a few GB.
 const analyticsWorkMem = "1GB"
 
 // withAnalyticsTx runs fn inside one read-only transaction with work_mem
-// raised to analyticsWorkMem for that transaction only.
+// raised to analyticsWorkMem (and hash_mem_multiplier pinned to 1.0) for that
+// transaction only.
 func (s *PostgresStore) withAnalyticsTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -2237,6 +2243,9 @@ func (s *PostgresStore) withAnalyticsTx(ctx context.Context, fn func(pgx.Tx) err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '"+analyticsWorkMem+"'"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL hash_mem_multiplier = 1.0"); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {

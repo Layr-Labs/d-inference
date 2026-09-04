@@ -631,6 +631,13 @@ func TestWarmTargetLittlesLaw(t *testing.T) {
 	if got := warmTarget(capped, params, 5*time.Second); got != 3 {
 		t.Fatalf("warmTarget(capped) = %d, want 3", got)
 	}
+	// Boxes with a load in flight are not eligible for another but will be
+	// warm: they are reachable (warm 0 + inFlight 2 + eligibleCold 3 = 5).
+	inFlight := capped
+	inFlight.InFlight = 2
+	if got := warmTarget(inFlight, params, 5*time.Second); got != 5 {
+		t.Fatalf("warmTarget(in flight) = %d, want 5 (in-flight loads are reachable)", got)
+	}
 	// A lone pressure event still nudges the pool forward by one (reactive
 	// floor) on the tick that first sees it ...
 	reactive := warmTargetInputs{

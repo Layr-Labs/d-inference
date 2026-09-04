@@ -465,3 +465,83 @@ func TestWarmPoolReactiveFloorSurvivesUnpressuredTick(t *testing.T) {
 		t.Fatalf("pressured tick did not consume the arm: reactiveAppliedAt = %v, want %v", at, t1)
 	}
 }
+
+// TestWarmPoolInFlightLoadsAreReachable: a box with a load in flight is
+// excluded from eligibleCold (warmColdPendingLoad) but WILL be warm shortly,
+// so it counts toward what the fleet can reach. Three cold boxes, a floor of
+// 3 and one load already in flight: the target is 3 and the tick issues the
+// two remaining loads. Before the fix the target was clamped to
+// warm + eligibleCold = 2 and the gap then subtracted the in-flight load a
+// second time (min(T-W-I, E-I) instead of min(T-W-I, E)): one load, and the
+// third box waited a full load latency for the first two to land.
+func TestWarmPoolInFlightLoadsAreReachable(t *testing.T) {
+	reg, sent := inflightFixture(t, 3)
+	cfg := testWarmPoolConfig()
+	cfg.MaxLoadsPerTick = 4
+	cfg.MinWarmByModel = map[string]int{inflightModel: 3}
+	reg.ConfigureWarmPool(cfg)
+	now := time.Now()
+	if got := reg.reservePendingModelLoads([]modelLoadAction{{providerID: "cold-00", modelID: inflightModel}}, now); len(got) != 1 {
+		t.Fatalf("reserved %d, want 1", len(got))
+	}
+
+	snaps := reg.warmPool.tick(now)
+	var snap WarmPoolSnapshot
+	for _, s := range snaps {
+		if s.Model == inflightModel {
+			snap = s
+		}
+	}
+	if snap.PendingLoads != 1 || snap.EligibleCold != 2 {
+		t.Fatalf("snapshot pending=%d eligible=%d, want 1/2", snap.PendingLoads, snap.EligibleCold)
+	}
+	if snap.TargetWarm != 3 {
+		t.Fatalf("TargetWarm = %d, want 3 (warm 0 + in flight 1 + eligible cold 2 are all reachable)", snap.TargetWarm)
+	}
+	if len(*sent) != 2 {
+		t.Fatalf("tick sent %d loads, want 2 (%v)", len(*sent), *sent)
+	}
+	for _, a := range *sent {
+		if a.providerID == "cold-00" {
+			t.Fatalf("tick re-issued the in-flight load: %v", *sent)
+		}
+	}
+}
+
+// TestTargetWarmClampsCountInFlightLoads: the controller-side bounds on the
+// target (the MinDwell hold, the MinWarmByModel floor and the dedicated
+// whole-pool rule) use the same reachable set as warmTarget — warm + in
+// flight + eligible cold — so none of them re-introduces the double count.
+func TestTargetWarmClampsCountInFlightLoads(t *testing.T) {
+	reg := New(testLogger())
+	reg.SetDedicatedModels([]string{"gemma-4"})
+	cfg := testWarmPoolConfig()
+	cfg.MinDwell = time.Minute
+	cfg.MinWarmByModel = map[string]int{qwenBuild: 4}
+	c := newWarmPoolController(reg, cfg)
+	params := c.targetParams()
+	now := time.Now()
+	two := []warmPoolCandidate{{providerID: "c1"}, {providerID: "c2"}}
+
+	// Dwell hold: the last target (5) is held but bounded by the reachable
+	// set 0 + 1 + 2 = 3, not by warm + eligibleCold = 2.
+	held := warmPoolPressureBucket{lastTarget: 5, lastTargetChangedAt: now}
+	fleet := warmPoolModelSnapshot{model: "plain", eligibleCold: two}
+	in := c.targetInputs(fleet, held, warmPoolQueuePressure{}, 1)
+	if got := c.targetWarm(fleet, held, in, params, time.Second, now); got != 3 {
+		t.Fatalf("dwell-held target = %d, want 3 (warm 0 + in flight 1 + eligible 2)", got)
+	}
+	// MinWarmByModel floor (4) bounded the same way.
+	floored := warmPoolModelSnapshot{model: qwenBuild, eligibleCold: two}
+	in = c.targetInputs(floored, warmPoolPressureBucket{}, warmPoolQueuePressure{}, 1)
+	if got := c.targetWarm(floored, warmPoolPressureBucket{}, in, params, time.Second, now); got != 3 {
+		t.Fatalf("floored target = %d, want 3 (warm 0 + in flight 1 + eligible 2)", got)
+	}
+	// Dedicated pool under demand: the WHOLE pool includes the in-flight box.
+	dedicated := warmPoolModelSnapshot{model: gemmaBuild, warm: 2, eligibleCold: two}
+	demand := warmPoolPressureBucket{capacityRejects: 1}
+	in = c.targetInputs(dedicated, demand, warmPoolQueuePressure{}, 1)
+	if got := c.targetWarm(dedicated, demand, in, params, time.Second, now); got != 5 {
+		t.Fatalf("dedicated whole-pool target = %d, want 5 (warm 2 + in flight 1 + eligible 2)", got)
+	}
+}

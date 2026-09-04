@@ -51,8 +51,13 @@ type warmTargetParams struct {
 // They are assembled by the controller from the fleet snapshot (warm/cold
 // counts, in-flight load, representative rates) and the pressure/queue state.
 type warmTargetInputs struct {
-	Warm            int // warm providers serving the model right now
-	EligibleCold    int // cold providers that could be warmed this tick
+	Warm         int // warm providers serving the model right now
+	EligibleCold int // cold providers that could be warmed this tick
+	// InFlight is the number of load_model commands in flight for the model
+	// (bounded by the hedge window). Those boxes are excluded from
+	// EligibleCold — a pending load disqualifies a candidate — but they will
+	// be warm shortly, so they count toward what the fleet can reach.
+	InFlight        int
 	RunningRequests int // Σ NumRunning across warm providers (served, decoding)
 	WaitingRequests int // Σ NumWaiting across warm providers (provider-queued)
 	QueueDepth      int // coordinator-side queued requests for the model
@@ -74,6 +79,16 @@ type warmTargetInputs struct {
 	// tick for as long as its window stays open. Only a tick under demand
 	// pressure evaluates (and so consumes) the arm — see reactiveFloorConsumed.
 	ReactiveFloor bool
+}
+
+// maxReachable is the most warm providers the fleet can have once every load
+// the controller could issue this tick has landed: the warm set, the loads
+// already in flight, and the cold boxes still eligible for one. Every clamp
+// on the target uses it; bounding by warm + eligibleCold alone omitted the
+// in-flight boxes, and the gap (target − warm − inFlight) then subtracted
+// them a second time.
+func (in warmTargetInputs) maxReachable() int {
+	return in.Warm + in.InFlight + in.EligibleCold
 }
 
 // reactiveFloorConsumed reports whether a tick with these inputs evaluated the
@@ -174,8 +189,9 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 // arrival rate is small — but the floor is applied ONCE per demand event
 // (in.ReactiveFloor), not on every tick the event's window stays open. The
 // result never shrinks below the current warm count within a tick (dwell is
-// enforced by the caller) and never exceeds what the fleet can actually warm
-// (warm + eligibleCold). With no demand pressure the pool is left as-is.
+// enforced by the caller) and never exceeds what the fleet can actually reach
+// (warm + inFlight + eligibleCold, maxReachable). With no demand pressure the
+// pool is left as-is.
 func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int {
 	if !in.DemandPressure {
 		return in.Warm
@@ -192,7 +208,7 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 	if target < in.Warm {
 		target = in.Warm
 	}
-	if maxReachable := in.Warm + in.EligibleCold; target > maxReachable {
+	if maxReachable := in.maxReachable(); target > maxReachable {
 		target = maxReachable
 	}
 	if target < 0 {

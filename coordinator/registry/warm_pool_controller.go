@@ -50,7 +50,10 @@ type warmPoolQueuePressure struct {
 }
 
 type WarmPoolSnapshot struct {
-	Model              string
+	Model string
+	// TargetWarm is the warm count the tick planned toward, bounded by what
+	// the fleet can reach: WarmProviders + PendingLoads + EligibleCold (a box
+	// with a load in flight is not eligible for another, but will be warm).
 	TargetWarm         int
 	WarmProviders      int
 	EligibleCold       int
@@ -452,13 +455,14 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			serviceTPS = f.soloDecodeTPS
 		}
 		svc := estimateServiceTime(f.prefillTPS, serviceTPS, params)
-		in := c.targetInputs(f, p, q)
-		target := c.targetWarm(f, p, in, params, svc, now)
-
 		// In-flight loads close the gap too: with ~30 s load latency a tick
 		// every 10–30 s otherwise re-issued up to `gap` loads per tick to
-		// different idle boxes for the same demand.
+		// different idle boxes for the same demand. They are also reachable
+		// capacity for the target's clamps (a pending load takes a box out of
+		// eligibleCold), so the gap counts them exactly once.
 		pendingLoads := c.registry.inFlightLoadsForModel(model, now, pendingLoadHedgeBoundFor(p.loadDurationEWMA))
+		in := c.targetInputs(f, p, q, pendingLoads)
+		target := c.targetWarm(f, p, in, params, svc, now)
 		gap := target - (f.warm + pendingLoads)
 		if gap < 0 {
 			gap = 0
@@ -550,11 +554,13 @@ func (c *warmPoolController) targetParams() warmTargetParams {
 }
 
 // targetInputs assembles the measured per-model inputs for the Little's Law
-// target from the fleet, pressure, and queue snapshots.
-func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure) warmTargetInputs {
+// target from the fleet, pressure, and queue snapshots plus the model's
+// in-flight load count (inFlightLoadsForModel, hedge-bounded).
+func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, queue warmPoolQueuePressure, inFlight int) warmTargetInputs {
 	return warmTargetInputs{
 		Warm:             fleet.warm,
 		EligibleCold:     len(fleet.eligibleCold),
+		InFlight:         inFlight,
 		RunningRequests:  fleet.running,
 		WaitingRequests:  fleet.waiting,
 		QueueDepth:       queue.Depth,
@@ -608,15 +614,18 @@ func (c *warmPoolController) hasDemandPressure(fleet warmPoolModelSnapshot, pres
 // (anti-flap).
 func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure warmPoolPressureBucket, in warmTargetInputs, params warmTargetParams, svc time.Duration, now time.Time) int {
 	target := warmTarget(in, params, svc)
+	// Every bound below is in.maxReachable() (warm + in flight + eligible
+	// cold): the caller's gap subtracts the in-flight loads, so a bound that
+	// omitted them charged those boxes twice.
 	if c.config.MinDwell > 0 && pressure.lastTarget > target && now.Sub(pressure.lastTargetChangedAt) < c.config.MinDwell {
 		target = pressure.lastTarget
-		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+		if maxReachable := in.maxReachable(); target > maxReachable {
 			target = maxReachable
 		}
 	}
 	if floor := c.config.MinWarmByModel[fleet.model]; floor > target {
 		target = floor
-		if maxReachable := fleet.warm + len(fleet.eligibleCold); target > maxReachable {
+		if maxReachable := in.maxReachable(); target > maxReachable {
 			target = maxReachable
 		}
 	}
@@ -629,9 +638,10 @@ func (c *warmPoolController) targetWarm(fleet warmPoolModelSnapshot, pressure wa
 	// migration where desired+previous Gemma builds are both catalog-allowed, only
 	// the build actually receiving traffic gets the whole pool, not the stale one
 	// (which would otherwise burn model slots/memory and evict the live build).
-	// Bounded by warm+eligibleCold; the per-tick ramp still throttles the load rate.
+	// The whole pool is maxReachable (warm + in flight + eligible cold); the
+	// per-tick ramp still throttles the load rate.
 	if c.registry != nil && c.registry.IsDedicatedModel(fleet.model) && in.DemandPressure {
-		if whole := fleet.warm + len(fleet.eligibleCold); whole > target {
+		if whole := in.maxReachable(); whole > target {
 			target = whole
 		}
 	}

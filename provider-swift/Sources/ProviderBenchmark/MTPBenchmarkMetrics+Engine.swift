@@ -31,7 +31,24 @@ extension MTPBenchmarkMetrics {
                     ewmaRoundWallTimeNanos: $0.ewmaWallTimeNanos,
                     totalRoundWallTimeNanos: $0.totalWallTimeNanos)
             },
-            totalRoundWallTimeNanos: value.totalRoundWallTimeNanos)
+            totalRoundWallTimeNanos: value.totalRoundWallTimeNanos,
+            // Host timestamps the engine already took; projecting them costs
+            // nothing and is what makes a per-stage round regression visible
+            // in the report instead of inferable from round deltas.
+            roundTiming: value.roundTiming.rounds > 0
+                ? MTPBenchmarkRoundTiming(
+                    rounds: value.roundTiming.rounds,
+                    hostGapNanos: value.roundTiming.hostGapNanos,
+                    captureNanos: value.roundTiming.captureNanos,
+                    draftBuildNanos: value.roundTiming.draftBuildNanos,
+                    verifyBuildNanos: value.roundTiming.verifyBuildNanos,
+                    submitNanos: value.roundTiming.submitNanos,
+                    packetWaitNanos: value.roundTiming.packetWaitNanos,
+                    acceptWalkNanos: value.roundTiming.acceptWalkNanos,
+                    rowFinalizeNanos: value.roundTiming.rowFinalizeNanos,
+                    minRoundNanos: value.roundTiming.minRoundNanos,
+                    maxRoundNanos: value.roundTiming.maxRoundNanos)
+                : nil)
     }
 }
 

@@ -146,7 +146,12 @@ public enum GemmaOptimizationEnvironment {
     ///
     /// - Parameter set: applies one key and returns `0` on success or the
     ///   failing `errno` otherwise.
-    static func apply(
+    /// Public so a second consumer can supply its own write rule. The
+    /// benchmark runner needs "fill in what nothing chose" rather than the
+    /// serving path's unconditional overwrite, and the alternative — copying
+    /// the projection table into `ProviderBenchmark` — is how bench and serve
+    /// drift apart.
+    public static func apply(
         _ settings: GemmaOptimizationSettings,
         context: Context = .serving,
         getenv: (String) -> String? = {

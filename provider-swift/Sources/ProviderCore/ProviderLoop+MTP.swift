@@ -3,14 +3,26 @@ import Foundation
 extension ProviderLoop {
     static let specDecCatalogPrewarmTimeout: Duration = .seconds(2)
 
+    /// A drafter path counts as a declaration only when it is actually a path.
+    /// An empty or whitespace key is an absent one, exactly as the funnel and
+    /// the catalog prewarm already read it.
+    static func declaresDrafterPath(_ path: String?) -> Bool {
+        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !path.isEmpty
+    }
+
     /// Warm the in-process target-to-assistant metadata map before any startup
     /// preload or unified-local request can construct a target slot. This does
     /// not download assistant bytes and is bounded/fail-open; every ordinary
     /// load remains a local-only catalog-cache/artifact-cache consultation.
     ///
     /// Only `mtp_mode = "on"` prewarms: catalog metadata exists to pair
-    /// separately published assistants, and `auto` activates only embedded
-    /// heads, which resolve from the checkpoint itself without any catalog.
+    /// separately published assistants from the network, and `auto` activates
+    /// only what is already declared locally — an embedded head in the
+    /// checkpoint, or an operator-named `mtp_drafter_path`. Both resolve
+    /// without any catalog, so `auto` must not start pulling one.
     func prewarmSpecDecCatalog() async {
         let backend = loopConfig.config.backend
         guard backend.mtpMode == .on,
@@ -54,7 +66,9 @@ extension ProviderLoop {
                 modelType: modelInfo.modelType,
                 enabled: loopConfig.config.backend.mtpMode.enablesMTP(
                     forModelType: modelInfo.modelType,
-                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact),
+                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact,
+                    drafterPathDeclared: Self.declaresDrafterPath(
+                        loopConfig.config.backend.mtpDrafterPath)),
                 localPath: loopConfig.config.backend.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 inlineDeclaration: inlineDeclaration,

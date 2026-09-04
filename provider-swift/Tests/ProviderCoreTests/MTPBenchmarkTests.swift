@@ -1303,6 +1303,256 @@ struct MTPBenchmarkTests {
             Issue.record("unexpected deadline error: \(error)")
         }
     }
+
+    @Test("recorded parity keeps measuring and names the first divergence")
+    func recordedParityKeepsMeasuring() async throws {
+        let artifact = testArtifact()
+        let fixedMetrics = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            selectedDepth: 0,
+            decodeRowBucket: 1,
+            depthSelections: ["0": 1])
+        // Target-only emits 9; the MTP arm emits 7 at the same length. Under
+        // `.enforce` this aborts (covered by parityMismatchCannotCertify);
+        // under `.record` it is a measured, reported divergence.
+        let sessions = MTPBenchmarkSessionFactory { mode, _ in
+            if mode.kind == .targetOnly {
+                return MTPBenchmarkSession(
+                    engine: SameTokenLengthEngine(token: 9)) { .inactive }
+            }
+            return MTPBenchmarkSession(
+                engine: SameTokenLengthEngine(token: 7)) { fixedMetrics }
+        }
+        let report = try await MTPBenchmarkRunner.run(
+            target: artifact,
+            assistant: artifact,
+            hardware: testHardware(),
+            configuration: MTPBenchmarkConfiguration(
+                prompts: [.init(name: "prompt", tokenIDs: [1])],
+                batchSizes: [1],
+                modes: [.targetOnly, try .fixed(verificationWidth: 1)],
+                maxTokensPerRow: 1,
+                purpose: .rawParityStress,
+                stopPolicy: .rawFixedLength,
+                parityPolicy: .record,
+                deadline: .seconds(60)),
+            sessions: sessions)
+        #expect(report.parityPolicy == .record)
+        #expect(report.promptTokenCounts == [1])
+        let baseline = try #require(report.cases.first { $0.mode.kind == .targetOnly })
+        #expect(baseline.tokenParity)
+        #expect(baseline.parityDivergences.isEmpty)
+        let candidate = try #require(report.cases.first { $0.mode.kind == .fixed })
+        #expect(!candidate.tokenParity)
+        #expect(candidate.parityMismatchRows == [0])
+        #expect(candidate.repetitionStable)
+        let divergence = try #require(candidate.parityDivergences.first)
+        #expect(divergence.row == 0)
+        #expect(divergence.firstDivergenceIndex == 0)
+        #expect(divergence.baselineTokenCount == 1)
+        #expect(divergence.candidateTokenCount == 1)
+    }
+
+    @Test("recorded parity still refuses to invent a missing baseline")
+    func recordedParityStillNeedsBaseline() async throws {
+        let artifact = testArtifact()
+        let sessions = MTPBenchmarkSessionFactory { _, _ in
+            MTPBenchmarkSession(engine: SameTokenLengthEngine(token: 9)) { .inactive }
+        }
+        await #expect(throws: MTPBenchmarkError.self) {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: MTPBenchmarkConfiguration(
+                    prompts: [.init(name: "prompt", tokenIDs: [1])],
+                    batchSizes: [1],
+                    modes: [try .fixed(verificationWidth: 1)],
+                    maxTokensPerRow: 1,
+                    purpose: .rawParityStress,
+                    stopPolicy: .rawFixedLength,
+                    parityPolicy: .record,
+                    deadline: .seconds(60)),
+                sessions: sessions)
+        }
+    }
+
+    @Test("fixed-length performance sweeps are opt-in, never the default")
+    func rawFixedLengthPerformanceIsOptIn() async throws {
+        let artifact = testArtifact()
+        let sessions = MTPBenchmarkSessionFactory { _, _ in
+            MTPBenchmarkSession(engine: SuccessfulLengthEngine()) { .inactive }
+        }
+        func configuration(allowing: Bool) -> MTPBenchmarkConfiguration {
+            MTPBenchmarkConfiguration(
+                prompts: [.init(name: "prompt", tokenIDs: [1])],
+                batchSizes: [1],
+                modes: [.targetOnly],
+                maxTokensPerRow: 1,
+                purpose: .productionPerformance,
+                stopPolicy: .rawFixedLength,
+                allowsRawFixedLengthPerformance: allowing,
+                deadline: .seconds(60))
+        }
+        do {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: configuration(allowing: false),
+                sessions: sessions)
+            Issue.record("a performance run silently dropped the production stop policy")
+        } catch let error as MTPBenchmarkError {
+            #expect(error.description.contains("allowsRawFixedLengthPerformance"))
+        }
+        #if !DEBUG
+        let report = try await MTPBenchmarkRunner.run(
+            target: artifact,
+            assistant: artifact,
+            hardware: testHardware(),
+            configuration: configuration(allowing: true),
+            sessions: sessions)
+        // An opted-in fixed-length sweep measures throughput but must NOT
+        // claim the production serving-stop gate.
+        #expect(report.coverage.productionServingStopPolicy == .notInThisReport)
+        #expect(report.cases.first?.medianAggregateDecodeTokensPerSecond != nil)
+        #endif
+    }
+
+    /// A stand-in tokenizer: the chat template contributes `head` tokens in
+    /// front and `tail` behind, the instruction is `instruction` tokens, and
+    /// one filler unit is `perUnit` tokens. No real tokenizer needed to pin
+    /// the arithmetic the builder depends on.
+    private func fakeTemplated(
+        head: Int, tail: Int, instruction: Int, perUnit: Int,
+        units: Int, includeInstruction: Bool = true
+    ) -> [Int] {
+        var tokens = Array(repeating: -1, count: head)
+        tokens += Array(repeating: 7, count: units * perUnit)
+        if includeInstruction { tokens += Array(repeating: 9, count: instruction) }
+        tokens += Array(repeating: -2, count: tail)
+        return tokens
+    }
+
+    @Test("the template's shape is measured from probes, never assumed")
+    func syntheticPromptMeasuresTheTemplate() {
+        for (head, tail, instruction, perUnit) in [
+            (5, 3, 60, 350), (1, 1, 1, 1), (40, 12, 7, 3), (0, 0, 25, 100),
+        ] {
+            let shape = MTPBenchmarkSyntheticPrompt.templateShape(
+                noInstruction: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 0, includeInstruction: false),
+                zeroUnits: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 0),
+                oneUnit: fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: 1))
+            #expect(shape.instructionTokens == instruction)
+            #expect(shape.tokensPerFillerUnit == perUnit)
+            // Head/tail may only ever be OVER-protected (a filler or
+            // instruction token that happens to equal a template token widens
+            // the protected region), never under-protected.
+            #expect(shape.templateHead >= head)
+            #expect(shape.templateTail >= tail)
+        }
+    }
+
+    @Test("an exact prompt is produced at every length, from the template minimum up")
+    func syntheticPromptIsExactAtEveryLength() throws {
+        let (head, tail, instruction, perUnit) = (5, 3, 60, 350)
+        let shape = MTPBenchmarkSyntheticPrompt.templateShape(
+            noInstruction: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0, includeInstruction: false),
+            zeroUnits: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0),
+            oneUnit: fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 1))
+        // Three orders of magnitude plus both boundaries. Nothing in the
+        // builder is allowed to prefer one of these sizes.
+        for target in [shape.minimumTokens, 20, 70, 64, 512, 1024, 17408, 65536] {
+            var units = 0
+            var tokens = fakeTemplated(
+                head: head, tail: tail, instruction: instruction,
+                perUnit: perUnit, units: 0)
+            var attempts = 0
+            while tokens.count < target, attempts < 64 {
+                units += MTPBenchmarkSyntheticPrompt.fillerUnits(
+                    forTarget: target, shape: shape, alreadyProduced: tokens.count)
+                tokens = fakeTemplated(
+                    head: head, tail: tail, instruction: instruction,
+                    perUnit: perUnit, units: units)
+                attempts += 1
+            }
+            // One measured step is always enough.
+            #expect(attempts <= 1)
+            let prompt = try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens,
+                target: target,
+                removableInPriorityOrder: MTPBenchmarkSyntheticPrompt.removableRanges(
+                    promptTokens: tokens.count, shape: shape))
+            #expect(prompt.count == target)
+            // The chat template's own control tokens survive at EVERY length —
+            // that is what keeps a 20-token prompt a valid turn.
+            #expect(Array(prompt.prefix(head)) == Array(repeating: -1, count: head))
+            #expect(Array(prompt.suffix(tail)) == Array(repeating: -2, count: tail))
+            // Filler is spent before the instruction: any prompt with room for
+            // both keeps the whole instruction.
+            if target >= shape.minimumTokens + instruction {
+                #expect(prompt.filter { $0 == 9 }.count == instruction)
+            }
+        }
+    }
+
+    @Test("below the template minimum the builder refuses instead of inventing")
+    func syntheticPromptRefusesBelowTheTemplateMinimum() throws {
+        let tokens = Array(0..<500)
+        let ranges = [10..<400]
+        #expect(try MTPBenchmarkSyntheticPrompt.trimmed(
+            tokenIDs: tokens, target: 500, removableInPriorityOrder: ranges) == tokens)
+        let trimmed = try MTPBenchmarkSyntheticPrompt.trimmed(
+            tokenIDs: tokens, target: 400, removableInPriorityOrder: ranges)
+        #expect(trimmed.count == 400)
+        #expect(Array(trimmed.prefix(10)) == Array(tokens.prefix(10)))
+        #expect(Array(trimmed.suffix(100)) == Array(tokens.suffix(100)))
+        // Asking for more than the prompt has, or for fewer tokens than the
+        // removable regions can absorb, is refused with both numbers named
+        // rather than silently cutting the template.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 501, removableInPriorityOrder: ranges)
+        }
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 5, removableInPriorityOrder: ranges)
+        }
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens, target: 400,
+                removableInPriorityOrder: [200..<300, 100..<150])
+        }
+    }
+
+    @Test("long-context coverage is claimed only when the prompts are long")
+    func longContextCoverageIsEarned() throws {
+        let artifact = testArtifact()
+        let short = MTPBenchmarkCoverage.shortContextMatrix(
+            target: artifact, assistant: artifact, purpose: .productionPerformance)
+        #expect(short.longSlidingAndPrefixContexts == .notImplemented)
+        let long = MTPBenchmarkCoverage.shortContextMatrix(
+            target: artifact,
+            assistant: artifact,
+            purpose: .productionPerformance,
+            longContext: true)
+        #expect(long.longSlidingAndPrefixContexts == .covered)
+    }
+
 }
 
 private final class TerminalErrorEngine: CBv2Engine, @unchecked Sendable {

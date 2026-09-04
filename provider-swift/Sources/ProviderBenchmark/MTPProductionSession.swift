@@ -153,6 +153,148 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         return MTPBenchmarkPrompt(name: name, tokenIDs: tokens)
     }
 
+    /// One chat turn of exactly `totalTokens` prompt tokens, at ANY
+    /// `totalTokens`, ending in a continuation instruction. `variant` rotates
+    /// the content so a multi-row batch does not submit identical prompts
+    /// (identical prompts route to identical experts and understate MoE
+    /// traffic).
+    ///
+    /// Nothing is tuned to a prompt size. Three probe tokenizations of this
+    /// tokenizer's own chat template measure the template's head, its tail,
+    /// the instruction's length, and the tokens one filler unit is worth; the
+    /// body is then sized from that measured slope and trimmed to the exact
+    /// count from inside regions those measurements identify. The chat
+    /// template's control tokens are never in a trimmable region, so the
+    /// result is a well-formed turn from the template's own minimum length up
+    /// to the full context window, and the instruction is only ever eaten into
+    /// when the request is too short to hold it.
+    public func syntheticPrompt(
+        name: String,
+        totalTokens: Int,
+        variant: Int = 0
+    ) throws -> MTPBenchmarkPrompt {
+        guard totalTokens > 0 else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "totalTokens must be positive, got \(totalTokens)")
+        }
+        func templated(fillerUnits: Int, includeInstruction: Bool = true) throws -> [Int] {
+            let messages: [[String: any Sendable]] = [[
+                "role": "user",
+                "content": MTPBenchmarkSyntheticPrompt.body(
+                    fillerUnits: fillerUnits,
+                    variant: variant,
+                    includeInstruction: includeInstruction),
+            ]]
+            return try tokenize(name: name, messages: messages).tokenIDs
+        }
+        let noInstruction = try templated(fillerUnits: 0, includeInstruction: false)
+        let zeroUnits = try templated(fillerUnits: 0)
+        let oneUnit = try templated(fillerUnits: 1)
+        let shape = MTPBenchmarkSyntheticPrompt.templateShape(
+            noInstruction: noInstruction, zeroUnits: zeroUnits, oneUnit: oneUnit)
+        guard totalTokens >= shape.minimumTokens else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "\(totalTokens) tokens is below this chat template's minimum well-formed "
+                    + "turn of \(shape.minimumTokens) tokens")
+        }
+
+        var tokens = zeroUnits
+        var units = 0
+        var attempts = 0
+        // The slope is measured, so this converges in one step for any target;
+        // the bound only stops a pathological tokenizer from looping forever.
+        while tokens.count < totalTokens, attempts < 64 {
+            units += MTPBenchmarkSyntheticPrompt.fillerUnits(
+                forTarget: totalTokens, shape: shape, alreadyProduced: tokens.count)
+            tokens = try templated(fillerUnits: units)
+            attempts += 1
+        }
+        guard tokens.count >= totalTokens else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "could not grow the templated prompt to \(totalTokens) tokens "
+                    + "(reached \(tokens.count) with \(units) filler units)")
+        }
+        return MTPBenchmarkPrompt(
+            name: name,
+            tokenIDs: try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens,
+                target: totalTokens,
+                removableInPriorityOrder: MTPBenchmarkSyntheticPrompt.removableRanges(
+                    promptTokens: tokens.count, shape: shape)))
+    }
+
+    /// One chat turn of exactly `totalTokens` prompt tokens whose body is REAL
+    /// TEXT supplied by the caller, at any `totalTokens` and for any file.
+    ///
+    /// A4b measured the benchmark's synthetic filler at 0.65 acceptance on a
+    /// 512-token prompt and 0.66 at 17,408, against 0.91 on the product's real
+    /// chat prompts — the same number at both lengths, so what the filler was
+    /// measuring was the filler. Any MTP number that is meant to describe
+    /// production has to come from text a model can actually predict.
+    ///
+    /// Sizing is the same measured machinery the synthetic path uses, with two
+    /// probes instead of three because a real document supplies its own
+    /// ending and needs no instruction appended: an empty-bodied templated
+    /// prompt and a one-copy one differ only in the body, so their common
+    /// prefix and suffix are the template's head and tail. A file longer than
+    /// the target is trimmed inside that measured region; a shorter one is
+    /// repeated with a separator that names the part. Nothing here is tied to
+    /// a prompt size, a file, or a tokenizer.
+    public func filePrompt(
+        name: String,
+        totalTokens: Int,
+        text: String,
+        variant: Int = 0
+    ) throws -> MTPBenchmarkPrompt {
+        guard totalTokens > 0 else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "totalTokens must be positive, got \(totalTokens)")
+        }
+        guard !text.isEmpty else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt("prompt file is empty")
+        }
+        func templated(copies: Int) throws -> [Int] {
+            let messages: [[String: any Sendable]] = [[
+                "role": "user",
+                "content": MTPBenchmarkSyntheticPrompt.fileBody(
+                    text: text, copies: copies, variant: variant),
+            ]]
+            return try tokenize(name: name, messages: messages).tokenIDs
+        }
+        let empty = try templated(copies: 0)
+        let oneCopy = try templated(copies: 1)
+        let bounds = MTPBenchmarkSyntheticPrompt.bodyBounds(empty: empty, oneCopy: oneCopy)
+        guard totalTokens >= bounds.minimumTokens else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "\(totalTokens) tokens is below this chat template's minimum well-formed "
+                    + "turn of \(bounds.minimumTokens) tokens")
+        }
+
+        var tokens = oneCopy
+        var copies = 1
+        var attempts = 0
+        // The slope is measured, so this converges in one step for any target
+        // and any file; the bound only stops a pathological tokenizer looping.
+        while tokens.count < totalTokens, attempts < 64 {
+            copies += MTPBenchmarkSyntheticPrompt.copies(
+                forTarget: totalTokens, bounds: bounds, alreadyProduced: tokens.count)
+            tokens = try templated(copies: copies)
+            attempts += 1
+        }
+        guard tokens.count >= totalTokens else {
+            throw MTPBenchmarkError.invalidSyntheticPrompt(
+                "could not grow the prompt file to \(totalTokens) tokens "
+                    + "(reached \(tokens.count) with \(copies) copies)")
+        }
+        return MTPBenchmarkPrompt(
+            name: name,
+            tokenIDs: try MTPBenchmarkSyntheticPrompt.trimmed(
+                tokenIDs: tokens,
+                target: totalTokens,
+                removableInPriorityOrder: MTPBenchmarkSyntheticPrompt.bodyRegion(
+                    promptTokens: tokens.count, bounds: bounds)))
+    }
+
     public func makeSessionFactory() -> MTPBenchmarkSessionFactory {
         MTPBenchmarkSessionFactory { [self] mode, batchSize in
             try await self.makeSession(mode: mode, batchSize: batchSize)

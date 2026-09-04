@@ -20,7 +20,9 @@ extension StandaloneServer {
                 modelType: modelInfo.modelType,
                 enabled: config.mtpMode.enablesMTP(
                     forModelType: modelInfo.modelType,
-                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact),
+                    embeddedArtifactDeclared: inlineDeclaration.mayDeclareEmbeddedArtifact,
+                    drafterPathDeclared: ProviderLoop.declaresDrafterPath(
+                        config.mtpDrafterPath)),
                 localPath: config.mtpDrafterPath,
                 modelDirectory: modelDirectory,
                 inlineDeclaration: inlineDeclaration,

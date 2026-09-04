@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MLXLMCommon
 import ProviderCore
@@ -51,6 +52,22 @@ public struct MTPBenchmarkConfiguration: Sendable {
     public let adaptiveDraftingBatchSizes: Set<Int>
     public let allowedSkipReasons: Set<String>
     public let runFingerprint: String
+    /// `.enforce` aborts the run on the first divergence from the target-only
+    /// baseline; `.record` writes the divergence into the case and keeps
+    /// measuring. See `MTPBenchmarkParityPolicy`.
+    public let parityPolicy: MTPBenchmarkParityPolicy
+    /// Opt-in escape from the purpose/stop-policy pairing: a performance sweep
+    /// may run the raw fixed-length policy so every arm emits exactly
+    /// `maxTokensPerRow` tokens and the tok/s numbers are comparable across
+    /// modes that would otherwise stop at different EOS positions. Off by
+    /// default — a certification run must carry the production stop set.
+    public let allowsRawFixedLengthPerformance: Bool
+    /// Declares that every prompt crosses the target's sliding window, so the
+    /// report's long-context coverage gate may say `covered`.
+    public let longContextEvidence: Bool
+    /// `synthetic` or `file`; recorded so two reports are only compared when
+    /// their prompt bodies came from the same kind of source.
+    public let promptSource: String
     public let checkpointDestination: MTPBenchmarkReportDestination?
     /// Elapsed run budget checked around factory creation, submission,
     /// consumption, and shutdown. Synchronous MLX calls are not safely
@@ -72,6 +89,10 @@ public struct MTPBenchmarkConfiguration: Sendable {
         adaptiveDraftingBatchSizes: Set<Int>? = nil,
         allowedSkipReasons: Set<String> = [],
         runFingerprint: String = UUID().uuidString,
+        parityPolicy: MTPBenchmarkParityPolicy = .enforce,
+        allowsRawFixedLengthPerformance: Bool = false,
+        longContextEvidence: Bool = false,
+        promptSource: String = "synthetic",
         checkpointDestination: MTPBenchmarkReportDestination? = nil,
         deadline: Duration = .seconds(3600)
     ) {
@@ -88,6 +109,10 @@ public struct MTPBenchmarkConfiguration: Sendable {
         self.adaptiveDraftingBatchSizes = adaptiveDraftingBatchSizes ?? Set(batchSizes)
         self.allowedSkipReasons = allowedSkipReasons
         self.runFingerprint = runFingerprint
+        self.parityPolicy = parityPolicy
+        self.allowsRawFixedLengthPerformance = allowsRawFixedLengthPerformance
+        self.longContextEvidence = longContextEvidence
+        self.promptSource = promptSource
         self.checkpointDestination = checkpointDestination
         self.deadline = deadline
     }
@@ -139,13 +164,25 @@ public enum MTPBenchmarkRunner {
     ) async throws -> MTPBenchmarkReport {
         let startedAt = ContinuousClock.now
         let startedDate = Date()
+        // The benchmark process must be the SERVING process, environment
+        // included. It was not: nothing here applied
+        // `GemmaOptimizationEnvironment`, so every arm ran with
+        // MLX_MAX_MB_PER_BUFFER unset -- 50 MB on an M5 Max -- while the serve
+        // path projects 500. MLX reads that once, at first Metal device
+        // construction, so it has to be set before the model loads, which is
+        // why this is the first statement of the run.
+        let effectiveMaxMBPerBuffer = applyServingEnvironment()
         try validate(configuration)
         try validateArtifactBoundary(target, label: "target")
         try validateArtifactBoundary(assistant, label: "assistant")
 
         let deadlineAt = startedAt + configuration.deadline
         let coverage = MTPBenchmarkCoverage.shortContextMatrix(
-            target: target, assistant: assistant, purpose: configuration.purpose)
+            target: target,
+            assistant: assistant,
+            purpose: configuration.purpose,
+            productionStopPolicy: configuration.stopPolicy.kind == .productionTargetEOS,
+            longContext: configuration.longContextEvidence)
         let orderedCases = caseOrder(configuration: configuration)
         let tokenEvidenceSalt = MTPBenchmarkDigest.randomSalt()
         var results: [MTPBenchmarkCaseResult] = []
@@ -159,6 +196,9 @@ public enum MTPBenchmarkRunner {
                 purpose: configuration.purpose,
                 mtpExpectation: configuration.mtpExpectation,
                 stopPolicy: configuration.stopPolicy,
+                parityPolicy: configuration.parityPolicy,
+                promptTokenCounts: configuration.prompts.map { $0.tokenIDs.count },
+                promptSource: configuration.promptSource,
                 startedAt: startedDate,
                 completedAt: complete ? Date() : nil,
                 complete: complete,
@@ -172,11 +212,24 @@ public enum MTPBenchmarkRunner {
                 modeOrderSeed: configuration.modeOrderSeed,
                 coverage: coverage,
                 elapsedMs: milliseconds(ContinuousClock.now - startedAt),
+                preCaseCommand: Self.preCaseCommand,
+                mlxMaxMBPerBuffer: effectiveMaxMBPerBuffer,
                 cases: results)
         }
 
+        let preCaseCommand = Self.preCaseCommand
         for key in orderedCases {
             try requireBeforeDeadline(deadlineAt)
+            // THE TEST specifies a 40 C thermal hold. The arm runner holds
+            // before each ARM, but every case of this matrix runs inside one
+            // process, so without this nothing holds between cases: the depth
+            // sweep ran 7 modes x (1 warmup + 3 reps) back to back for 5.2
+            // minutes and the later modes measured hotter than the earlier
+            // ones. The hold has to happen here, where the cases iterate, and
+            // before the warmup rather than before the measured repetitions —
+            // the warmup heats the part too.
+            let preCaseExit = runPreCaseCommand(
+                preCaseCommand, caseLabel: "\(key.mode.label) B=\(key.batchSize)")
             for _ in 0..<configuration.warmupIterations {
                 _ = try await runSample(
                     key: key,
@@ -192,11 +245,17 @@ public enum MTPBenchmarkRunner {
                     deadlineAt: deadlineAt,
                     sessions: sessions))
             }
-            try validateRepetitionConsistency(samples, key: key)
+            let repetitionStable = repetitionsAgree(samples)
+            if !repetitionStable, configuration.parityPolicy == .enforce {
+                throw MTPBenchmarkError.inconsistentRepetition(
+                    "\(key.mode.label), B=\(key.batchSize) changed tokens, prompts, "
+                        + "or terminal reason")
+            }
 
             let sampleTokens = samples.map { $0.batch.rows.map(\.tokenIDs) }
             let sampleReasons = samples.map { $0.batch.rows.map(\.finishReason) }
             let canonicalTokens = sampleTokens[0]
+            var divergences: [MTPBenchmarkParityDivergence] = []
             if key.mode.kind == .targetOnly {
                 baselineTokens[key.batchSize] = canonicalTokens
                 baselineFinishReasons[key.batchSize] = sampleReasons[0]
@@ -206,26 +265,34 @@ public enum MTPBenchmarkRunner {
                 else {
                     throw MTPBenchmarkError.missingTargetOnlyBaseline
                 }
-                for tokens in sampleTokens {
-                    let mismatches = parityMismatches(baseline: baseline, candidate: tokens)
-                    guard mismatches.isEmpty, baseline.count == tokens.count else {
-                        throw MTPBenchmarkError.tokenParityMismatch(
-                            mode: key.mode.label,
-                            batchSize: key.batchSize,
-                            rows: mismatches)
-                    }
-                }
                 // Identical tokens with a different terminal reason is still
                 // an OpenAI-visible behavior divergence (for example EOS
                 // exactly at the budget reported as "stop" by target-only but
                 // "length" by MTP). Parity certifies both.
-                for reasons in sampleReasons where reasons != baselineReasons {
-                    let rows = zip(reasons, baselineReasons).enumerated()
-                        .filter { $0.element.0 != $0.element.1 }
-                        .map(\.offset)
+                divergences = parityDivergences(
+                    baselineTokens: baseline,
+                    baselineFinishReasons: baselineReasons,
+                    sampleTokens: sampleTokens,
+                    sampleFinishReasons: sampleReasons)
+                if !divergences.isEmpty, configuration.parityPolicy == .enforce {
+                    // A row whose streams are the same length with no differing
+                    // position emitted identical tokens: the divergence is the
+                    // terminal reason alone, which is its own OpenAI-visible
+                    // defect and reads nothing like a parity break.
+                    let tokenRows = divergences.filter {
+                        !($0.firstDivergenceIndex == nil
+                            && $0.baselineTokenCount == $0.candidateTokenCount)
+                    }
+                    guard tokenRows.isEmpty else {
+                        throw MTPBenchmarkError.tokenParityMismatch(
+                            mode: key.mode.label,
+                            batchSize: key.batchSize,
+                            rows: tokenRows.map(\.row))
+                    }
                     throw MTPBenchmarkError.invalidMetrics(
                         "\(key.mode.label), B=\(key.batchSize) finish reasons diverge "
-                            + "from the target-only baseline at rows \(rows)")
+                            + "from the target-only baseline at rows "
+                            + "\(divergences.map(\.row))")
                 }
             }
 
@@ -233,7 +300,10 @@ public enum MTPBenchmarkRunner {
                 samples: samples,
                 key: key,
                 performanceEligible: configuration.purpose.performanceEligible,
-                tokenEvidenceSalt: tokenEvidenceSalt))
+                tokenEvidenceSalt: tokenEvidenceSalt,
+                divergences: divergences,
+                repetitionStable: repetitionStable,
+                preCaseExit: preCaseExit))
             if let checkpointDestination = configuration.checkpointDestination {
                 try requireBeforeDeadline(deadlineAt)
                 try report(complete: false).write(to: checkpointDestination)
@@ -302,6 +372,21 @@ public enum MTPBenchmarkRunner {
             guard configuration.stopPolicy.stopTokenIDs.isEmpty else {
                 throw MTPBenchmarkError.invalidStopPolicy(
                     "raw parity must not carry stop token IDs")
+            }
+        case (.productionPerformance, .rawFixedLengthNoStop):
+            // Opt-in only. A fixed-length performance sweep makes every arm
+            // emit exactly maxTokensPerRow tokens, so tok/s is not confounded
+            // by arms stopping at different EOS positions. It certifies
+            // nothing about production stop behaviour, which is why the
+            // configuration has to ask for it by name.
+            guard configuration.allowsRawFixedLengthPerformance else {
+                throw MTPBenchmarkError.invalidStopPolicy(
+                    "production performance requires the production stop policy "
+                        + "unless allowsRawFixedLengthPerformance is set")
+            }
+            guard configuration.stopPolicy.stopTokenIDs.isEmpty else {
+                throw MTPBenchmarkError.invalidStopPolicy(
+                    "raw fixed length must not carry stop token IDs")
             }
         case (.productionCorrectness, .productionTargetEOS),
              (.productionPerformance, .productionTargetEOS):
@@ -675,7 +760,9 @@ public enum MTPBenchmarkRunner {
               metrics.costInputs.isEmpty,
               metrics.totalRoundWallTimeNanos == nil,
               metrics.assistantTimeNanos == nil,
-              metrics.targetVerifyTimeNanos == nil
+              metrics.targetVerifyTimeNanos == nil,
+              // A round that never ran cannot have per-stage round timing.
+              metrics.roundTiming == nil
         else {
             throw MTPBenchmarkError.invalidMetrics(
                 "\(context) reported speculative work")
@@ -914,30 +1001,70 @@ public enum MTPBenchmarkRunner {
             finishReason: finishReason)
     }
 
-    private static func validateRepetitionConsistency(
-        _ samples: [CaseSample],
-        key: CaseKey
-    ) throws {
-        guard let first = samples.first else {
-            throw MTPBenchmarkError.invalidMeasurementRepetitions(0)
-        }
+    /// True when every measurement repetition emitted the same prompts,
+    /// tokens, and terminal reasons.
+    private static func repetitionsAgree(_ samples: [CaseSample]) -> Bool {
+        guard let first = samples.first else { return false }
         let expected = first.batch.rows.map { ($0.promptName, $0.tokenIDs, $0.finishReason) }
         for sample in samples.dropFirst() {
             let actual = sample.batch.rows.map { ($0.promptName, $0.tokenIDs, $0.finishReason) }
             guard actual.elementsEqual(expected, by: {
                 $0.0 == $1.0 && $0.1 == $1.1 && $0.2 == $1.2
-            }) else {
-                throw MTPBenchmarkError.inconsistentRepetition(
-                    "\(key.mode.label), B=\(key.batchSize) changed tokens, prompts, or terminal reason")
+            }) else { return false }
+        }
+        return true
+    }
+
+    /// Every row that left the target-only baseline in ANY repetition, with the
+    /// earliest emitted-token position at which it did. A row whose stream is a
+    /// strict prefix of the baseline (or vice versa) reports a nil index and is
+    /// identified by the two token counts. Row counts that disagree are
+    /// themselves a divergence, reported against the rows that exist.
+    static func parityDivergences(
+        baselineTokens: [[Int]],
+        baselineFinishReasons: [String],
+        sampleTokens: [[[Int]]],
+        sampleFinishReasons: [[String]]
+    ) -> [MTPBenchmarkParityDivergence] {
+        var byRow: [Int: MTPBenchmarkParityDivergence] = [:]
+        for (tokens, reasons) in zip(sampleTokens, sampleFinishReasons) {
+            let rowCount = max(baselineTokens.count, tokens.count)
+            for row in 0..<rowCount {
+                let base = row < baselineTokens.count ? baselineTokens[row] : []
+                let candidate = row < tokens.count ? tokens[row] : []
+                let baseReason = row < baselineFinishReasons.count
+                    ? baselineFinishReasons[row] : "missing"
+                let candidateReason = row < reasons.count ? reasons[row] : "missing"
+                guard base != candidate || baseReason != candidateReason else { continue }
+                let firstIndex = (0..<min(base.count, candidate.count))
+                    .first { base[$0] != candidate[$0] }
+                let divergence = MTPBenchmarkParityDivergence(
+                    row: row,
+                    firstDivergenceIndex: firstIndex,
+                    baselineTokenCount: base.count,
+                    candidateTokenCount: candidate.count,
+                    baselineFinishReason: baseReason,
+                    candidateFinishReason: candidateReason)
+                if let existing = byRow[row] {
+                    let existingIndex = existing.firstDivergenceIndex ?? Int.max
+                    let newIndex = firstIndex ?? Int.max
+                    if newIndex < existingIndex { byRow[row] = divergence }
+                } else {
+                    byRow[row] = divergence
+                }
             }
         }
+        return byRow.keys.sorted().compactMap { byRow[$0] }
     }
 
     private static func aggregate(
         samples: [CaseSample],
         key: CaseKey,
         performanceEligible: Bool,
-        tokenEvidenceSalt: Data
+        tokenEvidenceSalt: Data,
+        divergences: [MTPBenchmarkParityDivergence],
+        repetitionStable: Bool,
+        preCaseExit: Int32?
     ) -> MTPBenchmarkCaseResult {
         let sortedSamples = samples.sorted {
             $0.batch.aggregateDecodeTokensPerSecond < $1.batch.aggregateDecodeTokensPerSecond
@@ -973,20 +1100,89 @@ public enum MTPBenchmarkRunner {
             medianAggregateDecodeTokensPerSecond: performanceEligible
                 ? median(samples.map { $0.batch.aggregateDecodeTokensPerSecond })
                 : nil,
-            tokenParity: true,
-            parityMismatchRows: [],
+            tokenParity: divergences.isEmpty,
+            parityMismatchRows: divergences.map(\.row),
+            parityDivergences: divergences,
+            repetitionStable: repetitionStable,
+            preCaseExit: preCaseExit,
             rows: rows,
             metrics: representative.metrics)
     }
 
-    private static func parityMismatches(
-        baseline: [[Int]], candidate: [[Int]]
-    ) -> [Int] {
-        let count = max(baseline.count, candidate.count)
-        return (0..<count).filter { row in
-            guard row < baseline.count, row < candidate.count else { return true }
-            return baseline[row] != candidate[row]
+    /// Project the serving environment into this process, then report the
+    /// effective `MLX_MAX_MB_PER_BUFFER`.
+    ///
+    /// The projection table is NOT duplicated here: this calls the provider's
+    /// own `apply`, so bench and serve can never drift apart by editing one of
+    /// two lists. What differs is the write rule. `apply` normally overwrites
+    /// (`setenv(..., 1)`), which would let the projection stomp a value an arm
+    /// set deliberately; the `set` closure below skips any key already present,
+    /// so an explicit arm setting always wins and the projection only fills in
+    /// what nothing chose.
+    private static func applyServingEnvironment() -> String? {
+        let key = GemmaOptimizationEnvironment.maxMBPerBufferKey
+        do {
+            try GemmaOptimizationEnvironment.apply(
+                GemmaOptimizationSettings(),
+                context: .serving,
+                set: { name, value, _ in
+                    let present = name.withCString { Darwin.getenv($0) } != nil
+                    guard !present else { return 0 }
+                    return value.withCString { raw in
+                        name.withCString { setenv($0, raw, 0) }
+                    }
+                })
+        } catch {
+            FileHandle.standardError.write(
+                Data("serving environment projection failed: \(error)\n".utf8))
         }
+        return ProcessInfo.processInfo.environment[key]
+    }
+
+    /// The per-case command, read once from `MTP_PRE_CASE_CMD`.
+    ///
+    /// An environment variable rather than a configuration field on purpose:
+    /// the matrix is launched by `swift test`, so there is no argument surface
+    /// between the arm script and this runner, and the wrapper already forwards
+    /// environment to the test subprocess.
+    static var preCaseCommand: String? {
+        guard let raw = ProcessInfo.processInfo.environment["MTP_PRE_CASE_CMD"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty
+        else { return nil }
+        return raw
+    }
+
+    /// Run the per-case command and return its exit status, or nil when none is
+    /// configured.
+    ///
+    /// A non-zero exit is REPORTED, not thrown. A thermal gate that times out
+    /// should leave a mark in the report and let the matrix finish; aborting a
+    /// 5-minute run because the part cooled slowly would lose the cases that
+    /// had already been measured correctly.
+    private static func runPreCaseCommand(
+        _ command: String?, caseLabel: String
+    ) -> Int32? {
+        guard let command else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        var environment = ProcessInfo.processInfo.environment
+        environment["MTP_CASE"] = caseLabel
+        process.environment = environment
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            FileHandle.standardError.write(
+                Data("pre-case command failed to launch for \(caseLabel): \(error)\n"
+                    .utf8))
+            return -1
+        }
+        let status = process.terminationStatus
+        FileHandle.standardError.write(
+            Data("pre-case command for \(caseLabel) exited \(status)\n".utf8))
+        return status
     }
 
     private static func validateArtifactBoundary(

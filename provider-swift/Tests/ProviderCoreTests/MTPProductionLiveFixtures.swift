@@ -53,8 +53,30 @@ enum MTPProductionLiveFixtures {
             modelID: assistantID, pathEnvironment: "DARKBLOOM_MTP_ASSISTANT_PATH")
     }
 
+    /// Default corpus: three short chat turns, the shape every certified MTP
+    /// matrix has used. When `DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS` is set the
+    /// corpus becomes N synthetic long prompts of exactly that token count —
+    /// THE TEST is one prompt of 17,408.
     static func prompts(bundle: MTPProductionModelBundle) throws -> [MTPBenchmarkPrompt] {
-        try [
+        if let promptTokens = benchmarkPromptTokens {
+            if let path = benchmarkPromptFile {
+                let text = try String(contentsOfFile: path, encoding: .utf8)
+                return try (0..<benchmarkPromptCount).map { index in
+                    try bundle.filePrompt(
+                        name: "file-\(promptTokens)-\(index)",
+                        totalTokens: promptTokens,
+                        text: text,
+                        variant: index)
+                }
+            }
+            return try (0..<benchmarkPromptCount).map { index in
+                try bundle.syntheticPrompt(
+                    name: "long-\(promptTokens)-\(index)",
+                    totalTokens: promptTokens,
+                    variant: index)
+            }
+        }
+        return try [
             bundle.tokenizeChat(
                 name: "code",
                 userPrompt: "Write a Swift function that returns the larger of two integers."),
@@ -65,6 +87,84 @@ enum MTPProductionLiveFixtures {
                 name: "arithmetic",
                 userPrompt: "What is 17 multiplied by 23? Reply with only the number."),
         ]
+    }
+
+    /// Exact prompt length in tokens for the synthetic long-context corpus.
+    /// Nil (unset) keeps the short chat corpus.
+    static var benchmarkPromptTokens: Int? {
+        guard let value = environment["DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS"],
+              let tokens = Int(value), tokens > 0
+        else { return nil }
+        return tokens
+    }
+
+    /// Real-text source for the prompt body. Requires
+    /// `DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS` — the file is sized to exactly
+    /// that many tokens.
+    static var benchmarkPromptFile: String? {
+        guard let value = environment["DARKBLOOM_MTP_BENCHMARK_PROMPT_FILE"],
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return value
+    }
+
+    static var benchmarkPromptSource: String {
+        benchmarkPromptFile == nil ? "synthetic" : "file"
+    }
+
+    static var benchmarkPromptCount: Int {
+        max(1, environment["DARKBLOOM_MTP_BENCHMARK_PROMPT_COUNT"].flatMap(Int.init) ?? 1)
+    }
+
+    /// Gemma 4 slides its local attention at 1,024 tokens, so any prompt at or
+    /// past that has actually exercised the sliding path the coverage gate
+    /// names. Below it the report must keep saying `not_implemented`.
+    static var benchmarkLongContextEvidence: Bool {
+        (benchmarkPromptTokens ?? 0) >= 1024
+    }
+
+    static var benchmarkBatchSizes: [Int] {
+        parseIntList(environment["DARKBLOOM_MTP_BENCHMARK_BATCH_SIZES"]) ?? [1, 2, 4, 8]
+    }
+
+    /// Fixed verification widths L to sweep (draft depth k = L-1). Target-only
+    /// is always the first case; adaptive is separately gated.
+    static var benchmarkVerificationWidths: [Int] {
+        parseIntList(environment["DARKBLOOM_MTP_BENCHMARK_WIDTHS"]) ?? Array(1...8)
+    }
+
+    static var benchmarkIncludesAdaptive: Bool {
+        guard let value = environment["DARKBLOOM_MTP_BENCHMARK_INCLUDE_ADAPTIVE"] else {
+            return true
+        }
+        return truthy(value)
+    }
+
+    static func benchmarkModes() throws -> [MTPBenchmarkMode] {
+        var modes: [MTPBenchmarkMode] = [.targetOnly]
+        for width in benchmarkVerificationWidths {
+            modes.append(try MTPBenchmarkMode.fixed(verificationWidth: width))
+        }
+        if benchmarkIncludesAdaptive { modes.append(.adaptive) }
+        return modes
+    }
+
+    static var benchmarkParityPolicy: MTPBenchmarkParityPolicy {
+        environment["DARKBLOOM_MTP_BENCHMARK_PARITY_POLICY"] == "record" ? .record : .enforce
+    }
+
+    /// `raw` runs a performance sweep on the fixed-length no-stop policy so
+    /// every arm emits exactly max-tokens tokens. Ignored outside
+    /// production-performance, where the stop policy is already raw.
+    static var benchmarkUsesRawStopPolicy: Bool {
+        environment["DARKBLOOM_MTP_BENCHMARK_STOP_POLICY"] == "raw"
+    }
+
+    private static func parseIntList(_ value: String?) -> [Int]? {
+        guard let value, !value.isEmpty else { return nil }
+        let parsed = value.split(separator: ",").compactMap { Int($0.trimmingCharacters(
+            in: .whitespaces)) }
+        return parsed.isEmpty ? nil : parsed
     }
 
     static func toolPrompt(bundle: MTPProductionModelBundle) throws -> MTPBenchmarkPrompt {
@@ -150,9 +250,9 @@ enum MTPProductionLiveFixtures {
     static func benchmarkStopPolicy(
         bundle: MTPProductionModelBundle
     ) -> MTPBenchmarkStopPolicy {
-        benchmarkPurpose == .rawParityStress
-            ? .rawFixedLength
-            : .production(tokenIDs: bundle.productionStopTokenIDs)
+        if benchmarkPurpose == .rawParityStress { return .rawFixedLength }
+        if benchmarkUsesRawStopPolicy { return .rawFixedLength }
+        return .production(tokenIDs: bundle.productionStopTokenIDs)
     }
 
     static var benchmarkWarmupIterations: Int {

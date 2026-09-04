@@ -44,10 +44,20 @@ func TestExpectedCompletionTokensForRouting(t *testing.T) {
 		t.Fatalf("warm/explicit below p90: expected=%d, want the bound 300", got)
 	}
 
-	// Kill switch: back to the cold rules.
+	// Kill switch: the pre-calibration cost byte-for-byte — the forwarded
+	// bound for omitted AND explicit max_tokens, even with a warm calibrator.
+	// (This pinned 256 before: the switch only disabled the learned value and
+	// left the cold default in place, so the documented rollback of the
+	// cold+absent ranking change required a deploy.)
 	t.Setenv("EIGENINFERENCE_COMPLETION_CALIBRATION", "off")
-	if got := srv.expectedCompletionTokensForRouting(model, map[string]any{"max_tokens": 8192}, false, 8192); got != 256 {
-		t.Fatalf("switch off/absent: expected=%d, want 256", got)
+	if got := srv.expectedCompletionTokensForRouting(model, map[string]any{"max_tokens": 8192}, false, 8192); got != 8192 {
+		t.Fatalf("switch off/absent: expected=%d, want the forwarded bound 8192", got)
+	}
+	if got := srv.expectedCompletionTokensForRouting(model, map[string]any{"max_tokens": 8192, "n": 3}, false, 8192*3); got != 8192*3 {
+		t.Fatalf("switch off/absent n=3: expected=%d, want the forwarded bound %d", got, 8192*3)
+	}
+	if got := srv.expectedCompletionTokensForRouting(model, map[string]any{"max_tokens": 300}, true, 300); got != 300 {
+		t.Fatalf("switch off/explicit: expected=%d, want 300", got)
 	}
 
 	// No registry (unit fixtures): cold rules.
@@ -177,6 +187,17 @@ func TestRoutingEstimatesFlowThroughDispatch(t *testing.T) {
 			t.Fatalf("seeded expected=%d, want 574", got)
 		}
 	}, 14_000, 15_000)
+
+	// Kill switch, at the production layer: the same warm calibrator and the
+	// same omitted-max_tokens request score the injected bound (8192 / 40 tok/s
+	// = 204,800 ms) — the rollback the rollout notes promise, without a deploy.
+	// Before the fix this ranked on the 256 cold default (6.4 s).
+	run(t, "omitted_max_tokens_kill_switch_scores_the_bound", func(t *testing.T, reg *registry.Registry, model string) {
+		for i := 0; i < 50; i++ {
+			reg.RecordCompletionObservation(model, 100+400*i/49)
+		}
+		t.Setenv("EIGENINFERENCE_COMPLETION_CALIBRATION", "off")
+	}, 204_000, 206_000)
 }
 
 // TestCompletionObservationsFeedCalibratorLive drives the REAL settlement

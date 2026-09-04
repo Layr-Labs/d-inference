@@ -43,10 +43,14 @@ import (
 //   - Warm-up: below completionCalibrationWarmupObs observations the estimate
 //     is requestedMax — today's behaviour.
 //   - Kill switch: EIGENINFERENCE_COMPLETION_CALIBRATION=off restores the
-//     pre-calibration cost byte-for-byte: expected() returns requestedMax and
-//     the scheduler seam (thisReqDecodeTokens) falls back to the bound. It is
-//     evaluated ONCE per request where the value is computed, never per
-//     candidate inside the fleet scan. Learning continues while off.
+//     pre-calibration cost byte-for-byte: expected() returns requestedMax,
+//     the consumer's routing glue (api/routing_estimates.go) returns the
+//     forwarded bound for explicit AND omitted max_tokens alike (never its
+//     256 × n cold default), and the scheduler seam (thisReqDecodeTokens)
+//     falls back to the bound. It is evaluated where the value is computed
+//     (at most twice per request: CompletionCalibrationEnabled plus
+//     expected()), never per candidate inside the fleet scan. Learning
+//     continues while off.
 //
 // Value field of Registry with a LEAF mutex and a lazily-created map
 // (quoteTracker idiom): safe for bare &Registry{} and never takes r.mu/p.mu.
@@ -153,6 +157,14 @@ func (c *completionCalibrator) expected(model string, requestedMax int) (int, bo
 // term that is always re-clamped to the bound.)
 func (r *Registry) RecordCompletionObservation(model string, completionTokens int) {
 	r.completionCal.record(model, completionTokens)
+}
+
+// CompletionCalibrationEnabled reports the live kill-switch state
+// (EIGENINFERENCE_COMPLETION_CALIBRATION, default on). The consumer's routing
+// glue consults it BEFORE its own cold defaults so that "off" means the
+// forwarded bound for every request, not just the ones with a learned value.
+func (r *Registry) CompletionCalibrationEnabled() bool {
+	return completionCalibrationEnabled()
 }
 
 // ExpectedCompletionTokens is the decode length the router should plan for:

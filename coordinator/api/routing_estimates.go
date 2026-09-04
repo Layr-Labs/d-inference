@@ -26,7 +26,11 @@ package api
 //     max_tokens no longer scores as if it will produce the whole 8–32K window.
 //     Note that the cold+absent case is itself a ranking change versus the
 //     injected bound (256 matches AssumedCompletionTokens); the kill switch
-//     (EIGENINFERENCE_COMPLETION_CALIBRATION=off) restores the bound.
+//     (EIGENINFERENCE_COMPLETION_CALIBRATION=off) restores the bound for
+//     explicit and omitted max_tokens alike — it is checked BEFORE the cold
+//     rules below, so an operator flipping it during an incident gets the
+//     pre-calibration ranking for the dominant omitted-max_tokens traffic
+//     without a deploy.
 
 import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -39,6 +43,11 @@ import (
 // caller before the injection.
 func (s *Server) expectedCompletionTokensForRouting(model string, parsed map[string]any, clientSetMaxTokens bool, forwardedMaxTokens int) int {
 	if s != nil && s.registry != nil {
+		if !s.registry.CompletionCalibrationEnabled() {
+			// Kill switch: the pre-calibration cost byte-for-byte, i.e. the
+			// forwarded bound — never the 256 × n cold default.
+			return forwardedMaxTokens
+		}
 		if expected, learned := s.registry.ExpectedCompletionTokensLearned(model, forwardedMaxTokens); learned {
 			return expected
 		}

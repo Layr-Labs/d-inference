@@ -233,7 +233,7 @@ self-reported); current application evidence when a release policy is enforced
 `dangerous_modules_blocked`, and `sip_enabled` in `PrivacyCapabilities` are
 wire-compatibility fields and are not consulted.
 
-| Level | Public routing (`minTrust = MinTrustLevel`, default `hardware`; `publiclyRoutableLocked`) | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
+| Level | Public routing — `publiclyRoutableLocked`, which is the liveness gate called with `minTrust = MinTrustLevel` (default `hardware`) and `allowPrivate = false` | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
 |---|---|---|
 | `none` | no (`GateTrustFloor`) | yes, if gates 1–2 and 5–7 pass |
 | `self_signed` | no (`GateTrustFloor`) | yes, same conditions |

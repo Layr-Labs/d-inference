@@ -4,9 +4,11 @@
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
-lint — and which CI workflow runs what. `make test` is the local equivalent of
-the unit-test half of CI; the e2e suite needs an Apple Silicon Mac with the
-test checkpoints cached.
+lint — and which CI workflow runs what. `make test` runs every unit suite plus
+the docs lint locally; CI runs a subset per pull request (see the CI workflow
+map: the console UI job lints and builds but does not run vitest, and the
+benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
+Mac with the test checkpoints cached.
 
 ## Prerequisites
 

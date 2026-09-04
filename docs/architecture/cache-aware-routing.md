@@ -106,9 +106,19 @@ block layout, or key) and on a whole-root wipe of an unloaded model root.
 Provider capacity eviction, TTL expiry, external-removal reconciliation, and
 corrupt-block drops keep the epoch, so holders for the surviving blocks stay
 valid and a heartbeat inside an unlink window keeps advertising the same
-capability. A holder for an evicted block is eventually consistent: it costs
-at most one discounted attempt (capped at 1,000 ms / 35% of cost) whose
-verified miss prunes it, or it expires with the holder TTL.
+capability. A holder for an evicted block is therefore stale until one of
+two things removes it: a verified miss at that boundary (`miss_absent` /
+`miss_corrupt`, which the provider reports only when NO leading run stages),
+or the holder TTL (`defaultCacheRoutingTTL`, 10 minutes). A partial hit does
+not prune: eviction at budget usually removes part of a chain, the next
+attempt stages a shorter leading run and reports `hit` with the shorter
+matched anchor, and the coordinator upserts only that boundary — the
+provider's holders for the longer boundaries survive to the TTL and keep
+earning the discount at the stale boundary on every attempt in between,
+capped at `defaultCacheRoutingMaxDiscountMs` (1,000 ms) / 35 % of the routing
+cost estimate (`defaultCacheRoutingMaxCostFraction`). Pruning this provider's
+longer-boundary holders on a shorter hit is a coordinator follow-up
+(prune-longer-on-hit) and a precondition for enabling cached routing.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Attempt and holder maps are memory-only, capped,

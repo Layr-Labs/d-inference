@@ -826,6 +826,11 @@ public struct MTPBenchmarkReport: Codable, Sendable {
     /// report states whether anything held between cases, instead of leaving
     /// the reader to infer it from the elapsed time.
     public let preCaseCommand: String?
+    /// `MLX_MAX_MB_PER_BUFFER` as this process actually saw it, after the
+    /// serving projection was applied. Nil means the variable was unset, which
+    /// is MLX's hardware default -- 50 MB on an M5 Max, against the 500 the
+    /// serve path projects. Every report before this field carried the 50.
+    public let mlxMaxMBPerBuffer: String?
     public let cases: [MTPBenchmarkCaseResult]
 
     public static func buildBoundFingerprint(
@@ -861,6 +866,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         coverage: MTPBenchmarkCoverage,
         elapsedMs: Double?,
         preCaseCommand: String? = nil,
+        mlxMaxMBPerBuffer: String? = nil,
         cases: [MTPBenchmarkCaseResult]
     ) {
         self.schemaVersion = schemaVersion
@@ -890,6 +896,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         self.coverage = coverage
         self.elapsedMs = purpose.performanceEligible ? elapsedMs : nil
         self.preCaseCommand = preCaseCommand
+        self.mlxMaxMBPerBuffer = mlxMaxMBPerBuffer
         self.cases = purpose.performanceEligible
             ? cases
             : cases.map { $0.withoutPerformanceMeasurements() }

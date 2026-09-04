@@ -90,6 +90,39 @@ struct GemmaOptimizationEnvironmentTests {
         "MLX_MAX_MB_PER_BUFFER",
     ]
 
+    /// The benchmark process must carry the serving buffer cap.
+    ///
+    /// It did not. Nothing in `ProviderBenchmark` applied the projection, so
+    /// every arm ran with `MLX_MAX_MB_PER_BUFFER` unset -- 50 MB on an M5 Max
+    /// -- while the serve path projects 500. MLX reads it once at first Metal
+    /// device construction, so a benchmark that sets it late sets it never.
+    ///
+    /// This pins the value the runner projects. `MTPBenchmarkRunner` applies
+    /// the same table through the same `apply`, with a write rule that skips
+    /// keys an arm already set.
+    @Test("the projected environment carries the serving buffer cap")
+    func projectionCarriesTheBufferCap() {
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(),
+            getenv: { _ in nil }
+        )
+        #expect(projection[GemmaOptimizationEnvironment.maxMBPerBufferKey] == "500")
+
+        // Applying with a skip-if-present rule leaves an explicit arm setting
+        // alone: that is how a control arm keeps its own value.
+        var written: [String: String] = [:]
+        try? GemmaOptimizationEnvironment.apply(
+            GemmaOptimizationSettings(),
+            context: .serving,
+            getenv: { $0 == GemmaOptimizationEnvironment.maxMBPerBufferKey ? "64" : nil },
+            set: { name, value, _ in
+                if name == GemmaOptimizationEnvironment.maxMBPerBufferKey { return 0 }
+                written[name] = value
+                return 0
+            })
+        #expect(written[GemmaOptimizationEnvironment.maxMBPerBufferKey] == nil)
+    }
+
     @Test("projection emits the selected controls")
     func exactProjection() {
         let enabled = GemmaOptimizationEnvironment.projection(

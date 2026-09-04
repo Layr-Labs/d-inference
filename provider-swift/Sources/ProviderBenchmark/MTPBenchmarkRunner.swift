@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MLXLMCommon
 import ProviderCore
@@ -163,6 +164,14 @@ public enum MTPBenchmarkRunner {
     ) async throws -> MTPBenchmarkReport {
         let startedAt = ContinuousClock.now
         let startedDate = Date()
+        // The benchmark process must be the SERVING process, environment
+        // included. It was not: nothing here applied
+        // `GemmaOptimizationEnvironment`, so every arm ran with
+        // MLX_MAX_MB_PER_BUFFER unset -- 50 MB on an M5 Max -- while the serve
+        // path projects 500. MLX reads that once, at first Metal device
+        // construction, so it has to be set before the model loads, which is
+        // why this is the first statement of the run.
+        let effectiveMaxMBPerBuffer = applyServingEnvironment()
         try validate(configuration)
         try validateArtifactBoundary(target, label: "target")
         try validateArtifactBoundary(assistant, label: "assistant")
@@ -204,6 +213,7 @@ public enum MTPBenchmarkRunner {
                 coverage: coverage,
                 elapsedMs: milliseconds(ContinuousClock.now - startedAt),
                 preCaseCommand: Self.preCaseCommand,
+                mlxMaxMBPerBuffer: effectiveMaxMBPerBuffer,
                 cases: results)
         }
 
@@ -1097,6 +1107,36 @@ public enum MTPBenchmarkRunner {
             preCaseExit: preCaseExit,
             rows: rows,
             metrics: representative.metrics)
+    }
+
+    /// Project the serving environment into this process, then report the
+    /// effective `MLX_MAX_MB_PER_BUFFER`.
+    ///
+    /// The projection table is NOT duplicated here: this calls the provider's
+    /// own `apply`, so bench and serve can never drift apart by editing one of
+    /// two lists. What differs is the write rule. `apply` normally overwrites
+    /// (`setenv(..., 1)`), which would let the projection stomp a value an arm
+    /// set deliberately; the `set` closure below skips any key already present,
+    /// so an explicit arm setting always wins and the projection only fills in
+    /// what nothing chose.
+    private static func applyServingEnvironment() -> String? {
+        let key = GemmaOptimizationEnvironment.maxMBPerBufferKey
+        do {
+            try GemmaOptimizationEnvironment.apply(
+                GemmaOptimizationSettings(),
+                context: .serving,
+                set: { name, value, _ in
+                    let present = name.withCString { Darwin.getenv($0) } != nil
+                    guard !present else { return 0 }
+                    return value.withCString { raw in
+                        name.withCString { setenv($0, raw, 0) }
+                    }
+                })
+        } catch {
+            FileHandle.standardError.write(
+                Data("serving environment projection failed: \(error)\n".utf8))
+        }
+        return ProcessInfo.processInfo.environment[key]
     }
 
     /// The per-case command, read once from `MTP_PRE_CASE_CMD`.

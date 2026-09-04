@@ -2648,7 +2648,9 @@ struct EngineV2BridgePagedKVTests {
                 kvBytesCapacity: 100_000, kvBytesBackendCapacity: 60_000,
                 activeTokens: 0))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 1_000)
-        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 60)
+        // Pool truth (60_000) binds, then the engine's 5% watermark mirror
+        // (T3-05): 57_000 admissible / 1_000.
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 57)
         // The fleet-residency clamp still binds from below when tighter.
         #expect(
             await bridge.backendSlotCapacity(kvBytesBudgetClamp: 40_000)
@@ -2679,7 +2681,7 @@ struct EngineV2BridgePagedKVTests {
         await bridge.updateKVBytesCapacity(100_000)
         #expect(engine.capacity().kvBytesCapacity == 60_000)
         #expect(engine.capacity().kvBytesBackendCapacity == 60_000)
-        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 60)
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 57)  // 95% of pool truth
     }
 
     @Test("unknown backend capacity (0) does not bind")
@@ -2690,7 +2692,8 @@ struct EngineV2BridgePagedKVTests {
                 activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
                 kvBytesCapacity: 100_000, activeTokens: 0))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 1_000)
-        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 100)
+        // No pool figure to bind: the admissible 95% of the ledger grant.
+        #expect(await bridge.backendSlotCapacity().activeTokenBudgetMax == 95)
     }
 
     @Test("paged slots skip the per-request shared-KV reserve")

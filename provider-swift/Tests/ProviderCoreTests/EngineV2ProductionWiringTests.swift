@@ -1207,9 +1207,11 @@ struct EngineV2ReslicingWiringTests {
             return slot.activeTokenBudgetMax
         }
 
-        // Alone on the box: the heartbeat reports the full-budget grant.
+        // Alone on the box: the heartbeat reports the full-budget grant —
+        // its engine-ADMISSIBLE share (5% watermark mirror, T3-05).
         let grantA0 = await bridgeA.engineKVBytesCapacity()
-        #expect(try await v2BudgetMax() == Int64(grantA0 / rate))
+        #expect(try await v2BudgetMax()
+            == Int64(EngineV2Bridge.engineAdmissibleBytes(capacity: grantA0) / rate))
 
         // A second v2 slot loads: A's engine grant is RE-SLICED (shrunk);
         // the heartbeat must report the CURRENT grant, not the construction
@@ -1232,7 +1234,8 @@ struct EngineV2ReslicingWiringTests {
 
         let grantA1 = await bridgeA.engineKVBytesCapacity()
         #expect(grantA1 < grantA0)
-        #expect(try await v2BudgetMax() == Int64(grantA1 / rate))
+        #expect(try await v2BudgetMax()
+            == Int64(EngineV2Bridge.engineAdmissibleBytes(capacity: grantA1) / rate))
         // The heartbeat carries BOTH v2 slots (and nothing else).
         await loop.updateAggregateCapacity()
         let capacity = try #require(await loop.backendCapacityForTesting())

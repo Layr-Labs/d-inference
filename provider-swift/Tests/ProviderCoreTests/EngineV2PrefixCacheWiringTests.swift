@@ -396,7 +396,9 @@ struct EngineV2FP32PagedRateTests {
             fullRowsUseFP32: false,
             pagedPoolDType: "float32"))
 
-        #expect(fp16.max == Int64(capacityBytes / fp16Rate))
+        // The advertised max is the engine-ADMISSIBLE share of the grant
+        // (5% watermark mirror, T3-05) in tokens.
+        #expect(fp16.max == Int64(EngineV2Bridge.engineAdmissibleBytes(capacity: capacityBytes) / fp16Rate))
         #expect(fp32.rate == fp16.rate * 2)
         #expect(fp32.max == fp16.max / 2, "fp32 pages hold half the tokens per byte grant")
     }

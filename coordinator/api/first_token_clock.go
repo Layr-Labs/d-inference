@@ -277,7 +277,7 @@ func (d *dispatchState) abandonInflightForFirstTokenTimeout() bool {
 	}
 	d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 	d.excludeProviders[provider.ID] = struct{}{}
-	d.s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+	d.s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 	d.updateRoutingOutcomeForAttempt(
 		routingAttempt(provider, pr, d.requestID, d.attempt),
 		d.errorRoutingOutcomeFor(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout),

@@ -729,10 +729,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.registry.MarkModelWarm(providerID, statusMsg.ModelID)
 				duration := s.registry.ClearPendingModelLoad(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, true, duration)
+				s.recordModelLoadResult(statusMsg.ModelID, "succeeded", duration)
 				s.registry.DrainQueuedRequestsForModelWithReason(statusMsg.ModelID, registry.DrainTriggerLoad)
 			case protocol.LoadModelStatusFailed:
 				duration := s.registry.PendingModelLoadDuration(providerID, statusMsg.ModelID)
 				s.registry.RecordWarmPoolLoadResult(statusMsg.ModelID, false, duration)
+				s.recordModelLoadResult(statusMsg.ModelID, "failed", duration)
 				// Quantify WHY proactive loads are rejected. The reason
 				// is derived only from the existing error string (no new wire
 				// field). The proactive path's string is often a generic

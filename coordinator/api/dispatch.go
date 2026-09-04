@@ -1476,7 +1476,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				s.recordWarmPoolQueueState(d.model)
 				d.queuedExitOutcome(queuePR.Profile, "error", "ttft_too_slow", http.StatusTooManyRequests)
 				d.refundReservation()
-				s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+				s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 				s.triggerWarmPool()
 				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
@@ -2168,7 +2168,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			if providerAttemptAttributableStall(pr, d.deadline) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
@@ -2444,7 +2444,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			if providerAttemptAttributableStall(pr, d.deadline) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
@@ -2849,7 +2849,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				backupPR, d.deadline-d.speculativeAt) {
 				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
 			}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			d.updateSpeculativeTimeout(backupPR, "first_chunk_timeout")
 			d.excludeProviders[provider.ID] = struct{}{}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
@@ -2952,7 +2952,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			// is already recorded); report the timeout, not the
 			// backup's stale error text.
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			if providerAttemptAttributableStall(pr, d.deadline) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
@@ -3084,7 +3084,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 				continue
 			}
 			d.excludeProviders[backupProvider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			if providerAttemptAttributableStall(
 				backupPR, d.deadline-d.speculativeAt) {
 				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
@@ -3177,7 +3177,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+			s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 			if providerAttemptAttributableStall(pr, d.deadline) {
 				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			}
@@ -3337,7 +3337,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				continue
 			}
 			d.excludeProviders[provider.ID] = struct{}{}
-			s.registry.RecordWarmPoolTTFTMiss(d.model, firstContentBudget)
+			s.recordWarmPoolTTFTMiss(d.model, firstContentBudget, d.attempt)
 			// Accepted-then-silent (or preamble-then-stall) feeds the
 			// breaker so a provider that repeatedly acks and stalls enters
 			// cooldown — but ONLY when the provider was actually granted a

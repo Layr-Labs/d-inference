@@ -2211,6 +2211,10 @@ type Registry struct {
 	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
 	swapPlanGate modelSwapPlanGate
 
+	// metrics is the registry's counter sink (registry_metrics.go); nil
+	// until api.Server installs the Datadog client.
+	metrics atomic.Pointer[metricsSinkBox]
+
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
@@ -4485,7 +4489,7 @@ func (r *Registry) TriggerModelSwaps() {
 
 	actions := r.planModelLoadActions(queuedModels, now)
 	actions = r.reservePendingModelLoads(actions, now)
-	r.sendModelLoadActions(actions)
+	r.sendModelLoadActions(actions, loadPlannerSwap)
 }
 
 func (r *Registry) expirePendingModelLoads(now time.Time) {
@@ -4692,7 +4696,10 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	return reserved
 }
 
-func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
+// sendModelLoadActions sends every reserved action; planner names the
+// planner that produced them (loadPlannerSwap / loadPlannerWarmPool) for the
+// model_load.sent series so loads can be attributed after the fact.
+func (r *Registry) sendModelLoadActions(actions []modelLoadAction, planner string) {
 	for _, action := range actions {
 		if err := r.SendLoadModel(action.providerID, action.modelID); err != nil {
 			r.logger.Warn("failed to trigger model swap",
@@ -4701,7 +4708,9 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 				"error", err,
 			)
 			r.ClearPendingModelLoad(action.providerID, action.modelID)
+			continue
 		}
+		r.metricIncr("model_load.sent", []string{"planner:" + planner})
 	}
 }
 

@@ -999,6 +999,13 @@ func (s *Server) SetEmitter(e *telemetry.Emitter) {
 // SetDatadog wires the Datadog client for DogStatsD metrics and Logs API forwarding.
 func (s *Server) SetDatadog(dd *datadog.Client) {
 	s.dd = dd
+	// The registry's own counters (queue drain passes, planner-attributed
+	// load_model sends — registry_metrics.go) share the client. Install only a
+	// non-nil client: a typed-nil *datadog.Client stored in the interface
+	// would defeat the registry's nil check.
+	if dd != nil && s.registry != nil {
+		s.registry.SetMetricsSink(dd)
+	}
 }
 
 // Datadog returns the Datadog client (or nil). Exposed so main.go and the

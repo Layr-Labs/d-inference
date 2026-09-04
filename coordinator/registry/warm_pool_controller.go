@@ -268,7 +268,7 @@ func (c *warmPoolController) tick(now time.Time) []WarmPoolSnapshot {
 		if snap.ObserveOnly || len(snap.Actions) == 0 {
 			continue
 		}
-		c.registry.sendModelLoadActions(snap.Actions)
+		c.registry.sendModelLoadActions(snap.Actions, loadPlannerWarmPool)
 	}
 	return snapshots
 }

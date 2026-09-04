@@ -3191,6 +3191,8 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 	}
 	for _, model := range models {
 		var skipped []*QueuedRequest
+		// Per-pass tallies for the queue.drain.* series (registry_metrics.go).
+		popped, scanned, admitted := 0, 0, 0
 		requeueSkipped := func() {
 			for i := len(skipped) - 1; i >= 0; i-- {
 				queue.RequeueFront(skipped[i])
@@ -3203,6 +3205,7 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 				requeueSkipped()
 				break
 			}
+			popped++
 			if req.Pending == nil {
 				req.Pending = &PendingRequest{
 					RequestID:          req.RequestID,
@@ -3219,6 +3222,7 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 				continue
 			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
+			scanned++
 			// Queue context for the routing record: where the request sat at
 			// enqueue and which event ran the drain that produced this decision.
 			decision.QueuePosition = req.EnqueuePosition
@@ -3249,6 +3253,7 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 			}
 			req.DrainTrigger = reason
 			req.Decision = decision
+			admitted++
 			requeueSkipped()
 
 			releaseReservation := func() {
@@ -3273,5 +3278,26 @@ func (r *Registry) drainQueuedRequestsForModelsWithReason(models []string, reaso
 				continue
 			}
 		}
+		r.emitDrainPassMetrics(reason, popped, scanned, admitted)
 	}
+}
+
+// emitDrainPassMetrics records one drain pass for a model. A pass that popped
+// nothing is the empty-queue probe every heartbeat runs and is not counted —
+// keeping that path allocation-free matters more than a series that would
+// only ever read "empty".
+func (r *Registry) emitDrainPassMetrics(reason string, popped, scanned, admitted int) {
+	if popped == 0 || r.metricsSink() == nil {
+		return
+	}
+	outcome := drainOutcomeEmpty
+	switch {
+	case admitted > 0:
+		outcome = drainOutcomeAdmitted
+	case scanned > 0:
+		outcome = drainOutcomeSaturated
+	}
+	trigger := "trigger:" + reason
+	r.metricIncr("queue.drain.pass", []string{trigger, "outcome:" + outcome})
+	r.metricCount("queue.drain.scans", int64(scanned), []string{trigger})
 }

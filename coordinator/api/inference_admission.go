@@ -499,7 +499,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Routing v2 W3: feed the autoscaler the demand the preflight sees.
-		s.registry.RecordWarmPoolCapacityReject(model)
+		s.recordWarmPoolCapacityReject(model, 0)
 		s.triggerWarmPool()
 		// Queue-before-shed (default on): providers exist for this model but
 		// all are at capacity right now. Rather than an immediate 429, let the
@@ -572,7 +572,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// where a loadable cold provider is not yet a candidate.
 		//
 		// Feed the autoscaler the demand regardless of outcome.
-		s.registry.RecordWarmPoolCapacityReject(model)
+		s.recordWarmPoolCapacityReject(model, 0)
 		s.triggerWarmPool()
 		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
@@ -667,7 +667,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// Keep the text soft-gate pressure signal, but do not teach the warm
 			// pool from a media projection that omits decode and tower work.
 			if !p.requiresVision {
-				s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+				s.recordWarmPoolTTFTMiss(model, ttftThreshold, 0)
 				s.triggerWarmPool()
 			}
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
@@ -679,7 +679,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		} else {
 			// Hard TTFT gate, no faster alias: shed with a 429 + Retry-After,
 			// and feed the autoscaler a TTFT-miss so warm capacity grows.
-			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
+			s.recordWarmPoolTTFTMiss(model, ttftThreshold, 0)
 			s.triggerWarmPool()
 			retryModel, retryTTFT := fasterTTFTEstimate(model, bestTTFT, fallbackModel, fallbackTTFT, fallbackHasTTFT)
 			refundReservation()

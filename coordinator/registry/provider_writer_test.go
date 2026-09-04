@@ -633,7 +633,7 @@ func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 	if len(actions) != 1 {
 		t.Fatalf("reserved actions = %d, want 1", len(actions))
 	}
-	r.sendModelLoadActions(actions)
+	r.sendModelLoadActions(actions, loadPlannerSwap)
 
 	r.mu.Lock()
 	hasPending := r.providerHasPendingLoad(p.ID)

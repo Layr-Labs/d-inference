@@ -40,7 +40,7 @@ private final class HarnessEngine: CBv2Engine, @unchecked Sendable {
     private var _ordinarySubmits = 0
     private var _deadlineSubmits = 0
     private var _verdict: Verdict = .admit
-    private var _capacityBlock: TimeInterval = 0
+    private var _capacityGate: CapacityGate?
     /// Invoked synchronously inside `cancel` (ordering assertions).
     var onCancel: (@Sendable (CBv2RequestID) -> Void)?
 
@@ -51,8 +51,10 @@ private final class HarnessEngine: CBv2Engine, @unchecked Sendable {
     var deadlineSubmits: Int { lock.withLock { _deadlineSubmits } }
 
     func arm(_ verdict: Verdict) { lock.withLock { _verdict = verdict } }
-    /// Every `capacity()` read blocks the caller for this long.
-    func blockCapacity(seconds: TimeInterval) { lock.withLock { _capacityBlock = seconds } }
+    /// Every `capacity()` read parks the caller on `gate` until the test
+    /// releases it — the ordering-proof shape: "this frame landed while the
+    /// neighbour's capacity read was still held" needs no clock.
+    func holdCapacity(on gate: CapacityGate) { lock.withLock { _capacityGate = gate } }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
@@ -116,17 +118,52 @@ private final class HarnessEngine: CBv2Engine, @unchecked Sendable {
     }
 
     func capacity() -> CBv2CapacitySnapshot {
-        let block = lock.withLock {
+        let gate = lock.withLock {
             _capacityCalls += 1
-            return _capacityBlock
+            return _capacityGate
         }
-        if block > 0 { Thread.sleep(forTimeInterval: block) }
+        gate?.park()
         return CBv2CapacitySnapshot(
             activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
             kvBytesCapacity: 1 << 30, activeTokens: 0)
     }
 
     func shutdown() async {}
+}
+
+/// A hold the test releases explicitly. `park()` blocks the calling thread —
+/// the bridge actor's executor, exactly what a busy co-resident slot does to
+/// a capacity rebuild — until `release()`. A 20 s safety timeout turns a
+/// wrong ordering into a failed wait instead of a hung suite.
+private final class CapacityGate: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var _held = true
+    private var _parked = 0
+
+    /// Reads currently parked on the gate.
+    var parked: Int { lock.withLock { _parked } }
+
+    func park() {
+        let held = lock.withLock { () -> Bool in
+            guard _held else { return false }
+            _parked += 1
+            return true
+        }
+        guard held else { return }
+        _ = semaphore.wait(timeout: .now() + 20)
+        lock.withLock { _parked -= 1 }
+    }
+
+    /// Lower the hold: every parked read resumes, later reads pass through.
+    func release() {
+        let waiters = lock.withLock { () -> Int in
+            guard _held else { return 0 }
+            _held = false
+            return _parked
+        }
+        for _ in 0..<waiters { semaphore.signal() }
+    }
 }
 
 // MARK: - Stub weights
@@ -379,11 +416,6 @@ private struct Harness {
     }
 }
 
-private func ms(_ duration: Duration) -> Double {
-    Double(duration.components.seconds) * 1000.0
-        + Double(duration.components.attoseconds) / 1e15
-}
-
 @Suite("ProviderLoop coordinator request path (sealed body → chunks → terminal)", .serialized)
 struct ProviderLoopStreamingPathTests {
 
@@ -606,16 +638,23 @@ struct ProviderLoopStreamingPathTests {
     // MARK: T1-02 — capacity rebuilds off the request path
 
 
-    @Test("a slow co-resident slot delays neither the first chunk nor the terminal; the rebuild still happens off-path")
+    @Test("a co-resident slot whose capacity read is HELD delays neither the first chunk nor the terminal; the rebuilds still happen off-path")
     func capacityRebuildsNeverGateChunksOrTerminal() async throws {
+        // Review fix (S1 P2): this used to assert `< 600 ms` wall-clock
+        // bounds around a 400 ms `Thread.sleep` per capacity read, which a
+        // loaded runner can violate with no regression in the code under
+        // test (the bound was already widened once). It is now an ORDERING
+        // proof: the neighbour's capacity read is parked on a gate the test
+        // releases only after the frame in question has been recorded. If
+        // any request-path hop awaited the rebuild (the pre-T1-02 shape:
+        // the detached task awaited `updateAggregateCapacity()` before its
+        // first frame and again before its terminal), the frame could not
+        // arrive while the gate is held and the bounded wait fails.
         let h = try await Harness.make()
-        // A co-resident slot whose bridge actor is busy (its own pumps): every
-        // capacity read on it blocks 400 ms. The rebuild must visit it (two
-        // hops per bridge ⇒ ≥ 800 ms per rebuild); this request's pump never
-        // does. Before the change the detached task awaited that rebuild
-        // before consuming its first frame and again before its terminal.
         let busyEngine = HarnessEngine()
-        busyEngine.blockCapacity(seconds: 0.4)
+        let gate = CapacityGate()
+        defer { gate.release() }
+        busyEngine.holdCapacity(on: gate)
         let busyBridge = EngineV2Bridge(
             engine: busyEngine,
             modelId: "busy-neighbour",
@@ -629,42 +668,53 @@ struct ProviderLoopStreamingPathTests {
         _ = await handler.value
         try await h.wait("engine submission") { h.engine.ordinarySubmits == 1 }
 
-        let emittedFirst = ContinuousClock.now
+        // First token → the post-submit rebuild is detached; the first
+        // CONTENT chunk (#2, after the role preamble) must land while the
+        // neighbour's read is held.
         h.engine.emit(.delta(text: "Hello", tokens: [10], logprobs: nil))
-        // The role preamble is chunk #1; the first CONTENT chunk is #2.
         try await h.wait("first content chunk", recorder: recorder) { recorder.chunkCount >= 2 }
-        let firstChunkAt = try #require(recorder.chunkAt(index: 1))
-        let firstChunkMs = ms(firstChunkAt - emittedFirst)
+        // Make the hold load-bearing for the rest of the request: the
+        // rebuild has reached the neighbour and is parked inside its FIRST
+        // read (the second hop cannot start until the first returns).
+        // (`capacity()` counts the call BEFORE it parks, so wait on the park
+        // itself, not the count.)
+        try await h.wait("post-submit rebuild parked on the neighbour") {
+            gate.parked >= 1
+        }
+        #expect(busyEngine.capacityCalls == 1)
+        #expect(gate.parked == 1)
 
         h.engine.emit(.delta(text: " world", tokens: [11], logprobs: nil))
         try await h.wait("second content chunk", recorder: recorder) { recorder.chunkCount >= 3 }
-        let emittedFinish = ContinuousClock.now
         h.engine.emit(.finished(
             reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)))
         h.engine.finishStream()
         try await h.wait("terminal", recorder: recorder) { recorder.terminalAt != nil }
-        let terminalAt = try #require(recorder.terminalAt)
-        let terminalMs = ms(terminalAt - emittedFinish)
 
-        // Neither hop paid the neighbour's ≥ 800 ms rebuild (loaded machine
-        // running the whole suite in parallel: a generous bound, still below
-        // the two blocked reads either site used to wait for).
-        #expect(firstChunkMs < 600, "first chunk took \(firstChunkMs) ms")
-        #expect(terminalMs < 600, "terminal took \(terminalMs) ms")
+        // ORDERING PROOF: the terminal landed while the rebuild was still
+        // parked in its first neighbour read — neither the post-submit
+        // rebuild nor a pre-terminal one gated it.
+        #expect(busyEngine.capacityCalls == 1)
+        #expect(gate.parked == 1)
         #expect(recorder.kinds.last == "complete")
         let completion = try #require(recorder.completions.first)
         #expect(completion.usage.completionTokens == 2)
         #expect(completion.usage.promptTokens == 5)
         #expect(completion.hash != nil)
 
-        // The post-submit rebuild and the finish rebuild still run — off the
-        // request path: exactly two runtime consults per request, each
-        // visiting the busy neighbour twice (2 hops per bridge).
+        // Lower the hold: the post-submit rebuild and the finish rebuild
+        // both complete off the request path — exactly two runtime consults
+        // per request, each visiting the busy neighbour in two actor hops
+        // that take THREE engine snapshot reads (`capacityInputs` reads the
+        // grant and the slot claim; `backendSlotCapacity` reads once more).
+        // The old `== 4` was a timing artifact of the 400 ms sleeps: reads
+        // 5 and 6 had not landed when `>= 4` was observed.
+        gate.release()
         try await h.wait("post-request rebuilds", timeout: .seconds(30), recorder: recorder) {
-            busyEngine.capacityCalls >= 4
+            busyEngine.capacityCalls >= 6
         }
         #expect(await h.runtime.consultCount == 2)
-        #expect(busyEngine.capacityCalls == 4)
+        #expect(busyEngine.capacityCalls == 6)
     }
 
     @Test("the per-slot MTP/KV-backend posture is sampled by the capacity tick, not by per-request rebuilds")

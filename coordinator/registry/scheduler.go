@@ -33,7 +33,7 @@ const (
 	totalPendingPenaltyMs    = 750.0
 	memoryPressurePenaltyMs  = 4_000.0
 	cpuUsagePenaltyMs        = 1_500.0
-	gpuUtilizationPenaltyMs  = 5_000.0
+	gpuUtilizationPenaltyMs  = 0.0 // resident-weights fraction is not health; see healthPenaltyMs
 	thermalPenaltyFairMs     = 2_000.0
 	thermalPenaltySeriousMs  = 8_000.0
 	nearTieCostWindowMs      = 3_000.0
@@ -2342,6 +2342,13 @@ func backlogTokenMs(maxTokensPotential int64, waitingTokens, unaccountedPendingT
 	return totalTokensAhead / decodeTPS * 1000.0
 }
 
+// healthPenaltyMs prices the provider's live system signals. Memory pressure,
+// CPU, and thermal state are latency signals. The active-memory fraction
+// (gpuActiveGB/totalMemGB) is the resident-weights fraction on an idle box (a
+// 26 GB model: 72% of a 36 GB box, 20% of a 128 GB box) — a size ratio, not a
+// latency signal — and the KV growth it also tracks is already priced by the
+// backlog and budget terms, so gpuUtilizationPenaltyMs is 0. The term stays
+// so the price can be restored without a code change.
 func healthPenaltyMs(m protocol.SystemMetrics, gpuActiveGB, totalMemGB float64) float64 {
 	penalty := m.MemoryPressure*memoryPressurePenaltyMs + m.CPUUsage*cpuUsagePenaltyMs
 	switch m.ThermalState {

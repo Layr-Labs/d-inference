@@ -367,16 +367,31 @@ internal final class OSAllocatedUnfairLock: @unchecked Sendable {
 /// NWConnection (NWProtocolWebSocket surfaces the pong on the connection's
 /// receive queue, an arbitrary queue) and read from the ping task on the
 /// cooperative thread pool.
+///
+/// Monotonic (`ContinuousClock`, mach_continuous_time), not wall clock: a
+/// forward wall-clock step > 30 s (NTP, a manual clock change) used to read
+/// as a pong timeout on a live socket — tearing the session down and 502-ing
+/// every in-flight request — and a backward step hid a real timeout.
+/// ContinuousClock still advances across sleep on Darwin, so the post-wake
+/// detection this feeds is unchanged. `now` is injectable for tests.
 internal final class PongTracker: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
-    private var lastPong = CFAbsoluteTimeGetCurrent()
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private var lastPong: ContinuousClock.Instant
 
-    func recordPong() {
-        lock.withLock { lastPong = CFAbsoluteTimeGetCurrent() }
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
+        self.now = now
+        self.lastPong = now()
     }
 
-    func elapsed() -> TimeInterval {
-        lock.withLock { CFAbsoluteTimeGetCurrent() - lastPong }
+    func recordPong() {
+        let at = now()
+        lock.withLock { lastPong = at }
+    }
+
+    func elapsed() -> Duration {
+        let at = now()
+        return lock.withLock { at - lastPong }
     }
 }
 

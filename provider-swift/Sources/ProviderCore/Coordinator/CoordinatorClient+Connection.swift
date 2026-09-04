@@ -233,8 +233,8 @@ extension CoordinatorClient {
         outboundStream: AsyncStream<OutboundMessage>,
         failureStream: AsyncStream<Error>
     ) async throws {
-        let pingInterval: TimeInterval = 10.0
-        let pongTimeout: TimeInterval = 30.0
+        let pingInterval: Duration = .seconds(10)
+        let pongTimeout: Duration = .seconds(30)
 
         // Thread-safe pong timestamp: updated from the pong handler (runs on
         // connectionQueue), read from the ping task. Using an actor would force
@@ -296,20 +296,24 @@ extension CoordinatorClient {
 
             // Task 4: Ping timer with pong timeout + suspension detection
             group.addTask {
-                var lastTick = CFAbsoluteTimeGetCurrent()
+                var lastTick = ContinuousClock.now
                 while true {
-                    try await taskSleep( .seconds(pingInterval))
+                    try await taskSleep(pingInterval)
 
-                    // If far more wall-clock elapsed than we slept for, the
-                    // process was suspended/throttled (App Nap or sleep). The
-                    // socket is almost certainly dead and the coordinator has
-                    // likely already evicted us, so reconnect NOW instead of
-                    // waiting out the (also-throttled) pong timeout — this is
-                    // what removes the multi-minute post-wake detection lag.
-                    let now = CFAbsoluteTimeGetCurrent()
+                    // If far more time elapsed than we slept for, the process
+                    // was suspended/throttled (App Nap or sleep). The socket
+                    // is almost certainly dead and the coordinator has likely
+                    // already evicted us, so reconnect NOW instead of waiting
+                    // out the (also-throttled) pong timeout — this is what
+                    // removes the multi-minute post-wake detection lag.
+                    // ContinuousClock advances across sleep (unlike
+                    // SuspendingClock) so the heuristic survives, and unlike
+                    // the wall clock it cannot be stepped by NTP or an
+                    // operator into a false suspension verdict.
+                    let now = ContinuousClock.now
                     let gap = now - lastTick
                     lastTick = now
-                    if gap > pingInterval * 3 {
+                    if Self.suspensionDetected(gap: gap, pingInterval: pingInterval) {
                         throw CoordinatorError.suspensionDetected
                     }
 
@@ -351,6 +355,13 @@ extension CoordinatorClient {
                 throw error
             }
         }
+    }
+
+    /// The ping task's suspension rule: a tick gap more than three ping
+    /// intervals long means the process was not running (sleep, App Nap),
+    /// not that the network is slow. Pure, for tests.
+    nonisolated static func suspensionDetected(gap: Duration, pingInterval: Duration) -> Bool {
+        gap > pingInterval * 3
     }
 
     // MARK: - Outbound frame write (non-blocking)

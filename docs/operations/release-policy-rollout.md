@@ -53,6 +53,17 @@ provider's reported `mlx_metallib` — nothing else. The gate has two modes via
   because a restarted coordinator has an empty registry (zero evidence) and
   would otherwise 429 the fleet until first challenges complete. Do not set
   the grace below the default for a production flip.
+- Registering a release MUST NOT deroute the fleet running the previous
+  release. The runtime manifest (`SyncRuntimeManifest`) is the UNION of every
+  ACTIVE release row's hashes — one accepted set per template name,
+  `mlx_metallib` included — so providers on v(N-1) and v(N) both pass the
+  challenge runtime policy for the whole self-update window. Deactivating a
+  release (`DELETE /v1/admin/releases`) is the only way to retire its hashes.
+  A manifest gate that keeps a single expected value per key is the
+  2026-09-03 brownout: registering v0.8.16 replaced the v0.8.15 metallib hash
+  and ~1,180 still-current providers were excluded from routing at their next
+  challenge until they self-updated. Regression tests:
+  `coordinator/api/runtime_manifest_union_test.go`.
 
 ## Stage 1 — shadow deployment
 

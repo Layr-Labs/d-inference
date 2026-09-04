@@ -658,15 +658,13 @@ func main() {
 	// routing (but not disconnected) and receive feedback about mismatches.
 	// Python/runtime hashes are deprecated — only template hashes (e.g. mlx_metallib) are checked.
 	if templateHashes := os.Getenv("EIGENINFERENCE_KNOWN_TEMPLATE_HASHES"); templateHashes != "" {
-		manifest := &api.RuntimeManifest{
-			PythonHashes:   make(map[string]bool),
-			RuntimeHashes:  make(map[string]bool),
-			TemplateHashes: make(map[string]string),
-		}
+		// The manifest is a set per template name: repeating a name
+		// (mlx_metallib=<a>,mlx_metallib=<b>) accepts every listed hash.
+		manifest := api.NewRuntimeManifest()
 		for _, pair := range strings.Split(templateHashes, ",") {
 			parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
 			if len(parts) == 2 {
-				manifest.TemplateHashes[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				manifest.AddTemplateHash(parts[0], parts[1])
 			}
 		}
 		srv.SetRuntimeManifest(manifest)

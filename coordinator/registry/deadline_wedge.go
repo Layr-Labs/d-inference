@@ -55,7 +55,13 @@ import (
 // LOCKING. A LEAF mutex of its own, lazily created; it never takes r.mu or
 // p.mu (the completion_calibration idiom). The routing gate reads it with
 // r.mu and p.mu held (order r.mu → p.mu → wedge.mu); the api hook resolves
-// the fault key under r.mu.RLock, releases, then records.
+// the fault key under r.mu.RLock, releases, then records. The gate runs for
+// every candidate of every fleet walk (scans and capacity preflights, tens
+// of concurrent walkers over ~1,260 providers) in shadow mode too, so it
+// must not serialize the parallel RLock scans on this one mutex in the
+// steady state: skipEntries mirrors len(skips) atomically and shouldSkip
+// returns without the lock while it is zero — the common case, since a
+// pair is armed for at most minutes and swept once expired.
 //
 // SWITCH. EIGENINFERENCE_DEADLINE_WEDGE_SKIP (read once at construction):
 // off (default) = shadow — refusals are recorded, would-be skips counted
@@ -141,6 +147,9 @@ type deadlineWedgeTracker struct {
 	mu      sync.Mutex
 	runs    map[deadlineWedgeKey]deadlineWedgeRun
 	skips   map[deadlineWedgeKey]*deadlineWedgeSkip
+	// skipEntries is len(skips), republished under mu after every mutation
+	// (syncSkipEntriesLocked) so the gate's fast path can skip the lock.
+	skipEntries atomic.Int64
 
 	skipCount, shadowSkipCount, probeCount, clearCount atomic.Int64
 }
@@ -167,6 +176,7 @@ func (w *deadlineWedgeTracker) note(key deadlineWedgeKey, indicts bool, now time
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	defer w.syncSkipEntriesLocked()
 	w.sweepLocked(now)
 
 	// An armed pair whose TTL lapsed and whose probe just refused re-arms
@@ -206,17 +216,23 @@ func (w *deadlineWedgeTracker) clear(key deadlineWedgeKey) {
 	_, hadSkip := w.skips[key]
 	delete(w.runs, key)
 	delete(w.skips, key)
+	w.syncSkipEntriesLocked()
 	w.mu.Unlock()
 	if hadRun || hadSkip {
 		w.clearCount.Add(1)
 	}
 }
 
-// skipLocked reports whether routing should skip the pair (mirrors
+// shouldSkip reports whether routing should skip the pair (mirrors
 // capacityCooldownActiveLocked's half-open semantics) and counts the verdict:
 // with the switch on the gate skips, with it off the would-be skip is only
-// counted. Callers hold r.mu (either mode); this takes the leaf lock.
+// counted. Callers hold r.mu (either mode). Lock-free while no pair holds a
+// skip entry (skipEntries == 0): an entry is only ever created under mu by
+// note(), so a zero read here means the map lookup below would miss.
 func (w *deadlineWedgeTracker) shouldSkip(key deadlineWedgeKey, now time.Time) bool {
+	if w.skipEntries.Load() == 0 {
+		return false
+	}
 	w.mu.Lock()
 	s, ok := w.skips[key]
 	active := ok && (now.Before(s.until) ||
@@ -256,6 +272,7 @@ func (w *deadlineWedgeTracker) migrate(oldKey, newKey string) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	defer w.syncSkipEntriesLocked()
 	for k, run := range w.runs {
 		if k.FaultKey != oldKey {
 			continue
@@ -283,6 +300,7 @@ func (w *deadlineWedgeTracker) migrate(oldKey, newKey string) {
 func (w *deadlineWedgeTracker) forget(faultKey string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	defer w.syncSkipEntriesLocked()
 	for k := range w.runs {
 		if k.FaultKey == faultKey {
 			delete(w.runs, k)
@@ -311,6 +329,13 @@ func (w *deadlineWedgeTracker) sweepLocked(now time.Time) {
 			}
 		}
 	}
+}
+
+// syncSkipEntriesLocked republishes len(skips) for shouldSkip's lock-free
+// fast path. Caller holds mu; every path that mutates skips (note, clear,
+// migrate, forget — sweepLocked runs inside note) calls it before unlocking.
+func (w *deadlineWedgeTracker) syncSkipEntriesLocked() {
+	w.skipEntries.Store(int64(len(w.skips)))
 }
 
 func (w *deadlineWedgeTracker) stats(now time.Time) DeadlineWedgeStats {

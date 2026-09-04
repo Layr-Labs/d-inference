@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -315,5 +316,100 @@ func TestDeadlineWedgeIgnoresRefusalsThatDoNotIndictTheSlot(t *testing.T) {
 	}
 	if ev := refuseN(reg, p, model, deadlineWedgeThreshold-1); ev != DeadlineWedgeArmed {
 		t.Fatalf("full-clock primary refusals must still arm (event %v)", ev)
+	}
+}
+
+// TestDeadlineWedgeGateIsLockFreeWhileNoPairIsArmed: the routing gate runs
+// for every candidate of every fleet walk under r.mu, in shadow mode too, so
+// while no pair holds a skip entry it must not touch the tracker's mutex
+// (otherwise every parallel RLock scan serializes on it). Pinned by holding
+// the leaf lock from the test: an empty tracker answers immediately, an
+// armed one blocks (the slow path still consults the map under the lock)
+// and answers once released, and a cleared one is lock-free again. Fails
+// before the fix (shouldSkip locked unconditionally and the first probe
+// timed out).
+func TestDeadlineWedgeGateIsLockFreeWhileNoPairIsArmed(t *testing.T) {
+	reg, p, model := wedgeFixture(t, true)
+	w := reg.deadlineWedge
+	key := deadlineWedgeKey{FaultKey: p.ID, ModelID: model}
+	probe := func() <-chan bool {
+		out := make(chan bool, 1)
+		go func() { out <- w.shouldSkip(key, time.Now()) }()
+		return out
+	}
+	expectPrompt := func(what string, want bool) {
+		t.Helper()
+		select {
+		case got := <-probe():
+			if got != want {
+				t.Fatalf("%s: shouldSkip = %v, want %v", what, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: shouldSkip blocked on the tracker mutex", what)
+		}
+	}
+
+	w.mu.Lock()
+	expectPrompt("empty tracker with the lock held", false)
+	w.mu.Unlock()
+
+	refuseN(reg, p, model, deadlineWedgeThreshold)
+	w.mu.Lock()
+	armed := probe()
+	select {
+	case got := <-armed:
+		t.Fatalf("armed tracker with the lock held answered %v without the lock: the slow path must consult the map under it", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	w.mu.Unlock()
+	select {
+	case got := <-armed:
+		if !got {
+			t.Fatal("armed pair not skipped once the lock was released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("armed probe never answered after the lock was released")
+	}
+
+	reg.RecordCapacityAcceptOutcome(p.ID, model, false)
+	if n := w.skipEntries.Load(); n != 0 {
+		t.Fatalf("skipEntries = %d after the accept cleared the pair, want 0", n)
+	}
+	w.mu.Lock()
+	expectPrompt("cleared tracker with the lock held", false)
+	w.mu.Unlock()
+}
+
+// TestDeadlineWedgeSkipEntriesTrackEveryMutation: the lock-free count
+// mirrors len(skips) across arm, identity migration, forget and the sweep.
+func TestDeadlineWedgeSkipEntriesTrackEveryMutation(t *testing.T) {
+	reg, p, model := wedgeFixture(t, true)
+	w := reg.deadlineWedge
+	refuseN(reg, p, model, deadlineWedgeThreshold)
+	if n := w.skipEntries.Load(); n != 1 {
+		t.Fatalf("skipEntries after arm = %d, want 1", n)
+	}
+	w.migrate(p.ID, "serial:MIGRATED")
+	if n := w.skipEntries.Load(); n != 1 {
+		t.Fatalf("skipEntries after migrate = %d, want 1 (re-keyed, not duplicated)", n)
+	}
+	w.forget("serial:MIGRATED")
+	if n := w.skipEntries.Load(); n != 0 {
+		t.Fatalf("skipEntries after forget = %d, want 0", n)
+	}
+	// The sweep (inside note, past the map bound) drops expired entries and
+	// republishes the count.
+	w.mu.Lock()
+	for i := 0; i < 1100; i++ {
+		w.skips[deadlineWedgeKey{FaultKey: fmt.Sprintf("expired-%d", i), ModelID: model}] = &deadlineWedgeSkip{until: time.Now().Add(-time.Minute), trips: 1}
+	}
+	w.syncSkipEntriesLocked()
+	w.mu.Unlock()
+	if n := w.skipEntries.Load(); n != 1100 {
+		t.Fatalf("skipEntries after seeding = %d, want 1100", n)
+	}
+	reg.NoteDeadlineRefusal(p.ID, wedgeRefusal(model))
+	if n := w.skipEntries.Load(); n != 0 {
+		t.Fatalf("skipEntries after the sweep = %d, want 0 (expired entries dropped)", n)
 	}
 }

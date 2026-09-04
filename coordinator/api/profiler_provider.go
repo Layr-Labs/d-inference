@@ -446,14 +446,7 @@ func (s *Server) applyProviderProfile(rec *store.RequestProfileRecord, ap *regis
 	rec.ProviderProfileInvalidReason = reason
 
 	// The only telemetry derived from the profile: bounded tags, no values.
-	reasonTag := reason
-	if valid {
-		reasonTag = "none"
-	}
-	s.ddIncr("profiler.provider_profile", []string{"valid:" + strconv.FormatBool(valid), "reason:" + reasonTag})
-	if enumFolded {
-		s.ddIncr("profiler.provider_profile", []string{"valid:" + strconv.FormatBool(valid), "reason:enum"})
-	}
+	s.emitProviderProfileVerdict(valid, reason, enumFolded)
 	if stored == nil {
 		return
 	}
@@ -521,6 +514,24 @@ func (s *Server) applyProviderProfile(rec *store.RequestProfileRecord, ap *regis
 	if stored.TotalUS != nil && rec.CompleteIngressUS != nil && rec.WriteDoneUS != nil {
 		v := (*rec.CompleteIngressUS - *rec.WriteDoneUS) - *stored.TotalUS
 		rec.TransportEstUS = &v
+	}
+}
+
+// emitProviderProfileVerdict emits profiler.provider_profile{valid,reason}
+// (plus the reason:enum secondary count when an enum was folded) for one
+// decoded provider profile. It runs for EVERY decoded profile — persisted
+// rows from applyProviderProfile, sampled-out rows from the sink's verdict —
+// so the valid/invalid ratio the series exists for stays comparable while
+// ~90% of clean successes are discarded before flattening; the ingress
+// discards (size, duplicate, late) are counted by retainProviderProfile.
+func (s *Server) emitProviderProfileVerdict(valid bool, reason string, enumFolded bool) {
+	reasonTag := reason
+	if valid {
+		reasonTag = "none"
+	}
+	s.ddIncr("profiler.provider_profile", []string{"valid:" + strconv.FormatBool(valid), "reason:" + reasonTag})
+	if enumFolded {
+		s.ddIncr("profiler.provider_profile", []string{"valid:" + strconv.FormatBool(valid), "reason:enum"})
 	}
 }
 

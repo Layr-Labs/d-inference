@@ -5,6 +5,7 @@ package api
 // alwaysRecord applies (parity pinned below).
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -99,6 +100,31 @@ func samplingCorpus(t *testing.T) []samplingCase {
 		}), true},
 		{"invalid provider profile", clean(func(_ *testing.T, _ *registry.RequestProfile, ap *registry.AttemptProfile) {
 			ap.SetProviderProfileRaw([]byte(`{"schema":`))
+		}), true},
+		{"oversized provider profile (dropped at ingress)", clean(func(t *testing.T, _ *registry.RequestProfile, ap *registry.AttemptProfile) {
+			if got := ap.SetProviderProfileRaw(bytes.Repeat([]byte("x"), 4097)); got != registry.ProviderProfileTooLarge {
+				t.Fatalf("SetProviderProfileRaw(4097 B) = %v, want ProviderProfileTooLarge", got)
+			}
+		}), true},
+		{"duplicate provider profile after a valid one", clean(func(t *testing.T, rp *registry.RequestProfile, ap *registry.AttemptProfile) {
+			// First profile wins and is valid; the duplicate is counted at
+			// ingress only, so the attempt is NOT force-recorded on either side.
+			rp.T0 = fixtureReceivedAt
+			raw := fixtureProfile(t, "inference_complete_full")
+			if got := ap.SetProviderProfileRaw(raw); got != registry.ProviderProfileStored {
+				t.Fatalf("first SetProviderProfileRaw = %v, want stored", got)
+			}
+			if got := ap.SetProviderProfileRaw(raw); got != registry.ProviderProfileDuplicate {
+				t.Fatalf("second SetProviderProfileRaw = %v, want ProviderProfileDuplicate", got)
+			}
+		}), false},
+		{"late provider profile (after finalization)", clean(func(t *testing.T, rp *registry.RequestProfile, ap *registry.AttemptProfile) {
+			rp.T0 = fixtureReceivedAt
+			ap.CompleteHandler()
+			ap.CompleteTerminal()
+			if got := ap.SetProviderProfileRaw(fixtureProfile(t, "inference_complete_full")); got != registry.ProviderProfileLate {
+				t.Fatalf("SetProviderProfileRaw after finalization = %v, want ProviderProfileLate", got)
+			}
 		}), true},
 	}
 }

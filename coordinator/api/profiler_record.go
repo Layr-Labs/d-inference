@@ -352,10 +352,33 @@ func stampsOutOfOrder(values []int64) bool {
 // buildProfileRecord (~150 field copies, two decision JSON marshals) on the
 // sink worker only to be discarded.
 func (p *profiler) shouldRecord(rp *registry.RequestProfile, ap *registry.AttemptProfile) bool {
+	record, _ := p.shouldRecordVerdict(rp, ap)
+	return record
+}
+
+// providerProfileVerdict is what alwaysRecordRawVerdict learned about the
+// retained raw provider profile: whether it decoded one, and the decoder's
+// tags. The sink emits profiler.provider_profile from it for a sampled-out
+// attempt (which never reaches applyProviderProfile, the persisted-row
+// emitter) without a second decode.
+type providerProfileVerdict struct {
+	decoded    bool
+	valid      bool
+	reason     string
+	enumFolded bool
+}
+
+// shouldRecordVerdict is shouldRecord that also returns the provider-profile
+// verdict the always-record evaluation produced (zero when the request was
+// sampled in, or when no raw profile was decoded).
+func (p *profiler) shouldRecordVerdict(rp *registry.RequestProfile, ap *registry.AttemptProfile) (bool, providerProfileVerdict) {
 	if p == nil || rp == nil || ap == nil {
-		return false
+		return false, providerProfileVerdict{}
 	}
-	return p.sampled(rp.CoordRequestID) || p.alwaysRecordRaw(rp, ap)
+	if p.sampled(rp.CoordRequestID) {
+		return true, providerProfileVerdict{}
+	}
+	return p.alwaysRecordRawVerdict(rp, ap)
 }
 
 // alwaysRecordRaw is alwaysRecord evaluated on the live profile: the same
@@ -364,21 +387,29 @@ func (p *profiler) shouldRecord(rp *registry.RequestProfile, ap *registry.Attemp
 // decoder (one <= 4 KB Unmarshal) so an invalid profile on a clean success
 // is still force-recorded. TestAlwaysRecordRawMatchesFlattened pins parity.
 func (p *profiler) alwaysRecordRaw(rp *registry.RequestProfile, ap *registry.AttemptProfile) bool {
+	always, _ := p.alwaysRecordRawVerdict(rp, ap)
+	return always
+}
+
+// alwaysRecordRawVerdict is alwaysRecordRaw that also returns what the
+// provider-profile predicate decoded (decoded=false when an earlier
+// predicate decided, or no raw profile was retained).
+func (p *profiler) alwaysRecordRawVerdict(rp *registry.RequestProfile, ap *registry.AttemptProfile) (bool, providerProfileVerdict) {
 	finalStatus, _, _, providerOutcome, _ := ap.Outcome()
 	if deriveFinalStatus(finalStatus, providerOutcome) != finalStatusSuccess {
-		return true
+		return true, providerProfileVerdict{}
 	}
 	if v := ap.FirstContentUS.Load(); v > profileSlowFirstContent.Microseconds() {
-		return true
+		return true, providerProfileVerdict{}
 	}
 	if v := ap.FinalizedUS.Load(); v > profileSlowTotal.Microseconds() {
-		return true
+		return true, providerProfileVerdict{}
 	}
 	if rp.DispatchedAttempts() > 1 || ap.BackupLaunched.Load() || rp.ClientGonePhase() != "" {
-		return true
+		return true, providerProfileVerdict{}
 	}
 	if profileTimingAnomalyRaw(rp, ap) {
-		return true
+		return true, providerProfileVerdict{}
 	}
 	raw, late := ap.ProviderProfileRaw()
 	switch {
@@ -387,16 +418,16 @@ func (p *profiler) alwaysRecordRaw(rp *registry.RequestProfile, ap *registry.Att
 		if receivedAt.IsZero() {
 			receivedAt = time.Now()
 		}
-		_, valid, _, _ := decodeInferenceProfile(raw, receivedAt)
-		return !valid
+		_, valid, reason, enumFolded := decodeInferenceProfile(raw, receivedAt)
+		return !valid, providerProfileVerdict{decoded: true, valid: valid, reason: reason, enumFolded: enumFolded}
 	case late:
-		return true
+		return true, providerProfileVerdict{}
 	default:
 		switch ap.ProviderProfileIngressStatus() {
 		case registry.ProviderProfileTooLarge, registry.ProviderProfileDuplicate:
-			return true
+			return true, providerProfileVerdict{}
 		}
-		return false
+		return false, providerProfileVerdict{}
 	}
 }
 

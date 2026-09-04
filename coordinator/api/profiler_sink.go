@@ -141,9 +141,17 @@ func (p *profileSink) worker() {
 // on the sink worker; panics are contained by the caller's Recover.
 func (p *profileSink) build(job profileJob) *store.RequestProfileRecord {
 	defer saferun.Recover(p.s.logger, "profileSink.build")
-	if !p.s.profiler.shouldRecord(job.rp, job.ap) {
+	record, verdict := p.s.profiler.shouldRecordVerdict(job.rp, job.ap)
+	if !record {
 		p.sampledOut.Add(1)
 		p.s.ddIncr("profiler.records", []string{"status:sampled_out"})
+		// A sampled-out attempt never reaches applyProviderProfile, the
+		// persisted-row emitter of profiler.provider_profile; emit the
+		// verdict the always-record decode already produced so the series
+		// counts every decoded profile rather than ~10% of the valid ones.
+		if verdict.decoded {
+			p.s.emitProviderProfileVerdict(verdict.valid, verdict.reason, verdict.enumFolded)
+		}
 		return nil
 	}
 	rec := p.s.buildProfileRecord(job.rp, job.ap)

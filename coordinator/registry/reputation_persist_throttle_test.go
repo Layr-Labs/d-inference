@@ -20,8 +20,11 @@ type reputationUpsertCounter struct {
 }
 
 func (c *reputationUpsertCounter) UpsertReputation(ctx context.Context, providerID string, rep store.ReputationRecord) error {
+	err := c.MemoryStore.UpsertReputation(ctx, providerID, rep)
+	// Waiters inspect the persisted row after observing this count, so publish
+	// completion only after the wrapped write has made that row visible.
 	c.upserts.Add(1)
-	return c.MemoryStore.UpsertReputation(ctx, providerID, rep)
+	return err
 }
 
 func waitForUpserts(t *testing.T, st *reputationUpsertCounter, want int64) {

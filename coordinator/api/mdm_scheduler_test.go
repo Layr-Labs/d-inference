@@ -118,6 +118,29 @@ func waitSchedulerCondition(t *testing.T, condition func() bool, message string)
 	}
 }
 
+// withoutLiveDispatcher consumes the scheduler's start Once so Submit's Start
+// becomes a no-op and no dispatcher or worker goroutine ever runs. Tests that
+// drive loadDueRows by hand are then the only actor over sch.jobs and
+// dueScanOffset: nothing concurrently pages the same due rows, claims the
+// reseeded job (rewriting job.record) or completes and drops it. Close stays
+// safe because the WaitGroup is never armed.
+func withoutLiveDispatcher(sch *mdmVerificationScheduler) {
+	sch.start.Do(func() {})
+}
+
+// schedulerJobDue reports whether the scheduler currently holds the job and
+// its recorded due time, both read under sch.mu so a test never races the
+// dispatcher's claimAndDispatch, which rewrites job.record.
+func schedulerJobDue(sch *mdmVerificationScheduler, sePubKey string, kind store.VerificationTaskKind) (bool, time.Time) {
+	sch.mu.Lock()
+	defer sch.mu.Unlock()
+	job := sch.jobs[verificationSchedulerKey(sePubKey, kind)]
+	if job == nil {
+		return false, time.Time{}
+	}
+	return true, job.record.NextAttemptAt
+}
+
 func TestMDMSchedulerGlobalConcurrencyCap(t *testing.T) {
 	var active atomic.Int32
 	var maximum atomic.Int32
@@ -969,6 +992,7 @@ func TestMDMSchedulerQueueRejectedChallengeSettlesDurablyAndReseeds(t *testing.T
 	}, mdmSchedulerDeps{now: nowFn, jitter: func(time.Duration, time.Duration) time.Duration {
 		return 3 * time.Minute
 	}})
+	withoutLiveDispatcher(sch)
 	evicted := schedulerTestProvider(t, srv, "evicted-refresh", "se-evicted-refresh")
 	sch.Submit(context.Background(), evicted.ID, evicted, store.VerificationPriorityRefresh)
 	urgent := schedulerTestProvider(t, srv, "urgent-first", "se-urgent-first")
@@ -991,18 +1015,9 @@ func TestMDMSchedulerQueueRejectedChallengeSettlesDurablyAndReseeds(t *testing.T
 	sch.Unbind("se-urgent-first", urgentGeneration)
 	clock.Store(wantDue.UnixNano())
 	sch.loadDueRows()
-	sch.mu.Lock()
-	job := sch.jobs[verificationSchedulerKey(
-		"se-evicted-refresh", store.VerificationTaskSecurityInfo,
-	)]
-	var reseeded *store.VerificationJob
-	if job != nil {
-		record := job.record
-		reseeded = &record
-	}
-	sch.mu.Unlock()
-	if reseeded == nil || !reseeded.NextAttemptAt.Equal(wantDue) {
-		t.Fatalf("durable queue-pressure job was not reseeded at preserved due time: %+v", reseeded)
+	found, reseededDue := schedulerJobDue(sch, "se-evicted-refresh", store.VerificationTaskSecurityInfo)
+	if !found || !reseededDue.Equal(wantDue) {
+		t.Fatalf("durable queue-pressure job was not reseeded at preserved due time: found=%v due=%s", found, reseededDue)
 	}
 }
 
@@ -1021,6 +1036,7 @@ func TestMDMSchedulerDuePagingCannotStarveLiveRowBehindDisconnectedPrefix(t *tes
 			return time.Hour
 		},
 	})
+	withoutLiveDispatcher(sch)
 	for i := range 5 {
 		_, err := st.UpsertVerificationJob(context.Background(), store.VerificationJob{
 			SEPubKey:      fmt.Sprintf("a-disconnected-%02d", i),
@@ -1055,21 +1071,12 @@ func TestMDMSchedulerDuePagingCannotStarveLiveRowBehindDisconnectedPrefix(t *tes
 	for range 4 {
 		sch.loadDueRows()
 	}
-	sch.mu.Lock()
-	job := sch.jobs[verificationSchedulerKey(
-		"z-se-paging-live", store.VerificationTaskSecurityInfo,
-	)]
-	var reseeded *store.VerificationJob
-	if job != nil {
-		record := job.record
-		reseeded = &record
-	}
-	sch.mu.Unlock()
-	if reseeded == nil {
+	found, reseededDue := schedulerJobDue(sch, "z-se-paging-live", store.VerificationTaskSecurityInfo)
+	if !found {
 		t.Fatal("live queue-rejected row remained hidden behind disconnected due-row prefix")
 	}
-	if !reseeded.NextAttemptAt.Equal(due) {
-		t.Fatalf("paged reseed due = %s, want %s", reseeded.NextAttemptAt, due)
+	if !reseededDue.Equal(due) {
+		t.Fatalf("paged reseed due = %s, want %s", reseededDue, due)
 	}
 }
 

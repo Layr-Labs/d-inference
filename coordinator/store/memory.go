@@ -941,6 +941,28 @@ func (s *MemoryStore) RecordRejection(record *RejectionRecord) error {
 	return nil
 }
 
+// RecordRejections appends records in order under one lock (nil records
+// skipped), with the per-row semantics of RecordRejection.
+func (s *MemoryStore) RecordRejections(records []*RejectionRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		rec := *record
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = now
+		}
+		s.inferenceRejections = append(s.inferenceRejections, rec)
+	}
+	return nil
+}
+
 // RejectionRecordsSince returns rejection records created at or after the
 // given time. Zero since returns all records.
 func (s *MemoryStore) RejectionRecordsSince(since time.Time) []RejectionRecord {

@@ -131,6 +131,14 @@ func (s *Server) recordRejection(info rejectionInfo) {
 
 	// Decide whether we still need to compute servability inside the goroutine.
 	computeServability := !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
+	if !computeServability {
+		// Every field is final: hand the row to the sink as a typed op so a
+		// group of them (a rate-limit or drain storm is one row per 429) is
+		// one multi-row insert on the single worker, not one closure each.
+		rec.CouldHaveServed = rec.CandidateCount > 0
+		s.submitRejectionRecord(rec)
+		return
+	}
 	reg := s.registry
 	resolvedModel := info.resolvedModel
 	estPrompt := info.estimatedPromptTokens

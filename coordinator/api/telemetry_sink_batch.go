@@ -51,6 +51,7 @@ import (
 type telemetryGroup struct {
 	ops        []telemetryOp
 	records    []*store.InferenceRouteRecord
+	rejections []*store.RejectionRecord
 	insertKeys map[string]struct{}
 	updateKeys map[string]struct{}
 }
@@ -91,6 +92,8 @@ func (g *telemetryGroup) add(op telemetryOp) {
 		g.insertKeys[routeTelemetryKey(op.record.RequestID, op.record.Attempt)] = struct{}{}
 	case op.update != nil:
 		g.updateKeys[routeTelemetryKey(op.update.RequestID, op.update.Attempt)] = struct{}{}
+	case op.rejection != nil:
+		g.rejections = append(g.rejections, op.rejection)
 	}
 }
 
@@ -201,13 +204,19 @@ func (t *telemetrySink) drainOnClose(carry *telemetryOp) {
 }
 
 // execute persists one group: all records first (one store call), then the
-// remaining ops in queue order with runs of updates pipelined (one store call
-// per run) and generic closures inline. Every store call and closure runs in
-// its own panic-safe unit so one failure cannot skip the rest of the group.
+// group's rejection rows (one store call; they have no key and no ordering
+// dependency on anything else), then the remaining ops in queue order with
+// runs of updates pipelined (one store call per run) and generic closures
+// inline. Every store call and closure runs in its own panic-safe unit so one
+// failure cannot skip the rest of the group.
 func (t *telemetrySink) execute(g *telemetryGroup) {
 	if len(g.records) > 0 {
 		records := g.records
 		t.runUnit(func() { t.persistRoutes(records) })
+	}
+	if len(g.rejections) > 0 {
+		rejections := g.rejections
+		t.runUnit(func() { t.persistRejections(rejections) })
 	}
 	var pending []telemetryOp
 	flush := func() {
@@ -311,6 +320,52 @@ func (t *telemetrySink) persistRoutes(records []*store.InferenceRouteRecord) {
 	}
 	if t.logger != nil {
 		t.logger.Warn("inference_routes batch write failed — retrying rows individually",
+			"rows", len(records),
+			"error", err,
+		)
+	}
+	for _, r := range records {
+		writeOne(r)
+	}
+}
+
+// persistRejections writes a group's rejection rows with one multi-row call,
+// then applies the failure policy from the file header (row fault: replay
+// each row alone; unavailable store or closing sink: drop and count).
+func (t *telemetrySink) persistRejections(records []*store.RejectionRecord) {
+	st := t.store
+	if st == nil {
+		return
+	}
+	writeOne := func(r *store.RejectionRecord) {
+		t.runUnit(func() {
+			err := st.RecordRejection(r)
+			switch {
+			case err == nil:
+			case t.rowFault(err):
+				if t.logger != nil {
+					t.logger.Error("request_rejections row write failed",
+						"request_id", r.RequestID, "stage", r.Stage, "reason_code", r.ReasonCode, "error", err)
+				}
+			default:
+				t.dropGroup("request_rejections", 1, err)
+			}
+		})
+	}
+	if len(records) == 1 {
+		writeOne(records[0])
+		return
+	}
+	err := t.tryBatch("recordRejections", func() error { return st.RecordRejections(records) })
+	if err == nil {
+		return
+	}
+	if !t.rowFault(err) {
+		t.dropGroup("request_rejections", len(records), err)
+		return
+	}
+	if t.logger != nil {
+		t.logger.Warn("request_rejections batch write failed — retrying rows individually",
 			"rows", len(records),
 			"error", err,
 		)

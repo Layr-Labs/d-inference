@@ -18,6 +18,7 @@ import (
 
 	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -209,4 +210,48 @@ func TestRateLimitBypassStampsProfiler(t *testing.T) {
 	}
 	check("admin bypass", "admin", nil)
 	check("service bypass without a service limiter", "openrouter", &store.User{AccountID: "openrouter", Role: store.RoleService})
+}
+
+// TestRateLimit429RowsBatchThroughTheSink drives the production writer
+// (writeRateLimited -> recordRejection) over NewServer's real sink with a
+// store that counts its calls: 200 rate-limit 429s become a handful of
+// multi-row inserts and zero single-row writes, and every row lands. Before
+// the change each 429 queued its own single-row closure (200 store round
+// trips on the one worker), the pattern that let a throttled key starve
+// served requests' route rows.
+func TestRateLimit429RowsBatchThroughTheSink(t *testing.T) {
+	st := newCountingTelemetryStore()
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	t.Cleanup(srv.Close)
+	if srv.routeTelemetry == nil {
+		t.Fatal("NewServer must install the telemetry sink")
+	}
+	const n = 200
+	for i := 0; i < n; i++ {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(minimalChatBody))
+		r = r.WithContext(context.WithValue(r.Context(), ctxKeyConsumer, "acct-storm"))
+		srv.writeRateLimited(rec, r, "ratelimit", "consumer", "requests", 3, "", "requests rate limit exceeded")
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429", rec.Code)
+		}
+	}
+	if !srv.routeTelemetry.closeAndWait(5 * time.Second) {
+		t.Fatal("sink did not drain")
+	}
+	batches, rows := st.count("rejections")
+	if rows != n || batches == 0 || batches > 8 {
+		t.Fatalf("rejection batches: calls=%d rows=%d, want all %d rows in a few multi-row inserts; log=%v", batches, rows, n, st.callLog())
+	}
+	if singles, _ := st.count("rejection"); singles != 0 {
+		t.Fatalf("%d single-row rejection writes on the sink worker, want 0; log=%v", singles, st.callLog())
+	}
+	got := st.RejectionRecordsSince(time.Time{})
+	if len(got) != n {
+		t.Fatalf("persisted %d rows, want %d", len(got), n)
+	}
+	if got[0].Stage != "ratelimit" || got[0].ReasonCode != "requests" || got[0].RetryAfterMs != 3000 || got[0].LimitKind != "consumer" {
+		t.Fatalf("row = %+v, want stage ratelimit / reason requests / retry_after_ms 3000 / limit_kind consumer", got[0])
+	}
 }

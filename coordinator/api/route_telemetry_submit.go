@@ -50,6 +50,24 @@ func (s *Server) submitRouteOutcome(requestID string, attempt int, model string,
 	})
 }
 
+// submitRejectionRecord persists a FINAL rejection-ledger row (servability
+// already decided) off the request path with the same never-block contract
+// as submitRouteRecord: with a sink the row joins its group's one multi-row
+// insert; without one it is written by its own goroutine.
+func (s *Server) submitRejectionRecord(record *store.RejectionRecord) {
+	if s == nil || record == nil || s.store == nil {
+		return
+	}
+	if t := s.routeTelemetry; t != nil {
+		t.bind(s.store)
+		t.submitRejection(record)
+		return
+	}
+	saferun.Go(s.logger, "recordRejection", func() {
+		_ = s.store.RecordRejection(record)
+	})
+}
+
 // logRouteRecordWriteError is the single diagnostic line for a failed route
 // snapshot write; a nil err is a no-op.
 func logRouteRecordWriteError(logger *slog.Logger, record *store.InferenceRouteRecord, err error) {

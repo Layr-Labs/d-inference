@@ -18,9 +18,11 @@ package api
 //
 // Ops are TYPED so the worker can coalesce them: it gathers up to maxBatch ops
 // (waiting at most window for more), writes every route record in the group
-// with ONE multi-row store call and every run of outcome updates with ONE
-// pipelined call, and runs generic closures (rejections) inline at their queue
-// position. See telemetry_sink_batch.go for the ordering argument.
+// with ONE multi-row store call, every final rejection-ledger row with ONE
+// multi-row insert, every run of outcome updates with ONE pipelined call, and
+// runs generic closures (rejections that still need their servability
+// counterfactual) inline at their queue position. See telemetry_sink_batch.go
+// for the ordering argument.
 //
 // Shutdown: close marks the sink closed (later submits are rejected and
 // counted as drops) and signals the worker, which finishes its group, writes
@@ -60,10 +62,11 @@ const (
 )
 
 // telemetryOp is one queued unit of telemetry work. Exactly one of fn, record,
-// or update is set.
+// update, or rejection is set.
 type telemetryOp struct {
-	// fn is a generic best-effort closure (rejection ledger rows, ...). It runs
-	// at its queue position and is never reordered relative to other closures.
+	// fn is a generic best-effort closure (a rejection row that still needs
+	// its servability counterfactual computed, ...). It runs at its queue
+	// position and is never reordered relative to other closures.
 	fn func()
 	// record is an inference_routes snapshot insert (upsert on request/attempt).
 	record *store.InferenceRouteRecord
@@ -71,6 +74,14 @@ type telemetryOp struct {
 	update *store.InferenceRouteOutcomeUpdate
 	// model tags the update's failure log line; it is diagnostic only.
 	model string
+	// rejection is a request_rejections row whose fields are final (no
+	// counterfactual walk needed): rate-limit / drain 429s and every other
+	// caller that already computed servability. Rows carry no key and depend
+	// on no route row, so the worker writes a group's rejections with ONE
+	// multi-row insert — a throttled client at hundreds of 429/s could
+	// otherwise fill the queue with single-row closures and drop other
+	// consumers' route rows.
+	rejection *store.RejectionRecord
 }
 
 // telemetrySink is a bounded, non-blocking work queue for best-effort telemetry
@@ -208,6 +219,15 @@ func (t *telemetrySink) submitOutcome(requestID string, attempt int, model strin
 		update: &store.InferenceRouteOutcomeUpdate{RequestID: requestID, Attempt: attempt, Outcome: outcome},
 		model:  model,
 	})
+}
+
+// submitRejection enqueues a final request_rejections row for the batched
+// insert. Same non-blocking accept/drop contract as submit.
+func (t *telemetrySink) submitRejection(record *store.RejectionRecord) bool {
+	if t == nil || record == nil {
+		return false
+	}
+	return t.enqueue(telemetryOp{rejection: record})
 }
 
 // enqueue is the single non-blocking entry into the buffer: accept, or drop

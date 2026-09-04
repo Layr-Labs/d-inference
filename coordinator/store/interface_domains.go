@@ -188,6 +188,13 @@ type TelemetryStore interface {
 	// the request path.
 	RecordRejection(record *RejectionRecord) error
 
+	// RecordRejections persists a batch of rejection records with exactly the
+	// per-row semantics of RecordRejection (zero CreatedAt defaulted to now,
+	// empty params stored as NULL), issued as one multi-row statement per chunk
+	// instead of one round trip per record. Nil records are skipped. The
+	// telemetry sink coalesces rate-limit / drain 429 rows through it.
+	RecordRejections(records []*RejectionRecord) error
+
 	// RejectionRecordsSince returns rejection records created at or after the
 	// given time. Zero since returns all records.
 	RejectionRecordsSince(since time.Time) []RejectionRecord

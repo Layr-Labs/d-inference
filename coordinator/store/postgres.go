@@ -2050,54 +2050,17 @@ func (s *PostgresStore) InferenceRouteRecordsSince(since time.Time) []InferenceR
 }
 
 // RecordRejection writes a rejected-request record with its counterfactual
-// servability snapshot. Best-effort; failures are discarded and never block
-// the request path.
+// servability snapshot: the single-row case of RecordRejections (the column
+// list and bind order live in postgres_rejections.go). The exec error is
+// returned so a caller with a failure policy (the telemetry sink) can act on
+// it; the request path itself never waits on this write.
 func (s *PostgresStore) RecordRejection(record *RejectionRecord) error {
 	if record == nil {
 		return nil
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	createdAt := record.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
+	if err := s.execRejectionInsert([]*RejectionRecord{record}, rejectionWriteTimeout); err != nil {
+		return fmt.Errorf("store: record rejection: %w", err)
 	}
-
-	// Mirror marshalProviderLocation's JSONB handling: pass nil (→ SQL NULL)
-	// when there are no params so we never write an invalid empty JSONB value.
-	var params json.RawMessage
-	if len(record.Params) > 0 {
-		params = record.Params
-	}
-
-	_, _ = s.pool.Exec(ctx,
-		`INSERT INTO request_rejections (
-			request_id, endpoint, stage, reason_code, http_status, consumer_key_hash, key_id, client_class,
-			requested_model, resolved_model, stream, n, estimated_prompt_tokens, requested_max_tokens,
-			requires_vision, has_image, has_audio, has_tools, tool_count, response_format, self_route_only, prefer_owner,
-			params, request_body_bytes, retry_after_ms,
-			could_have_served, candidate_count, capacity_rejections, model_too_large_rejections, vision_rejections,
-			warm_provider_existed, best_ttft_ms, shortfall_micro_usd, limit_kind, over_by,
-			created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14,
-			$15, $16, $17, $18, $19, $20, $21, $22,
-			$23, $24, $25,
-			$26, $27, $28, $29, $30,
-			$31, $32, $33, $34, $35,
-			$36
-		)`,
-		record.RequestID, record.Endpoint, record.Stage, record.ReasonCode, record.HTTPStatus, record.ConsumerKeyHash, record.KeyID, record.ClientClass,
-		record.RequestedModel, record.ResolvedModel, record.Stream, record.N, record.EstimatedPromptTokens, record.RequestedMaxTokens,
-		record.RequiresVision, record.HasImage, record.HasAudio, record.HasTools, record.ToolCount, record.ResponseFormat, record.SelfRouteOnly, record.PreferOwner,
-		params, record.RequestBodyBytes, record.RetryAfterMs,
-		record.CouldHaveServed, record.CandidateCount, record.CapacityRejections, record.ModelTooLargeRejections, record.VisionRejections,
-		record.WarmProviderExisted, record.BestTTFTMs, record.ShortfallMicroUSD, record.LimitKind, record.OverBy,
-		createdAt,
-	)
 	return nil
 }
 

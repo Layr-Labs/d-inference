@@ -20,8 +20,9 @@ type countingTelemetryStore struct {
 	mu    sync.Mutex
 	calls []string // "record", "records:N", "update", "updates:N", "fn"
 
-	failBatchRecords atomic.Bool
-	failBatchUpdates atomic.Bool
+	failBatchRecords    atomic.Bool
+	failBatchUpdates    atomic.Bool
+	failBatchRejections atomic.Bool
 	// gate, when non-nil, blocks every single-record write until it is closed
 	// (simulates a stuck store while the worker holds one op).
 	gate chan struct{}
@@ -73,6 +74,19 @@ func (c *countingTelemetryStore) RecordInferenceRoutes(rs []*store.InferenceRout
 		return errors.New("injected batch insert failure")
 	}
 	return c.MemoryStore.RecordInferenceRoutes(rs)
+}
+
+func (c *countingTelemetryStore) RecordRejection(r *store.RejectionRecord) error {
+	c.note("rejection")
+	return c.MemoryStore.RecordRejection(r)
+}
+
+func (c *countingTelemetryStore) RecordRejections(rs []*store.RejectionRecord) error {
+	c.note(fmt.Sprintf("rejections:%d", len(rs)))
+	if c.failBatchRejections.Load() {
+		return errors.New("injected rejection batch failure")
+	}
+	return c.MemoryStore.RecordRejections(rs)
 }
 
 func (c *countingTelemetryStore) UpdateInferenceRouteOutcome(id string, attempt int, o *store.InferenceRouteOutcome) error {
@@ -299,6 +313,60 @@ func TestTelemetrySinkGenericClosureKeepsQueuePosition(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("call log = %v, want %v", got, want)
 		}
+	}
+}
+
+// TestTelemetrySinkBatchesRejectionRows: final rejection rows (rate-limit /
+// drain 429s) are typed ops and a group of them is ONE multi-row insert, after
+// the group's route inserts and before its updates/closures. Before the
+// change every row was a closure doing its own single-row INSERT on the one
+// worker, so a throttled client at hundreds of 429/s filled the queue and
+// dropped other consumers' route rows.
+func TestTelemetrySinkBatchesRejectionRows(t *testing.T) {
+	st := newCountingTelemetryStore()
+	sink := newTestSink(t, st, 1024, 256, 10*time.Second)
+
+	const n = 50
+	sink.submitRoute(routeRec("rj-1", 1, "p"))
+	for i := 0; i < n; i++ {
+		if !sink.submitRejection(&store.RejectionRecord{RequestID: fmt.Sprintf("rl-%d", i), Stage: "ratelimit", ReasonCode: "requests", HTTPStatus: 429}) {
+			t.Fatalf("submitRejection %d rejected", i)
+		}
+	}
+	sink.submitOutcome("rj-1", 1, "m", &store.InferenceRouteOutcome{FinalStatus: "success"})
+	flushAndWait(t, sink)
+
+	if calls, rows := st.count("rejections"); calls != 1 || rows != n {
+		t.Fatalf("rejection batches: calls=%d rows=%d, want 1/%d; log=%v", calls, rows, n, st.callLog())
+	}
+	if c, _ := st.count("rejection"); c != 0 {
+		t.Fatalf("no single-row rejection writes expected; log=%v", st.callLog())
+	}
+	// One route record is written alone (the n=1 path), then the group's
+	// rejections in one call, then the update.
+	if got := st.callLog(); len(got) != 3 || got[0] != "record" || got[1] != fmt.Sprintf("rejections:%d", n) || got[2] != "update" {
+		t.Fatalf("call log = %v, want [record rejections:%d update]", got, n)
+	}
+	if rows := st.RejectionRecordsSince(time.Time{}); len(rows) != n {
+		t.Fatalf("persisted %d rejection rows, want %d", len(rows), n)
+	}
+
+	// Failure policy: a row fault on the batch replays each row alone. The
+	// group fills by size (3) so it executes while the sink is OPEN — the
+	// per-row replay is only taken while open; a closing drain drops instead.
+	st2 := newCountingTelemetryStore()
+	st2.failBatchRejections.Store(true)
+	sink2 := newTestSink(t, st2, 1024, 3, 10*time.Second)
+	for i := 0; i < 3; i++ {
+		sink2.submitRejection(&store.RejectionRecord{RequestID: fmt.Sprintf("rf-%d", i), Stage: "drain", HTTPStatus: 429})
+	}
+	waitForCalls(t, st2, "rejection", 3)
+	flushAndWait(t, sink2)
+	if c, _ := st2.count("rejections"); c != 1 {
+		t.Fatalf("batch insert should be attempted once: log=%v", st2.callLog())
+	}
+	if rows := st2.RejectionRecordsSince(time.Time{}); len(rows) != 3 {
+		t.Fatalf("replayed rows persisted = %d, want 3", len(rows))
 	}
 }
 

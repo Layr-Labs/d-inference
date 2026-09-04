@@ -1,5 +1,27 @@
 package api
 
+import "sync"
+
+// Only the immediately preceding set is retained. A departing model gets one
+// zero sample, then leaves the tracker rather than accumulating forever.
+type queueGaugeState struct {
+	mu     sync.Mutex
+	models map[string]struct{}
+}
+
+func (state *queueGaugeState) reconcile(current map[string]struct{}) []string {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	var retired []string
+	for model := range state.models {
+		if _, present := current[model]; !present {
+			retired = append(retired, model)
+		}
+	}
+	state.models = current
+	return retired
+}
+
 // Per-model queue gauges, pushed from StartDDGaugeLoop.
 //
 // request_queue.depth is a single fleet-wide number and queue_wait_ms is
@@ -34,10 +56,16 @@ func (s *Server) emitPerModelQueueGauges(servedModels map[string]int64) {
 	for _, model := range q.QueuedModels() {
 		models[model] = struct{}{}
 	}
+	retired := s.queueGauges.reconcile(models)
 	for model := range models {
 		depth, oldestAge := q.QueueStats(model)
 		tags := []string{"model:" + model}
 		s.ddGauge(metricQueueDepthByModel, float64(depth), tags)
 		s.ddGauge(metricQueueOldestAgeMs, float64(oldestAge.Milliseconds()), tags)
+	}
+	for _, model := range retired {
+		tags := []string{"model:" + model}
+		s.ddGauge(metricQueueDepthByModel, 0, tags)
+		s.ddGauge(metricQueueOldestAgeMs, 0, tags)
 	}
 }

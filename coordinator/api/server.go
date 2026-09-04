@@ -439,7 +439,8 @@ type Server struct {
 
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
-	dd *datadog.Client
+	dd          *datadog.Client
+	queueGauges queueGaugeState
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after

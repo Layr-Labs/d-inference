@@ -137,9 +137,8 @@ func benchLocalStatsd(tb testing.TB) *datadog.Client {
 // providerReadLoop for a baseline heartbeat (no prefix-cache fields, so
 // UpdatePrefixCacheSnapshot is skipped exactly as in production).
 func runHeartbeatBranch(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
-	prev := provider.BackendCapacitySnapshot()
-	s.registry.Heartbeat(providerID, hb)
-	runHeartbeatTail(ctx, s, providerID, provider, prev, hb)
+	s.applyProviderHeartbeat(providerID, provider, hb)
+	s.maybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
 // runHeartbeatTail is the API-side tail after registry ingest, exactly as the

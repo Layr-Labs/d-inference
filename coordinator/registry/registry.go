@@ -4010,14 +4010,15 @@ func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online
 	return online
 }
 
-// Heartbeat updates the provider's status and stats.
-func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
+// Heartbeat updates the provider's status and stats and reports whether the
+// snapshot was accepted. Rejected stale snapshots still advance liveness.
+func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	r.mu.RLock()
 	p, ok := r.providers[id]
 	if !ok {
 		r.mu.RUnlock()
 		r.logger.Warn("heartbeat from unknown provider", "provider_id", id)
-		return
+		return false
 	}
 
 	// Work from registry-owned copies so clamping and retention never mutate the
@@ -4071,7 +4072,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			p.mu.Unlock()
 			r.logger.Debug("discarding stale capacity heartbeat",
 				"provider_id", id, "seq", msg.BackendCapacity.CapacitySeq, "applied_seq", appliedSeq)
-			return
+			return false
 		}
 		p.capacitySeq = msg.BackendCapacity.CapacitySeq
 		// Seq-stamping providers implement the wave-2 capacity protocol:
@@ -4215,6 +4216,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// (model_swap_coalesce.go). Drain work can outlast the planning window,
 	// so claim against the current time rather than the heartbeat timestamp.
 	r.triggerModelSwapsFromHeartbeat(time.Now())
+	return true
 }
 
 // SendLoadModel instructs a provider to eagerly load a model so it becomes

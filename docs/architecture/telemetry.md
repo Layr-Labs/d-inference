@@ -1,6 +1,6 @@
 # Telemetry
 
-> Last updated: 2026-09-04 · commit `aa87a0ebd`
+> Last updated: 2026-09-04 · commit `a50f61560`
 
 How operational data leaves a provider, what the coordinator does with it, and
 why nothing on that path can carry a prompt or slow a request. The heartbeat is
@@ -68,7 +68,10 @@ DogStatsD-only client, or as latest-value gauges through HTTPS when
 claiming fleet percentiles. It emits
 cumulative reclaimer counters as nonnegative deltas from the previous accepted
 heartbeat. The first observation has no counter baseline; a reset contributes
-no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`). Tags
+no negative delta (`coordinator/api/provider_mlx_cache_telemetry.go`).
+`applyProviderHeartbeat` (`coordinator/api/provider_heartbeat.go`) emits only
+when `Registry.Heartbeat` accepts the snapshot; stale sequence-stamped frames
+still prove liveness but emit no repeated allocator or wedge samples. Tags
 never include a provider session id. `sanitizeChipFamilyTag` uses the fixed
 M1–M5 family/tier vocabulary plus `unknown`/`other`; client-cancellation metrics
 use the same helper (`coordinator/api/chip_family_tags.go`).

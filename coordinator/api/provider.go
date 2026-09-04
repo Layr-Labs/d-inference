@@ -631,17 +631,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
-			// The pre-heartbeat snapshot is the baseline for the MLX reclaimer
-			// counter deltas (recordMLXCacheTelemetry); nil on the session's
-			// first heartbeat.
-			prevCapacity := provider.BackendCapacitySnapshot()
-			s.registry.Heartbeat(providerID, hbMsg)
-			// Emit only from the accepted registry snapshot: malformed values
-			// have been clamped and slot model IDs constrained to this
-			// connection's coordinator-known inventory.
-			capacity := provider.BackendCapacitySnapshot()
-			s.recordBackendWedgeTelemetry(capacity)
-			s.recordMLXCacheTelemetry(provider, prevCapacity, capacity)
+			s.applyProviderHeartbeat(providerID, provider, hbMsg)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)

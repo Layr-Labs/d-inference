@@ -880,17 +880,23 @@ func warmPoolBackendSlotBusyLocked(p *Provider) bool {
 	return false
 }
 
+// Counting takes only the shared lock; the write lock is taken to reap
+// expired entries only when the count saw one (expirePendingModelLoads
+// sweeps them anyway). Per warm-pool tick, not per request — kept read-first
+// for lock hygiene, not for the served-path writer queue.
 func (r *Registry) pendingModelLoadCount(now time.Time) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	count := 0
-	for key, expiresAt := range r.pendingModelLoads {
+	r.mu.RLock()
+	count, expired := 0, false
+	for _, expiresAt := range r.pendingModelLoads {
 		if now.After(expiresAt) {
-			delete(r.pendingModelLoads, key)
-			delete(r.pendingModelLoadStarted, key)
+			expired = true
 			continue
 		}
 		count++
+	}
+	r.mu.RUnlock()
+	if expired {
+		r.expirePendingModelLoads(now)
 	}
 	return count
 }

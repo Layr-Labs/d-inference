@@ -2622,7 +2622,17 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
+//
+// Read-first (see RecordInferenceSuccess): the pair is almost never cooling
+// down when a request completes, so probe under the shared lock and take the
+// write lock only when the entry exists.
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
+	r.mu.RLock()
+	_, cooling := r.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}]
+	r.mu.RUnlock()
+	if !cooling {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.dispatchLoadCooldowns, dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID})

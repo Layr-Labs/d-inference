@@ -145,10 +145,28 @@ func (r *Registry) RecordInferenceError(providerID, modelID string, statusCode i
 // success must never clear accumulated "tools" strikes, otherwise a
 // deterministic tool failure interleaved with text traffic could never trip
 // the breaker (the original incident).
+//
+// Read-first: on the served path this runs once per completion and the
+// triple almost never has strikes or a cool-down, so it probes both maps
+// under the shared lock (faultKeyLocked is read-only) and takes the write
+// lock only when there is something to delete, re-checking under it. Under
+// Go's RWMutex every unnecessary Lock() is a full trip through the writer
+// queue — it waits out the in-flight reader batch (fleet scans) and blocks
+// new readers behind it — so the common case must not acquire it.
 func (r *Registry) RecordInferenceSuccess(providerID, modelID, shape string) {
+	r.mu.RLock()
+	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
+	_, hasStrikes := r.inferenceErrorStrikes[key]
+	_, hasCooldown := r.inferenceErrorCooldowns[key]
+	r.mu.RUnlock()
+	if !hasStrikes && !hasCooldown {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
+	// The fault key may have been rebound between the probe and the write
+	// lock; resolve it again so the deletion targets the current key.
+	key = inferenceErrorKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID, Shape: shape}
 	delete(r.inferenceErrorStrikes, key)
 	delete(r.inferenceErrorCooldowns, key)
 }

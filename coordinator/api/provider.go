@@ -2788,7 +2788,8 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// would otherwise never finalize (neither the funnel nor the fallback
 	// completes a claimed terminal).
 	var claimedHere *registry.AttemptProfile
-	if pending := provider.GetPending(msg.RequestID); pending != nil && pending.Profile != nil && !owned {
+	pending := provider.GetPending(msg.RequestID)
+	if pending != nil && pending.Profile != nil && !owned {
 		if !pending.Profile.ClaimTerminal() {
 			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
 			s.ddIncr("inference.unknown_request_frames", []string{"kind:duplicate_error"})
@@ -2802,6 +2803,9 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		// consumer-side cleanup removes it before RemovePending.
 		s.retainProviderProfile(pending.Profile, msg.Profile)
 		msg.Profile = nil
+	}
+	if pending != nil && isDrainingErrorReason(msg.ErrorReason) {
+		s.noteProviderDraining(providerID, pending.Model)
 	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream).
@@ -2843,6 +2847,11 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID
+	if pending == nil && isDrainingErrorReason(msg.ErrorReason) {
+		// A consumer-gone request may already be parked outside the pending
+		// map. Fence its provider before SetProviderIdle drains queued work.
+		s.noteProviderDraining(providerID, pr.Model)
+	}
 	if ap := pr.Profile; ap != nil {
 		ap.Mark(registry.StampCompleteIngress)
 		// A pending entry was claimed at the peek above; a PARKED record (no

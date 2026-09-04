@@ -1,6 +1,6 @@
 # Scheduling: queues, slots, capacity and the warm pool
 
-> Last updated: 2026-09-04 · commit `c54b40e18`
+> Last updated: 2026-09-04 · commit `5d22be17a`
 
 Scheduling is the coordinator's model of *how much work the fleet can take
 and where the weights are*: the per-model request queue, the per-slot state
@@ -80,7 +80,11 @@ is excluded as transient capacity until its next idle/serving heartbeat, or
 `drainStateTTL = 150 * time.Second` without a refresh. These rejections do not
 consume capacity retries or feed provider fault/capacity trackers
 (`coordinator/registry/drain_state.go`, `MarkDraining`;
-`coordinator/api/consumer.go`, `noteInferenceError`). Wire values are listed in
+`coordinator/api/provider.go`, `handleInferenceErrorOwned`;
+`coordinator/api/provider_drain.go`, `noteProviderDraining`). Error ingress marks
+the provider before removing its pending slot or draining queued demand.
+Consumer classification does not repeat the mutation, so a delayed error cannot
+overwrite a newer recovery heartbeat. Wire values are listed in
 [the protocol reference](../reference/protocol-messages.md).
 
 `PopNextFresh` skips stale entries as it pops; `RequeueFront` returns a

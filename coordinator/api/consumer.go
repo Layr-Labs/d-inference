@@ -412,14 +412,11 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// Typed drain refusal (R2, registry/drain_state.go): the provider is
 	// restarting, not sick and not dishonest about capacity. It feeds NO
 	// breaker and NO gray-box capacity state (no cooldown strike, no rate
-	// derate, no budget clamp) — it marks the provider draining so routing
-	// skips it from the next scan on, which also covers a drain whose event
-	// heartbeat has not landed yet; the provider's next idle/serving
-	// heartbeat clears the mark either way.
+	// derate, no budget clamp). Ingress marks draining before releasing the
+	// pending slot, so its queue drain already skips this provider. Do not
+	// repeat that mutation here: an idle/serving heartbeat may have cleared
+	// the mark while this consumer was waiting to process its error channel.
 	if isDrainingErrorReason(errReason) {
-		if s.registry.MarkDraining(providerID) {
-			s.ddIncr("routing.provider_draining", []string{"model:" + pr.Model})
-		}
 		return
 	}
 	// Typed terminal-cause gate (the deadline-incident fix): the provider told

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — provider lifecycle and bounded coordinator work
+
+- Fragment large provider WebSocket messages, bound queue-drain work, and keep control traffic responsive.
+- Fence typed draining refusals at ingress before releasing the request slot; preserve newer recovery heartbeats. Graceful restarts remain health-neutral, and late disconnect errors follow identity enrichment without re-quarantining an upgraded provider.
+- Correlate cancel sends and terminals atomically, bound version history and telemetry tags, and retain MLX metrics on HTTP-only Datadog deployments.
+
 ## Unreleased (2026-09-04) — console redesign
 
 - Provider onboarding specifies macOS 26 or later.

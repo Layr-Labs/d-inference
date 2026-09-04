@@ -571,6 +571,11 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 		case reservationDeadlineExpired:
 			return nil, failedDecision(), nil
 		case reservationCommitted:
+			// The calibrator join runs here, after the registry write section:
+			// it has its own lock and a bounded map sweep that must not extend
+			// the r.mu hold, and first content cannot precede the dispatch that
+			// follows this return, so recordActual still finds the prediction.
+			notePredictedTTFT(pr, model, candidate)
 			decision := routingDecisionForCandidate(
 				model, provider, candidate, last.candidates)
 			addRoutingRejections(&decision, carried)
@@ -787,11 +792,6 @@ func (r *Registry) commitProviderReservation(
 	if !slotStateModelLoaded(candidate.snapshot.slotState) {
 		r.RecordWarmPoolColdDispatch(model)
 	}
-	if !pr.RequiresVision && candidate.breakdown.RawTTFTMs > 0 && candidate.breakdown.StateMs == 0 {
-		ttftCalibration.notePrediction(
-			pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily,
-			candidate.breakdown.RawTTFTMs)
-	}
 	if candidate.breakdown.CacheDiscountMs > 0 {
 		pr.CacheSelectionMode = "active"
 		pr.CacheSelectionTier = candidate.cacheTier
@@ -800,6 +800,20 @@ func (r *Registry) commitProviderReservation(
 		pr.CacheSelectionSelected = true
 	}
 	return p, candidate, reservationCommitted, RoutingDecision{}
+}
+
+// notePredictedTTFT joins the TTFT calibrator for a committed warm text
+// dispatch (the calibrator learns actual/predicted only where the formula
+// predicted a flow time: RawTTFTMs > 0 with no cold-load penalty). Called by
+// both reservation paths AFTER their registry write section is released.
+func notePredictedTTFT(pr *PendingRequest, model string, candidate *routingCandidate) {
+	if pr == nil || candidate == nil || pr.RequiresVision {
+		return
+	}
+	bd := candidate.breakdown
+	if bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
+	}
 }
 
 // currentTTFTShadow computes the observational signal from the winner's
@@ -1180,6 +1194,12 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	var scan candidateScan
 	now := time.Now()
 	r.scanStats.fleetWalks.Add(1)
+	// Per-walk environment reads: the calibration kill switch is scored into
+	// every candidate and the decode-floor median source is consulted for
+	// every candidate without an observed rate, so both are read ONCE here
+	// (os.Getenv per candidate was a visible share of the fleet-scale scan).
+	calibrationOn := ttftCalibrationEnabled()
+	useFleetMedian := decodeFloorUseFleetMedian()
 	// Vision preparation is absent from the token-prefill projection, so media
 	// estimates are advisory even if a caller accidentally supplies a ceiling.
 	// The request-absolute first-content deadline remains authoritative.
@@ -1227,39 +1247,56 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		if !ok {
 			arena.release(c)
 			scan.tallyGate(gateReason)
-			// Count providers a breaker-bypassed fail-open re-scan COULD rescue: those
-			// dropped by the node-health breaker OR the stable-identity health-ejection
-			// gate (both are bypassed when ignoreProviderBreaker is set). Without
-			// counting ejection here, ejecting EVERY provider for a model would leave
-			// winner==nil with breakerRejected==0, so shouldBypassBreakerFailOpen would
-			// NOT fire and the model would be zeroed out. Only meaningful on the normal pass.
-			if !ignoreProviderBreaker {
-				if r.providerBreakerOpenLocked(p.ID, now) {
+			// The gate chain is ordered catalog → dispatch-load cooldown →
+			// inference-error cooldown → capacity cooldown → breaker → ejection →
+			// liveness → traits, then the slot/capacity checks of
+			// buildCandidateInto, and gateReason names the FIRST gate that failed.
+			// The two tallies below therefore only need the extra lookups for a
+			// provider dropped BEFORE the breaker/ejection gates ran (it may also
+			// be breaker-open or ejected, which the fail-open valve counts) or by
+			// the capacity cooldown itself; a provider dropped by any later gate
+			// passed the breaker, ejection and capacity-cooldown gates, so those
+			// lookups (and the p.mu identity read) could only return false.
+			switch gateReason {
+			case GateBreaker, GateEjection:
+				// Count providers a breaker-bypassed fail-open re-scan COULD
+				// rescue (both gates are bypassed when ignoreProviderBreaker is
+				// set; the normal pass never sees these reasons otherwise).
+				// Without counting ejection, ejecting EVERY provider for a model
+				// would leave winner==nil with breakerRejected==0, so
+				// shouldBypassBreakerFailOpen would NOT fire and the model would
+				// be zeroed out.
+				if !ignoreProviderBreaker {
 					breakerRejected++
-				} else if healthEjectionEnabled() {
-					// p.mu is not held here (snapshot released it); take it for the
-					// identity read (r.mu→p.mu is the established order).
-					p.mu.Lock()
-					sid := stableProviderIdentityLocked(p)
-					p.mu.Unlock()
-					if sid != "" && r.healthEjectionOpenLocked(sid, now) {
+				}
+			case GateNotServingModel, GateDedicated, GateDispatchLoadCooldown, GateErrorCooldown, GateCapacityCooldown:
+				if !ignoreProviderBreaker {
+					if r.providerBreakerOpenLocked(p.ID, now) {
 						breakerRejected++
+					} else if healthEjectionEnabled() {
+						// p.mu is not held here (snapshot released it); take it for the
+						// identity read (r.mu→p.mu is the established order).
+						p.mu.Lock()
+						sid := stableProviderIdentityLocked(p)
+						p.mu.Unlock()
+						if sid != "" && r.healthEjectionOpenLocked(sid, now) {
+							breakerRejected++
+						}
 					}
 				}
-			}
-			// A pair dropped ONLY by the capacity-reject cooldown is TRANSIENT
-			// capacity, not structural absence — count it as a capacityRejection
-			// (mirroring quickCapacityCheck) so an all-cooled model classifies as
-			// over_capacity (429/queue material) rather than no_provider. The
-			// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
-			// ALSO fails a structural gate out of the count; both checks are
-			// cheap and only run on the already-rare drop path.
-			if r.capacityCooldownActiveLocked(p.ID, model, now) {
-				p.mu.Lock()
-				otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
-				p.mu.Unlock()
-				if otherwiseRoutable {
-					capacityRejections++
+				// A pair dropped ONLY by the capacity-reject cooldown is TRANSIENT
+				// capacity, not structural absence — count it as a capacityRejection
+				// (mirroring quickCapacityCheck) so an all-cooled model classifies as
+				// over_capacity (429/queue material) rather than no_provider. The
+				// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
+				// ALSO fails a structural gate out of the count.
+				if r.capacityCooldownActiveLocked(p.ID, model, now) {
+					p.mu.Lock()
+					otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
+					p.mu.Unlock()
+					if otherwiseRoutable {
+						capacityRejections++
+					}
 				}
 			}
 			continue
@@ -1281,7 +1318,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				continue
 			}
 		}
-		reason, gateReason, ok := r.buildCandidateInto(c, pr, now)
+		reason, gateReason, ok := r.buildCandidateInto(c, pr, now, calibrationOn)
 		if !ok {
 			arena.release(c)
 			switch reason {
@@ -1376,7 +1413,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	if pr.MinDecodeTPS > 0 {
 		quality := make([]*routingCandidate, 0, len(pool))
 		for _, c := range pool {
-			if projectedPerRequestDecodeTPS(&c.snapshot) >= pr.MinDecodeTPS {
+			if projectedPerRequestDecodeTPSWith(&c.snapshot, useFleetMedian) >= pr.MinDecodeTPS {
 				quality = append(quality, c)
 			}
 		}
@@ -2201,7 +2238,7 @@ func committedTokenBudget(snap *routingSnapshot) int64 {
 // slot whose snapshot was filled in place.
 func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingRequest, now time.Time) (*routingCandidate, candidateRejection, bool) {
 	c := &routingCandidate{snapshot: snap}
-	reason, _, ok := r.buildCandidateInto(c, pr, now)
+	reason, _, ok := r.buildCandidateInto(c, pr, now, ttftCalibrationEnabled())
 	if !ok {
 		return nil, reason, false
 	}
@@ -2215,7 +2252,7 @@ func (r *Registry) buildCandidateWithReason(snap routingSnapshot, pr *PendingReq
 // Cold callers only (the fleet sampler); it reads its own clock. Caller holds r.mu.
 func (r *Registry) buildCandidateGateLocked(snap routingSnapshot, pr *PendingRequest) (*routingCandidate, candidateRejection, GateReason, bool) {
 	c := &routingCandidate{snapshot: snap}
-	reason, gateReason, ok := r.buildCandidateInto(c, pr, time.Now())
+	reason, gateReason, ok := r.buildCandidateInto(c, pr, time.Now(), ttftCalibrationEnabled())
 	if !ok {
 		return nil, reason, gateReason, false
 	}
@@ -2227,8 +2264,9 @@ func (r *Registry) buildCandidateGateLocked(snap routingSnapshot, pr *PendingReq
 // On rejection it returns the candidateRejection class the legacy counters
 // split on AND the closed GateReason naming the exact drop; c is left
 // partially written and must be discarded by the caller (the arena releases
-// the slot).
-func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, now time.Time) (candidateRejection, GateReason, bool) {
+// the slot). calibrationOn is the TTFT-calibration kill switch, read by the
+// caller once per walk (ttftCalibrationEnabled) rather than per candidate.
+func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, now time.Time, calibrationOn bool) (candidateRejection, GateReason, bool) {
 	snap := &c.snapshot
 	statePenalty, eligible := slotStatePenalty(snap.slotState)
 	if !eligible {
@@ -2378,7 +2416,7 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	}
 	// Read the calibration ratio once and score with it, so the ratio the
 	// profiler records is exactly the one this candidate was gated on.
-	calibrationRatio := ttftCalibration.appliedRatio(snap.model, snap.chipFamily)
+	calibrationRatio := ttftCalibration.appliedRatioIf(calibrationOn, snap.model, snap.chipFamily)
 	ttftMs := calibratedTTFTMsWithRatio(snap, rawTTFTMs, calibrationRatio)
 
 	c.provider = snap.provider
@@ -2736,7 +2774,14 @@ func resolvedPrefillTPS(p *Provider) float64 {
 // reapplied at b+1; otherwise the static benchmark is the solo proxy. Used by the
 // decode-floor quality preference (PendingRequest.MinDecodeTPS).
 func projectedPerRequestDecodeTPS(snap *routingSnapshot) float64 {
-	return projectedPerRequestDecodeTPSAtBatch(snap, snap.backendRunning)
+	return projectedPerRequestDecodeTPSAtBatchWith(snap, snap.backendRunning, decodeFloorUseFleetMedian())
+}
+
+// projectedPerRequestDecodeTPSWith is projectedPerRequestDecodeTPS with the
+// decode-floor median switch supplied by the caller (read once per fleet walk
+// by scanCandidatesLocked instead of once per candidate).
+func projectedPerRequestDecodeTPSWith(snap *routingSnapshot, useFleetMedian bool) float64 {
+	return projectedPerRequestDecodeTPSAtBatchWith(snap, snap.backendRunning, useFleetMedian)
 }
 
 // projectedPerRequestDecodeTPSAtBatch is projectedPerRequestDecodeTPS with an
@@ -2750,6 +2795,10 @@ func projectedPerRequestDecodeTPS(snap *routingSnapshot) float64 {
 // peers the heartbeat has not yet reflected (occ > backend_running) is charged at
 // the contended rate it will actually see — not the idle/low-batch rate.
 func projectedPerRequestDecodeTPSAtBatch(snap *routingSnapshot, joinBatch int) float64 {
+	return projectedPerRequestDecodeTPSAtBatchWith(snap, joinBatch, decodeFloorUseFleetMedian())
+}
+
+func projectedPerRequestDecodeTPSAtBatchWith(snap *routingSnapshot, joinBatch int, useFleetMedian bool) float64 {
 	k := effectiveTPSLoadFactor
 	if k < 0 {
 		k = 0
@@ -2768,7 +2817,7 @@ func projectedPerRequestDecodeTPSAtBatch(snap *routingSnapshot, joinBatch int) f
 		// tier 1: this box's own LIVE measured rate, unwound from the batch it
 		// was measured at (bObserved) to solo.
 		solo = snap.observedDecodeTPS * (1 + k*float64(bObserved))
-	case decodeFloorUseFleetMedian() && snap.fleetMedianTPS > 0:
+	case useFleetMedian && snap.fleetMedianTPS > 0:
 		// tier 2: durable per-(model,chip) observed median from the tps registry.
 		// Exists even when this box is IDLE, so a historically-slow chip (e.g. the
 		// ~9 tok/s gemma boxes driving client_gone) is deprioritized BEFORE it gets
@@ -2942,7 +2991,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		// re-introducing the very model-wide outage the valve exists to prevent.
 		// Every other gate (incl. the shape-keyed inference-error cooldown) is
 		// still honored; the breaker still steers SELECTION away from bad nodes.
-		if !r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, false) {
+		if ok, reason := r.providerRoutingGateReasonLockedEx(p, model, traits, false, now, true, false); !ok {
 			// A pair blocked ONLY by the capacity-reject cooldown is TRANSIENT
 			// capacity, not structural absence: the box exists, serves the model,
 			// and will be re-probed when its TTL lapses. Count it as a
@@ -2957,8 +3006,12 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			// (same as the main path just below), and a pair whose model can
 			// never fit the hardware counts as modelTooLarge — never as
 			// transient capacity, or a fleet of undersized cooled boxes would
-			// read as "busy, retry" for a model that will never fit.
-			if r.capacityCooldownActiveLocked(p.ID, model, now) &&
+			// read as "busy, retry" for a model that will never fit. The gate
+			// reason names the first failing gate, so reason == capacity
+			// cooldown means the pair is cooled AND passed every earlier gate —
+			// exactly the old "cooled && otherwise passes" predicate, minus a
+			// redundant cooldown lookup on every drop.
+			if reason == GateCapacityCooldown &&
 				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
 				p.SystemMetrics.ThermalState != "critical" &&
 				(!requiresVision || r.providerServesVisionModelLocked(p, model, false)) {
@@ -3164,11 +3217,13 @@ func ttftMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
 //
 // It is used ONLY by the shadow evaluator today; a future enforce step will wire
 // it (against the verified ~10s base) into the live path. Keeping the occupancy
-// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: prod runs HARD_REJECT
-// (pr.MaxTTFTMs set from the pinned request-local deadline), so if the term
-// leaked into ttftMsFromSnapshot, raising alpha would tighten the live ceiling
-// and over-shed ~2x (telemetry-db findings §2). The term may therefore only
-// ever reach the shadow estimate, never breakdown.TTFTMs.
+// term OUT of ttftMsFromSnapshot is a SAFETY INVARIANT: whenever the hard TTFT
+// gate is on (EIGENINFERENCE_TTFT_HARD_REJECT=true — a deploy-time switch, so
+// assume it may be), pr.MaxTTFTMs is set from the pinned request-local
+// deadline and breakdown.TTFTMs is a live admission ceiling; if the term
+// leaked into ttftMsFromSnapshot, raising alpha would tighten that ceiling and
+// over-shed ~2x (telemetry-db findings §2). The term may therefore only ever
+// reach the shadow estimate, never breakdown.TTFTMs.
 func occupancyAwareTTFTMsFromSnapshot(snap *routingSnapshot, reqPromptTokens int) float64 {
 	base := ttftMsFromSnapshot(snap, reqPromptTokens)
 	if base <= 0 {

@@ -340,7 +340,16 @@ func (c *ttftCalibrator) learnedRatioLocked(model, chip string) float64 {
 // appliedRatio is the ratio the live estimate is scaled by: the learned ratio,
 // or 1.0 when the kill switch is off.
 func (c *ttftCalibrator) appliedRatio(model, chip string) float64 {
-	if !ttftCalibrationEnabled() {
+	return c.appliedRatioIf(ttftCalibrationEnabled(), model, chip)
+}
+
+// appliedRatioIf is appliedRatio with the kill-switch state supplied by the
+// caller: a fleet walk reads EIGENINFERENCE_TTFT_CALIBRATION once per walk
+// (ttftCalibrationEnabled is env.EnvOr = os.Getenv + TrimSpace per call) and
+// scores every candidate with it, instead of re-reading the environment per
+// candidate. The environment remains the live source: the next walk re-reads.
+func (c *ttftCalibrator) appliedRatioIf(enabled bool, model, chip string) float64 {
+	if !enabled {
 		return 1.0
 	}
 	c.mu.RLock()

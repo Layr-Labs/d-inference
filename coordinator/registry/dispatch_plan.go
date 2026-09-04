@@ -375,6 +375,16 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	if pr == nil || pr.RequestID == "" || plan == nil || plan.model == "" {
 		return nil, RoutingDecision{}, []PlanSkip{{Reason: PlanSkipExhausted}}
 	}
+	p, decision, skips, reserved := r.reserveNextFromPlanLocked(pr, plan, excludeIDs...)
+	// Calibrator join after the write section (see notePredictedTTFT).
+	notePredictedTTFT(pr, plan.model, reserved)
+	return p, decision, skips
+}
+
+// reserveNextFromPlanLocked is ReserveNextFromPlan's locked body; it also
+// returns the reserved candidate so the caller can join the calibrator once
+// the write lock is released.
+func (r *Registry) reserveNextFromPlanLocked(pr *PendingRequest, plan *DispatchPlan, excludeIDs ...string) (*Provider, RoutingDecision, []PlanSkip, *routingCandidate) {
 	model := plan.model
 	if pr.Model == "" {
 		pr.Model = model
@@ -402,7 +412,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	// tryReserve runs the full CURRENT gate chain against one identity-checked
 	// entry and, on success, commits the reservation. Failure appends the
 	// bounded gate_rejected skip.
-	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
+	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, *routingCandidate, bool) {
 		id := entry.view.ProviderID
 		p := entry.provider
 		// One clock read per revalidated entry (snapshot, cost, admit, claim).
@@ -415,26 +425,26 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		if pr.SelfRouteOnly && !owned {
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 		if len(allowedSerials) > 0 && !providerMatchesAllowedSerial(p, allowedSerials) {
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
 		snap, ok := r.snapshotProviderLockedEx(p, model, pr.Traits, relaxTrust, false, now)
 		if !ok {
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 		candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
 		if !ok {
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 
 		// Final admit + reservation under p.mu — the same commit sequence as
@@ -445,7 +455,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
-			return nil, RoutingDecision{}, false
+			return nil, RoutingDecision{}, nil, false
 		}
 		pr.ProviderID = p.ID
 		p.addPendingLocked(pr)
@@ -460,12 +470,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 		if !slotStateModelLoaded(candidate.snapshot.slotState) {
 			r.RecordWarmPoolColdDispatch(model)
 		}
-		// Same calibrator-join rule as the primary path: warm text dispatches
-		// only (see reserveProvider).
 		bd := candidate.breakdown
-		if !pr.RequiresVision && bd.RawTTFTMs > 0 && bd.StateMs == 0 {
-			ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, candidate.snapshot.chipFamily, bd.RawTTFTMs)
-		}
 		// Winner-specific fields only: the scan tallies belong to the plan
 		// (EligibleCount/…), not to this per-entry revalidation, so the count
 		// fields stay zero rather than repeating stale scan-time numbers.
@@ -486,7 +491,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			EffectiveTPS:       candidate.effectiveTPS,
 			StaticTPS:          candidate.snapshot.decodeTPS,
 		}
-		return p, decision, true
+		return p, decision, candidate, true
 	}
 
 	// Pass 1: cost order, deferring live avoided-version entries (see the
@@ -511,25 +516,25 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			deferred = append(deferred, entry)
 			continue
 		}
-		if p, decision, ok := tryReserve(entry); ok {
+		if p, decision, candidate, ok := tryReserve(entry); ok {
 			// Diversity won: the deferred same-version entries were passed
 			// over for this consumption — record them for telemetry.
 			for _, d := range deferred {
 				skips = append(skips, PlanSkip{ProviderID: d.view.ProviderID, Reason: PlanSkipVersionAvoided})
 			}
-			return p, decision, skips
+			return p, decision, skips, candidate
 		}
 	}
 	// Pass 2: no diverse entry was admissible — fall back to the avoided
 	// version rather than failing closed. The pass-1 identity checks remain
 	// valid: r.providers cannot change while the r.mu write lock is held.
 	for _, entry := range deferred {
-		if p, decision, ok := tryReserve(entry); ok {
-			return p, decision, skips
+		if p, decision, candidate, ok := tryReserve(entry); ok {
+			return p, decision, skips, candidate
 		}
 	}
 	skips = append(skips, PlanSkip{Reason: PlanSkipExhausted})
-	return nil, RoutingDecision{Model: model}, skips
+	return nil, RoutingDecision{Model: model}, skips, nil
 }
 
 // RefreshDispatchPlan performs the plan's single full re-scan refresh: a fresh

@@ -109,9 +109,17 @@ func (s *Server) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
 	writeCachedJSON(w, body)
 }
 
+// windowParamOrDefault canonicalises a window parseLeaderboardWindow
+// accepts: the aliases 1d and lifetime map onto 24h and all, so they share
+// the refresher-owned network_totals keys (and their ≤60 s staleness)
+// instead of taking the 5 min cold path under their own key. The response
+// echoes the canonical spelling.
 func windowParamOrDefault(s string) string {
-	if s == "" {
+	switch s {
+	case "", "lifetime":
 		return "all"
+	case "1d":
+		return "24h"
 	}
 	return s
 }

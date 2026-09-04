@@ -472,6 +472,35 @@ func TestStatsUnavailableCarriesRetryAfter(t *testing.T) {
 	}
 }
 
+// The alias spellings share the warm keys: after one refresh, ?window=1d
+// and ?window=lifetime are cache hits on network_totals:24h / :all (no
+// store read) and echo the canonical window.
+func TestNetworkTotalsAliasWindowsHitWarmKeys(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	srv.refreshStatsCaches(context.Background())
+	calls := st.totalsCalls.Load()
+
+	for alias, canonical := range map[string]string{"1d": "24h", "lifetime": "all", "": "all"} {
+		code, body := getNetworkTotals(t, srv, alias)
+		if code != http.StatusOK {
+			t.Fatalf("window=%q: status %d: %s", alias, code, body)
+		}
+		var resp struct {
+			Window string `json:"window"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil || resp.Window != canonical {
+			t.Fatalf("window=%q: body window = %q (err %v), want %q", alias, resp.Window, err, canonical)
+		}
+		if _, ok := srv.readCache.Get(networkTotalsCacheKey(alias)); ok && alias != "" {
+			t.Fatalf("window=%q got its own cache key", alias)
+		}
+	}
+	if got := st.totalsCalls.Load(); got != calls {
+		t.Fatalf("totals store reads after alias requests = %d, want %d (all served from the warm keys)", got, calls)
+	}
+}
+
 type stubGeoResolver struct{ loc *store.ProviderLocation }
 
 func (s stubGeoResolver) Lookup(*http.Request) *store.ProviderLocation { return s.loc }

@@ -33,8 +33,9 @@ extension EngineV2Bridge {
     /// semantics are unchanged. One documented divergence: a `.length`/EOS
     /// finish whose FULL decode happened to contain a candidate the engine
     /// never matched (a SentencePiece whitespace-rewrite artifact) used to
-    /// report that stale match; the tail reports nil, which is the correct
-    /// answer.
+    /// report that stale match; the pump still runs identification for
+    /// `.length`, so such an artifact is reported only when it sits inside
+    /// the retained tail and is nil otherwise.
     func matchedStopSequence(
         candidates: [String],
         generatedTokens: [Int]

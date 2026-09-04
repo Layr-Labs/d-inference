@@ -303,12 +303,21 @@ func TestStatsRefreshFailureKeepsPreviousBody(t *testing.T) {
 	}
 
 	// No previous body and a failing store: unavailable, and nothing cached.
+	// The hold from the failed tick is expired first so the cold path really
+	// executes the failing reads (otherwise the held error alone would
+	// satisfy these assertions, whatever refreshStats cached on error).
 	srv.readCache.expireAllForTest()
+	srv.refreshFlights.expireFailureHoldForTest()
+	calls, totalsCalls := st.analyticsCalls.Load(), st.totalsCalls.Load()
 	if code, body := getStats(t, srv); code != http.StatusServiceUnavailable {
 		t.Fatalf("cold stats with failing analytics: status %d, body %s", code, body)
 	}
 	if code, body := getNetworkTotals(t, srv, "24h"); code != http.StatusServiceUnavailable {
 		t.Fatalf("cold totals with failing store: status %d, body %s", code, body)
+	}
+	if st.analyticsCalls.Load() != calls+1 || st.totalsCalls.Load() != totalsCalls+1 {
+		t.Fatalf("cold path after hold expiry did not execute: analytics %d→%d totals %d→%d",
+			calls, st.analyticsCalls.Load(), totalsCalls, st.totalsCalls.Load())
 	}
 	if _, ok := srv.readCache.Get(statsCacheKey); ok {
 		t.Fatal("a failed cold refresh cached a stats body")
@@ -350,6 +359,9 @@ func TestStatsFailureHoldStopsPipelineStacking(t *testing.T) {
 	}
 	if got := st.analyticsCalls.Load(); got != 1 {
 		t.Fatalf("analytics executions for %d cold misses on a failing store = %d, want 1", n, got)
+	}
+	if _, ok := srv.readCache.Get(statsCacheKey); ok {
+		t.Fatal("the failed execution cached a stats body")
 	}
 	var wg sync.WaitGroup
 	totalsCodes := make([]int, n)

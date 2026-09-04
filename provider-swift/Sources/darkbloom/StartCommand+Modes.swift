@@ -214,6 +214,8 @@ extension Start {
         // panic hook now; its compatibility queue calls are no-ops and its only
         // provider-owned output is a bounded local stderr marker.
         PanicHook.install()
+        // CBV2_STEP_PROFILE=1 only: SIGUSR1 dumps the engine step-phase table.
+        EngineStepProfileDump.armIfEnabled()
 
         // Arm crash recovery for the running daemon however it was launched
         // (manual start, login, or auto-update relaunch). Idempotent (skip when

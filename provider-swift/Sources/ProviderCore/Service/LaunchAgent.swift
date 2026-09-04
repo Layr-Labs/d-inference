@@ -301,12 +301,13 @@ public enum LaunchAgent: Sendable {
     /// prefill), `CBV2_STEP_PROFILE` (step profiler), `MLX_COMPILED_DECODE`
     /// (the documented Tahoe opt-out) and `MLX_QWEN_DIRECT_EXPERT_REDUCTION`.
     /// Defaults are unchanged: nothing here is set unless an operator does.
+    /// `CBV2_STEP_PROFILE` is dumped on SIGUSR1 by `EngineStepProfileDump`.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
         "DARKBLOOM_CBV2_MIXED_PREFILL_CAP",
         "DARKBLOOM_CBV2_PREFILL_NARROWING",
-        "CBV2_STEP_PROFILE",
+        EngineStepProfileDump.environmentKey,
         "MLX_COMPILED_DECODE",
         "MLX_QWEN_DIRECT_EXPERT_REDUCTION",
     ]

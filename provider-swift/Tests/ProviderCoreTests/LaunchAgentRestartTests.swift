@@ -54,6 +54,17 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
+    /// `CBV2_STEP_PROFILE` must reach the launchd daemon or the SIGUSR1
+    /// step-profile dump stays a foreground-only diagnostic.
+    @Test func forwardsTheEngineStepProfileSwitch() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            EngineStepProfileDump.environmentKey: "1",
+            "PATH": "/usr/bin",
+        ])
+        #expect(out == [EngineStepProfileDump.environmentKey: "1"])
+        #expect(EngineStepProfileDump.environmentKey == "CBV2_STEP_PROFILE")
+    }
+
     @Test func forwardsTheHuggingFaceCacheRootSoTheDaemonScansTheShellsCache() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             "HF_HOME": "/Volumes/models/hf",

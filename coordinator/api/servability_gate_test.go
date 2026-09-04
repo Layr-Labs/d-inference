@@ -52,6 +52,25 @@ func servabilityHarness(t *testing.T) (*Server, *http.Request) {
 // on a gate-ON shed, which returns before that branch is reached.
 func servabilityHarnessWithBudget(t *testing.T, budgetMax, budgetUsed int64) (*Server, *http.Request) {
 	t.Helper()
+	srv, model := servabilityServerWithBudget(t, budgetMax, budgetUsed)
+
+	// ~40,000 chars => ~10,000 estimated prompt tokens (the len/4 routing
+	// heuristic in estimatePromptTokens); with max_tokens 64 the request needs
+	// ~10,064 tokens, far beyond the 4096 budget, so it is structurally
+	// unservable on this (only) provider.
+	hugePrompt := strings.Repeat("x", 40000)
+	return srv, servabilityChatRequest(t, map[string]any{
+		"model":      model,
+		"messages":   []any{map[string]any{"role": "user", "content": hugePrompt}},
+		"max_tokens": 64,
+	})
+}
+
+// servabilityServerWithBudget is the server half of servabilityHarnessWithBudget:
+// one routable, model-resident provider whose single slot advertises the given
+// token-budget ceiling and live usage. Returns the server and the model id.
+func servabilityServerWithBudget(t *testing.T, budgetMax, budgetUsed int64) (*Server, string) {
+	t.Helper()
 	t.Setenv("EIGENINFERENCE_QUEUE_BEFORE_SHED", "false")
 
 	srv, _ := testServer(t)
@@ -67,25 +86,66 @@ func servabilityHarnessWithBudget(t *testing.T, budgetMax, budgetUsed int64) (*S
 	p.BackendCapacity.Slots[0].ActiveTokenBudgetMax = budgetMax
 	p.BackendCapacity.Slots[0].ActiveTokenBudgetUsed = budgetUsed
 	p.Mu().Unlock()
+	return srv, model
+}
 
-	// ~40,000 chars => ~10,000 estimated prompt tokens (the len/4 routing
-	// heuristic in estimatePromptTokens); with max_tokens 64 the request needs
-	// ~10,064 tokens, far beyond the 4096 budget, so it is structurally
-	// unservable on this (only) provider.
-	hugePrompt := strings.Repeat("x", 40000)
-	reqBody, err := json.Marshal(map[string]any{
-		"model":      model,
-		"messages":   []any{map[string]any{"role": "user", "content": hugePrompt}},
-		"max_tokens": 64,
-	})
+// servabilityChatRequest builds the authenticated chat request for body.
+func servabilityChatRequest(t *testing.T, body map[string]any) *http.Request {
+	t.Helper()
+	reqBody, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal request body: %v", err)
 	}
-
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(reqBody)))
 	req.Header.Set("Authorization", "Bearer test-key")
 	req.Header.Set("Content-Type", "application/json")
-	return srv, req
+	return req
+}
+
+// TestServabilityGateCountsToolSchemas pins T10-07 at the gate: a request
+// whose messages alone fit the only provider's 4096-token budget (2,000 prompt
+// tokens + max_tokens 64) but whose 10 KB tools array pushes the routing
+// estimate to ~4,624 tokens is shed at preflight with the servability 429.
+// Before the change the tool schemas were invisible to the estimate, the gate
+// admitted the request, and the oversized prefill reached the provider.
+func TestServabilityGateCountsToolSchemas(t *testing.T) {
+	srv, model := servabilityServerWithBudget(t, 4096, 0)
+	srv.SetServabilityGate(true)
+	// The fixture provider registers at the desired_models floor (0.5.17); a
+	// tool-bearing request is trait-gated to providers at the tools floor.
+	if p := srv.registry.GetProvider("servability-budget-provider"); p != nil {
+		p.Mu().Lock()
+		p.Version = "0.8.10"
+		p.Mu().Unlock()
+	}
+
+	const toolsJSONLen = 10240 // 2,560 tokens of schema
+	body := map[string]any{
+		"model":      model,
+		"messages":   []any{map[string]any{"role": "user", "content": strings.Repeat("x", 8000)}},
+		"max_tokens": 64,
+		"tools":      toolSchemaOfJSONLength(t, toolsJSONLen),
+	}
+
+	// Control: the same request without tools fits and is not shed by the gate.
+	control := map[string]any{"model": body["model"], "messages": body["messages"], "max_tokens": body["max_tokens"]}
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, servabilityChatRequest(t, control))
+	if strings.Contains(w.Body.String(), "largest provider token budget") {
+		t.Fatalf("control request without tools was shed by the servability gate: %d %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, servabilityChatRequest(t, body))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Fatal("Retry-After header missing on the tools-driven servability 429")
+	}
+	if !strings.Contains(w.Body.String(), "largest provider token budget") {
+		t.Fatalf("body = %q, want the servability token-budget detail (tools must count toward the estimate)", w.Body.String())
+	}
 }
 
 // TestServabilityGateShedsUnservable429 pins the gate-ON behaviour: the oversized

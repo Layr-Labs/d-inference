@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,13 @@ var introspectionBodies = map[string]string{
 	"empty prompt":         `{"model":"m","messages":[],"input":"","prompt":"","max_tokens":9}`,
 	"no prompt fields":     `{"model":"m","temperature":0.5}`,
 	"content unusual":      `{"model":"m","messages":[{"role":"user","content":{"nested":"object"}},{"role":"user","content":12}]}`,
+	// Prompt-bearing fields OUTSIDE messages/input/prompt (T10-07): tool
+	// schemas on every API shape, the Anthropic top-level system prompt (string
+	// or blocks) and the Responses instructions.
+	"anthropic system string": `{"model":"m","system":"You are terse.","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}]}`,
+	"anthropic system blocks": `{"model":"m","system":[{"type":"text","text":"You are terse."},{"type":"text","text":"Answer in French."}],"messages":[{"role":"user","content":"hi"}]}`,
+	"responses instructions":  `{"model":"m","instructions":"Reply in JSON only.","input":"summarize","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`,
+	"tools only":              `{"model":"m","tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`,
 }
 
 // legacyEstimates re-implements the pre-fusion estimators (independent walks,
@@ -164,6 +172,19 @@ func legacyEstimates(parsed map[string]any) (routing, billing, media int) {
 		routing += legacyCount(v)
 		billing += legacyUpper(v)
 	}
+	// Independent walk of the auxiliary prompt fields (T10-07): tool schemas
+	// count their JSON bytes / 4, the Anthropic system prompt and the Responses
+	// instructions count like any other prompt value. Routing only — the
+	// billing byte bound is untouched.
+	if v, ok := parsed["tools"]; ok {
+		routing += marshalLen(v) / 4
+	}
+	if v, ok := parsed["system"]; ok {
+		routing += legacyCount(v)
+	}
+	if v, ok := parsed["instructions"]; ok {
+		routing += legacyCount(v)
+	}
 	if routing == 0 {
 		routing = legacyCount(parsed)
 	}
@@ -227,5 +248,87 @@ func TestRequestShapeFallbackIsLazy(t *testing.T) {
 	}
 	if got := estimatePromptTokens(parsed); got != shape.routingPromptTokens(parsed) {
 		t.Fatalf("wrapper = %d, shape = %d", got, shape.routingPromptTokens(parsed))
+	}
+}
+
+// toolSchemaOfJSONLength returns a one-tool array whose JSON encoding is exactly
+// jsonLen bytes, so the routing term it adds is exactly jsonLen/4 tokens.
+func toolSchemaOfJSONLength(t *testing.T, jsonLen int) []any {
+	t.Helper()
+	const overhead = len(`[{"type":"function","function":{"name":"f","description":""}}]`)
+	if jsonLen < overhead {
+		t.Fatalf("jsonLen %d below the %d-byte envelope", jsonLen, overhead)
+	}
+	tools := []any{map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        "f",
+			"description": strings.Repeat("x", jsonLen-overhead),
+		},
+	}}
+	if got := jsonValueLen(tools); got != jsonLen {
+		t.Fatalf("tools JSON length = %d, want %d", got, jsonLen)
+	}
+	return tools
+}
+
+// TestRoutingShapeCountsToolsSystemInstructions pins the T10-07 terms on all
+// three API shapes: a 6 KB tools array adds exactly 1,536 routing tokens on
+// top of the message walk (tool-less bodies are unchanged), the Anthropic
+// system prompt and the Responses instructions count like prompt text, a body
+// whose only prompt-bearing field is tools no longer falls back to the
+// whole-body marshal (no double count), and the billing bound is untouched.
+// Before the change every one of these deltas was 0.
+func TestRoutingShapeCountsToolsSystemInstructions(t *testing.T) {
+	const toolsJSONLen = 6144 // 6 KB of schema → 1,536 tokens
+	tools := toolSchemaOfJSONLength(t, toolsJSONLen)
+	instructions := strings.Repeat("i", 400) // 100 tokens
+	system := strings.Repeat("s", 800)       // 200 tokens
+
+	chat := map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	chatBase := estimatePromptTokens(chat)
+	if chatBase != 4+1 {
+		t.Fatalf("tool-less chat estimate = %d, want 5 (4/message + len/4)", chatBase)
+	}
+	chat["tools"] = tools
+	if got := estimatePromptTokens(chat); got != chatBase+toolsJSONLen/4 {
+		t.Fatalf("chat with 6 KB tools = %d, want %d (+%d)", got, chatBase+toolsJSONLen/4, toolsJSONLen/4)
+	}
+	if got := estimateBillingPromptTokens(chat); got != estimateBillingPromptTokens(map[string]any{"model": "m", "messages": chat["messages"]}) {
+		t.Fatalf("billing bound moved with tools: %d", got)
+	}
+
+	responses := map[string]any{"model": "m", "input": "summarize"}
+	respBase := estimatePromptTokens(responses)
+	responses["instructions"] = instructions
+	responses["tools"] = tools
+	if got, want := estimatePromptTokens(responses), respBase+100+toolsJSONLen/4; got != want {
+		t.Fatalf("responses with instructions+tools = %d, want %d", got, want)
+	}
+
+	anthropic := map[string]any{"model": "m", "messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+	anthBase := estimatePromptTokens(anthropic)
+	anthropic["system"] = system
+	anthropic["tools"] = tools
+	if got, want := estimatePromptTokens(anthropic), anthBase+200+toolsJSONLen/4; got != want {
+		t.Fatalf("anthropic with system+tools = %d, want %d", got, want)
+	}
+	anthropic["system"] = []any{map[string]any{"type": "text", "text": system}}
+	blocks := estimatePromptTokens(anthropic)
+	if blocks <= anthBase+toolsJSONLen/4 {
+		t.Fatalf("anthropic system blocks not counted: %d", blocks)
+	}
+
+	// tools as the only prompt-bearing field: counted once (the whole-body
+	// fallback, which would also include the model field, must not run).
+	toolsOnly := map[string]any{"model": strings.Repeat("m", 400), "tools": tools}
+	if got := estimatePromptTokens(toolsOnly); got != toolsJSONLen/4 {
+		t.Fatalf("tools-only body = %d, want exactly %d (no whole-body fallback)", got, toolsJSONLen/4)
+	}
+
+	// Both handlers read the same walk.
+	shape := introspectRequest(chat)
+	if got := shape.routingPromptTokens(chat); got != estimatePromptTokens(chat) {
+		t.Fatalf("introspectRequest routing = %d, estimatePromptTokens = %d", got, estimatePromptTokens(chat))
 	}
 }

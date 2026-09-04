@@ -415,3 +415,22 @@ func TestMaybeFallbackAliasCapacitySkipsRejectedPrevious(t *testing.T) {
 		t.Fatalf("capacity fallback switched to rejected previous: switched=%v fallback=%q parsed=%v", switched, fallbackModel, parsed)
 	}
 }
+
+// TestFirstContentDeadlineCountsToolSchemas pins the T10-07 product effect on
+// the first-content clock: a 6 KB tools array adds 1,536 estimated prompt
+// tokens, and at the fixed 1 ms/token slope the deadline widens by exactly
+// 1.536 s — the budget an agentic request's schema-heavy prefill was silently
+// missing. Tool-less requests are unchanged.
+func TestFirstContentDeadlineCountsToolSchemas(t *testing.T) {
+	srv, _ := testServer(t)
+	const model = "tools-deadline-model"
+	body := map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+	base := srv.FirstContentDeadline(model, estimatePromptTokens(body))
+	if base != 5*time.Second+5*time.Millisecond {
+		t.Fatalf("tool-less deadline = %v, want 5.005s", base)
+	}
+	body["tools"] = toolSchemaOfJSONLength(t, 6144)
+	if got, want := srv.FirstContentDeadline(model, estimatePromptTokens(body)), base+1536*time.Millisecond; got != want {
+		t.Fatalf("deadline with 6 KB tools = %v, want %v (+1.536s)", got, want)
+	}
+}

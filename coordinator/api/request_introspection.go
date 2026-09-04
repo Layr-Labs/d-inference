@@ -174,7 +174,15 @@ func introspectRequest(parsed map[string]any) requestShape {
 }
 
 // routingShape walks messages[], input[] and prompt once for the media-aware
-// routing estimate and the image/video part count.
+// routing estimate and the image/video part count, then adds the prompt-bearing
+// fields that live OUTSIDE those arrays: the top-level tools[] schemas (Chat,
+// Responses and Anthropic /v1/messages all carry them, and every chat template
+// renders them into the prompt), the Anthropic top-level system prompt and the
+// Responses instructions. Those three were never counted, so tool-schema-heavy
+// agentic requests (1-8K tokens of definitions) ran a first-content deadline
+// 1-8 s short on exactly the longest prefills, an under-counted ITPM charge, and
+// could slip past the servability context gate into provider 5xx chains.
+// billingBytes is unchanged (it is a byte upper bound, refunded after the fact).
 func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 	if v, ok := parsed["messages"]; ok {
 		tokens, media := messagesShape(v)
@@ -189,7 +197,29 @@ func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 	if v, ok := parsed["prompt"]; ok {
 		routingTokens += approximateTokenCount(v)
 	}
+	routingTokens += auxiliaryPromptTokens(parsed)
 	return routingTokens, mediaParts
+}
+
+// auxiliaryPromptTokens is the len/4 estimate of the prompt-bearing top-level
+// fields outside messages/input/prompt: tools[] (schema bytes / 4), the
+// Anthropic system prompt (string or content blocks) and the Responses
+// instructions string. Counted once, on the primary path only: when every
+// prompt field is absent routingPromptTokens marshals the whole body, which
+// already includes these fields, and a non-zero return here keeps that
+// fallback from running, so the terms are never double-counted.
+func auxiliaryPromptTokens(parsed map[string]any) int {
+	total := 0
+	if v, ok := parsed["tools"]; ok {
+		total += jsonValueLen(v) / 4
+	}
+	if v, ok := parsed["system"]; ok {
+		total += approximateTokenCount(v)
+	}
+	if v, ok := parsed["instructions"]; ok {
+		total += approximateTokenCount(v)
+	}
+	return total
 }
 
 // billingBytes is the byte-length reservation bound over the same fields.

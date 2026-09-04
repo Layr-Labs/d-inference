@@ -51,6 +51,13 @@ public struct CapturedMessages: Sendable {
     /// or transport drop) — shutdown-ordering tests read it to prove the link
     /// outlived the drain and closed afterwards.
     public var socketCloses: Int = 0
+    /// Status code of every close FRAME the provider sent, in order (1001 =
+    /// goingAway, the clean close the coordinator records as `ws_close_1001`).
+    /// A connection that ended without one — a transport drop, which the
+    /// coordinator records as `read_error` and answers by flushing in-flight
+    /// requests as 502 — bumps `socketCloses` but adds nothing here, so
+    /// `socketCloses - closeCodes.count` is the abrupt-close count.
+    public var closeCodes: [UInt16] = []
 
     public init() {}
 }
@@ -408,13 +415,22 @@ public final class MockCoordinator: @unchecked Sendable {
 
     // MARK: Router
 
-    private func makeRouter() -> Router<BasicWebSocketRequestContext> {
-        let router = Router(context: BasicWebSocketRequestContext.self)
+    private func makeRouter() -> Router<MockWebSocketRequestContext> {
+        let router = Router(context: MockWebSocketRequestContext.self)
 
         // ----- WebSocket: /ws/provider -----
-        router.ws("/ws/provider") { [weak self] inbound, outbound, _ in
+        router.ws("/ws/provider") { [weak self] inbound, outbound, context in
             guard let self else { return }
             self.lock.withLock { self.activeOutbound = outbound }
+            // Observe the provider's close frame (Hummingbird consumes it
+            // below the route handler): installed before the first read so
+            // it is in place long before any shutdown close arrives.
+            try? await WebSocketCloseFrameProbe.install(
+                on: context.requestContext.channel
+            ) { [weak self] code in
+                guard let self else { return }
+                self.lock.withLock { self.captured.closeCodes.append(code) }
+            }
             self.eventContinuation.yield(.wsConnected)
             defer {
                 self.lock.withLock {

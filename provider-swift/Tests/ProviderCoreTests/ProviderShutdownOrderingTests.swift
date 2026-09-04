@@ -145,8 +145,11 @@ struct ProviderShutdownOrderingTests {
 
         await drain.value
         #expect(finished.value, "the link was closed before the in-flight work completed")
-        let closed = try await mock.waitForSnapshot(timeout: .seconds(2)) { $0.socketCloses >= 1 }
-        #expect(closed != nil, "no close observed after the drain")
+        // A close FRAME with goingAway (1001) — the clean close the
+        // coordinator records — not a transport drop (`read_error`).
+        let closed = try await mock.waitForSnapshot(timeout: .seconds(2)) { !$0.closeCodes.isEmpty }
+        #expect(closed?.closeCodes == [1001], "expected one goingAway close frame, got \(String(describing: closed?.closeCodes))")
+        #expect(closed?.socketCloses == 1, "the link ended without a close frame")
 
         // shutdown() is permanent: no reconnect follows the close.
         try await Task.sleep(for: .milliseconds(1500))
@@ -190,8 +193,9 @@ struct ProviderShutdownOrderingTests {
         let elapsed = ContinuousClock.now - started
         #expect(cancelled.value, "straggler was not force-cancelled")
         #expect(elapsed < .seconds(5), "drain took \(elapsed)")
-        let closed = try await mock.waitForSnapshot(timeout: .seconds(2)) { $0.socketCloses >= 1 }
-        #expect(closed != nil)
+        let closed = try await mock.waitForSnapshot(timeout: .seconds(2)) { !$0.closeCodes.isEmpty }
+        #expect(closed?.closeCodes == [1001], "expected one goingAway close frame, got \(String(describing: closed?.closeCodes))")
+        #expect(closed?.socketCloses == 1)
     }
 
     /// The auto-update restart step closes the link with a goingAway frame
@@ -222,14 +226,16 @@ struct ProviderShutdownOrderingTests {
         let closedBeforeRestart = Flag()
         await #expect(throws: RestartCommandFailed.self) {
             try await loop.closeLinkThenRestart {
-                // The restart command runs only after the close frame went out.
-                if try await mock.waitForSnapshot(timeout: .seconds(1), where: { $0.socketCloses >= 1 }) != nil {
+                // The restart command runs only after the goingAway close
+                // frame went out (not merely after the socket ended).
+                if try await mock.waitForSnapshot(timeout: .seconds(1), where: { $0.closeCodes == [1001] }) != nil {
                     closedBeforeRestart.set()
                 }
                 throw RestartCommandFailed()
             }
         }
-        #expect(closedBeforeRestart.value, "restart ran before the link was closed")
+        #expect(closedBeforeRestart.value, "restart ran before the link was closed with goingAway")
+        #expect(mock.snapshot().socketCloses == 1)
 
         // Not a shutdown: the reconnect loop re-registers after its backoff.
         let reRegistered = try await mock.waitForSnapshot(timeout: .seconds(10)) {

@@ -20,7 +20,10 @@ func TestReserveProviderCountsCommitRescans(t *testing.T) {
 	model := "rescan-count-model"
 	winner := planTestProvider(t, reg, "rescan-winner", model, 0)
 
-	const slowScan = 3 * time.Millisecond
+	// Large enough that scheduler jitter or a GC pause inside the final,
+	// one-provider scan cannot approach it (the assertions below are
+	// structural, but the margin keeps RescanUS unambiguous under -race).
+	const slowScan = 20 * time.Millisecond
 	var scans atomic.Int32
 	reg.reservationAfterScan = func(string) {
 		if scans.Add(1) != 1 {
@@ -53,10 +56,12 @@ func TestReserveProviderCountsCommitRescans(t *testing.T) {
 	if decision.RescanUS < slowScan.Microseconds() {
 		t.Fatalf("RescanUS = %d, want >= the discarded iteration's %d µs scan", decision.RescanUS, slowScan.Microseconds())
 	}
-	// Last-iteration semantics: the committing scan was fast, so ScanUS must
-	// not carry the discarded iteration's sleep.
-	if decision.ScanUS >= slowScan.Microseconds() {
-		t.Fatalf("ScanUS = %d, want the final iteration's (< %d µs)", decision.ScanUS, slowScan.Microseconds())
+	// Last-iteration semantics: ScanUS describes the committing iteration,
+	// so it cannot include the discarded iteration's sleep that RescanUS
+	// carries. Structural (ScanUS < RescanUS) rather than a wall-clock bound
+	// on the final scan, which a GC pause on a loaded runner could exceed.
+	if decision.ScanUS >= decision.RescanUS {
+		t.Fatalf("ScanUS = %d >= RescanUS = %d: the committing scan carried the discarded iteration's cost", decision.ScanUS, decision.RescanUS)
 	}
 	if decision.PendingForModel != 1 {
 		t.Fatalf("PendingForModel = %d, want 1 (the committed iteration saw the competitor)", decision.PendingForModel)

@@ -7,6 +7,21 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/attestation"
 )
 
+// expireHealthEjection rewinds the identity's ejection expiry into the past,
+// simulating the cooldown elapsing (ejected -> half-open) without sleeping.
+func expireHealthEjection(reg *Registry, sid string) {
+	withGateForKey(reg, sid, func(g *gateState) { g.ejectionUntil = time.Now().Add(-time.Second) })
+}
+
+func healthEjectionTripsOf(reg *Registry, sid string) (trips int) {
+	readGateForKey(reg, sid, func(g *gateState) {
+		if g != nil {
+			trips = g.ejectionTrips
+		}
+	})
+	return trips
+}
+
 func TestStableProviderIdentityLocked_Precedence(t *testing.T) {
 	if got := stableProviderIdentityLocked(&Provider{AttestationResult: &attestation.VerificationResult{Valid: true, SerialNumber: "SER1", PublicKey: "PK1"}, AccountID: "acct1"}); got != "serial:SER1" {
 		t.Errorf("serial must win; got %q", got)
@@ -116,9 +131,7 @@ func TestHealthEjection_CapacityBlackHoleEjects(t *testing.T) {
 
 	// Half-open: after the cooldown elapses, a probe that capacity-rejects
 	// re-arms immediately with a doubled backoff...
-	reg.mu.Lock()
-	reg.healthEjectionUntil[sid] = time.Now().Add(-time.Second)
-	reg.mu.Unlock()
+	expireHealthEjection(reg, sid)
 	if reg.HealthEjectionOpen(sid) {
 		t.Fatal("cooldown expiry must allow a half-open probe")
 	}
@@ -126,9 +139,7 @@ func TestHealthEjection_CapacityBlackHoleEjects(t *testing.T) {
 		t.Fatal("a capacity reject on the half-open probe must re-arm the ejection")
 	}
 	// ...and a probe that SUCCEEDS recovers the node and clears the streak.
-	reg.mu.Lock()
-	reg.healthEjectionUntil[sid] = time.Now().Add(-time.Second)
-	reg.mu.Unlock()
+	expireHealthEjection(reg, sid)
 	if _, recovered := reg.RecordProviderServeOutcome(sid, true, 200, ""); !recovered {
 		t.Fatal("a successful probe must recover the ejected identity")
 	}
@@ -277,9 +288,7 @@ func TestHealthEjection_CapacityShedDoesNotRearmFaultEjection(t *testing.T) {
 	}
 
 	// Cooldown expires; the half-open probe hits a legitimately full box.
-	reg.mu.Lock()
-	reg.healthEjectionUntil[sid] = time.Now().Add(-time.Second)
-	reg.mu.Unlock()
+	expireHealthEjection(reg, sid)
 	if ejected, _ := reg.RecordProviderServeOutcome(sid, false, 503, capacityReject); ejected {
 		t.Fatal("one capacity shed must not re-arm a fault ejection")
 	}
@@ -324,9 +333,7 @@ func TestHealthEjection_FirstContentDisarmsCapacityHalfOpen(t *testing.T) {
 	}
 
 	// Cooldown expires (half-open) and the probe produces FIRST CONTENT.
-	reg.mu.Lock()
-	reg.healthEjectionUntil[sid] = time.Now().Add(-time.Second)
-	reg.mu.Unlock()
+	expireHealthEjection(reg, sid)
 	reg.RecordCapacityAccept(p.ID, model)
 
 	// One straggling capacity reject must NOT re-eject a node that just
@@ -371,10 +378,8 @@ func TestHealthEjection_FirstContentPreservesFaultHalfOpen(t *testing.T) {
 
 	reg.RecordCapacityAccept(p.ID, model)
 
-	reg.mu.Lock()
-	reg.healthEjectionUntil[sid] = time.Now().Add(-time.Second)
-	trips := reg.healthEjectionTrips[sid]
-	reg.mu.Unlock()
+	expireHealthEjection(reg, sid)
+	trips := healthEjectionTripsOf(reg, sid)
 	if trips == 0 {
 		t.Fatal("first content must not wipe a fault ejection's trip count")
 	}

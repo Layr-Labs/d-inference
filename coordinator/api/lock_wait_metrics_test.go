@@ -33,6 +33,7 @@ func waitForMetric(t *testing.T, collector *udpCollector, substr string) string 
 // lock-wait observer to the registry.mu.write_wait_ms histogram, tagged with
 // the call site.
 func TestRegistryLockWaitHistogramTaggedBySite(t *testing.T) {
+	t.Setenv("EIGENINFERENCE_RESERVE_COMMIT_MODE", "global")
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -46,16 +47,15 @@ func TestRegistryLockWaitHistogramTaggedBySite(t *testing.T) {
 	const model = "lock-wait-metric-model"
 	p := makeRoutableProvider(t, reg, "lock-wait-metric-provider", model)
 
-	// Block the recorder behind a held write lock so the wait is measurable.
-	release := reg.HoldWriteLockForTest()
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		release()
-	}()
-	reg.ClearDispatchLoadCooldown(p.ID, model)
+	// The global compatibility commit still emits the write-lock metric.
+	reserved, _, _ := reg.ReserveProviderWithPlan(model, &registry.PendingRequest{RequestID: "global-metric", Model: model, EstimatedPromptTokens: 1})
+	if reserved == nil {
+		t.Fatal("global reservation failed")
+	}
+	defer p.RemovePending("global-metric")
 
 	packet := waitForMetric(t, collector, "registry.mu.write_wait_ms")
-	if !strings.Contains(packet, "site:dispatch_load_cooldown") {
+	if !strings.Contains(packet, "site:commit") {
 		t.Fatalf("lock-wait histogram missing the site tag: %s", packet)
 	}
 	if !strings.Contains(packet, "|h|") {

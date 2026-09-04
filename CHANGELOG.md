@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — coordinator performance Tiers 2 and 3
+
+- Cache repeated user and model lookups, batch route telemetry writes, and credit balances in one database statement. Invalidate model caches without allowing older in-flight reads to republish stale entries.
+- Coalesce streaming output within a byte cap and parse request bodies once.
+- Reduce routing scan work with per-model provider indexes, maintained medians, reusable snapshots, bounded version memoization, and coalesced swap and queue-drain planning.
+- Commit reservations under the registry read lock and the selected provider's lock. Keep fault tracking on per-identity gates, with validated rebind and sweep handling; retain `EIGENINFERENCE_RESERVE_COMMIT_MODE=global` as the reservation rollback switch.
+- Preserve newer rejection state when capacity-accept bookkeeping arrives late.
+- Make scheduler, attestation timestamp, and reputation persistence test fixtures deterministic.
+
 ## Unreleased — provider lifecycle and bounded coordinator work
 
 - Fragment large provider WebSocket messages, bound queue-drain work, and keep control traffic responsive.

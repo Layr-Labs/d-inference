@@ -16,13 +16,13 @@ import (
 // to them) — is ejected from routing, re-probed after an exponential cooldown
 // (half-open), and auto-re-admitted on the first success.
 //
-// This file also owns the session→identity fault-key binding
-// (bindStableFaultKey / faultKeyLocked) that the OTHER fault trackers
-// (error_cooldown.go, provider_breaker.go, dispatchLoadCooldowns) key their
-// maps by, so ALL fault state re-attaches when a machine reconnects with a
-// fresh session UUID instead of being wiped (the prod zombie exploit: median
-// 18 sessions/machine/week reset every session-keyed breaker before it could
-// trip).
+// The session→identity fault-key binding (bindStableFaultKey /
+// faultKeyForSession, gate_state.go) that EVERY fault tracker keys by lives
+// with the per-identity gate index, so ALL fault state re-attaches when a
+// machine reconnects with a fresh session UUID instead of being wiped (the
+// prod zombie exploit: median 18 sessions/machine/week reset every
+// session-keyed breaker before it could trip). This file derives the stable
+// identity and owns the ejection breaker itself.
 //
 // FAIL OPEN, like provider_breaker.go: occasional capacity/client sheds never
 // count (only an unbroken zero-success capacity streak does), an un-attestable
@@ -125,288 +125,35 @@ func stableProviderIdentityLocked(p *Provider) string {
 
 // GetProviderStableIdentity resolves a live session providerID to its stable
 // identity, or "" if the provider is gone or un-attestable. For the consumer
-// note* hooks to feed RecordProviderServeOutcome without holding registry locks.
+// note* hooks to feed RecordProviderServeOutcome without holding registry locks:
+// the session index under gatesMu stands in for r.providers, so this never
+// queues behind a registry writer.
 func (r *Registry) GetProviderStableIdentity(providerID string) string {
 	if providerID == "" {
 		return ""
 	}
-	r.mu.RLock()
-	p := r.providers[providerID]
+	r.gatesMu.RLock()
+	p := r.sessions[providerID]
 	cached, hasCached := r.disconnectedStableIDs[providerID]
-	r.mu.RUnlock()
+	r.gatesMu.RUnlock()
 	if p != nil {
 		// This path does NOT hold p.mu (unlike the routing gate), so take it for the
 		// read — guarding against a concurrent SetAttestationResult (live re-attestation
-		// writes p.AttestationResult under p.mu). Not nested with r.mu, so no deadlock.
+		// writes p.AttestationResult under p.mu). Not nested with gatesMu, so no deadlock.
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		return stableProviderIdentityLocked(p)
 	}
-	// Provider already removed from r.providers — typically because Disconnect ran
-	// before the pending-request ErrorCh flush, which carries the 502 "provider
-	// disconnected" faults that characterize a reconnecting zombie. Fall back to the
-	// identity captured at disconnect so those faults are still recorded against the
-	// stable-identity breaker (otherwise the dominant zombie signal is never counted).
+	// Provider already removed from the session index — typically because
+	// Disconnect ran before the pending-request ErrorCh flush, which carries the
+	// 502 "provider disconnected" faults that characterize a reconnecting zombie.
+	// Fall back to the identity captured at disconnect so those faults are still
+	// recorded against the stable-identity breaker (otherwise the dominant zombie
+	// signal is never counted).
 	if hasCached && time.Since(cached.at) < disconnectedStableIDTTL {
 		return cached.id
 	}
 	return ""
-}
-
-// bindStableFaultKey binds a live session id to its stable identity so every
-// fault-tracking map (inference-error cooldowns, node-health breaker,
-// dispatch-load cooldowns) keys by identity and survives reconnects. Called by
-// SetAttestationResult on every (re-)attestation — i.e. BEFORE the session is
-// routable for public traffic — which is what re-attaches a reconnecting
-// machine's accumulated fault state to its fresh session id. An empty stableID
-// (attestation cleared / never valid) unbinds, falling back to session keying.
-func (r *Registry) bindStableFaultKey(sessionID, stableID string) {
-	if sessionID == "" {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if stableID == "" {
-		delete(r.faultKeyBySession, sessionID)
-		return
-	}
-	// Only bind LIVE sessions: a re-attestation racing Disconnect must not
-	// re-insert an entry Disconnect already removed (it would leak forever —
-	// nothing cleans that session id again). The disconnectedStableIDs cache
-	// covers post-disconnect resolution.
-	p, live := r.providers[sessionID]
-	if !live {
-		return
-	}
-	// Migrate accumulated fault state when the key changes: from the session id
-	// on the FIRST bind (strikes recorded pre-attestation live under the
-	// faultKeyLocked session fallback), or from the previous identity on a
-	// rebind (e.g. sekey: → serial: after MDA enrichment). Without this, a
-	// machine near quarantine sheds its history at the exact moment its
-	// identity improves. No-op on the common re-attestation with an unchanged
-	// identity.
-	old := r.faultKeyBySession[sessionID]
-	if old == "" {
-		old = sessionID
-	}
-	if old != stableID {
-		r.migrateFaultStateLocked(old, stableID)
-	}
-	r.faultKeyBySession[sessionID] = stableID
-	// Version-changed reconnect reset (version_reset.go): a session that
-	// already reported its binary version binds here on re-attestation;
-	// registration-time binds happen before the version is stored and are
-	// covered by Provider.SetVersion. r.mu → p.mu is the established order.
-	p.mu.Lock()
-	version := p.Version
-	p.mu.Unlock()
-	r.noteIdentityVersionLocked(stableID, version)
-}
-
-// migrateFaultStateLocked re-keys every fault-tracking map entry from oldKey to
-// newKey so accumulated history follows an identity rebind. Merge policy where
-// both keys hold state: expiries and streak recency take the max, trip counts
-// take the max, timestamp histories merge chronologically (their bounded-map
-// sweeps use the tail as the newest entry), and health windows are merged in
-// timestamp order bounded by the ring size (providerHealthWindow.merge) so an
-// in-progress consecutive-fault streak survives the rebind. Caller holds r.mu.
-func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
-	if oldKey == "" || newKey == "" || oldKey == newKey {
-		return
-	}
-
-	// Late disconnect-flush outcomes must follow the same identity as the
-	// migrated windows and reset timestamp. Preserve each drop time so the
-	// migration neither extends the cache TTL nor changes reset ordering.
-	for sessionID, cached := range r.disconnectedStableIDs {
-		if cached.id == oldKey {
-			cached.id = newKey
-			r.disconnectedStableIDs[sessionID] = cached
-		}
-	}
-
-	// Dispatch-load cooldowns: struct keys per (fault key, model).
-	for k, expiry := range r.dispatchLoadCooldowns {
-		if k.FaultKey == oldKey {
-			nk := k
-			nk.FaultKey = newKey
-			if cur, ok := r.dispatchLoadCooldowns[nk]; !ok || expiry.After(cur) {
-				r.dispatchLoadCooldowns[nk] = expiry
-			}
-			delete(r.dispatchLoadCooldowns, k)
-		}
-	}
-
-	// Inference-error strikes/cooldowns: struct keys per (provider, model, shape).
-	for k, strikes := range r.inferenceErrorStrikes {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			r.inferenceErrorStrikes[nk] = mergeChronologicalTimestamps(r.inferenceErrorStrikes[nk], strikes)
-			delete(r.inferenceErrorStrikes, k)
-		}
-	}
-	for k, expiry := range r.inferenceErrorCooldowns {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			if cur, ok := r.inferenceErrorCooldowns[nk]; !ok || expiry.After(cur) {
-				r.inferenceErrorCooldowns[nk] = expiry
-			}
-			delete(r.inferenceErrorCooldowns, k)
-		}
-	}
-	// Disconnect-flush strike tags, the last-seen binary version, and the
-	// version-reset throttle timestamp follow the identity too
-	// (version_reset.go): an existing version under the new key is the more
-	// recent binding and wins; the later reset timestamp wins so a rebind can
-	// never hand the identity a second reset inside the interval.
-	for k, flush := range r.inferenceErrorFlushStrikes {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			r.inferenceErrorFlushStrikes[nk] = mergeChronologicalTimestamps(r.inferenceErrorFlushStrikes[nk], flush)
-			delete(r.inferenceErrorFlushStrikes, k)
-		}
-	}
-	if v, ok := r.identityVersions[oldKey]; ok {
-		if _, exists := r.identityVersions[newKey]; !exists {
-			r.identityVersions[newKey] = v
-		}
-		delete(r.identityVersions, oldKey)
-	}
-	if at, ok := r.identityVersionSeenAt[oldKey]; ok {
-		if cur, exists := r.identityVersionSeenAt[newKey]; !exists || at.After(cur) {
-			r.identityVersionSeenAt[newKey] = at
-		}
-		delete(r.identityVersionSeenAt, oldKey)
-	}
-	if at, ok := r.identityVersionResetAt[oldKey]; ok {
-		if cur, exists := r.identityVersionResetAt[newKey]; !exists || at.After(cur) {
-			r.identityVersionResetAt[newKey] = at
-		}
-		delete(r.identityVersionResetAt, oldKey)
-	}
-
-	// Node-health breaker.
-	if w, ok := r.providerOutcomes[oldKey]; ok {
-		if dst, exists := r.providerOutcomes[newKey]; exists {
-			dst.merge(w)
-		} else {
-			r.providerOutcomes[newKey] = w
-		}
-		delete(r.providerOutcomes, oldKey)
-	}
-	if expiry, ok := r.providerBreakerOpenUntil[oldKey]; ok {
-		if cur, exists := r.providerBreakerOpenUntil[newKey]; !exists || expiry.After(cur) {
-			r.providerBreakerOpenUntil[newKey] = expiry
-		}
-		delete(r.providerBreakerOpenUntil, oldKey)
-	}
-	if trips, ok := r.providerBreakerTrips[oldKey]; ok {
-		if cur, exists := r.providerBreakerTrips[newKey]; !exists || trips > cur {
-			r.providerBreakerTrips[newKey] = trips
-		}
-		delete(r.providerBreakerTrips, oldKey)
-	}
-
-	// Capacity-reject cooldown (pair-scoped struct keys).
-	for k, strikes := range r.capacityRejectStrikes {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			r.capacityRejectStrikes[nk] = mergeChronologicalTimestamps(r.capacityRejectStrikes[nk], strikes)
-			delete(r.capacityRejectStrikes, k)
-		}
-	}
-	for k, entry := range r.capacityCooldowns {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			if cur, ok := r.capacityCooldowns[nk]; !ok || entry.expiry.After(cur.expiry) {
-				r.capacityCooldowns[nk] = entry
-			}
-			delete(r.capacityCooldowns, k)
-		}
-	}
-	for k, trips := range r.capacityCooldownTrips {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			if cur, ok := r.capacityCooldownTrips[nk]; !ok || trips > cur {
-				r.capacityCooldownTrips[nk] = trips
-			}
-			delete(r.capacityCooldownTrips, k)
-		}
-	}
-
-	// Gray-box budget clamp: the entry with the LATER clamp time wins whole
-	// (its clampedAt anchors both the TTL and the release-freshness check, and
-	// its acceptedSince belongs to that clamp window).
-	for k, entry := range r.budgetClamps {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			if cur, ok := r.budgetClamps[nk]; !ok || entry.clampedAt.After(cur.clampedAt) {
-				r.budgetClamps[nk] = entry
-			}
-			delete(r.budgetClamps, k)
-		}
-	}
-
-	// Capacity-503 rate windows: union the outcome slices chronologically. The
-	// large-map sweep uses the tail as the newest timestamp, so appending an older
-	// source history after a fresh destination would otherwise delete live state.
-	for k, outcomes := range r.capacityRateRejects {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			r.capacityRateRejects[nk] = mergeChronologicalTimestamps(r.capacityRateRejects[nk], outcomes)
-			delete(r.capacityRateRejects, k)
-		}
-	}
-	for k, outcomes := range r.capacityRateAccepts {
-		if k.ProviderID == oldKey {
-			nk := k
-			nk.ProviderID = newKey
-			r.capacityRateAccepts[nk] = mergeChronologicalTimestamps(r.capacityRateAccepts[nk], outcomes)
-			delete(r.capacityRateAccepts, k)
-		}
-	}
-
-	// Stable-identity health ejection.
-	if w, ok := r.healthEjectionWindows[oldKey]; ok {
-		if dst, exists := r.healthEjectionWindows[newKey]; exists {
-			dst.merge(w)
-		} else {
-			r.healthEjectionWindows[newKey] = w
-		}
-		delete(r.healthEjectionWindows, oldKey)
-	}
-	if until, ok := r.healthEjectionUntil[oldKey]; ok {
-		if cur, exists := r.healthEjectionUntil[newKey]; !exists || until.After(cur) {
-			r.healthEjectionUntil[newKey] = until
-		}
-		delete(r.healthEjectionUntil, oldKey)
-	}
-	if trips, ok := r.healthEjectionTrips[oldKey]; ok {
-		if cur, exists := r.healthEjectionTrips[newKey]; !exists || trips > cur {
-			r.healthEjectionTrips[newKey] = trips
-		}
-		delete(r.healthEjectionTrips, oldKey)
-	}
-	if streak, ok := r.healthEjectionCapacityStreaks[oldKey]; ok {
-		if cur, exists := r.healthEjectionCapacityStreaks[newKey]; !exists || streak.n > cur.n {
-			r.healthEjectionCapacityStreaks[newKey] = streak
-		}
-		delete(r.healthEjectionCapacityStreaks, oldKey)
-	}
-	if lastCap, ok := r.healthEjectionLastTripCapacity[oldKey]; ok {
-		if _, exists := r.healthEjectionLastTripCapacity[newKey]; !exists {
-			r.healthEjectionLastTripCapacity[newKey] = lastCap
-		}
-		delete(r.healthEjectionLastTripCapacity, oldKey)
-	}
 }
 
 // mergeChronologicalTimestamps returns the oldest-to-newest union of two
@@ -437,27 +184,14 @@ func mergeChronologicalTimestamps(dst, src []time.Time) []time.Time {
 	return merged
 }
 
-// faultKeyLocked resolves a session provider id to the key its fault state
-// lives under: the bound stable identity (serial/SE-key/account), the identity
-// cached at Disconnect for the trailing ErrorCh flush, or — when no identity
-// was ever available — the session id itself. READ-ONLY (no map writes), so it
-// is safe under r.mu held in either mode; the routing gates call it under
-// r.mu.RLock.
-func (r *Registry) faultKeyLocked(sessionID string) string {
-	if k, ok := r.faultKeyBySession[sessionID]; ok && k != "" {
-		return k
-	}
-	if c, ok := r.disconnectedStableIDs[sessionID]; ok && c.id != "" && time.Since(c.at) < disconnectedStableIDTTL {
-		return c.id
-	}
-	return sessionID
-}
-
 // disconnectedStableID caches a provider's stable identity at Disconnect time so
 // the trailing pending-request ErrorCh flush can still resolve it.
 type disconnectedStableID struct {
 	id string
 	at time.Time
+	// binding is shared only with short-lived recorder refs, not Provider.
+	// Identity migration updates it under the old gate's mutex before reset.
+	binding *disconnectedGateBinding
 }
 
 // disconnectedStableIDTTL bounds how long a disconnected provider's cached stable
@@ -466,8 +200,8 @@ type disconnectedStableID struct {
 const disconnectedStableIDTTL = 2 * time.Minute
 
 // rememberDisconnectedStableIDLocked caches a provider's stable identity keyed by
-// its about-to-be-removed session id. Caller holds r.mu.
-func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string) {
+// its about-to-be-removed session id. Caller holds gatesMu for writing.
+func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string, disconnectedAt time.Time) {
 	if r.disconnectedStableIDs == nil {
 		r.disconnectedStableIDs = make(map[string]disconnectedStableID)
 	}
@@ -479,9 +213,7 @@ func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string
 			}
 		}
 	}
-	disconnectedAt := time.Now()
-	r.disconnectedStableIDs[sessionID] = disconnectedStableID{id: stableID, at: disconnectedAt}
-	r.touchIdentityVersionLocked(stableID, disconnectedAt)
+	r.disconnectedStableIDs[sessionID] = disconnectedStableID{id: stableID, at: disconnectedAt, binding: newDisconnectedGateBinding(stableID)}
 }
 
 // RecordProviderServeOutcome feeds one terminal outcome into the stable-identity
@@ -499,65 +231,57 @@ func (r *Registry) rememberDisconnectedStableIDLocked(sessionID, stableID string
 //     can never trip;
 //   - everything else (client 4xx, request-shape context overflows,
 //     unattributed codes): neutral.
+//
+// State lives on the identity's gate (gate_state.go), filed under the stable
+// id itself; only gate.mu is taken, never r.mu.
 func (r *Registry) RecordProviderServeOutcome(stableID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
 	if stableID == "" || !healthEjectionEnabled() {
 		return false, false
 	}
-	hold := r.lockWrite("health_ejection")
+	hold := r.lockGate(r.gateForKey(stableID), "health_ejection")
 	defer hold.unlock()
-	return r.recordProviderServeOutcomeLocked(stableID, ok, statusCode, errStr)
+	g := hold.g
+	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr)
 }
 
-// RecordProviderSessionServeOutcome retains the source session through the
-// ejection mutation so a version reset cannot be followed by an old flush strike.
 func (r *Registry) RecordProviderSessionServeOutcome(sessionID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
-	if sessionID == "" || !healthEjectionEnabled() {
+	if sessionID == "" || !healthEjectionEnabled() || r.faultKeyForSession(sessionID) == sessionID {
 		return false, false
 	}
-	hold := r.lockWrite("health_ejection")
+	source := r.captureDisconnectSource(sessionID)
+	hold := r.lockGate(r.gateForSession(sessionID), "health_ejection")
 	defer hold.unlock()
-	if !ok && statusCode == disconnectFlushStatusCode && r.supersededDisconnectFlushLocked(sessionID) {
+	g := hold.g
+	if g == nil || g.key == sessionID || (!ok && statusCode == disconnectFlushStatusCode && source.supersededBy(g)) {
 		return false, false
 	}
-	stableID := ""
-	if p := r.providers[sessionID]; p != nil {
-		p.mu.Lock()
-		stableID = stableProviderIdentityLocked(p)
-		p.mu.Unlock()
-	} else if cached, exists := r.disconnectedStableIDs[sessionID]; exists && time.Since(cached.at) < disconnectedStableIDTTL {
-		stableID = cached.id
-	}
-	if stableID == "" {
-		return false, false
-	}
-	return r.recordProviderServeOutcomeLocked(stableID, ok, statusCode, errStr)
+	return r.recordProviderServeOutcomeOnGateLocked(g, ok, statusCode, errStr)
 }
 
-// recordProviderServeOutcomeLocked requires r.mu and a nonempty stable identity.
-func (r *Registry) recordProviderServeOutcomeLocked(stableID string, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
+func (r *Registry) recordProviderServeOutcomeOnGateLocked(g *gateState, ok bool, statusCode int, errStr string) (ejected, recovered bool) {
 	now := time.Now()
-	r.healthEjectionSweepLocked(now)
+	defer g.updatedLocked(now)
 
 	if ok {
-		r.healthEjectionWindowLocked(stableID).record(true, now)
-		delete(r.healthEjectionCapacityStreaks, stableID)
-		if _, had := r.healthEjectionUntil[stableID]; had {
-			delete(r.healthEjectionUntil, stableID)
-			delete(r.healthEjectionTrips, stableID)
-			delete(r.healthEjectionLastTripCapacity, stableID)
+		g.ejectionWindowLocked().record(true, now)
+		g.ejectionCapacityStreak = capacityStreak{}
+		if !g.ejectionUntil.IsZero() {
+			g.ejectionUntil = time.Time{}
+			g.ejectionTrips = 0
+			g.ejectionLastTripCapacity = false
 			return false, true // half-open probe succeeded → recover
 		}
 		return false, false
 	}
 
 	if providerOutcomeIsFault(statusCode, errStr) {
-		w := r.healthEjectionWindowLocked(stableID)
+		w := g.ejectionWindowLocked()
 		w.recordFault(now, statusCode == disconnectFlushStatusCode)
 
-		if until, had := r.healthEjectionUntil[stableID]; had && now.Before(until) {
+		if now.Before(g.ejectionUntil) {
 			return false, false // already ejected; in-flight faults don't re-arm until cooldown
 		}
-		trips := r.healthEjectionTrips[stableID]
+		trips := g.ejectionTrips
 		halfOpen := trips > 0
 		total, fails := w.windowStats(now, healthEjectionWindow)
 		rateTrip := total >= healthEjectionMinSample &&
@@ -565,104 +289,81 @@ func (r *Registry) recordProviderServeOutcomeLocked(stableID string, ok bool, st
 		if !halfOpen && w.consecFail < healthEjectionConsecTrip && !rateTrip {
 			return false, false
 		}
-		r.healthEjectionUntil[stableID] = now.Add(healthEjectionBackoff(trips))
-		r.healthEjectionTrips[stableID] = trips + 1
-		r.healthEjectionLastTripCapacity[stableID] = false
+		g.ejectionUntil = now.Add(healthEjectionBackoff(trips))
+		g.ejectionTrips = trips + 1
+		g.ejectionLastTripCapacity = false
 		return true, false
 	}
 
 	if isNodeCapacityRejectStrike(statusCode, errStr) {
-		s := r.healthEjectionCapacityStreaks[stableID]
+		s := g.ejectionCapacityStreak
 		if s.n > 0 && now.Sub(s.last) > healthEjectionWindow {
 			s.n = 0 // stale streak: never combine old strikes with a fresh blip
 		}
 		s.n++
 		s.last = now
-		r.healthEjectionCapacityStreaks[stableID] = s
+		g.ejectionCapacityStreak = s
 
-		if until, had := r.healthEjectionUntil[stableID]; had && now.Before(until) {
+		if now.Before(g.ejectionUntil) {
 			return false, false // already ejected; stragglers don't re-arm until cooldown
 		}
-		trips := r.healthEjectionTrips[stableID]
+		trips := g.ejectionTrips
 		// Half-open instant re-arm applies ONLY when the previous trip was
 		// itself capacity-shaped (the black-hole probe failing again): a single
 		// capacity shed is legitimate for a healthy-but-full box and must not
 		// re-arm a FAULT ejection whose cooldown just expired — that identity
 		// needs the full zero-success streak like a fresh one.
-		capacityHalfOpen := trips > 0 && r.healthEjectionLastTripCapacity[stableID]
+		capacityHalfOpen := trips > 0 && g.ejectionLastTripCapacity
 		if !capacityHalfOpen && s.n < healthEjectionCapacityConsecTrip {
 			return false, false
 		}
-		r.healthEjectionUntil[stableID] = now.Add(healthEjectionBackoff(trips))
-		r.healthEjectionTrips[stableID] = trips + 1
-		r.healthEjectionLastTripCapacity[stableID] = true
+		g.ejectionUntil = now.Add(healthEjectionBackoff(trips))
+		g.ejectionTrips = trips + 1
+		g.ejectionLastTripCapacity = true
 		return true, false
 	}
 
 	return false, false
 }
 
-// healthEjectionOpenLocked reports whether routing should skip this stable
-// identity. READ-ONLY (no lazy delete); caller holds r.mu in either mode.
-func (r *Registry) healthEjectionOpenLocked(stableID string, now time.Time) bool {
+// ejectionOpen reports whether routing should skip this stable identity.
+// Resolves the identity's gate; the scan reads the cached p.gate atomically
+// (ejectionOpenFor) and never comes here.
+func (r *Registry) ejectionOpen(stableID string, now time.Time) bool {
 	if stableID == "" {
 		return false
 	}
-	until, ok := r.healthEjectionUntil[stableID]
-	return ok && now.Before(until)
+	return r.lookupGateForKey(stableID).ejectedAt(now.UnixNano())
+}
+
+// ejectionOpenFor is the scan's ejection check for provider p whose stable
+// identity is sid: when the session's cached gate IS the identity's gate (the
+// steady state — bindStableFaultKey filed the session under sid) the answer is
+// one atomic load; only a session whose bind has not caught up with its
+// identity pays a gatesMu.RLock lookup.
+func (r *Registry) ejectionOpenFor(g *gateState, sid string, nowNS int64) bool {
+	if sid == "" {
+		return false
+	}
+	if g != nil && g.key == sid {
+		return g.ejectedAt(nowNS)
+	}
+	return r.lookupGateForKey(sid).ejectedAt(nowNS)
 }
 
 // HealthEjectionOpen reports whether a stable identity is currently ejected.
 // Exposed for tests/observability.
 func (r *Registry) HealthEjectionOpen(stableID string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.healthEjectionOpenLocked(stableID, time.Now())
+	return r.ejectionOpen(stableID, time.Now())
 }
 
-func (r *Registry) healthEjectionWindowLocked(stableID string) *providerHealthWindow {
-	w := r.healthEjectionWindows[stableID]
-	if w == nil {
-		w = &providerHealthWindow{}
-		r.healthEjectionWindows[stableID] = w
+// ejectionWindowLocked returns the gate's ejection ring, creating it on first
+// use. Caller holds g.mu.
+func (g *gateState) ejectionWindowLocked() *providerHealthWindow {
+	if g.ejection == nil {
+		g.ejection = &providerHealthWindow{}
 	}
-	return w
-}
-
-// healthEjectionSweepLocked bounds the maps. Stable ids persist across reconnects
-// by design, so only entries idle for longer than the window (no windowed
-// outcomes, no fresh capacity streak, not currently ejected) are reaped, once
-// the maps grow large.
-func (r *Registry) healthEjectionSweepLocked(now time.Time) {
-	if len(r.healthEjectionWindows) > 2048 {
-		for id, w := range r.healthEjectionWindows {
-			if until, had := r.healthEjectionUntil[id]; had && now.Before(until) {
-				continue
-			}
-			if s, ok := r.healthEjectionCapacityStreaks[id]; ok && now.Sub(s.last) <= healthEjectionWindow {
-				continue
-			}
-			if total, _ := w.windowStats(now, healthEjectionWindow); total == 0 {
-				delete(r.healthEjectionWindows, id)
-				delete(r.healthEjectionUntil, id)
-				delete(r.healthEjectionTrips, id)
-				delete(r.healthEjectionCapacityStreaks, id)
-				delete(r.healthEjectionLastTripCapacity, id)
-			}
-		}
-	}
-	// Capacity-only identities (pure black holes) never touch the fault ring,
-	// so their streaks need their own staleness sweep.
-	if len(r.healthEjectionCapacityStreaks) > 2048 {
-		for id, s := range r.healthEjectionCapacityStreaks {
-			if until, had := r.healthEjectionUntil[id]; had && now.Before(until) {
-				continue
-			}
-			if now.Sub(s.last) > healthEjectionWindow {
-				delete(r.healthEjectionCapacityStreaks, id)
-			}
-		}
-	}
+	return g.ejection
 }
 
 // healthEjectionBackoff: base * 2^trips capped at the max (mirrors providerBreakerBackoff).

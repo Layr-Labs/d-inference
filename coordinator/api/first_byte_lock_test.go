@@ -165,4 +165,30 @@ func TestFirstByteReachesClientWhileRegistryWriteLockHeld(t *testing.T) {
 	if !strings.Contains(rest.String(), "[DONE]") {
 		t.Fatalf("stream did not finish after the lock was released: %q", rest.String())
 	}
+
+	// Exactly-once for the capacity-503 rate window through the real path:
+	// the asynchronous commit-time accept lands once, and the completion-time
+	// re-offer (noteInferenceSuccess) adds nothing because the request was
+	// stamped before the goroutine ran. A reject makes the window observable:
+	// one accept + one reject = 2 samples, never 3.
+	ids := reg.ProviderIDs()
+	if len(ids) != 1 {
+		t.Fatalf("providers = %d, want 1", len(ids))
+	}
+	reg.RecordCapacityReject(ids[0], model)
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if _, samples := reg.CapacityRejectRate(ids[0], model); samples == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_, samples := reg.CapacityRejectRate(ids[0], model)
+			t.Fatalf("capacity-rate samples = %d after one streamed request and one reject, want 2 (the async accept never landed or landed twice)", samples)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if rate, samples := reg.CapacityRejectRate(ids[0], model); samples != 2 || rate != 0.5 {
+		t.Fatalf("capacity-rate = %.2f over %d samples, want 0.5 over 2 (accept counted exactly once)", rate, samples)
+	}
 }

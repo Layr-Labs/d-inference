@@ -43,7 +43,13 @@ struct DoctorChecksTests {
 
     @Test("check backbone includes local posture but leaves Secure Boot to MDM")
     func stableBackbone() {
-        #expect(checks(hardware: hardware).map(\.name) == [
+        // "huggingface cache migration" is appended only when HF_HUB_CACHE/HF_HOME
+        // moves the cache root away from a legacy root that still holds weights;
+        // other suites export those variables for their own fixtures and run in
+        // the same process, so the pure backbone is compared without it.
+        let backbone = checks(hardware: hardware).map(\.name)
+            .filter { $0 != "huggingface cache migration" }
+        #expect(backbone == [
             "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
             "macos", "sip", "rdma", "authenticated root", "hardened runtime", "debugger",
             "binary hash", "competing inference",

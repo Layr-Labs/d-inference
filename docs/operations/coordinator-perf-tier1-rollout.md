@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `b2c1da143`
+> Last updated: 2026-09-04 · commit `075d37a91`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -13,25 +13,25 @@ Everything under **Human-only** mutates production and is executed only by a
 human operator or a human-approved agent with per-action approval. The agent
 that prepared this branch has **not** added any env line to any prod file.
 
-Canonical code (code wins over this doc; line numbers are those of the branch
-head — re-run `grep -n` on the symbol if a later change moves them):
+Canonical code (code wins over this doc; find declarations by symbol):
 
 | Behavior | Code |
 |---|---|
-| Bounded in-memory usage history (100/consumer) | `coordinator/payments/payments.go:90` (`Ledger.RecordUsage`) |
-| Stats / network-totals cache refreshers | `coordinator/api/stats.go:201` (`StartCacheRefreshers`), `:128` (`refreshCachedEntry`, coalescing), `:160` (`storeCachedEntry`, degraded keeps the last good value), `:250` (`computeStats`), `:216` (`handleStats`); `coordinator/api/leaderboard.go:183` (`refreshNetworkTotals`), `:123` (`handleNetworkTotals`) |
-| Analytics `SET LOCAL work_mem` transaction | `coordinator/store/postgres.go:2239` (`withAnalyticsTx`) |
-| Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go:47` (`shouldLoadDueRows`), `:57` (`nextDispatchDelay`) |
-| Dashboard rolling windows (one aggregate, 15 s per-account cache) | `coordinator/store/postgres.go:4458` and `coordinator/store/memory.go:2897` (`AccountEarningsWindows`); `coordinator/api/me_handlers.go:151` (`handleMySummary`), `:210` (`accountEarningsWindows`, the cache) |
-| Batched reputation reads | `coordinator/store/postgres.go:5163` and `coordinator/store/memory.go:3361` (`GetReputations`); `coordinator/api/me_handlers.go:338` (`handleMyProviders`, one `GetReputations` call at `:454`) |
-| Capacity accept off the first-byte path | `coordinator/api/dispatch.go:600` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go:431` (`RecordCapacityAcceptObserved`, applies an accept stamped with its observation time) |
-| Throttled reputation persist | `coordinator/registry/registry.go:5789` (`RecordJobSuccess`) → `coordinator/registry/persistence.go:218` (`persistReputationThrottled`); `coordinator/registry/registry.go:4941` (`Disconnect`) flushes unconditionally at `:5081` |
-| Single provider-frame decode | `coordinator/api/provider.go:193` (`providerReadLoop`, one `msg.UnmarshalJSON` at `:319`) |
-| No cancel frame after a settled terminal | `coordinator/api/dispatch.go:3740` (`writeCommittedResponse`, `terminalSettled` gate at `:3812-3814`) |
-| No shed-path fleet walk | `coordinator/api/inference_admission.go:243` (`runInferenceAdmission`; the `routing_saturated` rejection is recorded with `servabilityComputed: true` at `:334-343`) |
-| Lock-wait histogram by call site | `coordinator/registry/registry.go:5190` (`lockWrite`); `coordinator/api/server.go:850` (`registry.mu.write_wait_ms` emission) |
-| Scan counter | `coordinator/registry/scheduler.go:423` (`RoutingDecision.ScanCount`, set at `:523`); `coordinator/api/dispatch.go:450` (`routing.scans` emission) |
-| Contention profiles | `coordinator/cmd/coordinator/main.go:1108` (`enableContentionProfiling`) |
+| Bounded usage history with lazy allocation | `coordinator/payments/payments.go` (`Ledger.RecordUsage`, `usageHistoryGrowth`) |
+| Shared cache refresh and cold-miss coalescing | `coordinator/api/cache_refresher.go` (`StartCacheRefreshers`, `getCachedEntry`, `refreshCachedEntry`, `computeCachedEntry`) |
+| Stats / network totals computation | `coordinator/api/stats.go` (`computeStats`, `handleStats`); `coordinator/api/network_totals.go` (`computeNetworkTotals`, `handleNetworkTotals`) |
+| Analytics transaction and query errors | `coordinator/store/postgres_analytics.go` (`withAnalyticsTx`, `UsageLocationBuckets`, `UsageFlowBuckets`, `NetworkTotals`) |
+| Verification poller cadence + busy floor | `coordinator/api/mdm_scheduler_exec.go` (`shouldLoadDueRows`, `nextDispatchDelay`) |
+| Dashboard rolling windows | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`AccountEarningsWindows`); `coordinator/api/me_summary_cache.go` (`accountEarningsWindows`) |
+| Batched reputation reads | `coordinator/store/postgres_dashboard.go` and `coordinator/store/memory_dashboard.go` (`GetReputations`); `coordinator/api/me_handlers.go` (`attachStoredReputations`) |
+| Capacity accept off the first-byte path | `coordinator/api/dispatch.go` (`commitFirstContent`); `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`) |
+| Throttled reputation persist | `coordinator/registry/registry.go` (`RecordJobSuccess`, `Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
+| Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
+| Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
+| No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `servabilityComputed`) |
+| Lock-wait histogram by call site | `coordinator/registry/lock_wait.go` (`lockWrite`); `coordinator/api/server.go` (`NewServer`) |
+| Scan counter | `coordinator/registry/scheduler.go` (`RoutingDecision.ScanCount`); `coordinator/api/dispatch.go` (`recordRoutingDecisionFor`) |
+| Contention profiles | `coordinator/cmd/coordinator/main.go` (`enableContentionProfiling`) |
 
 ## Prerequisites
 
@@ -44,7 +44,7 @@ head — re-run `grep -n` on the symbol if a later change moves them):
   block profiles.
 - Read access to Datadog for the new series `d_inference.registry.mu.write_wait_ms`
   (tag `site`), `d_inference.routing.scans`, `d_inference.cache.refresh_failed`
-  and `d_inference.cache.refresh_degraded` (tag `key`).
+  (tag `key`).
 
 ## Steps — code items (deploy only)
 
@@ -67,7 +67,7 @@ curl -s 'http://127.0.0.1:6060/debug/pprof/heap?debug=1' | grep -B1 -A3 'RecordU
 # 2. Stats refresher: one statement set per minute, never per request.
 #    The pipelines were ~1,950/h before 1.3; expect ~60/h (locations + flows)
 #    and ~240/h network totals (4 windows x 60/h).
-sudo docker logs coordinator --since 10m 2>&1 | grep -c 'cache refresh'   # failures/degraded only; 0 is the healthy answer
+sudo docker logs coordinator --since 10m 2>&1 | grep -c 'cache refresh'   # failures only; 0 is the healthy answer
 
 # 3. Verification poller: the durable table is read ~1/s, not ~34/s
 #    (pg_stat_user_tables.seq_scan on provider_verification_jobs, read-only).
@@ -84,10 +84,13 @@ must now agree on.
 
 ## Human-only — `GOGC=400` (item 1.2)
 
-Why: after 1.1 the live heap is ~0.2–0.3 GB instead of 1.1 GB and growing.
+[INFERENCE] After bounding the ledger, the proposal estimates a live heap
+of ~0.2–0.3 GB instead of the measured 1.1 GB and growing. Verify this gate
+on the deployed build; these are estimates, not post-deploy measurements.
 `GOGC=400` cuts the GC cycle rate by 4x for a heap goal of ~1.25 GB (about
 today's RSS). It must **not** be applied before 1.1 is verified live for 24 h:
-`GOGC` multiplies the heap goal, so an unbounded ledger would grow 4x faster.
+`GOGC` multiplies the heap goal, so retained growth would allow a larger
+heap before each collection; it does not change the rate of that growth.
 
 ### Gate (24 h after the swap)
 
@@ -129,11 +132,11 @@ a **new** `docker run`. Docker does not reread the env file on restart
 
    Listing a brand-new key in both is supported. The required-key pass that
    runs against the live env *before* the merge exempts every key the
-   defaults file supplies (`deploy/gcp/prod/refresh-env.sh:63-72`, call at
-   `:92`), so a host that has no `GOGC` yet is not failed for lacking it; the
-   merge appends the default and prints `ADD GOGC=400` (`:133-141`). The
-   post-merge pass then enforces the whole manifest with no exemption
-   (`:145`), and it runs before the `--check` early exit (`:155`).
+   defaults file supplies (`deploy/gcp/prod/refresh-env.sh`,
+   `require_existing_values` with `allow_defaults=1`), so a host with no
+   `GOGC` is not failed for lacking it. The defaults merge appends the key
+   and prints `ADD GOGC=400`. The post-merge `require_existing_values` call
+   enforces the whole manifest without exemption, before the `--check` exit.
    `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` shipped this way.
 
    The manifest entry is what makes a blank value fail closed. The merge adds
@@ -160,9 +163,7 @@ a **new** `docker run`. Docker does not reread the env file on restart
    # then the §4 container swap
    ```
 
-Optional guard: `GOMEMLIMIT=12GiB` goes in the same file the same way. It is
-only needed if 1.1 could not ship first; with the ledger bounded the heap goal
-is ~1.25 GB on a 56 GB VM.
+Optional guard: `GOMEMLIMIT=12GiB` goes in the same file the same way. It does not waive the preceding 24 h verification gate for `GOGC=400`.
 
 ### Verification
 
@@ -201,9 +202,9 @@ process start.
 
 | # | Knob | Value | Effect (from the proposal) |
 |---|---|---|---|
-| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go:2080`, "NOT auto-derived from the latest release"). |
-| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed at `coordinator/cmd/coordinator/main.go:682`). Risk removal for the 2026-08-31 class of incident. |
-| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go:12-13` for the knobs, `:165` for `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
+| 0.1 | `EIGENINFERENCE_MIN_PROVIDER_VERSION` | `0.7.5` today → `0.8.12`, then `0.8.15` | Deroutes the ~4 % of the fleet on old builds that produce a large share of `first_chunk_timeout`; staged so no more than that share drops at once. The floor is manual by design (`coordinator/api/server.go`, `SetMinProviderVersion`). |
+| 0.3 | `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES` | `qwen3-vl-30b-a3b-instruct=off` | Removes the hardcoded 4 s first-content cutoff for that model (`0`/`off` deletes the built-in entry so the model uses the global base; parsed by `main` in `coordinator/cmd/coordinator/main.go`). Risk removal for the 2026-08-31 class of incident. |
+| 0.5 | `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | operator decision, `0..1` (default `0.1`) | Today ≈53 % of successes are recorded because every non-success / slow / retried request bypasses sampling (`coordinator/api/profiler.go`, `profiler.sampled`). Decide whether ~9 GB/day of `request_profiles` is intended before touching it; `EIGENINFERENCE_PROFILER=off` is the kill switch. |
 
 Commands for one knob (repeat per key; values are the ones from the table):
 
@@ -253,7 +254,7 @@ flowchart LR
     A5[provider first content] --> A7[first client byte]
     A5 -.->|goroutine| A6[RecordCapacityAccept]
     A8[completion] --> A9[reputation persist <= 1/30 s,<br/>no cancel after terminal,<br/>ledger capped at 100/consumer]
-    A10[verification job due, workers busy] --> A11[250 ms wake, no table read;<br/>durable rows re-read 1/s, page <= 256]
+    A10[verification job due, workers busy] --> A11[250 ms wake, no table read;<br/>durable rows re-read 1/s, initial page capacity <= 256]
     A12[/v1/me/summary] --> A13[one FILTER aggregate over 7 d,<br/>exact, 15 s per-account cache]
     A14[routing_saturated shed] --> A15[rejection row only]
   end
@@ -276,7 +277,7 @@ flowchart LR
   end
   subgraph After
     direction TB
-    D1[StartCacheRefreshers] --> D2[refreshCachedEntry<br/>coalesced, degraded-aware] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
+    D1[StartCacheRefreshers] --> D2[refreshCachedEntry<br/>coalesced, errors keep last success] --> D3[withAnalyticsTx<br/>SET LOCAL work_mem 1GB] --> D4[Set 5 min]
     D5[handleStats / handleNetworkTotals] --> D6[readCache.Get; cold miss -> D2]
     D7[commitFirstContent] --> D8[MarkRateOutcomeCounted<br/>saferun.Go RecordCapacityAccept] --> D9[writeCommittedResponse] --> D10[provider.RecordLatency<br/>p.mu only] --> D11[stream]
     D12[dispatcher loop] --> D13[shouldLoadDueRows: 1 s cadence or empty queue] --> D14[ListDueVerificationJobsPage<br/>make 0,min limit,256]

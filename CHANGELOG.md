@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — coordinator performance Tier 1
+
+- Bound recent in-process usage history with lazy allocation; aggregate dashboard earnings across every row in the rolling windows.
+- Refresh public stats and network totals in the background. Preserve unexpired successful data on store failures, return 503 when unavailable, and accept genuinely empty windows.
+- Remove capacity-accept bookkeeping from the first-byte path while preserving newer rejection strikes and cooldowns; avoid redundant provider cancels after settled completion.
+- Reduce verification polling, batch reputation reads, throttle successful reputation writes, and add lock-wait/scan instrumentation.
+
 ## Unreleased (2026-09-03) — documentation overhaul
 
 - **Every page under `docs/` rewritten or verified against the code at

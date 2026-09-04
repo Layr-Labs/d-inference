@@ -1035,8 +1035,13 @@ struct ProviderLoopPrefetchTests {
     /// nil-weight-hash case falls into: a verify that can't produce a hashed,
     /// advertisable build. Used to prove neither path strands the previous build.
     private func seedConfigOnlySnapshot(modelID: String) throws -> URL {
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        // Through the per-process temp cache (touching it installs the
+        // scanner override), never the operator's real HF cache: this is the
+        // first disk operation of its only caller, so resolving through the
+        // production downloader here wrote a `models--org--unhashable-*`
+        // husk into `~/.cache/huggingface/hub` when the test ran first.
+        let snapshot = TestHFCache.snapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)

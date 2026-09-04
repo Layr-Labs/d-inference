@@ -305,7 +305,7 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 // coordinator-synthetic or directly-constructed messages that did not traverse
 // the provider read-loop sanitizer.
 func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string {
-	if msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
+	if msg.CoordinatorCause.IsProviderDisconnect() {
 		return "provider disconnected"
 	}
 	if msg.FailureCode.Valid() {
@@ -319,14 +319,21 @@ func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string 
 // delivery. It preserves the one non-wire coordinator cause and otherwise
 // applies the same provider ingress boundary.
 func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) protocol.InferenceErrorMessage {
-	if msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
+	if msg.CoordinatorCause.IsProviderDisconnect() {
+		// The abrupt flush carries no reason and stays provider_error; the
+		// graceful restart flush keeps its coordinator-internal
+		// provider_restart marker (health-neutral through the reason funnel).
+		reason := errorReasonProviderError
+		if msg.CoordinatorCause == protocol.CoordinatorCauseProviderRestart {
+			reason = errorReasonProviderRestart
+		}
 		return protocol.InferenceErrorMessage{
 			Type:             protocol.TypeInferenceError,
 			RequestID:        msg.RequestID,
 			Error:            "provider disconnected",
 			StatusCode:       http.StatusBadGateway,
-			ErrorReason:      errorReasonProviderError,
-			CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+			ErrorReason:      reason,
+			CoordinatorCause: msg.CoordinatorCause,
 			AttemptUsage:     msg.AttemptUsage,
 		}
 	}

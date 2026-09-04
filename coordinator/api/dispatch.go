@@ -974,7 +974,7 @@ func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequ
 		return out
 	}
 	class := "provider_error"
-	if d.lastErrCoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
+	if d.lastErrCoordinatorCause.IsProviderDisconnect() {
 		class = "provider_disconnect_pre_commit"
 	}
 	out := d.errorRoutingOutcomeFor(pr, "error", class, d.lastErrCode)

@@ -5199,7 +5199,20 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 }
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
+// Disconnect removes a provider with the generic "disconnect" session reason
+// and the abrupt (health-striking) flush cause. The provider read loop uses
+// DisconnectWithReason (disconnect_reason.go) so a graceful peer close flushes
+// health-neutral and the session row carries the observed socket outcome; this
+// entry point remains for the paths that never saw the socket end (stale
+// eviction, duplicate-serial kick) and for tests.
 func (r *Registry) Disconnect(id string) {
+	r.disconnectWithCause(id, protocol.CoordinatorCauseProviderDisconnected, string(DisconnectReasonNormal))
+}
+
+// disconnectWithCause is the shared Disconnect implementation; cause is
+// stamped on every flushed pending-request terminal and sessionReason on the
+// provider_sessions row.
+func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInferenceErrorCause, sessionReason string) {
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
@@ -5270,13 +5283,12 @@ func (r *Registry) Disconnect(id string) {
 	if !ok {
 		return
 	}
-	// Removing the last capable provider can turn a queued constrained request
-	// from temporarily capacity-blocked into permanently unservable. Re-run
-	// the canonical drain after removal so those waiters receive the immediate
-	// capability-unavailable result instead of sleeping until maxWait.
-	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
-	// after releasing registry/provider locks.
+	// after releasing registry/provider locks, and BEFORE the pending flush
+	// below: the flushed requests fail over immediately, and a retained plan
+	// entry or an open capacity quote for this connection would let that
+	// failover pick the dead provider again or probe it for the full quote
+	// window.
 	r.cacheRouting.disconnect(id, cacheHolderRemovalDisconnect)
 	// Outstanding capacity-probe waiters bound to this connection can never be
 	// answered now (the socket is gone) — resolve them as SendFailed so probe
@@ -5286,11 +5298,15 @@ func (r *Registry) Disconnect(id string) {
 	// mutex; see capacity_quotes.go).
 	r.capacityQuotes.failProvider(id)
 
-	// Close all pending request channels so consumers get errors. Pending
-	// requests created by tests may leave these channels nil, and consumer
-	// goroutines may have already closed them on a successful/error path. Use
-	// non-nil checks and recover so a single bad request cannot hang or panic
-	// the disconnect cleanup.
+	// Close all pending request channels so consumers get errors. This runs
+	// BEFORE the queue drain: every in-flight request's failover starts the
+	// moment its ErrorCh is fed, instead of behind one ReserveProviderEx per
+	// queued waiter, and the drain cannot place a waiter on this provider
+	// anyway (it left r.providers under r.mu above). Pending requests created
+	// by tests may leave these channels nil, and consumer goroutines may have
+	// already closed them on a successful/error path. Use non-nil checks and
+	// recover so a single bad request cannot hang or panic the disconnect
+	// cleanup.
 	p.mu.Lock()
 	for reqID, pr := range p.pendingReqs {
 		if pr == nil {
@@ -5304,7 +5320,8 @@ func (r *Registry) Disconnect(id string) {
 					RequestID:        reqID,
 					Error:            "provider disconnected",
 					StatusCode:       502,
-					CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+					ErrorReason:      disconnectFlushErrorReason(cause),
+					CoordinatorCause: cause,
 				}
 			}()
 			func() {
@@ -5328,6 +5345,12 @@ func (r *Registry) Disconnect(id string) {
 	p.pendingReqs = make(map[string]*PendingRequest)
 	p.mu.Unlock()
 
+	// Removing the last capable provider can turn a queued constrained request
+	// from temporarily capacity-blocked into permanently unservable. Re-run
+	// the canonical drain after removal so those waiters receive the immediate
+	// capability-unavailable result instead of sleeping until maxWait.
+	r.drainQueuedRequestsForModelsWithReason(disconnectedModels, DrainTriggerDisconnect)
+
 	// Tear down the socket. Deleting the map entry only makes the provider
 	// unroutable; its read loop and challenge loop keep running on the open
 	// socket and the coordinator keeps auto-ponging it, so the provider never
@@ -5339,19 +5362,24 @@ func (r *Registry) Disconnect(id string) {
 	// outside r.mu so it can't stall the registry.
 	p.closeWriterNow()
 
-	// Close this connection's session row (async; durable uptime history).
-	// Covers both graceful disconnects and evictStale (which calls Disconnect).
+	// Close this connection's session row ONCE (async; durable uptime history)
+	// with the reason the caller observed: the read loop's ws_close_<code> /
+	// read_error / oom_suspected, or the generic "disconnect" for paths that
+	// never saw the socket end (evictStale, duplicate-serial kick). The read
+	// loop used to write a synchronous, 3 s-bounded stamp first so that
+	// first-close-wins kept its reason against this generic close; that DB
+	// round trip sat on the teardown path ahead of the pending flush.
 	if r.store != nil {
 		saferun.Go(r.logger, "registry.closeSession", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := r.store.CloseProviderSession(ctx, id, "disconnect", time.Now()); err != nil {
+			if err := r.store.CloseProviderSession(ctx, id, sessionReason, time.Now()); err != nil {
 				r.logger.Warn("failed to close provider session", "provider_id", id, "error", err)
 			}
 		})
 	}
 
-	r.logger.Info("provider disconnected", "provider_id", id)
+	r.logger.Info("provider disconnected", "provider_id", id, "reason", sessionReason)
 }
 
 // GetProvider returns a provider by ID, or nil if not found.

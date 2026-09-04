@@ -364,6 +364,46 @@ func (r *sessionStampRecorder) firstWrite(reason string) (sessionWriteRecord, bo
 	return sessionWriteRecord{}, false
 }
 
+// After the teardown reorder the disconnect path writes the session row
+// exactly ONCE, carrying the specific reason. Before it, the read loop wrote a
+// synchronous 3 s-bounded stamp and registry.Disconnect a second, generic
+// async close (a no-op under first-close-wins, but a DB round trip per
+// disconnect — and the first one sat on the teardown path ahead of the
+// pending flush).
+func TestProviderSessionCloseWrittenOnceWithReason(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rec := &sessionStampRecorder{}
+	h := newSessionReasonHarnessWith(t, ctx, func(reg *registry.Registry, st *store.MemoryStore) store.Store {
+		rec.reg = reg
+		rec.Store = st
+		return rec
+	})
+
+	if err := h.conn.Close(websocket.StatusGoingAway, "restarting"); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	if reason := h.closedReason(t); reason != "ws_close_1001" {
+		t.Errorf("disconnect_reason = %q, want %q", reason, "ws_close_1001")
+	}
+	// A second (generic) write would land within the registry's async close
+	// window; give it every chance to show up.
+	time.Sleep(300 * time.Millisecond)
+	rec.mu.Lock()
+	writes := append([]sessionWriteRecord(nil), rec.writes...)
+	rec.mu.Unlock()
+	if len(writes) != 1 {
+		t.Fatalf("CloseProviderSession writes per disconnect = %d (%+v), want exactly 1", len(writes), writes)
+	}
+	if writes[0].reason != "ws_close_1001" {
+		t.Errorf("the single session close carried reason %q, want ws_close_1001", writes[0].reason)
+	}
+	if writes[0].inRegistry {
+		t.Errorf("session close reached the store while the provider was still in the registry")
+	}
+}
+
 // Regression for the PR #512 review finding: when the read loop exits, the
 // provider must already be unroutable when the durable disconnect-reason write
 // starts — a slow provider_sessions upsert must not leave a dead provider

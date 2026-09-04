@@ -210,27 +210,6 @@ func readErrorDisconnectReason(err error) string {
 	return readErrorReasonGeneric
 }
 
-// closeSessionWithReason closes this connection's provider_sessions row with a
-// specific disconnect reason. Synchronous with a short timeout: it must land
-// before the deferred registry.Disconnect issues its generic "disconnect"
-// close (first close wins in the store), and a bounded wait means a stalled DB
-// delays only this connection's teardown by at most the timeout — the store's
-// upsert semantics make the registry's later write a safe fallback if this one
-// times out. The caller marks the provider StatusOffline before calling, so
-// the wait is never routing-critical: the dead provider cannot be selected
-// while the write is in flight.
-func (s *Server) closeSessionWithReason(providerID, reason string) {
-	if s.store == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := s.store.CloseProviderSession(ctx, providerID, reason, time.Now()); err != nil {
-		s.logger.Warn("failed to close provider session with reason",
-			"provider_id", providerID, "reason", reason, "error", err)
-	}
-}
-
 // providerReadLoop reads messages from the provider WebSocket and dispatches
 // them. It runs until the connection closes or the context is cancelled.
 func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, providerID string, r *http.Request) {
@@ -239,6 +218,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	var schedulerSEKey string
 	var schedulerGeneration uint64
 
+	// The read loop's error branch captures how the socket ended for the
+	// deferred teardown: peerCloseStatus is the close code the peer sent (-1
+	// = no close frame), peerOOMSuspected the abrupt-drop OOM classification,
+	// and sessionReason the provider_sessions disconnect_reason. Together they
+	// let registry.DisconnectWithReason flush pending requests with the
+	// health-neutral restart cause on a graceful 1000/1001 close (and the
+	// striking abrupt cause otherwise) and write the session row exactly once
+	// with the specific reason. sessionReason stays the generic "disconnect"
+	// for a coordinator shutdown (ctx.Err() != nil — the next instance's
+	// startup reconcile labels those "coordinator_restart") and for a
+	// connection that never registered (no session row exists).
+	peerCloseStatus := websocket.StatusCode(-1)
+	peerOOMSuspected := false
+	sessionReason := string(registry.DisconnectReasonNormal)
 	// Cancel context for cleanup of the challenge loop goroutine.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer func() {
@@ -254,7 +247,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// provider down), so the measured reconnect gap starts here rather
 		// than at the last periodic coverage pass.
 		s.stopTrustCoverageForProvider(providerID)
-		s.registry.Disconnect(providerID)
+		s.registry.DisconnectWithReason(providerID,
+			registry.ClassifyPeerClose(peerCloseStatus, peerOOMSuspected), sessionReason)
 		conn.Close(websocket.StatusNormalClosure, "goodbye")
 	}()
 
@@ -265,6 +259,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
 			if closeStatus != -1 {
+				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
 				// Peer-initiated closes were previously unmetered — only
@@ -324,27 +319,26 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 
-			// Stamp this connection's session row with the observed socket
-			// outcome. Every registry.Disconnect path writes the catch-all
-			// "disconnect", which made 97% of provider_sessions rows carry a
-			// single indistinguishable reason (2026-07-03 churn analysis). The
-			// stamp is written synchronously BEFORE the deferred
-			// registry.Disconnect so the store's first-close-wins semantics keep
-			// the specific reason; the registry's later generic close becomes a
-			// no-op. Skipped when:
+			peerOOMSuspected = oomSuspected
+
+			// Hand the observed socket outcome to the deferred
+			// registry.DisconnectWithReason, which writes it to this
+			// connection's session row. Every other Disconnect path writes the
+			// catch-all "disconnect", which made 97% of provider_sessions rows
+			// carry a single indistinguishable reason (2026-07-03 churn
+			// analysis). Skipped (generic reason kept) when:
 			//   - provider == nil: never registered, so no session row exists
-			//     (writing would fabricate a zero-duration row);
+			//     (Disconnect is a no-op for an unknown id anyway);
 			//   - ctx.Err() != nil: coordinator shutdown — the next instance's
 			//     startup reconcile labels these "coordinator_restart";
 			//   - the registry no longer has the provider: registry.Disconnect
 			//     already ran (stale eviction, duplicate-serial kick) and owns
 			//     the reason for that path.
 			if provider != nil && ctx.Err() == nil && s.registry.GetProvider(providerID) != nil {
-				// The socket is dead, but the deferred registry.Disconnect
-				// only runs after the stamp lands (first close wins requires
-				// that order). Flip the provider offline first — StatusOffline
-				// fails every routing-eligibility gate — so a slow store write
-				// can never leave a dead provider selectable. Untrusted stays
+				// The socket is dead. Flip the provider offline before the
+				// deferred teardown removes it — StatusOffline fails every
+				// routing-eligibility gate — so nothing that runs between here
+				// and the registry delete can select it. Untrusted stays
 				// untrusted: it is equally unroutable, and overwriting it would
 				// make Disconnect's status-gated online/model decrements run a
 				// second time after markUntrusted already decremented.
@@ -353,7 +347,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				s.closeSessionWithReason(providerID, sessionDisconnectReason(closeStatus, oomSuspected, readReason))
+				sessionReason = sessionDisconnectReason(closeStatus, oomSuspected, readReason)
 			}
 			return
 		}

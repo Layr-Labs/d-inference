@@ -36,7 +36,13 @@ const (
 	// on the normal bounded-failover path, NEVER in the terminal client-error
 	// stop set (see isTerminalClientErrorCode).
 	errorReasonToolNoncompliance = "tool_noncompliance"
-	errorReasonUnknown           = "unknown"
+	// errorReasonProviderRestart: coordinator-internal marker stamped by the
+	// registry on the pending-request flush of a GRACEFUL peer close
+	// (restart/stop/update). Health-neutral through
+	// isProviderHealthNeutralErrorReason; never accepted from the wire
+	// (safeInferenceErrorReason does not emit it).
+	errorReasonProviderRestart = protocol.InferenceErrorReasonProviderRestart
+	errorReasonUnknown         = "unknown"
 )
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
@@ -100,7 +106,18 @@ func isDeadlineUnreachableErrorReason(reason string) bool {
 // supplied remaining SLA, not provider sickness or capacity dishonesty.
 func isProviderHealthNeutralErrorReason(reason string) bool {
 	return isNonProviderFaultErrorReason(reason) ||
-		isDeadlineUnreachableErrorReason(reason)
+		isDeadlineUnreachableErrorReason(reason) ||
+		isProviderRestartErrorReason(reason)
+}
+
+// isProviderRestartErrorReason reports whether reason is the coordinator-
+// internal provider_restart marker the registry stamps on the flushed
+// terminals of a GRACEFUL peer close (registry.DisconnectWithReason). The
+// requests fail over like any disconnect, but the terminal is health-neutral:
+// no breaker/cooldown/ejection strike, no clear. An abrupt drop's flush
+// carries no reason and keeps striking (the zombie discriminator).
+func isProviderRestartErrorReason(reason string) bool {
+	return normalizeInferenceErrorReason(reason) == errorReasonProviderRestart
 }
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
@@ -131,6 +148,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonCancelled:                 {},
 	errorReasonProviderError:             {},
 	errorReasonClientError:               {},
+	errorReasonProviderRestart:           {},
 	errorReasonToolNoncompliance:         {},
 	errorReasonUnknown:                   {},
 }
@@ -280,7 +298,7 @@ func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string
 }
 
 func providerDisconnectedError(msg protocol.InferenceErrorMessage) bool {
-	return msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected
+	return msg.CoordinatorCause.IsProviderDisconnect()
 }
 
 // applyAttemptUsage copies a typed error terminal's provider-reported partial

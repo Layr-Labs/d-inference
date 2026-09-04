@@ -43,6 +43,14 @@ tests pass with under 0.5 s of margin. **#818's round-2 work is paused at the us
 extraction sit unpushed in `.worktrees/coordinator-perf-tier1`; the runbook line-number and 503-docs findings
 are not started.
 
+**Handover (2026-09-04 ~20:40 UTC):** the repository owner took over #818, the Tier 2 branches (#820, #819, #823, the
+A+B base) and then #822 directly, pushing commits, merging #823 into #822 and resolving Codex threads in the same
+worktrees; the session's agents on those PRs were stopped at the owner's request. Round 3 on #822 (five findings, one a
+regression versus master: rebinds were no longer serialized with the commit-time gate check) was fixed and pushed
+before the handover; round 4 (one finding: the scan's post-snapshot rejection classification reads an unconfirmed gate)
+exists as a validated standalone patch in the session scratchpad, not applied. The Codex monitor keeps reporting
+per-PR unresolved counts.
+
 **Codex review round 1 (2026-09-04 06:00 UTC):** #819 and #821 clean. Eleven findings on the other four, all
 verified legitimate (one partially) and fixed with regression tests, each thread answered on GitHub:
 

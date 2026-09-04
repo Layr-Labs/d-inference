@@ -146,3 +146,46 @@ func TestPreflightCalibrationSwitchReadOncePerWalk(t *testing.T) {
 		t.Fatalf("explicit switch off = %v, want the raw estimate %v", got, raw)
 	}
 }
+
+// TestScanSwitchesReadOncePerWalkRegardlessOfFleetSize is the structural
+// pin behind the three *ReadOncePerWalk tests above (which only prove the
+// environment is honoured between walks): the number of live environment
+// reads per reservation and per capacity preflight does not grow with the
+// number of candidates walked. Fails if either switch is read inside the
+// candidate loop again.
+func TestScanSwitchesReadOncePerWalkRegardlessOfFleetSize(t *testing.T) {
+	readsFor := func(providers int) (reserve, preflight int64) {
+		reg := New(testLogger())
+		model := fmt.Sprintf("hygiene-reads-%d", providers)
+		for i := 0; i < providers; i++ {
+			makeSchedulerProvider(t, reg, fmt.Sprintf("reads-%d-%d", providers, i), model, 100)
+		}
+		pr := &PendingRequest{RequestID: "reads-req", Model: model, EstimatedPromptTokens: 100, RequestedMaxTokens: 100}
+		before := schedulerEnvReads.Load()
+		p, decision := reg.ReserveProviderEx(model, pr)
+		if p == nil {
+			t.Fatalf("%d providers: reservation failed: %+v", providers, decision)
+		}
+		if decision.Rescans != 0 {
+			t.Fatalf("%d providers: %d rescans, want 0 (each rescan is a walk of its own)", providers, decision.Rescans)
+		}
+		reserve = schedulerEnvReads.Load() - before
+		p.RemovePending(pr.RequestID)
+		before = schedulerEnvReads.Load()
+		reg.QuickCapacityCheckForRequest(model, 100, 100, RequestTraits{}, false)
+		preflight = schedulerEnvReads.Load() - before
+		return reserve, preflight
+	}
+	r1, q1 := readsFor(1)
+	r16, q16 := readsFor(16)
+	t.Logf("env reads per reservation: 1 provider=%d 16 providers=%d; per preflight: %d / %d", r1, r16, q1, q16)
+	if r1 == 0 || q1 == 0 {
+		t.Fatal("fixture: the walk must read each switch at least once")
+	}
+	if r16 != r1 {
+		t.Fatalf("reservation env reads grew with the fleet: 1 provider=%d, 16 providers=%d (read per candidate again)", r1, r16)
+	}
+	if q16 != q1 {
+		t.Fatalf("preflight env reads grew with the fleet: 1 provider=%d, 16 providers=%d (read per candidate again)", q1, q16)
+	}
+}

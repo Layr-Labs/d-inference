@@ -2852,6 +2852,7 @@ func projectedPerRequestDecodeTPSAtBatchWith(snap *routingSnapshot, joinBatch in
 // EIGENINFERENCE_DECODE_FLOOR_USE_FLEET_MEDIAN=false for byte-for-byte pre-fix
 // behavior (idle boxes fall straight to the static benchmark).
 func decodeFloorUseFleetMedian() bool {
+	schedulerEnvReads.Add(1)
 	return env.EnvBool(env.EnvPrefix+"_DECODE_FLOOR_USE_FLEET_MEDIAN", true)
 }
 

@@ -99,6 +99,7 @@ const (
 // EIGENINFERENCE_TTFT_CALIBRATION=off (or false/0) makes the apply path return
 // ratio 1.0. Mirrors decodeFloorUseFleetMedian's live-env pattern.
 func ttftCalibrationEnabled() bool {
+	schedulerEnvReads.Add(1)
 	v := strings.TrimSpace(env.EnvOr(env.EnvPrefix+"_TTFT_CALIBRATION", "on"))
 	return !strings.EqualFold(v, "off") && v != "false" && v != "0"
 }

@@ -205,3 +205,10 @@ type scanCounters struct {
 func (r *Registry) FleetWalkCount() int64 {
 	return r.scanStats.fleetWalks.Load()
 }
+
+// schedulerEnvReads counts the live environment reads of the scan-path
+// switches (ttftCalibrationEnabled, decodeFloorUseFleetMedian). Each is read
+// ONCE per fleet walk and scored into every candidate; the counter is what
+// lets a test pin that the count is independent of the fleet size (one
+// atomic add per walk is noise next to the walk itself).
+var schedulerEnvReads atomic.Int64

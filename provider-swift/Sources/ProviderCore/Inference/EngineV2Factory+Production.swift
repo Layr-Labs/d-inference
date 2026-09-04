@@ -446,6 +446,7 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         prefixCache: (any CBv2PrefixCache)? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
@@ -459,6 +460,7 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             activationReserveBytes: activationReserveBytes,
+            configReserveBytes: configReserveBytes,
             prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
@@ -616,6 +618,7 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         prefixCache: (any CBv2PrefixCache)? = nil,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
@@ -629,6 +632,7 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             activationReserveBytes: activationReserveBytes,
+            configReserveBytes: configReserveBytes,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment,
@@ -651,6 +655,7 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
+        configReserveBytes: UInt64 = 0,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -968,8 +973,13 @@ extension EngineV2Factory {
                     // pool and `degradeOrRefuse` 503s an explicit-paged
                     // slot — the admit-then-fail shape this change removes
                     // everywhere else.
+                    // …and the operator's `memory_reserve_gb`, which the
+                    // live gate also holds back (T3-03): without it this
+                    // probe measures against the bare 0.9 cap and can plan
+                    // a pool the gate then starves on < 40 GiB boxes.
                     liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(
-                        activationReserveBytes: activationReserveBytes),
+                        activationReserveBytes: activationReserveBytes,
+                        configReserveBytes: configReserveBytes),
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):

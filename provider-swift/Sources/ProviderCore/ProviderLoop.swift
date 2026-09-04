@@ -700,6 +700,14 @@ public actor ProviderLoop {
         return overflow ? UInt64.max : bytes
     }
 
+    /// The operator's `memory_reserve_gb` in bytes — the config reserve the
+    /// shared KV gate (`kvBudget`), the load gate, `free_for_load_gb` and the
+    /// measured headroom probes (`KVHeadroomProbe`) all hold back, so every
+    /// memory verdict on this box measures against ONE effective cap.
+    var configuredMemoryReserveBytes: UInt64 {
+        Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB)
+    }
+
     // MARK: - Model Slot
 
     internal static let schedulerMaxConcurrent = 24

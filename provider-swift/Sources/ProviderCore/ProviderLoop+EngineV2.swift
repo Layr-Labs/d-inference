@@ -626,6 +626,10 @@ extension ProviderLoop {
                 // decision inside the factory measures headroom against the
                 // same reserve every other gate on this load path carves.
                 activationReserveBytes: resolvedActivationReserveBytes,
+                // …and the operator reserve the same gates hold back, so the
+                // paged decision's headroom probe and the live KV gate
+                // measure against one effective cap (T3-03).
+                configReserveBytes: configuredMemoryReserveBytes,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 prefillDeadlineMode:

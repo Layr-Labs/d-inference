@@ -225,7 +225,8 @@ extension ProviderLoop {
             var postBuildServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: newBridge.kvBackendKind,
                 pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
-                activationReserveBytes: resolvedActivationReserveBytes)
+                activationReserveBytes: resolvedActivationReserveBytes,
+                configReserveBytes: configuredMemoryReserveBytes)
             // Scripted hook engines are not concrete EngineV2 instances and
             // cannot expose MTP metrics; their prepared bundle status is the
             // test seam's runtime truth. Production still requires live metrics.
@@ -266,7 +267,8 @@ extension ProviderLoop {
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: newBridge.kvBackendKind,
                     pagedPoolBytes: await newBridge.kvBackendPoolBytes(),
-                    activationReserveBytes: resolvedActivationReserveBytes)
+                    activationReserveBytes: resolvedActivationReserveBytes,
+                    configReserveBytes: configuredMemoryReserveBytes)
             }
             if !postBuildServeable {
                 await engineV2Runtime.unregister(modelId: modelId)

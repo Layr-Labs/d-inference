@@ -555,8 +555,12 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		}
 		mp.LifetimeRequestsServed = live.Stats.RequestsServed
 		mp.LifetimeTokensGenerated = live.Stats.TokensGenerated
-		mp.PrefillTPS = live.PrefillTPS
-		mp.DecodeTPS = live.DecodeTPS
+		// Measured throughput: the heartbeat's per-slot EWMA, not the
+		// registration benchmark alone — current providers never send the
+		// latter, which left decode_tps permanently omitted.
+		tp := live.MeasuredThroughputLocked()
+		mp.PrefillTPS = tp.PrefillTPS
+		mp.DecodeTPS = tp.DecodeTPS
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult

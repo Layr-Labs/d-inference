@@ -132,6 +132,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		if last := p.GetLastChallengeVerified(); !last.IsZero() {
 			lastChallengeVerified = last.UTC().Format(time.RFC3339)
 		}
+		// Heartbeat state (slots, active model) is written under p.mu.
+		p.Mu().Lock()
+		decodeTPS := p.MeasuredThroughputLocked().DecodeTPS
+		p.Mu().Unlock()
 
 		prov := map[string]any{
 			"id":                             p.ID,
@@ -145,7 +149,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"memory_bandwidth_gbs":           p.Hardware.MemoryBandwidthGBs,
 			"status":                         status,
 			"trust_level":                    string(p.TrustLevel),
-			"decode_tps":                     p.DecodeTPS,
+			"decode_tps":                     decodeTPS,
 			"requests_served":                p.Stats.RequestsServed,
 			"tokens_generated":               p.Stats.TokensGenerated,
 			"cancellations_received":         p.Stats.CancellationsReceived,

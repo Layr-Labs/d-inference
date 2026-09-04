@@ -607,9 +607,22 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
     /// a mismatch can be aggregated, so this stays empty there.
     public let parityDivergences: [MTPBenchmarkParityDivergence]
     /// True when every measurement repetition of this case emitted the same
-    /// tokens and terminal reasons. `.enforce` throws on an unstable case;
-    /// `.record` reports it here and keeps the median.
+    /// tokens and terminal reasons.
     public let repetitionStable: Bool
+    /// Whether token identity across repetitions is a property this MODE has.
+    ///
+    /// Read `repetitionStable` together with this flag or it will be
+    /// misread. A target-only or fixed-depth case serves one verify width on
+    /// every round, so its arithmetic is the same every time and a `false`
+    /// there is a real defect. The adaptive controller prices depths from
+    /// MEASURED wall-clock cost, so two runs cannot agree on which round is
+    /// served at which depth; the observed schedule spans the whole envelope
+    /// (one run served depths 0 through 7 across 309 rounds). A different
+    /// width is different arithmetic — `qmv` against `qmv_wide`, a different
+    /// accumulation order — so a near-tie token flips and the streams part.
+    /// Adaptive `repetitionStable == false` is therefore structural, not a
+    /// defect, and `.enforce` must not fail on it.
+    public let repetitionStableRequired: Bool
     /// Exit status of the per-case command, run immediately before this case's
     /// warmup. Nil when no command was configured.
     ///
@@ -629,6 +642,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         parityMismatchRows: [Int],
         parityDivergences: [MTPBenchmarkParityDivergence] = [],
         repetitionStable: Bool = true,
+        repetitionStableRequired: Bool = true,
         preCaseExit: Int32? = nil,
         rows: [MTPBenchmarkRowResult],
         metrics: MTPBenchmarkMetrics
@@ -641,6 +655,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
         self.parityMismatchRows = parityMismatchRows
         self.parityDivergences = parityDivergences
         self.repetitionStable = repetitionStable
+        self.repetitionStableRequired = repetitionStableRequired
         self.preCaseExit = preCaseExit
         self.rows = rows
         self.metrics = metrics
@@ -656,6 +671,7 @@ public struct MTPBenchmarkCaseResult: Codable, Sendable {
             parityMismatchRows: parityMismatchRows,
             parityDivergences: parityDivergences,
             repetitionStable: repetitionStable,
+            repetitionStableRequired: repetitionStableRequired,
             preCaseExit: preCaseExit,
             rows: rows.map { $0.withoutPerformanceMeasurements() },
             metrics: metrics.withoutPerformanceMeasurements())
@@ -790,7 +806,7 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 9
+    public static let currentSchemaVersion = 10
 
     public let schemaVersion: Int
     public let runFingerprint: String

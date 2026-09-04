@@ -1795,7 +1795,14 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--batch-sizes must be positive integers")
     if len(set(args.batch_size_list)) != len(args.batch_size_list):
         parser.error("--batch-sizes must not repeat")
-    if not args.width_list or any(not 1 <= value <= 8 for value in args.width_list):
+    # An EXPLICITLY empty --widths means "no fixed cases". With --no-adaptive
+    # that is the target-only-only arm, which had no other spelling: the list
+    # was required to be non-empty, and the one value that would have stood in
+    # for it, --widths 1, was rejected downstream by a metrics validator that
+    # demanded speculative evidence from a depth-0 case.
+    if any(not 1 <= value <= 8 for value in args.width_list):
+        parser.error("--widths must be integers in 1...8")
+    if not args.width_list and args.widths.strip():
         parser.error("--widths must be integers in 1...8")
     if len(set(args.width_list)) != len(args.width_list):
         parser.error("--widths must not repeat")

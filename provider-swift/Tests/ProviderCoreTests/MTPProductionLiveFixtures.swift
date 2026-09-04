@@ -129,8 +129,17 @@ enum MTPProductionLiveFixtures {
 
     /// Fixed verification widths L to sweep (draft depth k = L-1). Target-only
     /// is always the first case; adaptive is separately gated.
+    ///
+    /// UNSET and SET-BUT-EMPTY are different requests. Unset means "sweep the
+    /// default envelope". An explicit empty value means "no fixed cases", which
+    /// with `--no-adaptive` is how a target-only-only arm is expressed;
+    /// collapsing the two would silently turn that arm into a full sweep.
     static var benchmarkVerificationWidths: [Int] {
-        parseIntList(environment["DARKBLOOM_MTP_BENCHMARK_WIDTHS"]) ?? Array(1...8)
+        guard let raw = environment["DARKBLOOM_MTP_BENCHMARK_WIDTHS"] else {
+            return Array(1...8)
+        }
+        if raw.trimmingCharacters(in: .whitespaces).isEmpty { return [] }
+        return parseIntList(raw) ?? Array(1...8)
     }
 
     static var benchmarkIncludesAdaptive: Bool {

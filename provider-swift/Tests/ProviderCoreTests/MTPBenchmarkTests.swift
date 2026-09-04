@@ -1786,4 +1786,85 @@ private extension JSONDecoder {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }
+    // MARK: - Depth 0 is the baseline, not a broken speculative case
+
+    /// A fixed case at verification width 1 must validate.
+    ///
+    /// Width 1 is draft depth 0: the rectangle is the bonus token alone, so
+    /// nothing is drafted and nothing is verified. The certificates that prove
+    /// speculation happened — a decode-row bucket, a per-depth cost input — are
+    /// recorded per speculative round, and a depth-0 case has none. Demanding
+    /// them made `--widths 1` fail with "never observed decode-row bucket 1"
+    /// and left the harness with no way to express a target-only-only arm.
+    @Test("a depth-0 fixed case validates as the baseline it is")
+    func depthZeroFixedCaseValidatesAsBaseline() throws {
+        let mode = try MTPBenchmarkMode.fixed(verificationWidth: 1)
+        #expect(MTPBenchmarkRunner.repetitionStabilityRequired(for: mode))
+
+        // The shape a depth-0 pin actually produces: the planner ran and chose
+        // depth 0 every round, and no draft token was proposed. No bucket, no
+        // cost input.
+        try MTPBenchmarkRunner.validateMetrics(
+            MTPBenchmarkMetrics(
+                active: true,
+                verificationMode: "automatic",
+                rectangularVerificationRounds: 0,
+                serialVerificationRounds: 0,
+                depthSelections: ["0": 128]),
+            mode: mode,
+            batchSize: 1,
+            adaptiveDraftingExpected: false,
+            allowedSkipReasons: [],
+            requireAutomaticVerification: true)
+
+        // A planner that never entered the MTP path at all is also a baseline.
+        try MTPBenchmarkRunner.validateMetrics(
+            MTPBenchmarkMetrics(active: true, verificationMode: "automatic"),
+            mode: mode,
+            batchSize: 1,
+            adaptiveDraftingExpected: false,
+            allowedSkipReasons: [])
+
+        // But a depth-0 case that DRAFTED is a pin that did not take, and the
+        // relaxation must not swallow that.
+        for broken in [
+            MTPBenchmarkMetrics(active: true, proposedTokens: 12),
+            MTPBenchmarkMetrics(active: true, acceptedDraftTokens: 3),
+            MTPBenchmarkMetrics(active: true, depthSelections: ["0": 100, "2": 1]),
+        ] {
+            #expect(throws: MTPBenchmarkError.self) {
+                try MTPBenchmarkRunner.validateMetrics(
+                    broken,
+                    mode: mode,
+                    batchSize: 1,
+                    adaptiveDraftingExpected: false,
+                    allowedSkipReasons: [])
+            }
+        }
+    }
+
+    // MARK: - Repetition stability is a property of the mode
+
+    /// Token identity across repetitions is required of the fixed-width modes
+    /// and is not a property the adaptive controller has.
+    ///
+    /// The controller prices depths from measured wall-clock cost, so two runs
+    /// disagree about which round is served at which depth. A different depth
+    /// is a different verify width, a different width is different arithmetic
+    /// (`qmv` against `qmv_wide`), and a near-tie token flips. Both measured
+    /// arms show exactly this: every fixed row stable, the adaptive row not,
+    /// on two different binaries. Enforcing identity there would fail every
+    /// adaptive run for behaving as designed.
+    @Test("repetition stability is required of fixed modes, not of adaptive")
+    func repetitionStabilityIsRequiredOfFixedModesOnly() throws {
+        #expect(MTPBenchmarkRunner.repetitionStabilityRequired(for: .targetOnly))
+        for width in 1...8 {
+            #expect(
+                MTPBenchmarkRunner.repetitionStabilityRequired(
+                    for: try MTPBenchmarkMode.fixed(verificationWidth: width)),
+                "width \(width)")
+        }
+        #expect(!MTPBenchmarkRunner.repetitionStabilityRequired(for: .adaptive))
+    }
+
 }

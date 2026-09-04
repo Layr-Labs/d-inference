@@ -246,7 +246,18 @@ public enum MTPBenchmarkRunner {
                     sessions: sessions))
             }
             let repetitionStable = repetitionsAgree(samples)
-            if !repetitionStable, configuration.parityPolicy == .enforce {
+            // Only a mode that serves ONE verify width on every round can be
+            // required to emit the same tokens twice. The adaptive controller
+            // chooses depth from measured wall-clock cost, so its depth
+            // schedule differs run to run, a different depth is a different
+            // verify width, and a different width is different arithmetic
+            // (`qmv` against `qmv_wide`) — near-tie tokens flip and the
+            // streams part. Enforcing token identity there would fail every
+            // adaptive run for doing exactly what it is designed to do.
+            let repetitionStableRequired = Self.repetitionStabilityRequired(for: key.mode)
+            if !repetitionStable, repetitionStableRequired,
+                configuration.parityPolicy == .enforce
+            {
                 throw MTPBenchmarkError.inconsistentRepetition(
                     "\(key.mode.label), B=\(key.batchSize) changed tokens, prompts, "
                         + "or terminal reason")
@@ -303,6 +314,7 @@ public enum MTPBenchmarkRunner {
                 tokenEvidenceSalt: tokenEvidenceSalt,
                 divergences: divergences,
                 repetitionStable: repetitionStable,
+                repetitionStableRequired: repetitionStableRequired,
                 preCaseExit: preCaseExit))
             if let checkpointDestination = configuration.checkpointDestination {
                 try requireBeforeDeadline(deadlineAt)
@@ -525,6 +537,34 @@ public enum MTPBenchmarkRunner {
                 return
             }
             let expectedDepth = (mode.verificationWidth ?? 1) - 1
+            // Verification width 1 is draft depth 0: the "rectangle" is the
+            // bonus token by itself, so the round drafts nothing and verifies
+            // nothing. It is target-only decoding reached through the MTP
+            // planner, and the certificates below cannot apply to it — a
+            // decode-row bucket and a per-depth cost input are both recorded
+            // per SPECULATIVE round, and there are none. Requiring them made
+            // `--widths 1` unrunnable, which in turn made a target-only-only
+            // arm inexpressible: the harness had no way to say "run the
+            // baseline and no speculation".
+            //
+            // What IS checkable, and what this asserts, is that the pin took:
+            // nothing was drafted, and no round chose a positive depth. A
+            // depth-0 case that proposes tokens is a broken pin, not a
+            // baseline, and it fails here.
+            if expectedDepth == 0 {
+                guard metrics.proposedTokens == 0, metrics.acceptedDraftTokens == 0 else {
+                    throw MTPBenchmarkError.invalidMetrics(
+                        "\(mode.label), B=\(batchSize) drafted at depth 0 "
+                            + "(proposed \(metrics.proposedTokens), "
+                            + "accepted \(metrics.acceptedDraftTokens))")
+                }
+                guard metrics.depthSelections.allSatisfy({ (Int($0.key) ?? -1) == 0 }) else {
+                    throw MTPBenchmarkError.invalidMetrics(
+                        "\(mode.label), B=\(batchSize) selected a positive depth at "
+                            + "width 1: \(metrics.depthSelections)")
+                }
+                return
+            }
             if try validateAutomaticDepthLimitFallback(
                 metrics, batchSize: batchSize, requestedDepth: expectedDepth)
             {
@@ -1003,6 +1043,15 @@ public enum MTPBenchmarkRunner {
 
     /// True when every measurement repetition emitted the same prompts,
     /// tokens, and terminal reasons.
+    /// Token identity across repetitions is a property of fixed-width modes,
+    /// not of the adaptive controller. See `repetitionStableRequired`.
+    static func repetitionStabilityRequired(for mode: MTPBenchmarkMode) -> Bool {
+        switch mode.kind {
+        case .targetOnly, .fixed: return true
+        case .adaptive: return false
+        }
+    }
+
     private static func repetitionsAgree(_ samples: [CaseSample]) -> Bool {
         guard let first = samples.first else { return false }
         let expected = first.batch.rows.map { ($0.promptName, $0.tokenIDs, $0.finishReason) }
@@ -1064,6 +1113,7 @@ public enum MTPBenchmarkRunner {
         tokenEvidenceSalt: Data,
         divergences: [MTPBenchmarkParityDivergence],
         repetitionStable: Bool,
+        repetitionStableRequired: Bool,
         preCaseExit: Int32?
     ) -> MTPBenchmarkCaseResult {
         let sortedSamples = samples.sorted {
@@ -1104,6 +1154,7 @@ public enum MTPBenchmarkRunner {
             parityMismatchRows: divergences.map(\.row),
             parityDivergences: divergences,
             repetitionStable: repetitionStable,
+            repetitionStableRequired: repetitionStableRequired,
             preCaseExit: preCaseExit,
             rows: rows,
             metrics: representative.metrics)

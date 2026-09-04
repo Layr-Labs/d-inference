@@ -161,7 +161,8 @@ func TestAdmissionDoesNotInvent413WithoutIncompatibleProvider(t *testing.T) {
 
 func TestAdmissionReturns413ForActualProtocolZeroIncompatibility(t *testing.T) {
 	reg, _, server := setupFailoverServer(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Allow race-instrumented decoding of a maximum-size body on loaded runners.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	const model = "overflow-protocol-zero-model"
 	provider := startFailoverProvider(t, ctx, server, reg, failoverProviderConfig{

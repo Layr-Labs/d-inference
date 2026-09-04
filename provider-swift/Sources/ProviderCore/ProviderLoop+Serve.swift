@@ -239,6 +239,18 @@ extension ProviderLoop {
         // they reroute instead of timing out, and cancels still land — until
         // the drain closes the link, which finishes `events` and ends the
         // consumer.
+        await serveCoordinatorEvents(coordinator: coordinator, events: events, send: send)
+    }
+
+    /// Step 5 of `run()` and its teardown, split out so a test can drive the
+    /// real cancellation path (cancel this task, observe refuse → drain →
+    /// close, return) against the in-process mock coordinator without the
+    /// hardening, preload and APNs steps that precede it in `run()`.
+    internal func serveCoordinatorEvents(
+        coordinator: CoordinatorClient,
+        events: AsyncStream<CoordinatorEvent>,
+        send: SendHandle
+    ) async {
         let me = self
         let consumer = Task {
             for await event in events {

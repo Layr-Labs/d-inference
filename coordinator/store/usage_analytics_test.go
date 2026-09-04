@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -231,6 +233,34 @@ func TestPostgresUsageAnalyticsStatementShape(t *testing.T) {
 	}
 	if s.analyticsTuningRejected.Load() {
 		t.Fatal("tuning marked rejected after a successful tuned transaction")
+	}
+}
+
+// Only configuration-class server errors on a tuning statement are
+// remembered as a rejection; transient failures are not.
+func TestAnalyticsTuningRejectedByServerClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"context", context.Canceled, false},
+		{"plain", errors.New("connection reset"), false},
+		{"invalid_parameter_value", &pgconn.PgError{Code: "22023"}, true},
+		{"insufficient_privilege", &pgconn.PgError{Code: "42501"}, true},
+		{"cant_change_runtime_param", &pgconn.PgError{Code: "55P02"}, true},
+		{"feature_not_supported", &pgconn.PgError{Code: "0A000"}, true},
+		{"admin_shutdown", &pgconn.PgError{Code: "57P01"}, false},
+		{"query_canceled", &pgconn.PgError{Code: "57014"}, false},
+		{"out_of_memory", &pgconn.PgError{Code: "53200"}, false},
+		{"wrapped", fmt.Errorf("exec: %w", &pgconn.PgError{Code: "22023"}), true},
+		{"short code", &pgconn.PgError{Code: "X"}, false},
+	}
+	for _, tc := range cases {
+		if got := analyticsTuningRejectedByServer(tc.err); got != tc.want {
+			t.Errorf("%s: rejected = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

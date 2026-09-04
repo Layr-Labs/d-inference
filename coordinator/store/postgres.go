@@ -2114,6 +2114,26 @@ var usageAnalyticsWorkMem = "1GB"
 // opposed to a connection or context failure while sending it).
 var errAnalyticsTuningRejected = errors.New("store: usage analytics tuning rejected by the server")
 
+// analyticsTuningRejectedByServer reports whether err is the server refusing
+// a tuning statement on configuration grounds — the deterministic failures
+// worth remembering for the life of the process: invalid or out-of-range
+// value (class 22), insufficient privilege (42), a parameter that cannot be
+// changed now (55), feature not supported (0A). Anything else — a
+// connection or context failure, a failover (57), resource pressure (53) —
+// is an ordinary transient error: reported as such and retried tuned on the
+// next tick.
+func analyticsTuningRejectedByServer(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "42", "55", "0A":
+		return true
+	}
+	return false
+}
+
 // usageAnalyticsTuning are the transaction-local settings, in order. Parallel
 // workers are disabled because work_mem is a per-process budget: with the
 // default max_parallel_workers_per_gather the leader and each worker could
@@ -2171,8 +2191,7 @@ func (s *PostgresStore) usageAnalyticsTx(ctx context.Context, since time.Time, t
 		// SET LOCAL is scoped to this transaction; the values are constants.
 		for _, stmt := range usageAnalyticsTuning() {
 			if _, err := tx.Exec(ctx, stmt); err != nil {
-				var pgErr *pgconn.PgError
-				if errors.As(err, &pgErr) {
+				if analyticsTuningRejectedByServer(err) {
 					return UsageAnalytics{}, fmt.Errorf("%w: %s: %w", errAnalyticsTuningRejected, stmt, err)
 				}
 				return UsageAnalytics{}, fmt.Errorf("store: usage analytics tuning: %w", err)

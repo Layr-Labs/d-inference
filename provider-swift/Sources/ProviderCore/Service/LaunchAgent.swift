@@ -311,6 +311,14 @@ public enum LaunchAgent: Sendable {
         "MLX_QWEN_DIRECT_EXPERT_REDUCTION",
     ]
 
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB`: the documented (v0.8.0 notes),
+    /// raise-only-against-the-floor activation reserve lever. Without
+    /// passthrough the daemon silently kept the floor while `darkbloom
+    /// doctor` (a shell process) computed model fit WITH the override — box
+    /// and doctor disagreed. `DARKBLOOM_MEM_CAP_FRACTION` is deliberately
+    /// NOT carried: undocumented, and any finite value > 0 is honored, so
+    /// persisting it into the plist would bake a request-rejecting foot-gun
+    /// into the daemon that today only affects foreground runs.
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
         // The HuggingFace cache root (`ModelScanner.defaultCacheDirectory`):
@@ -323,6 +331,7 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
         "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_ACTIVATION_RESERVE_GB",
     ] + inferencePassthroughEnvKeys
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

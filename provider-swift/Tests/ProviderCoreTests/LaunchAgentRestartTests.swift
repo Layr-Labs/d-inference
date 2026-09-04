@@ -205,6 +205,28 @@ struct LaunchAgentEnvironmentTests {
         }
     }
 
+    /// T13-06 (a): the documented, raise-only activation-reserve lever reaches
+    /// the launchd daemon; the undocumented cap fraction and the parity
+    /// harness's dtype posture stay foreground-only.
+    @Test func forwardsActivationReserveButNotCapFractionOrHarnessDtype() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_ACTIVATION_RESERVE_GB": "8",
+            "DARKBLOOM_MEM_CAP_FRACTION": "0.5",
+            "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "fp16",
+            "PATH": "/usr/bin",
+        ])
+        #expect(out["DARKBLOOM_ACTIVATION_RESERVE_GB"] == "8")
+        #expect(out["DARKBLOOM_MEM_CAP_FRACTION"] == nil)
+        #expect(out["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == nil)
+        #expect(out["PATH"] == nil)
+        // Empty is dropped like every other allowlisted key.
+        #expect(LaunchAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_ACTIVATION_RESERVE_GB": ""])["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil)
+        // The watchdog job never runs inference and stays without it.
+        #expect(WatchdogAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "8"])["DARKBLOOM_ACTIVATION_RESERVE_GB"] == nil)
+    }
+
     @Test func forwardsMLXMemoryGuardKnobsToDaemon() {
         // The MLXMemoryGuard operator knobs only matter in the launchd
         // daemon (the normal `darkbloom start` mode). Without passthrough, a

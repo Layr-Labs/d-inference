@@ -295,10 +295,11 @@ func TestConcurrentPlanReservationsCannotExceedAdmission(t *testing.T) {
 	reg := New(testLogger())
 	model := "plan-concurrent-model"
 	// Cheap primary with ample budget; alternate pB fits ONE 2,500-token
-	// request (560 used + 2×2,500 > 4,000). pB's 7,000 ms backlog keeps pA the
-	// deterministic primary even with one pending (3,750 ms, outside the
-	// 3,000 ms near-tie window).
-	pA := planTestProvider(t, reg, "pA", model, 0)
+	// request (560 used + 2×2,500 > 4,000). pA decodes at 400 tok/s, so even
+	// with one in-gap pending charged to its backlog (2,500 tokens = 6,250 ms,
+	// plus 3,750 ms of queue/pending penalties) it stays the deterministic
+	// primary against pB's 7,000 ms backlog and 31 s per-request decode.
+	pA := makeTokenBudgetProvider(t, reg, "pA", model, 100, 0, 1_000_000, 400)
 	makeTokenBudgetProvider(t, reg, "pB", model, 100, 560, 4_000, 80)
 
 	pr1 := planTestRequest("c1", 1_000, 1_500)

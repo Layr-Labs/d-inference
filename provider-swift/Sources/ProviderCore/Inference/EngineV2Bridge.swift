@@ -1766,7 +1766,12 @@ public actor EngineV2Bridge {
         // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
+        // Bounded stop-string replay tail (see `stopTailTokenLimit`): only
+        // the last few filtered tokens are retained, never the whole
+        // output.
+        let stopTailLimit = Self.stopTailTokenLimit(for: stopSequences)
         var generatedTokens: [Int] = []
+        generatedTokens.reserveCapacity(stopTailLimit)
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
@@ -1799,13 +1804,17 @@ public actor EngineV2Bridge {
                         id: id, emissionTokens: tokens.count, profileNow: lastDeltaAt)
                 }
                 recordProgress(id: id, newTokens: tokens.count)
-                if !stopSequences.isEmpty {
+                if stopTailLimit > 0 {
                     // EngineLoopV2 suppresses stop-token text before the
                     // stop-string holdback sees it. Exclude those raw tokens
                     // from replay too, or an EOS token whose debug rendering
                     // equals a caller sequence would become a false match.
                     generatedTokens.append(
                         contentsOf: tokens.filter { !stopTokenIds.contains($0) })
+                    let excess = generatedTokens.count - stopTailLimit
+                    if excess > 0 {
+                        generatedTokens.removeFirst(excess)
+                    }
                 }
                 // Logprobs passthrough: convert to the OpenAI streaming
                 // entry shape and publish to the per-request channel BEFORE

@@ -1,6 +1,36 @@
 import Foundation
 
 extension EngineV2Bridge {
+    /// How many generated tokens the pump retains for stop-string
+    /// identification, 0 when the request has no stop strings.
+    ///
+    /// The engine's `StopHoldback` stops on the EARLIEST full match across
+    /// every candidate and the loop finishes one step late, so whenever a
+    /// stop string caused a `.stop` the whole match lies inside the last
+    /// few tokens. A bounded tail therefore decodes to the same verdict as
+    /// the full output — at O(1) cost on the bridge actor (which every pump
+    /// of this model shares) instead of an O(output) decode.
+    ///
+    /// Budget, in tokens: a byte-fallback scalar can span up to 4 tokens,
+    /// so the longest candidate needs `4 × its scalar count`; +1 for the
+    /// one-step-late token, +1 for a leading context token (keeps
+    /// SentencePiece leading-whitespace rendering identical to the full
+    /// decode — a match must never start at the decode boundary), +1
+    /// margin.
+    static func stopTailTokenLimit(for candidates: [String]) -> Int {
+        let longest = candidates.map { $0.unicodeScalars.count }.max() ?? 0
+        guard longest > 0 else { return 0 }
+        return 4 * longest + 3
+    }
+
+    /// Identify which caller stop sequence the engine stopped on, from the
+    /// retained token tail (`stopTailTokenLimit`). The tail decode is a
+    /// suffix of the full decode, so earliest-match / lowest-index
+    /// semantics are unchanged. One documented divergence: a `.length`/EOS
+    /// finish whose FULL decode happened to contain a candidate the engine
+    /// never matched (a SentencePiece whitespace-rewrite artifact) used to
+    /// report that stale match; the tail reports nil, which is the correct
+    /// answer.
     func matchedStopSequence(
         candidates: [String],
         generatedTokens: [Int]

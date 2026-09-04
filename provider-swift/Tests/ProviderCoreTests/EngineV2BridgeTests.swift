@@ -2807,3 +2807,174 @@ struct EngineV2UsageSignalCountsTests {
         }
     }
 }
+
+// MARK: - Bounded stop-string tail (stop identification without an O(output) decode)
+
+/// Vocabulary-table tokenizer whose `decode` concatenates per-id BYTE
+/// sequences, so a multi-byte scalar can be split across ids exactly like a
+/// byte-fallback BPE; records the size of every decode call.
+private final class DecodeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _decodeSizes: [Int] = []
+    func record(_ n: Int) { lock.withLock { _decodeSizes.append(n) } }
+    var decodeSizes: [Int] { lock.withLock { _decodeSizes } }
+}
+
+private struct ByteTableTokenizer: MLXLMCommon.Tokenizer {
+    var table: [Int: [UInt8]]
+    var recorder: DecodeRecorder
+    /// Mimic SentencePiece: a leading `▁` renders as a space EXCEPT at the
+    /// very start of a decode, where it is stripped.
+    var stripsLeadingSpace = false
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        recorder.record(tokenIds.count)
+        var bytes: [UInt8] = []
+        for id in tokenIds { bytes.append(contentsOf: table[id] ?? []) }
+        var text = String(decoding: bytes, as: UTF8.self)
+        if stripsLeadingSpace, text.hasPrefix(" ") { text.removeFirst() }
+        return text
+    }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [1] }
+}
+
+@Suite("EngineV2 bounded stop-sequence tail")
+struct EngineV2BoundedStopTailTests {
+    private static let baseTable: [Int: [UInt8]] = [
+        0: Array("a".utf8), 1: Array("b".utf8), 2: Array("\n".utf8), 3: Array("#".utf8),
+        4: Array("!".utf8),
+        // 😀 = F0 9F 98 80 split across four byte-fallback ids.
+        10: [0xF0], 11: [0x9F], 12: [0x98], 13: [0x80],
+        // SentencePiece-style "▁###" as ONE token (leading space).
+        20: Array(" ###".utf8),
+    ]
+
+    private func run(
+        tokens: [Int],
+        stops: [String],
+        reason: CBv2FinishReason = .stop,
+        stripsLeadingSpace: Bool = false
+    ) async -> (matched: String?, oracle: String?, decodeSizes: [Int], limit: Int) {
+        let recorder = DecodeRecorder()
+        let tokenizer = ByteTableTokenizer(
+            table: Self.baseTable, recorder: recorder,
+            stripsLeadingSpace: stripsLeadingSpace)
+        var events: [CBv2Event] = tokens.map { .delta(text: "", tokens: [$0], logprobs: nil) }
+        events.append(.finished(
+            reason: reason,
+            usage: CBv2Usage(promptTokens: 1, completionTokens: tokens.count)))
+        let engine = ScriptedCBv2Engine(script: .stream(events))
+        let bridge = EngineV2Bridge(
+            engine: engine, modelId: "stop-tail",
+            tokenizer: TokenizerHandle(tokenizer), eosTokenIds: [])
+        let signal = EngineV2RequestUsageSignal()
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1],
+            request: makeRequest(stop: .multiple(stops)),
+            usageSignal: signal))
+        // Oracle: the pre-change implementation — decode EVERYTHING, then the
+        // same scalar scan. The bounded tail must agree wherever a stop
+        // string caused the finish.
+        let full = tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
+        let oracle = EngineV2Bridge.matchedStopSequence(candidates: stops, generatedText: full)
+        // Drop the oracle's own decode from the recorded sizes.
+        let sizes = Array(recorder.decodeSizes.dropLast())
+        return (signal.matchedStopSequence, oracle, sizes,
+                EngineV2Bridge.stopTailTokenLimit(for: stops))
+    }
+
+    @Test("the limit is 4 × the longest candidate's scalar count + 3, and 0 without stops")
+    func limitDerivation() {
+        #expect(EngineV2Bridge.stopTailTokenLimit(for: []) == 0)
+        #expect(EngineV2Bridge.stopTailTokenLimit(for: [""]) == 0)
+        #expect(EngineV2Bridge.stopTailTokenLimit(for: ["###"]) == 15)
+        #expect(EngineV2Bridge.stopTailTokenLimit(for: ["\n\n###", "##"]) == 23)
+        // Scalars, not UTF-8 bytes: one emoji is one scalar.
+        #expect(EngineV2Bridge.stopTailTokenLimit(for: ["😀!"]) == 11)
+    }
+
+    @Test("a 4K-token stream decodes only the bounded tail and matches the full-decode oracle")
+    func longStreamDecodesBoundedTail() async {
+        // 4096 tokens of prose, the multi-token stop, then the one-step-late
+        // token the engine emits before it observes the holdback verdict.
+        var tokens = (0..<4096).map { $0 % 2 }
+        tokens += [2, 2, 3, 3, 3]  // "\n\n###"
+        tokens += [0]
+        let out = await run(tokens: tokens, stops: ["\n\n###"])
+        #expect(out.matched == "\n\n###")
+        #expect(out.matched == out.oracle)
+        #expect(out.decodeSizes.count == 1)
+        // The retained tail never exceeds the limit (fails before: the pump
+        // handed all 4102 tokens to the tokenizer).
+        #expect(out.decodeSizes.allSatisfy { $0 <= out.limit })
+    }
+
+    @Test("earliest match wins across candidates and ties break on caller order")
+    func earliestMatchAndTieBreak() async {
+        var tokens = Array(repeating: 0, count: 64)
+        tokens += [2, 2, 3, 3, 3, 0]
+        // "\n\n###" starts two scalars before "###": earliest position wins
+        // even though "###" is listed first.
+        let earliest = await run(tokens: tokens, stops: ["###", "\n\n###"])
+        #expect(earliest.matched == "\n\n###")
+        #expect(earliest.matched == earliest.oracle)
+        // Same start position: the lower caller index wins.
+        let tie = await run(tokens: tokens, stops: ["\n\n#", "\n\n###"])
+        #expect(tie.matched == "\n\n#")
+        #expect(tie.matched == tie.oracle)
+    }
+
+    @Test("a stop whose scalar arrives via byte fallback still matches inside the tail")
+    func byteFallbackScalarInsideTail() async {
+        var tokens = Array(repeating: 1, count: 200)
+        tokens += [10, 11, 12, 13, 4]  // 😀 across four ids, then "!"
+        tokens += [0]
+        let out = await run(tokens: tokens, stops: ["😀!"])
+        #expect(out.matched == "😀!")
+        #expect(out.matched == out.oracle)
+        #expect(out.decodeSizes.allSatisfy { $0 <= out.limit })
+    }
+
+    @Test("a SentencePiece stop beginning with whitespace is matched with the leading context token")
+    func sentencePieceLeadingWhitespace() async {
+        // The tokenizer strips a leading space at the decode boundary. The
+        // stop " ###" sits (limit − 2) tokens from the end, so without the
+        // context token the tail decode would start ON the stop token and
+        // lose its space. The oracle (full decode) keeps it; so must we.
+        let limit = EngineV2Bridge.stopTailTokenLimit(for: [" ###"])
+        var tokens = Array(repeating: 0, count: 300)
+        tokens += [20, 0]
+        let out = await run(tokens: tokens, stops: [" ###"], stripsLeadingSpace: true)
+        #expect(out.matched == " ###")
+        #expect(out.matched == out.oracle)
+        #expect(out.limit == limit)
+        #expect(out.decodeSizes.allSatisfy { $0 <= limit })
+    }
+
+    @Test("a length finish with no stop string anywhere reports nil, tail or not")
+    func lengthFinishWithoutMatch() async {
+        let tokens = Array(repeating: 0, count: 500)
+        let out = await run(tokens: tokens, stops: ["###"], reason: .length)
+        #expect(out.matched == nil)
+        #expect(out.oracle == nil)
+        #expect(out.decodeSizes.allSatisfy { $0 <= out.limit })
+    }
+
+    @Test("without stop strings nothing is retained or decoded")
+    func noStopsNoDecode() async {
+        let tokens = Array(repeating: 0, count: 100)
+        let out = await run(tokens: tokens, stops: [])
+        #expect(out.matched == nil)
+        #expect(out.decodeSizes.isEmpty)
+    }
+}

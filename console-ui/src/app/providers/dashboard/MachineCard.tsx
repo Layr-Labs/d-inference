@@ -17,17 +17,21 @@ import { BackendSlotsPanel } from "./BackendSlotsPanel";
 import { AttestationPanel } from "./AttestationPanel";
 import { ExpandSection } from "./gauges/ExpandSection";
 import { RemoveMachineButton } from "./RemoveMachineButton";
+import { NO_MODEL_NAMES, type ModelNames } from "./modelNames";
 
 export function MachineCard({
   provider,
   ctx,
   fleetMaxDecodeTps,
   onRemoved,
+  names = NO_MODEL_NAMES,
 }: {
   provider: MyProvider;
   ctx: RoutingCtx;
   fleetMaxDecodeTps: number;
   onRemoved?: () => void;
+  /** Catalog display names for the model chips, slot rows, and decode label. */
+  names?: ModelNames;
 }) {
   // Compute this machine's warnings once and derive everything (rail color,
   // hero verdict, the top reason to surface) from the shared routing module so
@@ -85,15 +89,15 @@ export function MachineCard({
 
       {/* Always-visible body: live vitals, models, then earnings */}
       <div className={dimmed ? "opacity-70" : ""}>
-        <CardVitals provider={provider} fleetMaxDecodeTps={fleetMaxDecodeTps} />
-        <ModelsStrip provider={provider} />
+        <CardVitals provider={provider} fleetMaxDecodeTps={fleetMaxDecodeTps} names={names} />
+        <ModelsStrip provider={provider} names={names} />
         <CardEarningsRow provider={provider} />
       </div>
 
       {/* Progressive disclosure: deep detail stays collapsed by default */}
       {provider.backend_capacity && (
         <ExpandSection label="Backend slots" icon={Zap} right={`${provider.backend_capacity.slots.length} model${provider.backend_capacity.slots.length === 1 ? "" : "s"}`}>
-          <BackendSlotsPanel cap={provider.backend_capacity} />
+          <BackendSlotsPanel cap={provider.backend_capacity} names={names} />
         </ExpandSection>
       )}
 

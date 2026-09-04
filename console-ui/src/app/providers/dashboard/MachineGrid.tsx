@@ -8,6 +8,7 @@ import type { MyProvider } from "../types";
 import { routingFor, type RoutingCtx, type RoutingState } from "./routing";
 import { MachineCard } from "./MachineCard";
 import { FleetControls, type Density, type SortMode } from "./FleetControls";
+import type { ModelNames } from "./modelNames";
 
 const STATE_RANK: Record<RoutingState, number> = {
   blocked: 0,
@@ -21,11 +22,13 @@ export function MachineGrid({
   ctx,
   fleetMaxDecodeTps,
   onRemoved,
+  names,
 }: {
   providers: MyProvider[];
   ctx: RoutingCtx;
   fleetMaxDecodeTps: number;
   onRemoved?: () => void;
+  names: ModelNames;
 }) {
   const [sort, setSort] = useState<SortMode>("attention");
   const [density, setDensity] = useState<Density>("grid");
@@ -61,6 +64,7 @@ export function MachineGrid({
             ctx={ctx}
             fleetMaxDecodeTps={fleetMaxDecodeTps}
             onRemoved={onRemoved}
+            names={names}
           />
         ))}
       </div>

@@ -4,7 +4,8 @@
 // measured decode tok/s is the per-model view of the card's headline Decode line.
 
 import type { MyBackendCapacity } from "../types";
-import { abbreviateNumber, clampPct, formatTps, shortModelName } from "./format";
+import { abbreviateNumber, clampPct, formatTps } from "./format";
+import { modelDisplayName, NO_MODEL_NAMES, type ModelNames } from "./modelNames";
 import { MeterBar } from "./gauges/MeterBar";
 
 const STATE_TAG: Record<string, string> = {
@@ -23,7 +24,7 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
+export function BackendSlotsPanel({ cap, names = NO_MODEL_NAMES }: { cap: MyBackendCapacity; names?: ModelNames }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-2.5">
@@ -40,7 +41,9 @@ export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
             return (
               <div key={s.model} className="rounded-lg bg-bg-tertiary/40 px-3 py-2 space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-mono text-text-secondary truncate">{shortModelName(s.model)}</span>
+                  <span className="text-xs font-mono text-text-secondary truncate" title={s.model}>
+                    {modelDisplayName(s.model, names)}
+                  </span>
                   <div className="flex items-center gap-2 shrink-0">
                     <span
                       className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${

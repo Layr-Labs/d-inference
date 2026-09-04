@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { CardVitals } from "./CardVitals";
 import { makeProvider } from "./testFixtures";
+import { modelNamesFrom } from "./modelNames";
 import type { MyBackendCapacity, MyBackendSlot, MyProvider } from "../types";
 
 const ACTIVE = "qwen-27b";
@@ -59,6 +60,17 @@ describe("CardVitals decode line", () => {
     render(<CardVitals provider={swappedIn} fleetMaxDecodeTps={92} />);
     expect(screen.getByText("92.0")).toBeInTheDocument();
     expect(screen.getByText(`on ${MOE}`)).toBeInTheDocument();
+  });
+
+  it("uses the catalog display name for the stand-in model, raw id in the tooltip", () => {
+    const swappedIn = liveProvider({
+      backend_capacity: { ...cap, slots: [slot(MOE, { observed_decode_tps: 92 }), slot(ACTIVE, { state: "running", num_running: 1 })] },
+    });
+    const names = modelNamesFrom({ model_display_names: { [MOE]: "Qwen 3.6 35B A3B" } });
+    render(<CardVitals provider={swappedIn} fleetMaxDecodeTps={92} names={names} />);
+    const label = screen.getByText("on Qwen 3.6 35B A3B");
+    expect(label).toBeInTheDocument();
+    expect(label.getAttribute("title")).toContain(MOE);
   });
 
   it("renders an explicit blank, not a zero, for an unmeasured machine", () => {

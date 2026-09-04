@@ -4,7 +4,8 @@
 // snapshot shows an honest line, never a wall of misleading zeros.
 
 import type { MyProvider } from "../types";
-import { clampPct, formatTps, pct, shortModelName } from "./format";
+import { clampPct, formatTps, pct } from "./format";
+import { modelDisplayName, NO_MODEL_NAMES, type ModelNames } from "./modelNames";
 import { resolveThroughput } from "./throughput";
 import { MeterBar, StackedBar, pressureColor, cpuColor } from "./gauges/MeterBar";
 import { ThermalPips } from "./gauges/ThermalPips";
@@ -33,9 +34,11 @@ function Vital({
 export function CardVitals({
   provider,
   fleetMaxDecodeTps,
+  names = NO_MODEL_NAMES,
 }: {
   provider: MyProvider;
   fleetMaxDecodeTps: number;
+  names?: ModelNames;
 }) {
   const sm = provider.system_metrics;
   const cap = provider.backend_capacity;
@@ -100,7 +103,7 @@ export function CardVitals({
             className="text-[11px] font-mono text-text-tertiary shrink-0 truncate max-w-[9rem]"
             title={`Measured on ${decodeFallbackModel}; the active model has not served a request yet`}
           >
-            on {shortModelName(decodeFallbackModel)}
+            on {modelDisplayName(decodeFallbackModel, names)}
           </span>
         )}
         {prefill > 0 && (

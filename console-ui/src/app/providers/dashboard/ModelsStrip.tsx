@@ -1,10 +1,10 @@
 // Models on a machine: the loaded/warm set (active one highlighted, with
 // cold/crashed/reloading tags pulled from backend slot state) and the catalog
-// it's approved to serve. Mono pills; catalog collapses past a threshold to
-// protect density.
+// it's approved to serve. Mono pills showing catalog display names (raw build
+// id on hover); catalog collapses past a threshold to protect density.
 
 import type { MyProvider } from "../types";
-import { shortModelName } from "./format";
+import { modelDisplayName, NO_MODEL_NAMES, type ModelNames } from "./modelNames";
 
 const CATALOG_LIMIT = 8;
 
@@ -14,7 +14,7 @@ const SLOT_TAG: Record<string, { label: string; cls: string }> = {
   reloading: { label: "reloading", cls: "bg-blue/15 text-blue" },
 };
 
-export function ModelsStrip({ provider }: { provider: MyProvider }) {
+export function ModelsStrip({ provider, names = NO_MODEL_NAMES }: { provider: MyProvider; names?: ModelNames }) {
   // Prefer the reported warm set; fall back to the single current model.
   const warm = provider.warm_models?.length
     ? provider.warm_models
@@ -47,12 +47,13 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
               return (
                 <span
                   key={m}
+                  title={m}
                   className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-mono ${
                     active ? "bg-accent-brand/15 text-accent-brand" : "bg-bg-tertiary text-text-secondary"
                   }`}
                 >
                   {active && <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />}
-                  {shortModelName(m)}
+                  {modelDisplayName(m, names)}
                   {active && <span className="opacity-70">active</span>}
                   {tag && (
                     <span className={`px-1 rounded text-[10px] font-semibold uppercase ${tag.cls}`} title={`backend ${slotState.get(m)}`}>
@@ -73,8 +74,8 @@ export function ModelsStrip({ provider }: { provider: MyProvider }) {
           </p>
           <div className="flex flex-wrap gap-1.5">
             {shownCatalog.map((m) => (
-              <span key={m.id} className="px-2 py-0.5 rounded-md bg-bg-tertiary/70 text-xs font-mono text-text-tertiary">
-                {shortModelName(m.id)}
+              <span key={m.id} title={m.id} className="px-2 py-0.5 rounded-md bg-bg-tertiary/70 text-xs font-mono text-text-tertiary">
+                {modelDisplayName(m.id, names)}
               </span>
             ))}
             {extraCatalog > 0 && (

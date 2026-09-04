@@ -154,6 +154,10 @@ export interface MyProvidersResponse {
   min_provider_version: string;
   heartbeat_timeout_seconds: number;
   challenge_max_age_seconds: number;
+  // Raw catalog model id -> published display name ("Qwen 3.8 27B"). Ids
+  // without a published name are absent. Optional only because coordinators
+  // predating the key omit it; read through dashboard/modelNames.ts.
+  model_display_names?: Record<string, string>;
 }
 
 export interface MyFleetCounts {

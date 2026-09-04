@@ -5,7 +5,9 @@ import Testing
 
 /// Pure invariants of the cold-load stage report (T4-04): the fields the
 /// `Model loaded:` line and the "model loaded" `.engineHealth` event carry,
-/// and the read-not-reset peak rule.
+/// and the per-load delta rule — every MLX figure is process-wide, so the
+/// ratio and the steady delta subtract the pre-load baseline (the residency
+/// at the T3-08 peak reset).
 @Suite("Model load stage report")
 struct ModelLoadStageReportTests {
     private let gib = 1_073_741_824.0
@@ -31,14 +33,16 @@ struct ModelLoadStageReportTests {
         #expect(report.peakActiveGb == 15)
         #expect(report.peakBaselineGb == 1)
         #expect(!report.peakMasked)
+        // Per-load deltas: (15 − 1) / 12.1 and 12.4 − 1.
         let ratio = try? #require(report.transientRatio)
-        #expect(abs((ratio ?? 0) - 15 / 12.1) < 1e-9)
+        #expect(abs((ratio ?? 0) - 14 / 12.1) < 1e-9)
+        #expect(abs(report.steadyDeltaGb - 11.4) < 1e-9)
         #expect(report.totalMs >= report.containerLoadMs + report.buildMs)
 
         let fields = report.telemetryFields
         for key in [
             "evict_ms", "hash_ms", "hash_passes", "container_load_ms", "post_load_probe_ms",
-            "build_ms", "total_ms", "disk_gb", "estimated_gb", "steady_active_gb",
+            "build_ms", "total_ms", "disk_gb", "estimated_gb", "steady_active_gb", "steady_delta_gb",
             "peak_baseline_gb", "peak_masked", "peak_active_gb", "transient_ratio",
         ] {
             #expect(fields[key] != nil, "missing telemetry field \(key)")
@@ -54,10 +58,33 @@ struct ModelLoadStageReportTests {
         #expect(line.contains("total_ms=3600"))
         #expect(line.contains("hash_passes=1"))
         #expect(line.contains("peak_active_gb=15.00"))
-        #expect(line.contains("transient_ratio=1.24"))
+        #expect(line.contains("steady_delta_gb=11.40"))
+        #expect(line.contains("transient_ratio=1.16"))
     }
 
-    @Test("a peak that did not rise above the pre-load high-water mark is reported masked, never re-based")
+    @Test("a co-resident model is inside the process-wide figures but never inside the per-load ratio")
+    func coResidentModelDoesNotInflateTheRatio() {
+        // Box serving an 11 GB model cold-loads a 14 GB one: MLX reads
+        // peak≈25, steady≈25. The load's own footprint is 14 (ratio 1.0),
+        // not 25 / 14 = 1.79 — the figure that would read as "needs 1.8×".
+        var report = ModelLoadStageReport(diskGb: 14, estimatedGb: 14 * 1.2)
+        report.recordPeak(beforeBytes: Int(11 * gib), afterBytes: Int(25 * gib))
+        report.steadyActiveGb = 25
+
+        let ratio = try? #require(report.transientRatio)
+        #expect(abs((ratio ?? 0) - 1.0) < 1e-9)
+        #expect(abs(report.steadyDeltaGb - 14) < 1e-9)
+        #expect(report.peakBaselineGb == 11)
+        // The absolute readings stay on the line for context; the ratio is
+        // what the padding decision reads.
+        let line = report.logSummary
+        #expect(line.contains("steady_active_gb=25.00"))
+        #expect(line.contains("steady_delta_gb=14.00"))
+        #expect(line.contains("transient_ratio=1.00"))
+        #expect(report.telemetryFields["transient_ratio"]?.value as? Double == 1.0)
+    }
+
+    @Test("a load that staged nothing reports the peak masked (counter never rose above the baseline)")
     func maskedPeak() {
         var report = filled()
         report.recordPeak(beforeBytes: Int(20 * gib), afterBytes: Int(20 * gib))

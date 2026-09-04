@@ -8,9 +8,12 @@
 /// folded in.
 ///
 /// `estimatedGb` = disk × 1.2 is what the admit gate and the pending-load
-/// reservation charge for the LOAD TRANSIENT; `peakActiveGb / diskGb`
-/// (`transientRatio`) is the first measurement of that transient per
-/// family — the input for any later per-family padding change.
+/// reservation charge for the LOAD TRANSIENT; `transientRatio` =
+/// (peak − pre-load residency) / disk is THIS load's measured footprint on
+/// the same scale (1.2 ⇒ exactly the padding) — the input for any later
+/// per-family padding change. Every MLX figure is process-wide, so the
+/// report carries the pre-load baseline and derives per-load deltas from
+/// it; a co-resident model never inflates the ratio.
 
 import Foundation
 
@@ -35,12 +38,16 @@ struct ModelLoadStageReport: Sendable, Equatable {
     /// Scanner facts: on-disk bytes and the padded admit estimate.
     var diskGb: Double
     var estimatedGb: Double
-    /// Process-wide MLX peak observed across the container load, only when
-    /// it rose above the pre-load high-water mark (nil ⇒ masked by an
-    /// earlier peak in this process; `peakBaselineGb` says by what).
+    /// Process-wide MLX peak since `ModelLoadTransientProbe.begin()` reset
+    /// the counter right before shard staging — everything already resident
+    /// (co-resident models, in-flight decode) is inside it. nil ⇒ the
+    /// counter never rose above `peakBaselineGb` (nothing was staged).
     var peakActiveGb: Double?
+    /// `MLX.Memory.activeMemory` at the peak reset: the residency this load
+    /// started from, and the baseline every per-load delta subtracts.
     var peakBaselineGb: Double = 0
-    /// `MLX.Memory.activeMemory` right after the post-load `clearCache`.
+    /// `MLX.Memory.activeMemory` right after the post-load `clearCache`
+    /// (process-wide; `steadyDeltaGb` is this load's own share).
     var steadyActiveGb: Double = 0
 
     init(diskGb: Double, estimatedGb: Double) {
@@ -48,10 +55,16 @@ struct ModelLoadStageReport: Sendable, Equatable {
         self.estimatedGb = estimatedGb
     }
 
-    /// Load-transient ratio the 1.2 padding constant is meant to cover.
+    /// This load's own steady residency: steady − the pre-load baseline.
+    var steadyDeltaGb: Double { max(0, steadyActiveGb - peakBaselineGb) }
+
+    /// This load's peak footprint over the pre-load baseline as a fraction
+    /// of its disk bytes — directly comparable to the 1.2 admit padding
+    /// (`estimatedGb / diskGb`). Process-wide peak ÷ one model's disk size
+    /// would read a 14 GB model loaded beside an 11 GB resident one as 1.8.
     var transientRatio: Double? {
         guard let peakActiveGb, diskGb > 0 else { return nil }
-        return peakActiveGb / diskGb
+        return max(0, peakActiveGb - peakBaselineGb) / diskGb
     }
 
     var peakMasked: Bool { peakActiveGb == nil }
@@ -86,6 +99,7 @@ struct ModelLoadStageReport: Sendable, Equatable {
             "disk_gb": .double(diskGb),
             "estimated_gb": .double(estimatedGb),
             "steady_active_gb": .double(steadyActiveGb),
+            "steady_delta_gb": .double(steadyDeltaGb),
             "peak_baseline_gb": .double(peakBaselineGb),
             "peak_masked": .bool(peakMasked),
         ]
@@ -113,6 +127,7 @@ struct ModelLoadStageReport: Sendable, Equatable {
             "disk_gb=\(g(diskGb))",
             "estimated_gb=\(g(estimatedGb))",
             "steady_active_gb=\(g(steadyActiveGb))",
+            "steady_delta_gb=\(g(steadyDeltaGb))",
         ]
         if let peakActiveGb, let transientRatio {
             parts.append("peak_active_gb=\(g(peakActiveGb))")

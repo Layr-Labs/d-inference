@@ -462,6 +462,37 @@ extension ProviderLoop {
     /// Test seam: the loop's X25519 public key, so a test can seal a request
     /// body exactly as the coordinator does.
     func publicKeyBytesForTesting() -> Data { keyPair.publicKeyBytes }
+
+    /// Test seam: register a task as the in-flight generation for a request
+    /// (production registers the detached task at the end of
+    /// `handleInferenceRequest`). Cancellation-ordering tests use it to
+    /// observe that `handleCancellation` cancels the task BEFORE any actor
+    /// hop.
+    func registerInflightTaskForTesting(requestId: String, task: Task<Void, Never>) {
+        inflightTasks[requestId] = task
+    }
+
+    /// Test seam: mark a model as mid-load so `ensureModelLoaded` parks
+    /// callers on `loadingWaiters` — the cold-load window a request can be
+    /// cancelled inside.
+    func beginSimulatedModelLoadForTesting(modelId: String) {
+        modelsLoading.insert(modelId)
+    }
+
+    /// Test seam: number of callers parked on the simulated load.
+    func loadWaiterCountForTesting(modelId: String) -> Int {
+        loadingWaiters[modelId]?.count ?? 0
+    }
+
+    /// Test seam: complete the simulated load (install the slot first via
+    /// `installModelSlotForTesting`) and resume every parked caller, exactly
+    /// as the production load's success path does.
+    func finishSimulatedModelLoadForTesting(modelId: String) {
+        modelsLoading.remove(modelId)
+        for waiter in loadingWaiters.removeValue(forKey: modelId) ?? [] {
+            waiter.resume()
+        }
+    }
 }
 
 extension ProviderLoop {

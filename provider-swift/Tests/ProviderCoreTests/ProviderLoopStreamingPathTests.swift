@@ -10,7 +10,11 @@
 //
 // Covers:
 //   * a deadline refusal's 503 terminal carries the engine's projection on
-//     its profile (T2-02).
+//     its profile (T2-02);
+//   * a coordinator cancel mid-stream settles as a partial completion with
+//     the delivered tokens, cancel stamps in order, and no usage gap (T1-01);
+//   * cancels for unknown ids and disconnect-driven cancel-all never consult
+//     the runtime or rebuild capacity (T1-01).
 
 import Foundation
 import MLXLMCommon
@@ -126,8 +130,11 @@ private final class HarnessEngine: CBv2Engine, @unchecked Sendable {
 // MARK: - Stub weights
 
 private struct HarnessTokenizer: MLXLMCommon.Tokenizer {
+    /// One token per whitespace-separated word: the cancelled-mid-stream
+    /// settle re-tokenizes the delivered text as its completion floor, so the
+    /// engine's one-token-per-word deltas below bill as one token each.
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
-        Array(repeating: 0, count: text.count)
+        Array(repeating: 0, count: text.split(whereSeparator: { $0 == " " }).count)
     }
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
         tokenIds.map { "t\($0)" }.joined()
@@ -288,7 +295,10 @@ private struct Harness {
 
     /// Seal a chat body exactly as the coordinator does and hand it to the
     /// real handler on the loop actor. Returns once the handler has spawned
-    /// (or refused) the generation task.
+    /// (or refused) the generation task. `reasoning_parser: none` because a
+    /// slot with no model type infers the qwen3 think parser, whose streaming
+    /// state machine holds tagless output until end-of-stream — these tests
+    /// are about the request path, not the parser.
     @discardableResult
     func submit(
         requestId: String,
@@ -298,7 +308,7 @@ private struct Harness {
         maxTokens: Int = 16
     ) async throws -> Task<Void, Never> {
         let body = Data(
-            #"{"model":"\#(modelId)","messages":[{"role":"user","content":"hi"}],"max_tokens":\#(maxTokens)}"#
+            #"{"model":"\#(modelId)","messages":[{"role":"user","content":"hi"}],"max_tokens":\#(maxTokens),"reasoning_parser":"none"}"#
                 .utf8)
         let ciphertext = try sender.encrypt(
             recipientPublicKey: await loop.publicKeyBytesForTesting(),
@@ -324,6 +334,7 @@ private struct Harness {
     func wait(
         _ description: String,
         timeout: Duration = .seconds(20),
+        recorder: OutboundRecorder? = nil,
         until condition: @escaping @Sendable () async -> Bool
     ) async throws {
         let deadline = ContinuousClock.now.advanced(by: timeout)
@@ -331,7 +342,10 @@ private struct Harness {
             if await condition() { return }
             try await Task.sleep(for: .milliseconds(2))
         }
-        Issue.record("timed out waiting for \(description)")
+        let posture = "engine submits=\(engine.ordinarySubmits)/\(engine.deadlineSubmits) "
+            + "continuations=\(engine.continuations.count) cancelled=\(engine.cancelled.count) "
+            + "capacity=\(engine.capacityCalls) recorder=\(recorder?.kinds ?? [])"
+        Issue.record("timed out waiting for \(description): \(posture)")
     }
 }
 
@@ -384,4 +398,139 @@ struct ProviderLoopStreamingPathTests {
         #expect(object["engine_admitted_us"] == nil)
     }
     #endif
+
+    // MARK: T1-01 — cancel path
+
+    @Test("a coordinator cancel mid-stream settles as a partial completion: delivered tokens billed, cancel stamps ordered, no usage gap")
+    func midStreamCancelSettlesPartialCompletion() async throws {
+        let h = try await Harness.make()
+        let recorder = OutboundRecorder()
+        let sender = NodeKeyPair.generate()
+        let statsBefore = (
+            partial: await h.loop.stats.cancellationsPartialComplete,
+            gaps: await h.loop.stats.usageGaps,
+            received: await h.loop.stats.cancellationsReceived)
+        let handler = try await h.submit(
+            requestId: "req-mid-stream", recorder: recorder, sender: sender)
+        _ = await handler.value
+        try await h.wait("engine submission") { h.engine.ordinarySubmits == 1 }
+
+        // Three content deltas reach the wire (the role preamble frame is
+        // chunk #1, so content delta k is chunk k + 1).
+        for (index, text) in ["Hello", " there", " world"].enumerated() {
+            h.engine.emit(.delta(text: text, tokens: [10 + index], logprobs: nil))
+            let expected = index + 2
+            try await h.wait("chunk \(expected)", recorder: recorder) {
+                recorder.chunkPayloads.count >= expected
+            }
+        }
+
+        // The coordinator's cancel lands: the loop cancels the task first,
+        // Task propagation reaches the bridge and the engine drops the row.
+        await h.loop.handleCancellation(requestId: "req-mid-stream")
+        try await h.wait("terminal after cancel", recorder: recorder) { recorder.terminalAt != nil }
+        try await h.wait("engine cancel", recorder: recorder) { !h.engine.cancelled.isEmpty }
+
+        // Partial settle: inference_complete with the delivered tokens, not
+        // a bare 499 — the client is billed for what it received.
+        #expect(recorder.kinds.last == "complete", "kinds: \(recorder.kinds)")
+        #expect(recorder.errors.isEmpty)
+        let completion = try #require(recorder.completions.first)
+        #expect(completion.usage.completionTokens == 3)
+        #expect(completion.usage.promptTokens == 5)
+        let content = try recorder.chunkPayloads.map { payload -> String in
+            let data = try sender.decryptPayload(payload)
+            return String(decoding: data, as: UTF8.self)
+        }.joined()
+        #expect(content.contains("Hello"))
+        #expect(content.contains(" world"))
+        // Stats: one partial-complete cancel, no usage-gap false alarm.
+        #expect(await h.loop.stats.cancellationsPartialComplete == statsBefore.partial + 1)
+        #expect(await h.loop.stats.usageGaps == statsBefore.gaps)
+        #expect(await h.loop.stats.cancellationsReceived == statsBefore.received + 1)
+        // Profile: cancel receipt precedes the abort, so abort latency is measurable.
+        let profile = try #require(completion.profile)
+        let summary = profile.cancelSummary()
+        let abortNs = try #require(summary.abortNs)
+        #expect(abortNs > 0)
+        #expect(profile.wireObject().cancelStage != nil)
+    }
+
+    @Test("a cancel for an id the loop never saw costs nothing: no runtime consult, no capacity rebuild")
+    func unknownIdCancelIsFree() async throws {
+        let h = try await Harness.make()
+        #expect(await h.loop.hasEngineV2SlotsForTesting())
+        let before = await h.runtime.consultCount
+        await h.loop.handleCancellation(requestId: "req-never-seen")
+        #expect(await h.runtime.consultCount == before)
+        #expect(h.engine.cancelled.isEmpty)
+        #expect(h.engine.capacityCalls == 0)
+    }
+
+    @Test("cancelling an in-flight request cancels its task BEFORE any runtime consult")
+    func taskCancelPrecedesRuntimeConsult() async throws {
+        let h = try await Harness.make()
+        let order = OrderLog()
+        h.engine.onCancel = { _ in order.append("runtime_cancel") }
+        // A row the runtime fan-out can find (the coordinator id IS the
+        // bridge id here, so the id-map path records `runtime_cancel`).
+        let stream = await h.bridge.submit(
+            request: ChatCompletionRequest(
+                model: h.modelId, messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: "req-order")
+        let entered = OrderLog()
+        let task = Task<Void, Never> {
+            await withTaskCancellationHandler {
+                entered.append("entered")
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+            } onCancel: {
+                order.append("task_cancel")
+            }
+        }
+        try await h.wait("task entered") { !entered.events.isEmpty }
+        await h.loop.registerInflightTaskForTesting(requestId: "req-order", task: task)
+
+        await h.loop.handleCancellation(requestId: "req-order")
+        _ = await task.value
+        #expect(order.events == ["task_cancel", "runtime_cancel"])
+        #expect(await h.runtime.consultCount == 1)
+        withExtendedLifetime(stream) {}
+    }
+
+    @Test("cancelAllInflight cancels every task synchronously and rebuilds nothing")
+    func cancelAllInflightIsAwaitFree() async throws {
+        let h = try await Harness.make()
+        let cancelled = OrderLog()
+        var tasks: [Task<Void, Never>] = []
+        for index in 0..<8 {
+            let task = Task<Void, Never> {
+                await withTaskCancellationHandler {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .milliseconds(1))
+                    }
+                } onCancel: {
+                    cancelled.append("task-\(index)")
+                }
+            }
+            tasks.append(task)
+            await h.loop.registerInflightTaskForTesting(requestId: "req-\(index)", task: task)
+        }
+        let before = await h.runtime.consultCount
+        await h.loop.cancelAllInflight()
+        for task in tasks { _ = await task.value }
+        #expect(Set(cancelled.events).count == 8)
+        #expect(await h.runtime.consultCount == before)
+        #expect(h.engine.capacityCalls == 0)
+        #expect(await h.loop.hasInflightWork == false)
+    }
+}
+
+/// Thread-safe append-only event log for ordering assertions.
+private final class OrderLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [String] = []
+    var events: [String] { lock.withLock { _events } }
+    func append(_ event: String) { lock.withLock { _events.append(event) } }
 }

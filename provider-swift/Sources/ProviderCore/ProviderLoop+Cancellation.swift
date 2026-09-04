@@ -18,9 +18,20 @@ extension ProviderLoop {
     // MARK: - Cancellation
 
     internal func handleCancellation(requestId: String, receivedFromCoordinator: Bool = true) async {
-        logger.info("Cancelling request: \(requestId)")
+        // Cheap by design. The coordinator sends a cancel after EVERY
+        // committed request and re-cancels suspected zombies every 10 s, and
+        // every cancel shares the serial event loop with new inference
+        // requests — so an id this loop has never seen (or has already
+        // finished) must cost nothing: no actor hop, no capacity rebuild,
+        // no info log.
         let hadInflightTask = inflightTasks[requestId] != nil
         let hadModelReservation = requestToModel[requestId] != nil
+        let profile = inflightProfiles[requestId]
+        guard hadInflightTask || hadModelReservation || profile != nil else {
+            logger.debug("Cancel for unknown or finished request: \(requestId)")
+            return
+        }
+        logger.info("Cancelling request: \(requestId)")
         if receivedFromCoordinator && (hadInflightTask || hadModelReservation) {
             stats.incrementCancellationsReceived()
         }
@@ -28,7 +39,6 @@ extension ProviderLoop {
         // the stamps present right now (one lock). The stage counters count
         // COORDINATOR cancels only — a disconnect-driven cancel-all is not
         // a client decision.
-        let profile = inflightProfiles[requestId]
         if let profile,
             let stage = profile.markCancelReceived(),
             receivedFromCoordinator
@@ -36,15 +46,14 @@ extension ProviderLoop {
             stats.incrementCancelStage(stage)
         }
 
-        // MLXLMServer mints an internal request id before submitting to the
-        // EngineV2 bridge, so the coordinator id held here may not match the
-        // id the engine tracks. Cancelling only by coordinator id can therefore
-        // be a no-op.
-        //
-        // Instead, rely on Task cancellation propagation:
+        // The ONE statement that stops a coordinator-routed generation, so it
+        // runs BEFORE any suspension point in this method:
         //
         //   ProviderLoop.task.cancel()
-        //     -> `for try await frame in frames` raises CancellationError
+        //     -> `for try await frame in frames` ends (nil-end or
+        //        CancellationError; the handler checks `Task.isCancelled`
+        //        on every settle path so the partial-settle billing does not
+        //        depend on the registry hop below having landed)
         //     -> the detached task exits, the `frames` AsyncThrowingStream
         //        is deallocated, its `onTermination` fires
         //     -> MLXOpenAIService.streamChatCompletionFrames's inner
@@ -53,56 +62,85 @@ extension ProviderLoop {
         //        `onTermination` fires
         //     -> MultiModelBatchSchedulerEngine.streamChatCompletion's
         //        `onTermination` cancels the bridge's internal id.
-        //
-        // The cancellation-registry token below remains so the explicit
-        // `if token.isCancelled` check inside the streaming loop also
-        // fires on the next iteration (defense in depth — both paths
-        // reach the same teardown).
-        // Forward the coordinator request-id to the owning EngineV2 bridge so
-        // `CBv2Engine.cancel` drops the row promptly (the in-flight step
-        // completes, then the engine delivers `.finished(.cancelled)` and
-        // the bridge tears down). The zero-slot guard avoids an actor hop.
-        // Defense in depth:
-        // the primary v2 teardown is the same Task-cancellation propagation
-        // documented above (the bridge stream's onTermination cancels the
-        // engine-minted id); this fan-out additionally catches any submit
-        // made directly under the coordinator id.
-        // The profile rides along so the owning bridge can take the
-        // `tokens_after_cancel` snapshot at cancel receipt even though the
-        // coordinator id misses its `req-…` map (profile-identity match).
-        // ORDER: the bridge snapshot runs BEFORE the registry await below.
-        // The profile-identity scan is serialized on the bridge actor against
-        // `recordFinish`, so a miss means "never submitted" or "already
-        // finished" — the latter records `tokens_after_cancel = 0` rather
-        // than omitting the field.
-        if hasEngineV2Slots {
-            let owned = await engineV2Runtime.cancel(requestId: requestId, profile: profile)
-            if !owned {
-                profile?.recordTokensAfterCancelIfFinished()
-            }
+        if let task = inflightTasks.removeValue(forKey: requestId) {
+            task.cancel()
         }
 
-        await cancellationRegistry.cancel(requestId: requestId)
-
+        // Load-window tombstone: `handleInferenceRequest` re-checks
+        // `requestToModel` after `ensureModelLoaded` returns and emits the
+        // 499 terminal instead of spawning generation.
         if requestToModel.removeValue(forKey: requestId) != nil {
             if !hadInflightTask {
                 stats.incrementCancelDuringModelLoad()
             }
             powerAssertion.release()
         }
-
         syncWarmModelState()
-        await updateAggregateCapacity()
 
-        if let task = inflightTasks.removeValue(forKey: requestId) {
-            task.cancel()
+        // Defense in depth: the explicit `token.isCancelled` check inside the
+        // streaming loop also fires on the next iteration (both paths reach
+        // the same teardown).
+        await cancellationRegistry.cancel(requestId: requestId)
+
+        // Second, task-independent stop path. MLXLMServer mints the engine's
+        // provider id (`req-…`) per request, so the coordinator id misses the
+        // bridge's id map; the request's profile is the one handle both
+        // sides share, and the owning bridge matches on its identity: it
+        // takes the `tokens_after_cancel` snapshot at cancel receipt AND
+        // cancels the engine row, so the row is dropped at the next step
+        // boundary even if the detached task is wedged in synchronous work.
+        // Runs AFTER `task.cancel()` — it is the slower path (one actor hop
+        // per live bridge). The zero-slot guard avoids the hop entirely. A
+        // miss means "never submitted" or "already finished" — the latter
+        // records `tokens_after_cancel = 0` rather than omitting the field.
+        if hasEngineV2Slots {
+            let owned = await engineV2Runtime.cancel(requestId: requestId, profile: profile)
+            if !owned {
+                profile?.recordTokensAfterCancelIfFinished()
+            }
         }
+        // No `updateAggregateCapacity()` here: `finishInflightRequest` runs
+        // it when the cancelled task exits, and a request cancelled inside
+        // the load window never held engine capacity (the 2 s capacity tick
+        // covers its `in_admission` counter).
+    }
+
+    /// Terminal for a cancel honored inside the load window — the request
+    /// was accepted but its generation task was never spawned, so neither
+    /// of the detached task's terminals can fire. Same 499 `cancelled` shape
+    /// as the pre-output cancel the detached task emits, so the coordinator
+    /// can measure cancel→terminal latency for exactly the head-of-line-
+    /// blocked case (it has already dropped its pending entry; the terminal
+    /// is health-neutral and only ever observed as a late one).
+    internal func sendCancelledInLoadWindowTerminal(
+        requestId: String,
+        profile: RequestProfileBuilder,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) {
+        profile.mark(.cancelAborted)
+        profile.update { f, now in f.mark(.terminalBuilt, offsetUs: now) }
+        lookupReceiptFinalizer.sendTerminal(
+            .inferenceError(
+                requestId: requestId,
+                failure: InferenceFailure(
+                    code: .cancelled,
+                    statusCode: 499,
+                    terminalCause: .cancelled),
+                profile: profile),
+            fallbackFailure: .policy,
+            send: send)
     }
 
     internal func cancelAllInflight() async {
-        let requestIds = Array(inflightTasks.keys)
-        for requestId in requestIds {
-            await handleCancellation(requestId: requestId, receivedFromCoordinator: false)
+        // Disconnect-driven: the coordinator will not route responses for a
+        // dead connection, so stop every generation NOW — one synchronous
+        // sweep, no per-id actor hops. Each task's defer still runs
+        // `finishInflightRequest` (registry finish + capacity rebuild), and
+        // Task propagation reaches the engine rows exactly as for a single
+        // cancel.
+        for task in inflightTasks.values {
+            task.cancel()
         }
         inflightTasks.removeAll()
         completedBeforeTaskRegistration.removeAll()

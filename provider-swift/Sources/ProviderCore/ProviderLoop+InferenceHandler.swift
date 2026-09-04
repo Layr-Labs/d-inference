@@ -467,6 +467,9 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during admission")
+            sendCancelledInLoadWindowTerminal(
+                requestId: requestId, profile: profile, send: send,
+                lookupReceiptFinalizer: lookupReceiptFinalizer)
             return
         }
         if await rejectAcceptedRequestIfFirstContentDeadlineExpired(
@@ -539,6 +542,9 @@ extension ProviderLoop {
         guard requestToModel[requestId] == modelId else {
             await cancellationRegistry.finish(requestId: requestId)
             logger.info("[\(requestId)] Request cancelled during model load")
+            sendCancelledInLoadWindowTerminal(
+                requestId: requestId, profile: profile, send: send,
+                lookupReceiptFinalizer: lookupReceiptFinalizer)
             return
         }
 
@@ -863,7 +869,7 @@ extension ProviderLoop {
                 // would count as a provider error and trip the
                 // (provider, model) 5xx routing cooldown for a client's own
                 // cancel.
-                if error is CancellationError || token.isCancelled {
+                if error is CancellationError || token.isCancelled || Task.isCancelled {
                     log.info("[\(requestId)] Request cancelled while starting the stream")
                     providerStats.incrementCancellationsBeforeOutput()
                     profile.mark(.cancelAborted)
@@ -1029,7 +1035,12 @@ extension ProviderLoop {
                     if contentFrameCount == 0, rejectExpiredDeadline() {
                         return
                     }
-                    if token.isCancelled {
+                    // `Task.isCancelled` too: `handleCancellation` cancels
+                    // this task BEFORE the registry hop that flips `token`,
+                    // and a cancelled iterator ends the stream with a nil-end,
+                    // not a throw — the partial-settle billing below must not
+                    // depend on which lands first.
+                    if token.isCancelled || Task.isCancelled {
                         log.info("[\(requestId)] Cancelled during generation")
                         cancelledMidStream = true
                         profile.mark(.cancelAborted)
@@ -1182,7 +1193,7 @@ extension ProviderLoop {
             } catch {
                 // Cancellation can throw here or end the stream as a clean
                 // nil-end (caught after the loop); both settle as a cancel.
-                if error is CancellationError || token.isCancelled {
+                if error is CancellationError || token.isCancelled || Task.isCancelled {
                     log.info("[\(requestId)] Cancelled while waiting on next frame")
                     cancelledMidStream = true
                     profile.mark(.cancelAborted)
@@ -1218,7 +1229,7 @@ extension ProviderLoop {
                     return
                 }
             }
-            if token.isCancelled {
+            if token.isCancelled || Task.isCancelled {
                 cancelledMidStream = true
                 profile.mark(.cancelAborted)
             }

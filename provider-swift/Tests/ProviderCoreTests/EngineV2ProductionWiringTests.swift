@@ -2149,8 +2149,18 @@ struct EngineV2RuntimeGuardTests {
                 messages: [ChatMessage(role: "user", content: "hi")]),
             requestId: "req-coord-1")
         let engineId = await bridge._testEngineRequestId(for: "req-coord-1")
+        // The loop tracks a generation task under the id (production
+        // registers the detached task); an id the loop has no record of is
+        // free and never reaches the runtime (ProviderLoopStreamingPathTests).
+        let task = Task<Void, Never> {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        await loop.registerInflightTaskForTesting(requestId: "req-coord-1", task: task)
 
         await loop.handleCancellation(requestId: "req-coord-1", receivedFromCoordinator: false)
+        _ = await task.value
         #expect(await runtime.consultCount >= 1)
         #expect(engine.cancelled.first == engineId)
         withExtendedLifetime(stream) {}

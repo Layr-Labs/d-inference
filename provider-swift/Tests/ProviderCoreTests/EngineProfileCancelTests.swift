@@ -223,11 +223,13 @@ struct EngineProfileCancelTests {
         _ = await iterator.next()
 
         // The coordinator cancel arrives under the COORDINATOR id: the bridge's
-        // id map misses, but the profile identity finds the row and snapshots
-        // the completion count (2) at receipt.
+        // id map misses, but the profile identity finds the row, snapshots
+        // the completion count (2) at receipt AND cancels the engine row
+        // right there — the coordinator's cancel is the effective stop, not
+        // the later Task-propagation teardown.
         let owned = await bridge.cancelIfOwned(requestId: "coordinator-uuid", profile: profile)
-        #expect(owned == false)
-        #expect(engine.cancelledIDs.isEmpty, "semantics unchanged: no engine cancel on the miss path")
+        #expect(owned == true)
+        #expect(engine.cancelledIDs.count == 1, "exactly one engine cancel on the profile-identity hit")
 
         // The handler builds its cancelled terminal NOW — before the engine
         // has delivered `.finished(.cancelled)`.
@@ -285,13 +287,14 @@ struct EngineProfileCancelTests {
         // the minted id reaches the engine AND snapshots (1 token so far).
         await bridge.cancel(requestId: "req-minted")
         #expect(engine.cancelledIDs.count == 1)
-        // A second cancel via the MISS path (the coordinator id, racing the
-        // teardown) must neither move the first snapshot nor cancel again.
+        // A second cancel via the profile-identity path (the coordinator id,
+        // racing the teardown) must not move the first snapshot; the engine
+        // cancel it repeats is idempotent engine-side.
         engine.emit(.delta(text: "b", tokens: [11], logprobs: nil))
         _ = await iterator.next()
         let ownedAgain = await bridge.cancelIfOwned(requestId: "coordinator-uuid", profile: profile)
-        #expect(ownedAgain == false)
-        #expect(engine.cancelledIDs.count == 1)
+        #expect(ownedAgain == true)
+        #expect(engine.cancelledIDs.count == 2)
         engine.emit(.delta(text: "c", tokens: [12], logprobs: nil))
         _ = await iterator.next()
         engine.emit(.finished(

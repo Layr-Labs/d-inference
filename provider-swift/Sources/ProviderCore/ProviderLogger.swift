@@ -43,6 +43,12 @@ struct ProviderLogger: Sendable {
         publicLog(.error, message)
     }
 
+    /// Private, debug-level: for hot-path events that are expected and
+    /// frequent (e.g. a cancel for a request this loop never saw).
+    func debug(_ message: String) {
+        privateLog(.debug, message)
+    }
+
     func info(_ message: String) {
         privateLog(.info, message)
     }
@@ -62,6 +68,8 @@ struct ProviderLogger: Sendable {
         }
         #if canImport(os)
         switch level {
+        case .debug:
+            osLogger.debug("\(message.rawValue, privacy: .public)")
         case .info:
             osLogger.info("\(message.rawValue, privacy: .public)")
         case .warning:
@@ -81,6 +89,8 @@ struct ProviderLogger: Sendable {
         }
         #if canImport(os)
         switch level {
+        case .debug:
+            osLogger.debug("\(message, privacy: .private)")
         case .info:
             osLogger.info("\(message, privacy: .private)")
         case .warning:
@@ -97,12 +107,14 @@ struct ProviderLogger: Sendable {
 }
 
 enum ProviderLogLevel: Sendable, Equatable {
+    case debug
     case info
     case warning
     case error
 
     fileprivate var label: String {
         switch self {
+        case .debug: "DEBUG"
         case .info: "INFO"
         case .warning: "WARN"
         case .error: "ERROR"

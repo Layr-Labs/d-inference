@@ -1832,11 +1832,19 @@ public actor EngineV2Bridge {
         // both sides share, so match on its identity. O(rows), cancel path only.
         guard let profile else { return false }
         // Admitted row: take the `tokens_after_cancel` snapshot NOW, at
-        // cancel receipt, instead of at Task-cancellation teardown.
-        // Cancellation semantics unchanged (still Task-propagation driven).
-        if let state = active.values.first(where: { $0.profile === profile }) {
+        // cancel receipt, and drop the engine row NOW — the coordinator's
+        // cancel no longer waits for Task-propagation to walk three stream
+        // teardowns before `CBv2Engine.cancel` runs (the row kept decoding
+        // for tens to hundreds of ms). The later propagation-driven cancel
+        // under the minted id is a no-op in the engine (`requestCancel`
+        // guards on the live stream and the pending-cancel map assignment
+        // is idempotent). Owned — nothing else can hold this profile.
+        if let (providerId, state) = active.first(where: { $0.value.profile === profile }) {
             snapshotTokensAtCancel(state)
-            return false
+            if let cbv2Id = idMap[providerId], let engine = ownedEngine {
+                engine.cancel(cbv2Id)
+            }
+            return true
         }
         // Still pending engine admission: seed the zero baseline and latch
         // the cancellation so the row is cancelled the moment submit returns

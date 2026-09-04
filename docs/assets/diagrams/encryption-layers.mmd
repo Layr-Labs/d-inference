@@ -1,26 +1,25 @@
-flowchart TB
-    subgraph consumer["Consumer"]
-        C[Prompt plaintext]
-    end
+%% Encryption hops as built at c5c404fca. Source of truth for encryption-layers.svg;
+%% re-render after editing: mmdc -i encryption-layers.mmd -o encryption-layers.svg
+%% Symbols: coordinator/api/sender_encryption.go, coordinator/internal/e2e/e2e.go,
+%% coordinator/api/chunk_key_cache.go, coordinator/api/response_metadata.go.
+sequenceDiagram
+    participant C as Consumer
+    participant K as Coordinator
+    participant P as Provider
 
-    subgraph coord["Coordinator — Confidential VM"]
-        CK[Long-lived X25519 key]
-        CE[Ephemeral X25519 key]
-        CVM["Plaintext in CVM memory<br/>(routing/billing only;<br/>not logged or retained)"]
-    end
+    Note over C,K: Hop 1 (optional) — sender sealing
+    C->>K: GET /v1/encryption-key
+    K-->>C: {kid, public_key, algorithm: "x25519-nacl-box"}
+    C->>K: POST /v1/chat/completions<br/>Content-Type: application/eigeninference-sealed+json<br/>{kid, ephemeral_public_key, ciphertext = nonce || box}
+    Note over K: sealedTransport opens with the coordinator X25519 key<br/>(HKDF-SHA256 of the mnemonic, info "eigeninference-coordinator-e2e-v1")<br/>plaintext handed to the handler as application/json
 
-    subgraph provider["Provider Mac"]
-        PK[Ephemeral X25519 key]
-        SE[Secure Enclave]
-        PT[Prompt plaintext]
-    end
+    Note over K,P: Hop 2 (mandatory) — coordinator → provider
+    K->>P: inference_request<br/>encrypted_body = {ephemeral_public_key: session pub, ciphertext = nonce || box}<br/>sealed to the provider's registered X25519 key K
+    Note over P: K opens it — plaintext exists only in the provider process
 
-    C -->|"TLS (default)"| CK
-    C -.->|"Optional NaCl Box"| CK
-    CK --> CVM
-    CVM -->|"Mandatory NaCl Box"| PK
-    PK --> PT
-    SE -.->|"binds"| PK
+    Note over P,K: Hop 3 (mandatory) — provider → coordinator
+    P->>K: inference_response_chunk<br/>encrypted_data = {ephemeral_public_key: K (static), ciphertext}<br/>sealed to the request's session public key
+    Note over K: ephemeral_public_key must equal Provider.PublicKey<br/>shared key memoized per request (chunkKeyCache, chunkKeyCacheMax = 8192)
 
-    style CVM fill:#fff9c4
-    style PT fill:#fff9c4
+    Note over K,C: Response returns on hop 1
+    K-->>C: X-Eigen-Sealed: true · X-Eigen-Sealed-Kid<br/>X-Provider-* · X-Attestation-Se-Public-Key<br/>body / SSE events sealed to the sender's ephemeral key when hop 1 was used

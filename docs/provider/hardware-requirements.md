@@ -1,117 +1,110 @@
-# Provider Hardware Requirements
+# Provider hardware requirements
 
-Darkbloom providers run on Apple Silicon Macs. This page describes the minimum
-and recommended specs, how memory is accounted, and how to size a machine for
-the models you want to serve.
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Reference for what a Mac needs to run the `darkbloom` provider: the minimum
+requirements, the chip families the provider distinguishes, which catalog
+models load at each unified-memory size, and the disk and thermal behaviour an
+operator has to plan for. For operators choosing or checking a machine. The
+memory constants and the load-gate arithmetic behind the RAM table are stated
+once in [`../architecture/hardware-support.md`](../architecture/hardware-support.md)
+and are not repeated here.
 
 ## Minimum requirements
 
-| Component | Minimum | Notes |
-|-----------|---------|-------|
-| **CPU** | Apple M1 (or later) | Apple Silicon required; Intel Macs are not supported |
-| **RAM** | 8 GB | Start path rejects `< 8 GB` (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:23-27`) |
-| **GPU** | Apple Silicon integrated GPU | CPU-only execution is rejected (`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`) |
-| **Storage** | 50 GB free | SSD required; model weights are large |
-| **macOS** | 14 (Sonoma) | Newer is better; install script enforces Darwin + arm64 |
-| **Network** | Outbound HTTPS to coordinator | No inbound port is required |
+| Component | Requirement | Code |
+|---|---|---|
+| CPU / GPU | Apple Silicon with Metal; `ChipFamily` recognised: `M1`, `M2`, `M3`, `M4`, `M5` (`Unknown` still runs) | `provider-swift/Sources/ProviderCore/Inference/GPUEnforcement.swift` (`requireMetal`), `provider-swift/Sources/ProviderCore/Protocol/Enums.swift` |
+| Architecture | `arm64` only; the installer refuses Intel Macs | `coordinator/api/install.sh` |
+| RAM | At least 8 GB to start at all ([`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)); per-model needs below | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` (`hardware.memoryGb < 8`) |
+| macOS | 14 (Sonoma) or later, the build floor; `darkbloom doctor` warns below macOS 26 (`recommendedMacOSMajorVersion`, [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context)) but does not block | `provider-swift/Package.swift` (`.macOS(.v14)`), `provider-swift/Sources/ProviderCore/Security/BootSecurity.swift` |
+| Storage | Weights per model (catalog `size_gb`) under the Hugging Face hub cache, plus the SSD prefix-cache budget (`defaultSSDDiskBudgetBytes`, [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)) when that cache is active | `provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift` (`defaultCacheDirectory`), `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
+| Network | Outbound `wss://api.darkbloom.dev/ws/provider` and HTTPS on 443; a heartbeat every `heartbeat_interval_secs` ([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)); no inbound port | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
+| Security posture | SIP enabled and Full Security boot; a logged-in GUI session for APNs code-identity attestation | [`attestation.md`](./attestation.md) |
 
-## Recommended configurations
+## Chip families
 
-| Workload | Mac | RAM | Notes |
-|----------|-----|-----|-------|
-| Small quantized models | Mac mini / MacBook Air M1 | 16 GB | Serves one model at a time comfortably |
-| Standard text models | MacBook Pro / Mac Studio M1 Pro/Max | 32–48 GB | Can hold several slots |
-| Large / multi-model | Mac Studio M1 Ultra / M2 Ultra | 64–128 GB | `max_model_slots` default is 3 |
+| Family | Recognised as | Behaviour that differs |
+|---|---|---|
+| M1, M2 | `ChipFamily.m1`, `.m2` | MTP `maxRectangularTokens = 4` (`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`) |
+| M3, M4 | `.m3`, `.m4` | MTP `maxRectangularTokens = 8` |
+| M5 | `.m5` | As M3/M4, plus the provider advertises runtime capability `apple_m5` (and `mlx_nax` when the NAX kernels are available); the catalog's `required_provider_capabilities` uses these to decide eligibility (`provider-swift/Sources/ProviderCore/Models/ModelRuntimeRequirements.swift`, `coordinator/registry/provider_capabilities.go`) |
+| Other | `.unknown` | Treated like M1/M2 for MTP |
 
-## Memory model
+Chip tier (`Base`, `Pro`, `Max`, `Ultra`) is reported to the coordinator but
+does not gate any model (`provider-swift/Sources/ProviderCore/Hardware/HardwareDetector.swift`,
+`parseChipIdentity`).
 
-A provider can keep up to `backend.max_model_slots` models resident at once
-(default 3, defined in
-`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:66-74`).
+## RAM tiers and catalog models
 
-### Load gate
+Which model loads on a given Mac is decided twice: the coordinator routes only
+to boxes whose total memory is at least the catalog's `min_ram_gb`
+(`coordinator/registry/scheduler.go`, `modelFitsHardware`), and the provider
+then requires, at load time, free memory of at least the model's padded weights
+plus its activation reserve plus the minimum KV headroom
+(`requiredToLoadGb`, [load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)).
+The table applies the provider's rule to the live catalog as recorded on
+2026-08-30 ([`../reports/2026-08-30-activation-floor-measurements.md`](../reports/2026-08-30-activation-floor-measurements.md),
+"Live catalog"); `min_ram_gb` and `size_gb` are catalog data, not code, so
+re-read them from `darkbloom models catalog` before relying on a row.
 
-When the provider loads a model it checks that the physical memory available
-after the OS reserve and any in-flight KV-cache reservations can fit the model
-weights plus a small one-request headroom. The current gate is:
+| Catalog id | Catalog `min_ram_gb` | Weights `size_gb` | Activation reserve | Provider needs free at load (GiB) | Smallest Mac where an idle box passes the provider gate |
+|---|---|---|---|---|---|
+| `gpt-oss-20b` | 24 | 12.1 | measured floor | 18.0 | 24 GB (tight) |
+| `gemma-4-26b-qat-4bit` | 36 | 15.6 | default | 23.9 | 32 GB |
+| `qwen3-vl-30b-a3b-instruct` | 32 | 18.3 | default | 27.0 | 32 GB (tight) |
+| `qwen3.5-35b-a3b` | 36 | 20.9 | default | 29.9 | 36 GB |
+| `qwen3.6-35b-a3b-vl-mtp-mxfp8` | 32 | 21.3 | default | 30.3 | 36 GB — does **not** load on a 32 GB Mac despite the catalog tier |
+| `gemma-4-26b` (8bit) | 36 | 28.0 | default | 37.8 | 48 GB — does **not** load on a 36 GB Mac despite the catalog tier |
+| `gemma-4-26b-8bit` | 64 | 28.0 | default | 37.8 | 48 GB |
 
-```text
-required_gb = weights_gb + default_load_headroom_gb
-```
+How each column is computed: weights are the catalog `size_gb` padded by
+`memoryOverheadFactor`; the activation reserve is
+`UnifiedMemoryCap.defaultActivationReserveBytes`, or the model's entry in
+`measuredActivationFloorsBytes` where one exists (today only `gpt-oss-20b`);
+the load also needs `minimumLoadKVBytes` of KV headroom. The values of those
+constants are in [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)
+and the formulas in [Cap and reserves](../architecture/hardware-support.md#cap-and-reserves-unifiedmemorycap).
+"Smallest Mac" assumes nothing else is loaded, the default `memory_reserve_gb`
+([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli))
+and the default hard cap; "tight" means the system-available memory the gate
+needs (the free-at-load figure plus the config reserve) is within 2 GiB of the
+machine's total. The two rows marked **not** are the discrepancies the
+2026-08-30 report recommends fixing in the catalog (re-tier
+`qwen3.6-35b-a3b-vl-mtp-mxfp8` to 36; `gemma-4-26b` 8bit stays blocked at
+padded weights until a provider-path residency measurement lands).
 
-where `default_load_headroom_gb = 2.0`
-(`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift:19-24`).
+Several models can be resident at once, up to `max_model_slots`
+([`cli-reference.md`](./cli-reference.md#providertoml-keys-read-by-the-cli)):
+each adds its padded weights, while the activation reserve is charged once at
+the largest floor in the serving set. The KV cache for concurrent requests comes
+out of whatever the cap leaves after weights and activations; a model that loads
+with less than `minimumLoadKVBytes` of KV headroom is unloaded again
+(`provider-swift/Sources/ProviderCore/Inference/KVHeadroomProbe.swift`;
+[after the load](../architecture/hardware-support.md#after-the-load)).
 
-This replaces the earlier "3× weights" rule. The runtime still protects each
-request via `GlobalKVCacheBudget`, which rejects a request whose KV cache would
-not fit in real free memory; the load gate therefore only needs to guarantee
-that at least one request can run.
+## Disk for the SSD prefix cache
 
-The coordinator has its own admission check (`freeMemoryAdmits` in
-`coordinator/registry/registry.go`) that is less conservative than the provider
-load gate. A model the coordinator admits can still fail to load on the provider
-if the provider's stricter gate is not met.
-
-### Sizing guidance
-
-| What you need | Rule of thumb |
-|---------------|---------------|
-| Model weights | Use the size shown by `darkbloom models catalog` |
-| Load headroom | +2 GB per model |
-| OS reserve | `provider.memory_reserve_gb` (default 4 GB) |
-| Concurrent requests | Additional KV-cache usage; runtime-enforced |
-
-Example: a 12 GB weights model loads when roughly `12 + 2 + 4 = 18 GB` of usable
-memory is available.
-
-## Storage
-
-Models are cached under the Hugging Face hub directory (typically
-`~/.cache/huggingface/hub`). The exact path is discovered by
-`ModelScanner.defaultCacheDirectory()`
-(`provider-swift/Sources/ProviderCoreFoundation/ModelScanner.swift:55`).
-
-Plan disk space per model from the catalog output of `darkbloom models catalog`.
-Logs and telemetry are small; the bundle plus `mlx.metallib` is roughly 200 MB.
-
-## Network
-
-| Direction | Requirement |
-|-----------|-------------|
-| Outbound | `wss://api.darkbloom.dev/ws/provider` and `https://api.darkbloom.dev` on port 443 |
-| Inbound | None for normal provider operation |
-| Local | Optional: `darkbloom start --local` or `--local-endpoint` binds a loopback/tailnet address |
-
-Persistent WebSocket idle bandwidth is low (heartbeat every 5 seconds by
-default).
+| Rule | Where it is specified | Code |
+|---|---|---|
+| Location | [`../reference/ssd-kv-cache.md#paths`](../reference/ssd-kv-cache.md#paths) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` |
+| Box-wide budget (`defaultSSDDiskBudgetBytes`, halved when the volume is short on free space), the `DARKBLOOM_PREFIX_CACHE_DISK_GB` override, LRU eviction | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
+| Low-disk write stop (`lowDiskFloorBytes`; reads continue) and the daily write cap (`defaultMaxWriteBytesPerDay`) | [`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCachePolicy.swift` |
+| When it is used at all | Only on slots configured `engine_v2_kv_backend = "paged"`; the default configuration builds no SSD cache | [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) |
 
 ## Thermal and power
 
-- Laptops throttle under sustained GPU load. For 24/7 operation, prefer a
-  desktop Mac (Mac Studio / Mac Pro).
-- Use `darkbloom status` and `darkbloom doctor` to check thermal state.
-- The provider calls `ProcessLifecycle.preventSystemSleep()` while serving so
-  in-flight requests are not interrupted.
-- v0.7.9 adds optional experimental fan control. It requires a Mac that reports
-  at least one fan and a validated GPU sensor; fanless and unknown hardware stays
-  under macOS control. See [Experimental Fan Control](fan-control.md).
+| Behaviour | Code |
+|---|---|
+| The daemon prevents system sleep while serving | `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` (`preventSystemSleep`) |
+| Thermal state (`nominal`, `fair`, `serious`, `critical`) is sampled from `ProcessInfo.thermalState`, sent to the coordinator as `thermal_state`, and written to the daemon state file read by `darkbloom status` | `provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift`, `provider-swift/Sources/ProviderCore/Protocol/Types.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift` |
+| Optional experimental fan control (Macs with a fan and a validated GPU sensor) | [`fan-control.md`](./fan-control.md) |
 
-## macOS version support
+## Related
 
-The installer and CLI target macOS 14+. Individual security checks (SIP,
-Authenticated Root, RDMA controls) behave differently across macOS versions;
-`darkbloom doctor` reports the current state without requiring you to manually
-parse tool output.
-
-## Verification checklist
-
-Before relying on a node for public traffic:
-
-- [ ] `darkbloom doctor` passes all critical checks.
-- [ ] `darkbloom status` shows the daemon running with a trust verdict.
-- [ ] `darkbloom models catalog` lists the models you intend to serve.
-- [ ] You have at least `weights + 2 GB + memory_reserve_gb` of usable RAM per
-      loaded model.
-- [ ] `darkbloom benchmark` completes for your target model.
-- [ ] The machine has a stable outbound path to `api.darkbloom.dev`.
-- [ ] For hardware trust, the MDM enrollment profile is installed.
+- [`../architecture/hardware-support.md`](../architecture/hardware-support.md) — the memory constants, cap formulas and load gate
+- [`../architecture/inference.md`](../architecture/inference.md) — supported model families
+- [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — SSD cache paths, budget and knobs
+- [`../reference/configuration.md`](../reference/configuration.md) — every `DARKBLOOM_*` variable
+- [`cli-reference.md`](./cli-reference.md) — `provider.toml` keys and their defaults
+- [`../consumer/models.md`](../consumer/models.md) — the model catalog as consumers see it

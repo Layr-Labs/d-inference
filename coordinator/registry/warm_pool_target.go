@@ -6,7 +6,7 @@ import (
 )
 
 // warm_pool_target.go holds the pure, side-effect-free math behind the
-// warm-pool controller's capacity target (Layer 3 in docs/architecture/routing-v2.md).
+// warm-pool controller's capacity target (Layer 3 in docs/design/routing-v2.md).
 //
 // The controller drives warm capacity from measured demand using Little's Law:
 //

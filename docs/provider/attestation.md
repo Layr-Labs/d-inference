@@ -1,232 +1,180 @@
-# Provider Attestation
+# Reaching and keeping `hardware` trust
 
-Darkbloom verifies every provider before routing private inference traffic to
-it. This page describes the trust levels, the attestation chain, and what you
-need to do to reach the highest trust level.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## Trust levels
+How to take a provider Mac from `self_signed` to `hardware` trust and keep it
+there, so the coordinator routes public inference to it. For operators; the
+mechanism — what each layer proves, the grant and loss conditions, the routing
+gate, and the code map — is in
+[`../architecture/security/attestation.md`](../architecture/security/attestation.md)
+and is not restated here.
 
-The coordinator stores a `TrustLevel` for each provider
-(`coordinator/registry/registry.go:51-58`):
+## Prerequisites
 
-| Level | Name | Meaning |
-|-------|------|---------|
-| `none` | No attestation | Provider registered without an attestation. Not routed for private text. |
-| `self_signed` | Self-attested | A valid Secure-Enclave-signed attestation was verified. |
-| `hardware` | Hardware-attested | Self-signed attestation plus MDM SecurityInfo cross-check (with Apple MDA as the genuineness proof). |
+- A supported Apple silicon Mac with SIP on and Secure Boot at **Full
+  Security**, running the provider ([`installation.md`](./installation.md),
+  [`hardware-requirements.md`](./hardware-requirements.md)). Both settings are
+  changed only in Recovery; the coordinator checks them independently of your
+  self-report ([Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
+- The Mac must not be enrolled in another MDM. `darkbloom enroll` refuses
+  (`managedByOtherMDM`) and `darkbloom doctor` reports "enrolled in another
+  MDM … hardware trust unavailable on this Mac"
+  ([`../architecture/security/enrollment.md#failure-modes`](../architecture/security/enrollment.md#failure-modes)).
+- A real console user logged in (Aqua session), automatic login enabled,
+  auto-logout on idle disabled, and sleep prevented. APNs registration, which
+  the code-identity flag depends on, only works inside a logged-in GUI session;
+  `darkbloom doctor` reports these as `console session`, `automatic login`,
+  `auto-logout on idle` and `sleep prevention`
+  ([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
+- A healthy `darkbloom start`. Registration with a valid Secure-Enclave-signed
+  blob grants `self_signed` at once ([Layer 1](../architecture/security/attestation.md#layer-1--secure-enclave-registration-blob));
+  `hardware` is only ever granted on top of that.
 
-The default minimum trust level for public routing is `hardware`
-(`coordinator/registry/registry.go:773`). Self-route relaxes the trust floor for
-the owner's own machine only, but it does **not** bypass the code-identity gate
-once that gate is enforced.
+## Steps
 
-## What the coordinator verifies before routing
-
-Private-text routing has a single chokepoint:
-`providerSupportsPrivateTextLocked` in `coordinator/registry/registry.go:305-342`.
-A provider must satisfy all of the following:
-
-1. Has a non-empty X25519 public key bound at registration.
-2. Uses the Swift backend (`mlx-swift`).
-3. Advertises encrypted response chunks.
-4. Passed runtime manifest checking.
-5. Has coordinator-verified SIP from a recent challenge (`ChallengeVerifiedSIP`).
-6. Passed APNs code-identity attestation when enforcement is active (`CodeAttested`).
-7. Reports the required privacy capabilities:
-   - `text_backend_inprocess = true`
-   - `text_proxy_disabled = true`
-   - `anti_debug_enabled = true`
-   - `core_dumps_disabled = true`
-   - `env_scrubbed = true`
-
-The privacy capability values are reported in the `register` message and are
-defined in `coordinator/protocol/messages.go:169-180`.
-
-## Registration attestation
-
-When a provider connects, it sends a `register` WebSocket message containing a
-signed attestation blob. The blob is built in
-`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift` and
-signed by a per-launch P-256 key held in the Apple Secure Enclave
-(`provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`).
-
-The blob contains:
-
-| Field | Purpose |
-|-------|---------|
-| `chipName` | e.g. "Apple M4 Max" |
-| `hardwareModel` | Machine model identifier, e.g. "Mac16,1" |
-| `serialNumber` | Used for MDM/MDA cross-reference |
-| `osVersion` | macOS version string |
-| `sipEnabled` | System Integrity Protection state |
-| `secureBootEnabled` | Secure Boot state |
-| `authenticatedRootEnabled` | Authenticated root volume state |
-| `rdmaDisabled` | RDMA safety signal |
-| `secureEnclaveAvailable` | Confirms SE presence |
-| `binaryHash` | SHA-256 of the provider binary |
-| `systemVolumeHash` | Signed system-volume snapshot hash |
-| `publicKey` | SE P-256 public key |
-| `encryptionPublicKey` | X25519 public key used for per-request NaCl Box |
-
-The coordinator verifies the ECDSA signature over the exact attestation JSON
-bytes in `coordinator/attestation/attestation.go:128` and checks that the
-encryption public key in the blob matches the key supplied in the `register`
-message (`coordinator/api/provider.go:2130-2156`).
-
-> **Legacy field:** older provider builds also included a `hypervisorActive`
-> field in this blob and in the challenge-response canonical payload. It was a
-> hardcoded-`false` stub — hypervisor isolation was never implemented — and
-> current providers no longer report it. The coordinator still accepts it in
-> signed payloads from older providers so their signatures keep verifying, but
-> it carries no meaning and is not used in any routing or trust decision.
-
-## Periodic challenge-response
-
-After registration, the coordinator sends an `attestation_challenge` message
-every `DefaultChallengeInterval` (5 minutes,
-`coordinator/api/provider.go:50-51`). The provider signs `nonce + timestamp`
-with its SE key and returns the signature plus a fresh status signature
-(`provider-swift/Sources/ProviderCore/Security/AttestationBuilder.swift:264-327`).
-
-The coordinator verifies:
-
-- Signature against the SE public key bound at registration.
-- That SIP is still enabled (sets `ChallengeVerifiedSIP`).
-- Runtime hash / template hash matches if a runtime manifest is configured.
-- Provider version is still above the minimum.
-
-A provider is only routable while its last successful challenge is within
-`challengeFreshnessMaxAge` (6 minutes,
-`coordinator/registry/scheduler.go:37`). Three consecutive failures mark the
-provider `untrusted` (`coordinator/registry/registry.go:62-64`), and six
-consecutive timeouts force a WebSocket reconnect
-(`coordinator/api/provider.go:69`).
-
-## Upgrading from `self_signed` to `hardware`
-
-A provider starts at `self_signed` after SE attestation verifies. It is
-promoted to `hardware` exclusively through **MDM verification** —
-`verifyProviderViaMDM` (`coordinator/api/provider.go`). The coordinator queries
-its MicroMDM server for the device's serial number and checks that MDM-reported
-SIP/Secure Boot match the provider's self-report. If they match, trust is
-upgraded to `hardware` and Apple Device Attestation (MDA) is requested.
-
-**Apple MDA** — `verifyAppleDeviceAttestation`
-(`coordinator/api/provider.go`) — supplies the informational Apple-genuineness
-proof after MDM succeeds: the coordinator asks Apple to sign a device
-attestation certificate, verifies the chain to the Apple Enterprise Attestation
-Root CA, and checks that the MDA serial matches the provider's serial. The MDA
-cert may also bind the SE public key via the `FreshnessCode` OID.
-
-(An ACME `device-attest-01` client-certificate path used to exist as a second
-trust leg; it was never wired end-to-end and was removed on 2026-07-03.
-Hardware trust is MDM SecurityInfo only.)
-
-The `hardware` verdict means the coordinator has an independent, Apple-signed
-proof that the provider is running on genuine Apple hardware with the claimed
-security posture.
-
-## APNs code-identity attestation (v0.6.0+)
-
-The strongest production gate is APNs code-identity attestation. It proves that
-the running binary is the genuine, Apple-team-provisioned Darkbloom provider.
-
-### How it works
-
-1. The provider registers with an APNs device token obtained by
-   `registerForRemoteNotifications()` in a logged-in macOS GUI session
-   (`provider-swift/Sources/darkbloom/ProviderAppKitHost.swift:61`).
-2. The coordinator generates a random nonce, encrypts it to the provider's
-   X25519 public key using the same NaCl Box path used for inference bodies,
-   and pushes it to the provider via APNs
-   (`coordinator/apns/attestor.go:172-227`).
-3. The provider receives the push, decrypts the nonce with its X25519 key, and
-   signs the nonce with its SE P-256 key
-   (`provider-swift/Sources/ProviderCore/ProviderLoop.swift:3116-3156`).
-4. The provider returns the decrypted nonce and signature in a
-   `code_attestation_response` WebSocket message
-   (`coordinator/protocol/messages.go:39-42`).
-5. The coordinator verifies nonce equality and the SE signature against the key
-   bound at registration (`coordinator/api/provider.go:596-604`).
-6. On success the connection is marked `CodeAttested`
-   (`coordinator/registry/registry.go:299`).
-
-Only the genuine hardened process can both receive the APNs push (Apple's
-enforcement) and decrypt the nonce (only the process holds the X25519 private
-key `K`). The SE signature binds that proof to the registration identity.
-
-### Requirements for code-identity attestation
-
-APNs registration only works when the provider process runs in a real macOS
-Aqua (GUI) session. Headless or login-window boxes cannot obtain a device token
-and therefore cannot attest. `AttestationReadiness`
-(`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`)
-evaluates the local state and reports:
-
-| Check | Why it matters |
-|-------|----------------|
-| Real console user logged in | `registerForRemoteNotifications()` requires an Aqua session. |
-| Automatic login enabled | The session self-recovers after reboot. |
-| Auto-logout-after-idle disabled | Logging out kills the GUI launchd agent and APNs registration. |
-| Sleep prevention | Deep idle sleep delays reconnect/attestation. |
-
-You can inspect the readiness verdict with `darkbloom doctor`.
-
-### Enforcement
-
-Code-identity attestation is rolled out with a grace deadline:
-
-- `codeAttestationConfigured` — true once the coordinator has APNs credentials.
-- `codeAttestationDeadline` — the instant after which un-attested providers are
-  fail-closed and removed from private-text routing
-  (`coordinator/registry/registry.go:666-684`).
-
-Before the deadline, the coordinator challenges providers and measures coverage
-but still routes un-attested ones. After the deadline, un-attested providers
-(including headless or pre-0.6.0 nodes) are derouted. Operators monitor coverage
-via `/v1/stats` (`coordinator/registry/registry.go:3585-3600`).
-
-The throttle (`coordinator/api/code_attest_throttle.go`) keeps APNs pushes
-within Apple's background budget: one challenge per connection, bounded retries,
-a 20-minute per-device push cooldown, and a 30-minute reuse window for the same
-SE key + version.
-
-## Public attestation endpoint
-
-Anyone can inspect privacy-redacted provider trust status:
+### 1. Enrol the Mac
 
 ```bash
-curl https://api.darkbloom.dev/v1/providers/attestation
+darkbloom enroll
 ```
 
-The response is built by `handleProviderAttestation`
-(`coordinator/api/provider.go:2471-2580`) and includes:
+The command downloads the enrolment profile from `POST /v1/enroll`, saves it as
+`Darkbloom-Enroll-<uuid>.mobileconfig`, registers it with System Settings and
+opens the Profiles pane (`EnrollCommand.swift`; options in
+[`cli-reference.md`](./cli-reference.md#darkbloom-enroll--darkbloom-unenroll)).
+"Already enrolled" means the Darkbloom profile is present and you can skip to
+step 3. What the profile contains and the read-only `AccessRights` it requests
+are in [`../architecture/security/enrollment.md#the-profile`](../architecture/security/enrollment.md#the-profile).
 
-| Field | Meaning |
-|-------|---------|
-| `trust_level` | `none`, `self_signed`, or `hardware` |
-| `status` | `online`, `offline`, `untrusted`, etc. |
-| `mdm_verified` | `true` for `hardware` trust via MDM |
-| `acme_verified` | Deprecated — always `false` (the ACME leg was removed 2026-07-03; kept on the wire because shipped provider builds decode it as required) |
-| `mda_verified` | `true` if Apple MDA chain verified |
-| `sip_enabled`, `secure_boot_enabled`, `authenticated_root_enabled` | Latest verified posture |
-| `se_public_key` | SE P-256 public key |
+### 2. Approve the profile
 
-The response deliberately omits hardware serials, UDIDs, and the raw MDA
-certificate chain. The coordinator verifies Apple's chain and serial binding
-internally; returning the leaf certificate would reveal the identifiers stored
-in its signed OIDs.
+In **System Settings → General → Device Management**, select *Darkbloom
+Provider Enrollment*, click **Install**, and authenticate. `mdmclient` then
+performs SCEP and the MDM check-in against the coordinator's MicroMDM
+([operator flow](../architecture/security/enrollment.md#operator-flow)). If the
+profile is shown as unverified, the coordinator served it unsigned; installing
+it is still safe because signing is install-time UX only
+([profile signing](../architecture/security/enrollment.md#profile-signing)).
 
-## Troubleshooting attestation
+### 3. Confirm your posture
+
+The coordinator grants `hardware` when Apple's MDM subsystem on your Mac
+reports SIP enabled and `SecureBootLevel` `full`, in agreement with your
+attestation blob. Check both before waiting on the coordinator:
+
+```bash
+csrutil status            # System Integrity Protection status: enabled.
+csrutil authenticated-root status
+```
+
+For Secure Boot, open **Startup Security Utility** in Recovery and confirm
+**Full Security**. Fixing either setting requires a reboot into Recovery, which
+also restarts the provider.
+
+### 4. Wait for the verification, or re-check
+
+Nothing more is needed from you: the coordinator's verification scheduler picks
+up the enrolled device, sends a `SecurityInfo` command, and grants on the first
+report that agrees with your blob. A transient outcome (device not found yet,
+not enrolled, report timed out) leaves your level unchanged and is retried on
+the scheduler's backoff; only a received report that **contradicts** your blob
+demotes you ([Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant),
+[failure modes](../architecture/security/attestation.md#failure-modes)).
+
+To re-check after fixing something, restart the provider so it re-registers:
+
+```bash
+darkbloom restart
+darkbloom status
+```
+
+### Keeping the level
+
+- **Stay online and awake.** Trust is per connection: a reconnect caps a
+  stored `hardware` back to `self_signed`, and the coordinator restores it
+  from durable device evidence on your first passing challenge only within the
+  trust-reuse bounds; otherwise a fresh `SecurityInfo` round-trip runs
+  (trust reuse in [Layer 3](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant)).
+  Missing the periodic challenge deroutes you; the cadence, timeouts and strike
+  counts are in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge).
+- **Keep the console session.** `code_attested` is earned through an APNs push
+  that only a logged-in Aqua session can receive; once the operator enables
+  enforcement, un-attested providers receive no private text
+  ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)).
+- **Keep the same identity.** The Secure Enclave signing key is persistent in
+  the keychain, so your SE public key survives restarts and is the identity the
+  trust-reuse and code-identity caches are keyed on
+  ([`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md)).
+  If the keychain path fails — for example a binary without the
+  `keychain-access-groups` entitlement — `ProviderLoop.swift` falls back to an
+  ephemeral key with a warning, you appear as a brand-new identity, and you
+  re-earn every flag from scratch.
+- **Run a released build.** Binary, metallib and model-hash drift against
+  registration untrusts you; `darkbloom update` returns you to a build in the
+  release record ([`cli-reference.md`](./cli-reference.md#darkbloom-update)).
+
+## Verify
+
+`darkbloom status` prints the last `trust_status` the coordinator sent as
+`Trust: <level> / <status>` (`StatusCommand.swift`). What you want to see:
+
+| `Trust:` line | Meaning |
+|---|---|
+| `hardware / online` with reason `MDM verification passed` or `MDM verification passed (late SecurityInfo)` | A fresh `SecurityInfo` grant on this connection |
+| `hardware / online` with a trust-reuse reason (`same_binary`, `continuity`, `approved_release_transition`, `continuity_release_transition`) | Restored from durable device evidence after a reconnect |
+| `self_signed / online`, reason `SE attestation verified, awaiting MDM verification` | Enrolment not complete or the report has not arrived yet — see Troubleshooting |
+| any level `/ untrusted` with a failure reason | The coordinator stopped routing to you — see Troubleshooting |
+
+The reason strings are listed in
+[trust status messages](../architecture/security/attestation.md#trust-status-messages-to-providers).
+
+`darkbloom doctor` shows the local side: MDM enrolment, SIP, the console-session
+checks above, and (with `--support`) the coordinator URL and MDM state
+([`troubleshooting.md#doctor-checks`](./troubleshooting.md#doctor-checks)).
+
+Anyone can read your public verdict — `trust_level`, `mdm_verified`,
+`mda_verified` and the verified posture fields, never your serial, UDID, APNs
+token or `code_attested` — from `GET /v1/providers/attestation`; the fields are
+explained in [`../consumer/verification.md#public-attestation-endpoint`](../consumer/verification.md#public-attestation-endpoint).
+
+What `hardware` does not prove: it says nothing about *which* binary holds your
+key (that is `code_attested`) or *which* Apple device (that is `mda_verified`;
+Apple issues a fresh attestation only about once per device per week, so the
+flag can lag the level — [Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
+Neither flag changes the level. Single-node inference is the supported security
+boundary: multi-node RDMA over Thunderbolt bypasses the in-process memory
+protections and is not trusted. The process defences behind the privacy
+capabilities the routing gate requires, and their known limits, are recorded in
+[`../threat-model.yaml`](../threat-model.yaml) and summarised in
+[`../architecture/components/provider.md#process-boundaries`](../architecture/components/provider.md#process-boundaries);
+what the provider can and cannot see is in
+[`../architecture/security/encryption.md#what-each-party-can-observe`](../architecture/security/encryption.md#what-each-party-can-observe).
+
+## Troubleshooting
 
 | Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| `trust_level: self_signed` | MDM verification not completed | Run `darkbloom enroll` and install the profile; approve MDM in System Settings |
-| `mdm_verified: false` | Device not enrolled or MDM check timed out | Confirm enrollment in System Settings → Device Management |
-| `mda_verified: false` | MDA command failed or freshness expired | Wait for next MDM/MDA retry; re-enroll if persistent |
-| Code-attest never passes | No Aqua session / no APNs token | Log in at the console, enable automatic login, disable auto-logout |
-| `ChallengeVerifiedSIP: false` | SIP disabled or challenge failing | Re-enable SIP in Recovery; check `darkbloom doctor` |
-| Binary hash drift warning | Running a build not in the coordinator's release record | Run `darkbloom update` |
+|---|---|---|
+| `trust_level: self_signed` persists | MDM verification not completed | `darkbloom enroll`, install the profile, approve MDM in System Settings → Device Management; the scheduler retries on its own |
+| `mdm_verified: false` | Not enrolled, or `SecurityInfo` timed out | Confirm enrolment; wait for the next retry on the [scheduler backoff](../architecture/security/attestation.md#layer-3--mdm-securityinfo-the-hardware-grant) |
+| `mda_verified: false` while `hardware` | Apple has not issued a fresh attestation yet or the chain did not bind your SE key | Wait; informational only, routing is unaffected |
+| `trust_status` reason `posture-mismatch` / status `untrusted` | MDM says SIP or Secure Boot differs from your blob | Fix the posture in Recovery (`csrutil enable`, Full Security), reboot, restart the provider |
+| `code_attested` never passes | No Aqua session / no APNs token / pushes throttled | Log in at the console, enable automatic login, disable auto-logout; check `darkbloom doctor`; a reconnect soon after a proof uses the resume path instead of a push ([Flag — APNs code identity](../architecture/security/attestation.md#flag--apns-code-identity)) |
+| Derouted after missed challenges | Sleep or network blip | Recovers on the next passing challenge; prevent sleep |
+| Binary hash drift warning | Running a build not in the coordinator's release record | `darkbloom update` |
+| `darkbloom enroll` says the Mac is managed by another MDM | Another MDM profile is installed | Remove it (System Settings → General → Device Management) or use another Mac; `hardware` is unavailable while it is present |
+| Every flag lost after an update or reinstall | The Secure Enclave key fell back to ephemeral (warning in `darkbloom logs`) | Reinstall a signed release build so the `keychain-access-groups` entitlement is present |
 
-For local diagnostics, inspect `darkbloom doctor` and `darkbloom logs --last 1h`.
-Automatic and manual provider-log uploads are disabled for inference privacy.
+For local diagnostics use `darkbloom doctor` and `darkbloom logs --last 1h`.
+Provider logs are never uploaded automatically; `darkbloom report` uploads a
+unified-log excerpt to `POST /v1/provider/log-report` only when you run it
+(`--dry-run` prints it first; [`cli-reference.md`](./cli-reference.md#darkbloom-report)).
+
+## Related
+
+- [`../architecture/security/attestation.md`](../architecture/security/attestation.md) — trust levels, the three layers, both flags, the routing gate, invariants, and code map.
+- [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) — the MDM profile, operator flow, and webhook.
+- [`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md) — how the SE key, `K`, the APNs token, and your account are bound.
+- [`../architecture/security/encryption.md`](../architecture/security/encryption.md) — the three NaCl Box hops and the privacy statement.
+- [`../consumer/verification.md`](../consumer/verification.md) — how consumers read your verdict.
+- [`troubleshooting.md`](./troubleshooting.md) — doctor checks and symptom → fix rows.
+- [`../design/apns-code-attestation.md`](../design/apns-code-attestation.md) — design record for code identity.

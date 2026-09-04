@@ -1,40 +1,25 @@
-flowchart TB
-    subgraph macOS["macOS launch-time enforcement"]
-        AMFI["AppleMobileFileIntegrity.kext<br/>+ amfid"]
-        CS["Code signature: our Developer ID"]
-        APP["App ID: io.darkbloom.provider"]
-        ENT["Entitlement: aps-environment"]
-        PROV["Apple-signed provisioning profile"]
+%% APNs code-identity attestation as built at c5c404fca. Source of truth for
+%% apns-code-identity.svg and .png; re-render after editing:
+%%   mmdc -i apns-code-identity.mmd -o apns-code-identity.svg
+%%   mmdc -i apns-code-identity.mmd -o apns-code-identity.png -s 2
+%% Symbols: coordinator/api/provider_codeattest.go, coordinator/api/code_attest_throttle.go,
+%% coordinator/apns/attestor.go, coordinator/registry/registry.go.
+sequenceDiagram
+    participant P as Provider (signed app, Aqua session)
+    participant K as Coordinator
+    participant A as Apple APNs
+
+    P->>K: register {public_key K, apns_device_token, apns_environment, attestation}
+    Note over K: codeAttestLoop waits for this connection's first signed attestation_challenge
+    alt durable proof for (SE key, version, APNs token, K) younger than reuseWindow = 30m,<br/>or an approved cross-version release transition
+        K->>P: code_attestation_resume_challenge {code_challenge = nonce sealed to K}
+        P->>K: code_attestation_response {nonce, signature} within resumeTimeout = 30s
+    else push (maxAttempts = 3 per loop)
+        K->>K: throttle: backgroundPushCooldown 20m / alertPushCooldown 75s per device,<br/>retrySpacing 15s + jitter [0, 15s), budgetClearCooldown 20m
+        K->>A: POST /3/device/{token}<br/>{aps: {content-available: 1}, code_challenge: {ephemeral_public_key, ciphertext}}<br/>apns-topic io.darkbloom.provider · apns-push-type background · apns-priority 5<br/>apns-expiration now + 300s · JWT ES256 cached jwtMaxAge = 50m
+        A->>P: delivery to the Team-ID-signed bundle with aps-environment
+        P->>K: code_attestation_response {nonce, signature}<br/>nonce accepted for challengeValidity = 300s
     end
-
-    subgraph flow["APNs code-identity challenge"]
-        P["Provider genuine binary"]
-        A["Apple APNs"]
-        C["Coordinator"]
-    end
-
-    subgraph caveat["What APNs does NOT prove"]
-        MDM["MDM + MDA still required for:<br/>SIP, Secure Boot, hardware genuineness"]
-    end
-
-    CS --> AMFI
-    APP --> AMFI
-    ENT --> AMFI
-    PROV --> AMFI
-    AMFI --> P
-
-    P --> C
-    C --> C2["Encrypt nonce n to provider X25519 K"]
-    C2 --> A
-    A --> P
-    P --> P2["Decrypt n, sign with SE P-256"]
-    P2 --> C
-    C --> V["CodeAttested = true"]
-
-    V --> G["Gates private text routing"]
-    V --> MDM
-
-    style AMFI fill:#ffcccc
-    style P fill:#ccffcc
-    style V fill:#ccffcc
-    style MDM fill:#fff9c4
+    Note over K: handleCodeAttestationResponse: nonce matches the challenge recorded for<br/>this SE key + APNs token + K — ECDSA verified with the registration SE key<br/>GrantProcessCodeAttested refuses if K or the token rotated
+    K->>K: persistCodeAttestation (se_pubkey_hash, apns_token_hash, process_key, attested_at)
+    Note over K: enforcement: APNS_ENFORCE_AFTER (RFC 3339) reached ∧ attestor configured<br/>→ providerSupportsPrivateTextLocked requires CodeAttested

@@ -1,530 +1,159 @@
-# Retired Client Telemetry Compatibility Schema
+# Telemetry event schema
 
-This document records the inactive client-telemetry wire format retained for
-source and mixed-version compatibility. The coordinator and console endpoints
-return `410 Gone` before reading a body, while the production Swift and
-TypeScript facades drop events in process. Nothing on this page authorizes
-provider, app, or browser telemetry transmission.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-Canonical compatibility definitions are in
-[`coordinator/protocol/telemetry.go`](../../coordinator/protocol/telemetry.go),
-with Swift and TypeScript mirrors in
-[`TelemetryEvent.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift)
-and [`telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts).
-The disabled coordinator route and handler are
-[`server.go`](../../coordinator/api/server.go#L1919-L1922) and
-[`handleTelemetryIngest`](../../coordinator/api/telemetry_handlers.go#L261-L269);
-the disabled clients are
-[`TelemetryClient.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
-and [`telemetry.ts`](../../console-ui/src/lib/telemetry.ts#L1-L26).
+The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
+TypeScript), the closed enums it carries, the field allowlist, and the tests
+that keep the mirrors identical. Only one producer of this shape is live today:
+the coordinator's own emitter, which forwards to Datadog. Client ingestion is
+switched off — `POST /v1/telemetry/events` answers `telemetry_ingest_disabled`
+([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)) without reading
+the body — but the allowlist still governs what the Swift and console filters
+let through and what the coordinator emits about itself. What each live datum
+is and where it goes: [`telemetry-inventory.md`](telemetry-inventory.md);
+design and failure modes: [`../architecture/telemetry.md`](../architecture/telemetry.md).
 
-## Profiler wire fields are not telemetry events
+## Mirrors
 
-The system profiler's `profile` object (on `inference_complete` /
-`inference_error`) and the `telemetry` sub-objects on the heartbeat's
-`backend_capacity` and `backend_capacity.slots[]` are **protocol fields**, not
-`TelemetryEvent` records. They ride the existing provider WebSocket messages,
-never `POST /v1/telemetry/events`, and are governed by a two-way Go/Swift
-protocol sync ([`coordinator/protocol/profile.go`](../../coordinator/protocol/profile.go)
-↔ [`InferenceProfile.swift`](../../provider-swift/Sources/ProviderCore/Protocol/InferenceProfile.swift),
-enforced by a shared fixture), not by the three-way Go/Swift/TypeScript
-allowlist on this page. Nothing below applies to them; see
-[`docs/architecture/system-profiler.md`](../architecture/system-profiler.md) §6
-and the [protocol reference](protocol-messages.md#system-profiler-objects).
+| Mirror | File | Types | Role today |
+|---|---|---|---|
+| Go (canon) | `coordinator/protocol/telemetry.go` | `TelemetryEvent`, `TelemetryBatch`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind` | shape and enums |
+| Go allowlist | `coordinator/api/telemetry_handlers.go` | `telemetryFieldAllowlist`, `sanitizeTelemetryEvent`, `handleTelemetryIngest` | allowlist of record; the sanitizer is retained but no route reaches it |
+| Go emitter | `coordinator/telemetry/emitter.go` | `Emitter.Emit`, `Event` | the only live producer; source forced to `coordinator` |
+| Go store mirror | `coordinator/store/interface.go` | `TelemetryEventRecord` | `TelemetryEvent` + `received_at`; nothing persists it — Datadog is the sole sink |
+| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TelemetryFieldFilter` | client-side pre-filter; `TelemetryClient.swift` is a no-op facade (`emit` discards, `configure`/`shutdown` do nothing) |
+| TypeScript | `console-ui/src/lib/telemetry-types.ts` | `TelemetryEvent`, `TelemetrySource`, `TelemetrySeverity`, `TelemetryKind`, `TELEMETRY_ALLOWED_FIELDS` | console filter types |
 
-The [one key, one meaning](#adding-a-field-one-key-one-meaning) rule still
-holds across both channels:
+## Event fields
 
-* `eval_in_flight_ms` on the heartbeat is now produced by the provider from
-  MLX `EvalProbe.currentEvalElapsedMs` (the v2 bridge previously left the
-  slot-level field at `0`). The pre-existing `backend_capacity.slots[].eval_in_flight_ms`
-  and the new `slots[].telemetry.eval_in_flight_ms` are the same read with the
-  documented meaning: milliseconds the currently running blocking `eval` has
-  held the process-global eval lock, `0` when none is in flight.
-* `slots[].telemetry.kv_bytes_in_use` / `kv_bytes_capacity` are raw bytes:
-  `CBv2CapacitySnapshot.kvBytesInUse`, and `kvBytesCapacity` (the admission
-  ledger) bounded by `kvBytesBackendCapacity` when that is known. They are not
-  the retired [`pool_utilization`](#paged-kv-pool) ratio, whose denominator is
-  the physical `kvBytesBackendCapacity`. Derive ratios downstream from the raw
-  terms; do not add one to the wire.
-* The `fleet_snapshots` capability columns `provider_version`, `model_vision`
-  and `template_render_ok` add **no** wire key: they are coordinator-side
-  copies of the register message's `version` (folded by
-  `registry.ProviderVersionFold` to a bounded semver or `invalid`) and of the
-  slot model's `models[].is_vision` / `models[].template_render_ok`, sampled
-  once a minute so `routingsim` can replay the tools version floor, the vision
-  gate and the template-render gate (see
-  [`system-profiler.md`](../architecture/system-profiler.md) §5.2). Their
-  meaning is the register message's, unchanged.
+| JSON key | Go | Swift | TS | Presence | Notes |
+|---|---|---|---|---|---|
+| `id` | `string` | `String` | `string` | req | UUIDv4 minted by the producer; the sanitizer re-mints anything `uuid.Parse` rejects |
+| `timestamp` | `time.Time` (RFC 3339) | `String` (ISO 8601) | `string` | req | producer wall clock; the sanitizer clamps to `[now − 7 d, now + 5 min]`, else `now` |
+| `source` | `TelemetrySource` | `TelemetrySource` | union | req | see enums; the emitter overwrites it with `coordinator` |
+| `severity` | `TelemetrySeverity` | `TelemetrySeverity` | union | req | unknown → `info` |
+| `kind` | `TelemetryKind` | `TelemetryKind` | union | req | unknown → `custom` |
+| `version` | `string` | `String?` | `string?` | opt | component version, ≤ 64 chars after sanitising |
+| `machine_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars |
+| `account_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars; server-stamped from auth when a route existed |
+| `request_id` | `string` | `String?` | `string?` | opt | ≤ 128 chars; correlation with an inference job |
+| `session_id` | `string` | `String?` | `string?` | opt | ≤ 64 chars; per-process UUID (`TelemetrySession.id` in Swift, `telemetry.SessionID` in Go) |
+| `message` | `string` | `String` | `string` | req | developer-authored; empty → event rejected; > `telemetryMaxMessage = 4096` bytes → truncated with `…` |
+| `fields` | `map[string]any` | `[String: AnyCodableValue]?` | `Record<string, unknown>?` | opt | allowlist-filtered; serialised size > `telemetryMaxFieldsKB = 8 KiB` → `{}` |
+| `stack` | `string` | `String?` | `string?` | opt | > `telemetryMaxStack = 32 KiB` → truncated with `… [truncated]` |
+| `received_at` | `time.Time` | — | — | store mirror only | `TelemetryEventRecord` |
+
+Casing and omission rules: every key is snake_case and identical across the
+three mirrors (`TelemetrySymmetryTests.swift` pins the exact encoded string).
+Go optional fields are `omitempty`; Swift uses `encodeIfPresent`; TS marks them
+`?`. The six required keys are always present in every mirror. `TelemetryBatch`
+is `{"events": [TelemetryEvent, …]}`, at most `telemetryMaxBatch = 100` events
+in `telemetryMaxBodyBytes = 64 KiB`.
+
+## Enums
+
+Every raw value is lowercase snake_case. Swift cases are camelCase with an
+explicit raw value where the two differ; TS uses string-literal unions.
+
+| Enum | Values | Fallback |
+|---|---|---|
+| `source` | `coordinator`, `provider`, `app`, `console`, `bridge` | `custom` (`TelemetrySourceCustomValue`) for anything outside `KnownSources()`; authenticated providers were always rewritten to `provider` |
+| `severity` | `debug`, `info`, `warn`, `error`, `fatal` | `info` |
+| `kind` | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `oom`, `engine_health`, `log`, `custom` | `custom` |
+
+The emitter maps severity to `slog` level: `fatal`/`error` → `Error`, `warn` →
+`Warn`, `debug` → `Debug`, else `Info`.
+
+## Field allowlist
+
+`telemetryFieldAllowlist` (`coordinator/api/telemetry_handlers.go`) has 90 keys.
+`sanitizeTelemetryEvent` drops any other key silently. The Swift
+`TelemetryFieldFilter.allowed` set and the TS `TELEMETRY_ALLOWED_FIELDS` set are
+mirrors of it, minus the [known gaps](#known-mirror-gaps). Values are bounded
+enums, counters, byte counts and durations; prompt, completion, media and cache
+content are never admitted.
+
+| Group | Keys |
+|---|---|
+| Generic | `component`, `operation`, `duration_ms`, `attempt`, `endpoint`, `status_code`, `error_class`, `error`, `target` |
+| Provider / backend | `model`, `backend`, `exit_code`, `signal`, `hardware_chip`, `memory_gb`, `macos_version` |
+| Boot-security posture | `boot_macos_major`, `boot_sip_status` |
+| Coordinator | `handler`, `provider_id`, `trust_level`, `queue_depth`, `reason`, `runtime_component` |
+| Connectivity | `reconnect_count`, `last_error`, `ws_state`, `network_reachable`, `coordinator_url` |
+| Billing (booleans/enums only) | `billing_method`, `payment_failed` |
+| OOM / memory pressure | `detect_source`, `peak_memory_bytes`, `report`, `pressure`, `available_bytes`, `mlx_active_bytes`, `memory_pressure`, `in_flight` |
+| Engine health / first-token wedge | `steps_executed`, `admits`, `first_tokens_emitted`, `consecutive_admits_without_first_token`, `seconds_since_last_step`, `seconds_since_last_first_token`, `num_running`, `wedge_suspected` |
+| Eval / idle-clear / prefill sampling | `eval_in_flight_ms`, `longest_eval_ms`, `evals_completed`, `idle_clear_in_flight_ms`, `idle_clears_completed`, `prefill_samples_accepted`, `prefill_samples_dropped_floor`, `prefill_samples_dropped_ceiling`, `last_prefill_sample_tps`, `observed_prefill_tps_ewma` |
+| KV-budget sustained-rejection audit | `streak_seconds`, `reservation_count`, `reserved_bytes`, `mlx_cache_bytes`, `system_available_bytes`, `reservations`, `request_id`, `age_seconds` |
+| Media through engine_v2 | `multimodal`, `media_kind` (`image`/`video`/`mixed`) |
+| Exact-prefix replay | `prefix_reuse_strategy`, `prefix_matched_tokens`, `prefix_replay_tokens`, `prefix_saved_tokens`, `prefix_boundary_splits`, `prefix_construction_failure`, `prefix_capacity_refusal`, `prefix_cold_fallback` |
+| KV-backend discriminator | `kv_backend` (`paged`/`contiguous`, same key as `BackendSlotCapacity.KVBackend` on the heartbeat), `prefix_reuse_backend` (`contiguous_unquantized`/`contiguous_quantized`/`paged_fp16`/`unknown`) |
+| Paged KV pool | `pool_utilization` (occupancy ratio), `pool_bytes`, `pool_deferred_growth_bytes`, `pool_stranded_bytes` (raw bytes; `pages_pinned` and `cow_events` are deliberately absent because neither mechanism exists) |
+| Multi-token prediction | `mtp_enabled`, `mtp_active`, `mtp_inactive_reason` (`MTPFallbackReason` values plus `inert_kv_unsupported`), `mtp_acceptance_rate`, `mtp_proposed_tokens`, `mtp_accepted_tokens` |
+| Console UI context | `url`, `user_agent`, `route` |
+
+### Known mirror gaps
+
+`telemetryKnownMirrorGaps` (`coordinator/api/telemetry_allowlist_parity_test.go`)
+lists the drift that ships. Each entry is a client-side completeness gap, not a
+wire incompatibility: Go accepts the key, the named client never sends it.
+
+| Key | Missing from | Why |
+|---|---|---|
+| `network_reachable`, `coordinator_url` | Swift, TS | coordinator-side connectivity bookkeeping only |
+| `url`, `user_agent`, `route` | Swift | browser context; TS has them |
+
+### Adding a field: one key, one meaning
+
+Add the key to all three mirrors in one change, with its producer. A key with
+no producer reads as a legitimate zero on a dashboard. Do not add a second
+ratio under a name that collides with an existing one (`pool_utilization` is
+occupancy; `pool_bytes` is emitted so share-of-pool stays derivable). Retiring
+a gap means deleting its `telemetryKnownMirrorGaps` entry and adding the key to
+the mirror in the same change; `TestTelemetryAllowlistKnownGapsAreStillReal`
+fails on stale entries.
 
 ## Ingestion endpoint
 
-```
-POST /v1/telemetry/events
-HTTP/1.1 410 Gone
-```
-
-Ingestion is disabled. The coordinator and console proxy reject requests before
-reading or forwarding their bodies; production Swift and TypeScript clients
-drop events before disk or network I/O. The remaining wire definitions are
-historical compatibility types, not an active data path.
-
-## Historical compatibility material
-
-Everything below this heading describes retained, unreachable client-ingestion
-machinery. Terms such as “emits,” “accepted,” “server-enforced,” “coerced,” and
-“allowed” mean “would be processed this way by the retired parser if ingestion
-were deliberately re-enabled.” Producer call sites may still construct values
-and pass them to a no-op facade; they do not persist or transmit them. The
-allowlists and parser limits are not active confidentiality controls.
-
-## Batch envelope
-
-Go: [`TelemetryBatch`](../../coordinator/protocol/telemetry.go); Swift: `TelemetryBatch`; TS: `TelemetryEvent[]` wrapped as `{ events: ... }`.
-
-| Field | Type | Notes |
+| Route | Handler | Behaviour |
 |---|---|---|
-| `events` | array | [`TelemetryEvent`](#telemetryevent) records |
+| `POST /v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | Always the `telemetry_ingest_disabled` error (status and route-table entry: [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)), without reading, decoding, logging or forwarding the request body. The route stays registered so old providers get a terminal answer; `TelemetryClient.swift` no longer posts at all |
 
-Historical parser caps (inactive because the 410 handler never reads a body):
+Retained but unreachable from any route: `sanitizeTelemetryEvent`,
+`telemetryLimiter` (`newTelemetryLimiter`: burst 200 / 100 events per minute per
+machine or account, burst 30 / 10 per minute anonymous), and the batch and body
+limits above. `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody` pins
+the `telemetry_ingest_disabled` response.
 
-| Limit | Value |
+## Coordinator emitter
+
+`Emitter.Emit` (`coordinator/telemetry/emitter.go`) is the one live path that
+builds this shape. It does not run the allowlist; every call site passes
+allowlisted keys by construction. Each event goes to three places in order:
+
+| Sink | What |
 |---|---|
-| Max body size | 64 KB |
-| Max events per batch | 100 |
-| Max message length | 4,096 chars |
-| Max stack length | 32 KB |
-| Max fields JSON size | 8 KB |
-| Authenticated rate | 200 burst, 100 events/min refill |
-| Anonymous rate | 30 burst, 10 events/min refill |
+| `slog` | `telemetry: <message>` at the mapped level, with `kind`, `request_id` (when set) and every field as attributes |
+| in-process registry | `telemetry_events_total{source, severity, kind}` via `Metrics.IncCounterEvent` (`coordinator/api/metrics.go`), readable at `GET /v1/admin/metrics` |
+| Datadog Logs API | `datadog.Client.ForwardLog` (`coordinator/datadog/datadog.go`) → `https://http-intake.logs.<site>/api/v2/logs`, only when `DD_API_KEY` is set |
 
-See the retained
-[`telemetryMax*` constants](../../coordinator/api/telemetry_handlers.go#L31-L36)
-and [`newTelemetryLimiter`](../../coordinator/api/telemetry_handlers.go#L211-L218).
+Call sites (`s.emit`, `s.emitRequest`, `s.emitPanic` in `coordinator/api/server.go`)
+and their fields are enumerated in
+[`telemetry-inventory.md`](telemetry-inventory.md#coordinator-emitted-events).
 
-## `TelemetryEvent`
+## Tests that pin the mirrors
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `id` | string | yes | UUIDv4, client-supplied |
-| `timestamp` | string | yes | ISO 8601 (RFC 3339 with fractional seconds in Swift) |
-| `source` | string | yes | `coordinator`, `provider`, `app`, `console`, `bridge` |
-| `severity` | string | yes | `debug`, `info`, `warn`, `error`, `fatal` |
-| `kind` | string | yes | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `log`, `custom` |
-| `version` | string | no | Component version |
-| `machine_id` | string | no | Stable per-machine identifier |
-| `account_id` | string | no | Server-stamped from auth when present |
-| `request_id` | string | no | Correlation id |
-| `session_id` | string | no | Per-process UUID |
-| `message` | string | yes | Human-readable developer string |
-| `fields` | object | no | Allowlisted structured fields |
-| `stack` | string | no | Backtrace / formatted stack |
-
-The retained sanitizer would coerce unknown `source`, `severity`, and `kind`
-values to `custom` / `info` / `custom` and clamp timestamps to
-`[now-7d, now+5min]`. It is unreachable from the active 410 route. See
-[`sanitizeTelemetryEvent`](../../coordinator/api/telemetry_handlers.go).
-
-## Historical field allowlist
-
-If the retired parser were re-enabled, it would silently drop any `fields` key
-not in this set. The mirrors remain synchronized for compatibility tests, not
-because production clients send these events.
-
-| Field | Allowed in |
-|---|---|
-| `component` | Go, Swift, TS |
-| `operation` | Go, Swift, TS |
-| `duration_ms` | Go, Swift, TS |
-| `attempt` | Go, Swift, TS |
-| `endpoint` | Go, Swift, TS |
-| `status_code` | Go, Swift, TS |
-| `error_class` | Go, Swift, TS |
-| `error` | Go, Swift, TS |
-| `target` | Go, Swift, TS |
-| `model` | Go, Swift, TS |
-| `backend` | Go, Swift, TS |
-| `exit_code` | Go, Swift, TS |
-| `signal` | Go, Swift, TS |
-| `hardware_chip` | Go, Swift, TS |
-| `memory_gb` | Go, Swift, TS |
-| `macos_version` | Go, Swift, TS |
-| `handler` | Go, Swift, TS |
-| `provider_id` | Go, Swift, TS |
-| `trust_level` | Go, Swift, TS |
-| `queue_depth` | Go, Swift, TS |
-| `reason` | Go, Swift, TS |
-| `runtime_component` | Go, Swift, TS |
-| `reconnect_count` | Go, Swift, TS |
-| `last_error` | Go, Swift, TS |
-| `ws_state` | Go, Swift, TS |
-| `network_reachable` | Go only |
-| `coordinator_url` | Go only |
-| `billing_method` | Go, Swift, TS |
-| `payment_failed` | Go, Swift, TS |
-| `url` | Go, TS |
-| `user_agent` | Go, TS |
-| `route` | Go, TS |
-| `kv_backend` | Go, Swift, TS |
-| `prefix_reuse_backend` | Go, Swift, TS |
-| `pages_pinned` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
-| `cow_events` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
-| `pool_utilization` | Go, Swift, TS |
-| `pool_bytes` | Go, Swift, TS |
-| `pool_deferred_growth_bytes` | Go, Swift, TS |
-| `pool_stranded_bytes` | Go, Swift, TS |
-| `mtp_enabled` | Go, Swift, TS |
-| `mtp_active` | Go, Swift, TS |
-| `mtp_inactive_reason` | Go, Swift, TS |
-| `mtp_acceptance_rate` | Go, Swift, TS |
-| `mtp_proposed_tokens` | Go, Swift, TS |
-| `mtp_accepted_tokens` | Go, Swift, TS |
-
-This table is not exhaustive: the OOM / memory-pressure, engine-health (first-token
-wedge), eval-in-flight, KV-budget audit, media, and exact-prefix-replay cohorts are
-allowlisted in all three mirrors but have never been transcribed here. Absence from
-this table does **not** mean a key is rejected — the Go map is the authority, and
-`TestTelemetryAllowlistThreeWayParity` is what keeps the three mirrors honest.
-
-**Important:** the retained schema still contains free-form `message`, `stack`,
-and field values. A field-name allowlist does not make those values
-confidentiality-safe; this is why ingestion is disabled before body read.
-
-Historical server allowlist:
-[`telemetry_handlers.go:44-190`](../../coordinator/api/telemetry_handlers.go#L44-L190).
-Swift compatibility filter:
-[`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift).
-TypeScript compatibility set:
-[`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts).
-
-## Discrepancies
-
-- The TypeScript allowlist in [`console-ui/src/lib/telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts) currently omits `network_reachable` and `coordinator_url`, which the Go server accepts. Swift's client-side filter also omits `network_reachable`, `coordinator_url`, `url`, `user_agent`, and `route`. Unknown keys are dropped server-side without error, so this is a client-side completeness gap, not a wire incompatibility.
-
-## Adding a field: one key, one meaning
-
-**One key, one meaning. Before adding a metric, grep the allowlist for the
-concept, not just the name. Prefer raw quantities to ratios at the emission
-point — ratios clamp, hide their denominator, and collide semantically far
-more easily than counts do.**
-
-This has now been paid for twice. `backend` carried three unrelated value
-vocabularies across its producer sites (below), and within a single wave of
-fixing that, `pool_utilization` acquired two producers meaning two different
-things — pool occupancy and a slot's grant-as-fraction-of-pool. Both collisions
-passed every review that checked *names*, because both were spelled correctly.
-Neither would have survived a reviewer asking "is this concept already emitted
-under some other spelling?"
-
-Three corollaries worth stating, since each one is what actually went wrong:
-
-* **Distinct `operation` values do not partition a field.** A dashboard grouping
-  by `kv_backend` or `model` sees every event that carries the key, whatever
-  operation produced it. If two operations disagree about what a key means, the
-  aggregate is noise.
-* **A near-miss name is not a fix.** Two keys both ending `_utilization`, both on
-  paged slots, is the same trap with an extra word. Rename the *concept* or emit
-  the raw terms; do not park a second meaning next to the first in a dropdown.
-* **Raw quantities compose; ratios do not.** A consumer can derive a ratio from
-  numerator and denominator, then also sum, diff and threshold them. It cannot
-  recover either term from a ratio — and a clamped ratio (`min(a, b) / b`) throws
-  away exactly the overflow case the metric existed to expose.
-
-A new key must land in **all three** allowlist mirrors. `TelemetryFieldFilter`
-drops unmirrored keys silently, so a half-applied rename deletes the value rather
-than moving it, and the producer still looks healthy.
-
-**The tempting reuse is the dangerous one.** When the paged re-slice residue
-needed byte fields, every existing byte key in the allowlist belonged to another
-cohort: `peak_memory_bytes`, `available_bytes`, `mlx_active_bytes`,
-`mlx_cache_bytes` and `system_available_bytes` are OOM / memory-snapshot terms,
-and `reserved_bytes` / `reservations` are the KV budget's outstanding
-reservations. `reserved_bytes` is the one that looks right — a paged pool does
-reserve bytes — and reusing it would have been the same collision one level down:
-two unrelated reservation concepts under one key, discovered later by whoever
-summed them. Three new keys (`pool_bytes`, `pool_deferred_growth_bytes`,
-`pool_stranded_bytes`) and a three-mirror change was the cheaper answer, because
-a metric you cannot interpret is worse than a metric that cost three file edits.
-
-## `backend` key semantics
-
-`backend` was overloaded. Across producer sites it carried **three unrelated value
-vocabularies**, so any `group by backend` dashboard mis-buckets:
-
-| Meaning | Values | Producer sites |
+| Test | File | Pins |
 |---|---|---|
-| Engine identity | `engine_v2` | `EngineV2Bridge+Capacity.swift:220`, `EngineV2Bridge.swift:1207,1231`, `EngineV2Config.swift:215,255`, `EngineV2VisionPrefill.swift:468`, `MultiModelBatchSchedulerEngine.swift:854` |
-| Process runtime identity | `mlx-swift` | `darkbloom/StartCommand+Modes.swift:209` |
-| KV storage kind | `paged`, `contiguous` | `EngineV2Bridge+PrefixCache.swift:197,252` |
-| Prefix-reuse row identity | `contiguousUnquantized`, `contiguousQuantized`, `pagedFP16`, `unknown` | `EngineV2SlotFactory.swift:479` |
+| `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
+| `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
+| `TestTelemetryAllowlistThreeWayParity`, `TestTelemetryAllowlistKnownGapsAreStillReal`, `TestTelemetryAllowlistDiffDetectsNewDrift` | `coordinator/api/telemetry_allowlist_parity_test.go` | Go ↔ Swift ↔ TS allowlist sets, parsed from source; known gaps stay real |
+| `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the `telemetry_ingest_disabled` response, allowlist membership, message truncation |
+| `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/` | the facade stays inert |
 
-**Ruling.** `backend` keeps the majority meaning — the engine or process runtime
-executing inference (`engine_v2`, `mlx-swift`). It is also the meaning that matches
-`RegisterMessage.backend` on the wire, so telemetry and registration stay joinable.
-The other two axes move to their own keys:
+## Related
 
-* `kv_backend` — the KV storage kind, `paged` | `contiguous`. This is **not a new
-  name**: it is deliberately the same key and the same two-value vocabulary as
-  [`BackendSlotCapacity.KVBackend`](../../coordinator/protocol/messages.go) on the
-  heartbeat wire (`messages.go:303`) and `kvBackend` in
-  [`Types.swift:518`](../../provider-swift/Sources/ProviderCore/Protocol/Types.swift).
-  Telemetry and per-slot capacity therefore group identically, which is the whole
-  point of the v0.8.0 rollout dashboard.
-* `prefix_reuse_backend` — the finer `CBv2PrefixReuseBackend` row identity. It gets
-  its own key rather than being folded into `kv_backend` because
-  `contiguousQuantized` vs `contiguousUnquantized` is a real distinction that
-  `contiguous` cannot express; collapsing it would be a silent data loss.
-
-**Producer sites — landed.** All four now emit the split keys:
-
-1. `EngineV2Bridge+PrefixCache.swift` (`prefix_cache_replay`, both the cold-fallback
-   and the resolved-outcome event) — `backend` is `engine_v2`, and the KV storage
-   kind moved to `kv_backend`.
-2. `EngineV2SlotFactory.swift` (`prefix_cache_construction`) — `backend` is
-   `engine_v2`, `kv_backend` carries the resolved `EngineV2KVBackendKind`, and the
-   `CBv2PrefixReuseBackend` row identity moved to `prefix_reuse_backend`.
-   **Correction to an earlier note here:** those raw values are *not* camelCase.
-   `PrefixReusePlan.swift:14-17` already spells them `contiguous_unquantized`,
-   `contiguous_quantized`, `paged_fp16`, `unknown`, so `.rawValue` is emitted
-   directly and no mapping layer exists (or should be added).
-3. `EngineV2Config.swift` (`engine_v2_kv_backend`) — the kind was previously legible
-   only inside the free-form `reason` string, where `fallback:kill_switch` hides it
-   from any `group by`. It now also rides `kv_backend`; `reason` keeps the
-   fallback detail.
-4. `EngineV2Bridge+MTP.swift` (`engine_v2_slot_posture`) — new recurring per-slot
-   sample, described under [MTP](#mtp-speculative-decode) below.
-
-`kv_backend` is **omitted** rather than guessed when a slot's backend was never
-resolved (`EngineV2SlotFactory`'s no-prepared-backend branch). Absent means
-UNKNOWN, matching `BackendSlotCapacity.KVBackend`'s `*string` + `omitempty`
-contract on the heartbeat wire. Never substitute a third vocabulary value such as
-`"unknown"`: omission has to stay distinguishable from an observation.
-
-**`kv_backend` has a heartbeat-only companion: `kv_backend_fallback_reason`.**
-It is deliberately **not** a telemetry-event field and is **not** in the
-three-way allowlist — it rides `BackendSlotCapacity` on the heartbeat
-([`messages.go`](../../coordinator/protocol/messages.go),
-[`Types.swift`](../../provider-swift/Sources/ProviderCore/Protocol/Types.swift)),
-the same channel as `kv_backend` itself. Protocol changes are a TWO-way sync
-(Go + Swift); the three-way parity guard
-(`coordinator/api/telemetry_allowlist_parity_test.go`) governs
-`telemetryFieldAllowlist` only and neither sees nor requires this key. It is
-recorded here because this page is where the `kv_backend` semantics live and a
-reader must not infer the wrong omission rule.
-
-It carries the provider's degrade reason verbatim — `kill_switch`,
-`crash_loop_guard`, `kernel_preflight: …`, `physical_capacity: …`,
-`ineligible: …`, `pool_construction_capacity: …`, `invalid_dtype: …` — when a
-slot resolved to a backend other than the one it was configured for. The
-resolved kind alone cannot separate an operator who chose contiguous from a
-paged slot that fell back, and those are opposite signals: a choice and a
-regression. `.auto` resolves **contiguous** as of v0.8.1 (it resolved paged
-for v0.8.0 only), which inverts how to read this field: the default fleet now
-reports contiguous with this key **absent**, so a present value marks a box
-carrying an explicit `engine_v2_kv_backend = "paged"`. Every class stays on
-the wire — v0.8.0 providers coexist during rollout, and the paged classes
-stay live on explicitly-paged boxes. `kernel_preflight`, `physical_capacity`,
-`ineligible` and `pool_construction_capacity` mean the box could not serve
-paged and degraded;
-`crash_loop_guard` means the box's watchdog counted 3 consecutive
-crash-loop-shaped restarts and flipped `.auto` to contiguous itself (an
-INCIDENT marker — the box was crash-looping minutes earlier; it also emits
-an ERROR `engine_health` event, `operation=engine_v2_crash_loop_guard`, at
-the trip); `invalid_dtype` means a typo'd `DARKBLOOM_CBV2_PAGED_KV_DTYPE`
-(operator-fixable config error, the typo verbatim in the tail); and
-`kill_switch` means `DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate
-override. Nothing else on the wire separates them, and they should not be
-alerted on the same way.
-
-**Its omission rule is the INVERSE of `kv_backend`'s, and the two must be read
-as a pair.** Absent `kv_backend` is UNKNOWN; absent `kv_backend_fallback_reason`
-on a slot that DID name a `kv_backend` is an authoritative "this slot did not
-degrade". Both keys ship in v0.8.0, so there is no build that reports one and
-not the other. The reason is untrusted free text and never reaches a metric tag
-verbatim: `registry.KVBackendFallbackTag` folds it onto the bounded class
-vocabulary (`none`, the seven producer classes, `other`, `unknown`), which is
-what the `kv_backend_fallback:` tag on `inference.ttft_ms`,
-`inference.decode_tps` and `inference.request_outcome` carries.
-
-## v0.8.0 field semantics
-
-### Paged KV pool
-
-| Field | Type | Meaning | Producer |
-|---|---|---|---|
-| `pages_pinned` | int | Pages currently pinned in the paged pool and therefore not evictable. | **none — see below** |
-| `cow_events` | int | Cumulative copy-on-write page splits (shared prefix page diverged and had to be duplicated). | **none — see below** |
-| `pool_utilization` | float | Occupied pool **bytes** / total pool bytes, `[0,1]`. | `engine_v2_slot_posture` |
-
-Aggregate counters only — never page contents, block hashes, or token ids.
-
-> **`pool_utilization` briefly had two producers with two meanings; resolved.**
-> `EngineV2Bridge+MTP.swift` (`operation=engine_v2_slot_posture`) emits the
-> occupancy defined in the table above. `EngineV2Bridge.swift`
-> (`operation=paged_pool_resize_clamped`, Wave 1 track W15) also emitted the key,
-> as `min(requestedBytes, poolBytes) / poolBytes` — a slot's re-sliced fair share
-> as a fraction of its committed pool, explicitly *not* occupancy. Distinct
-> `operation` values did not contain it: both events are paged slots tagged
-> `kv_backend=paged`, so `avg(pool_utilization) by kv_backend` — the rollout
-> dashboard's natural query — blended two unrelated populations.
->
-> **Ruling:** `pool_utilization` keeps the documented occupancy meaning. The
-> grant-vs-pool relationship is emitted as **raw bytes, not a second ratio**, and
-> must include its denominator so share-of-pool stays derivable without guessing.
-> A second `*_utilization` key was rejected: it sits next to this one in every
-> dropdown, and `min(a, b) / b` discards the overflow magnitude at exactly the
-> point co-residency diagnosis needs it. See
-> [one key, one meaning](#adding-a-field-one-key-one-meaning).
-
-#### Paged pool re-slice residue
-
-| Field | Type | Meaning | Producer |
-|---|---|---|---|
-| `pool_bytes` | int | The slot's committed paged pool, `PagedKVPool.bytesCapacity`. The **denominator**: always emitted with the deltas below so share-of-pool is derivable. |
-| `pool_deferred_growth_bytes` | int | Grant growth the pool could not absorb — the re-sliced fair share exceeds the construction-fixed pool. |
-| `pool_stranded_bytes` | int | Pool bytes committed to this slot that its current fair share cannot use. |
-
-Producer: `paged_pool_resize_clamped` (`EngineV2Bridge.swift`), edge-triggered on a
-change in the residue — WARN while a residue exists, INFO on the edge back to
-exact. All three ship together; a delta without its denominator is not
-interpretable.
-
-**Querying these for the co-residency admission defect (D1) — read this before
-building the panel.** Paged commits slabs per slot at construction, so on a
-memory-tight box a later model can measure too little headroom against the load
-minimum and 503 where an all-contiguous configuration would have served.
-
-The intuitive query is wrong. At the instant of the 503 the failure lands on the
-SECOND model, while the committed slabs that ate the headroom belong to the
-FIRST — and that first slot's `pool_stranded_bytes` may still be **zero**, because
-residue only becomes non-zero once a re-slice cuts a slot's share below its own
-pool. A panel keyed on "stranded > 0 at the time of the error" will show nothing
-during exactly the incident it was built for.
-
-* **`pool_bytes` is the term that is always present.** `Σ pool_bytes by provider`
-  against the box's KV budget is what exposes the commitment that consumed the
-  headroom, and it is emitted on every one of these events regardless of residue.
-* **`pool_stranded_bytes` is the sharper signal once co-residency settles** — it
-  names bytes a slot holds and cannot use — but it is a follow-on diagnostic, not
-  the trigger condition.
-
-**`pool_utilization` is a byte ratio, not a page ratio.** `PagedKVPool` exposes only
-`bytesInUse` / `bytesReserved` / `bytesCapacity`; its page counters are per-group and
-internal, and `pageBytes` differs per `(kvHeads, headDim)` group, so a page ratio
-would weight a small group equally with a large one. The byte ratio is that same
-ratio weighted by page size. It is derived from
-`CBv2CapacitySnapshot.kvBytesInUse / .kvBytesBackendCapacity`, which on the paged
-backend are exactly `PagedKVPool.bytesInUse` / `.bytesCapacity`
-(`EngineLoopV2.swift:2295-2297`). In-use, not reserved: reserved is the worst-case
-admission charge and would report a pool as full while its pages are still cold.
-A zero backend capacity means UNKNOWN, so the key is omitted rather than sent as `0`.
-
-**`pages_pinned` and `cow_events` have no producer, and cannot yet.** Neither
-mechanism exists in the engine: `PagedKVPool` has no pin concept (only
-reserve / in-use), and copy-on-write page splitting is unimplemented — "today every
-page has refcount 0 or 1" (`PagedKVPool.swift` header). They are blocked on the
-prefix-sharing work, not on plumbing, and emitting a hardcoded `0` would be
-indistinguishable from a measured zero. Unblocking them needs, in the engine repo:
-
-```swift
-// MLXLMCommon/ContinuousBatchingV2/Paged/PagedKVPool.swift
-public struct PagedKVPoolStats: Sendable, Equatable {
-    public var pageCount: Int      // Σ over groups
-    public var pagesInUse: Int     // Σ pages actually touched
-    public var pagesReserved: Int  // Σ worst-case admission charges
-    public var pagesPinned: Int    // Σ pages with refcount > 1  — NEEDS the mechanism
-    public var cowEvents: Int      // cumulative page duplications — NEEDS the mechanism
-}
-extension PagedKVPool { public var stats: PagedKVPoolStats { /* Σ over groups */ } }
-
-// MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift — CBv2Engine
-func pagedPoolStats() -> PagedKVPoolStats?   // nil on contiguous backends
-```
-
-plus a one-line provider forwarder on `EngineV2Bridge`. The first three fields are
-pure plumbing over counters `PagedKVGroup` already keeps; `pagesPinned` and
-`cowEvents` additionally need refcount sharing and a duplication counter to exist.
-Once `pagedPoolStats()` lands, `pool_utilization` should switch to the exact page
-ratio and this section's byte-ratio caveat can be dropped.
-
-### MTP (speculative decode)
-
-MTP is otherwise **invisible** to the coordinator: before this change, `mtp`,
-`speculat`, and `draft` matched nothing in `coordinator/protocol/`,
-`coordinator/api/`, the provider `Protocol/` and `Telemetry/` trees, or
-`console-ui/src/lib/`. That matters beyond diagnostics: MTP inflates
-`observed_decode_tps` with no discriminator, so a partially-MTP fleet biases
-coordinator routing on a metric the coordinator believes is homogeneous.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `mtp_enabled` | bool | `ProviderMTPStatusSnapshot.configured` — MTP is configured and the kill switch is off. |
-| `mtp_active` | bool | `ProviderMTPStatusSnapshot.active` — the drafter is loaded, the engine reports itself active, **and the slot is not inert** (see `inert_kv_unsupported`). A slot executing zero rounds is not active. |
-| `mtp_inactive_reason` | string | Bounded enum, present whenever MTP is not *productively* running. |
-| `mtp_acceptance_rate` | float | `acceptedDraftTokens / proposedTokens`, cumulative over the slot's lifetime, `[0,1]`; omitted when `proposedTokens == 0`. |
-| `mtp_proposed_tokens` | int | Cumulative `proposedTokens` — the acceptance ratio's denominator, and the **weight** a fleet roll-up must apply per sample. Token count, never token contents. Omitted with the ratio when zero. |
-| `mtp_accepted_tokens` | int | Cumulative `acceptedDraftTokens` — the ratio's numerator. Same omission rule. |
-
-A roll-up must never average the bare per-slot ratios: the events recur per slot
-per minute with cumulative history, so an unweighted mean both over-counts old
-history and weighs a 1/1 slot equally with a 10,000/10,000 slot. Sum
-`mtp_accepted_tokens` / sum `mtp_proposed_tokens` (latest sample per slot, or
-differenced between two samples of the same slot) instead. The counters are
-cumulative rather than per-interval deltas because the telemetry sink drops on
-full — a lost delta is gone forever, while cumulative counters stay differenceable
-across any two samples that did land.
-
-All of these are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
-emitted by a per-bridge sampler on the same 60 s cadence as the MTP metrics log
-(`EngineV2Bridge+MTP.swift`). The sampler runs for **every** slot, MTP or not:
-`mtp_enabled: false` is itself the observation that resolves a partially-MTP fleet,
-and the paged-pool fields do not depend on MTP. The emission point is deliberate —
-a once-per-engine-construction event (like `engine_v2_kv_backend`) rides a sink that
-drops on full behind a 100/min limit and is a notification, not an inventory; a
-per-request event makes idle slots vanish; an edge-triggered event (like
-`step_wedge`) never reports a healthy slot. The per-slot every-heartbeat channel is
-`BackendSlotCapacity`, which already carries `kv_backend`; this is its
-telemetry-side counterpart.
-
-`mtp_inactive_reason` values are
-[`MTPFallbackReason`](../../provider-swift/Sources/ProviderCore/SpecDec/SpecDecTypes.swift)
-raw values (`config_disabled`, `kill_switch_disabled`, `target_unsupported`, …,
-`engine_inactive`), plus one that names a state the enum could not previously
-express:
-
-* `inert_kv_unsupported` — **enabled but doing nothing.** On a paged
-  `gemma-4-26b-qat-4bit` slot the drafter loads, the engine reports MTP active, and
-  every planned row is refused by the storage-eligibility guard
-  ([`EngineLoopV2+MTPPlanning.swift:47`](../../libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/EngineLoopV2+MTPPlanning.swift)),
-  so not one round runs while ~236 MB of drafter residency is charged. It is
-  distinct from `engine_inactive`, where the engine says it is OFF; here the engine
-  says it is ON and produces nothing, which is exactly why the state stayed
-  invisible.
-
-  Derived in `ProviderMTPStatusSnapshot.init` when the drafter activated, the engine
-  reports active, `rounds == 0`, and `skippedRows["kv_unsupported"] > 0`. **`active`
-  is false in this state.** Reporting it active is what hid the bug, and it also
-  inverted the field's purpose: an inert slot does not inflate
-  `observed_decode_tps`, so discounting its throughput is wrong in the opposite
-  direction.
-
-  `rounds` counts only rounds that drafted *and* verified, and the skip is recorded
-  per scheduled row, so the state can only be reached after real traffic has been
-  planned and refused — never on a freshly built engine. That bounds the blast
-  radius of the `active` change: the post-build MTP teardown gate
-  (`ProviderLoop+ModelLoading`, `ProviderLoop+EngineV2Liveness`, `StandaloneServer`)
-  reads `active` on a zero-traffic engine, where `rounds == 0` **and** the skip count
-  is `0`, so it cannot mis-fire there. Post-load nothing else consults the snapshot,
-  so the inert slot's residency is reported, not reclaimed.
-
-`mtp_acceptance_rate` is a per-event ratio and therefore **not** re-aggregatable by a
-plain average. The counters that make weighted aggregation possible ship alongside
-it: weight each sample by `mtp_proposed_tokens`, i.e. compute
-`sum(mtp_accepted_tokens) / sum(mtp_proposed_tokens)` across slots (latest sample
-per slot for a point-in-time fleet rate). For a windowed rate, difference the
-cumulative counters between two samples of the same slot —
-`Δaccepted / Δproposed` — before summing across slots; treat a counter that went
-*down* as a slot rebuild (engine reconstruction resets the lifetime counters) and
-start the window at the new sample. Never post-process the bare ratios: an
-unweighted mean over-counts old history and weighs a 1/1 slot equally with a
-10,000/10,000 slot.
+- [`telemetry-inventory.md`](telemetry-inventory.md) — every datum, producer, sink, cadence, retention
+- [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes, Datadog metric names
+- [`protocol-messages.md`](protocol-messages.md) — the heartbeat fields the coordinator turns into metrics
+- [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1) — the route table entry for `/v1/telemetry/events` (`telemetry_ingest_disabled`)

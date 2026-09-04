@@ -1,237 +1,220 @@
-# Dev Environment Runbook
+# Dev environment
 
-How to stand up, operate, and tear down the Darkbloom dev environment on Google Cloud. Dev exists so we can test coordinator, provider bundle, console-ui, Mac fleet, and release pipeline end-to-end without touching prod.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-**Prod runs in the separate `darkbloom-mainnet` GCP project and is
-human-deploy-only (see [`coordinator-deploy.md`](coordinator-deploy.md)).**
-Nothing in this runbook deploys to prod.
+Runbook for the Darkbloom dev environment on Google Cloud (project
+`sepolia-ai`): a GCE VM running the same coordinator container as production,
+auto-deployed by Cloud Build on every push to `master`, plus a dev console on
+Vercel, a dev R2 bucket, and a small Mac fleet. Dev exists so coordinator,
+provider bundle, console, MDM enrollment, and the release pipeline can be
+exercised end-to-end without touching production. Nothing here deploys to
+production (`darkbloom-mainnet`); that is
+[coordinator-deploy.md](coordinator-deploy.md).
 
-## What dev looks like
+## When to use
 
-| Component | Location | URL / identifier |
-|---|---|---|
-| Coordinator | GCE VM `d-inference-dev` (us-central1-a, Ubuntu 24.04 + Docker + systemd) | `https://api.dev.darkbloom.xyz` (static IP) |
-| Persistent disk | GCE persistent disk `d-inference-dev-data` mounted at `/mnt/disks/userdata` (same path as GCP prod) | 30 GB, pd-balanced |
-| Console UI | Vercel project `darkbloom-console-dev`, built from `console-ui/` | `https://console.dev.darkbloom.xyz` |
-| Database | Cloud SQL Postgres 16, instance `d-inference-dev-db`, `db-f1-micro` | 127.0.0.1:5432 from inside the container via cloud-sql-proxy sidecar |
-| Release bucket | Cloudflare R2 `d-inf-app-dev` | R2 CDN URL in env vars |
-| Secrets | Google Secret Manager, prefix `eigeninference-*`; fetched at VM boot into `/etc/d-inference/env` | See §Secrets |
-| Mac fleet | 2–4 dev Macs | Listed in `deploy/provider-fleet/dev-inventory.txt` |
-| DNS | Vercel Domains | `api.dev.darkbloom.xyz` A → VM static IP; `console.dev.darkbloom.xyz` CNAME → Vercel |
-| Privy | Separate dev Privy app | Values in Secret Manager |
-| Coordinator encryption identity | Dev-only BIP39 mnemonic used for X25519 key derivation | Never reuse production's mnemonic |
-| MDM / attestation | Full stack — MicroMDM runs inside the coordinator container | `MIN_TRUST=hardware`, same as prod |
-
-**Why GCE VM, not Cloud Run:** the coordinator container runs MicroMDM (BoltDB + push cert on disk), which needs reliable local filesystem semantics. Cloud Run's ephemeral FS doesn't survive revisions, and gcsfuse is unsafe for BoltDB. The VM's persistent disk lives at `/mnt/disks/userdata` — the same path GCP prod uses, so the container's `start.sh` works unchanged.
-
-**Upgrade time:** ~2–4 minutes end-to-end for the coordinator (build + push + `systemctl restart`). ~30–60 seconds for the console UI on Vercel (auto-builds on git push). During a coordinator restart there is a ~10s blip when the container comes down and back up; providers auto-reconnect.
+- Standing up dev from scratch (steps 1–6) or re-bootstrapping after teardown.
+- Changing a dev secret or non-secret setting (step 7).
+- Publishing a dev provider release, onboarding a dev Mac, or rolling the dev
+  coordinator back to an older image.
 
 ## Prerequisites
 
-- [ ] `gcloud` authenticated against `sepolia-ai` (or the project you pass to `bootstrap.sh`).
-- [ ] `mise install` run locally for coordinator/UI builds.
-- [ ] A dev Privy app created and its credentials available.
-- [ ] A dev R2 bucket `d-inf-app-dev` and bucket-scoped API token.
-- [ ] (Optional but recommended) A Mac host available to join the dev fleet.
+- `gcloud` authenticated against `sepolia-ai` with rights to Compute, Cloud
+  Build, Artifact Registry, Secret Manager, and Cloud SQL.
+- `mise install` locally (for `scripts/smoke-dev.sh`, `jq`, `gh`).
+- A dev Privy app, a dev Stripe account, and a Cloudflare R2 bucket
+  `d-inf-app-dev` with a bucket-scoped token (for the release workflow's
+  `DEV_R2_*` secrets; see [`provider-release.md`](provider-release.md)).
+- Optional: one or more Apple Silicon Macs to enrol as dev providers.
+
+### What dev looks like
+
+| Component | Where | Identifier |
+|---|---|---|
+| Coordinator | GCE VM `d-inference-dev`, zone `us-central1-a`, `e2-small` (default in [`deploy/gcp/bootstrap.sh`](../../deploy/gcp/bootstrap.sh)), Ubuntu + Docker + systemd | `https://api.dev.darkbloom.xyz` (static IP `d-inference-dev-ip`) |
+| Image | Artifact Registry `us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator:<SHORT_SHA>` (+ `:latest`), built by [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml) with `BUILD_VERSION=dev`, `BUILD_COMMIT=$COMMIT_SHA` | `/health` reports `version: "dev"` and the full `build_commit` |
+| Container | `d-inference-coordinator`, `--network host`, `--env-file /etc/d-inference/env`, bind mount `/mnt/disks/userdata`; run by systemd unit `d-inference-coordinator.service` via `/usr/local/bin/d-inference-run.sh`, which reads the tag from VM metadata `DINF_IMAGE_TAG` (default `latest`) and `docker pull`s on every start | [`deploy/gcp/vm-startup.sh`](../../deploy/gcp/vm-startup.sh) |
+| Persistent disk | `d-inference-dev-data` mounted at `/mnt/disks/userdata` (MicroMDM BoltDB, prompt artifacts) — same path as prod so `start.sh` is unchanged | |
+| Database | Cloud SQL Postgres 16 `d-inference-dev-db` (`db-f1-micro`), reached via `cloud-sql-proxy.service` on `127.0.0.1:5432` | `EIGENINFERENCE_DATABASE_URL` |
+| Ingress | Host Caddy (systemd) terminates TLS and proxies to `:8080` | `DOMAIN=api.dev.darkbloom.xyz` |
+| Telemetry | Host Datadog Agent (`DD_ENV=development`, `DD_SERVICE=d-inference-coordinator`) | secrets `eigeninference-dd-api-key`, `eigeninference-dd-site` |
+| Console UI | Vercel project `darkbloom-console-dev` from `console-ui/` | `https://console.dev.darkbloom.xyz` |
+| Release bucket | Cloudflare R2 `d-inf-app-dev`; its public URL is secret `eigeninference-r2-cdn-url` → `EIGENINFERENCE_R2_CDN_URL` | |
+| Mac fleet | [`deploy/provider-fleet/dev-inventory.txt`](../../deploy/provider-fleet/dev-inventory.txt) | `deploy/provider-fleet/update-fleet.sh dev` |
+| Trust posture | Same as prod: MicroMDM inside the container, `EIGENINFERENCE_MIN_TRUST=hardware`, `EIGENINFERENCE_BILLING_MOCK=false` | |
+
+Why a VM and not Cloud Run: MicroMDM keeps BoltDB and the push certificate on
+local disk; Cloud Run's ephemeral filesystem does not survive revisions and
+gcsfuse is unsafe for BoltDB.
 
 ## Steps
 
 ### 1. Bootstrap GCP
 
-From the repo root:
-
 ```bash
-deploy/gcp/bootstrap.sh
+deploy/gcp/bootstrap.sh          # PROJECT/REGION/ZONE/INSTANCE/MACHINE_TYPE/SQL_INSTANCE overridable via env
 ```
 
-This creates Artifact Registry repos, service accounts, empty Secret Manager entries, a Cloud SQL instance, a GCE VM, and a persistent disk. It is idempotent — re-run as needed. Reference: [`deploy/gcp/bootstrap.sh`](../../deploy/gcp/bootstrap.sh).
+Idempotent. Creates the Artifact Registry repo `coordinator`, the coordinator
+service account, empty Secret Manager entries, Cloud SQL `d-inference-dev-db`,
+the data disk, the static IP, and the VM with
+`deploy/gcp/vm-startup.sh` as its startup script. It prints the static IP.
 
 ### 2. Populate secrets
 
-For each entry created by the bootstrap script:
-
 ```bash
-echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=-
+echo -n '<value>' | gcloud secrets versions add <secret-name> --data-file=- --project=sepolia-ai
 ```
 
-Values:
-
-| Secret | Value / source |
+| Secret | Value |
 |---|---|
-| `eigeninference-admin-key` | `openssl rand -hex 32` |
-| `eigeninference-release-key` | `openssl rand -hex 32` |
-| `eigeninference-solana-mnemonic` | Legacy secret name: generate a **new** BIP39 mnemonic for coordinator X25519 key derivation. It has no Solana billing role; never reuse prod. |
-| `eigeninference-privy-app-id` | Dev Privy app dashboard |
-| `eigeninference-privy-app-secret` | Dev Privy app dashboard |
-| `eigeninference-privy-verification-key` | Dev Privy app dashboard (JWKS JSON or PEM) |
-| `eigeninference-database-url` | Already set by bootstrap if Cloud SQL was just created |
-| `eigeninference-micromdm-api-key` | `openssl rand -hex 32` (used by both MicroMDM and the coordinator's MDM client; they must match) |
-| `eigeninference-mdm-push-p12-b64` | Base64url-encoded MDM push PKCS#12. Same Apple push cert prod uses (one cert per Apple Developer account). To encode: `base64 < push.p12 \| tr '/+' '_-' \| tr -d '\n='` |
-| `eigeninference-r2-cdn-url` | Public URL of the `d-inf-app-dev` R2 bucket, e.g. `https://pub-<randomid>.r2.dev`. Used by the coordinator to template `install.sh` so dev providers pull artifacts from the dev bucket. |
+| `eigeninference-admin-key`, `eigeninference-release-key` | `openssl rand -hex 32` each. The release key must also be set as the GitHub secret `DEV_RELEASE_KEY` |
+| `eigeninference-solana-mnemonic` | Legacy name. A **new** BIP39 mnemonic for the coordinator's X25519 key derivation (`MNEMONIC`); never reuse production's |
+| `eigeninference-privy-app-id`, `eigeninference-privy-app-secret`, `eigeninference-privy-verification-key` | Dev Privy app dashboard |
+| `eigeninference-database-url` | Written by bootstrap when it creates Cloud SQL |
+| `eigeninference-micromdm-api-key` | `openssl rand -hex 32`; injected as both `MICROMDM_API_KEY` and `EIGENINFERENCE_MDM_API_KEY` |
+| `eigeninference-mdm-push-p12-b64` | Apple MDM push PKCS#12, base64url: `base64 < push.p12 \| tr '/+' '_-' \| tr -d '\n='` |
+| `eigeninference-profile-signing-p12-b64`, `eigeninference-profile-signing-p12-password` | Optional Developer ID identity used to CMS-sign the `/v1/enroll` profile; unset serves it unsigned |
+| `eigeninference-r2-cdn-url` | Public URL of `d-inf-app-dev`, e.g. `https://pub-<id>.r2.dev`; templated into `install.sh` and required by `POST /v1/releases` |
+| `eigeninference-stripe-secret-key`, `eigeninference-stripe-webhook-secret`, `eigeninference-stripe-connect-webhook-secret`, `eigeninference-stripe-success-url`, `eigeninference-stripe-cancel-url`, `eigeninference-stripe-connect-return-url`, `eigeninference-stripe-connect-refresh-url` | Dev Stripe account |
+| `eigeninference-dd-api-key`, `eigeninference-dd-site` | Datadog |
+| `eigeninference-ipapi-key` | Optional ip-api.com PRO key; empty falls back to the free tier |
+
+`deploy/gcp/refresh-env.sh` refuses to overwrite the env file when any of
+`EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_DATABASE_URL`,
+`EIGENINFERENCE_STRIPE_SECRET_KEY`, `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET`,
+`EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` resolves empty, so set those
+before the first deploy.
 
 ### 3. DNS
 
-The bootstrap reserves a static external IP and prints it. On Vercel Domains:
-
 ```
-api.dev.darkbloom.xyz      A     <VM_STATIC_IP>
-console.dev.darkbloom.xyz  CNAME cname.vercel-dns.com
+api.dev.darkbloom.xyz      A      <VM static IP>
+console.dev.darkbloom.xyz  CNAME  <target Vercel shows after step 5>
 ```
-
-The exact CNAME target is shown by Vercel after you add the custom domain in step 5.
 
 ### 4. First coordinator deploy
-
-From the repo root:
 
 ```bash
 gcloud builds submit --config=deploy/gcp/cloudbuild.yaml --project=sepolia-ai
 ```
 
-This builds the image, pushes to Artifact Registry, writes the SHA to VM metadata, and restarts the systemd unit on the VM via IAP SSH. First build is ~4 minutes; subsequent deploys are ~2–3 minutes. Reference: [`deploy/gcp/cloudbuild.yaml`](../../deploy/gcp/cloudbuild.yaml).
+The build tags `:$SHORT_SHA` and `:latest`, pushes both, then the `deploy`
+step: writes `DINF_IMAGE_TAG=$SHORT_SHA` to VM metadata, refreshes the
+`startup-script` metadata from `deploy/gcp/vm-startup.sh`, pipes
+`deploy/gcp/refresh-env.sh` over IAP SSH (`sudo bash -s`) to regenerate
+`/etc/d-inference/env` from Secret Manager, runs
+`sudo systemctl restart d-inference-coordinator`, and polls
+`https://api.dev.darkbloom.xyz/health` for up to 4 minutes. ~2–4 minutes
+end-to-end; the fleet sees a ~10 s blip and reconnects.
 
 ### 5. Console UI on Vercel
 
-In the Vercel dashboard:
+1. Import the repo as project `darkbloom-console-dev`, root directory
+   `console-ui/`.
+2. Env: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`.
+3. Add domain `console.dev.darkbloom.xyz`; copy the CNAME target into step 3.
 
-1. Import the `d-inference` repo as a new project named `darkbloom-console-dev`. Set root directory to `console-ui/`.
-2. Environment variables: `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`.
-3. Add custom domain `console.dev.darkbloom.xyz`. Vercel provisions the cert; copy the CNAME target it shows and add it in step 3.
-4. Every push to `master` auto-builds. Isolated preview branches still hit the dev coordinator.
+Every push to `master` auto-builds; preview branches also talk to the dev
+coordinator.
 
 ### 6. Connect GitHub → Cloud Build
 
-One-time, from the Cloud Console:
+One-time in the Cloud Console: install the Cloud Build GitHub App on
+`Layr-Labs/d-inference`, then create a trigger on push to `master` using
+`deploy/gcp/cloudbuild.yaml` with the path filter `coordinator/**`,
+`deploy/gcp/**`. From then on every merge touching those paths redeploys dev
+with no approval step.
 
-1. Install the Google Cloud Build GitHub App on `Gajesh2007/d-inference`.
-2. Authorize the repo.
-3. Create a trigger targeting `deploy/gcp/cloudbuild.yaml` on push to `master` with path filter `coordinator/**` and `deploy/gcp/**`.
+### 7. Change a setting
 
-The console UI on Vercel handles its own CI; no second Cloud Build trigger is needed.
+- **Secret:** add a new version in Secret Manager, then either redeploy (any
+  Cloud Build run re-runs `refresh-env.sh`) or on the VM run
+  `sudo bash deploy/gcp/refresh-env.sh && sudo systemctl restart d-inference-coordinator`.
+- **Non-secret value** (`EIGENINFERENCE_MIN_TRUST`, `EIGENINFERENCE_ADMIN_EMAILS`,
+  `EIGENINFERENCE_REFERRAL_SHARE_PCT`, `EIGENINFERENCE_BASE_URL`, …): these are
+  literal lines in **both** `deploy/gcp/refresh-env.sh` and
+  `deploy/gcp/vm-startup.sh` (the boot path). Edit both, merge, and let Cloud
+  Build redeploy. There is no `--set-env-vars`; the env file is the only
+  source.
+- Variables are read once at process start; a restart is always required.
 
-### 7. First dev provider release
+### 8. Dev provider release
 
-From the GitHub Actions UI, run **Release Provider Bundle** with
-`environment=dev` and a version exactly matching the checked-in provider and
-coordinator constants. It builds, signs, notarizes, uploads to R2
-`d-inf-app-dev`, and registers with the dev coordinator. Dev tags are not used:
-the exact-version gate rejects tag/source disagreement.
+```bash
+gh workflow run release-swift.yml --ref <branch> -f environment=dev   # optional -f version_override=X.Y.Z
+```
 
-Reference: [`coordinator-deploy.md`](coordinator-deploy.md).
+Builds, signs, notarizes, uploads to R2 `d-inf-app-dev`, and registers with
+the dev coordinator using the `DEV_*` secrets. Dev tags (`-dev.*`) are
+rejected; only dispatch is supported. Details:
+[`provider-release.md`](provider-release.md).
 
-### 8. Onboard the Mac fleet
-
-On each dev Mac:
+### 9. Onboard a Mac
 
 ```bash
 curl -fsSL https://api.dev.darkbloom.xyz/install.sh | bash
 ```
 
-The install script is served by the dev coordinator with its URL templated in, so the installed provider only talks to dev. Add the Mac's SSH host alias to `deploy/provider-fleet/dev-inventory.txt`.
-
-### 9. Smoke test
-
-Run the dev smoke script:
-
-```bash
-scripts/smoke-dev.sh
-```
-
-It hits `/health`, `/v1/stats`, `/v1/models/catalog`, verifies `install.sh` templating, and optionally runs an authenticated chat round-trip if `API_KEY` is set. Reference: [`scripts/smoke-dev.sh`](../../scripts/smoke-dev.sh).
-
-## Day-to-day flow
-
-- **Push to `master`** → Cloud Build auto-deploys the coordinator; Vercel auto-deploys the console UI. No approval step.
-- **Need a new provider release on dev?** Run the **Release Provider Bundle**
-  workflow with `environment=dev`.
-- **Prod release after dev bake?** Create the reviewed source-matching stable
-  tag on the same commit. Production publication rejects branch dispatches and
-  still requires the protected prod GitHub Environment approval. Dev and prod
-  never share artifacts.
-- **Fleet refresh.** `deploy/provider-fleet/update-fleet.sh dev` reinstalls via SSH + `install.sh`.
-
-## Secrets mapping
-
-| Env var in coordinator | Secret Manager name | Source |
-|---|---|---|
-| `EIGENINFERENCE_ADMIN_KEY` | `eigeninference-admin-key` | Generated once, stored |
-| `EIGENINFERENCE_RELEASE_KEY` | `eigeninference-release-key` | Generated once; also set in GH env `dev` → `RELEASE_KEY` |
-| `EIGENINFERENCE_PRIVY_APP_ID` | `eigeninference-privy-app-id` | Privy dashboard (dev app) |
-| `EIGENINFERENCE_PRIVY_APP_SECRET` | `eigeninference-privy-app-secret` | Privy dashboard |
-| `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | `eigeninference-privy-verification-key` | Privy dashboard |
-| `MNEMONIC` | `eigeninference-solana-mnemonic` | Legacy secret name; generated fresh for dev X25519 key derivation |
-| `EIGENINFERENCE_DATABASE_URL` | `eigeninference-database-url` | Bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
-| `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `eigeninference-micromdm-api-key` | Same value for both — keep in sync |
-| `MDM_PUSH_P12_B64` | `eigeninference-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |
-| `PROFILE_SIGNING_P12_B64` / `PROFILE_SIGNING_P12_PASSWORD` | `eigeninference-profile-signing-p12-b64` / `…-password` | Developer ID Application identity (base64 PKCS#12 + password) used to CMS-sign the `/v1/enroll` profile. **Optional** — unset serves profiles unsigned. |
-
-Non-secret configuration is baked into `deploy/gcp/cloudbuild.yaml` via `--set-env-vars`. If you need to change one (e.g. flip `MIN_TRUST`), edit that file; the next deploy picks it up.
+The dev coordinator serves `install.sh` with its own URL and CDN templated in,
+so the provider can only ever register with dev. Add the host's SSH alias to
+`deploy/provider-fleet/dev-inventory.txt`; `deploy/provider-fleet/update-fleet.sh dev`
+re-runs the installer on every listed Mac.
 
 ## Verification
 
-| Check | Command |
-|---|---|
-| Coordinator health | `curl https://api.dev.darkbloom.xyz/health` |
-| Public stats | `curl https://api.dev.darkbloom.xyz/v1/stats` |
-| Model catalog | `curl https://api.dev.darkbloom.xyz/v1/models/catalog` |
-| Provider release registered | `curl https://api.dev.darkbloom.xyz/v1/releases/latest` |
-| Cloud Build trigger status | `gcloud builds list --project=sepolia-ai` |
-| VM systemd status | `gcloud compute ssh d-inference-dev --zone=us-central1-a --tunnel-through-iap -- 'sudo systemctl status d-inference-coordinator'` |
+```bash
+scripts/smoke-dev.sh                              # /health, /v1/stats, /v1/models/catalog, install.sh templating
+API_KEY=<dev api key> scripts/smoke-dev.sh        # + an authenticated chat completion
+curl -fsS https://api.dev.darkbloom.xyz/health | jq .            # version "dev", build_commit = deployed SHA
+curl -fsS https://api.dev.darkbloom.xyz/v1/releases/latest | jq .
+gcloud builds list --project=sepolia-ai --limit=5
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap -- \
+  'sudo systemctl status d-inference-coordinator --no-pager; sudo docker logs --tail 50 d-inference-coordinator'
+```
 
 ## Rollback
 
-### Dev coordinator
-
-Images are tagged by `$SHORT_SHA` in Artifact Registry. Point the VM at an older tag and restart:
+**Coordinator** — images stay in Artifact Registry by short SHA. Point the VM
+at an older one and restart (~1 minute):
 
 ```bash
-gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a \
+gcloud compute instances add-metadata d-inference-dev --zone=us-central1-a --project=sepolia-ai \
   --metadata=DINF_IMAGE_TAG=<older-short-sha>
-gcloud compute ssh d-inference-dev --zone=us-central1-a --tunnel-through-iap -- \
+gcloud compute ssh d-inference-dev --zone=us-central1-a --project=sepolia-ai --tunnel-through-iap -- \
   'sudo systemctl restart d-inference-coordinator'
 ```
 
-Rollback time: ~1 minute (image already in registry + VM already running — just a container swap).
+The next `master` push will move `DINF_IMAGE_TAG` forward again.
 
-### Dev provider bundle
+**Provider bundle** — deactivate the release on the dev coordinator
+(`DELETE /v1/admin/releases`, or `scripts/admin.sh releases deactivate <version>`)
+so `/v1/releases/latest` falls back to the previous version, then
+`deploy/provider-fleet/update-fleet.sh dev`. R2 objects are immutable per
+version; see [`provider-release.md`](provider-release.md) ("Rollback").
 
-Releases are immutable in R2. To roll back:
-
-1. Re-run the dev release workflow against an older tag, **or**
-2. Manually point the `latest/` prefix in the `d-inf-app-dev` bucket to the previous tarball and ask providers to re-run `install.sh`.
-
-### Full dev teardown
-
-Delete the VM, disk, SQL instance, and secrets only when you are sure you no longer need the dev state:
+**Full teardown** (destroys dev state; secrets survive unless deleted):
 
 ```bash
-gcloud compute instances delete d-inference-dev --zone=us-central1-a --quiet
-gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --quiet
-gcloud sql instances delete d-inference-dev-db --quiet
-# Delete secrets manually if desired; bootstrap can recreate them.
+gcloud compute instances delete d-inference-dev --zone=us-central1-a --project=sepolia-ai --quiet
+gcloud compute disks delete d-inference-dev-data --zone=us-central1-a --project=sepolia-ai --quiet
+gcloud sql instances delete d-inference-dev-db --project=sepolia-ai --quiet
 ```
 
-## What dev does *not* cover
+## What dev does not cover
 
-- **Production's approval-gated container swap.** Dev uses a systemd restart;
-  production uses an explicitly human-approved drain, fallback-container swap,
-  and host Caddy maintenance marker.
-- **External user traffic.** Dev is team-only; admin emails are gated to `gajesh@eigenlabs.org` by default.
-- **In-memory mode data loss.** If `EIGENINFERENCE_DATABASE_URL` is unset, the coordinator resets state on every deploy. To re-register the current release and grant test credits after a redeploy, run `scripts/admin.sh EIGENINFERENCE_COORDINATOR_URL=https://api.dev.darkbloom.xyz releases latest`.
+- Production's human-approved drain, fallback container, and env-refresh
+  contract (`deploy/gcp/prod/`). Dev restarts via systemd with a 30 s stop
+  timeout.
+- Real users: admin access is limited to `EIGENINFERENCE_ADMIN_EMAILS`
+  (`gajesh@eigenlabs.org`).
+- Cost realism: `e2-small` + `db-f1-micro` + 30 GB disk + static IP is roughly
+  \$25–30/month.
 
-## Cost
+## Related
 
-Approximate monthly cost for the standard dev footprint:
-
-| Resource | ~$/mo |
-|---|---|
-| GCE `e2-small` 24/7 | ~$13 |
-| Cloud SQL `db-f1-micro` | ~$8 |
-| GCE static IP | ~$1.50 |
-| 30 GB persistent disk (pd-balanced) | ~$3 |
-| Artifact Registry + Cloud Build + Logging | Free tier |
-| R2 `d-inf-app-dev` | Free tier |
-| Vercel console UI | Free/hobby tier |
-| DNS | Vercel Domains (existing plan) |
-
-**Total: ~$25–30/month.** Not optimizing for cost — correctness + realism-vs-prod take priority.
+- [coordinator-deploy.md](coordinator-deploy.md) — production.
+- [`provider-release.md`](provider-release.md) — release workflow, `DEV_*` secrets.
+- [`../developer/build.md`](../developer/build.md) — the Dockerfile Cloud Build builds.
+- [`../provider/installation.md`](../provider/installation.md) — what `install.sh` does on a Mac.

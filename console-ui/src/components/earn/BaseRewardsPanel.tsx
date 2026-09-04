@@ -11,7 +11,7 @@ import { FLOOR_TIERS } from "@/app/earn/calc";
  * Model: payout = usage_earnings + floor (additive). The floor table mirrors
  * coordinator/payments/baserewards/floor.go.
  *
- * Honesty constraints (see docs/base-rewards.md): we never call it a
+ * Honesty constraints (see docs/design/base-rewards.md): we never call it a
  * "guarantee" (it is eligibility-gated and capped by a fixed monthly pool).
  */
 export function BaseRewardsPanel() {

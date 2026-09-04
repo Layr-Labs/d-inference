@@ -1,28 +1,40 @@
-# Reference
+# Reference — exact shapes and values
 
-Dry reference material for Darkbloom's public interfaces, wire protocols, schemas, and operational formats.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## API and protocol
+Tables and schemas for Darkbloom's public interfaces, wire protocol,
+configuration, and formats. Consult these; do not read them front to back.
+Every row cites the code that defines it. For how and why things work, use
+[`../architecture/README.md`](../architecture/README.md).
 
-| Doc | Content |
+## Interfaces
+
+| Page | Content |
 |---|---|
-| [api-contracts.md](api-contracts.md) | OpenAI-compatible HTTP endpoints, auth, headers, errors |
-| [protocol-messages.md](protocol-messages.md) | WebSocket message types between coordinator and provider |
+| [api-contracts.md](api-contracts.md) | Every coordinator HTTP route: method, path, auth, request and response shapes, headers, status codes, SSE framing |
+| [protocol-messages.md](protocol-messages.md) | Every WebSocket message between coordinator and provider, field by field, with the Go and Swift types |
 
-## Schemas and formats
+## Configuration and schemas
 
-| Doc | Content |
+| Page | Content |
 |---|---|
-| [telemetry-schema.md](telemetry-schema.md) | Telemetry event schema, field allowlist, and symmetry rules |
-| [model-registry-format.md](model-registry-format.md) | Manifest schema, model registration, and alias format |
-| [pricing-model.md](pricing-model.md) | Micro-USD pricing, provider custom prices, service accounts |
+| [configuration.md](configuration.md) | Every environment variable of the coordinator, provider CLI, console UI, and admin UI: default, where read, effect |
+| [telemetry-schema.md](telemetry-schema.md) | Telemetry event types, field allowlist, optional-field and casing rules pinned by the symmetry tests |
+| [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
+| [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
+| [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
 
-## SSD KV cache reference
+## Prefix cache formats
 
-| Doc | Content |
+| Page | Content |
 |---|---|
-| [ssd-kv-cache.md](ssd-kv-cache.md) | v0.7.5 EngineV2 SSD cache format and configuration |
-| [ssd-kv-cache-design.md](ssd-kv-cache-design.md) | Archived pre-v0.7.5 design |
-| [ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md) | EngineV2 hybrid-model adoption and recompute rules |
+| [ssd-kv-cache.md](ssd-kv-cache.md) | DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status and outcome vocabularies |
 
-These documents are intended to be consulted, not read front-to-back. For narrative explanations, see the [architecture docs](../architecture/README.md).
+## Vocabulary
+
+| Page | Content |
+|---|---|
+| [`../glossary.md`](../glossary.md) | Canonical term for each thing and the page that owns its definition |
+
+Superseded designs (for example the pre-v0.7.5 SSD cache design) live under
+[`../design/README.md`](../design/README.md).

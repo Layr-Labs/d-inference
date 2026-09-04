@@ -13,7 +13,7 @@ import (
 // rejectionInfo carries everything known about a rejected inbound inference
 // request at a 4xx/5xx exit point. Callers populate what they have; zero values
 // are fine. It is the single contract the consumer/handler code uses to feed the
-// rejection ledger (see docs/architecture/routing-telemetry-and-calibration.md §4.9).
+// rejection ledger (see docs/design/routing-telemetry-and-calibration.md §4.9).
 type rejectionInfo struct {
 	r          *http.Request
 	stage      string // auth, validation, model_resolution, balance, rate_limit, preflight_capacity, routing_ttft

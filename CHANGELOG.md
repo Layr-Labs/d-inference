@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased (2026-09-03) — documentation overhaul
+
+- **Every page under `docs/` rewritten or verified against the code at
+  `5d400cf75`** — each page now carries a freshness stamp
+  (`> Last updated: <date> · commit <sha>`) naming the code commit its claims
+  were checked against; frozen records (`docs/reports/`, `docs/releases/`,
+  `docs/legal/`) keep the date and commit of their own last substantive
+  change. Claims cite code by path and symbol, not line number. Facts that
+  drifted from the code were corrected in place (examples: challenge
+  freshness is 16 min not 6; the prefix cache is built only on
+  explicitly-paged slots; eviction is two missed 30 s sweeps against a 90 s
+  timeout; explicit `max_tokens` is not clamped; the platform fee is stated
+  once, in `docs/architecture/billing.md`).
+- **Tree reorganised by page type** with `docs/README.md` rewritten as an
+  llms.txt-style map (one line per page) and an index per directory.
+  `architecture/` holds explanations only — `architecture/operations/*`
+  became `architecture/{billing,model-registry,routing,scheduling,telemetry}.md`
+  and `architecture/prefix-cache.md`, `architecture/components/admin-ui.md`
+  are new; `reference/` gains `configuration.md` (every environment variable
+  of the coordinator, provider CLI, console and admin UI, with defaults and
+  the symbol that reads it) and `telemetry-inventory.md`; plans and ADRs live
+  in `design/` with a status line each (`design/README.md`); dated frozen
+  records live in `reports/` (`reports/README.md`; twelve reports that were
+  sitting uncommitted are now in the tree); `glossary.md` gives one name per
+  concept. Merged as duplicates: `architecture/payments.md` →
+  `architecture/billing.md`, `provider/security-model.md` →
+  `provider/attestation.md`, `reference/ssd-kv-cache-hybrid-models.md` →
+  `reference/ssd-kv-cache.md`; PR screenshot folders removed. Security
+  diagrams redrawn from the code (`docs/assets/diagrams/*.mmd` → SVG/PNG).
+- **One home per fact** (follow-up to an organisation audit of the new tree)
+  — every constant, default, limit and status code is now stated on one owner
+  page (`reference/api-contracts.md`, `reference/configuration.md`,
+  `reference/pricing-model.md`, the owning `architecture/` page) and linked,
+  by identifier, from every other page; operator procedures and SQL recipes
+  left the explanation pages for `operations/cache-routing-rollout.md` and
+  `operations/profiler-queries.md`; `developer/release.md` became
+  `operations/provider-release.md` (it registers releases with production);
+  six plan and decision memos moved from `reports/` to `design/` with a
+  status line each (`design/README.md` lists all seventeen with status and
+  date); `provider/attestation.md` is now the operator how-to for reaching
+  and keeping `hardware` trust, and `consumer/privacy-expectations.md` a
+  short list that links the encryption page instead of restating it.
+- **Docs tooling** — `scripts/docs-stamp.sh` writes or refreshes the stamp
+  (`--from-git` for frozen records); `scripts/docs-check.sh` fails on a
+  missing or malformed stamp, a relative link that does not resolve, a cited
+  code path that does not exist, or a page no index links to. `make
+  docs-check` / `make docs-stamp`; `make test` runs the check; CI gains a
+  "Docs Lint" job. `docs/AGENTS.md` states the rules for humans and agents:
+  one job per page, one canonical home per fact, cite the code, stamp on
+  every edit, and the page skeleton for each page type.
+- **Root pointers** — `README.md`, `CONTRIBUTING.md`, `AGENTS.md` and
+  `CLAUDE.md` point at the new paths, and the "coordinator never sees
+  plaintext" claim was replaced by the hop-by-hop encryption model documented
+  in `docs/architecture/security/encryption.md`. Code comments that named
+  moved docs were updated (comment-only edits in `coordinator/`,
+  `console-ui/`, `provider-swift/`).
+- **Re-verified against `ac60c5ada` (#816)** — the runtime manifest's
+  union-across-active-releases semantics, the `GET /v1/runtime/manifest`
+  shape and the `EIGENINFERENCE_KNOWN_TEMPLATE_HASHES` override are stated
+  once, in `docs/architecture/security/attestation.md#runtime-manifest`, and
+  linked from the provider-release and release-policy runbooks.
+
 ## Unreleased (2026-09-02) — system profiler
 
 - **Runtime manifest accepts every active release** — `SyncRuntimeManifest`
@@ -65,7 +127,7 @@
   (clamped, `timing_anomaly` flag) and gains additive `pre_handler_us`,
   `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`,
   `socket_us`, `provider_ack_us`. Docs: `docs/architecture/system-profiler.md`,
-  `docs/architecture/telemetry-inventory.md`; threat model T-051.
+  `docs/reference/telemetry-inventory.md`; threat model T-051.
 
 ## Release candidate v0.8.16 (not shipped; 2026-08-31)
 

@@ -1,5 +1,7 @@
 # Darkbloom v0.8.0 post-release engine benchmark sweep
 
+> Last updated: 2026-07-28 · commit `3eefaf1ed`
+
 **Purpose.** v0.8.0 flipped the fleet default KV backend to PagedAttention. Every report in
 `libs/mlx-swift-lm/benchmarks/reports/` predates the release range (newest: 2026-07-09/10) — before the
 ring shrink (97→65 pages), sub-blocked prefill, and first-admission slab commitment. This sweep is the

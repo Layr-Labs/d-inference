@@ -1,37 +1,38 @@
-# Operations Runbooks
+# Operations runbooks
 
-This directory contains procedural runbooks for deploying, migrating, and operating Darkbloom infrastructure. Every runbook uses the same section structure:
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-- **Prerequisites** — what must be true before starting
-- **Steps** — ordered operator actions
-- **Verification** — how to prove the outcome is correct
-- **Rollback** — how to undo or fail back safely
+Procedures for deploying, migrating, and operating Darkbloom production
+infrastructure. Every runbook has the same shape — when to use, prerequisites,
+steps, verification, rollback — and is written for an operator with production
+access. Architecture and security context live under
+[`../architecture/README.md`](../architecture/README.md); API and protocol
+shapes under [`../reference/README.md`](../reference/README.md).
 
-Runbooks are written for operators. For architecture and security context, see the [`architecture/README.md`](../architecture/README.md) docs; for API and protocol details, see [`reference/README.md`](../reference/README.md).
+| Runbook | Scope |
+|---|---|
+| [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
+| [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
+| [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |
+| [`routing-v2-rollout.md`](routing-v2-rollout.md) | Kill switches and flag flips for the shipped routing-v2 behaviours (TTFT gate, queue-before-shed, cold dispatch, warm pool, budget clamp, anomaly detector) |
+| [`cache-routing-rollout.md`](cache-routing-rollout.md) | Turn exact prefix-cache routing on in production, widen the activation percent and plan-QPS bounds one at a time, verify with `GET /v1/cache/status`, roll back to `off` |
+| [`profiler-queries.md`](profiler-queries.md) | Read-only SQL recipes against the profiler tables (`request_profiles`, `fleet_snapshots`) for latency, fleet and outcome questions |
+| [`model-migration.md`](model-migration.md) | Publish a model build and move a public alias to it with zero downtime |
+| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) |
 
-## Runbook index
+The EigenCloud → GCP move is a frozen report, not a live runbook:
+[`../reports/2026-07-17-eigencloud-to-gcp-migration.md`](../reports/2026-07-17-eigencloud-to-gcp-migration.md).
 
-| Runbook | Scope | Audience |
-|---|---|---|
-| [`coordinator-deploy.md`](coordinator-deploy.md) | Build and deploy the coordinator (Go) and provider CLI (Swift) | Infra / release engineer |
-| [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
-| [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
-| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer / human-approved agent |
-| [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer / human-approved agent |
-| [`m5-stress-runbook.md`](m5-stress-runbook.md) | Archived pre-v0.7.5 SSD soak; do not use for EngineV2 | Historical reference |
+Two rules apply to every page here:
 
-## Safety rules that apply to every runbook
+1. Production mutations — GCP deploys, Secret Manager, VM/container/service
+   changes, database, DNS, traffic, release registration — require explicit
+   human approval for the specific operation. Without it, agents prepare
+   commands and perform read-only inspection only.
+2. Validate on dev first. Anything that publishes a model, flips an alias, or
+   changes routing runs against the dev coordinator
+   ([`dev-environment.md`](dev-environment.md)) before production.
 
-1. **Production GCP deploys, Secret Manager, VM/container/service/config,
-   database, DNS, traffic, and release registration require explicit human
-   approval for the specific operation.** A human operator or human-approved
-   agent may execute them. Without that approval, AI agents may only prepare
-   commands and perform read-only production inspection.
-2. **The code is the source of truth.** Claims cite canonical file paths and line ranges where possible.
-3. **Privacy model** (from [`docs/AGENTS.md`](../AGENTS.md)):
-   - Consumer → coordinator: TLS by default; optional NaCl Box.
-   - Coordinator → provider: mandatory per-request NaCl Box to the provider's attested X25519 public key.
-   - Provider → coordinator: response SSE chunks encrypted back to the coordinator's ephemeral X25519 key.
-   - The coordinator decrypts consumer bodies in Confidential VM memory for routing and billing, but does not log or retain prompt content.
-   - The provider is the decryption endpoint for prompts; it is bound to Apple Secure Enclave identity and code-identity attestation.
-4. **Validate on dev first.** Any command that publishes a model, flips an alias, or extracts state should be run against `api.dev.darkbloom.xyz` before prod.
+Provider CLI releases register a release with the production coordinator and
+follow both rules: [`provider-release.md`](provider-release.md).

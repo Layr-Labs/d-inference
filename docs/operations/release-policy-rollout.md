@@ -1,146 +1,225 @@
-# Release-Policy Gate Rollout (Application Evidence)
+# Roll out the release-policy routing gate (shadow → enforce)
 
-Authoritative procedure for the first deployment of any coordinator containing
-the release-policy routing gate, and for the later enforcement flip. Follows
-[`coordinator-deploy.md`](coordinator-deploy.md) for the mechanics of every
-swap; this document adds the gate-specific stages and acceptance criteria.
+> Last updated: 2026-09-04 · commit `ac60c5ada`
 
-Canonical code (code wins over this doc):
+Runbook for the two production changes that involve the coordinator's
+release-policy routing gate: (1) deploying a coordinator that contains the gate
+in **shadow** mode, and (2) later flipping it to **enforce**. The gate decides
+whether a provider that lacks *application evidence* (proof that its running
+binary and metallib match an active release row) may receive routed requests.
+Container swaps themselves follow
+[`coordinator-deploy.md`](coordinator-deploy.md); this page adds the
+gate-specific checks, acceptance criteria, and rollback lever.
 
-| Behavior | Code |
-|---|---|
-| Mode parsing + boot grace | `coordinator/cmd/coordinator/main.go` (`EIGENINFERENCE_RELEASE_POLICY_MODE` switch) |
-| Routing chokepoint + evidence gate | `coordinator/registry/registry.go:providerSupportsPrivateTextModeLocked` |
-| Live-enforcement predicate (mode + enforce-after) | `coordinator/registry/registry.go:releasePolicyEnforcedLocked` |
-| Evidence derivation + typed outcomes | `coordinator/api/server.go:deriveApprovedReleaseTransition`, `releaseMetallibMatches` |
-| Sweep re-proof / invalidation | `coordinator/api/server.go:releaseEvidenceStillApproved`, `coordinator/registry/registry.go:SetReleasePolicyGeneration` |
-| Coverage counters | `coordinator/registry/registry.go:CountProvidersWithCurrentApplicationEvidence`, `ApplicationEvidenceModelCoverage`; served by `coordinator/api/stats.go` |
+## When to use
 
-## Background
+- First production deploy of any coordinator build that evaluates application
+  evidence (the `EIGENINFERENCE_RELEASE_POLICY_MODE` switch in
+  `coordinator/cmd/coordinator/main.go`).
+- Turning enforcement on after shadow coverage has been proven.
+- Turning enforcement back off (incident lever).
 
-On 2026-08-31 two candidate coordinators connected ~1,250 providers and
-admitted zero for routing: release rows carried CI-fabricated per-model-family
-`template_hashes` no provider has ever reported, the evidence gate demanded
-them, and every rejection was an untyped `false`. `/v1/models/capacity`
-returned no models and all inference received 429 until rollback
-(`docs/reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`).
+Do not use it to debug why one provider lacks evidence; that is the per-reason
+counter table under Verification, and the fix is on the release-registration
+side ([`provider-release.md`](provider-release.md)).
 
-The reworked contract: application evidence proves that the SE-signed
-challenge `binary_hash` matches an **active release row** for (version,
-platform, backend) and that the release's `metallib_hash` matches the
-provider's reported `mlx_metallib` — nothing else. The gate has two modes via
-`EIGENINFERENCE_RELEASE_POLICY_MODE`:
+## Prerequisites
 
-- `shadow` (default, also on unset/invalid): evidence is derived, granted,
-  swept, and counted, but never blocks routing or clears runtime capabilities.
-- `enforce`: after a boot grace (default 20m,
-  `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`), the chokepoint requires
-  generation-current evidence and policy sweeps clear capabilities with
-  invalidated evidence.
+- **Human approval for each stage as a distinct operation.** The shadow deploy
+  and the enforce flip are separate approvals; agents prepare commands and read
+  endpoints only.
+- SSH to the production VM and the pre-swap state from
+  [`coordinator-deploy.md`](coordinator-deploy.md) (candidate image pinned by
+  full commit SHA, database locks checked, `refresh-env.sh --check` clean).
+- Baseline captured before the swap: `/v1/models/capacity` (models and
+  `routable_providers` per model) and `/v1/stats` `active_providers`.
+- Datadog access to the `release_evidence.outcome` counter (emitted by
+  `coordinator/api/server.go` (`recordReleaseEvidenceOutcome`); no-op without
+  DogStatsD).
+- Read [Background](#background) once; the 2026-08-31 postmortem
+  ([`../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`](../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md))
+  is why every step below exists.
 
-## Invariants
+### Background
 
-- A new global trust gate MUST ship in shadow first; enforcement is a separate
-  human-approved action after live coverage is proven.
-- Never add a release-row fact to evidence derivation unless the production
-  provider build demonstrably reports it (check
-  `provider-swift/Sources/ProviderCore/Security/` and
-  `ProviderLoop+AttestationChallenge.swift` first).
-- `deriveApprovedReleaseTransition` and `releaseEvidenceStillApproved` MUST
-  compare the same fact set; changing one side alone desyncs grant from sweep
-  and wipes evidence every policy rebuild.
-- Enforcement flips happen via env + container recreate; the boot grace exists
-  because a restarted coordinator has an empty registry (zero evidence) and
-  would otherwise 429 the fleet until first challenges complete. Do not set
-  the grace below the default for a production flip.
-- Registering a release MUST NOT deroute the fleet running the previous
-  release. The runtime manifest (`SyncRuntimeManifest`) is the UNION of every
-  ACTIVE release row's hashes — one accepted set per template name,
-  `mlx_metallib` included — so providers on v(N-1) and v(N) both pass the
-  challenge runtime policy for the whole self-update window. Deactivating a
-  release (`DELETE /v1/admin/releases`) is the only way to retire its hashes.
-  A manifest gate that keeps a single expected value per key is the
-  2026-09-03 brownout: registering v0.8.16 replaced the v0.8.15 metallib hash
-  and ~1,180 still-current providers were excluded from routing at their next
-  challenge until they self-updated. Regression tests:
-  `coordinator/api/runtime_manifest_union_test.go`.
+The gate has two modes, chosen at boot from `EIGENINFERENCE_RELEASE_POLICY_MODE`
+(`coordinator/cmd/coordinator/main.go`):
 
-## Stage 1 — shadow deployment
+| Value | Behaviour | Startup log line |
+|---|---|---|
+| unset or `shadow` | Evidence is derived, granted, swept, and counted, but never blocks routing and never clears runtime capabilities | `release-policy routing gate in SHADOW mode (default): …` |
+| `enforce` | After a boot grace, the routing chokepoint requires generation-current evidence and policy sweeps clear capabilities whose evidence was invalidated | `release-policy routing gate ENFORCED via EIGENINFERENCE_RELEASE_POLICY_MODE — …` with `boot_grace=<duration>` |
+| anything else | Treated as shadow | `invalid EIGENINFERENCE_RELEASE_POLICY_MODE; staying in SHADOW mode` |
 
-### Prerequisites
+The boot grace defaults to `minEnforceGrace = 20 * time.Minute` and is
+**raise-only**: `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` values below 20m
+clamp up, invalid values keep 20m. It exists because a restarted coordinator has
+an empty provider registry (zero evidence) and would otherwise 429 the whole
+fleet until reconnected providers complete their first challenge cycle
+(`DefaultChallengeInterval = 5 * time.Minute` in `coordinator/api/provider.go`).
 
-- Candidate image built by the repository trigger from the exact reviewed
-  merge SHA; digest verified in Artifact Registry.
-- `/etc/d-inference/env` has `EIGENINFERENCE_RELEASE_POLICY_MODE=shadow` (or
-  the variable absent).
-- All prechecks from [`coordinator-deploy.md`](coordinator-deploy.md)
-  (database locks, env integrity, rollback state captured).
-- Baseline captured for comparison: `/v1/models/capacity` (models +
-  routable_providers per model) and `/v1/stats` (`active_providers`).
+Application evidence proves exactly two facts, checked identically at grant
+(`coordinator/api/server.go` (`deriveApprovedReleaseTransition`,
+`releaseMetallibMatches`)) and at every policy sweep
+(`releaseEvidenceStillApproved`): the Secure-Enclave-signed challenge
+`binary_hash` matches an **active** release row for the provider's (version,
+platform, backend), and that row's `metallib_hash` matches the provider's
+reported metallib. Nothing else — per-model template hashes were removed after
+the incident.
 
-### Steps
+Where the gate lives: `coordinator/registry/registry.go`
+(`providerSupportsPrivateTextModeLocked`, the single routing chokepoint;
+`releasePolicyEnforcedLocked`, mode + enforce-after predicate;
+`SetReleasePolicyGeneration`, sweep that re-proves or clears evidence;
+`CountProvidersWithCurrentApplicationEvidence` and
+`ApplicationEvidenceModelCoverage`, the coverage counters served by
+`coordinator/api/stats.go` (`handleStats`)).
 
-1. Perform the approved swap per [`coordinator-deploy.md`](coordinator-deploy.md).
-2. Confirm the startup log prints `release-policy routing gate in SHADOW mode`
-   (an `ENFORCED` warning here means the env is wrong — roll back).
+## Steps
 
-### Verification (within 20 minutes; challenges run every 5)
+### Stage 1 — deploy in shadow
+
+1. Confirm the env file is in shadow: `EIGENINFERENCE_RELEASE_POLICY_MODE` is
+   absent from `/etc/d-inference/env` or set to `shadow`.
+
+   ```bash
+   sudo grep -E '^EIGENINFERENCE_RELEASE_POLICY_(MODE|ENFORCE_GRACE)=' /etc/d-inference/env || echo "absent → shadow"
+   ```
+
+2. Perform the approved container swap exactly as in
+   [`coordinator-deploy.md`](coordinator-deploy.md) → Steps.
+3. Confirm the startup log line.
+
+   ```bash
+   sudo docker logs coordinator 2>&1 | grep -E 'release-policy routing gate'
+   ```
+
+   Expected: `release-policy routing gate in SHADOW mode`. An `ENFORCED`
+   warning here means the env file is wrong — go to [Rollback](#rollback).
+
+4. Run the Stage 1 verification table for at least 20 minutes (four challenge
+   cycles), then leave the build in shadow for **≥ 24 hours** before considering
+   Stage 2.
+
+### Stage 2 — flip to enforce
+
+1. Confirm every Stage 2 acceptance row (below) held for ≥ 24 hours and that
+   the flip has its own human approval.
+2. Set the mode in the env file. Leave `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE`
+   unset (20m) unless a *longer* grace is wanted.
+
+   ```bash
+   sudo sed -i 's/^EIGENINFERENCE_RELEASE_POLICY_MODE=.*$/EIGENINFERENCE_RELEASE_POLICY_MODE=enforce/' /etc/d-inference/env
+   sudo grep -q '^EIGENINFERENCE_RELEASE_POLICY_MODE=' /etc/d-inference/env || echo 'EIGENINFERENCE_RELEASE_POLICY_MODE=enforce' | sudo tee -a /etc/d-inference/env
+   ```
+
+3. Recreate the container with the **same image** (the swap procedure in
+   [`coordinator-deploy.md`](coordinator-deploy.md), reusing the current image
+   tag). Mode is read once at boot; there is no runtime toggle.
+4. Confirm the startup log prints the `ENFORCED` warning with
+   `boot_grace=20m0s` (or your longer value).
+
+## Verification
+
+`/v1/stats` is cached for one minute (`coordinator/api/stats.go`), so poll no
+faster than that. Fields used below:
+
+| `/v1/stats` field | Meaning | Source |
+|---|---|---|
+| `application_evidence_connected` | connected providers | `CountProvidersWithCurrentApplicationEvidence` (second return) |
+| `application_evidence_providers` | connected providers holding generation-current evidence | `CountProvidersWithCurrentApplicationEvidence` (first return) |
+| `application_evidence_models` | per model: `{"routable": n, "with_evidence": m}` — providers passing every routing gate except evidence, and the subset that also hold evidence | `ApplicationEvidenceModelCoverage` |
+| `release_policy_enforced` | `true` only when mode is `enforce` **and** the boot grace has elapsed | `ReleasePolicyEnforced` |
+
+### Stage 1 (shadow) — within 20 minutes of the swap
 
 | Check | Requirement |
 |---|---|
-| `/health`, `/readyz` | ok, expected build commit |
-| `/v1/models/capacity` | all expected models present; routable counts near baseline (shadow cannot zero this) |
-| `/v1/stats` `application_evidence_connected` | ≈ pre-swap `active_providers` |
-| `/v1/stats` `application_evidence_providers` | climbing toward connected; ≥90% within ~20 min |
-| `/v1/stats` `application_evidence_models` | for EVERY model: `with_evidence` ≈ `routable` (per-model criterion — a small family's uncovered providers must not hide inside the fleet average). The denominator is the advertised-catalog surface, not full dispatch: a small persistent gap can be providers dispatch already excludes (e.g. the dedicated-model rule). Before treating a stable gap as a blocker, confirm via `release_evidence.outcome` that the uncovered providers have a benign typed reason. |
-| Datadog `release_evidence.outcome` | `granted` dominates; every other reason explained (`version_floor` stragglers, `no_active_release` dev builds) |
+| `/health`, `/readyz` | ok; build commit matches the candidate |
+| `/v1/models/capacity` | every expected model present; `routable_providers` near baseline (shadow cannot reduce this) |
+| `application_evidence_connected` | ≈ pre-swap `active_providers` |
+| `application_evidence_providers` | climbing; ≥ 90 % of connected within ~20 min |
+| `application_evidence_models` | for **every** model, `with_evidence` ≈ `routable`. A small stable gap can be providers dispatch already excludes for other reasons; confirm via the outcome counters that the gap has a benign typed reason before treating it as a blocker |
+| Datadog `release_evidence.outcome` | `outcome:granted` dominates; every other tag explained (table below) |
 | Real inference | succeeds on every model family |
 
-If coverage stalls near zero: routing is unharmed; diagnose from the outcome
-counters. Do NOT flip enforce and do NOT redeploy guesses.
+Closed outcome set (`coordinator/api/server.go`, constants next to
+`recordReleaseEvidenceOutcome`):
 
-### Rollback
+| `outcome:` tag | Means |
+|---|---|
+| `granted` | evidence derived and installed |
+| `precondition` | untrusted status fields, SIP/Secure Boot not reported enabled, or challenge loop stopping |
+| `invalid_binary_hash` | challenge `binary_hash` is not 64 lowercase hex |
+| `policy_unavailable` | release inventory snapshot missing |
+| `policy_not_required` | the release inventory does not require evidence |
+| `process_identity` | provider has no process public key or no valid attestation result (SE public key + serial) |
+| `runtime_gate` | `RuntimeVerified`, `RuntimeManifestChecked`, or `MetallibVerified` is still false for the provider |
+| `version_floor` | provider below the minimum version (expected for stragglers) |
+| `registration_hash_mismatch` | challenge hash differs from the registration-time hash |
+| `no_active_release` | hash matches no active release row (expected for dev builds) |
+| `metallib_mismatch` | release row's `metallib_hash` differs from the provider's |
 
-Shadow-stage failures are ordinary deploy failures. Before any rollback:
+If coverage stalls near zero in shadow, routing is unharmed: diagnose from the
+counters, fix release rows or the provider build, and do **not** flip enforce.
 
-1. Export evidence FIRST: `sudo docker logs coordinator > /tmp/candidate-<ts>.log`,
-   plus `/v1/stats` and the outcome counters.
-2. Then run the canonical rollback in
-   [`coordinator-deploy.md`](coordinator-deploy.md). It replaces the container
-   named `coordinator` with the previous image; the failed candidate container
-   is preserved under a `coordinator_fallback_<ts>`-style name by the
-   procedure's container swap. Do not `docker rm` any preserved candidate or
-   fallback container until its logs and state are archived (the 2026-08-31
-   investigation lost primary evidence to exactly that).
+### Stage 2 (enforce)
 
-## Stage 2 — enforcement flip
+| Phase | Requirement |
+|---|---|
+| During the grace | `release_policy_enforced` stays `false`; routing identical to shadow; coverage rebuilds as providers re-challenge |
+| After the grace | `release_policy_enforced` flips `true`; per-model `routable_providers` in `/v1/models/capacity` stays within a few percent of `with_evidence`; no capacity drop; no change in 429 rate |
 
-### Prerequisites
+## Rollback
 
-- Stage 1 verification has held for ≥ 24 hours.
-- Per-model coverage (`application_evidence_models`) shows
-  `with_evidence` ≈ `routable` for every model, and fleet-wide
-  `application_evidence_providers` ≈ `application_evidence_connected`.
-- Human approval for the flip as a distinct operation.
+**Stage 1 (shadow) failures** are ordinary deploy failures. Export evidence
+first, then run the rollback in [`coordinator-deploy.md`](coordinator-deploy.md):
 
-### Steps
+```bash
+sudo docker logs coordinator > /tmp/candidate-$(date +%Y%m%d-%H%M%S).log 2>&1
+curl -fsS https://api.darkbloom.dev/v1/stats > /tmp/candidate-stats.json
+```
 
-1. Set `EIGENINFERENCE_RELEASE_POLICY_MODE=enforce` in
-   `/etc/d-inference/env`. Leave
-   `EIGENINFERENCE_RELEASE_POLICY_ENFORCE_GRACE` unset (20m default) unless a
-   longer grace is wanted.
-2. Recreate the container per [`coordinator-deploy.md`](coordinator-deploy.md).
-3. Confirm the startup log prints the ENFORCED warning with `boot_grace=20m0s`.
+The swap procedure keeps the previous container as
+`coordinator_fallback_<timestamp>`; after rolling back, the failed candidate is
+likewise preserved. Do not `docker rm` any preserved container until its logs
+are archived — the 2026-08-31 investigation lost primary evidence that way.
 
-### Verification
+**Stage 2 (enforce) misbehaviour** needs no image change: set
+`EIGENINFERENCE_RELEASE_POLICY_MODE=shadow` in `/etc/d-inference/env` and
+recreate the container with the same image. This is the incident lever.
 
-- During the grace: routing identical to shadow (`release_policy_enforced`
-  in `/v1/stats` stays `false`); coverage rebuilds as providers re-challenge.
-- After the grace elapses: `release_policy_enforced` flips `true`; routable
-  provider counts stay within a few percent of `application_evidence_providers`;
-  no capacity drop; no 429-rate change; per-model capacity unchanged.
+## Invariants for anyone changing the gate
 
-### Rollback
+1. A new global trust gate ships in shadow first; enforcement is a separate,
+   human-approved action after live coverage is proven.
+2. `deriveApprovedReleaseTransition` and `releaseEvidenceStillApproved`
+   (`coordinator/api/server.go`) compare the same fact set. Changing one side
+   desynchronises grant from sweep and wipes evidence on every policy rebuild.
+3. Never add a release-row fact to evidence derivation unless the production
+   provider build demonstrably reports it — check
+   `provider-swift/Sources/ProviderCore/Security/` and
+   `provider-swift/Sources/ProviderCore/ProviderLoop+AttestationChallenge.swift`
+   first.
+4. Do not lower the boot grace for a production flip; the code clamps it to
+   20m for this reason.
+5. Registering a release must never deroute the fleet on the previous
+   release. The runtime manifest is the union of every active release's
+   hashes, so v(N−1) and v(N) both pass their challenges through the
+   self-update window; hashes leave the manifest only when their release is
+   deactivated ([`provider-release.md` → Rollback](provider-release.md#rollback)).
+   Mechanism, flags, and the 2026-09-03 brownout that motivated the rule:
+   [runtime manifest](../architecture/security/attestation.md#runtime-manifest).
 
-Set `EIGENINFERENCE_RELEASE_POLICY_MODE=shadow` and recreate the container —
-no image change. This is the incident lever if enforcement ever misbehaves.
+## Related
+
+- [`coordinator-deploy.md`](coordinator-deploy.md) — the container swap, env
+  refresh, and rollback used by both stages.
+- [`provider-release.md`](provider-release.md) — how release rows
+  (binary hash, metallib hash, active flag) get registered.
+- [`../architecture/security/attestation.md`](../architecture/security/attestation.md)
+  — the challenge loop that produces the evidence.
+- [`../reference/configuration.md`](../reference/configuration.md) — every
+  coordinator environment variable.
+- [`../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md`](../reports/2026-08-31-coordinator-agent-deployment-failure-postmortem.md)
+  — the incident that shaped this runbook.

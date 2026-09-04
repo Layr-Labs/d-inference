@@ -1,177 +1,136 @@
-# Beta Features
+# Beta features
 
-Beta features are experimental provider capabilities with feature-specific
-defaults. The benchmark-selected Gemma stack is **on by default**, including for
-existing configs that omit its section; reserved and opt-in features remain off
-until enabled. Every feature can be changed per provider.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## How beta features are toggled
+Turn experimental engine behaviour on or off per machine with `darkbloom beta`,
+which writes keys into `provider.toml` so every serve path (LaunchAgent daemon,
+`--foreground`, `--local`) sees the same value. For operators; the result is a
+durable, restart-safe toggle plus a clear picture of which environment
+variables still do anything.
 
-Beta features are **config-backed**. Each one is a field in your provider TOML
-config (`~/.config/darkbloom/provider.toml`), and that config is authoritative
-for daemon, `--foreground`, and `--local` processes. Low-level environment
-variables are implementation details, not an independent production control
-surface. Process-wide optimization state is resolved at startup, so restart
-after changing a restart-required feature.
+Beta toggles are config-backed on purpose: the launchd daemon inherits only a
+short allow-list of `DARKBLOOM_*` variables (see
+[CLI reference → LaunchAgent environment passthrough](./cli-reference.md#launchagent-environment-passthrough)),
+so an environment-variable toggle would silently no-op for the normal daemon
+(`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift`, `BetaFeature`).
 
-The registry of available features lives in
-`BetaFeatures.all` in
-`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:73-133`.
+## Prerequisites
 
-### Canonical implementation references
+- Provider installed ([installation](./installation.md)).
+- Know which config file the daemon reads: `~/.config/darkbloom/provider.toml`
+  unless you pass `--config` to both `darkbloom beta` and `darkbloom start`.
 
-- Default-on decoding for omitted keys is implemented by
-  `GemmaOptimizationSettings.init(from:)` in
-  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:29-35`.
-  The missing-section fallback is `ProviderConfig.init(from:)` in
-  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:391-400`.
-- Startup projection before the first MLX device access (daemon, foreground,
-  `--local`, and `benchmark` processes): the shared ordering seam is
-  `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`
-  (`ServeRuntimePreparer.prepareRuntime`); the serve path calls it through
-  `Start.prepareServeRuntime` at
-  `provider-swift/Sources/darkbloom/StartCommand.swift:84-91,128-147`.
-  `Benchmark.run` rejects a conflicting shell override at
-  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:147-159`, prepares
-  the runtime at `:160-165`, and reports the effective controls at `:166-170`.
-  The guard helper is `ServeRuntimePreparer.conflictingEnvironmentOverride`
-  in `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:48-79`.
-- The config→environment projection and its overwrite authority:
-  `GemmaOptimizationEnvironment.projection(for:)` in
-  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:10-23`
-  and `GemmaOptimizationEnvironment.apply(_:)` at `:52-64`.
-- The `benchmark`-selected coupling of weighted unsort with safe R1 as one
-  control: `GemmaOptimizationSettings.weightedR1` in
-  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:10-14`.
+## Steps
 
-## The `darkbloom beta` command
+1. List the features this build knows about:
 
-```bash
-darkbloom beta list                 # show all beta features and whether each is on (default)
-darkbloom beta status [feature]     # show details for all features, or one
-darkbloom beta enable <feature>     # turn a feature on
-darkbloom beta disable <feature>    # turn a feature off
-```
+   ```bash
+   darkbloom beta            # same as `darkbloom beta list`
+   darkbloom beta list --json
+   ```
 
-`enable`/`disable` perform a read-modify-write of the TOML config and print
-whether a restart is required. For example, to roll back the default-on coupled
-Gemma expert optimization:
+   Each line shows `[on]`, `[off]` or `[auto]` and the one-line summary
+   (`Beta.List`, `provider-swift/Sources/darkbloom/BetaCommand.swift`).
 
-```bash
-darkbloom beta disable gemma-weighted-r1
-darkbloom restart
-```
+2. Read the details and current posture of one feature:
 
-The restart is the activation boundary. Re-enable and restart to restore the
-selected default. You can also see which beta features are active in
-`darkbloom status` (the `Beta features:` line), or edit the TOML directly.
+   ```bash
+   darkbloom beta status mtp
+   darkbloom beta status      # every feature
+   ```
 
-## Available features
+3. Toggle it:
 
-### `gemma-prefill-layer18` — layer-18 prefill submission
+   ```bash
+   darkbloom beta enable mtp
+   darkbloom beta disable gemma-weighted-r1
+   ```
 
-This optimization submits queued Gemma prefill work every 18 transformer
-layers instead of waiting for one final submission. It defaults ON for both new
-and pre-existing provider configs.
+   `setBetaFeature` loads the config, takes an exclusive lock on the file,
+   reloads inside the lock, writes the feature's key, and saves. An absent key
+   is always written on an explicit toggle, so a future default flip cannot
+   silently move your provider; `… is already enabled.` is printed only when
+   the file already pins the requested value. Without `--config`, the write
+   goes to the canonical `~/.config/darkbloom/provider.toml` even if the
+   snapshot was just migrated from a legacy location. Unknown ids exit with
+   `Unknown beta feature '<id>'. Available: …`.
 
-```toml
-[gemma_optimizations]
-prefill_layer18 = true
-```
+4. Restart when told to. Every current feature is a process-start latch:
 
-Rollback is config-backed and restart-required:
+   ```bash
+   darkbloom restart
+   ```
 
-```bash
-darkbloom beta disable gemma-prefill-layer18
-darkbloom restart
-```
+## Features in v0.8.16
 
-Setting the key to `false` (or using the command above) restores the legacy
-one-final-submission behavior after restart.
+`BetaFeatures.all` (`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift`):
 
-### `gemma-weighted-r1` — coupled weighted unsort + safe R1
+| Id | `provider.toml` key | Default | Restart | Effect |
+|---|---|---|---|---|
+| `gemma-prefill-layer18` | `[gemma_optimizations] prefill_layer18` | `true` | yes | Submit Gemma prefill work every 18 layers. Disable to restore the legacy one-final-submission prefill. Projected into the process as `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18` / `0` |
+| `gemma-weighted-r1` | `[gemma_optimizations] weighted_r1` | `true` | yes | Coupled weighted-unsort + safe exact-shape R1 expert paths for Gemma MoE; neither half can be selected alone. Projected as `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1/0` and `MLX_GATHER_QMM_EXPERT_SLICES=trust/0` |
+| `mtp` | `[backend] mtp_mode` | `auto` | yes | Multi-token prediction (speculative decoding) on CBv2 targets. `auto` turns MTP on for Qwen 3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares an embedded head after artifact validation, and leaves other models target-only. `enable` writes `on` (required for separately published catalog assistants and `mtp_drafter_path` overrides); `disable` writes `off`. Resolution and load fail open to target-only decode |
 
-This optimization defaults ON and is deliberately one atomic production
-control. It enables both the direct weighted expert reduction and the safe
-exact-shape R1 QMM path. There is no supported config or beta combination that
-enables one without the other.
+`darkbloom beta list` shows `auto (model-aware)` for MTP until you pin it;
+`darkbloom status` prints the resulting per-slot MTP and KV posture.
 
-```toml
-[gemma_optimizations]
-weighted_r1 = true
-```
+## Environment variables and precedence
 
-To roll back both paths together:
+| Variable | Relationship to the toggle | Source |
+|---|---|---|
+| `DARKBLOOM_CBV2_MTP` | Process-wide **kill switch**: `0`, `false`, `no` or `off` disables MTP regardless of `mtp_mode`; any other value, or unset, defers to config. On the LaunchAgent passthrough list | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` (`killSwitchEnabled`) |
+| `DARKBLOOM_CBV2_PAGED_KV` | Kill switch for the paged KV backend (`0` forces contiguous everywhere) — not a beta feature; paged is selected with `[backend] engine_v2_kv_backend = "paged"` or the per-model table. There is no env var that turns paged on. Passthrough-listed | `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift` (`killSwitchEnvKey`) |
+| `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT`, `MLX_GATHER_QMM_EXPERT_SLICES` | **Outputs**, not inputs: `GemmaOptimizationEnvironment.apply` overwrites them from config at every serve start. The single exception is a shell `MLX_GATHER_QMM_EXPERT_SLICES=1`, which restores the descriptor-retract drain instead of the `trust` default and is copied into the daemon plist for that reason | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` (`projection`, `daemonDrainPassthrough`) |
+| `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | Tighten-only cap on MTP verification width; passthrough-listed | [`reference/configuration.md`](../reference/configuration.md) |
 
-```bash
-darkbloom beta disable gemma-weighted-r1
-darkbloom restart
-```
+Order of precedence for MTP at load time: kill switch off → target-only;
+otherwise `mtp_mode` (`on` / `off` / `auto`) → artifact validation → fail-open
+to target-only.
 
-Missing `[gemma_optimizations]` sections and missing keys decode as `true`, so
-old configs receive the selected v0.8.2 stack. An explicit `false` plus restart
-is the durable rollback.
+## Retired
 
-### `mtp` — multi-token prediction (speculative decoding)
+Setting any of these prints one `warning: … RETIRED knob and is IGNORED` line at
+every `darkbloom start` and changes nothing
+(`provider-swift/Sources/ProviderCore/Config/RetiredKnobWarnings.swift`).
 
-The default `mtp_mode = "auto"` activates MTP **automatically** for Qwen
-3.5-family checkpoints (`qwen3_5`, `qwen3_5_moe`) whose `config.json` declares
-an embedded head (`mtplx_mtp.included = true`) — no beta toggle required. The
-policy travels with the weights: a checkpoint without an embedded declaration
-serves target-only under `auto` and is never asked about (decision:
-`MTPMode.enablesMTP` in
-`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:98-113`;
-declaration probe: `SpecDecStore.inlineDeclarationProbe` in
-`provider-swift/Sources/ProviderCore/SpecDec/SpecDecStore.swift:438-449`).
-The explicit rollback is:
+Environment variables (`EngineV2Config.retiredEnvironmentKeys`,
+`provider-swift/Sources/ProviderCore/Inference/EngineV2Config.swift`):
+
+| Variable | Was |
+|---|---|
+| `DARKBLOOM_ENGINE_V2` | Engine-v2 master flag; there is one engine now |
+| `DARKBLOOM_ENGINE_V2_MODELS` | Engine-v2 model allow-list |
+| `DARKBLOOM_COMPILED_DECODE` | Legacy compiled-decode switch |
+| `DARKBLOOM_GEMMA_B1_FAST_PATH` | Legacy Gemma batch-1 fast path |
+| `DARKBLOOM_B1_GREEDY_FAST_PATH` | Legacy batch-1 greedy fast path |
+| `DARKBLOOM_KV_GPTOSS_KERNEL` | Legacy GPT-OSS KV kernel switch |
+| `DARKBLOOM_ADAPTIVE_PREFILL_ALLOW_8192` | Legacy adaptive-prefill cap |
+| `DARKBLOOM_KV_CAPTURE_MAX_INFLIGHT` | Legacy checkpoint-capture inflight cap |
+| `DARKBLOOM_PREFIX_CACHE_MIN_PERSIST_TOKENS` | Legacy SSD prefix-cache per-persist threshold |
+
+`DARKBLOOM_PREFIX_CACHE`, `DARKBLOOM_PREFIX_CACHE_DISK_GB` and
+`DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` are **not** retired; the SSD offload
+tier re-adopted them. Their semantics are in
+[`reference/configuration.md`](../reference/configuration.md).
+
+`provider.toml` keys (`BackendSettings.RetiredCodingKeys`,
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`): `[backend]
+continuous_batching`, `adaptive_prefill`, `engine_v2`, `legacy_compiled_decode`,
+`kv_quant`. Delete them from the file to silence the warnings. The former beta
+ids `adaptive-prefill` and `kv-quant` no longer exist.
+
+## Verify
 
 ```bash
-darkbloom beta disable mtp
-darkbloom restart
+darkbloom beta list
+grep -A3 '^\[gemma_optimizations\]' ~/.config/darkbloom/provider.toml
+grep mtp_mode ~/.config/darkbloom/provider.toml
+darkbloom status         # per-slot KV/MTP posture after restart
 ```
 
-Enabling the beta writes the explicit **on** override, which is required for
-everything that is *not* an embedded head: separately published catalog
-assistants resolved through the target's `metadata.spec_dec` pointer (the
-public catalog publishes one for `gemma-4-26b-qat-4bit`,
-[live catalog](https://api.darkbloom.dev/v1/models/catalog?type=text)) and
-local `[backend] mtp_drafter_path` overrides:
+## Related
 
-```bash
-darkbloom beta enable mtp
-darkbloom restart
-```
-
-Artifact resolution and target-only fallback are in
-`ProviderLoop.specDecPreparation` at
-`provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift:42-71`.
-
-The implementation has target-authoritative verification and focused parity
-coverage. That is not a universal certification of token-identical behavior on
-every M1, M2, M3, or unknown Apple chip/model combination. Those hardware
-cohorts require separate canaries and the supervised benchmark matrix before
-activation. Provider publication, exact-cache routing activation, and MTP
-activation are three independent rollout decisions.
-
-## Retired features
-
-### `kv-quant` — removed in v0.8.0
-
-KV-cache quantization has been removed from the product. `darkbloom beta
-enable kv-quant` now fails with `Unknown beta feature 'kv-quant'`.
-
-The `[backend] kv_quant` TOML key is **retired, not rejected**: a
-`provider.toml` that still sets it loads normally and keeps every other
-setting. The value is ignored and startup logs one warning per retired key:
-
-```
-provider.toml sets [backend] kv_quant, which is a RETIRED knob and is IGNORED — remove the key
-```
-
-Remove the line to silence it. Any config the provider rewrites (for example
-via `darkbloom beta enable mtp`) sheds retired keys automatically.
-
-No provider ever served quantized KV: v0.7.5 through v0.7.15 already served
-fp16-only KV and warned that the setting did not apply, so removing it
-changes no serving behaviour, memory footprint, or capacity. Quantized paged
-pages are separate future work.
+- [CLI reference](./cli-reference.md) — `beta` flags, config keys and defaults, passthrough list.
+- [`reference/configuration.md`](../reference/configuration.md) — every environment variable.
+- [Troubleshooting](./troubleshooting.md) — KV-backend guard and `RETIRED knob` warnings.
+- [Direct mode](./direct-mode.md) — beta features apply to the local endpoint too.

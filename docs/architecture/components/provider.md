@@ -1,80 +1,122 @@
-# Provider
+# Provider process
 
-The provider is the Apple Silicon Mac node that runs inference. It is implemented in Swift as the `darkbloom` CLI, with shared logic in `ProviderCore`, a small `darkbloom-enclave` helper for attestation/signing operations, and an optional minimal root helper for experimental fan control. The provider connects outbound to the coordinator over WebSocket, decrypts prompts in-process, runs inference via `mlx-swift-lm`, and encrypts responses back to the coordinator.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-The provider is the decryption endpoint for prompts. Its hardened process and Secure Enclave-bound identity are the core privacy guarantee.
+The provider is the Apple Silicon Mac that decrypts prompts and runs inference.
+It ships as one Swift package (`provider-swift/`) producing the `darkbloom` CLI,
+a `darkbloom-enclave` helper and an optional `darkbloom-fan-helper`, all built
+on the `ProviderCore` library and the three pinned MLX submodules described in
+[`mlx-swift.md`](mlx-swift.md). This page maps the process's components; the
+inference path itself is in [`../inference.md`](../inference.md).
 
-## Responsibilities
+## Context
 
-| Responsibility | Where it lives |
+The provider connects outbound to the coordinator over WebSocket, decrypts each
+request in-process with its X25519 node key, serves it through one in-process
+CBv2 engine per resident model, and encrypts the response back. It is the
+decryption endpoint of the hop-by-hop model
+([`../security/encryption.md`](../security/encryption.md)), so everything that
+touches plaintext — template rendering, tokenisation, the engine, the KV cache —
+lives inside this one hardened process. `ProviderCore.version = "0.8.16"`
+(`provider-swift/Sources/ProviderCore/ProviderCore.swift`).
+
+## Mechanism
+
+### Binaries and libraries (`provider-swift/Package.swift`)
+
+| Product | Kind | Role |
+|---|---|---|
+| `darkbloom` | executable | CLI: `start`, `status`, `doctor`, `logs`, `benchmark`, `models`, `fan`, `watchdog`; long-running serve modes host an `NSApplication(.accessory)` run loop for APNs pushes (`provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift`) |
+| `darkbloom-enclave` | executable | Secure Enclave helper used by `coordinator/api/install.sh` before the daemon runs: `attest`, `sign`, `info`, `wallet-address` (`provider-swift/Sources/darkbloom-enclave-cli/`); the installer keeps an `eigeninference-enclave` symlink |
+| `darkbloom-fan-helper` | executable | Opt-in root LaunchDaemon for fan control; never installed by default (`provider-swift/Sources/DarkbloomFanHelper/`) |
+| `ProviderCore` | library | Everything below; shared by the CLI and helpers |
+| `ProviderCoreFoundation` | library | Pure-Foundation pieces also linked by publish tooling: `WeightHasher`, `PromptContractIdentity`, `TemplateRenderCheck`, `ModelScanner`, `Manifest` (`provider-swift/Sources/ProviderCoreFoundation/`) |
+| `DarkbloomFanCore`, `DarkbloomFanProtocol`, `DarkbloomFanService` | libraries | SMC access, XPC boundary and lease validation for the fan helper |
+
+### `ProviderCore` components
+
+| Component | Responsibility | Code |
+|---|---|---|
+| Coordinator client | WebSocket connection, reconnection backoff, protocol codec, registration | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientCodec.swift` |
+| `ProviderLoop` (actor) | Event loop: inference requests and cancellations, `load_model` / `prefetch_model` / `desired_models`, heartbeats and capacity, attestation challenges, startup preload, idle timeout, auto-update | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` and its `ProviderLoop+*.swift` extensions |
+| Inference | `MultiModelBatchSchedulerEngine` → one `EngineV2Bridge` per model → CBv2; slot construction, memory model, deadlines, MTP, vision | `provider-swift/Sources/ProviderCore/Inference/` — [`../inference.md`](../inference.md), [`../hardware-support.md`](../hardware-support.md) |
+| KV cache tiers | Encrypted SSD prefix cache (`KVCacheSSD/`) plus the legacy sweeper and key-wrapping service (`KVCache/`); no RAM prefix tier in production | `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/KVCache/` — [`../prefix-cache.md`](../prefix-cache.md) |
+| Model discovery and download | Scan of the Hugging Face cache, quantization detection, padded memory estimate, catalog client, prefetch and hot-swap | `provider-swift/Sources/ProviderCore/Models/`, `provider-swift/Sources/ProviderCore/Server/ModelPrefetchCoordinator.swift` |
+| Local / standalone serving | OpenAI-compatible HTTP on loopback or tailnet (`start --local`, `--local-endpoint`) using the upstream `MLXLMServer` router over the same engine | `provider-swift/Sources/ProviderCore/Server/StandaloneServer.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift` |
+| Security and identity | Secure Enclave P-256 identity, attestation blob, APNs code-identity, anti-debug, environment scrub, SIP/boot checks | `provider-swift/Sources/ProviderCore/Security/`, `provider-swift/Sources/ProviderCore/Apns/APNsBridge.swift` — [`../security/attestation.md`](../security/attestation.md) |
+| Crypto | X25519 node keypair; NaCl Box via `swift-sodium` for the coordinator wire | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift` |
+| Service management | launchd agents for the provider and the crash-recovery watchdog (`io.darkbloom.watchdog`), env allowlist (`passthroughEnvKeys`), daemon state file, sleep prevention | `provider-swift/Sources/ProviderCore/Service/LaunchAgent.swift`, `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift`, `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`, `provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift` |
+| Hardware and telemetry | Chip identity, memory, thermal state; request profiles and telemetry allowlists | `provider-swift/Sources/ProviderCore/Hardware/`, `provider-swift/Sources/ProviderCore/Telemetry/` — [`../telemetry.md`](../telemetry.md) |
+
+```mermaid
+flowchart LR
+    Coord[coordinator] -- WebSocket, NaCl Box --> CC[CoordinatorClient]
+    CC --> PL[ProviderLoop]
+    PL --> MM[MultiModelBatchSchedulerEngine]
+    LH[StandaloneServer / LocalInferenceHTTP] --> MM
+    MM --> B1[EngineV2Bridge model A]
+    MM --> B2[EngineV2Bridge model B]
+    B1 --> E[CBv2 EngineV2 → Metal]
+    B2 --> E
+    B1 -. paged slots only .-> SSD[SSDPrefixCache kv3/]
+    PL --> SE[Secure Enclave identity / attestation]
+```
+
+### Process boundaries
+
+- **In-process inference.** The MLX stack is linked into the `darkbloom`
+  binary; there is no Python interpreter and no inference subprocess. The only
+  child processes are the paged-kernel preflight (`PagedKernelPreflight`,
+  `runtime-smoke`) and the launchd-managed watchdog. The optional local HTTP
+  endpoint serves from the same loaded models in the same process.
+- **Fan helper.** A separate root LaunchDaemon that accepts an activity lease
+  only from the exact Darkbloom signing identity and can write only the SMC fan
+  keys exposed by `DarkbloomFanCore`; it receives no prompts, keys or network
+  (`provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift`,
+  `provider-swift/Sources/DarkbloomFanHelper/FanXPCService.swift`).
+- **promptsidecar** is a coordinator-side process; the provider computes the
+  same contract identity locally and never talks to it
+  ([`../prompt-contract-sidecar.md`](../prompt-contract-sidecar.md)).
+
+## Invariants
+
+1. Prompts are decrypted only inside this process and never logged; logs carry
+   request ids, model ids and token counts — `ProviderLoop+InboundDecode.swift`,
+   `ProviderLoop+InferenceHandler.swift`.
+2. The X25519 private key is generated in-process and never leaves the Mac —
+   `Crypto/NodeKeyPair.swift`.
+3. The SE P-256 identity binds the node key, binary hash, SIP and boot state
+   into every attestation — `Security/AttestationBuilder.swift`,
+   `Security/PersistentEnclaveKey.swift`.
+4. Installed daemons receive only allowlisted environment variables —
+   `Service/LaunchAgent.swift` (`passthroughEnvKeys`).
+5. One `EngineV2Bridge` per resident model, at most `max_model_slots` (default
+   `3`) — `ProviderLoop+ModelLoading.swift`, `Config/ProviderConfig.swift`.
+
+## Failure modes
+
+| Symptom | Cause | Where |
+|---|---|---|
+| Daemon exits at start | Metal or RAM preflight failed ([`../hardware-support.md`](../hardware-support.md)) | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` |
+| Provider offline after a crash | Watchdog agent stopped or persistently disabled | `Service/WatchdogAgent.swift` |
+| Env knob has no effect on the installed daemon | Not in `passthroughEnvKeys` | `Service/LaunchAgent.swift` |
+| Attestation trust downgraded | SIP off, boot-security warning, or stale APNs code-identity | `Security/BootSecurity.swift`, `Apns/APNsBridge.swift` — [`../../provider/attestation.md`](../../provider/attestation.md) |
+
+## Code map
+
+| Concern | Path |
 |---|---|
-| CLI entry point and subcommand dispatch | `provider-swift/Sources/darkbloom/main.swift`, `provider-swift/Sources/darkbloom/Darkbloom.swift` |
-| Coordinator WebSocket client and protocol codec | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient.swift`, `CoordinatorClientCodec.swift` |
-| Main event loop: requests, heartbeats, challenges, model swaps | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
-| Secure Enclave identity, attestation signing, code-identity | `provider-swift/Sources/ProviderCore/Security/SecureEnclaveIdentity.swift`, `AttestationSigner.swift`, `AttestationBuilder.swift` |
-| Batch scheduling and inference engine bridge | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift`, `EngineV2Runtime.swift`, `MultiModelBatchSchedulerEngine.swift` |
-| Model discovery, weight hashing, prefetch/hotswap | `provider-swift/Sources/ProviderCore/Models/ModelScanner+Discovery.swift`, `Server/ModelPrefetchCoordinator.swift` |
-| In-process local OpenAI-compatible HTTP endpoint (optional unified mode) | `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`, `StandaloneServer.swift` |
-| Crypto: NaCl Box, node keypair, response encryption | `provider-swift/Sources/ProviderCore/Crypto/NodeKeyPair.swift`, `X25519ChaChaPoly.swift` |
-| KV cache, prefix caching, disk accounting | `provider-swift/Sources/ProviderCore/KVCache/` |
-| Security hardening: anti-debug, env scrub, SIP checks | `provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift`, `EnvironmentScrubber.swift`, `AntiDebug.swift` |
-| Opt-in fan policy, AppleSMC access, signed provider lease | `provider-swift/Sources/DarkbloomFanCore/`, `DarkbloomFanHelper/`, `darkbloom/FanActivityLease.swift` |
+| CLI | `provider-swift/Sources/darkbloom/` |
+| Enclave helper | `provider-swift/Sources/darkbloom-enclave-cli/` |
+| Core library | `provider-swift/Sources/ProviderCore/` |
+| Foundation-only library | `provider-swift/Sources/ProviderCoreFoundation/` |
+| Fan control | `provider-swift/Sources/DarkbloomFanCore/`, `provider-swift/Sources/DarkbloomFanProtocol/`, `provider-swift/Sources/DarkbloomFanService/`, `provider-swift/Sources/DarkbloomFanHelper/` |
+| Tests | `provider-swift/Tests/` |
 
-## Key modules
+## Related
 
-### CLI (`provider-swift/Sources/darkbloom/`)
-
-`main.swift` is the entry point. Long-running serve modes (`start --foreground`, `start --local`) are hosted under an `NSApplication(.accessory)` run loop so the process can receive APNs code-identity pushes; other commands run through ArgumentParser's async dispatch. `Darkbloom.swift` declares the top-level `AsyncParsableCommand`, including the opt-in experimental `fan` command.
-
-### ProviderCore
-
-`ProviderCore` is a Swift library shared by the CLI and the enclave helper. It contains:
-
-- **Coordinator client** (`Coordinator/`): maintains the WebSocket connection, reconnection backoff, and the advertised model store.
-- **ProviderLoop** (`ProviderLoop.swift`): the actor-based event loop. It owns per-model inference slots (`modelSlots`), handles inference requests, cancellations, `load_model` / `prefetch_model` / `desired_models` messages, and attestation challenges.
-- **Inference** (`Inference/`): `MultiModelBatchSchedulerEngine` translates OpenAI requests and routes them to an `EngineV2Bridge`. Each loaded model gets one EngineV2 slot with continuous batching and prefix caching; `EngineV2Runtime` coordinates capacity and cancellation across slots.
-- **Security** (`Security/`): Secure Enclave key generation, attestation blob construction, code-identity response handling, and runtime hardening checks.
-- **Crypto** (`Crypto/`): X25519 keypair for E2E encryption and ChaCha20-Poly1305 helpers used in some local paths. The coordinator↔provider wire uses NaCl Box via `swift-sodium` for cross-language compatibility with Go `nacl/box`.
-- **KV cache** (`KVCache/`, `KVCacheSSD/`): the default-on encrypted SSD production prefix cache and the global live-KV budget. Production does not carve memory for a resident-RAM prefix tier.
-
-### Attestation and identity
-
-At startup the provider creates or loads a persistent Secure Enclave P-256 identity (`Security/PersistentEnclaveKey.swift`) and an X25519 node keypair (`Crypto/NodeKeyPair.swift`). The attestation blob signed by the SE key contains hardware identity, SIP/Secure Boot state, the X25519 public key, and the provider binary hash. The coordinator verifies the signature and binds the X25519 key to that identity.
-
-APNs code-identity attestation (v0.6.0+) is implemented in `ProviderCore/Apns/APNsBridge.swift`. The coordinator pushes an encrypted nonce to the device token; the provider decrypts it with its SE-bound key and returns a signature over the WebSocket connection.
-
-### darkbloom-enclave helper
-
-`provider-swift/Sources/darkbloom-enclave-cli/` is a small executable that wraps Secure Enclave attestation/signing helpers. It is used by `install.sh` to render an attestation blob before the main provider daemon is running. Subcommands include `attest`, `sign`, `info`, and `wallet-address`.
-
-### Experimental fan helper
-
-`provider-swift/Sources/DarkbloomFanHelper/` is a separate root LaunchDaemon that
-can write only the fan-related AppleSMC keys exposed by `DarkbloomFanCore`. It is
-not installed during ordinary provider setup. Explicit `sudo darkbloom fan
-enable` copies the independently signed executable to
-`/Library/PrivilegedHelperTools` and binds it to one provider UID.
-
-The helper accepts an activity lease only from the exact Darkbloom Developer ID
-team and provider signing identifier. It receives no prompts, model data,
-credentials, or network access. Lease expiry, XPC invalidation, sleep, thermal
-pressure, and write failures restore macOS automatic fan mode. The boundary is
-defined in `DarkbloomFanProtocol/FanIPC.swift`, `DarkbloomFanService/`, and
-`DarkbloomFanHelper/FanXPCService.swift`.
-
-## Privacy-relevant boundaries
-
-- **Provider as decryption endpoint**: The provider's X25519 private key is generated in-process and never leaves the Mac. Only this process can open the coordinator's per-request NaCl Box. See `Crypto/NodeKeyPair.swift` and the decryption path in `ProviderLoop.swift`.
-- **In-process inference**: Inference runs inside the `darkbloom` process via `mlx-swift-lm`. There is no subprocess or local server that another process can observe. The optional local HTTP endpoint (`LocalInferenceHTTP.swift`) serves from the same loaded models but is still in-process.
-- **Secure Enclave binding**: The SE P-256 identity and the X25519 node key are bound to the provider binary and machine. Attestation challenges prove liveness and fresh SIP/Secure Boot status.
-- **Memory and disk**: Model weights and live KV use unified memory. The default prefix-cache tier stores encrypted blocks on SSD with a Secure-Enclave-wrapped KEK and leaves serving RAM for live KV. See `KVCacheSSD/SSDPrefixCache.swift`, `KVCache/EncryptedKVStore.swift`, and `KVCache/SecureEnclaveKeyWrappingService.swift`.
-- **No prompt logging**: The provider decrypts prompts only to feed the inference engine. It does not log prompt content; logs contain request IDs, model IDs, and token counts.
-- **Fan-helper IPC**: Optional fan control adds a semantic local XPC lease, not an inference IPC path. The root helper cannot receive prompt or key material and exposes no arbitrary SMC operation.
-
-For the hop-by-hop encryption model, see [`../security/encryption.md`](../security/encryption.md) and the coordinator-side description in [`coordinator.md`](coordinator.md).
-
-## Outdated claims corrected
-
-- The old `ARCHITECTURE.md` listed two binaries (`darkbloom` and `darkbloom-enclave`) and described `darkbloom-enclave` as legacy-named `eigeninference-enclave`. The current `Package.swift` produces `darkbloom-enclave` as a first-class helper; the legacy symlink is retained by `install.sh` for backward compatibility.
-- The old doc claimed inference is "in-process" with no IPC. This remains true for the Swift `mlx-swift` backend, but the optional unified local endpoint (`LocalInferenceHTTP.swift`) exposes an in-process HTTP server surface for the same models.
-- The old doc's claim that "Python path is locked to signed bundle" refers to the deprecated Python/inprocess-MLX backend, which is no longer routable.
+- [`mlx-swift.md`](mlx-swift.md) — the three pinned submodules and the metallib
+- [`../inference.md`](../inference.md), [`../prefix-cache.md`](../prefix-cache.md), [`../hardware-support.md`](../hardware-support.md)
+- [`../security/encryption.md`](../security/encryption.md), [`../../provider/attestation.md`](../../provider/attestation.md)
+- [`coordinator.md`](coordinator.md) — the other side of the WebSocket
+- [`../../provider/cli-reference.md`](../../provider/cli-reference.md), [`../../provider/fan-control.md`](../../provider/fan-control.md)

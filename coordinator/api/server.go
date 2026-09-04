@@ -2948,7 +2948,7 @@ func (s *Server) routes() {
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
-	// See docs/architecture/routing-telemetry-and-calibration.md §6. Handlers
+	// See docs/design/routing-telemetry-and-calibration.md §6. Handlers
 	// enforce admin auth internally via requireAdminKey.
 	s.mux.HandleFunc("GET /v1/admin/routes", s.handleAdminRoutes)
 	s.mux.HandleFunc("GET /v1/admin/routes/export", s.handleAdminRoutesExport)

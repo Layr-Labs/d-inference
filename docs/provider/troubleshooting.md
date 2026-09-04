@@ -1,246 +1,186 @@
-# Provider Troubleshooting
+# Provider troubleshooting
 
-Start every troubleshooting session with:
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-```bash
-darkbloom doctor --strict
-darkbloom status
-darkbloom logs --last 1h
-```
+Symptom → check → fix for the `darkbloom` provider: installer exits, `doctor`
+check names, service lifecycle, coordinator connection, updates, models and the
+KV-backend guard. For operators; every fix is a command you run on the Mac.
 
-## Installation issues
+## Prerequisites
 
-### `darkbloom: command not found`
-
-The installer adds `~/.darkbloom/bin` to `~/.zshrc` (or `~/.bashrc`). Either open
-a new shell or run:
+Start every session with the three read-only commands:
 
 ```bash
-source ~/.zshrc
+darkbloom doctor --strict      # ✓ / ⚠ / ✗ per check; exit 1 on any ⚠ or ✗
+darkbloom status               # config, hardware, live daemon snapshot
+darkbloom logs --last 1h       # unified logs, subsystem dev.darkbloom.provider
 ```
 
-### Bundle or binary hash mismatch
+`doctor` (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `Doctor`) and
+`status` read `~/.darkbloom/daemon-state.json`, which the daemon rewrites every
+`max(1, heartbeat_interval_secs / 2)` s. A snapshot older than the stale
+threshold is `STALE`; older than `max(8 × refresh period, stale threshold)` s
+and `doctor` reports the daemon as wedged
+(`provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`,
+`wedgedAfterSeconds`). The heartbeat default and the stale threshold are in
+[`cli-reference.md`](./cli-reference.md#runtime-constants).
 
-Re-run `darkbloom update` or reinstall with the one-liner. The coordinator's
-`/v1/releases/latest` record is the source of truth for expected hashes
-(`scripts/install.sh:67-155`).
+## Installer exits
 
-### Code signature warning
+All messages come from `scripts/install.sh`; each exits 1 and, once the download
+has started, leaves the previous install untouched.
 
-If `codesign --verify` fails, the binary may be modified or the Gatekeeper cache
-is stale. Re-download from the coordinator and verify again.
+| Message | Cause | Fix |
+|---|---|---|
+| `Error: Darkbloom requires macOS with Apple Silicon.` / `… requires Apple Silicon (arm64).` | `uname` ≠ `Darwin` or `uname -m` ≠ `arm64` (Rosetta shell included) | Run in a native `arm64` shell on an Apple Silicon Mac |
+| `Could not reach coordinator at …` | `GET $COORD_URL/v1/releases/latest` failed | Check network/DNS; `curl -fsSL https://api.darkbloom.dev/v1/releases/latest`. From a checkout, set `COORD_URL` (the source keeps the `__DARKBLOOM_COORD_URL__` placeholder) |
+| `Coordinator response missing required fields (url / bundle_hash / version).` | Release record incomplete | Coordinator-side release publishing problem; retry later |
+| `Bundle hash mismatch — refusing to install possibly-tampered binary.` | Tarball SHA-256 ≠ `bundle_hash` | Re-run; a proxy or partial download is the usual cause |
+| `Release bundle is missing required flat verifier files.` | No `bin/darkbloom`, `bin/darkbloom-enclave` or `bin/mlx.metallib` in the tarball | Bad release artifact; report it |
+| `Binary hash mismatch …` / `Metallib hash mismatch …` / `App binary hash mismatch …` / `App releases require binary_hash and metallib_hash.` | Staged file ≠ published hash, or an app release without both hashes | Re-run; if it persists the release record and artifact disagree |
+| `Staged Darkbloom.app does not satisfy the pinned signature requirement.` / `Legacy flat artifact does not satisfy …` | `codesign --verify --deep --strict -R=…` failed against `identifier "io.darkbloom.provider"`, Team `SLDQ2GJ6TL` | Do not install; the artifact is not the signed release |
+| `Fan-helper CLI capability, marker, and nested helper must be present together.` / `… marker is invalid.` / `Bundled fan helper must be a regular executable …` / `… must have mode 0755.` / `… does not satisfy the pinned helper signature requirement.` | Fan-helper capability triple inconsistent in the staged app | Bad artifact; report it |
+| `Paged-capable staged app is missing its signed capability marker.` / `Staged app advertises paged capability without paged runtime code.` / `Paged runtime capability marker is invalid.` / `… requires exactly one sealed MLXLMCommon pagedattention.metal.` | Paged-kernel marker ⇔ binary ⇔ resource mismatch | Bad artifact; report it |
+| `Packaged paged-kernel runtime smoke failed.` | `darkbloom runtime-smoke` could not load the packaged Metal runtime | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry; report with the macOS version |
+| `Atomic app swap failed; previous install was restored.` | `mv` into `~/.darkbloom` failed | Check free space and permissions on `~/.darkbloom` |
+| `Secure Enclave ⚠ (not available on this hardware …)` (warning, install continues) | `darkbloom-enclave info` failed | Trust stays below `hardware`; see [attestation](./attestation.md) |
+| `Enrollment ⚠ …` (warning) | Profile not installed, or `POST /v1/enroll` unreachable | `darkbloom enroll`, then install the profile in System Settings |
+| `darkbloom: command not found` after install | Shell not reloaded; rc file is `~/.zshrc`, or `~/.bashrc` only if `~/.zshrc` is absent | `source ~/.zshrc`, or `export PATH="$HOME/.darkbloom/bin:$PATH"` |
 
-## Startup issues
+## Doctor checks
 
-### `darkbloom start` fails immediately
+`darkbloom doctor` prints an operator diagnosis (sections attestation key,
+attestation readiness, trust, model fit, runtime, billing, version;
+`provider-swift/Sources/darkbloom/Diagnostics/DoctorRunner.swift`,
+`buildOperatorDiagnosis`) followed by `DETAILED CHECKS`
+(`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `buildDoctorChecks`,
+`buildCoordinatorDoctorChecks`). Check names are stable identifiers:
 
-Boot-security, debugger, and memory preflight checks are in
-`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:9-27`; Metal
-enforcement is in `Start.prepareServeRuntime`
-(`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`).
+| Check | What it tests | When it is not ✓ |
+|---|---|---|
+| `hardware`, `metal gpu`, `macos` | Chip/RAM detection, Metal device, OS version | Apple Silicon with a working GPU is required; nothing to configure |
+| `config` | `provider.toml` parses | Fix the TOML at `~/.config/darkbloom/provider.toml`; retired keys only warn |
+| `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |
+| `sip`, `authenticated root`, `hardened runtime`, `debugger`, `binary hash`, `rdma` | Boot security and process integrity the coordinator scores | `csrutil enable` from Recovery; detach debuggers; reinstall if the binary hash is unknown. Effects on trust: [attestation](./attestation.md) |
+| `account link` | `~/.darkbloom/auth_token` present and accepted | `darkbloom login` |
+| `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
+| `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
+| `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
+| `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
+| `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
+| `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
+| `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
+| `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
+| `competing inference` | Another inference server holds the GPU (`provider-swift/Sources/darkbloom/Diagnostics/CompetingInferenceDiagnostics.swift`) | Quit it; it competes for the same unified memory and GPU time |
+| `usage reporting` | Usage rows the coordinator has not acknowledged (`usageGaps > 0`) | Transient after reconnects; persistent gaps ⇒ `darkbloom report` |
+| `up to date` | `SelfUpdater.checkForUpdate`; also reports a quarantined release | See [updates](#updates) |
 
-| Error | Fix |
-|-------|-----|
-| `SIP disabled` | Reboot to Recovery and run `csrutil enable` |
-| `A debugger is attached` | Detach the debugger; the coordinator rejects debugged providers |
-| `This Mac has <8 GB RAM` | Upgrade RAM or use a different machine |
-| `Metal device not found` | Run on Apple Silicon with a working GPU |
-| `No models selected` | Run `darkbloom models catalog`, download a model, or pass `--model` |
+`darkbloom verify` runs the same set and exits 1 on any ⚠.
 
-### The daemon does not stay running
+## `darkbloom start` fails
+
+| Message | Cause | Fix |
+|---|---|---|
+| `--local and --local-endpoint are mutually exclusive …` | Both flags given | Pick one ([direct mode](./direct-mode.md)) |
+| `A debugger is attached. The coordinator will reject this provider.` | `checkDebuggerAttached()` | Detach the debugger |
+| `This Mac has N GB RAM. At least 8 GB is needed to serve any model.` | `Start.runPreflightChecks` (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`) | Use a larger machine ([hardware requirements](./hardware-requirements.md)) |
+| `Cannot start: …` | `Start.prepareServeRuntime` — `GPUEnforcement.requireMetal` failed, or the Gemma runtime environment could not be applied (`GemmaOptimizationEnvironment.apply`) | Confirm a Metal GPU (`system_profiler SPDisplaysDataType`); retry |
+| `Cannot start: hardware detection failed …` | `sysctl`/`system_profiler` failed | Retry; report the output of `sysctl machdep.cpu.brand_string hw.memsize` |
+| `No models selected.` | Picker cancelled or `--model` ids not local | `darkbloom models list`; `darkbloom models download <id>` |
+| `No engine-v2-capable models available to serve.` (`--local`) | Every local model's family lacks a CBv2 adapter | Download a supported family (gpt-oss, gemma-4) |
+| `Local server failed to bind <addr>:<port> within 5s` | Port in use | `--port <other>`, or stop the other process |
+| `Cannot start --local-endpoint: failed to create the local API token …` | `~/.darkbloom` not writable | Fix permissions, or `--no-auth` on a trusted network |
+| `warning: … RETIRED knob and is IGNORED` | A retired `[backend]` key or env var is set | Remove it; see [beta features](./beta-features.md#retired) |
+
+## The service does not stay running
 
 ```bash
-# Check if launchd loaded the agent
-launchctl list | grep darkbloom
-
-# View launchd logs
-log show --predicate 'subsystem == "dev.darkbloom.provider"' --last 30m
-
-# If the watchdog is misbehaving, stop cleanly and reinstall
-darkbloom stop --uninstall
-darkbloom start
+launchctl print gui/$(id -u)/io.darkbloom.provider | head   # loaded? last exit status?
+launchctl print gui/$(id -u)/io.darkbloom.watchdog | head
+tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 ```
 
-Common causes:
+| Symptom | Cause | Fix |
+|---|---|---|
+| Service gone after `darkbloom stop` and a reboot | `stop` disables the label; auto-start returns only with `darkbloom start` (`provider-swift/Sources/darkbloom/StopCommand.swift`) | `darkbloom start` |
+| Daemon exits and nobody restarts it | The provider plist has `KeepAlive = false`; restarts are the watchdog's job, armed only when `provider.auto_restart = true` | Set `auto_restart = true`; `darkbloom restart` re-arms it (`provider-swift/Sources/darkbloom/RestartCommand.swift`) |
+| Models unload after a while, daemon stays up | `backend.idle_timeout_mins` elapsed (default in the [`provider.toml` table](./cli-reference.md#providertoml-keys-read-by-the-cli)); reload is lazy on the next request (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`) | Expected. `idle_timeout_mins = 0` disables unloading |
+| Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
+| Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
+| `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
 
-- The user logged out, killing the GUI launchd agent. Enable automatic login and
-disable auto-logout-after-idle.
-- A crash triggered the watchdog; `darkbloom status` shows the recovery state.
-- `auto_restart = false` in `provider.toml`.
+## Coordinator connection
 
-## Connection issues
+| Symptom | Mechanism | Fix |
+|---|---|---|
+| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`ExponentialBackoff`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
+| Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
+| Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
+| `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
 
-### `WebSocket connection failed`
+## Updates
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| `vX is already installed on disk but this process is vY.` | Update landed, daemon not restarted | `darkbloom restart` |
+| `SHA-256 hash mismatch!` | Download ≠ `bundle_hash`/`binary_hash`/`metallib_hash` | Retry; persistent mismatch means the release record and artifact disagree |
+| `another update/recovery operation is active` | Watchdog recovery or a previous update holds the lock | Wait a minute; retry |
+| No automatic updates | `provider.auto_update = false`, or `DARKBLOOM_NO_UPDATE_CHECK` set in a `--foreground` shell | `darkbloom autoupdate status`, `darkbloom autoupdate enable` |
+| Fan control stops after an update | The unprivileged updater does not replace the root helper | `sudo darkbloom fan enable` ([fan control](./fan-control.md)) |
+
+The check cadence (`autoUpdateInitialDelay`, `autoUpdateInterval`), the
+`update_jitter_seconds` install delay and the `updateDrainTimeout` before the
+restart (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`)
+are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
+
+## Models and memory
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
+| Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
+| `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
+| Slow decode, GPU busy | `competing inference` ⚠ | Quit the other server |
+
+## KV-backend crash-loop guard
+
+The watchdog writes `~/.darkbloom/kv-backend-guard.json` after
+`crashLoopTripThreshold` restarts ([runtime constants](./cli-reference.md#runtime-constants));
+while it matches the running version the
+engine forces contiguous KV and `doctor` shows `kv backend crash-loop guard`
+(`provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift`;
+`provider-swift/Sources/darkbloom/Diagnostics/KVBackendGuardDiagnostics.swift`).
 
 ```bash
-curl -v https://api.darkbloom.dev/health
+darkbloom doctor                        # read the guard record and the posture per slot
+darkbloom doctor --clear-backend-guard  # delete the record, reset the crash-loop counter
+darkbloom restart
 ```
 
-Check DNS, TLS certificates, date/time, and any corporate firewall that blocks
-port 443.
+A new binary version clears a stale record on start. `kv backend posture` ✗
+means an explicit `engine_v2_kv_backend = "paged"` (or per-model entry) could
+not be built and the model refused to load rather than degrade; set `"auto"` or
+`"contiguous"` for that model, or keep paged and accept the refusal.
 
-### Provider shows offline in the console
-
-```bash
-darkbloom status        # is the daemon running?
-darkbloom logs --last 1h
-```
-
-Possible causes:
-
-- Network interruption.
-- Coordinator restart (provider reconnects automatically).
-- The provider was marked `untrusted` after failing attestation challenges.
-- The provider version is below the coordinator's minimum; run `darkbloom update`.
-
-### Heartbeat timeout / forced reconnect
-
-If the outbound path is wedged, the provider keeps heartbeating but cannot
-answer challenges. After six consecutive timeouts the coordinator closes the
-connection (`coordinator/api/provider.go:69`). A manual `darkbloom restart`
-usually clears it.
-
-## Attestation issues
-
-### `trust_level` stays `self_signed`
-
-`hardware` trust requires MDM SecurityInfo verification. Run:
-
-```bash
-darkbloom enroll
-```
-
-Install the profile in System Settings → Device Management, then wait a few
-minutes and re-run `darkbloom doctor`.
-
-### Code-identity attestation never passes
-
-Code identity requires a real macOS Aqua session. Check:
-
-```bash
-darkbloom doctor
-```
-
-Look for the "attestation readiness" section
-(`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`).
-Required:
-
-- A real console user (not `loginwindow` or `root`).
-- Automatic login enabled.
-- Auto-logout-after-idle disabled.
-
-If the machine reboots to the login window, APNs registration will not succeed
-until someone logs in.
-
-### `mdm_verified: false` but profile is installed
-
-MDM SecurityInfo queries can time out, especially on sleeping devices. The
-coordinator retries after the next successful challenge
-(`coordinator/api/provider.go:1413-1427`). If it persists, remove and re-add the
-profile with `darkbloom unenroll` / `darkbloom enroll`.
-
-## Model issues
-
-### `Model not found`
-
-```bash
-# List supported models
-darkbloom models catalog
-
-# List local models
-darkbloom models list
-
-# Download the model
-darkbloom models download <id>
-```
-
-### `Insufficient memory headroom to load model`
-
-The provider load gate requires `weights_gb + 2 GB` of free memory after the OS
-reserve (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift:19-24`).
-
-Fixes:
-
-- Close other applications.
-- Reduce `backend.max_model_slots` so fewer models are resident.
-- Increase `provider.memory_reserve_gb` only if you want the provider to be more
-  conservative.
-- Serve a smaller quantized model.
-
-### Model load failures after a catalog update
-
-The coordinator may have published a new build for an alias. The provider fetches
-the new desired builds via `desired_models` and prefetches them. If a build
-fails, check `darkbloom logs` for the mismatch and run `darkbloom models remove
-<id>` followed by `darkbloom models download <id>`.
-
-## Performance issues
-
-### Low throughput
-
-```bash
-darkbloom benchmark --model <id> --iterations 5
-darkbloom status
-```
-
-Common causes:
-
-- Thermal throttling on a laptop.
-- Memory pressure causing excessive swapping.
-- Another application is using the GPU.
-- The model is too large for the machine's memory bandwidth.
-
-### High TTFT (time-to-first-token)
-
-- Cold start: the model was not loaded. Subsequent requests will be faster.
-- The coordinator's TTFT deadline includes a speculative backup dispatch at 50%
-of the deadline (`coordinator/api/consumer.go:72-76`).
-- Network latency to the coordinator increases dispatch time.
-
-## Billing / earnings issues
-
-### Earnings not updating
-
-- Confirm the provider is online and routed traffic (`darkbloom status`).
-- Usage can take a few minutes to appear in the console.
-- Stripe Connect onboarding must be complete before payouts.
-
-There is no `darkbloom earnings` CLI command; use the console.
-
-### Self-route request failed
-
-Self-route never falls back to the paid fleet. Common errors:
-
-| Error code | Meaning | Fix |
-|------------|---------|-----|
-| `no_linked_machine` | No provider linked to your account | Run `darkbloom login` on your Mac |
-| `machine_offline` | Linked provider is offline | Start the provider |
-| `model_not_loaded` | Your provider does not advertise this model | Download/load the model |
-| `machine_busy` | Your provider is at capacity | Retry later or reduce load |
-
-See [self-route](./self-route.md) for details.
-
-## Collecting a support bundle
+## Collect a report
 
 ```bash
 darkbloom doctor --support > doctor.txt
-darkbloom status --config ~/.config/darkbloom/provider.toml > status.txt
-darkbloom logs --last 24h > logs.txt
+darkbloom status > status.txt
+darkbloom report --last 24h --dry-run   # review exactly what would be sent
+darkbloom report --last 24h             # upload; prints report_id
 ```
 
-To review the exact support report without sending it:
+`Report` (`provider-swift/Sources/darkbloom/ReportCommand.swift`) collects
+subsystem `dev.darkbloom.provider` at info level with macOS privacy redaction
+intact, uploads only when you run it, and prints the `report_id` to quote to
+support.
 
-```bash
-darkbloom report --last 6h --dry-run
-```
+## Related
 
-To upload that provider-scoped report to the Darkbloom team:
-
-```bash
-darkbloom report --last 6h
-```
-
-Reports are sent only by this explicit command; automatic reporting is disabled.
-The collector includes only `dev.darkbloom.provider` unified logs, preserves
-macOS privacy redaction, and returns an opaque report ID to share with support.
-The upload neither sends nor returns the hardware serial number.
+- [CLI reference](./cli-reference.md) — flags, paths, runtime constants.
+- [Installation](./installation.md) · [Quickstart](./quickstart.md).
+- [Attestation](./attestation.md) — trust levels, enrollment, challenge cadence.
+- [Direct mode](./direct-mode.md) · [Fan control](./fan-control.md) · [Beta features](./beta-features.md).

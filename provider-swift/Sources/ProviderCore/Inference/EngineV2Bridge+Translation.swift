@@ -134,7 +134,7 @@ enum EngineV2Translation {
 
     /// OpenAI `logprobs`/`top_logprobs` → contract `topLogprobs`.
     ///
-    /// CONTRACT NOTE (see docs/engine-v2/CONTRACT-ISSUES-H-provider.md):
+    /// CONTRACT NOTE (see docs/reports/2026-07-02-engine-v2-contract-issues-provider-bridge.md):
     /// `CBv2SamplingParams.topLogprobs == 0` means "no logprobs at all", so
     /// the OpenAI shape "logprobs=true, top_logprobs omitted/0" (chosen
     /// token's logprob only, no alternatives) has no exact representation.

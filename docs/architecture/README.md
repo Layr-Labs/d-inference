@@ -1,69 +1,73 @@
-# Architecture
+# Architecture — how Darkbloom works
 
-This directory is the source of truth for how Darkbloom works. The code in `coordinator/`, `provider-swift/`, `console-ui/`, and `e2e/` is canonical; these docs describe and cite it.
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Explanation pages: context, mechanism, invariants, failure modes, and a code
+map for each part of the system. The code in `coordinator/`,
+`provider-swift/`, `console-ui/`, `admin-ui/`, and `e2e/` is canonical; these
+pages describe and cite it by path and symbol. For exact shapes and values use
+[`../reference/README.md`](../reference/README.md); for procedures use the
+how-to and runbook directories listed in [`../README.md`](../README.md).
 
 ![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
 
 ## Start here
 
-| Doc | What it covers |
+| Page | Covers |
 |---|---|
-| [overview.md](overview.md) | High-level system architecture, components, and trust model |
-| [data-flow.md](data-flow.md) | End-to-end request lifecycle from consumer to provider and back |
+| [overview.md](overview.md) | Components, trust boundaries, and the request path in one page |
+| [data-flow.md](data-flow.md) | One request end to end: HTTP ingress, routing, encryption, provider WebSocket, SSE egress, settlement |
 
 ## Components
 
-| Doc | Component |
+| Page | Component |
 |---|---|
-| [components/coordinator.md](components/coordinator.md) | Go control plane (HTTP API, WebSocket, registry, billing) |
-| [components/provider.md](components/provider.md) | Swift `darkbloom` provider CLI and inference engine |
-| [components/console-ui.md](components/console-ui.md) | Next.js / React consumer web interface |
-| [components/mlx-swift.md](components/mlx-swift.md) | MLX-Swift inference backend and model execution |
-| [components/consumer.md](components/consumer.md) | Consumer surface: OpenAI-compatible API, SDKs, and console |
+| [components/coordinator.md](components/coordinator.md) | Go control plane: process layout, HTTP and WebSocket servers, store, background jobs |
+| [components/provider.md](components/provider.md) | Swift `darkbloom` provider: connection loop, engine bridge, hardened runtime, service management, auto-update |
+| [components/consumer.md](components/consumer.md) | The coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage: parsing, admission, routing, sealing, streaming, settlement |
+| [components/console-ui.md](components/console-ui.md) | Next.js console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the static `landing/` site |
+| [components/admin-ui.md](components/admin-ui.md) | Internal read-only operator dashboard: HTTP Basic gate, single `pg.Pool` on the read replica, SELECT-only server components |
+| [components/mlx-swift.md](components/mlx-swift.md) | The three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what each provides, what `MLXLMServer` is used for, and the source-matched `mlx.metallib` |
 
 ## Security
 
-| Doc | Concern |
+| Page | Concern |
 |---|---|
-| [security/encryption.md](security/encryption.md) | NaCl Box encryption between consumer, coordinator, and provider |
-| [security/attestation.md](security/attestation.md) | Secure Enclave, MDM/MDA, APNs code identity, and trust levels |
-| [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM, SCEP, and profile generation |
-| [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind together |
+| [security/encryption.md](security/encryption.md) | The privacy model: NaCl Box on each hop, what the coordinator decrypts and does not retain, key lifetimes. The only page that states it |
+| [security/attestation.md](security/attestation.md) | Trust levels and the exact condition for each: Secure Enclave signature, MDM cross-check, MDA, APNs code identity |
+| [security/enrollment.md](security/enrollment.md) | Device enrollment: MDM profile generation and signing, SCEP, webhook |
+| [security/identity-binding.md](security/identity-binding.md) | How APNs, X25519, SE P-256, and MDA identities bind to one provider |
 
-## Operations inside the architecture
+## Routing and scheduling
 
-| Doc | Concern |
+| Page | Concern |
 |---|---|
-| [operations/routing.md](operations/routing.md) | Provider selection and cost-based scheduling |
-| [operations/scheduling.md](operations/scheduling.md) | Queues, slot states, token budgets, and model swaps |
-| [operations/billing.md](operations/billing.md) | Pricing, reservations, ledger, and payouts |
-| [operations/model-registry.md](operations/model-registry.md) | Model manifests, aliases, and provider downloads |
-| [operations/telemetry.md](operations/telemetry.md) | Telemetry schema, symmetry, and ingestion |
+| [routing.md](routing.md) | How a request becomes a provider choice: eligibility gates, cost model, selection, hedged dispatch, servability, breakers |
+| [scheduling.md](scheduling.md) | Per-model queue, slot states, token-budget admission, concurrency caps, model swaps, warm pool, heartbeat and eviction |
+| [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed exact prefix-cache routing: proof, holders, cost discount, kill switch |
+| [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | The Rust `promptsidecar`: token-boundary planning for cache routing, artifact identity, failure isolation |
 
-## Cross-cutting topics
+## Inference engine
 
-| Doc | Topic |
+| Page | Concern |
 |---|---|
-| [inference.md](inference.md) | How inference requests are decoded, batched, and served |
-| [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed prefix-cache routing, receipts, scoring, and rollout |
-| [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | Local prompt planning, artifact identity, binary block hashing, and failure isolation |
-| [request-outcome-observability.md](request-outcome-observability.md) | Request outcome taxonomy across client, provider, and billing paths |
-| [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation, query recipes |
-| [telemetry-inventory.md](telemetry-inventory.md) | Inventory of every telemetry datum collected today, its producer, sink, cadence, and gaps |
-| [storage.md](storage.md) | KV cache, prefix cache, and on-disk model storage |
-| [payments.md](payments.md) | Payments architecture (Stripe Connect, ledger, withdrawals) |
-| [hardware-support.md](hardware-support.md) | Supported Apple Silicon tiers and capability mapping |
+| [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
+| [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
+| [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
+| [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
 
-## Design decisions (ADRs)
+## Data, money, and observability
 
-| Doc | Decision |
+| Page | Concern |
 |---|---|
-| [decisions/apns-code-attestation.md](decisions/apns-code-attestation.md) | APNs-based code-identity attestation for genuine-binary proof |
-| [decisions/ssd-kv-cache.md](decisions/ssd-kv-cache.md) | SSD-backed prefix cache architecture |
-| [decisions/kv-cache-lookup-shadowing.md](decisions/kv-cache-lookup-shadowing.md) | RAM-first lookup shadowing on hybrid sliding-window models |
+| [storage.md](storage.md) | Coordinator persistence: Postgres tables and migrations, memory store, retention jobs |
+| [billing.md](billing.md) | Pricing, reservations, ledger, Stripe deposits and Connect payouts, referrals, base rewards |
+| [telemetry.md](telemetry.md) | What telemetry exists, Go/Swift/TS symmetry, ingestion allowlist, Datadog |
+| [request-outcome-observability.md](request-outcome-observability.md) | Closed outcome taxonomy across client, provider, and billing dimensions |
+| [system-profiler.md](system-profiler.md) | Per-attempt request profiles and fleet snapshots: schema, clocks, validation |
 
-## Rules
+## Not here
 
-- Claims must cite canonical code paths.
-- The privacy model is hop-by-hop encryption: the coordinator decrypts consumer bodies in Confidential VM memory for routing and billing, but does not log or retain prompt content.
-- If code and docs disagree, the code wins; open a PR to fix the docs.
+- Decisions and plans, each with a shipped/superseded status: [`../design/README.md`](../design/README.md).
+- Dated measurements and incidents: [`../reports/README.md`](../reports/README.md).
+- Authoring rules (page skeletons, citing, stamps, checks): [`../AGENTS.md`](../AGENTS.md).

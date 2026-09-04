@@ -10,8 +10,26 @@ import (
 
 func (s *mdmVerificationScheduler) dispatcher() {
 	defer s.wg.Done()
+	var (
+		lastLoad     time.Time // deps.now() at the last load (the injectable clock)
+		lastLoadWall time.Time // time.Now() at the last load (the clock the timer runs on)
+	)
 	for {
-		s.loadDueRows()
+		// Durable due rows are (re)loaded at most once per dispatch interval.
+		// Wakes and the 1 ms retry path (due work that cannot dispatch because
+		// every worker is busy) dispatch from the in-memory queue without
+		// re-scanning the table: with a busy pool that path re-queried
+		// provider_verification_jobs on every iteration (≈34 scans/s in prod,
+		// each pre-allocating a full page). Newly-due rows are picked up
+		// within one interval — the cadence they were always polled at when
+		// nothing was due. The gate honours whichever clock advanced: the
+		// injectable one (tests jump it) or the wall clock the retry timer
+		// keeps (tests freeze the injectable one; in production they agree).
+		now, wall := s.deps.now(), time.Now()
+		if lastLoadWall.IsZero() || dispatchIntervalElapsed(lastLoad, now) || dispatchIntervalElapsed(lastLoadWall, wall) {
+			s.loadDueRows()
+			lastLoad, lastLoadWall = now, wall
+		}
 		s.dispatchDueRows()
 		s.publishDogStatsDGauges()
 		timer := s.deps.newTimer(s.nextDispatchDelay())
@@ -24,6 +42,12 @@ func (s *mdmVerificationScheduler) dispatcher() {
 		case <-timer.C():
 		}
 	}
+}
+
+// dispatchIntervalElapsed reports whether a full dispatch interval has passed
+// on one clock since `since` (a clock that moved backwards counts as elapsed).
+func dispatchIntervalElapsed(since, now time.Time) bool {
+	return now.Before(since) || now.Sub(since) >= mdmSchedulerDispatchInterval
 }
 
 func (s *mdmVerificationScheduler) nextDispatchDelay() time.Duration {

@@ -5565,6 +5565,12 @@ func (s *PostgresStore) ListDueVerificationJobs(
 	return s.ListDueVerificationJobsPage(ctx, now, limit, 0)
 }
 
+// verificationDuePagePrealloc caps the page slice's initial capacity. The
+// caller's limit is the queue capacity (4,096) but the due set is normally a
+// few dozen rows, and the scheduler calls this once per second: pre-allocating
+// a full page each time was 16 % of the coordinator's allocated bytes.
+const verificationDuePagePrealloc = 256
+
 func (s *PostgresStore) ListDueVerificationJobsPage(
 	ctx context.Context,
 	now time.Time,
@@ -5589,7 +5595,7 @@ func (s *PostgresStore) ListDueVerificationJobsPage(
 		return nil, fmt.Errorf("store: list due verification jobs: %w", err)
 	}
 	defer rows.Close()
-	out := make([]VerificationJob, 0, limit)
+	out := make([]VerificationJob, 0, min(limit, verificationDuePagePrealloc))
 	for rows.Next() {
 		rec, scanErr := scanVerificationJob(rows)
 		if scanErr != nil {

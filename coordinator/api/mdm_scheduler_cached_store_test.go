@@ -79,11 +79,15 @@ func TestMDMSchedulerDuePagingThroughCachedStore(t *testing.T) {
 		"z-se-paging-live", store.VerificationTaskSecurityInfo,
 	)]
 	offset := sch.dueScanOffset
+	var reseededDue time.Time
+	if reseeded != nil {
+		reseededDue = reseeded.record.NextAttemptAt // read under the lock: the live dispatcher may claim it
+	}
 	sch.mu.Unlock()
 	if reseeded == nil {
 		t.Fatalf("live queue-rejected row remained hidden behind the disconnected due-row prefix (dueScanOffset=%d): paged listing was not reached through the cached store", offset)
 	}
-	if !reseeded.record.NextAttemptAt.Equal(due) {
-		t.Fatalf("paged reseed due = %s, want %s", reseeded.record.NextAttemptAt, due)
+	if !reseededDue.Equal(due) {
+		t.Fatalf("paged reseed due = %s, want %s", reseededDue, due)
 	}
 }

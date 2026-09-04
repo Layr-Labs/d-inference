@@ -995,9 +995,13 @@ func TestMDMSchedulerQueueRejectedChallengeSettlesDurablyAndReseeds(t *testing.T
 	reseeded := sch.jobs[verificationSchedulerKey(
 		"se-evicted-refresh", store.VerificationTaskSecurityInfo,
 	)]
+	var reseededRecord store.VerificationJob
+	if reseeded != nil {
+		reseededRecord = reseeded.record // copied under the lock: the live dispatcher may claim it
+	}
 	sch.mu.Unlock()
-	if reseeded == nil || !reseeded.record.NextAttemptAt.Equal(wantDue) {
-		t.Fatalf("durable queue-pressure job was not reseeded at preserved due time: %+v", reseeded)
+	if reseeded == nil || !reseededRecord.NextAttemptAt.Equal(wantDue) {
+		t.Fatalf("durable queue-pressure job was not reseeded at preserved due time: %+v", reseededRecord)
 	}
 }
 
@@ -1054,12 +1058,16 @@ func TestMDMSchedulerDuePagingCannotStarveLiveRowBehindDisconnectedPrefix(t *tes
 	reseeded := sch.jobs[verificationSchedulerKey(
 		"z-se-paging-live", store.VerificationTaskSecurityInfo,
 	)]
+	var reseededDue time.Time
+	if reseeded != nil {
+		reseededDue = reseeded.record.NextAttemptAt // read under the lock: the live dispatcher may claim it
+	}
 	sch.mu.Unlock()
 	if reseeded == nil {
 		t.Fatal("live queue-rejected row remained hidden behind disconnected due-row prefix")
 	}
-	if !reseeded.record.NextAttemptAt.Equal(due) {
-		t.Fatalf("paged reseed due = %s, want %s", reseeded.record.NextAttemptAt, due)
+	if !reseededDue.Equal(due) {
+		t.Fatalf("paged reseed due = %s, want %s", reseededDue, due)
 	}
 }
 

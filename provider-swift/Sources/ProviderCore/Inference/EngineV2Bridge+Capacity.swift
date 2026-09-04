@@ -56,6 +56,11 @@ extension EngineV2Bridge {
 
         // Worst-case potential is bridge bookkeeping (the snapshot has no
         // per-request max-token view); active tokens are engine truth.
+        // `committedBytes` is the VARIABLE (token-growth) term of every
+        // active row - target KV plus block-rounded assistant/aux state -
+        // WITHOUT `fixedRequestBytes` (recurrent state, sliding-window
+        // rings). The fixed term is held back for ALL concurrency slots in
+        // `activeTokenBudgetMax` below instead; see the field mapping.
         var maxTokensPotential: Int64 = 0
         var committedBytes = 0
         var committedBytesOverflow = false
@@ -70,7 +75,7 @@ extension EngineV2Bridge {
             let (nextPotential, potentialOverflow) = maxTokensPotential.addingReportingOverflow(
                 Int64(tokens))
             maxTokensPotential = potentialOverflow ? Int64.max : nextPotential
-            if let bytes = requestReservationBytes(tokenCount: tokens) {
+            if let bytes = variableReservationBytes(tokenCount: tokens) {
                 let (next, overflow) = committedBytes.addingReportingOverflow(bytes)
                 committedBytes = next
                 committedBytesOverflow = committedBytesOverflow || overflow
@@ -100,19 +105,36 @@ extension EngineV2Bridge {
         //   activeTokens          ← snapshot.activeTokens (ENGINE TRUTH: the
         //                           real KV-resident token count)
         //   maxTokensPotential    ← Σ(prompt + maxTokens)  (worst case)
-        //   activeTokenBudgetUsed ← ceil(byte-exact active commitments /
-        //                           resolved native rate), including recurrent
-        //                           and assistant allocation overhead
+        //   activeTokenBudgetUsed ← ceil(byte-exact VARIABLE commitments /
+        //                           resolved native rate): target KV plus the
+        //                           block-rounded assistant allocation, NOT
+        //                           the fixed per-request term
         //   activeTokenBudgetMax  ← (min(kvBytesCapacity, live fleet clamp) −
         //                           worst-case fixed/block overhead for every
-        //                           still-available concurrency slot) / rate
+        //                           still-available concurrency slot − the
+        //                           fixed term of every ACTIVE row) / rate
         //                           (0 when the rate or arithmetic is unknown)
         //   queuedTokenBudget     ← 0 (engine-WAITING requests are already
         //                           inside the committed sum above — the
         //                           bridge does not split running/waiting)
+        //
+        // WHY the fixed term lives in `max`, not `used` (review fix, S4 P2):
+        // the coordinator de-duplicates its own in-gap pending requests
+        // against the heartbeat with `committedTokenBudget = max(used +
+        // queued, maxTokensPotential)` and `coordinatorExtra =
+        // pendingMaxTokens − committed` (registry/scheduler.go). Every byte
+        // in `used` above Σ(prompt + max) × rate is therefore read as
+        // ALREADY-REPORTED token work and uncharges that many pending
+        // tokens. gemma-4-26b's 200 MiB/request rings (T3-02) are ~10,240
+        // tokens per active row at 20,480 B/token — four active rows would
+        // hide five 6k-token in-gap requests until the next heartbeat. So
+        // `used` is Σ variable bytes (≡ Σ(prompt + max) when there is no
+        // assistant rounding) and `max` holds back fixedRequestBytes for
+        // every slot — the same total hold-back as before, in the field the
+        // dedup does not read.
         // Coordinator requests are expressed in ordinary tokens. Convert the
         // provider's byte-exact commitments back through the advertised rate;
-        // rounding up preserves fixed recurrent and assistant allocation blocks.
+        // rounding up preserves the assistant allocation blocks.
         let budgetUsed: Int64
         if kvBytesPerToken > 0 {
             let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
@@ -149,18 +171,27 @@ extension EngineV2Bridge {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
         let prospectiveRequests = max(0, maxConcurrentRequests - active.count)
-        let prospectiveOverheadBytes: Int?
+        // Hold-back: worst-case fixed + block overhead for every still-free
+        // slot, plus the fixed term of every ACTIVE row (its block-rounded
+        // aux state is already inside `committedBytes`) - so the fixed term
+        // is held for all `maxConcurrentRequests` slots regardless of
+        // occupancy and never rides `used`.
+        let holdBackBytes: Int?
         if let perRequestOverhead = maximumRequestOverheadBytes() {
-            let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
-                by: prospectiveRequests)
-            prospectiveOverheadBytes = overflow ? nil : bytes
+            let (prospective, prospectiveOverflow) = perRequestOverhead
+                .multipliedReportingOverflow(by: prospectiveRequests)
+            let (activeFixed, activeFixedOverflow) = fixedRequestBytes
+                .multipliedReportingOverflow(by: active.count)
+            let (total, totalOverflow) = prospective.addingReportingOverflow(activeFixed)
+            holdBackBytes =
+                prospectiveOverflow || activeFixedOverflow || totalOverflow ? nil : total
         } else {
-            prospectiveOverheadBytes = nil
+            holdBackBytes = nil
         }
         let budgetMax: Int64
-        if kvBytesPerToken > 0, let prospectiveOverheadBytes {
+        if kvBytesPerToken > 0, let holdBackBytes {
             budgetMax = Int64(
-                max(0, reportedKVBytesCapacity - prospectiveOverheadBytes)
+                max(0, reportedKVBytesCapacity - holdBackBytes)
                     / kvBytesPerToken)
         } else {
             budgetMax = 0

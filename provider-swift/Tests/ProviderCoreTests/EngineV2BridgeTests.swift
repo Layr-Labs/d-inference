@@ -1180,9 +1180,47 @@ struct EngineV2CapacityTests {
         #expect(await bridge.requestReservationBytes(tokenCount: 5) == 810)
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.maxTokensPotential == 5)
-        #expect(slot.activeTokenBudgetUsed == 9)
-        // (0.95 × 40_000 − 3 prospective rows × (250 + 20 × 4)) / 100.
-        #expect(slot.activeTokenBudgetMax == 370)
+        // `used` carries the VARIABLE term only: 80 × 5 target + 20 × 8
+        // block-rounded aux = 560 B → 6 tokens; the 250 B fixed term is
+        // held back in `max` for every slot instead (review fix, S4 P2).
+        #expect(await bridge.variableReservationBytes(tokenCount: 5) == 560)
+        #expect(slot.activeTokenBudgetUsed == 6)
+        // (0.95 × 40_000 − 3 prospective rows × (250 + 20 × 4) − 1 active
+        // row × 250) / 100.
+        #expect(slot.activeTokenBudgetMax == 367)
+    }
+
+    @Test("the fixed per-request term never rides `used`; `max` holds it back for every slot regardless of occupancy")
+    func fixedRequestBytesStayOutOfUsedAndHoldBackAllSlots() async {
+        // Review fix (S4 P2): coordinator dedup reads every token of `used`
+        // above Σ(prompt + max) as already-reported work. With a 40 kB fixed
+        // term (10 tokens' worth at 4000 B/token) the old figure read 1015
+        // for one 1005-token row, uncharging 10 in-gap pending tokens.
+        let capacity = 40_000_000
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: capacity, activeTokens: 0))
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, fixedRequestBytes: 40_000)
+        let admissible = EngineV2Bridge.engineAdmissibleBytes(capacity: capacity)
+        let idle = await bridge.backendSlotCapacity()
+        #expect(idle.activeTokenBudgetUsed == 0)
+        // Idle: 4 free slots × 40 kB held back.
+        #expect(idle.activeTokenBudgetMax == Int64((admissible - 4 * 40_000) / 4000))
+
+        _ = await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 1000),
+            requestId: "req-fixed")
+        let active = await bridge.backendSlotCapacity()
+        // `used` == Σ(prompt + max): the fixed term is not token work.
+        #expect(active.maxTokensPotential == 1005)
+        #expect(active.activeTokenBudgetUsed == 1005)
+        // 3 free slots + 1 active row: the same 4 × 40 kB hold-back, so
+        // `max` does not move with occupancy and used + max still encode
+        // the full fixed hold-back (before: 3 × 40 kB, 10 tokens looser).
+        #expect(active.activeTokenBudgetMax == idle.activeTokenBudgetMax)
+        #expect(active.activeTokenBudgetMax == Int64((admissible - 4 * 40_000) / 4000))
     }
 
     @Test("finished requests release their committed budget from the heartbeat")
@@ -3053,10 +3091,13 @@ struct EngineV2ReservationShrinkTests {
 
         // The heartbeat's committed worst case is bridge bookkeeping over
         // `active`, not the ledger — the coordinator contract
-        // (`used` = Σ(prompt + max)) is untouched by the shrink.
+        // (`used` = Σ(prompt + max)) is untouched by the shrink, and the
+        // 250 B fixed term is held back in `max`, not counted in `used`
+        // (the coordinator's pending-token dedup reads `used` as reported
+        // token work — review fix, S4 P2).
         let slot = await bridge.backendSlotCapacity()
         #expect(slot.maxTokensPotential == 1005)
-        #expect(slot.activeTokenBudgetUsed == 1006)  // ceil(4_020_250 / 4000)
+        #expect(slot.activeTokenBudgetUsed == 1005)  // 4000 × 1005 / 4000, no fixed term
 
         // Terminal: the (already smaller) reservation drains completely.
         engine.manualContinuation?.yield(

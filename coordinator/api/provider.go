@@ -1897,7 +1897,25 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	select {
 	case pr.ChunkCh <- chunk:
 	default:
-		if sendChunkWithGrace(pr, chunk) {
+		// One grace window per request is the candidate policy (a consumer a
+		// full buffer behind twice in one stream is stuck, and every window
+		// stalls this provider's OTHER streams — their next chunks get
+		// receivedAt after the dwell and are checked against their own
+		// first-content deadlines). This pass only MEASURES it: every
+		// overflow still gets the window; outcome would_skip marks a repeat
+		// window that delivered, i.e. exactly the requests enforcement would
+		// fail that survive today. Enforce once that series is sized.
+		first := pr.NoteChunkOverflowGrace()
+		delivered := sendChunkWithGrace(pr, chunk)
+		outcome := "expired"
+		switch {
+		case delivered && first:
+			outcome = "delivered"
+		case delivered:
+			outcome = "would_skip"
+		}
+		s.ddIncr("inference.chunk_overflow_grace", []string{"outcome:" + outcome})
+		if delivered {
 			return
 		}
 		s.logger.Error("chunk buffer overflow — failing request instead of corrupting stream",

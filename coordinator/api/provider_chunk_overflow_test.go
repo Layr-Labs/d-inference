@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,4 +220,92 @@ func TestHandleChunkOverflowGraceDeliversToSlowConsumer(t *testing.T) {
 	if provider.GetPending(pr.RequestID) == nil {
 		t.Fatal("pending request was removed; grace delivery must keep the stream alive")
 	}
+}
+
+// TestHandleChunkOverflowGraceOutcomeMetrics pins the sizing series for the
+// one-window-per-request policy: the first overflow that drains within the
+// window is "delivered", a REPEAT overflow that drains is "would_skip" (the
+// request enforcement would fail that survives today — behaviour is intact,
+// the chunk still lands), and a window that runs out is "expired" (the
+// request is failed with 499 exactly as before).
+func TestHandleChunkOverflowGraceOutcomeMetrics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{AdminKey: "test-key"})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	collector, dd := attachTestDD(t, srv)
+
+	providerPublicKey := testPublicKeyB64()
+	provider := reg.Register("provider-grace-metrics", nil, &protocol.RegisterMessage{
+		Type:                    protocol.TypeRegister,
+		Hardware:                protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:                  []protocol.ModelInfo{{ID: "test-model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:                 "mlx-swift",
+		PublicKey:               providerPublicKey,
+		EncryptedResponseChunks: true,
+		PrivacyCapabilities:     testPrivacyCaps(),
+	})
+	sessionKeys, err := e2e.GenerateSessionKeys()
+	if err != nil {
+		t.Fatalf("generate session keys: %v", err)
+	}
+	pr := &registry.PendingRequest{
+		RequestID:      "req-grace-metrics",
+		Model:          "test-model",
+		ChunkCh:        make(chan registry.ProviderChunk, 1),
+		CompleteCh:     make(chan protocol.UsageInfo, 1),
+		ErrorCh:        make(chan protocol.InferenceErrorMessage, 1),
+		SessionPrivKey: &sessionKeys.PrivateKey,
+	}
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: buffered"}
+	provider.AddPending(pr)
+	sealed := func(text string) protocol.InferenceResponseChunkMessage {
+		return testEncryptedChunk(t, protocol.InferenceRequestMessage{
+			RequestID: pr.RequestID,
+			EncryptedBody: &protocol.EncryptedPayload{
+				EphemeralPublicKey: base64.StdEncoding.EncodeToString(sessionKeys.PublicKey[:]),
+				Ciphertext:         "",
+			},
+		}, providerPublicKey, `data: {"choices":[{"delta":{"content":"`+text+`"}}]}`)
+	}
+	// A slow-but-alive consumer frees one slot inside each window.
+	drainOne := func() {
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			<-pr.ChunkCh
+		}()
+	}
+
+	drainOne()
+	chunk := sealed("first-overflow")
+	srv.handleChunk(provider.ID, provider, &chunk)
+	drainOne()
+	chunk = sealed("second-overflow")
+	srv.handleChunk(provider.ID, provider, &chunk)
+	// Behaviour intact: the repeat overflow was still delivered.
+	select {
+	case got := <-pr.ChunkCh:
+		if !strings.Contains(got.Data, "second-overflow") {
+			t.Fatalf("delivered chunk = %q, want the second overflow (measurement must not change delivery)", got.Data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("repeat overflow was not delivered: the measurement pass must keep the grace window")
+	}
+	// Nobody drains: the window expires and the request is failed as before.
+	pr.ChunkCh <- registry.ProviderChunk{Data: "data: refilled"}
+	chunk = sealed("third-overflow")
+	srv.handleChunk(provider.ID, provider, &chunk)
+	select {
+	case errMsg, ok := <-pr.ErrorCh:
+		if !ok || errMsg.StatusCode != 499 {
+			t.Fatalf("expired window terminal = %+v (ok=%v), want 499", errMsg, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired window did not fail the request")
+	}
+
+	packets := dd.packets(collector)
+	requireMetricWithTags(t, packets, "inference.chunk_overflow_grace", "outcome:delivered")
+	requireMetricWithTags(t, packets, "inference.chunk_overflow_grace", "outcome:would_skip")
+	requireMetricWithTags(t, packets, "inference.chunk_overflow_grace", "outcome:expired")
 }

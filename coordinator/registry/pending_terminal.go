@@ -14,3 +14,18 @@ func (pr *PendingRequest) HasCompletionIngress() bool {
 	defer pr.firstContentIngressMu.Unlock()
 	return !pr.completionIngressAt.IsZero()
 }
+
+// NoteChunkOverflowGrace records that the chunk relay is about to spend an
+// overflow grace window (api.chunkOverflowGrace) on this request and reports
+// whether it is the FIRST such window. The candidate policy is one window per
+// request — a consumer that falls a full buffer behind twice in one stream is
+// stuck, not bursty, and every further window stalls the provider's single
+// read goroutine for its other streams — but this pass only measures how often
+// a second window is spent (inference.chunk_overflow_grace{outcome:would_skip});
+// the relay still grants it.
+func (pr *PendingRequest) NoteChunkOverflowGrace() (first bool) {
+	if pr == nil {
+		return false
+	}
+	return pr.overflowGraceUsed.CompareAndSwap(false, true)
+}

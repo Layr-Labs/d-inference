@@ -303,6 +303,9 @@ type PendingRequest struct {
 	// the absolute-deadline timer have a total order. A chunk is marked pending
 	// before decrypt/classification; completion is marked before asynchronous
 	// settlement.
+	// overflowGraceUsed latches once handleChunk has spent a chunk-overflow
+	// grace window on this request (see PendingRequest.NoteChunkOverflowGrace).
+	overflowGraceUsed         atomic.Bool
 	firstContentIngressMu     sync.Mutex
 	chunkIngressPendingAt     time.Time
 	firstContentIngressAt     time.Time

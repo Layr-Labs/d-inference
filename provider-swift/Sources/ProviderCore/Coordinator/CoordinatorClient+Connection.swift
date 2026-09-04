@@ -8,7 +8,6 @@ extension CoordinatorClient {
     // MARK: - Connection Loop
 
     internal func runLoop() async {
-        var backoff = ExponentialBackoff(base: 1.0, max: 30.0)
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
@@ -18,13 +17,28 @@ extension CoordinatorClient {
             do {
                 try await connectAndRun()
                 logger.info(.coordinatorConnectionClosed)
-                backoff.reset()
+                reconnectBackoff.reset()
                 continue
             } catch {
                 if shutdownRequested { break }
 
                 eventContinuation?.yield(.disconnected)
-                let delay = backoff.nextDelay()
+                // A session that registered and stayed healthy proves the link;
+                // its failure is a new incident and must not inherit the delay
+                // ratcheted up by earlier, unrelated outages. A session that
+                // never registered (or died inside the minimum) keeps the
+                // ratchet: that is the coordinator-restart herd the jitter
+                // exists for. See ReconnectBackoffPolicy.
+                let registeredFor = sessionRegisteredAt.map { ContinuousClock.now - $0 }
+                let afterHealthySession = ReconnectBackoffPolicy.shouldResetBackoff(
+                    registeredFor: registeredFor,
+                    minimum: healthySessionMinimumOverride
+                        ?? ReconnectBackoffPolicy.healthySessionMinimum)
+                if afterHealthySession {
+                    reconnectBackoff.reset()
+                }
+                let delay = ReconnectBackoffPolicy.reconnectDelay(
+                    base: reconnectBackoff.nextDelay(), afterHealthySession: afterHealthySession)
                 let reachable = reachability.isReachable
                 logger.warning(.coordinatorConnectionFailed)
                 logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
@@ -93,6 +107,8 @@ extension CoordinatorClient {
         // and the coordinator's WS route would reject it.
         let connection = NWConnection(to: .url(url), using: params)
         self.nwConnection = connection
+        // Fresh attempt: nothing registered yet (see ReconnectBackoffPolicy).
+        self.sessionRegisteredAt = nil
 
         // Mid-session connection drops are published here by the persistent state
         // handler and rethrown by a task-group child to drive the reconnect loop.
@@ -170,6 +186,7 @@ extension CoordinatorClient {
         // heartbeats are permitted from here on.
         state.resetCapacitySession()
         sessionRegistered = true
+        sessionRegisteredAt = ContinuousClock.now
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is

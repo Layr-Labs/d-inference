@@ -438,6 +438,105 @@ struct CoordinatorIntegrationTests {
         #expect(resp.publicKey == keys.publicKeyBase64)
     }
 
+    // MARK: 3c. Reconnect backoff resets after a healthy session
+
+    /// Regression for the monotonic backoff ratchet: `runLoop` only ever reset
+    /// the backoff on a non-throwing `connectAndRun` return, which a live
+    /// session never takes, so after ~6 lifetime drops every reconnect waited
+    /// 15–30 s. A session that registered and stayed up past the healthy
+    /// minimum must reconnect on the base window (plus the bounded herd
+    /// spread) instead. Fails on the pre-fix client: the second register
+    /// lands ≥15 s after the drop.
+    @Test("a healthy registered session resets the ratcheted reconnect backoff")
+    func healthySessionResetsRatchetedBackoff() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        // Six unrelated lifetime drops: the deterministic delay is now capped
+        // at 30 s, i.e. the next reconnect would sleep U[15, 30] s.
+        await coordinator.preRatchetReconnectBackoffForTesting(drops: 6)
+        await coordinator.setHealthySessionMinimumForTesting(.milliseconds(200))
+
+        let (events, _) = await coordinator.start()
+        let drainTask = Task { for await _ in events {} }
+        defer {
+            drainTask.cancel()
+            Task { await coordinator.shutdown() }
+        }
+
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let registersBefore = mock.snapshot().registers.count
+
+        // Hold the session past the (injected) healthy minimum, then drop it.
+        try await Task.sleep(for: .milliseconds(400))
+        let dropped = ContinuousClock.now
+        await mock.dropActiveWebSocket()
+
+        // Base window [0.5, 1] s + up to 4 s post-healthy spread, never the
+        // 15–30 s ratchet tail.
+        let after = try await mock.waitForSnapshot(timeout: .seconds(8)) {
+            $0.registers.count > registersBefore
+        }
+        let elapsed = ContinuousClock.now - dropped
+        try #require(after != nil, "no re-register within 8 s: backoff ratchet not reset (took \(elapsed))")
+        #expect(elapsed < .seconds(6), "reconnect took \(elapsed); expected base window + spread")
+    }
+
+    /// The herd guard: a session that dies INSIDE the healthy minimum (the
+    /// coordinator accepted the registration and then went down again) keeps
+    /// the ratchet, so a fleet does not stampede a restart-looping coordinator.
+    @Test("a session that dies inside the healthy minimum keeps the ratchet")
+    func shortSessionKeepsRatchet() async throws {
+        let mock = MockCoordinator()
+        let baseURL = try await mock.start()
+        defer { Task { await mock.shutdown() } }
+
+        let keys = NodeKeyPair.generate()
+        let coordinator = makeClient(
+            url: baseURL.mockProviderWebSocketURL(),
+            publicKey: keys.publicKeyBase64,
+            heartbeatInterval: 60
+        )
+        // Two prior drops: deterministic 4 s → the next delay is U[2, 4] s.
+        await coordinator.preRatchetReconnectBackoffForTesting(drops: 2)
+        await coordinator.setHealthySessionMinimumForTesting(.seconds(10))
+
+        let (events, _) = await coordinator.start()
+        let drainTask = Task { for await _ in events {} }
+        defer {
+            drainTask.cancel()
+            Task { await coordinator.shutdown() }
+        }
+
+        let first = try await mock.awaitFirstRegister(timeout: .seconds(5))
+        try #require(first != nil)
+        let registersBefore = mock.snapshot().registers.count
+
+        // Drop well inside the 10 s minimum.
+        let dropped = ContinuousClock.now
+        await mock.dropActiveWebSocket()
+
+        let early = try await mock.waitForSnapshot(timeout: .milliseconds(1500)) {
+            $0.registers.count > registersBefore
+        }
+        #expect(early == nil, "re-registered inside 1.5 s: the ratchet was reset by a short session")
+
+        let eventually = try await mock.waitForSnapshot(timeout: .seconds(8)) {
+            $0.registers.count > registersBefore
+        }
+        let elapsed = ContinuousClock.now - dropped
+        try #require(eventually != nil, "no re-register within 8 s (took \(elapsed))")
+        #expect(elapsed >= .seconds(2), "ratcheted delay should be ≥2 s, took \(elapsed)")
+    }
+
     // MARK: 4. EnrollmentService round-trip
 
     @Test("EnrollmentService either fetches the mocked profile or short-circuits as already-enrolled")

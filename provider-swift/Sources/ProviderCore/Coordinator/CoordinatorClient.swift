@@ -92,6 +92,23 @@ public actor CoordinatorClient {
     /// gate.
     internal var sessionRegistered = false
 
+    /// When the current session's `register` frame was handed to the transport;
+    /// nil until then and cleared at the start of every connection attempt.
+    /// `runLoop` reads it after a session fails to decide whether the failure
+    /// ends a healthy session (reset backoff) or is another attempt in a
+    /// failing streak (keep ratcheting). See ReconnectBackoffPolicy.
+    internal var sessionRegisteredAt: ContinuousClock.Instant?
+
+    /// Reconnect backoff for `runLoop`. Actor state (not a `runLoop` local) so
+    /// the healthy-session reset is observable and a test can pre-ratchet it
+    /// the way a long-lived daemon's unrelated outages would have.
+    internal var reconnectBackoff = ExponentialBackoff(base: 1.0, max: 30.0)
+
+    /// Test seam: shortens ``ReconnectBackoffPolicy/healthySessionMinimum`` so
+    /// the reset can be observed without holding a real session open for 30 s.
+    /// nil in production.
+    internal var healthySessionMinimumOverride: Duration?
+
     private let shutdownFlag = ShutdownFlag()
 
     /// Fast, thread-safe shutdown visibility for connection tasks.
@@ -284,6 +301,20 @@ public actor CoordinatorClient {
     /// (re)registrations. Omitted entries clear daemon-start hashes.
     public func updateModelWeightHashes(_ hashes: [String: String]) {
         modelWeightHashOverrides = hashes
+    }
+
+    // MARK: - Test seams (reconnect policy)
+
+    /// Test seam: ratchet the reconnect backoff as `drops` prior session
+    /// failures would have, so a test can prove the healthy-session reset
+    /// without living through the failures.
+    func preRatchetReconnectBackoffForTesting(drops: Int) {
+        for _ in 0..<max(0, drops) { _ = reconnectBackoff.nextDelay() }
+    }
+
+    /// Test seam: see ``healthySessionMinimumOverride``.
+    func setHealthySessionMinimumForTesting(_ minimum: Duration?) {
+        healthySessionMinimumOverride = minimum
     }
 
 }

@@ -166,8 +166,8 @@ struct ReserveRaisePreflightTests {
     /// Seed a minimal valid MLX snapshot (config.json + one .safetensors) in
     /// the HuggingFace cache so the scanner + WeightHasher can read it.
     private func seedSnapshot(modelID: String) throws -> URL {
-        let snapshot = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let snapshot = TestHFCache.snapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         let refs = modelDir.appendingPathComponent("refs", isDirectory: true)
         try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)

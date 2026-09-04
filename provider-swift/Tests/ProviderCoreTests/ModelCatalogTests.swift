@@ -467,8 +467,8 @@ struct ModelCatalogTests {
     @Test("manifest download failure preserves existing local snapshot")
     func manifestDownloadFailurePreservesExistingSnapshot() async throws {
         let modelID = "test-org/staging-preserves-\(UUID().uuidString)"
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
-        let snapshotDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
+        let snapshotDir = TestHFCache.snapshotDirectory(for: modelID)
         let refsDir = modelDir.appendingPathComponent("refs", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: modelDir) }
         try? FileManager.default.removeItem(at: modelDir)

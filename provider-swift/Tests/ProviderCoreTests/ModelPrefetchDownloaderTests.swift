@@ -186,8 +186,8 @@ struct ModelPrefetchDownloaderTests {
             ManifestFile(path: "config.json", sizeBytes: Int64(configBytes.count), sha256: sha256Hex(configBytes), role: "config"),
             ManifestFile(path: "model.safetensors", sizeBytes: Int64(weightBytes.count), sha256: sha256Hex(weightBytes), role: "weight"),
         ]
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Aggregate hash over staged files, sorted by relative path (the same
@@ -250,9 +250,9 @@ struct ModelPrefetchDownloaderTests {
             "/\(prefix)/model.safetensors": weightBytes,
         ]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Pre-seed the STABLE staging dir with a VALID config.json (simulating an
@@ -308,9 +308,9 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = served
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Production staging-dir naming rule (keyed by r2Prefix).
@@ -421,8 +421,8 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = served
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
@@ -494,9 +494,9 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = [shardPath: shardBytes]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
@@ -565,9 +565,9 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = [shardPath: shardBytes]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
@@ -633,9 +633,9 @@ struct ModelPrefetchDownloaderTests {
             "/\(prefix)/model.safetensors": weightBytes,
         ]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let stagingName = ".prefetch-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
@@ -747,9 +747,9 @@ struct ModelPrefetchDownloaderTests {
             "/\(prefix)/small.json": smallBytes,
         ]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Pre-seed staging with the VALID big file (interrupted prior prefetch).
@@ -806,9 +806,9 @@ struct ModelPrefetchDownloaderTests {
             "/\(prefix)/config.json": smallBytes,
         ]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Pre-seed the FOREGROUND staging dir with the VALID big file (an
@@ -865,9 +865,9 @@ struct ModelPrefetchDownloaderTests {
             shardPath: shardBytes,
         ]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let stagingName = ".local-staging-" + prefix.replacingOccurrences(of: "/", with: "__")
@@ -945,9 +945,9 @@ struct ModelPrefetchDownloaderTests {
         serveFiles["/\(prefix)/manifest.json"] = try enc.encode(manifest)
         PrefetchURLProtocol.files = serveFiles
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let snapshotsDir = cacheDir.deletingLastPathComponent()
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         // Pre-seed the foreground staging dir with ALL files complete + valid.
@@ -998,8 +998,8 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = ["/\(prefix)/config.json": configBytes]
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
@@ -1037,14 +1037,14 @@ struct ModelPrefetchDownloaderTests {
         )
         PrefetchURLProtocol.files = served
 
-        let modelDir = ModelDownloader.cacheModelDirectory(for: modelID)
+        let modelDir = TestHFCache.modelDirectory(for: modelID)
         defer { try? FileManager.default.removeItem(at: modelDir) }
 
         let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: makeSession())
         let model = CatalogModel(id: modelID, s3Name: "unused", displayName: "Cancel", sizeGb: 0.001,
                                  r2Prefix: prefix, aggregateSHA256: manifest.aggregateSHA256)
 
-        let cacheDir = ModelDownloader.cacheSnapshotDirectory(for: modelID)
+        let cacheDir = TestHFCache.snapshotDirectory(for: modelID)
         let task = Task {
             try await downloader.prefetch(model: model, manifest: manifest)
         }

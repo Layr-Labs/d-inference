@@ -58,6 +58,15 @@ enum TestHFCache {
             "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
     }
 
+    /// The downloader's `snapshots/local` directory for `modelId`, under the
+    /// temp root. Touching `root` first installs the override, so the
+    /// production downloader/scanner then resolve the same location.
+    static func snapshotDirectory(for modelId: String) -> URL {
+        modelDirectory(for: modelId)
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent("local", isDirectory: true)
+    }
+
     /// Create a minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath`
     /// resolves `modelId` (the load paths require an on-disk snapshot BEFORE
     /// they reach the admission gates under test). `files` are written into

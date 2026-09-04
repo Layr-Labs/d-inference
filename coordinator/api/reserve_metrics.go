@@ -15,6 +15,9 @@ import (
 //	routing.shadow_rescan              count  TTFT-shadow post-commit re-walks
 //	routing.reserve_rescans{model}     hist   discarded reserve iterations/request
 //	routing.reserve_rescan_us{model}   hist   time those iterations cost
+//	routing.in_gap_pending_candidates{model} hist candidates charged for
+//	                                   coordinator pending the heartbeat had
+//	                                   not yet reported (exposure sizing)
 //	dispatch_plan.skip{reason}         count  plan entries passed over, by reason
 //	dispatch_plan.entries_consumed     hist   entries consumed when a plan exhausts
 //	routing.hedge_governor_snapshot{model} count governor fleet snapshots taken
@@ -42,6 +45,7 @@ func (s *Server) emitReserveDecisionMetrics(model string, d registry.RoutingDeci
 	if d.Rescans > 0 {
 		s.ddHistogram("routing.reserve_rescan_us", float64(d.RescanUS), tags)
 	}
+	s.ddHistogram("routing.in_gap_pending_candidates", float64(d.InGapPendingCandidates), tags)
 }
 
 // notePlanSkips emits one dispatch_plan.skip per passed-over plan entry

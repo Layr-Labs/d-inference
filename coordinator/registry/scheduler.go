@@ -437,6 +437,11 @@ type RoutingDecision struct {
 	// those discarded iterations cost, in microseconds.
 	Rescans  int
 	RescanUS int64
+	// InGapPendingCandidates is the number of routable candidates in the
+	// winning scan whose backlog charged coordinator-side pending tokens the
+	// provider's heartbeat had not yet reported (buildCandidateInto). Sizes
+	// how often the in-gap charge changes a ranking.
+	InGapPendingCandidates int
 	// TTFTCalibrationRatio is the ratio the TTFT calibrator applied to the
 	// winner's (model, chip) raw estimate (1.0 = uncalibrated or kill switch off).
 	// PrefillDecodeRatio is the decode→prefill fallback multiplier in effect.
@@ -856,15 +861,16 @@ func routingDecisionForFailedScan(model string, scan candidateScan) RoutingDecis
 		TTFTRejections:          scan.ttftRejections,
 		BestTTFTMs:              scan.bestTTFTMs,
 		// System-profiler routing context (by value, filled during the scan).
-		CandidateSetSize:   scan.candidateSetSize,
-		Scanned:            scan.scanned,
-		GateRejections:     scan.gateRejections,
-		Top:                scan.top,
-		RunnerUp:           scan.runnerUp,
-		BestIdle:           scan.bestIdle,
-		NearTiePoolSize:    int(scan.nearTieSize),
-		SelectionPath:      scan.path,
-		PrefillDecodeRatio: prefillToDecodeRatio,
+		CandidateSetSize:       scan.candidateSetSize,
+		Scanned:                scan.scanned,
+		GateRejections:         scan.gateRejections,
+		Top:                    scan.top,
+		RunnerUp:               scan.runnerUp,
+		BestIdle:               scan.bestIdle,
+		NearTiePoolSize:        int(scan.nearTieSize),
+		SelectionPath:          scan.path,
+		PrefillDecodeRatio:     prefillToDecodeRatio,
+		InGapPendingCandidates: scan.inGapPendingCandidates,
 	}
 }
 
@@ -1017,6 +1023,9 @@ type candidateScan struct {
 	bestIdle         CandidateSummary
 	nearTieSize      int32
 	path             SelectionPath
+	// inGapPendingCandidates counts routable candidates whose backlog term
+	// charged coordinator-side pending the heartbeat had not yet reported.
+	inGapPendingCandidates int
 }
 
 // tallyGate records one gate rejection, saturating at the uint16 ceiling.
@@ -1313,6 +1322,9 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 		// (before pool narrowing) so the record can answer "was an idle warm box
 		// available?" whether or not the shadow evaluator is on.
 		scan.noteBestIdle(c)
+		if inGapPendingTokens(&c.snapshot) > 0 {
+			scan.inGapPendingCandidates++
+		}
 		candidates = append(candidates, c)
 		candidateCount++
 	}
@@ -2153,6 +2165,22 @@ func pendingTokenBudget(pr *PendingRequest) int {
 	return prompt + maxTok
 }
 
+// inGapPendingTokens is the coordinator-side pending (Σ prompt + max_output
+// of this model's reserved requests) a budget-reporting provider has not yet
+// reported: the same coordinatorExtra freeMemoryAdmits debits. Zero for
+// providers without a token-budget slot (the legacy branch charges its own
+// unaccountedPendingTokens) and once the heartbeat reflects the work.
+func inGapPendingTokens(snap *routingSnapshot) int64 {
+	if snap.activeTokenBudgetMax <= 0 {
+		return 0
+	}
+	extra := int64(snap.pendingMaxTokens) - committedTokenBudget(snap)
+	if extra < 0 {
+		return 0
+	}
+	return extra
+}
+
 func committedTokenBudget(snap *routingSnapshot) int64 {
 	committed := snap.activeTokenBudgetUsed + snap.queuedTokenBudget
 	if snap.maxTokensPotential > committed {
@@ -2272,6 +2300,23 @@ func (r *Registry) buildCandidateInto(c *routingCandidate, pr *PendingRequest, n
 	var backlogMs float64
 	if snap.activeTokenBudgetMax > 0 {
 		tokensAhead := float64(snap.activeTokenBudgetUsed) + float64(snap.queuedTokenBudget)
+		// Charge the coordinator-side pending tokens the provider has not
+		// reported yet — the same coordinatorExtra the admission gate
+		// (freeMemoryAdmits) debits, in the same unit the heartbeat charges a
+		// reported occupant (active_token_budget_used = Σ prompt + max_output
+		// of admitted requests, protocol/messages.go). Without it a reserved
+		// request raised the winner's cost by only queueMs + pendingMs
+		// (3.75 s) until the provider's heartbeat reflected it, while at
+		// large max_tokens the per-tok/s cost gap to the next box is 5-9 s,
+		// so a concurrent-arrival cohort herded onto the cheapest box up to
+		// its concurrency cap. The window is the dispatch RTT plus the
+		// provider's event heartbeat (materiality >= 1,024 tokens or 10%,
+		// coalesced to 2/s — CapacityEventHeartbeats.swift) plus the
+		// coordinator's own lock wait; committedTokenBudget de-duplicates the
+		// charge once the heartbeat reports the admitted work (max(active +
+		// queued, maxTokensPotential)), so nothing is charged twice. Folded
+		// into backlogMs so the breakdown invariant (Σ terms == Total) holds.
+		tokensAhead += float64(inGapPendingTokens(snap))
 		backlogMs = tokensAhead / effectiveTPS * 1000.0
 	} else {
 		backlogMs = backlogTokenMs(snap.maxTokensPotential, waitingBacklogTokens, unaccountedPendingTokens, effectiveTPS)

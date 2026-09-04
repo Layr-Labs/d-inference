@@ -115,10 +115,13 @@ func TestReserveDecisionMetricsEmitRescans(t *testing.T) {
 	if hasMetric(packets, "routing.reserve_rescan_us") {
 		t.Fatalf("rescan cost emitted without a rescan; packets: %v", packets)
 	}
-	s.emitReserveDecisionMetrics("m", registry.RoutingDecision{Rescans: 2, RescanUS: 1500})
+	s.emitReserveDecisionMetrics("m", registry.RoutingDecision{Rescans: 2, RescanUS: 1500, InGapPendingCandidates: 7})
 	packets = flushDD(t, s, collector)
 	if !hasSeries(packets, "routing.reserve_rescans:2|h|", "model:m") || !hasSeries(packets, "routing.reserve_rescan_us:1500|h|", "model:m") {
 		t.Fatalf("missing rescan series; packets: %v", packets)
+	}
+	if !hasSeries(packets, "routing.in_gap_pending_candidates:7|h|", "model:m") {
+		t.Fatalf("missing in-gap exposure histogram; packets: %v", packets)
 	}
 }
 

@@ -15,7 +15,25 @@ after the human redeploy at 21:13 UTC) and against master `5d400cf75` in the rep
 | #822 | `perf/coordinator-registry-lock-2026-09-03` | Tier 3: per-identity gate state + commit under the read lock; `EIGENINFERENCE_RESERVE_COMMIT_MODE` (`shared` default, `global` kill switch) | #819's branch | green |
 | #823 | `perf/coordinator-wave-fixes-2026-09-03` | Tier 2 C/D: WS fragmentation, queue-drain bound, drain-neutral faults, cancel hygiene, single-pass chunk decode, telemetry re-key (9 commits; Retry-After policy and Tier 5.1 ranking deliberately excluded) | `perf/coordinator-tier2-base-2026-09-03` (A+B) | green (one re-run: the #821 flake) |
 
-Merge order: #821 → #818 → #820 → #819 → #822 → #823 (retarget #823 to master after #820/#819 merge). The Threat Model
+Merge order: #821 → #818 → #820 → #819 → #822 → #823 (retarget #823 to master after #820/#819 merge).
+
+**Codex review round (2026-09-04 06:00 UTC):** #819 and #821 clean. Eleven findings on the other four, all
+verified legitimate (one partially) and fixed with regression tests, each thread answered on GitHub:
+
+| PR | Finding | Verdict | Fix |
+|---|---|---|---|
+| #818 | deferred capacity accept can erase a newer rejection | partially (pre-existing window; goroutine adds µs) | accept stamped with its observation time; newer strikes survive, clamp proof only for older clamps (7a268446a) |
+| #818 | busy floor discards a nearer due job | legit | `min(delay, floor)` (8d7705d38) |
+| #818 | four usage aggregates swallow errors → refresher caches zeros | legit | error-returning store methods, all folded into `degraded` (04bc608a9) |
+| #818 | runbook told operators to leave GOGC out of the required manifest | legit | both manifests in one release; blank-value hazard documented (295422775) |
+| #818 | runbook code references lacked line numbers | legit | `file:line` everywhere (18e7f966d) |
+| #820 | coalesced relay batches bounded by count only (≈1.9 GiB worst case on the error drain) | legit, worse than stated | 256 KiB byte cap at `writeFrame`, oversized buffers released (f132acc5c) |
+| #822 | recorder racing a shared-identity rebind writes to the old gate | legit | validate gate identity under `gate.mu`, re-resolve on mismatch; migration repoints inside the locked section (d21e0d48f) |
+| #822 | sweep can delete a gate an in-flight recorder holds | legit | retire-before-delete, creation counts as touched (d21e0d48f) |
+| #822 | (found while fixing) probe claim and three lock-free fast paths read the stale gate | — | validated claim + `refHasPairState` (020fac64f); residual read-only admit re-check documented |
+| #823 | coordinator draining markers unreachable: provider never emits them | legit | Swift emitter half ported (31 lines, 6 files, tests 5/5 + 114 neighbours) (bcafa19e0) |
+| #823 | queue-only exits counted as attempts | legit | `inference.queue_outcome` with a transient `QueueExit` flag (9a1af65cf) |
+| #823 | flush-strike slice append-only per identity | legit | pruned with the strike window, cleared on success (790a2bdd4) | The Threat Model
 CI check fails on every PR with an invalid Anthropic API key in CI (infra, not code). Human-only items
 (`GOGC=400` after 1.1 is live 24 h, Tier 0 knobs, `ROUTING_CONCURRENCY` re-size after Tier 3) are in
 `docs/operations/coordinator-perf-tier1-rollout.md` on #818.

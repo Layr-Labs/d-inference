@@ -374,6 +374,10 @@ type RoutingDecision struct {
 	// selection; the API layer emits routing.ttft_admission / routing.ttft_spread
 	// from these fields so the spread-to-idle opportunity and the would-shed rate
 	// can be measured before any enforce flips them on.
+	// ShadowIdleAlternativeExists means "an idle, model-resident peer other than
+	// the winner was routable in the WINNING scan" (the post-rescan pool that
+	// selected the winner, whose peers' occupancy may lag concurrent commits on
+	// other providers); ShadowOccupancy is the winner's commit-time occupancy.
 	ShadowEvaluated             bool
 	ShadowMode                  string
 	ShadowWouldShed             bool
@@ -572,8 +576,7 @@ func (r *Registry) reserveProvider(model string, pr *PendingRequest, wantPlan bo
 			addRoutingRejections(&decision, carried)
 			decision.LockWaitUS, decision.ScanUS, decision.AdmitUS = last.lockWaitUS, last.scanUS, admitUS
 			decision.Rescans, decision.RescanUS = rescans, rescanUS
-			r.currentTTFTShadow(
-				model, pr, candidate, excluded...).applyTo(&decision)
+			r.currentTTFTShadow(model, pr, candidate, last.candidates).applyTo(&decision)
 			var plan *DispatchPlan
 			if wantPlan {
 				// The scan pool is immutable value snapshots plus provider
@@ -799,27 +802,25 @@ func (r *Registry) commitProviderReservation(
 	return p, candidate, reservationCommitted, RoutingDecision{}
 }
 
-// currentTTFTShadow recomputes the observational signal from the winner's
-// commit-time pre-reserve snapshot and a fresh, shared-lock candidate pool. It
-// runs after the pending debit is committed, so concurrent reservations cannot
-// leave occupancy and idle-alternative telemetry pinned to the original scan.
+// currentTTFTShadow computes the observational signal from the winner's
+// commit-time pre-reserve snapshot (occupancy, estimate) and the pool of the
+// scan that selected it (idle-alternative). It runs after the pending debit is
+// committed, so the occupancy telemetry reflects the commit, and it reuses the
+// winning scan instead of re-walking the fleet: the pool is immutable value
+// snapshots in arena chunks that stay valid exactly as newDispatchPlan relies
+// on, and a rescan already happened whenever the winner's debit changed
+// between scan and commit. No registry lock is taken — the evaluator reads
+// only the package-level admission mode, the winner and the scan pool.
 func (r *Registry) currentTTFTShadow(
 	model string,
 	pr *PendingRequest,
 	winner *routingCandidate,
-	excludeIDs ...string,
+	scan candidateScan,
 ) ttftShadowEval {
 	if TTFTAdmissionModeValue() == TTFTAdmissionOff || winner == nil || pr == nil {
 		return ttftShadowEval{}
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var current candidateScan
-	if snapshotOccupancy(&winner.snapshot) > 0 {
-		r.scanStats.shadowRescans.Add(1)
-		current = r.scanCandidatesLocked(model, pr, false, excludeIDs...)
-	}
-	return r.evaluateTTFTShadowLocked(model, pr, winner, current)
+	return r.evaluateTTFTShadow(model, pr, winner, scan)
 }
 
 func routingDecisionForCommitRejection(model string, reason candidateRejection, ttft bool) RoutingDecision {

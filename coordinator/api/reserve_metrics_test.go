@@ -126,7 +126,7 @@ func TestReserveDecisionMetricsEmitRescans(t *testing.T) {
 }
 
 // TestRegistryLockGaugesEmit pins the gauge-tick series: writer-wait gauges,
-// the acquisition count, and the fleet-walk / shadow-rescan deltas.
+// the acquisition count, and the fleet-walk delta.
 func TestRegistryLockGaugesEmit(t *testing.T) {
 	s, _ := testServer(t)
 	collector := withTestDD(t, s)
@@ -149,7 +149,6 @@ func TestRegistryLockGaugesEmit(t *testing.T) {
 		"registry.mu.lock_wait_ms:", // mean/p50/p99/max
 		"stat:p99",
 		"routing.fleet_walks:1|c",
-		"routing.shadow_rescan:0|c",
 	} {
 		if !hasMetric(packets, want) {
 			t.Errorf("missing %q; packets: %v", want, packets)

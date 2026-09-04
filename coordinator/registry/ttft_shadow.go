@@ -148,16 +148,17 @@ func (e ttftShadowEval) applyTo(d *RoutingDecision) {
 	d.ShadowOccupancy = e.Occupancy
 }
 
-// evaluateTTFTShadowLocked computes the Phase-0 shadow signals for the winning
+// evaluateTTFTShadow computes the Phase-0 shadow signals for the winning
 // candidate WITHOUT changing the routing decision. Returns the zero value (a
 // no-op for applyTo) when the admission mode is off.
 //
-// Caller holds r.mu and no provider lock. scan is the exact post-narrowing pool
-// that produced winner, so the idle-spread signal reuses it instead of walking
-// the fleet a second time. winner.snapshot is the PRE-reserve snapshot, so its
-// occupancy excludes the request about to be admitted (the b, not b+1, the new
-// request actually waits behind).
-func (r *Registry) evaluateTTFTShadowLocked(
+// Takes no lock: it reads only the package-level admission mode, the winner's
+// immutable snapshot and the scan's immutable pool. scan is the exact
+// post-narrowing pool that produced winner, so the idle-spread signal reuses
+// it instead of walking the fleet a second time. winner.snapshot is the
+// PRE-reserve snapshot, so its occupancy excludes the request about to be
+// admitted (the b, not b+1, the new request actually waits behind).
+func (r *Registry) evaluateTTFTShadow(
 	model string,
 	pr *PendingRequest,
 	winner *routingCandidate,

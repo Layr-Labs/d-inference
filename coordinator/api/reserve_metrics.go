@@ -12,7 +12,6 @@ import (
 //	registry.mu.lock_wait_ms{stat}     gauge  writer wait mean / p50 / p99 / max
 //	registry.mu.lock_acquisitions      count  exclusive acquisitions per tick
 //	routing.fleet_walks                count  full-fleet provider walks per tick
-//	routing.shadow_rescan              count  TTFT-shadow post-commit re-walks
 //	routing.reserve_rescans{model}     hist   discarded reserve iterations/request
 //	routing.reserve_rescan_us{model}   hist   time those iterations cost
 //	routing.in_gap_pending_candidates{model} hist candidates charged for
@@ -29,8 +28,7 @@ import (
 // reserveMetricsState carries the last-seen cumulative counters so the gauge
 // loop can emit per-tick deltas. Written by the gauge-loop goroutine only.
 type reserveMetricsState struct {
-	fleetWalks    int64
-	shadowRescans int64
+	fleetWalks int64
 }
 
 // emitReserveDecisionMetrics emits the per-request reserve-loop series. Called
@@ -82,7 +80,4 @@ func (s *Server) emitRegistryLockGauges() {
 	walks := s.registry.FleetWalkCount()
 	s.ddCount("routing.fleet_walks", walks-s.reserveMetrics.fleetWalks, nil)
 	s.reserveMetrics.fleetWalks = walks
-	shadow := s.registry.ShadowRescanCount()
-	s.ddCount("routing.shadow_rescan", shadow-s.reserveMetrics.shadowRescans, nil)
-	s.reserveMetrics.shadowRescans = shadow
 }

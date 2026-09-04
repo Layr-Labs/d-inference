@@ -108,24 +108,26 @@ type RequestProfileRecord struct {
 	TimingAnomaly      bool   `json:"timing_anomaly"`
 
 	// Routing context.
-	CandidateSetSize       int             `json:"candidate_set_size"`
-	Scanned                int             `json:"scanned"`
-	GateRejections         json.RawMessage `json:"gate_rejections,omitempty"` // {"reason":count}
-	RunnerUpProviderID     string          `json:"runner_up_provider_id"`
-	RunnerUpCostMs         float64         `json:"runner_up_cost_ms"`
-	NearTiePoolSize        int             `json:"near_tie_pool_size"`
-	SelectionPath          string          `json:"selection_path"`
-	BestIdleProviderID     string          `json:"best_idle_provider_id"`
-	BestIdleTTFTMs         float64         `json:"best_idle_ttft_ms"`
-	PredictedTTFTMs        float64         `json:"predicted_ttft_ms"`
-	RawTTFTMs              float64         `json:"raw_ttft_ms"`
-	PredictedDecodeTPS     float64         `json:"predicted_decode_tps"`
-	SnapshotAgeMs          int             `json:"snapshot_age_ms"`
-	PendingForModel        int             `json:"pending_for_model"`
-	TotalPending           int             `json:"total_pending"`
-	CapacityRateMs         float64         `json:"capacity_rate_ms"`
-	CacheDiscountMs        float64         `json:"cache_discount_ms"`
-	ShadowWouldShed        *bool           `json:"shadow_would_shed"`
+	CandidateSetSize   int             `json:"candidate_set_size"`
+	Scanned            int             `json:"scanned"`
+	GateRejections     json.RawMessage `json:"gate_rejections,omitempty"` // {"reason":count}
+	RunnerUpProviderID string          `json:"runner_up_provider_id"`
+	RunnerUpCostMs     float64         `json:"runner_up_cost_ms"`
+	NearTiePoolSize    int             `json:"near_tie_pool_size"`
+	SelectionPath      string          `json:"selection_path"`
+	BestIdleProviderID string          `json:"best_idle_provider_id"`
+	BestIdleTTFTMs     float64         `json:"best_idle_ttft_ms"`
+	PredictedTTFTMs    float64         `json:"predicted_ttft_ms"`
+	RawTTFTMs          float64         `json:"raw_ttft_ms"`
+	PredictedDecodeTPS float64         `json:"predicted_decode_tps"`
+	SnapshotAgeMs      int             `json:"snapshot_age_ms"`
+	PendingForModel    int             `json:"pending_for_model"`
+	TotalPending       int             `json:"total_pending"`
+	CapacityRateMs     float64         `json:"capacity_rate_ms"`
+	CacheDiscountMs    float64         `json:"cache_discount_ms"`
+	ShadowWouldShed    *bool           `json:"shadow_would_shed"`
+	// ShadowIdleAlternative: an idle, model-resident peer other than the
+	// winner was routable in the scan that selected the winner.
 	ShadowIdleAlternative  *bool           `json:"shadow_idle_alternative"`
 	LockWaitUS             int64           `json:"lock_wait_us"`
 	ScanUS                 int64           `json:"scan_us"`

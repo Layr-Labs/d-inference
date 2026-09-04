@@ -171,19 +171,12 @@ func (r *Registry) LockWaitPeek() LockWaitStats {
 // deltas on the gauge tick so the walks-per-request ratio is observable.
 type scanCounters struct {
 	// fleetWalks counts every O(fleet) provider walk: the candidate scan
-	// (dispatch, plan refresh, breaker fail-open rescan, shadow rescan) and
-	// the capacity preflight.
+	// (dispatch, plan refresh, breaker fail-open rescan) and the capacity
+	// preflight.
 	fleetWalks atomic.Int64
-	// shadowRescans counts the TTFT shadow evaluator's post-commit re-walk.
-	shadowRescans atomic.Int64
 }
 
 // FleetWalkCount is the cumulative number of full-fleet provider walks.
 func (r *Registry) FleetWalkCount() int64 {
 	return r.scanStats.fleetWalks.Load()
-}
-
-// ShadowRescanCount is the cumulative number of post-commit shadow rescans.
-func (r *Registry) ShadowRescanCount() int64 {
-	return r.scanStats.shadowRescans.Load()
 }

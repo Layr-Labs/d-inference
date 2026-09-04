@@ -5612,8 +5612,11 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	recovered := r.recoverIfTransientlyUntrusted(providerID, p)
 
+	now := time.Now()
 	p.mu.Lock()
-	p.LastChallengeVerified = time.Now()
+	prevVerified := p.LastChallengeVerified
+	prevSIP := p.ChallengeVerifiedSIP
+	p.LastChallengeVerified = now
 	p.FailedChallenges = 0
 	if !p.ChallengeVerifiedSIP {
 		p.ChallengeVerifiedSIP = true
@@ -5621,9 +5624,25 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 	p.Reputation.RecordChallengePass()
 	p.mu.Unlock()
 
-	// Persist challenge state and reputation.
-	r.persistProviderNow(p)
-	r.persistReputation(p)
+	// A success that flips something routing can see — recovery from a
+	// transient deroute, a stale or never-set challenge freshness (the
+	// liveness gate's challenge-age check), or the FIRST success after
+	// registration, which flips ChallengeVerifiedSIP and with it the
+	// private-text gate even though registration already stamped
+	// LastChallengeVerified — persists the full provider row now and drains
+	// the queues it may have unlocked. A steady-state success on an
+	// already-fresh, already-SIP-verified provider (~4.3/s fleet-wide on the
+	// 5-minute cadence) changes nothing a queued waiter could use: the 30 s
+	// heartbeat persist carries LastChallengeVerified, and the heartbeat drain
+	// covers the queue, so it skips the full-row marshal and the
+	// one-ReserveProviderEx-per-waiter drain pass. Reputation is persisted on
+	// the same 30 s throttle the heartbeat path uses.
+	wasFresh := !prevVerified.IsZero() && now.Sub(prevVerified) <= challengeFreshnessMaxAge
+	transition := recovered || !wasFresh || !prevSIP
+	if transition {
+		r.persistProviderNow(p)
+	}
+	r.persistReputationThrottled(p)
 
 	if recovered {
 		r.logger.Info("provider recovered from transient deroute", "provider_id", providerID)
@@ -5633,7 +5652,9 @@ func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 
 	// A newly verified (or newly recovered) provider may unlock queued requests
 	// for any model it serves.
-	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerChallenge)
+	if transition {
+		r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerChallenge)
+	}
 
 	return recovered
 }

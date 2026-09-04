@@ -353,6 +353,15 @@ public enum UnifiedMemoryCap {
 
     // MARK: - Resolution (explicit → env → default)
 
+    /// The process environment, materialized ONCE. `ProcessInfo.environment`
+    /// builds a fresh dictionary from `environ` on every access, and the two
+    /// resolvers below are reached with the default `env` from every KV
+    /// reserve/commit, every capacity rebuild and every load-gate check —
+    /// per request and per 2 s tick. The environment does not change after
+    /// launch (the smoke-latch seeding in `main` precedes any first access);
+    /// tests that need a different view pass `env:` explicitly.
+    static let liveEnvironment: [String: String] = ProcessInfo.processInfo.environment
+
     /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`
     /// (0–1), or the 0.90 default. A `<= 0` or non-finite env value is treated as
     /// UNSET (→ default), not clamped to 0: a degenerate `0` fraction would make
@@ -361,7 +370,7 @@ public enum UnifiedMemoryCap {
     /// is still clamped as given. Values `> 1` clamp to 1.0.
     static func resolvedCapFraction(
         explicit: Double?,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = liveEnvironment
     ) -> Double {
         if let explicit { return clampFraction(explicit) }
         if let raw = env["DARKBLOOM_MEM_CAP_FRACTION"], let v = Double(raw),
@@ -389,7 +398,7 @@ public enum UnifiedMemoryCap {
     /// small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment,
+        env: [String: String] = liveEnvironment,
         modelIDs: [String]? = nil
     ) -> UInt64 {
         if let explicit { return explicit }

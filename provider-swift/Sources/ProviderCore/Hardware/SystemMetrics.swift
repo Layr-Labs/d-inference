@@ -12,6 +12,14 @@ public enum SystemMetricsCollector: Sendable {
     }
 }
 
+// MARK: - Host port
+
+/// `mach_host_self()` returns a new send right on every call and the old
+/// code never deallocated it — one leaked uref per heartbeat and per
+/// availability probe, for the life of the daemon. The host port is
+/// process-constant; take it once.
+private let cachedHostPort: mach_port_t = mach_host_self()
+
 // MARK: - Thermal State Mapping
 
 private func mapThermalState(_ state: ProcessInfo.ThermalState) -> ThermalState {
@@ -36,7 +44,7 @@ private func collectMemoryPressure() -> Double? {
     let result = withUnsafeMutablePointer(to: &stats) { ptr in
         ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
             host_statistics64(
-                mach_host_self(),
+                cachedHostPort,
                 HOST_VM_INFO64,
                 intPtr,
                 &count

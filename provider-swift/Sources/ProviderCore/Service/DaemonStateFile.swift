@@ -400,13 +400,20 @@ public func daemonProcessAlive(pid: Int32) -> Bool {
 /// Reads/writes the daemon state file at `~/.darkbloom/daemon-state.json`
 /// (override with `DARKBLOOM_STATE_FILE`).
 public enum DaemonStateFile {
-    public static func path() -> URL {
+    /// Resolved once: `write` runs on the 2 s liveness cadence for the life
+    /// of the daemon, and `ProcessInfo.environment` materializes the whole
+    /// environment on every access. The override cannot change after launch
+    /// (launchd passes it in the job's plist); per-loop test redirection uses
+    /// `ProviderLoop.setDaemonStateFileForTesting`, not this env var.
+    private static let resolvedPath: URL = {
         if let override = ProcessInfo.processInfo.environment["DARKBLOOM_STATE_FILE"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".darkbloom/daemon-state.json")
-    }
+    }()
+
+    public static func path() -> URL { resolvedPath }
 
     /// Built once. `write` runs on a ~2 s tick for the life of the daemon, and
     /// a fresh `JSONEncoder` per call is pure allocation for a configuration

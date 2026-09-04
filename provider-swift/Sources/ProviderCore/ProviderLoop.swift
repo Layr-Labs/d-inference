@@ -744,7 +744,6 @@ public actor ProviderLoop {
     // MARK: - Model Slot
 
     internal static let schedulerMaxConcurrent = 24
-    internal static let schedulerPendingTimeout: Duration = .seconds(120)
     internal static let schedulerDefaultMaxTokens = 4096
 
     /// Infer the reasoning parser format from the model's `model_type`

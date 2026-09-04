@@ -263,7 +263,8 @@ could have resulted in an output"). The funnel, grounded in code:
 | `validation` | 400/413/422 | `messages_required`, `malformed_json`, `bad_param`, `payload_too_large`, `unsupported_param` | `consumer.go:1470-1484,1774` |
 | `model_resolution` | 404/503 | `model_not_found`, `model_unavailable`, `alias_unresolved` | `consumer.go:1506,1632,4085` |
 | `balance` | 402 | `insufficient_quota` (per-key cap), `insufficient_funds` (account), `insufficient_funds_provider_price` | `consumer.go:1604-1611,4135-4142,4426` |
-| `rate_limit` | 429 | `rpm_exceeded`, `itpm_exceeded`, `otpm_exceeded`, `global_rate_limit` | `server.go:525,568,2174` |
+| `ratelimit` | 429 | `requests` (per-key / account RPM), `input_tokens`, `output_tokens` (ITPM/OTPM); `limit_kind` = `consumer` / `service` / `key` | `server.go` `writeRateLimited` (one writer for every rate-limit 429) |
+| `drain` | 429 | `draining` (coordinator drain), trust-safety reason; `limit_kind = coordinator` | `drain.go` via `writeRateLimited` |
 | `preflight_capacity` | 429/503 | `machine_busy` (all full), `no_provider` (none serve model), `model_too_large` | `consumer.go:1658-1714,4168-4204` |
 | `routing_ttft` | 429 | `ttft_429`, `queue_timeout`, `queue_deadline` (also in `inference_routes`) | `dispatch.go:358-473` |
 

@@ -327,7 +327,7 @@ Coverage gaps to close:
 |---|---|
 | Auth failures on inference paths | `stage = auth`, reason such as `missing_credentials`, `invalid_api_key`, or `forbidden`. Store no body content. |
 | Account and key RPM limits | `stage = rate_limit`, `limit_kind = rpm`, `retry_after_ms`, `over_by` when known. |
-| Account and key token limits | `stage = rate_limit`, `limit_kind = itpm` or `otpm`, estimated token shape, `retry_after_ms`. |
+| Rate-limit and drain 429s (one writer: `writeRateLimited`) | `stage = ratelimit` with `reason_code = requests`, `input_tokens` or `output_tokens` and `limit_kind` = the tier (`consumer`, `service`, `key`); `stage = drain` with `reason_code = draining` (or the trust-safety reason) and `limit_kind = coordinator`. `requested_model` is empty for the RPM middleware and the drain gate (body unread); `candidate_count = 0`, servability marked computed (no fleet walk). These rows also count in `inference.request_outcome{class:rate_limited}` — filter on `stage` before treating `rate_limited` or `reason_code` as capacity. |
 | Sealed transport/body decode failures | `stage = validation` or `transport`, reason such as `malformed_json`, `payload_too_large`, or `sealed_transport_error`. |
 | Generic dispatch fail-fast exits | Same reason codes as chat path: `model_too_large`, `machine_busy`, `no_provider`, `ttft_too_slow`, `queue_timeout`, `queue_deadline`. |
 | Provider-price reservation failures before dispatch | `stage = balance`, `reason_code = insufficient_funds_provider_price`, with shortfall when available. |

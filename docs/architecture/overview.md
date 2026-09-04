@@ -1,234 +1,209 @@
-# Darkbloom Architecture Overview
+# System overview — how a Darkbloom request works
 
-Darkbloom is a decentralized private-inference network for Apple Silicon Macs.
-Consumers call an OpenAI-compatible HTTP API; the coordinator authenticates,
-routes, bills, and attests; providers run MLX-based inference locally on macOS.
-Prompt content is encrypted end-to-end: the coordinator only handles plaintext
-inside its Confidential-VM memory for routing and billing, and does not log or
-retain prompt content.
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-## System diagram
+Darkbloom sells inference on other people's Apple Silicon Macs. A Go
+**coordinator** accepts OpenAI- and Anthropic-shaped HTTP requests, picks an
+attested **provider** (a Mac running the Swift `darkbloom` CLI), re-encrypts the
+request to that provider, relays the streamed answer back, and settles money
+between the two accounts. This page names every component and walks one request
+through them; each section links to the page that owns the detail.
 
-![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
+## Context
 
-The diagram shows the request flow. Canonical code paths for each hop:
-
-- Consumer → coordinator HTTPS and optional NaCl Box: `coordinator/api/server.go:1411`, `coordinator/api/sender_encryption.go`.
-- Coordinator → provider dispatch and mandatory per-request NaCl Box: `coordinator/api/consumer.go:448-510`, `coordinator/internal/e2e/e2e.go`.
-- Provider decryption, in-process MLX inference, and response encryption: `provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`.
-- Provider attestation and APNs code-identity: `coordinator/api/provider.go:2074-2196`, `coordinator/apns/attestor.go`.
-
-See [`security/encryption.md`](security/encryption.md) for the precise hop-by-hop privacy model.
+The system has to satisfy three parties at once: consumers want a drop-in
+replacement for a hosted API (same wire format, same SDKs, lower price);
+providers want to earn from idle hardware without exposing it; and neither
+party trusts the other or the operator with more than necessary. The design
+answer is a thin control plane that never runs a model, a fat client that runs
+the model in-process on hardware whose identity Apple can vouch for, and
+per-hop encryption so that each party sees only what its role needs
+([`security/encryption.md`](security/encryption.md)).
 
 ## Components
 
-| Component | Path | Details |
+| Component | Code | Runs where | Job |
+|---|---|---|---|
+| Coordinator | `coordinator/` (Go) | GCP Confidential VM (AMD SEV); prod `api.darkbloom.dev`, dev `api.dev.darkbloom.xyz` | HTTP API, provider WebSocket, registry and routing, attestation, billing, model catalog, telemetry |
+| Provider | `provider-swift/` (Swift; product `darkbloom`) | Operators' Macs, as a LaunchAgent | Connect out to the coordinator, prove identity, run models in-process with MLX, encrypt responses |
+| Prompt-contract sidecar | `coordinator/promptsidecar/` (Rust) | Beside the coordinator | Token-boundary planning for prefix-cache routing; failure-isolated |
+| Console | `console-ui/` (Next.js 16 / React 19) | Vercel, `console.darkbloom.dev` | Sign-in, API keys, balance, usage, chat, provider dashboard |
+| Admin UI | `admin-ui/` (Next.js) | Internal | Read-only operator dashboard over the Postgres read replica |
+| Landing | `landing/` (static) | `darkbloom.dev` | Marketing site |
+| E2E harness | `e2e/` | CI and developer machines | Full-stack integration and benchmark runs |
+| MLX forks | `libs/mlx`, `libs/mlx-swift`, `libs/mlx-swift-lm` (submodules) | Compiled into the provider | The inference engine, pinned by commit |
+
+Detail: [`components/coordinator.md`](components/coordinator.md),
+[`components/provider.md`](components/provider.md),
+[`components/console-ui.md`](components/console-ui.md),
+[`components/admin-ui.md`](components/admin-ui.md),
+[`components/mlx-swift.md`](components/mlx-swift.md),
+[`prompt-contract-sidecar.md`](prompt-contract-sidecar.md).
+
+![Darkbloom system architecture](../assets/diagrams/system-architecture.svg)
+
+## One request, end to end
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Consumer (SDK / curl)
+  participant K as Coordinator
+  participant P as Provider (darkbloom)
+  P->>K: WebSocket register + attestation, heartbeat every 5 s
+  K->>P: challenge every 5 min (30 s to answer)
+  C->>K: POST /v1/chat/completions (TLS; optional sealed body)
+  K->>K: auth, rate limit, validate, resolve alias → build, reserve balance
+  K->>K: select provider (eligibility gates → cost model → reserve slot)
+  K->>P: inference_request, NaCl Box to provider key
+  P->>P: decrypt, run model in-process, encrypt each chunk
+  P-->>K: encrypted SSE chunks
+  K-->>C: SSE chunks (first byte only after first content)
+  P->>K: inference_complete (usage, timings, profile)
+  K->>K: settle: charge consumer, credit provider, write telemetry
+```
+
+1. **Provider joins.** `darkbloom start` connects outbound to `GET /ws/provider`
+   and sends `register` with a Secure Enclave–signed attestation blob. The
+   coordinator verifies it (`coordinator/attestation/attestation.go`), assigns a
+   trust level, and re-challenges every `DefaultChallengeInterval` (5 min) with a
+   `ChallengeResponseTimeout` of 30 s (`coordinator/api/provider.go`). The
+   provider heartbeats every `heartbeat_interval_secs` (5;
+   `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) with
+   capacity, slot state, and telemetry. Messages:
+   [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
+2. **Consumer calls.** Every route passes
+   `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
+   inference routes add `drainGate → requireAuth → rateLimitConsumer →
+   sealedTransport` (`coordinator/api/server.go`, `routes`). `/v1/chat/completions`
+   and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
+   `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
+   Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
+3. **Admission.** The handler validates the body (16 MiB cap, tool-schema
+   normalisation), resolves the public alias to a concrete build
+   ([`model-registry.md`](model-registry.md)), reserves the consumer's balance for
+   the worst-case output ([`billing.md`](billing.md)), and applies token-rate
+   admission ([`../reference/api-contracts.md`](../reference/api-contracts.md)).
+4. **Selection.** The registry filters providers through one ordered liveness
+   gate (`providerLivenessGateReasonLocked`,
+   `coordinator/registry/routing_eligibility.go`) — online, trusted at or above
+   the floor, runtime-verified, private-text capable, challenge verified within
+   `challengeFreshnessMaxAge` (16 min) — then scores survivors with an
+   estimated-completion-time cost model and reserves the cheapest
+   (`coordinator/registry/scheduler.go`). Every rejection has a name from a
+   closed vocabulary (`coordinator/registry/gate_reason.go`).
+   [`routing.md`](routing.md), [`scheduling.md`](scheduling.md).
+5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
+   provider's attested X25519 key (`coordinator/internal/e2e/e2e.go`) and sent
+   as `inference_request`. If the first content is late, a speculative second
+   dispatch starts at `speculativeTimerRatio` (0.5) of the first-content
+   deadline; the coordinator tries at most `maxDispatchAttempts` (64) providers
+   (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
+6. **Inference.** The provider decrypts in-process, runs the continuous-batching
+   engine over the pinned MLX forks, and encrypts every response chunk to the
+   coordinator's ephemeral key. [`inference.md`](inference.md),
+   [`prefix-cache.md`](prefix-cache.md).
+7. **Relay.** The coordinator commits the HTTP response only when the first
+   content chunk arrives; failures before that are plain JSON errors, never a
+   broken SSE stream. Chunks are normalised and relayed; one trailing extras
+   event carries the provider's signature and response hash, then `[DONE]`.
+   Post-commit trust and timing appear as `X-Provider-*`, `X-Timing`, and
+   `X-Inference-Job-ID` headers.
+8. **Settlement.** `inference_complete` carries usage and timings; the
+   coordinator charges the reservation's actual cost, credits the provider's
+   account, releases the remainder, and records telemetry and a request profile
+   ([`billing.md`](billing.md), [`telemetry.md`](telemetry.md),
+   [`system-profiler.md`](system-profiler.md)).
+
+## Trust and privacy in one paragraph
+
+Providers hold one of three trust levels — `none`, `self_signed`, `hardware`
+(`TrustLevel`, `coordinator/registry/registry.go`). Public traffic requires at
+least `MinTrustLevel`, default `hardware` (`EIGENINFERENCE_MIN_TRUST`,
+`coordinator/registry/config.go`), which means a Secure Enclave key bound to an
+Apple Managed Device Attestation chain plus an MDM posture check; APNs
+code-identity attestation additionally proves the running binary is the
+released one. The only backend is `mlx-swift` (`BackendMLXSwift`); providers
+that proxy text to another process, disable anti-debug, or fail the SIP check
+are not routable for private text (`providerSupportsPrivateTextLocked`,
+`coordinator/registry/registry.go`). Consumer bodies are decrypted inside the
+coordinator's confidential-VM memory for routing and billing and are not logged
+or retained; the provider is the plaintext endpoint. Exact conditions:
+[`security/attestation.md`](security/attestation.md); exact crypto and what is
+retained: [`security/encryption.md`](security/encryption.md).
+
+## Money in one paragraph
+
+The ledger is in micro-USD. Defaults are `DefaultInputPricePerMillion =
+50_000` and `DefaultOutputPricePerMillion = 200_000` µUSD per million tokens
+($0.05 / $0.20), with `platformFeePercent = 0` during the public alpha
+(`coordinator/payments/pricing.go`). Consumers fund balances through Stripe;
+providers withdraw through Stripe Connect. A consumer routing to a provider it
+owns (self-route) pays nothing. [`billing.md`](billing.md),
+[`../reference/pricing-model.md`](../reference/pricing-model.md).
+
+## Invariants
+
+1. The coordinator never executes a model; the provider never accepts inbound
+   connections from the coordinator (it connects out over `GET /ws/provider`).
+2. A provider is routable for public traffic only if every clause of
+   `providerLivenessGateReasonLocked` passes; there is no second code path
+   (`coordinator/registry/routing_eligibility.go`).
+3. Every coordinator → provider request body is a fresh NaCl Box to the key the
+   provider attested at registration (`coordinator/internal/e2e/e2e.go`).
+4. Nothing is written to the consumer's HTTP response before the first content
+   chunk, so a failed dispatch can always fail over or return a JSON error
+   (`handleChatCompletions`, `coordinator/api/consumer.go`).
+5. Balance is reserved before dispatch (`reserveInferenceBalance`,
+   `coordinator/api/inference_admission.go`) and settled from
+   `inference_complete` (`handleComplete`, `coordinator/api/provider.go`): the
+   difference is refunded, an overage is charged. A request that fails before
+   any provider usage is reported is refunded in full (`refundReservedBalance`,
+   `coordinator/api/consumer.go`).
+6. The provider version the coordinator advertises (`LatestProviderVersion`,
+   `coordinator/api/server.go`) equals `ProviderCore.version`; the test
+   `coordinator/api/provider_version_sync_test.go` enforces it.
+7. Telemetry wire types are mirrored in Go, Swift, and TypeScript and pinned by
+   symmetry tests; the ingestion allowlist never admits prompt or completion
+   text ([`telemetry.md`](telemetry.md)).
+8. Production persistence is Postgres; the coordinator refuses to start
+   without `EIGENINFERENCE_DATABASE_URL` unless
+   `EIGENINFERENCE_ALLOW_MEMORY_STORE=true` (`coordinator/cmd/coordinator/main.go`).
+   [`storage.md`](storage.md).
+
+## Failure modes
+
+| Failure | What happens | Where described |
 |---|---|---|
-| Coordinator | `coordinator/` | [`components/coordinator.md`](components/coordinator.md) |
-| Provider CLI | `provider-swift/` | [`components/provider.md`](components/provider.md) |
-| Console UI | `console-ui/` | [`components/console-ui.md`](components/console-ui.md) |
-| E2E harness | `e2e/` | `e2e/testbed/` |
+| No eligible provider for a model | 503 with a structured error before any bytes are streamed; rejection reasons tallied | [`routing.md`](routing.md) |
+| Provider slow to first content | Speculative second dispatch; the first to produce content wins; the other is cancelled | [`data-flow.md`](data-flow.md) |
+| Provider fails after commit | In-band error event on the SSE stream (the HTTP status is already sent); settlement follows whatever usage the provider reported | [`data-flow.md`](data-flow.md), [`billing.md`](billing.md) |
+| Consumer disconnects before the provider finishes | Billing record parked for `defaultTerminalSettleGrace` (30 s), then settled or refunded (`coordinator/api/settlement.go`) | [`billing.md`](billing.md) |
+| Attestation challenge fails or goes stale | Provider marked untrusted / `challenge_stale`; leaves routing until re-verified | [`security/attestation.md`](security/attestation.md) |
+| Coordinator restart | Providers reconnect with backoff 1 → 30 s; state is in Postgres; trust may be reused within a window | [`components/provider.md`](components/provider.md), [`security/attestation.md`](security/attestation.md) |
 
-### Coordinator
+## Code map
 
-The coordinator is the Go control plane. Production runs in a GCP Confidential
-VM that reports AMD SEV; development runs in a separate standard GCP VM. Route
-wiring lives in `coordinator/api/server.go:1411-1536`. Key
-responsibilities:
-
-* OpenAI-compatible consumer API (`/v1/chat/completions`, `/v1/completions`,
-  `/v1/messages`, `/v1/models`, …) — `coordinator/api/consumer.go`.
-* Provider WebSocket lifecycle, registration, heartbeats, attestation
-  challenges, and APNs code-identity round-trip —
-  `coordinator/api/provider.go`.
-* Provider registry and cost-based scheduler —
-  `coordinator/registry/scheduler.go`, `coordinator/registry/registry.go`.
-* Secure Enclave attestation verification —
-  `coordinator/attestation/attestation.go`.
-* Optional sender→coordinator NaCl Box sealing —
-  `coordinator/api/sender_encryption.go`.
-* Mandatory per-request coordinator→provider NaCl Box —
-  `coordinator/internal/e2e/e2e.go`, `coordinator/api/consumer.go:448-510`.
-* Billing, pricing, and ledger settlement —
-  `coordinator/payments/pricing.go`, `coordinator/api/provider.go:1640-1944`.
-
-### Provider
-
-The provider is a Swift CLI (`darkbloom`) that runs on Apple Silicon Macs.
-Inference is in-process via `mlx-swift-lm` (forked under `libs/mlx-swift-lm`).
-There is **no Rust provider**, no embedded Python interpreter, and no local
-inference server. The only routable backend is `BackendMLXSwift`
-(`coordinator/registry/registry.go:344-348`).
-
-Key subsystems:
-
-* WebSocket client and inference loop —
-  `provider-swift/Sources/ProviderCore/ProviderLoop.swift`.
-* Prompt decryption and response encryption —
-  `provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`.
-* Secure Enclave attestation and signing —
-  `provider-swift/Sources/darkbloom-enclave-cli/`.
-* Model manifests, download, and publish —
-  `provider-swift/Sources/ProviderCoreFoundation/`,
-  `provider-swift/Sources/darkbloom-publish/`.
-* In-process MLX inference — `provider-swift/Sources/ProviderCore/Inference/`.
-
-### Consumer
-
-Consumers use any OpenAI-compatible client pointed at the coordinator. The
-consumer HTTP path is wrapped as
-`drainGate → requireAuth → rateLimitConsumer → sealedTransport → handleChatCompletions`
-([`server.go:1755-1766`](../../coordinator/api/server.go#L1755-L1766)). After a request
-commits to a provider, the coordinator returns provider trust, timing, and job
-identity as `X-Provider-*`, `X-Timing`, and `X-Inference-Job-ID` headers;
-pre-commit failures do not have provider headers
-([`dispatch.go:3371-3379`](../../coordinator/api/dispatch.go#L3371-L3379)).
-`POST /v1/chat/completions` can copy those fields into a JSON `metadata` object
-when the caller sets `metadata_details=true`
-([`response_metadata.go:52-100`](../../coordinator/api/response_metadata.go#L52-L100),
-[`response_metadata.go:242-276`](../../coordinator/api/response_metadata.go#L242-L276)).
-That object also includes region/country GeoIP of the serving provider; city,
-coordinates, lookup source, and raw IPs are excluded
-([`response_metadata.go:209-240`](../../coordinator/api/response_metadata.go#L209-L240)).
-
-## Privacy model
-
-The canonical hop-by-hop model is defined in
-[`security/encryption.md`](security/encryption.md). In short:
-
-* **Consumer → coordinator**: TLS by default; optional NaCl Box
-  (X25519 + XSalsa20-Poly1305) via
-  `Content-Type: application/eigeninference-sealed+json`. Key advertisement at
-  `GET /v1/encryption-key` (`coordinator/api/sender_encryption.go:93-111`).
-* **Coordinator → provider**: mandatory per-request NaCl Box to the provider's
-  attested X25519 public key (`coordinator/api/consumer.go:448-510`,
-  `coordinator/internal/e2e/e2e.go`).
-* **Provider → coordinator**: response SSE chunks encrypted back to the
-  coordinator's ephemeral X25519 key
-  (`provider-swift/Sources/ProviderCore/ProviderLoop.swift:959-1178`).
-* **Coordinator handling**: the coordinator decrypts consumer bodies inside its
-  Confidential-VM memory for routing and billing. It does **not** log or retain
-  prompt content.
-* **Provider endpoint**: the provider is the decryption endpoint for prompts; it
-  is bound to Apple Secure Enclave identity and code-identity attestation.
-
-The precise statement is therefore not "the coordinator never sees plaintext
-prompts" but "plaintext is exposed only inside the coordinator's CVM memory,
-is not logged or retained, and is immediately re-encrypted for the selected
-provider."
-
-## Trust levels and attestation
-
-Providers are classified into three attestation levels
-(`coordinator/registry/registry.go:51-58`):
-
-| Level | Value | Meaning |
-|---|---|---|
-| `none` | `"none"` | No attestation provided (Open Mode). Not admitted for private text traffic. |
-| `self_signed` | `"self_signed"` | Secure Enclave P-256 ECDSA signature over a hardware/identity blob. |
-| `hardware` | `"hardware"` | MDM SecurityInfo posture check passed; SE key additionally bound to an Apple Managed Device Attestation (MDA) certificate chain as the genuineness proof. |
-
-Attestation is verified at registration (`coordinator/api/provider.go:2074-2196`;
-`coordinator/attestation/attestation.go:119-231`) and re-verified through
-periodic challenge-response: immediately on registration, then every
-`DefaultChallengeInterval` (5 minutes)
-(`coordinator/api/provider.go:818-920`). Disabled SIP or Secure Boot in a
-challenge response marks the provider untrusted immediately.
-
-The strongest production gate is APNs code-identity attestation (v0.6.0+), which
-proves the running provider binary is genuine and team-provisioned. See
-[`decisions/apns-code-attestation.md`](../design/apns-code-attestation.md) and
-[`security/attestation.md`](security/attestation.md).
-
-## Routing and scheduling
-
-Production routing is a **cost-minimization scheduler**, not round-robin. The
-dispatch hot path is `Registry.ReserveProviderEx`
-(`coordinator/registry/scheduler.go:213-292`); the full algorithm is documented
-in [`operations/routing.md`](routing.md).
-
-The scheduler (`coordinator/registry/scheduler.go:302-462`):
-
-1. Collects every provider that passes structural gates (catalog membership,
-   status, trust floor, runtime verification, private-text support, challenge
-   freshness, shape-keyed inference-error cooldown, trait gates, vision gate).
-2. Builds a per-candidate estimated completion time (`costMs`) from slot-state
-   penalty, queue depth, total pending load, token backlog, this-request
-   prefill/decode time, and health metrics.
-3. Selects the lowest-cost candidate; near-ties are broken by effective queue
-   depth, then total pending, then randomization to avoid hot-spotting.
-4. Atomically reserves capacity by registering the request in the provider's
-   pending set before returning.
-
-Capacity admission uses either the provider-reported token budget
-(`BackendCapacity.Slots.ActiveTokenBudget*`) or a memory-based fallback
-(`freeMemoryAdmits`, `coordinator/registry/scheduler.go:723-772`). Cold
-providers are eligible but pay a large state penalty, so warm providers are
-strongly preferred.
-
-For the request queue, slot-state semantics, token-budget admission, and
-demand-driven model loading, see [`operations/scheduling.md`](scheduling.md).
-
-> **Outdated claim corrected:** the old `ARCHITECTURE.md` described routing as a
-> multiplicative score
-> `(1-load) * decode_tps * trust_multiplier * reputation * warm_model_bonus * health_factor`.
-> That formula survives only in the legacy `ScoreProvider` helper
-> (`coordinator/registry/registry.go:3048-3182`), which is used by tests and
-> benchmarks; production dispatch uses `ReserveProviderEx` and
-> `selectBestCandidateLockedFull`.
-
-## Billing and pricing
-
-Pricing is resolved per request (`coordinator/api/provider.go:1657-1690`) in
-this order:
-
-1. Provider custom price (if any and not a service/wholesale consumer).
-2. Platform admin price set via `PUT /v1/admin/pricing`.
-3. Hardcoded fallback defaults in `coordinator/payments/pricing.go`.
-
-Fallback defaults (`coordinator/payments/pricing.go`):
-
-| Item | Value |
+| Concern | Entry point |
 |---|---|
-| Input tokens | $0.05 per 1M tokens (`DefaultInputPricePerMillion = 50_000` micro-USD per 1M) |
-| Output tokens | $0.20 per 1M tokens (`DefaultOutputPricePerMillion = 200_000` micro-USD per 1M) |
-| Minimum charge | $0.0001 per request (`minimumChargeMicroUSD = 100`) |
-| Platform fee | **0%** during public alpha (`platformFeePercent = 0`) |
+| Route table and middleware | `coordinator/api/server.go` (`routes`) |
+| Chat / Responses handler | `coordinator/api/consumer.go` (`handleChatCompletions`) |
+| Completions / Messages handler | `coordinator/api/consumer.go` (`handleGenericInference`) |
+| Provider WebSocket, registration, challenges | `coordinator/api/provider.go` |
+| Attestation verification | `coordinator/attestation/attestation.go` |
+| Eligibility gate | `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
+| Cost model and reservation | `coordinator/registry/scheduler.go` |
+| Per-request encryption | `coordinator/internal/e2e/e2e.go`; optional sender sealing `coordinator/api/sender_encryption.go` |
+| Pricing and ledger | `coordinator/payments/pricing.go`, `coordinator/billing/` |
+| Provider main loop | `provider-swift/Sources/ProviderCore/ProviderLoop.swift` |
+| Provider CLI entry | `provider-swift/Sources/darkbloom/Darkbloom.swift` |
+| Engine bridge, KV caches, scheduling | `provider-swift/Sources/ProviderCore/Inference/`, `provider-swift/Sources/ProviderCore/KVCache/`, `provider-swift/Sources/ProviderCore/KVCacheSSD/`, `provider-swift/Sources/ProviderCore/Scheduling/` |
+| Console API relay | `console-ui/src/app/api/` |
 
-> **Outdated claim corrected:** the old `ARCHITECTURE.md` claimed a 10%
-> platform fee and 90% provider payout. The code sets the default platform fee
-> to 0% for the public alpha
-> (`coordinator/payments/pricing.go:35-43`). Per-account overrides via
-> `PUT /v1/admin/users/platform-fee` are still possible, but the global default
-> is 0%.
+## Related
 
-Settlement credits the provider's linked account and any platform fee to the
-platform account. Free self-route traffic (consumer account equals provider
-account) settles at zero cost and is excluded from public stats
-(`coordinator/api/provider.go:1694-1866`).
-
-For the full price-resolution rules, reservation/settlement flow, and ledger
-entries, see [`operations/billing.md`](billing.md).
-
-## Model registry and telemetry
-
-The coordinator owns the canonical model catalog. Model metadata, versioned
-manifests, and file fingerprints live in Postgres; consumer-facing model names
-are aliases that resolve to concrete builds. Providers download approved models
-from R2 and verify per-file and aggregate SHA-256 hashes. See
-[`operations/model-registry.md`](model-registry.md).
-
-Telemetry events share a single wire type across Go, Swift, and TypeScript.
-The three implementations must keep enum values, snake_case field names, and
-the field allowlist in sync. See
-[`operations/telemetry.md`](telemetry.md).
-
-## Storage
-
-| Backend | Use case | Code |
-|---|---|---|
-| `MemoryStore` | Development / tests | `coordinator/store/memory.go` |
-| `PostgresStore` | Production persistence | `coordinator/store/postgres.go` |
-
-The default coordinator build uses the in-memory store unless Postgres is
-configured, so provider state is lost on coordinator restart in that mode.
+[`data-flow.md`](data-flow.md) ·
+[`../consumer/quickstart.md`](../consumer/quickstart.md) ·
+[`../provider/quickstart.md`](../provider/quickstart.md) ·
+[`../operations/README.md`](../operations/README.md) ·
+[`../glossary.md`](../glossary.md)

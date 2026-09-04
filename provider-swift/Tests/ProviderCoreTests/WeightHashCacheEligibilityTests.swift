@@ -224,7 +224,15 @@ struct WeightHashCacheEligibilityTests {
 struct ContiguousLoadWeightHashTests {
     private let modelID = "darkbloom-tests/contiguous-hash-\(UUID().uuidString.prefix(8))"
 
-    private func makeLoop(kvBackend: String) throws -> ProviderLoop {
+    private enum DriftTestStop: Error { case engineBuild }
+
+    /// Default hook cancels before any weights are read; the drift tests pass
+    /// their own to mutate the snapshot between the pre-load observation and
+    /// the (stubbed) container load.
+    private func makeLoop(
+        kvBackend: String,
+        beforeModelLoad: (@Sendable (String) async -> Void)? = nil
+    ) throws -> ProviderLoop {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
             hardware: HardwareInfo(
@@ -246,11 +254,32 @@ struct ContiguousLoadWeightHashTests {
             config: config,
             purgeLegacyFiles: false,
             attestationSigner: nil,
-            beforeModelLoad: { _ in
+            beforeModelLoad: beforeModelLoad ?? { _ in
                 // Stop before any weights are read: `ensureModelLoaded`
                 // checks cancellation right after this hook.
                 withUnsafeCurrentTask { $0?.cancel() }
             })
+    }
+
+    private func stubContainer() -> ModelContainer {
+        ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: modelID),
+                model: CacheHashStubLanguageModel(),
+                processor: CacheHashStubProcessor(),
+                tokenizer: StubBridgeTokenizer()))
+    }
+
+    /// Engine hook that ends the load at the build stage with a known
+    /// error: the stub container cannot build a real engine, and the point
+    /// under test lies BEFORE the build.
+    private func installEngineStop(_ loop: ProviderLoop) async {
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                eosTokenIds: [2],
+                emitTelemetry: nil,
+                physicalMemoryBytes: nil,
+                makeEngine: { _, _ in throw DriftTestStop.engineBuild }))
     }
 
     private func seedSnapshot(weights: String) throws -> (modelDir: URL, snapshot: URL) {
@@ -278,6 +307,69 @@ struct ContiguousLoadWeightHashTests {
         // result was published BEFORE the load (the bracket used to publish
         // nothing until both fresh reads agreed).
         #expect(await loop.liveModelHashForTesting(modelID) == expected)
+    }
+
+    @Test("mid-load byte drift on a contiguous slot fails closed: released, nothing new published, no slot")
+    func contiguousMidLoadByteDriftFailsClosed() async throws {
+        let (modelDir, snapshot) = try seedSnapshot(weights: "contiguous-weights-v1")
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        let weights = snapshot.appendingPathComponent("model.safetensors")
+        let preLoadHash = try #require(WeightHasher.computeHash(snapshotDir: snapshot))
+        // A same-id re-publish landing while the container loads: the bytes
+        // (and size) change between the pre-load observation and the load.
+        let loop = try makeLoop(
+            kvBackend: "auto",
+            beforeModelLoad: { _ in
+                try? Data("contiguous-weights-v2-different-length".utf8).write(to: weights)
+            })
+        await installEngineStop(loop)
+        let modelID = self.modelID
+        ModelContainerLoading.registerContainerForTesting(at: snapshot) { [self] in stubContainer() }
+        defer { ModelContainerLoading.unregisterContainerForTesting(at: snapshot) }
+
+        do {
+            try await loop.ensureModelLoaded(modelId: modelID)
+            Issue.record("a load whose bytes drifted must not install a slot")
+        } catch let InferenceError.modelLoadFailed(message) {
+            #expect(message.contains("changed while loading"), "\(message)")
+        }
+        // Fail-closed: the pre-load observation stands (the drifted bytes
+        // were never published as the model's hash), no slot, no loaded hash.
+        #expect(await loop.liveModelHashForTesting(modelID) == preLoadHash)
+        #expect(await loop.modelSlots[modelID] == nil)
+        #expect(await loop.loadedWeightHashForTesting(modelId: modelID) == nil)
+    }
+
+    @Test("metadata-only drift (same bytes, new mtime) verifies with one pass, re-seeds the fingerprint and proceeds")
+    func contiguousMetadataDriftVerifiesAndProceeds() async throws {
+        let (modelDir, snapshot) = try seedSnapshot(weights: "contiguous-weights-v1")
+        defer { try? FileManager.default.removeItem(at: modelDir) }
+        let weights = snapshot.appendingPathComponent("model.safetensors")
+        let expected = try #require(WeightHasher.computeHash(snapshotDir: snapshot))
+        let loop = try makeLoop(
+            kvBackend: "auto",
+            beforeModelLoad: { _ in
+                try? FileManager.default.setAttributes(
+                    [.modificationDate: Date().addingTimeInterval(120)],
+                    ofItemAtPath: weights.path)
+            })
+        await installEngineStop(loop)
+        let modelID = self.modelID
+        ModelContainerLoading.registerContainerForTesting(at: snapshot) { [self] in stubContainer() }
+        defer { ModelContainerLoading.unregisterContainerForTesting(at: snapshot) }
+
+        do {
+            try await loop.ensureModelLoaded(modelId: modelID)
+        } catch {
+            // The stub ends the load at the engine build (or a later gate);
+            // what matters is that the drift verdict was NOT fail-closed.
+            #expect(!"\(error)".contains("changed while loading"), "\(error)")
+        }
+        #expect(await loop.liveModelHashForTesting(modelID) == expected)
+        // The verifying pass re-seeded the fingerprint of the touched files.
+        #expect(
+            await loop.modelHashFingerprintForTesting(modelID)
+                == WeightHasher.snapshotFingerprint(snapshotDir: snapshot))
     }
 
     @Test("an explicit paged slot keeps the bracket: nothing is published before the post-load read")

@@ -424,12 +424,14 @@ extension ProviderLoop {
             // fingerprint-reuse path (0 passes when the start-time
             // fingerprint is seeded, 1 on a miss) instead of two full
             // passes it would throw away. Explicit paged slots are
-            // unchanged. Contract change to name: on a contiguous slot a
-            // hash-read failure keeps the previous hash (`publishWeightHash`
-            // guard) rather than removing it from registration, and a
-            // mid-load drift warns + recomputes + serves (the recomputed
-            // hash then trips the coordinator's catalog-pin check) rather
-            // than failing the load — the pre-#549 non-SSD contract.
+            // unchanged. Contract to name: on a contiguous slot a hash-read
+            // failure keeps the previous hash (`publishWeightHash` guard)
+            // rather than removing it from registration; a mid-load
+            // fingerprint drift is verified with ONE fresh read and fails
+            // the load unless the loaded bytes hash to the pre-load
+            // observation (below) — the same fail-closed verdict as the
+            // paged bracket, so a same-id re-publish that lands mid-load can
+            // never serve old or mixed bytes under the catalog's new hash.
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
                 && EngineV2KVBackendPolicy.mayResolvePaged(
                     global: loopConfig.config.backend.engineV2KVBackend,
@@ -556,15 +558,39 @@ extension ProviderLoop {
                 if preLoadHash.fingerprint == nil
                     || postLoadFingerprint != preLoadHash.fingerprint
                 {
+                    // Drift (or no pre-load fingerprint to compare): read
+                    // the bytes NOW on disk once and accept the load only
+                    // when they hash to the pre-load observation. Replaced
+                    // or mixed shards (a same-id re-download swapped
+                    // `snapshots/local` while the container loaded) hash
+                    // differently — or cannot be read — and the load fails
+                    // closed exactly like the paged bracket's `.changed`:
+                    // the requester's 503 reroutes and the retry hashes the
+                    // new bytes once. Recomputing and SERVING would publish
+                    // the catalog's new hash for bytes that are not it,
+                    // passing the catalog-pin check and the challenge with
+                    // a wrong attestation. Metadata-only drift (same bytes,
+                    // new mtime/inode) verifies equal and re-seeds the
+                    // fingerprint so the next load is 0-pass again.
                     logger.warning(
-                        "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
+                        "Snapshot fingerprint drifted between hash and load for \(modelId) — verifying the bytes actually loaded")
                     let postLoadHash = try await captureFreshCryptographicWeightHash(
                         modelId: modelId,
                         modelPath: modelPath,
                         fingerprint: postLoadFingerprint)
                     stages.hashPasses += 1
+                    guard case .eligible(let verified) = Self.reusableSSDWeightHashDecision(
+                        preLoadHash: preLoadHash.hash, postLoadHash: postLoadHash.hash)
+                    else {
+                        newcomer.release()
+                        MLX.Memory.clearCache()
+                        let message =
+                            "Model '\(modelId)' changed while loading (snapshot drifted and the loaded bytes do not verify against the pre-load hash) — unloaded"
+                        recordModelLoadError(model: modelId, message: message)
+                        throw InferenceError.modelLoadFailed(message)
+                    }
                     await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
-                    loadedWeightHash = postLoadHash.hash
+                    loadedWeightHash = verified
                 } else {
                     loadedWeightHash = preLoadHash.hash
                 }

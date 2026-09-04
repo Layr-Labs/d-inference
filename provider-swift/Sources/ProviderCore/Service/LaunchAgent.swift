@@ -306,6 +306,12 @@ public enum LaunchAgent: Sendable {
     /// (the documented Tahoe opt-out) and `MLX_QWEN_DIRECT_EXPERT_REDUCTION`.
     /// Defaults are unchanged: nothing here is set unless an operator does.
     /// `CBV2_STEP_PROFILE` is dumped on SIGUSR1 by `EngineStepProfileDump`.
+    /// Persistence is from the INSTALLING shell: a key exported for a
+    /// foreground run (`CBV2_STEP_PROFILE=1` for a step profile,
+    /// `MLX_COMPILED_DECODE=0` for a Tahoe check) and still set when
+    /// `darkbloom start` runs becomes the daemon's steady state until the
+    /// plist is rewritten — `persistedInferenceEnvironment(from:)` reports
+    /// exactly that set so both starts can say so.
     static let inferencePassthroughEnvKeys = [
         EngineV2Factory.maxPartialPrefillsKey,
         PrefillDeadlineMode.environmentKey,
@@ -360,6 +366,22 @@ public enum LaunchAgent: Sendable {
             }
         }
         return out
+    }
+
+    /// The engine-read inference keys (`inferencePassthroughEnvKeys`) that
+    /// `passthroughEnvironment(from:)` persists from `environment`, as
+    /// `KEY=value` lines in allowlist order. Printed by `darkbloom start`
+    /// (the moment of persistence) and in the daemon's startup banner (every
+    /// launchd restart/recovery replays the plist), so a foreground-only
+    /// export — the step profiler, the compiled-decode opt-out — that became
+    /// the daemon's steady state is visible instead of silent.
+    public static func persistedInferenceEnvironment(
+        from environment: [String: String]
+    ) -> [String] {
+        inferencePassthroughEnvKeys.compactMap { key in
+            guard let value = environment[key], !value.isEmpty else { return nil }
+            return "\(key)=\(value)"
+        }
     }
 
     private static func writePlist(

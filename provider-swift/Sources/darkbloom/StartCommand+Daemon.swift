@@ -90,6 +90,18 @@ extension Start {
         for id in selectedModelIDs {
             print("    \(id)")
         }
+        // Engine env keys copied from THIS shell into the daemon plist —
+        // say so, or a profiler/opt-out exported for a foreground run
+        // silently becomes the daemon's steady state.
+        let persistedEngineEnv = LaunchAgent.persistedInferenceEnvironment(
+            from: ProcessInfo.processInfo.environment)
+        if !persistedEngineEnv.isEmpty {
+            print("  Engine env persisted into the daemon plist from this shell:")
+            for entry in persistedEngineEnv {
+                print("    \(entry)")
+            }
+            print("    (unset and re-run `darkbloom start` to clear)")
+        }
         if localEndpoint {
             let shownURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
             print("  Local:   \(shownURL) (unified mode — run `darkbloom local` for the API key)")

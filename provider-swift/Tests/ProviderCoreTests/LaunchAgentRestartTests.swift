@@ -303,6 +303,31 @@ struct LaunchAgentEnvironmentTests {
         // The watchdog job deliberately carries none of the inference keys.
         #expect(WatchdogAgent.passthroughEnvironment(from: env).isEmpty)
     }
+
+    @Test func reportsPersistedInferenceKeysInAllowlistOrder() {
+        // What `darkbloom start` and the daemon banner print: only the
+        // engine-read keys that WILL persist, in allowlist order, empty
+        // values dropped, non-inference passthrough keys (prefix cache, HF
+        // cache) and unrelated variables excluded.
+        let env = [
+            "MLX_COMPILED_DECODE": "0",
+            "CBV2_STEP_PROFILE": "1",
+            "DARKBLOOM_CBV2_MIXED_PREFILL_CAP": "",
+            "DARKBLOOM_PREFIX_CACHE": "0",
+            "HOME": "/Users/x",
+        ]
+        #expect(
+            LaunchAgent.persistedInferenceEnvironment(from: env)
+                == ["CBV2_STEP_PROFILE=1", "MLX_COMPILED_DECODE=0"])
+        #expect(LaunchAgent.persistedInferenceEnvironment(from: [:]).isEmpty)
+        // Consistency with the plist builder: every reported key is one the
+        // plist persists, with the same value.
+        let plist = LaunchAgent.passthroughEnvironment(from: env)
+        for line in LaunchAgent.persistedInferenceEnvironment(from: env) {
+            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+            #expect(plist[parts[0]] == parts[1])
+        }
+    }
 }
 
 @Suite("LaunchAgent service plist")

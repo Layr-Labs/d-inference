@@ -265,6 +265,14 @@ extension Start {
 
         print("darkbloom \(ProviderCore.version)")
         print("Backend: mlx-swift")
+        // Engine env this process runs with (launchd replays the plist's
+        // persisted keys on every restart/recovery): in the provider log so
+        // a persisted profiler/opt-out is not silent.
+        let engineEnv = LaunchAgent.persistedInferenceEnvironment(
+            from: ProcessInfo.processInfo.environment)
+        if !engineEnv.isEmpty {
+            print("Engine env: \(engineEnv.joined(separator: " "))")
+        }
         print("Config: \(describeConfigPath(snapshot))")
         print("Coordinator: \(coordinatorURL)")
         if let schedule {

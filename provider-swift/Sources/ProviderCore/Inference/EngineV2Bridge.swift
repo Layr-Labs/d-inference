@@ -1770,11 +1770,25 @@ public actor EngineV2Bridge {
         // Profiler: pump-LOCAL last-delta instant (one clock read per delta,
         // no lock), written to the profile exactly once at finish.
         var lastDeltaAt: SuspendingClock.Instant?
+        // The engine's exact prompt count, published before the first delta
+        // can reach the frames loop: a cancel settlement (no usage frame in
+        // the normal cancel ordering) bills THIS instead of re-rendering the
+        // chat template to recover it. `active[id]` is seeded at admission,
+        // strictly before the pump task starts.
+        if let usageSignal, let promptTokens = active[id]?.promptTokens {
+            usageSignal.recordPromptTokens(promptTokens)
+        }
+        // Pump-local running completion count (one lock write per delta).
+        var forwardedTokens = 0
         for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
                 if profile != nil, !tokens.isEmpty {
                     lastDeltaAt = .now
+                }
+                if let usageSignal, !tokens.isEmpty {
+                    forwardedTokens += tokens.count
+                    usageSignal.recordCompletionTokens(forwardedTokens)
                 }
                 // Key first-token on TOKEN count, not text: some tokens
                 // (BPE intermediates, specials) detokenize to "" and would

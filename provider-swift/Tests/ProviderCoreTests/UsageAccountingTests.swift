@@ -77,3 +77,35 @@ func cancelledUsageClampsReasoningToCompletion() throws {
     #expect(settled.completionTokens == 5)
     #expect(settled.reasoningTokens == 5)
 }
+
+@Test("an engine-reported prompt count skips the re-template floor entirely")
+func enginePromptCountSkipsRetemplateFloor() {
+    // Pin (passes before and after the cancel-settlement change): once the
+    // handler fills `promptTokens` from the bridge's admission count, the
+    // `promptTokenFloor` autoclosure — a full chat-template re-render plus
+    // BPE — must never be evaluated. Only a zero prompt count reaches it.
+    let usage = StreamedGenerationUsage(
+        promptTokens: 17,
+        completionTokens: 0,
+        contentFrameCount: 3,
+        deliveredCompletionTokenFloor: 5,
+        hasVisibleOutput: true
+    )
+    var floorEvaluations = 0
+    let terminal = usage.cancelledTerminal(
+        promptTokenFloor: { floorEvaluations += 1; return 99 }())
+    #expect(terminal == .complete(UsageInfo(promptTokens: 17, completionTokens: 5)))
+    #expect(floorEvaluations == 0)
+
+    let zeroPrompt = StreamedGenerationUsage(
+        promptTokens: 0,
+        completionTokens: 0,
+        contentFrameCount: 3,
+        deliveredCompletionTokenFloor: 5,
+        hasVisibleOutput: true
+    )
+    let fallback = zeroPrompt.cancelledTerminal(
+        promptTokenFloor: { floorEvaluations += 1; return 99 }())
+    #expect(fallback == .complete(UsageInfo(promptTokens: 99, completionTokens: 5)))
+    #expect(floorEvaluations == 1)
+}

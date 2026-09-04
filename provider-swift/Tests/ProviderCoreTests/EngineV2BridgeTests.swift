@@ -2723,3 +2723,87 @@ struct EngineV2BridgePagedKVTests {
         #expect(pagedEngine.submitted.count == 1)
     }
 }
+
+// MARK: - Engine-side exact counts on the usage signal (cancel settlement)
+
+@Suite("EngineV2 usage signal carries the engine's exact counts")
+struct EngineV2UsageSignalCountsTests {
+    @Test("a clean finish leaves the admission prompt count and the forwarded completion count")
+    func cleanFinishPublishesCounts() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "a", tokens: [11], logprobs: nil),
+            .delta(text: "b", tokens: [12], logprobs: nil),
+            .delta(text: "", tokens: [2], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 4, completionTokens: 3)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let signal = EngineV2RequestUsageSignal()
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3, 4],
+            request: makeRequest(),
+            usageSignal: signal
+        ))
+        // The prompt count is the bridge's admission view (what a clean
+        // completion bills), not a re-template of the request.
+        #expect(signal.promptTokens == 4)
+        // Every delta's tokens count, EOS included — the engine's basis.
+        #expect(signal.completionTokens == 3)
+    }
+
+    @Test("counts are observable BEFORE any terminal, so a cancel settlement can read them")
+    func countsVisibleBeforeTerminal() async throws {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(engine: engine)
+        let signal = EngineV2RequestUsageSignal()
+        let stream = await bridge.submitTokenized(
+            promptTokens: [7, 8, 9],
+            request: makeRequest(),
+            usageSignal: signal
+        )
+        let consumer = Task { await record(stream) }
+        // The prompt count is published when the pump starts — before the
+        // engine has produced anything.
+        try await waitUntil { signal.promptTokens == 3 }
+        #expect(signal.completionTokens == nil)
+
+        engine.manualContinuation?.yield(.delta(text: "x", tokens: [21], logprobs: nil))
+        engine.manualContinuation?.yield(.delta(text: "y", tokens: [22], logprobs: nil))
+        try await waitUntil { signal.completionTokens == 2 }
+        #expect(signal.promptTokens == 3)
+
+        // The handler's cancel path has settled by now; the late engine
+        // terminal must not disturb what it read.
+        engine.manualContinuation?.yield(
+            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 3, completionTokens: 2)))
+        engine.manualContinuation?.finish()
+        _ = await consumer.value
+        #expect(signal.promptTokens == 3)
+        #expect(signal.completionTokens == 2)
+    }
+
+    @Test("no usage signal means no bookkeeping (local endpoint path)")
+    func absentSignalIsANoOp() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "a", tokens: [11], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 1, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1], request: makeRequest()))
+        #expect(events == [.chunk("a"), .info(prompt: 1, completion: 1)])
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(5),
+        _ condition: @escaping @Sendable () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !condition() {
+            if ContinuousClock.now >= deadline {
+                Issue.record("condition not met within \(timeout)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}

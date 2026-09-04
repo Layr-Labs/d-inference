@@ -11,6 +11,11 @@
 //     rides beside the stream, not inside it).
 //     The coordinator frames loop splices it into the trailing SSE usage
 //     chunk as OpenAI-standard `prompt_tokens_details.cached_tokens`.
+//     It also carries the engine's EXACT prompt count (the bridge's
+//     admission view) and a running delivered-completion count, so a
+//     cancel settlement — which in the normal cancel ordering never sees a
+//     usage frame — bills the prompt the engine actually prefilled instead
+//     of re-rendering the Jinja template and re-tokenizing to recover it.
 //
 import Foundation
 import MLXLMCommon
@@ -30,6 +35,8 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private var _prefixCachePrefillTokensSaved: Int?
     private var _stageResult: SSDPrefixCacheStageResult?
     private var _lookupResult: PrefixCacheLookupResult?
+    private var _promptTokens: Int?
+    private var _completionTokens: Int?
     private var _cacheDisabled = false
     private var didEmitLookup = false
     private let onLookupResolved: (@Sendable (PrefixCacheLookupResult) -> Void)?
@@ -146,6 +153,31 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     func record(matchedStopSequence: String?) {
         guard let matchedStopSequence, !matchedStopSequence.isEmpty else { return }
         lock.withLock { _matchedStopSequence = matchedStopSequence }
+    }
+
+    /// The engine's exact prompt count — the bridge's `promptTokens.count`
+    /// at admission (what a clean completion bills). Published when the
+    /// pump starts, i.e. before any delta can reach the frames loop.
+    func recordPromptTokens(_ count: Int) {
+        guard count > 0 else { return }
+        lock.withLock { _promptTokens = count }
+    }
+
+    /// Running count of completion tokens the pump has forwarded so far
+    /// (one write per delta). Monotonic; read late by the cancel path.
+    func recordCompletionTokens(_ count: Int) {
+        lock.withLock { _completionTokens = count }
+    }
+
+    /// Engine-side exact prompt count; nil until the pump started.
+    public var promptTokens: Int? {
+        lock.withLock { _promptTokens }
+    }
+
+    /// Completion tokens the pump has forwarded so far; nil before the
+    /// first delta.
+    public var completionTokens: Int? {
+        lock.withLock { _completionTokens }
     }
 
     public var matchedStopSequence: String? {

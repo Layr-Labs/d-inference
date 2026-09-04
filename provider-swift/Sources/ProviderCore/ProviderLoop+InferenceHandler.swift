@@ -1220,6 +1220,18 @@ extension ProviderLoop {
             }
 
             if cancelledMidStream {
+                // In the normal cancel ordering the frames loop breaks before
+                // any usage frame, so `promptTokens` is still 0 here. The
+                // bridge published the engine's exact prompt count when the
+                // pump started; billing it (the same number a clean finish
+                // bills) makes `promptTokenFloor` — a full chat-template
+                // re-render plus BPE — unnecessary: the autoclosure below is
+                // only evaluated while promptTokens == 0.
+                if promptTokens == 0, let enginePrompt = v2UsageSignal.promptTokens,
+                    enginePrompt > 0
+                {
+                    promptTokens = enginePrompt
+                }
                 if reasoningTokens == 0 && !reasoningText.isEmpty {
                     let completionFloor = completionTokens > 0 ? completionTokens : contentFrameCount
                     if completionFloor > 0 {
@@ -1232,14 +1244,29 @@ extension ProviderLoop {
                     }
                 }
 
+                let deliveredCompletionTokenFloor = tokenizer.inner.encode(
+                    text: fullResponseText, addSpecialTokens: false
+                ).count
+                if completionTokens == 0, let engineCompletion = v2UsageSignal.completionTokens {
+                    // Measurement hook, NOT billed: the engine forwarded
+                    // `engineCompletion` tokens by the time the pump last
+                    // wrote, while the delivered-text re-encode floors at
+                    // `deliveredCompletionTokenFloor`. The gap is the parser
+                    // holdback plus whatever sat in the downstream streams at
+                    // cancel; billing the engine count is gated on this
+                    // distribution measured over real cancels.
+                    log.info(
+                        "[\(requestId)] cancel settlement: engine_completion=\(engineCompletion) "
+                        + "delivered_floor=\(deliveredCompletionTokenFloor) "
+                        + "delta=\(engineCompletion - deliveredCompletionTokenFloor)"
+                    )
+                }
                 let partialUsage = StreamedGenerationUsage(
                     promptTokens: promptTokens,
                     completionTokens: completionTokens,
                     reasoningTokens: reasoningTokens,
                     contentFrameCount: contentFrameCount,
-                    deliveredCompletionTokenFloor: tokenizer.inner.encode(
-                        text: fullResponseText, addSpecialTokens: false
-                    ).count,
+                    deliveredCompletionTokenFloor: deliveredCompletionTokenFloor,
                     hasVisibleOutput: Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText

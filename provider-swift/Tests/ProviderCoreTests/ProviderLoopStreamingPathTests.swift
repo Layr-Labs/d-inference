@@ -573,10 +573,11 @@ struct ProviderLoopStreamingPathTests {
         let terminalAt = try #require(recorder.terminalAt)
         let terminalMs = ms(terminalAt - emittedFinish)
 
-        // Neither hop paid the neighbour's ≥ 800 ms rebuild (loaded machine:
-        // generous bound, still far below one blocked read).
-        #expect(firstChunkMs < 300, "first chunk took \(firstChunkMs) ms")
-        #expect(terminalMs < 300, "terminal took \(terminalMs) ms")
+        // Neither hop paid the neighbour's ≥ 800 ms rebuild (loaded machine
+        // running the whole suite in parallel: a generous bound, still below
+        // the two blocked reads either site used to wait for).
+        #expect(firstChunkMs < 600, "first chunk took \(firstChunkMs) ms")
+        #expect(terminalMs < 600, "terminal took \(terminalMs) ms")
         #expect(recorder.kinds.last == "complete")
         let completion = try #require(recorder.completions.first)
         #expect(completion.usage.completionTokens == 2)

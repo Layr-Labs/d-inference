@@ -713,9 +713,11 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
     /// deadline projection (the cold-start wedge floor).
     private let sampleFloor = EngineV2Bridge.isolatedPrefillSampleFloor
 
-    /// Record one isolated cold prefill sample: submit while idle, backdate
-    /// the submission by `prefillMilliseconds`, deliver a first token and a
-    /// cold `.stop` terminal.
+    /// Record one isolated cold prefill sample: submit while idle, deliver a
+    /// first token and a cold `.stop` terminal whose engine stamps span
+    /// EXACTLY `prefillMilliseconds` — deterministic under any scheduler
+    /// load (a backdated bridge window picks up scheduling jitter, which
+    /// under a loaded full-suite run registered as sample dispersion).
     private func recordIsolatedColdSample(
         bridge: EngineV2Bridge,
         engine: PrefillScriptEngine,
@@ -728,16 +730,16 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             request: request,
             requestId: requestId)
         let consumer = Task { for await _ in stream {} }
-        await bridge.backdateSubmissionForTesting(
-            requestId: requestId,
-            byMilliseconds: prefillMilliseconds)
+        var usage = CBv2Usage(
+            promptTokens: promptTokens.count,
+            completionTokens: completionTokens)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1
+        timing.firstTokenNanos = 1 + UInt64(prefillMilliseconds) * 1_000_000
+        usage.timing = timing
         let continuation = try #require(engine.continuations.last)
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
-        continuation.yield(.finished(
-            reason: .stop,
-            usage: CBv2Usage(
-                promptTokens: promptTokens.count,
-                completionTokens: completionTokens)))
+        continuation.yield(.finished(reason: .stop, usage: usage))
         continuation.finish()
         _ = await consumer.value
     }

@@ -32,7 +32,7 @@ func (s *mdmVerificationScheduler) dispatcher() {
 		}
 		s.dispatchDueRows()
 		s.publishDogStatsDGauges()
-		timer := s.deps.newTimer(s.nextDispatchDelay())
+		timer := s.deps.newTimer(s.nextDispatchDelay(lastLoadWall))
 		select {
 		case <-s.ctx.Done():
 			timer.Stop()
@@ -50,9 +50,20 @@ func dispatchIntervalElapsed(since, now time.Time) bool {
 	return now.Before(since) || now.Sub(since) >= mdmSchedulerDispatchInterval
 }
 
-func (s *mdmVerificationScheduler) nextDispatchDelay() time.Duration {
+// nextDispatchDelay is how long the dispatcher sleeps: until the earliest
+// in-memory job is due, or at most until the next due-row load boundary
+// (one dispatch interval after lastLoadWall, on the wall clock the timer
+// runs on). Without the clamp a wake just before the boundary skipped the
+// load and then slept a full interval, stretching the load cadence to
+// nearly twice the interval the comment above promises.
+func (s *mdmVerificationScheduler) nextDispatchDelay(lastLoadWall time.Time) time.Duration {
 	now := s.deps.now()
 	delay := mdmSchedulerDispatchInterval
+	if !lastLoadWall.IsZero() {
+		if untilLoad := mdmSchedulerDispatchInterval - time.Since(lastLoadWall); untilLoad < delay {
+			delay = max(untilLoad, time.Millisecond)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, job := range s.jobs {

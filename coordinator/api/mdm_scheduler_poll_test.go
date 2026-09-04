@@ -92,7 +92,29 @@ func TestMDMSchedulerLoadsDueRowsOnTickOnly(t *testing.T) {
 	if iters < 20 {
 		t.Fatalf("dispatcher iterated only %d times; the retry path was not exercised", iters)
 	}
-	if scans > 1 {
-		t.Fatalf("due-row scans during a 300 ms retry spin = %d, want at most 1 (rows load on the 1 s cadence only)", scans)
+	// Rows load on the 1 s wall-clock cadence only: one boundary can fall
+	// inside the window, a second only if a loaded runner stretches the
+	// 300 ms sleep past a second (the retry path alone made 4,119 scans).
+	if scans > 2 {
+		t.Fatalf("due-row scans during a 300 ms retry spin = %d, want at most 2 (rows load on the 1 s cadence only)", scans)
+	}
+}
+
+// The dispatcher's sleep never overshoots the next due-row load boundary:
+// with nothing due in memory it is the remainder of the dispatch interval
+// since the last load (1 ms floor once the boundary has passed), so a wake
+// just before the boundary cannot push the next load to nearly 2×interval.
+func TestMDMSchedulerDispatchDelayClampsToLoadBoundary(t *testing.T) {
+	sch := &mdmVerificationScheduler{deps: mdmSchedulerDeps{now: time.Now}}
+	if got := sch.nextDispatchDelay(time.Time{}); got != mdmSchedulerDispatchInterval {
+		t.Fatalf("delay before any load = %s, want the full interval %s", got, mdmSchedulerDispatchInterval)
+	}
+	elapsed := mdmSchedulerDispatchInterval - 100*time.Millisecond
+	got := sch.nextDispatchDelay(time.Now().Add(-elapsed))
+	if got <= 0 || got > 100*time.Millisecond {
+		t.Fatalf("delay %s into the interval = %s, want ≤ the remaining 100 ms", elapsed, got)
+	}
+	if got := sch.nextDispatchDelay(time.Now().Add(-2 * mdmSchedulerDispatchInterval)); got != time.Millisecond {
+		t.Fatalf("delay past the boundary = %s, want the 1 ms floor", got)
 	}
 }

@@ -98,7 +98,7 @@ private func makeCache(
     kvBudget: GlobalKVCacheBudget? = nil,
     diskBudget: SSDDiskBudget = SSDDiskBudget(),
     epochStore: SSDCacheEpochStore? = nil,
-    maintainWholeRoot: (@Sendable () -> Void)? = nil,
+    beforeSettle: (@Sendable () -> Void)? = nil,
     donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared
 ) -> SSDPrefixCache {
     let config = SSDPrefixCache.Config(
@@ -120,7 +120,7 @@ private func makeCache(
         config: config, kekKey: kek, kvBudget: kvBudget, diskBudget: diskBudget,
         maxWriteBytesPerDay: maxWriteBytesPerDay, strictFsync: false,
         diskBudgetBytes: { diskBudgetBytes },
-        maintainWholeRoot: maintainWholeRoot,
+        beforeSettle: beforeSettle,
         donationRecorder: donationRecorder)
 }
 
@@ -1631,7 +1631,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             kek: SymmetricKey(size: .bits256),
             clock: ClockBox(10_000),
             minEffectiveTokens: fixtureBlockSize,
-            maintainWholeRoot: {
+            beforeSettle: {
                 for file in dbk3Files(under: corruptDir) {
                     guard var bytes = try? Data(contentsOf: file), bytes.count > 16 else { continue }
                     bytes[bytes.count - 8] ^= 0xff
@@ -1662,7 +1662,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             kek: SymmetricKey(size: .bits256),
             clock: ClockBox(10_000),
             minEffectiveTokens: fixtureBlockSize,
-            maintainWholeRoot: {
+            beforeSettle: {
                 entered.signal()
                 _ = release.wait(timeout: .now() + 5)
             })
@@ -1752,7 +1752,7 @@ struct SSDReadyWriteBarrierTests {
                 diskBudgetBytes: { 1 << 20 },
                 volumeSpace: volumeSpace,
                 nowSeconds: { 10_000 },
-                maintainWholeRoot: nil,
+                beforeSettle: nil,
                 writeBlock: writeBlock),
             rateLimiter: SSDWriteRateLimiter(capBytesPerDay: 0),
             index: SSDBlockIndex(),
@@ -3156,7 +3156,7 @@ struct SSDPrefixCacheDonationGateTests {
                 diskBudgetBytes: { 1 << 40 },
                 volumeSpace: { nil },
                 nowSeconds: { 10_000 },
-                maintainWholeRoot: nil,
+                beforeSettle: nil,
                 writeBlock: nil),
             rateLimiter: SSDWriteRateLimiter(capBytesPerDay: 0),
             index: index, diskBudget: SSDDiskBudget(), stats: stats,

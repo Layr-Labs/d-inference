@@ -112,9 +112,29 @@ final class SSDBlockIndex: @unchecked Sendable {
         }
     }
 
-    /// Globally-oldest entry (LRU eviction candidate).
+    /// Globally-oldest entry (LRU eviction candidate): one linear min-scan in
+    /// the same order as `oldestEntries()` (lastAccess, then tag), so the
+    /// fast path and the sorted fallback agree on the victim. Box-wide
+    /// enforcement calls this once per victim per store — it must not copy
+    /// or sort the index.
     func oldest() -> (tag16: Data, lastAccess: Int64, fileBytes: Int)? {
-        oldestEntries().first
+        lock.withLock {
+            var best: (key: Data, entry: Entry)?
+            for (key, entry) in entries {
+                guard let current = best else {
+                    best = (key, entry)
+                    continue
+                }
+                if entry.lastAccess < current.entry.lastAccess
+                    || (entry.lastAccess == current.entry.lastAccess
+                        && key.lexicographicallyPrecedes(current.key))
+                {
+                    best = (key, entry)
+                }
+            }
+            guard let best else { return nil }
+            return (best.key, best.entry.lastAccess, best.entry.fileBytes)
+        }
     }
 
     /// Stable oldest-first snapshot. Eviction walks this bounded list so one

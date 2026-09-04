@@ -290,18 +290,11 @@ enum SSDPrefixCacheFactory {
                 PrefixCachePolicy.ssdDiskBudgetBytes(
                     environment: ProcessInfo.processInfo.environment,
                     freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))
-            },
-            maintainWholeRoot: { [wholeRoot, dir] in
-                _ = SSDWholeRootMaintainer.shared.maintain(
-                    root: wholeRoot,
-                    ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(
-                        environment: ProcessInfo.processInfo.environment),
-                    nowSeconds: Int64(Date().timeIntervalSince1970),
-                    budgetBytes: PrefixCachePolicy.ssdDiskBudgetBytes(
-                        environment: ProcessInfo.processInfo.environment,
-                        freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir)))
             })
         cache.startBackgroundTasks()
+        // Whole-root hygiene (unloaded model roots, crash temps, external
+        // reconcile) runs on the 60 s periodic walk only; the write-behind
+        // consumer enforces the box-wide budget from the loaded stores' indexes.
         startWholeRootMaintenance(environment: environment)
         #if canImport(os)
         logger.info(

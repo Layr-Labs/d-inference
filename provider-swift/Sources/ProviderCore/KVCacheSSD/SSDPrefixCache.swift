@@ -296,7 +296,7 @@ public final class SSDPrefixCache:
         maxWriteBytesPerDay: Int = SSDPrefixCachePolicy.defaultMaxWriteBytesPerDay,
         strictFsync: Bool = false,
         diskBudgetBytes: @escaping @Sendable () -> Int,
-        maintainWholeRoot: (@Sendable () -> Void)? = nil,
+        beforeSettle: (@Sendable () -> Void)? = nil,
         cacheInstanceNamespace: String = UUID().uuidString,
         donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared
     ) {
@@ -326,7 +326,7 @@ public final class SSDPrefixCache:
                 diskBudgetBytes: diskBudgetBytes,
                 volumeSpace: { Self.volumeSpace(at: root) },
                 nowSeconds: config.nowSeconds,
-                maintainWholeRoot: maintainWholeRoot,
+                beforeSettle: beforeSettle,
                 writeBlock: nil),
             rateLimiter: SSDWriteRateLimiter(capBytesPerDay: maxWriteBytesPerDay),
             index: index,
@@ -1837,36 +1837,51 @@ public final class SSDPrefixCache:
     /// Unlink the LRU entry (box-wide budget enforcement).
     func evictOldestEntry() -> Int {
         guard hasSafeRoot else { return 0 }
-        // Bounded by the index snapshot. Invalid/missing entries are dropped
-        // without touching their pathname; a valid-but-undeletable entry is
-        // skipped so a newer victim can still satisfy the box-wide budget.
-        let victims = index.oldestEntries()
-        guard !victims.isEmpty else { return 0 }
+        // Fast path: the linear-scan LRU victim, no copy or sort. Anything
+        // but a successful unlink (stale entry, undeletable file) falls back
+        // to the bounded sorted snapshot, so one stale or temporarily
+        // undeletable index entry cannot pin every newer victim behind it.
+        guard let first = index.oldest() else { return 0 }
         return performDestructiveChange {
-            for victim in victims {
-                let url = SSDBlockStore.fileURL(
-                    root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
-                switch SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) {
-                case .missing, .invalid:
-                    index.remove(tag16: victim.tag16)
-                case .regular:
-                    if SSDBlockStore.removeItemIfSafe(at: url, under: config.root) {
-                        let bytes = index.remove(tag16: victim.tag16)
-                        statsBox.add(evictions: 1)
-                        return bytes
-                    }
-                    // The entry may have changed between classification and unlink.
-                    // Drop only when a second no-follow check proves it is no longer
-                    // an owned regular file.
-                    if SSDBlockStore.indexedBlockFileStatus(
-                        at: url, under: config.root) != .regular
-                    {
-                        index.remove(tag16: victim.tag16)
-                    }
-                }
+            if case .freed(let bytes) = unlinkVictim(first.tag16) { return bytes }
+            for victim in index.oldestEntries() where victim.tag16 != first.tag16 {
+                if case .freed(let bytes) = unlinkVictim(victim.tag16) { return bytes }
             }
             return 0
         } ?? 0
+    }
+
+    private enum VictimOutcome {
+        case freed(Int)
+        case forgotten
+        case undeletable
+    }
+
+    /// Must run inside `performDestructiveChange`. Invalid/missing entries
+    /// are dropped without touching their pathname; a valid-but-undeletable
+    /// entry is left in place so a newer victim can still satisfy the budget.
+    private func unlinkVictim(_ tag16: Data) -> VictimOutcome {
+        let url = SSDBlockStore.fileURL(
+            root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+        switch SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) {
+        case .missing, .invalid:
+            index.remove(tag16: tag16)
+            return .forgotten
+        case .regular:
+            if SSDBlockStore.removeItemIfSafe(at: url, under: config.root) {
+                let bytes = index.remove(tag16: tag16)
+                statsBox.add(evictions: 1)
+                return .freed(bytes)
+            }
+            // The entry may have changed between classification and unlink.
+            // Drop only when a second no-follow check proves it is no longer
+            // an owned regular file.
+            if SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) != .regular {
+                index.remove(tag16: tag16)
+                return .forgotten
+            }
+            return .undeletable
+        }
     }
 
     func reconcileExternalRemovals() {
@@ -2138,10 +2153,11 @@ public final class SSDPrefixCache:
     }
 
     /// Called on the serial write-behind consumer only after every new block
-    /// landed and whole-box maintenance completed. Re-open/decrypt the surviving
-    /// leading run before advertising it; a corrupt/binding failure suppresses
-    /// the entire receipt, while budget eviction may legitimately shorten the
-    /// ready prefix.
+    /// landed and per-job maintenance (TTL sweep + box-wide budget
+    /// enforcement) completed. Re-open/decrypt the surviving leading run
+    /// before advertising it; a corrupt/binding failure suppresses the entire
+    /// receipt, while budget eviction may legitimately shorten the ready
+    /// prefix.
     private func settleDurableDonation(
         requestID: CBv2RequestID,
         tags16: [Data],

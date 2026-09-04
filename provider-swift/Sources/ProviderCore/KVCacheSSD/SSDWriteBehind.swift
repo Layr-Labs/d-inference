@@ -132,9 +132,10 @@ final class SSDWriteBehind: @unchecked Sendable {
         /// Volume (free, capacity) probe for the low-disk guard.
         let volumeSpace: @Sendable () -> (free: Int, capacity: Int)?
         let nowSeconds: @Sendable () -> Int64
-        /// Production whole-root maintenance. nil keeps the legacy registered-
-        /// store budget seam used by isolated tests.
-        let maintainWholeRoot: (@Sendable () -> Void)?
+        /// Test seam run after per-job maintenance and before settlement
+        /// (`onDurable`), i.e. inside the post-write barrier. Production
+        /// passes nil.
+        let beforeSettle: (@Sendable () -> Void)?
         /// Failure-injection seam. nil uses the real encrypted DBK3 writer.
         let writeBlock: (@Sendable (SSDBlockWrite, URL) throws -> Int)?
     }
@@ -274,14 +275,16 @@ final class SSDWriteBehind: @unchecked Sendable {
         var diskUnavailable = false
         defer {
             // Opportunistic maintenance on the serial consumer: TTL sweep +
-            // box-wide LRU budget enforcement (unlink-only, spec §4.1).
+            // INDEX-ONLY box-wide LRU budget enforcement (unlink-only, spec
+            // §4.1). Whole-root hygiene — unloaded model roots, crash temps,
+            // external reconcile — belongs to the 60 s periodic walk
+            // (`SSDWholeRootMaintainer.startPeriodicMaintenance`): at the
+            // 20 GiB budget that walk is ~10^5 syscalls, and paying it here
+            // delayed every ready receipt behind it and dropped the donations
+            // that arrived while it ran.
             sweepExpired()
-            if let maintainWholeRoot = config.maintainWholeRoot {
-                maintainWholeRoot()
-                diskBudget.reconcileAll()
-            } else {
-                diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
-            }
+            diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
+            config.beforeSettle?()
             let readyReceiptSettled = durableWriteSucceeded ? job.onDurable?() : nil
             let closedAtSettlement = queuedBytesLock.withLock { closed }
             let outcome: PrefixCacheDonationOutcome

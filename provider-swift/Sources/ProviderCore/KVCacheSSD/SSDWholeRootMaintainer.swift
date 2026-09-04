@@ -168,6 +168,18 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
         task?.cancel()
     }
 
+    /// Test seam: cancel the periodic task for `root` and wait until it has
+    /// actually exited. `stopPeriodicMaintenance` only cancels, and the loop
+    /// checks cancellation before each pass, so a pass that was about to
+    /// start can still run once after the cancel — a test that seeds files a
+    /// walk would reclaim needs the task gone, not just cancelled.
+    func stopPeriodicMaintenanceForTesting(root: URL) async {
+        let key = root.standardizedFileURL.path
+        let task = tasksLock.withLock { periodicTasks.removeValue(forKey: key) }
+        task?.cancel()
+        await task?.value
+    }
+
     func stopAllPeriodicMaintenanceForTesting() {
         let tasks = tasksLock.withLock { () -> [Task<Void, Never>] in
             let values = Array(periodicTasks.values)

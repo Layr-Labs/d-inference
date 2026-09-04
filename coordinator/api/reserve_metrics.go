@@ -20,6 +20,8 @@ import (
 //	dispatch_plan.skip{reason}         count  plan entries passed over, by reason
 //	dispatch_plan.entries_consumed     hist   entries consumed when a plan exhausts
 //	routing.hedge_governor_snapshot{model} count governor fleet snapshots taken
+//	routing.deadline_wedge_skip{model,event} count refusals fed to the wedge tracker
+//	routing.deadline_wedge.{enabled,armed_pairs} gauge / .{skips,shadow_skips,probes,cleared} count
 //
 // The writer-wait series are the pass/fail instrument for the Registry.mu
 // work (recorders off the write lock, commit rescan bound): the target after
@@ -29,6 +31,7 @@ import (
 // loop can emit per-tick deltas. Written by the gauge-loop goroutine only.
 type reserveMetricsState struct {
 	fleetWalks int64
+	wedge      registry.DeadlineWedgeStats
 }
 
 // emitReserveDecisionMetrics emits the per-request reserve-loop series. Called
@@ -80,4 +83,19 @@ func (s *Server) emitRegistryLockGauges() {
 	walks := s.registry.FleetWalkCount()
 	s.ddCount("routing.fleet_walks", walks-s.reserveMetrics.fleetWalks, nil)
 	s.reserveMetrics.fleetWalks = walks
+	// Deadline-wedge skip: armed pairs (gauge) and the gate/probe/clear
+	// counters (deltas). With the switch off, shadow_skips is the census.
+	wedge := s.registry.DeadlineWedgeStats()
+	enabled := 0.0
+	if wedge.Enabled {
+		enabled = 1
+	}
+	s.ddGauge("routing.deadline_wedge.enabled", enabled, nil)
+	s.ddGauge("routing.deadline_wedge.armed_pairs", float64(wedge.ArmedPairs), nil)
+	prev := s.reserveMetrics.wedge
+	s.ddCount("routing.deadline_wedge.skips", wedge.Skips-prev.Skips, nil)
+	s.ddCount("routing.deadline_wedge.shadow_skips", wedge.ShadowSkips-prev.ShadowSkips, nil)
+	s.ddCount("routing.deadline_wedge.probes", wedge.Probes-prev.Probes, nil)
+	s.ddCount("routing.deadline_wedge.cleared", wedge.Cleared-prev.Cleared, nil)
+	s.reserveMetrics.wedge = wedge
 }

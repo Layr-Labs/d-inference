@@ -209,6 +209,7 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 	}
 	r.outcomeMu.Lock()
 	defer r.outcomeMu.Unlock()
+	r.deadlineWedge.migrate(oldKey, newKey)
 
 	// Dispatch-load cooldowns: struct keys per (fault key, model).
 	for k, expiry := range r.dispatchLoadCooldowns {

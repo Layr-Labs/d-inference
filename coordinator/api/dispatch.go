@@ -1812,6 +1812,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 // pre-content failover counter), emits the generic retry counter. This is the
 // exact `if !d.noteProviderError(...) { s.ddIncr(retry) }` pattern.
 func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string) {
+	d.noteDeadlineWedgeRefusal(provider, pr, errReason)
 	if !d.noteProviderError(provider, pr, statusCode, errStr, errReason, terminalCause, held) {
 		d.s.ddIncr("inference.dispatches", []string{"status:retry"})
 	}

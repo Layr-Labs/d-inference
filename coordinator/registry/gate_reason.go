@@ -45,6 +45,10 @@ const (
 	GateExcluded
 	GateAllowlist
 	GateNotServingModel
+	// GateDeadlineWedge: the (provider, model) pair is skipped by the
+	// deadline-wedge tracker (deadline_wedge.go) after repeated
+	// deadline_unreachable refusals of short prompts on empty slots.
+	GateDeadlineWedge
 	// GateReasonCount is the number of reasons; it sizes the tally arrays and
 	// is not itself a reason.
 	GateReasonCount
@@ -78,6 +82,7 @@ var gateReasonNames = [GateReasonCount]string{
 	GateExcluded:             "excluded",
 	GateAllowlist:            "allowlist",
 	GateNotServingModel:      "not_serving_model",
+	GateDeadlineWedge:        "deadline_wedge",
 }
 
 // String returns the snake_case name of the reason ("unknown" for an

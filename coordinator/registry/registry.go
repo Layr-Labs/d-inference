@@ -82,6 +82,13 @@ type PendingRequest struct {
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
 	Attempt int
+	// ReserveOccupancy is the winner's coordinator-side occupancy at
+	// reservation commit, BEFORE this request was added: effectiveQueue
+	// (max(pending for the model, backend running + waiting)) plus the
+	// provider's pending across all models. Zero means the request was
+	// dispatched onto an empty slot — the discriminator the deadline-wedge
+	// skip keys on (deadline_wedge.go). Stamped by both reservation paths.
+	ReserveOccupancy int
 	// FirstContentBudgetMS is the positive remaining first-content budget for
 	// this dispatch attempt. It is an in-memory carrier for the provider wire;
 	// zero means no budget is attached.
@@ -2168,7 +2175,10 @@ type Registry struct {
 	// accounted for it. See provider_breaker.go / health_ejection.go /
 	// capacity_cooldown.go.
 	outcomeMu sync.RWMutex
-	providers map[string]*Provider
+	// deadlineWedge is the deadline-wedge skip tracker (deadline_wedge.go):
+	// its own leaf mutex, never nested under anything it takes.
+	deadlineWedge *deadlineWedgeTracker
+	providers     map[string]*Provider
 
 	queue *RequestQueue
 
@@ -2543,6 +2553,7 @@ func New(logger *slog.Logger) *Registry {
 		healthEjectionLastTripCapacity: make(map[string]bool),
 		disconnectedStableIDs:          make(map[string]disconnectedStableID),
 		faultKeyBySession:              make(map[string]string),
+		deadlineWedge:                  newDeadlineWedgeTracker(loadDeadlineWedgeSkipEnabled()),
 		evictStrikes:                   make(map[string]int),
 		cacheRouting:                   newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
 		cacheActivation:                newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
@@ -5217,6 +5228,7 @@ func (r *Registry) Disconnect(id string) {
 			delete(r.providerBreakerOpenUntil, id)
 			delete(r.providerBreakerTrips, id)
 			r.outcomeMu.Unlock()
+			r.deadlineWedge.forget(id)
 			for key := range r.inferenceErrorStrikes {
 				if key.ProviderID == id {
 					delete(r.inferenceErrorStrikes, key)

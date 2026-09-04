@@ -415,6 +415,9 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	r.mu.RUnlock()
 	now := time.Now()
+	// An accept proves the slot serves: clear any deadline-wedge run/skip for
+	// the pair (its own leaf lock; deadline_wedge.go).
+	r.deadlineWedge.clear(deadlineWedgeKey{FaultKey: key.ProviderID, ModelID: modelID})
 
 	r.outcomeMu.Lock()
 	if countRateOutcome {

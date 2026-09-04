@@ -458,10 +458,12 @@ func (r *Registry) reserveNextFromPlanLocked(pr *PendingRequest, plan *DispatchP
 			return nil, RoutingDecision{}, nil, false
 		}
 		pr.ProviderID = p.ID
+		pr.ReserveOccupancy = candidate.effectiveQueue + snap.totalPending
 		p.addPendingLocked(pr)
 		// Half-open capacity probe claim: identical to the primary reservation
 		// path (the r.mu write lock held across this loop serializes claims).
 		r.claimCapacityProbeLocked(p.ID, model, now)
+		r.claimDeadlineWedgeProbeLocked(p.ID, model, now)
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
 			p.Status = StatusServing
 		}

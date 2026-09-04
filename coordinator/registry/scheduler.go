@@ -784,8 +784,11 @@ func (r *Registry) commitProviderReservation(
 	}
 
 	pr.ProviderID = p.ID
+	// Pre-reserve occupancy of the winner (see PendingRequest.ReserveOccupancy).
+	pr.ReserveOccupancy = candidate.effectiveQueue + snapshot.totalPending
 	p.addPendingLocked(pr)
 	r.claimCapacityProbeLocked(p.ID, model, now)
+	r.claimDeadlineWedgeProbeLocked(p.ID, model, now)
 	if p.Status != StatusUntrusted && p.Status != StatusOffline {
 		p.Status = StatusServing
 	}
@@ -1269,7 +1272,7 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				if !ignoreProviderBreaker {
 					breakerRejected++
 				}
-			case GateNotServingModel, GateDedicated, GateDispatchLoadCooldown, GateErrorCooldown, GateCapacityCooldown:
+			case GateNotServingModel, GateDedicated, GateDispatchLoadCooldown, GateErrorCooldown, GateCapacityCooldown, GateDeadlineWedge:
 				if !ignoreProviderBreaker {
 					if r.providerBreakerOpenLocked(p.ID, now) {
 						breakerRejected++
@@ -1289,8 +1292,9 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 				// (mirroring quickCapacityCheck) so an all-cooled model classifies as
 				// over_capacity (429/queue material) rather than no_provider. The
 				// ignoreCapacityCooldown re-run of the shared gate keeps a pair that
-				// ALSO fails a structural gate out of the count.
-				if r.capacityCooldownActiveLocked(p.ID, model, now) {
+				// ALSO fails a structural gate out of the count. A deadline-wedge
+				// skip is the same transient class.
+				if gateReason == GateDeadlineWedge || r.capacityCooldownActiveLocked(p.ID, model, now) {
 					p.mu.Lock()
 					otherwiseRoutable := r.providerPassesRoutingGatesLockedEx(p, model, pr.Traits, relaxTrust, now, ignoreProviderBreaker, true)
 					p.mu.Unlock()
@@ -1806,6 +1810,17 @@ func (r *Registry) providerRoutingGateReasonLockedEx(p *Provider, model string, 
 	// its TTL expires. See capacity_cooldown.go.
 	if !ignoreCapacityCooldown && r.capacityCooldownActiveLocked(p.ID, model, now) {
 		return false, GateCapacityCooldown
+	}
+	// Skip a pair the deadline-wedge tracker has armed: repeated
+	// deadline_unreachable refusals of SHORT prompts dispatched onto EMPTY
+	// slots — a slot whose engine projection is wedged while its heartbeat
+	// still reports idle and healthy, so the cost function keeps ranking it
+	// first. Same transient-capacity class as the capacity cooldown (the
+	// ignoreCapacityCooldown re-check counts it as capacity, never as
+	// structural absence); with the switch off this only counts the would-be
+	// skip. See deadline_wedge.go.
+	if !ignoreCapacityCooldown && r.deadlineWedgeSkipLocked(p.ID, model, now) {
+		return false, GateDeadlineWedge
 	}
 	// Skip a provider quarantined by the per-provider node-health breaker: a
 	// node returning GENUINE-FAULT errors (500/502/504 or a
@@ -3011,7 +3026,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			// cooldown means the pair is cooled AND passed every earlier gate —
 			// exactly the old "cooled && otherwise passes" predicate, minus a
 			// redundant cooldown lookup on every drop.
-			if reason == GateCapacityCooldown &&
+			if (reason == GateCapacityCooldown || reason == GateDeadlineWedge) &&
 				r.providerPassesRoutingGatesLockedEx(p, model, traits, false, now, true, true) &&
 				p.SystemMetrics.ThermalState != "critical" &&
 				(!requiresVision || r.providerServesVisionModelLocked(p, model, false)) {

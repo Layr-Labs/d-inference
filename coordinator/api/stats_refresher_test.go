@@ -422,7 +422,7 @@ func TestStatsRefresherRunsImmediatelyAndStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		srv.runStatsRefresher(ctx, time.Hour)
+		srv.runStatsRefresher(ctx, testRefreshSchedule(time.Hour, time.Hour))
 		close(done)
 	}()
 	deadline := time.After(5 * time.Second)
@@ -452,6 +452,104 @@ func TestStatsRefresherRunsImmediatelyAndStops(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("refresher did not stop on context cancel")
+	}
+}
+
+// testRefreshSchedule is a fast warm-up schedule: the provider count is
+// sampled every 2 ms and fleet-driven refreshes are at least 10 ms apart.
+func testRefreshSchedule(interval, warmupWindow time.Duration) statsRefreshSchedule {
+	return statsRefreshSchedule{interval: interval, warmupWindow: warmupWindow, warmupPoll: 2 * time.Millisecond, warmupMinGap: 10 * time.Millisecond}
+}
+
+func registerStatsProvider(t *testing.T, srv *Server, id string) {
+	t.Helper()
+	srv.registry.Register(id, nil, &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{ChipFamily: "M3", ChipTier: "Max", MemoryGB: 64, GPUCores: 40},
+		Models:   []protocol.ModelInfo{{ID: "mlx-community/gemma-4-26b-a4b-it-8bit"}},
+	})
+}
+
+// cachedActiveProviders reads active_providers from the cached stats body
+// (-1 when nothing is cached).
+func cachedActiveProviders(t *testing.T, srv *Server) int {
+	t.Helper()
+	body, ok := srv.readCache.Get(statsCacheKey)
+	if !ok {
+		return -1
+	}
+	var v struct {
+		ActiveProviders int `json:"active_providers"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("decode cached stats: %v", err)
+	}
+	return v.ActiveProviders
+}
+
+func waitForActiveProviders(t *testing.T, srv *Server, want int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		if got := cachedActiveProviders(t, srv); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cached active_providers = %d, want %d within %s", cachedActiveProviders(t, srv), want, within)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// The boot refresh runs before any provider has reconnected, so its body says
+// the network is empty. During the warm-up window the refresher follows the
+// provider count: a provider that registers after the boot refresh is in
+// the cached body within the warm-up gap (not at the next tick), only
+// stats:v1 is recomputed (the totals windows do not read the registry), and
+// registrations after the window fall back to the tick.
+func TestStatsRefresherWarmupFollowsFleetReconnect(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 1)
+
+	const warmupWindow = 400 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := time.Now()
+	go srv.runStatsRefresher(ctx, testRefreshSchedule(time.Hour, warmupWindow))
+
+	// Boot refresh: empty fleet.
+	waitForActiveProviders(t, srv, 0, 5*time.Second)
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("analytics calls after the boot refresh = %d, want 1", got)
+	}
+
+	// The fleet reconnects after the boot refresh; the body follows it
+	// within the warm-up gap. Before this fix it stayed at 0 until the tick.
+	registerStatsProvider(t, srv, "warm-a")
+	waitForActiveProviders(t, srv, 1, time.Second)
+	registerStatsProvider(t, srv, "warm-b")
+	registerStatsProvider(t, srv, "warm-c")
+	waitForActiveProviders(t, srv, 3, time.Second)
+	if got := st.totalsCalls.Load(); got != int64(len(networkTotalsWindows)) {
+		t.Fatalf("totals calls = %d, want %d: fleet-driven refreshes must recompute stats:v1 only", got, len(networkTotalsWindows))
+	}
+	// Boot + one per fleet change, never more than one per gap.
+	if got := st.analyticsCalls.Load(); got < 2 || got > 4 {
+		t.Fatalf("analytics calls after three registrations = %d, want 2..4", got)
+	}
+
+	// After the window, a registration waits for the tick.
+	if remaining := warmupWindow - time.Since(started); remaining > 0 {
+		time.Sleep(remaining + 20*time.Millisecond)
+	}
+	calls := st.analyticsCalls.Load()
+	registerStatsProvider(t, srv, "late-d")
+	time.Sleep(50 * time.Millisecond)
+	if got := cachedActiveProviders(t, srv); got != 3 {
+		t.Fatalf("active_providers after the warm-up window = %d, want the tick-bound 3", got)
+	}
+	if got := st.analyticsCalls.Load(); got != calls {
+		t.Fatalf("analytics calls after the warm-up window = %d, want %d (no fleet-driven refresh)", got, calls)
 	}
 }
 

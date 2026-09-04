@@ -48,6 +48,19 @@ type registryMutex struct {
 
 // lockWaitWindow accumulates the wait of every Lock() since its last reset:
 // sum, max, and acquisitions by log2(wait µs).
+//
+// A returns-and-resets read (stats(reset=true)) is NOT a consistent cut: it
+// swaps the buckets one by one, then the sum, then the max, while Lock()
+// callers keep recording (record adds the sum, then the max, then the
+// bucket). A Lock() returning between two swaps has its count land in one
+// window and its wait in the next, so for that tick MeanUS can exceed MaxUS,
+// a percentile can be clamped to the other window's MaxUS, or Count can be 0
+// with a non-zero sum (emitRegistryLockGauges then skips the lock_wait_ms
+// gauges for the tick). The series is therefore APPROXIMATE PER TICK —
+// exact over any run of ticks, since nothing is lost or double counted —
+// and this happens exactly under the contended conditions the p99 target is
+// meant to observe. Exact per-tick cuts would need a double-buffered window
+// behind an atomic pointer swap with a quiesce; not worth it for a gauge.
 type lockWaitWindow struct {
 	waitNS      atomic.Int64
 	waitMaxNS   atomic.Int64

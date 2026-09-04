@@ -1864,9 +1864,9 @@ func (d *dispatchState) noteProviderSendFailed() dispatchOutcome {
 // provider error and, unless held boilerplate was discarded (which emits its own
 // pre-content failover counter), emits the generic retry counter. This is the
 // exact `if !d.noteProviderError(...) { s.ddIncr(retry) }` pattern.
-func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string) {
-	d.noteDeadlineWedgeRefusal(provider, pr, errReason)
-	if !d.noteProviderError(provider, pr, statusCode, errStr, errReason, terminalCause, held) {
+func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, errMsg protocol.InferenceErrorMessage, held *[]string) {
+	d.noteDeadlineWedgeRefusal(provider, pr, errMsg.ErrorReason, errMsg.CoordinatorCause)
+	if !d.noteProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, held) {
 		d.s.ddIncr("inference.dispatches", []string{"status:retry"})
 	}
 }
@@ -2244,7 +2244,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 					s.cancelDispatchAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -2288,7 +2288,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -2581,7 +2581,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 					s.cancelDispatchAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -2604,7 +2604,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -2773,7 +2773,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					s.cancelDispatchAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -3083,7 +3083,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
 					d.updateSpeculativeFailure(pr, errMsg2)
-					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg2, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					d.requestID = ""
@@ -3109,7 +3109,7 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
-			d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg2, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			d.requestID = ""
@@ -3200,7 +3200,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 					d.setLastInferenceError(backupProvider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg2)
-					d.noteDispatchRetry(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &backupHeld)
+					d.noteDispatchRetry(backupProvider, backupPR, errMsg2, &backupHeld)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -3316,7 +3316,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 					s.cancelDispatchAfterTerminal(provider, pr)
 					d.setLastInferenceError(provider, errMsg2)
 					d.lastFailedVersion = failedProviderVersion(provider)
-					d.noteDispatchRetry(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, errMsg2.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg2, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -3469,7 +3469,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 					if s.metrics != nil {
 						s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 					}
-					d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+					d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 					d.provider = nil
 					d.pr = nil
 					return outcomeRetry
@@ -3504,7 +3504,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			if s.metrics != nil {
 				s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "retry"})
 			}
-			d.noteDispatchRetry(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, &d.heldChunks)
+			d.noteDispatchRetry(provider, pr, errMsg, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry

@@ -1948,6 +1948,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			StatusCode:  http.StatusServiceUnavailable,
 			ErrorReason: errorReasonDeadlineUnreachable,
 			FailureCode: protocol.FailureCodeCapacity,
+			// Coordinator-authored conversion of an admitted attempt: the
+			// deadline-wedge tracker must not read it as an engine refusal.
+			CoordinatorCause: protocol.CoordinatorCauseDeadlineLateContent,
 		})
 		return
 	}
@@ -2191,6 +2194,9 @@ func (s *Server) handleCompleteAt(
 				StatusCode:  http.StatusServiceUnavailable,
 				ErrorReason: errorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
+				// Coordinator-authored conversion of an admitted attempt (see
+				// the late-first-content branch in handleChunk).
+				CoordinatorCause: protocol.CoordinatorCauseDeadlineLateContent,
 			}, true)
 			// handleInferenceError completes the terminal only when it still
 			// found the pending request; if a consumer-side cleanup removed it

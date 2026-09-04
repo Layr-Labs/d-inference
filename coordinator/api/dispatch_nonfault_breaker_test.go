@@ -83,8 +83,10 @@ func TestNoteDispatchRetry_JinjaSkipsProviderFaultBreakers(t *testing.T) {
 	srv, reg, provider, pr := newBreakerExemptionHarness(t, "jinja-skip")
 	d := &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
-		d.noteDispatchRetry(provider, pr, http.StatusInternalServerError,
-			"Runtime error: upper filter requires string", "jinja_template", "", nil)
+		d.noteDispatchRetry(provider, pr, protocol.InferenceErrorMessage{
+			StatusCode: http.StatusInternalServerError,
+			Error:      "Runtime error: upper filter requires string", ErrorReason: "jinja_template",
+		}, nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
 }
@@ -121,8 +123,10 @@ func TestNoteDispatchRetry_ToolNoncomplianceSkipsProviderFaultBreakers(t *testin
 	srv, reg, provider, pr := newBreakerExemptionHarness(t, "toolnc-skip")
 	d := &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
-		d.noteDispatchRetry(provider, pr, http.StatusUnprocessableEntity,
-			"model did not emit the required tool call", "tool_noncompliance", "", nil)
+		d.noteDispatchRetry(provider, pr, protocol.InferenceErrorMessage{
+			StatusCode: http.StatusUnprocessableEntity,
+			Error:      "model did not emit the required tool call", ErrorReason: "tool_noncompliance",
+		}, nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
 }
@@ -135,10 +139,11 @@ func TestNoteDispatchRetry_DeadlineUnreachableSkipsAllTrackers(t *testing.T) {
 	d := &dispatchState{s: srv, model: pr.Model}
 
 	for range breakerStrikeRounds {
-		d.noteDispatchRetry(
-			provider, pr, http.StatusServiceUnavailable,
-			"request rejected: provider capacity unavailable",
-			errorReasonDeadlineUnreachable, "", nil)
+		d.noteDispatchRetry(provider, pr, protocol.InferenceErrorMessage{
+			StatusCode:  http.StatusServiceUnavailable,
+			Error:       "request rejected: provider capacity unavailable",
+			ErrorReason: errorReasonDeadlineUnreachable,
+		}, nil)
 	}
 
 	assertBreakerStates(t, reg, provider, pr, false)

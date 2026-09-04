@@ -25,6 +25,16 @@ const (
 	// exactly like a disconnect, but the terminal is HEALTH-NEUTRAL: it
 	// strikes no breaker, cooldown, or ejection window and clears none.
 	CoordinatorCauseProviderRestart CoordinatorInferenceErrorCause = "provider_restart"
+	// CoordinatorCauseDeadlineLateContent marks the coordinator's OWN
+	// conversion of an ADMITTED attempt into a deadline_unreachable terminal:
+	// the provider accepted the request and its first content (or clean
+	// empty completion) reached the coordinator after the request-absolute
+	// first-content deadline (api/provider.go). The wire shape is the same
+	// capacity 503 the provider's projection refusal uses, so this marker is
+	// the only thing that separates "the engine refused the budget" from
+	// "the engine worked it and the clock ran out" — the deadline-wedge
+	// tracker (registry/deadline_wedge.go) counts only the former.
+	CoordinatorCauseDeadlineLateContent CoordinatorInferenceErrorCause = "deadline_late_content"
 )
 
 // InferenceErrorReasonProviderRestart is the coordinator-internal error_reason

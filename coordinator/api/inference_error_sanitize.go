@@ -31,6 +31,12 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	safe.Type = protocol.TypeInferenceError
 	safe.RequestID = msg.RequestID
 	safe.AttemptUsage = msg.AttemptUsage
+	// CoordinatorCause never crosses the wire (json:"-"): a decoded provider
+	// frame always carries the zero value, so preserving it here only keeps
+	// the coordinator's own synthetic markers (the late-content deadline
+	// conversion in handleChunk / handleCompleteAt) on the safe frame that
+	// reaches the dispatch loop.
+	safe.CoordinatorCause = msg.CoordinatorCause
 	// The provider profile is carried through as an opaque byte copy, exactly
 	// like AttemptUsage: it is NOT read here. It is length-checked on the read
 	// loop and decoded/validated on the profile sink worker

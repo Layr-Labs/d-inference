@@ -143,20 +143,24 @@ struct SSDSequenceLeaseTests {
         // (the shape of an unlink window) and take a sequence from another
         // thread: it must come from the in-memory window, not wait for the
         // record.
+        // Plain threads, not the cooperative pool: a loaded suite can starve
+        // the pool and turn a blocked probe into a false timeout.
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
+        let mutationDone = DispatchSemaphore(value: 0)
         let probe = TimedValue<UInt64>()
-        let mutation = Task.detached {
-            store.performOwnedNonRotatingChange {
+        Thread.detachNewThread {
+            _ = store.performOwnedNonRotatingChange {
                 entered.signal()
                 release.wait()
             }
+            mutationDone.signal()
         }
-        #expect(await waitForSemaphore(entered, timeout: .now() + 5) == .success)
-        Task.detached { probe.set(store.takeNextSequence(expectedEpoch: epoch)) }
-        let answered = await waitForSemaphore(probe.done, timeout: .now() + 5)
+        #expect(await waitForSemaphore(entered, timeout: .now() + 30) == .success)
+        Thread.detachNewThread { probe.set(store.takeNextSequence(expectedEpoch: epoch)) }
+        let answered = await waitForSemaphore(probe.done, timeout: .now() + 10)
         release.signal()
-        _ = await mutation.value
+        _ = await waitForSemaphore(mutationDone, timeout: .now() + 30)
         #expect(answered == .success, "takeNextSequence waited on the record lock")
         #expect(probe.seen == 2)
         #expect(store.takeNextSequence(expectedEpoch: epoch) == 3)
@@ -215,24 +219,29 @@ struct SSDSequenceLeaseTests {
         // the pure lock-only probe: it reads the staging map and nothing else.
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
-        let holder = Task.detached {
-            SSDCacheEpochStore.performUnloadedDestructiveChange(root: otherRoot) {
-                entered.signal()
-                release.wait()
-            }
+        let holder = TimedValue<Bool>()
+        Thread.detachNewThread {
+            holder.set(
+                SSDCacheEpochStore.performUnloadedDestructiveChange(root: otherRoot) {
+                    entered.signal()
+                    release.wait()
+                })
         }
-        #expect(await waitForSemaphore(entered, timeout: .now() + 5) == .success)
+        #expect(await waitForSemaphore(entered, timeout: .now() + 30) == .success)
         let taken = TimedValue<UInt64>()
-        Task.detached { taken.set(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch)) }
+        Thread.detachNewThread {
+            taken.set(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch))
+        }
         try await Task.sleep(for: .milliseconds(200))
         let lockProbe = TimedValue<Int>()
-        Task.detached { lockProbe.set(cache.bytesInUse) }
-        let answered = await waitForSemaphore(lockProbe.done, timeout: .now() + 5)
+        Thread.detachNewThread { lockProbe.set(cache.bytesInUse) }
+        let answered = await waitForSemaphore(lockProbe.done, timeout: .now() + 10)
         release.signal()
-        #expect(await holder.value)
+        #expect(await waitForSemaphore(holder.done, timeout: .now() + 30) == .success)
+        #expect(holder.seen == true)
         #expect(answered == .success, "SSDPrefixCache.lock was held across the epoch-store re-lease")
         #expect(lockProbe.seen == 0)
-        #expect(await waitForSemaphore(taken.done, timeout: .now() + 5) == .success)
+        #expect(await waitForSemaphore(taken.done, timeout: .now() + 30) == .success)
         #expect(taken.seen == 1 + SSDCacheEpochStore.sequenceLeaseSize)
     }
 }

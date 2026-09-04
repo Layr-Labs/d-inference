@@ -1312,8 +1312,8 @@ struct SSDPrefixCacheLifecycleTests {
             var seen: String?? { lock.withLock { value } }
         }
         let probe = EpochProbe()
-        Task.detached { probe.set(epochStore.current) }
-        #expect(await waitForSemaphore(probe.done, timeout: .now() + 5) == .success)
+        Thread.detachNewThread { probe.set(epochStore.current) }
+        #expect(await waitForSemaphore(probe.done, timeout: .now() + 30) == .success)
         #expect(probe.seen == .some(original.cacheEpoch))
 
         release.signal()

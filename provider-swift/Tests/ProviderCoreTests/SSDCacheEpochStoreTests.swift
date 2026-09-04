@@ -74,9 +74,9 @@ struct SSDCacheEpochStoreTests {
         #expect(store.takeNextSequence(expectedEpoch: epoch) == 1)
 
         // The epoch stays published for the whole body: a heartbeat inside an
-        // unlink window advertises the unchanged epoch. Probed from another
-        // thread with a timeout so a held instance lock fails instead of
-        // hanging the suite.
+        // unlink window advertises the unchanged epoch. Probed from a plain
+        // thread (not the cooperative pool, which a loaded suite can starve)
+        // with a timeout so a held instance lock fails instead of hanging.
         final class Probe: @unchecked Sendable {
             let done = DispatchSemaphore(value: 0)
             private let lock = NSLock()
@@ -86,8 +86,8 @@ struct SSDCacheEpochStoreTests {
         }
         let probe = Probe()
         let result: Int? = store.performOwnedNonRotatingChange {
-            Task.detached { probe.set(store.current) }
-            _ = probe.done.wait(timeout: .now() + 5)
+            Thread.detachNewThread { probe.set(store.current) }
+            _ = probe.done.wait(timeout: .now() + 30)
             return 7
         }
         #expect(result == 7)

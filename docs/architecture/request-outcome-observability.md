@@ -44,7 +44,7 @@ The model must answer three separate questions:
 | `partial_success` | The response was committed and at least some output may have reached the client, but the stream or client connection did not end cleanly. Post-commit client disconnects live here because partial output already reached the client; billing/refund details are captured separately. | `provider_error_after_commit`, `provider_disconnect_after_commit`, `stream_timeout_after_commit`, `client_gone_after_commit_provider_completed`, `client_gone_after_commit_provider_error`, `no_terminal_after_cancel`. |
 | `cancelled` | The client connection was cancelled before response commit, or the provider reported cancellation before visible output. | `client_gone_pre_commit`, `provider_cancelled_pre_commit`. |
 | `error` | No successful response was completed because a provider or coordinator error won before a timeout class applied. | `provider_error_pre_commit`, `encryption_missing`, `provider_send_failed`, `provider_disconnect_pre_commit`. |
-| `timeout` | No successful response was completed before a coordinator deadline. | `queue_timeout`, `first_chunk_timeout`, `accepted_timeout`, `preamble_liveness_timeout`. |
+| `timeout` | No successful response was completed before a coordinator deadline. | `queue_timeout`, `queue_deadline`, `first_chunk_timeout`, `accepted_timeout`, `preamble_liveness_timeout`. |
 
 `error_class` values must be stable enums, not raw provider messages. Provider messages can stay in logs, but not in metadata exports unless scrubbed and explicitly allowed.
 
@@ -58,6 +58,7 @@ The model must answer three separate questions:
 | `provider_disconnect_after_commit` | Provider disconnected after response commit and before a clean completion. | `registry.go` `Disconnect`, then relay/provider terminal handling. |
 | `stream_timeout_after_commit` | The coordinator committed a stream but the idle stream timer expired before a clean terminal. | `consumer.go` streaming relay timer arms. |
 | `queue_timeout` | Request entered the coordinator queue but did not receive a provider before queue timeout. | `dispatch.go` queued path; generic queue path in `consumer.go`. |
+| `queue_deadline` | The request-absolute first-content clock expired while the attempt was still queued — no provider was dispatched on that attempt (an earlier attempt may have been dispatched and failed pre-content before the ladder fell back to the queue). Capacity class (`capacity_timeout`), retryable 429 with a position-aware `Retry-After`; the `request_rejections` reason is `queue_deadline`, distinct from `first_chunk_timeout` (dispatched, then silent). | `dispatch.go` queued path (`queueExpired` → `classifyExhaustedStatus`). |
 | `first_chunk_timeout` | Provider was dispatched but produced no first useful content before the TTFT deadline. | `dispatch.go` `waitFirstChunk` and speculative wait helpers; `handleGenericInference` initial wait. |
 | `accepted_timeout` | Provider accepted the job or cold load but did not produce first content before the accepted wait deadline. | `dispatch.go` `waitAccepted`; `handleGenericInference` accepted wait. |
 | `preamble_liveness_timeout` | Provider produced only preamble or role/lifecycle chunks, then stalled before first useful content. | `dispatch.go` preamble-liveness branches. |
@@ -328,7 +329,7 @@ Coverage gaps to close:
 | Account and key RPM limits | `stage = rate_limit`, `limit_kind = rpm`, `retry_after_ms`, `over_by` when known. |
 | Account and key token limits | `stage = rate_limit`, `limit_kind = itpm` or `otpm`, estimated token shape, `retry_after_ms`. |
 | Sealed transport/body decode failures | `stage = validation` or `transport`, reason such as `malformed_json`, `payload_too_large`, or `sealed_transport_error`. |
-| Generic dispatch fail-fast exits | Same reason codes as chat path: `model_too_large`, `machine_busy`, `no_provider`, `ttft_too_slow`, `queue_timeout`. |
+| Generic dispatch fail-fast exits | Same reason codes as chat path: `model_too_large`, `machine_busy`, `no_provider`, `ttft_too_slow`, `queue_timeout`, `queue_deadline`. |
 | Provider-price reservation failures before dispatch | `stage = balance`, `reason_code = insufficient_funds_provider_price`, with shortfall when available. |
 
 Dashboards should start from low-cardinality tags and metadata:

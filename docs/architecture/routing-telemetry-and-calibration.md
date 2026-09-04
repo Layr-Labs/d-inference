@@ -203,7 +203,7 @@ All already in `inference_routes`. These are the **inputs** the cost used.
 | Field | Calibrates / answers |
 |-------|----------------------|
 | `final_status` (`success`/`partial_success`/`cancelled`/`error`/`timeout`) | Reliability per machine/model/version. See [request-outcome-observability.md](request-outcome-observability.md) for the derived status rules and client/provider/billing split. |
-| `error_code`, `error_class` | Stable failure taxonomy; which failure modes dominate. Detailed classes such as `client_gone_after_commit_provider_completed`, `provider_error_after_commit`, `queue_timeout`, `first_chunk_timeout`, `accepted_timeout`, and `preamble_liveness_timeout` are defined in [request-outcome-observability.md](request-outcome-observability.md). |
+| `error_code`, `error_class` | Stable failure taxonomy; which failure modes dominate. Detailed classes such as `client_gone_after_commit_provider_completed`, `provider_error_after_commit`, `queue_timeout`, `queue_deadline`, `first_chunk_timeout`, `accepted_timeout`, and `preamble_liveness_timeout` are defined in [request-outcome-observability.md](request-outcome-observability.md). |
 | `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cost_micro_usd` | Actual work done; estimate accuracy; cost-per-token by tier. |
 | `actual_ttft_ms`, `dispatch_to_first_chunk_ms`, `total_duration_ms` | **The ground truth.** `actual_ttft_ms − ttft_ms` = TTFT prediction error. `total_duration_ms` vs predicted `cost_ms` = cost-model error. |
 
@@ -265,7 +265,7 @@ could have resulted in an output"). The funnel, grounded in code:
 | `balance` | 402 | `insufficient_quota` (per-key cap), `insufficient_funds` (account), `insufficient_funds_provider_price` | `consumer.go:1604-1611,4135-4142,4426` |
 | `rate_limit` | 429 | `rpm_exceeded`, `itpm_exceeded`, `otpm_exceeded`, `global_rate_limit` | `server.go:525,568,2174` |
 | `preflight_capacity` | 429/503 | `machine_busy` (all full), `no_provider` (none serve model), `model_too_large` | `consumer.go:1658-1714,4168-4204` |
-| `routing_ttft` | 429 | `ttft_429`, `queue_timeout` (also in `inference_routes`) | `dispatch.go:358-473` |
+| `routing_ttft` | 429 | `ttft_429`, `queue_timeout`, `queue_deadline` (also in `inference_routes`) | `dispatch.go:358-473` |
 
 **Request shape & params (non-private — no content):**
 `request_id`, `endpoint`, `ts`, `key_id`/`consumer_key_hash`, `client_class`

@@ -58,9 +58,21 @@ func TestDeadlineWedgeArmsOnlyAtThreshold(t *testing.T) {
 	if !reg.DeadlineWedgeSkipActive(p.ID, model) {
 		t.Fatal("pair not skipped at the threshold")
 	}
-	// A straggler inside the TTL neither re-arms nor extends.
-	if ev := refuseN(reg, p, model, 1); ev != DeadlineWedgeRun {
-		t.Fatalf("straggler event = %v, want run", ev)
+	// A straggler inside the TTL neither re-arms nor extends, and is reported
+	// as its own event rather than a counted `run`.
+	key := deadlineWedgeKey{FaultKey: p.ID, ModelID: model}
+	reg.deadlineWedge.mu.Lock()
+	until := reg.deadlineWedge.skips[key].until
+	reg.deadlineWedge.mu.Unlock()
+	if ev := refuseN(reg, p, model, 3); ev != DeadlineWedgeStraggler {
+		t.Fatalf("straggler event = %v, want straggler", ev)
+	}
+	reg.deadlineWedge.mu.Lock()
+	after := reg.deadlineWedge.skips[key].until
+	_, runLive := reg.deadlineWedge.runs[key]
+	reg.deadlineWedge.mu.Unlock()
+	if !after.Equal(until) || runLive {
+		t.Fatalf("stragglers changed the skip (until %v -> %v) or started a run (%v)", until, after, runLive)
 	}
 }
 

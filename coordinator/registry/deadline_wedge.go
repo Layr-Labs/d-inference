@@ -118,10 +118,11 @@ type deadlineWedgeSkip struct {
 type DeadlineWedgeEvent string
 
 const (
-	DeadlineWedgeIgnored DeadlineWedgeEvent = "ignored" // not short, not on an empty slot
-	DeadlineWedgeRun     DeadlineWedgeEvent = "run"     // counted toward the threshold
-	DeadlineWedgeArmed   DeadlineWedgeEvent = "armed"   // threshold reached: pair skipped (or would be, in shadow)
-	DeadlineWedgeRearmed DeadlineWedgeEvent = "rearmed" // half-open probe refused: doubled TTL
+	DeadlineWedgeIgnored   DeadlineWedgeEvent = "ignored"   // does not indict the slot (deadlineRefusalIndictsSlot)
+	DeadlineWedgeRun       DeadlineWedgeEvent = "run"       // counted toward the threshold
+	DeadlineWedgeArmed     DeadlineWedgeEvent = "armed"     // threshold reached: pair skipped (or would be, in shadow)
+	DeadlineWedgeRearmed   DeadlineWedgeEvent = "rearmed"   // half-open probe refused: doubled TTL
+	DeadlineWedgeStraggler DeadlineWedgeEvent = "straggler" // pair already armed: not counted, TTL not extended (shadow keeps dispatching to it)
 )
 
 // DeadlineWedgeStats is the observability snapshot.
@@ -183,7 +184,11 @@ func (w *deadlineWedgeTracker) note(key deadlineWedgeKey, indicts bool, now time
 	// with the doubled TTL (the half-open re-probe failed).
 	if s, ok := w.skips[key]; ok {
 		if now.Before(s.until) {
-			return DeadlineWedgeRun // straggler inside the TTL: never extends it
+			// Inside the TTL: neither counted toward a run nor an extension.
+			// Reported apart from `run` so the census can tell a run in
+			// progress from an armed pair still being hit (in shadow every
+			// dispatch to an armed pair lands here).
+			return DeadlineWedgeStraggler
 		}
 		s.until = now.Add(deadlineWedgeBackoff(s.trips))
 		s.trips++

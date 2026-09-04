@@ -1,8 +1,22 @@
 package api
 
 import (
+	"sort"
+
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
+
+// percentiles returns p50, p90 and max of vs (sorting a copy); ok is false
+// for an empty input.
+func percentiles(vs []float64) (p50, p90, max float64, ok bool) {
+	if len(vs) == 0 {
+		return 0, 0, 0, false
+	}
+	s := make([]float64, len(vs))
+	copy(s, vs)
+	sort.Float64s(s)
+	return s[len(s)/2], s[(len(s)*9)/10], s[len(s)-1], true
+}
 
 // linkMetricsEmitter turns the registry's monotonic per-connection link
 // counters into DogStatsD counts + gauges on the gauge-loop cadence.
@@ -35,6 +49,7 @@ func (e *linkMetricsEmitter) emit(s *Server) {
 		maxDataDepth        int
 		maxControlDepth     int
 		backloggedProviders int
+		rttMs               []float64
 	)
 	next := make(map[string]registry.LinkStatsSnapshot, len(byProvider))
 	// inc adds cur-prev when the counter moved forward and nothing when it
@@ -48,6 +63,9 @@ func (e *linkMetricsEmitter) emit(s *Server) {
 	}
 	for id, cur := range byProvider {
 		next[id] = cur
+		if cur.RTT.Samples > 0 {
+			rttMs = append(rttMs, cur.RTT.EWMAMs)
+		}
 		prev, seen := e.last[id]
 		if !seen {
 			prev = registry.LinkStatsSnapshot{}
@@ -92,6 +110,12 @@ func (e *linkMetricsEmitter) emit(s *Server) {
 	s.ddGauge("provider.ws.data_queue_depth_max", float64(maxDataDepth), nil)
 	s.ddGauge("provider.ws.control_queue_depth_max", float64(maxControlDepth), nil)
 	s.ddGauge("provider.ws.backlogged_providers", float64(backloggedProviders), nil)
+	// Fleet RTT distribution from the coordinator's own pings.
+	if p50, p90, max, ok := percentiles(rttMs); ok {
+		s.ddGauge("provider.ws.rtt_p50_ms", p50, nil)
+		s.ddGauge("provider.ws.rtt_p90_ms", p90, nil)
+		s.ddGauge("provider.ws.rtt_max_ms", max, nil)
+	}
 
 	s.ddCount("provider.ws.frames_in", int64(delta.ChunkFramesIn), []string{"kind:chunk"})
 	s.ddCount("provider.ws.frames_in", int64(delta.HeartbeatFramesIn), []string{"kind:heartbeat"})

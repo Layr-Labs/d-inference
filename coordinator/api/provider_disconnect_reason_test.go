@@ -33,27 +33,33 @@ func TestSessionDisconnectReason(t *testing.T) {
 		closeStatus  websocket.StatusCode
 		oomSuspected bool
 		readReason   string
+		pingTimedOut bool
 		want         string
 	}{
-		{"normal close frame", websocket.StatusNormalClosure, false, readErrorReasonGeneric, "ws_close_1000"},
-		{"going away close frame", websocket.StatusGoingAway, false, readErrorReasonGeneric, "ws_close_1001"},
-		{"policy violation (challenge force-reconnect)", websocket.StatusPolicyViolation, false, readErrorReasonGeneric, "ws_close_1008"},
-		{"abrupt drop", -1, false, readErrorReasonGeneric, "read_error"},
-		{"control-frame handling failure", -1, false, readErrorReasonControlFrame, "read_error_control_frame"},
-		{"abrupt drop under memory pressure", -1, true, readErrorReasonGeneric, "oom_suspected"},
+		{"normal close frame", websocket.StatusNormalClosure, false, readErrorReasonGeneric, false, "ws_close_1000"},
+		{"going away close frame", websocket.StatusGoingAway, false, readErrorReasonGeneric, false, "ws_close_1001"},
+		{"policy violation (challenge force-reconnect)", websocket.StatusPolicyViolation, false, readErrorReasonGeneric, false, "ws_close_1008"},
+		{"abrupt drop", -1, false, readErrorReasonGeneric, false, "read_error"},
+		{"control-frame handling failure", -1, false, readErrorReasonControlFrame, false, "read_error_control_frame"},
+		{"abrupt drop under memory pressure", -1, true, readErrorReasonGeneric, false, "oom_suspected"},
+		{"keepalive closed a silent peer", -1, false, readErrorReasonGeneric, true, "ping_timeout"},
 		// A close frame never coexists with the OOM classification in the read
 		// loop (classification only runs on the abrupt branch), but the mapping
 		// must still prioritize the stronger signal if both are ever set.
-		{"oom wins over close frame", websocket.StatusNormalClosure, true, readErrorReasonGeneric, "oom_suspected"},
+		{"oom wins over close frame", websocket.StatusNormalClosure, true, readErrorReasonGeneric, false, "oom_suspected"},
 		// Likewise the read-error classification only exists on the frame-less
 		// branch; a close code must win if both are ever set.
-		{"close code wins over control-frame reason", websocket.StatusNormalClosure, false, readErrorReasonControlFrame, "ws_close_1000"},
+		{"close code wins over control-frame reason", websocket.StatusNormalClosure, false, readErrorReasonControlFrame, false, "ws_close_1000"},
+		// A close frame the peer actually sent outranks our keepalive verdict.
+		{"close code wins over ping timeout", websocket.StatusGoingAway, false, readErrorReasonGeneric, true, "ws_close_1001"},
+		{"oom wins over ping timeout", -1, true, readErrorReasonGeneric, true, "oom_suspected"},
+		{"ping timeout wins over the generic read error", -1, false, readErrorReasonControlFrame, true, "ping_timeout"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected, tt.readReason); got != tt.want {
-				t.Errorf("sessionDisconnectReason(%d, %v, %q) = %q, want %q",
-					tt.closeStatus, tt.oomSuspected, tt.readReason, got, tt.want)
+			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected, tt.readReason, tt.pingTimedOut); got != tt.want {
+				t.Errorf("sessionDisconnectReason(%d, %v, %q, %v) = %q, want %q",
+					tt.closeStatus, tt.oomSuspected, tt.readReason, tt.pingTimedOut, got, tt.want)
 			}
 		})
 	}

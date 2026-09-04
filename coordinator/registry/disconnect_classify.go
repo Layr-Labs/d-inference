@@ -12,6 +12,9 @@ type DisconnectReason string
 const (
 	DisconnectReasonNormal       DisconnectReason = "disconnect"    // graceful/unattributed
 	DisconnectReasonOOMSuspected DisconnectReason = "oom_suspected" // abrupt drop under memory pressure
+	// DisconnectReasonPingTimeout: the coordinator's keepalive closed the socket
+	// after consecutive unanswered WebSocket pings (silent peer death).
+	DisconnectReasonPingTimeout DisconnectReason = "ping_timeout"
 )
 
 // Precision-tuned: ≥0.90 pressure is on the edge regardless of load; active

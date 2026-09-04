@@ -164,20 +164,26 @@ const maxProviderVersionLength = 128
 //   - "read_error"      — the socket died without a close frame (TCP reset,
 //     NAT/LB teardown, machine went to sleep mid-write);
 //   - "read_error_control_frame" — nhooyr failed while handling a peer
-//     control frame (see readErrorDisconnectReason).
+//     control frame (see readErrorDisconnectReason);
+//   - "ping_timeout"    — the coordinator's own keepalive closed the socket
+//     after consecutive unanswered pings (provider_link_ping.go).
 //
 // readReason is the frame-less classification from readErrorDisconnectReason
-// and is used only when neither stronger signal applies.
+// and is used only when no stronger signal applies; a close frame the peer
+// actually sent outranks the keepalive verdict (a ping that raced a graceful
+// shutdown must not relabel it).
 //
 // The registry's own generic "disconnect" remains the reason for closes the
 // read loop did NOT observe first — in practice the stale-eviction sweep —
 // so post-fix, lingering "disconnect" rows ≈ silent drops reaped by eviction.
-func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string) string {
+func sessionDisconnectReason(closeStatus websocket.StatusCode, oomSuspected bool, readReason string, pingTimedOut bool) string {
 	switch {
 	case oomSuspected:
 		return string(registry.DisconnectReasonOOMSuspected)
 	case closeStatus != -1:
 		return "ws_close_" + strconv.Itoa(int(closeStatus))
+	case pingTimedOut:
+		return string(registry.DisconnectReasonPingTimeout)
 	default:
 		return readReason
 	}
@@ -253,12 +259,33 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	}()
 
 	for {
+		// Not busy while blocked in Read: pongs are consumed here, so the
+		// ping loop may hold the peer responsible for silence only now.
+		provider.SetReadLoopBusy(false)
 		_, data, err := conn.Read(loopCtx)
 		if err != nil {
 			closeStatus := websocket.CloseStatus(err)
 			oomSuspected := false
 			readReason := readErrorReasonGeneric
-			if closeStatus != -1 {
+			pingTimedOut := provider != nil && provider.LinkPingTimedOut() && closeStatus == -1
+			if pingTimedOut {
+				// Our own keepalive closed the socket after consecutive
+				// unanswered pings: a silently dead peer, not a peer close and
+				// not a transport error we merely observed.
+				s.logger.Warn("provider websocket closed after ping timeout", "provider_id", providerID)
+				s.emit(context.Background(), protocol.SeverityWarn, protocol.KindConnectivity,
+					"provider websocket closed after ping timeout",
+					map[string]any{
+						"provider_id": providerID,
+						"ws_state":    "ping_timeout",
+					})
+				if s.metrics != nil {
+					s.metrics.IncCounter("ws_disconnects_total",
+						MetricLabel{"reason", "ping_timeout"},
+					)
+				}
+				s.ddIncr("ws.disconnects", []string{"reason:ping_timeout"})
+			} else if closeStatus != -1 {
 				peerCloseStatus = closeStatus
 				s.logger.Info("provider websocket closed",
 					"provider_id", providerID, "close_code", int(closeStatus))
@@ -347,7 +374,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					provider.Status = registry.StatusOffline
 				}
 				provider.Mu().Unlock()
-				sessionReason = sessionDisconnectReason(closeStatus, oomSuspected, readReason)
+				sessionReason = sessionDisconnectReason(closeStatus, oomSuspected, readReason, pingTimedOut)
 			}
 			return
 		}
@@ -364,6 +391,8 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		// Link accounting (frames/bytes by kind) — atomics only, no lock.
 		// Nil-safe: frames before registration are simply not counted.
 		provider.RecordInboundFrame(msg.Type, len(data))
+		// From here until the next Read the goroutine is in a handler.
+		provider.SetReadLoopBusy(true)
 
 		switch msg.Type {
 		case protocol.TypeRegister:
@@ -398,6 +427,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// to account it; book it now so the connection's inbound totals
 			// include their first (and largest control) frame.
 			provider.RecordInboundFrame(protocol.TypeRegister, len(data))
+			provider.SetReadLoopBusy(true)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
 
@@ -563,6 +593,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			// Start challenge loop after registration
 			saferun.Go(s.logger, "challengeLoop", func() {
 				s.challengeLoop(loopCtx, providerID, provider, tracker)
+			})
+			// Server-side keepalive + RTT probe (provider_link_ping.go).
+			saferun.Go(s.logger, "linkPing", func() {
+				s.linkPingLoop(loopCtx, providerID, provider, conn)
 			})
 
 			// v0.6.0: APNs code-identity attestation. Runs only when an attestor is

@@ -1,10 +1,112 @@
 package registry
 
 import (
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
+
+// linkRTTAlpha is the EWMA weight for a new coordinator-measured RTT sample.
+// Samples arrive every ~15s; 0.3 tracks a route change within a minute while
+// smoothing single-sample jitter from a busy read loop.
+const linkRTTAlpha = 0.3
+
+// linkRTT is the coordinator-measured WebSocket round trip (ping→pong). It
+// has its own leaf mutex so readers never need p.mu to see it. Observability
+// only: routing does not read it.
+type linkRTT struct {
+	mu      sync.Mutex
+	ewmaMs  float64
+	lastMs  float64
+	samples uint64
+	lastAt  time.Time
+	// pingTimedOut latches once the coordinator's ping loop gave up on this
+	// connection and closed it, so the read loop can label the disconnect.
+	pingTimedOut bool
+}
+
+// LinkRTTSnapshot is the RTT half of a link snapshot.
+type LinkRTTSnapshot struct {
+	EWMAMs  float64
+	LastMs  float64
+	Samples uint64
+	LastAt  time.Time
+}
+
+// RecordLinkRTT folds one coordinator-measured ping→pong sample into the EWMA.
+func (p *Provider) RecordLinkRTT(rtt time.Duration) {
+	if p == nil || rtt < 0 {
+		return
+	}
+	ms := float64(rtt) / float64(time.Millisecond)
+	p.link.rtt.mu.Lock()
+	defer p.link.rtt.mu.Unlock()
+	if p.link.rtt.samples == 0 {
+		p.link.rtt.ewmaMs = ms
+	} else {
+		p.link.rtt.ewmaMs = linkRTTAlpha*ms + (1-linkRTTAlpha)*p.link.rtt.ewmaMs
+	}
+	p.link.rtt.lastMs = ms
+	p.link.rtt.samples++
+	p.link.rtt.lastAt = time.Now()
+}
+
+// MarkLinkPingTimeout records that the coordinator's ping loop closed this
+// connection after consecutive unanswered pings.
+func (p *Provider) MarkLinkPingTimeout() {
+	if p == nil {
+		return
+	}
+	p.link.rtt.mu.Lock()
+	p.link.rtt.pingTimedOut = true
+	p.link.rtt.mu.Unlock()
+}
+
+// LinkPingTimedOut reports whether MarkLinkPingTimeout was called.
+func (p *Provider) LinkPingTimedOut() bool {
+	if p == nil {
+		return false
+	}
+	p.link.rtt.mu.Lock()
+	defer p.link.rtt.mu.Unlock()
+	return p.link.rtt.pingTimedOut
+}
+
+// LinkRTT returns the RTT snapshot WITHOUT taking p.mu, so it is safe to call
+// from code that already holds p.mu.
+func (p *Provider) LinkRTT() LinkRTTSnapshot {
+	if p == nil {
+		return LinkRTTSnapshot{}
+	}
+	p.link.rtt.mu.Lock()
+	defer p.link.rtt.mu.Unlock()
+	return LinkRTTSnapshot{
+		EWMAMs:  p.link.rtt.ewmaMs,
+		LastMs:  p.link.rtt.lastMs,
+		Samples: p.link.rtt.samples,
+		LastAt:  p.link.rtt.lastAt,
+	}
+}
+
+// SetReadLoopBusy is called by the provider read loop around message
+// handling; see linkCounters.readLoopBusy.
+func (p *Provider) SetReadLoopBusy(busy bool) {
+	if p == nil {
+		return
+	}
+	p.link.readLoopBusy.Store(busy)
+}
+
+// ReadLoopBusy reports whether the read loop is currently inside a handler
+// rather than blocked in Read.
+func (p *Provider) ReadLoopBusy() bool {
+	if p == nil {
+		return false
+	}
+	return p.link.readLoopBusy.Load()
+}
 
 // linkCounters are the per-connection provider WebSocket link counters. Every
 // field is a monotonic count since the connection was accepted; the api layer
@@ -48,6 +150,16 @@ type linkCounters struct {
 	// other and an unsigned subtraction would wrap.
 	otherFramesIn atomic.Uint64
 	otherBytesIn  atomic.Uint64
+
+	// rtt holds the round-trip measurements (leaf mutex, see linkRTT).
+	rtt linkRTT
+
+	// readLoopBusy is true from the moment the provider read loop takes a
+	// frame off the socket until it calls Read again, i.e. while a handler
+	// runs on the read goroutine. nhooyr consumes pongs only inside Read, so
+	// the ping loop must not blame the peer for a pong that could not be
+	// read because the coordinator itself was busy.
+	readLoopBusy atomic.Bool
 
 	// finalOutbound is the writer's outbound counters frozen at
 	// closeWriterNow, so totals survive the writer being detached. Guarded
@@ -140,6 +252,9 @@ type LinkStatsSnapshot struct {
 	// Instantaneous queue depths (not monotonic).
 	DataQueueDepth    int
 	ControlQueueDepth int
+
+	// RTT is the coordinator-measured round trip.
+	RTT LinkRTTSnapshot
 }
 
 // FleetLinkStats aggregates LinkStatsSnapshot across every live provider
@@ -192,6 +307,7 @@ func (p *Provider) LinkStats() LinkStatsSnapshot {
 		HeartbeatBytesIn:  p.link.heartbeatBytesIn.Load(),
 		OtherFramesIn:     p.link.otherFramesIn.Load(),
 		OtherBytesIn:      p.link.otherBytesIn.Load(),
+		RTT:               p.LinkRTT(),
 	}
 	p.mu.Lock()
 	w := p.writer

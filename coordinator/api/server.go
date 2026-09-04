@@ -238,6 +238,10 @@ type Server struct {
 	modelAliasMutationMu          sync.Mutex      // serializes cross-endpoint alias validation + persistence
 	challengeInterval             time.Duration   // 0 means use DefaultChallengeInterval
 	challengeResponseTimeout      time.Duration   // 0 means ChallengeResponseTimeout (testing only)
+	linkPingInterval              time.Duration   // 0 means linkPingInterval (provider_link_ping.go)
+	linkPingTimeout               time.Duration   // 0 means linkPingTimeout
+	disableLinkPing               bool            // testing only
+	linkPingClose                 bool            // EIGENINFERENCE_LINK_PING_CLOSE=on: close silent peers; default observe-only
 	skipChallenge                 bool            // if true, skip attestation challenges entirely (testing only)
 	allowDuplicateProviderSerials bool            // in-process multi-provider testbed only
 	privyAuth                     *auth.PrivyAuth // Privy JWT authentication (nil if not configured)
@@ -960,6 +964,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		mdmSchedulerConfig:       cfg.MDMScheduler,
 		settlements:              newSettlementHolder(),
 		zombieCanceller:          newZombieStreamCanceller(),
+		linkPingClose:            os.Getenv("EIGENINFERENCE_LINK_PING_CLOSE") == "on",
 		hedgeGov:                 newHedgeGovernor(),
 		serviceReservations:      newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:           newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),

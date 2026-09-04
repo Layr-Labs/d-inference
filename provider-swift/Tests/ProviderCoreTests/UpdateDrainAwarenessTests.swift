@@ -269,4 +269,30 @@ struct UpdateDrainAwarenessTests {
         }
         #expect(decodedError.errorReason == .draining)
     }
+
+    @Test("retirement reconnect remains draining until the new connection lifts its barrier")
+    func retirementReconnectPreservesHeartbeatDrainState() async throws {
+        let loop = try makeDrainTestLoop()
+        let state = await loop.state
+        let client = makeHeartbeatClient(state: state)
+
+        await loop.setRetirementReconnectBarrier(true)
+        #expect(await loop.isReconnectingAfterRetirement)
+        #expect(try await heartbeatObject(client)["status"] as? String == "draining")
+        await loop.resumeServingAfterUpdate()
+        #expect(state.refusingNewWork)
+        #expect(try await heartbeatObject(client)["status"] as? String == "draining")
+
+        await loop.setRetirementReconnectBarrier(false)
+        #expect(!state.refusingNewWork)
+        #expect(try await heartbeatObject(client)["status"] as? String == "idle")
+
+        await loop.beginUpdateDraining()
+        await loop.setRetirementReconnectBarrier(true)
+        await loop.setRetirementReconnectBarrier(false)
+        #expect(state.refusingNewWork)
+        #expect(try await heartbeatObject(client)["status"] as? String == "draining")
+        await loop.resumeServingAfterUpdate()
+        #expect(!state.refusingNewWork)
+    }
 }

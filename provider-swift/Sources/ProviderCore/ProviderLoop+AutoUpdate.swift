@@ -187,7 +187,7 @@ extension ProviderLoop {
     internal func resumeServingAfterUpdate() async {
         updatePhase = .idle
         // Quote path mirror (routing v2): quotes may admit again.
-        state.refusingNewWork = false
+        state.refusingNewWork = isReconnectingAfterRetirement || isShuttingDown
         // Announce the un-drain NOW: the coordinator ages its drain mark on a
         // TTL, so a prompt `serving`/`idle` heartbeat ends the routing
         // blackout instead of leaving it to the next 5 s baseline tick.

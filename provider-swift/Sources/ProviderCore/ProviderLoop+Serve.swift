@@ -234,7 +234,7 @@ extension ProviderLoop {
                     // (see `fireRetirementReconnect`) lifts with the new
                     // session: the register it carried excluded every
                     // retired id, so routed work is safe to admit again.
-                    isReconnectingAfterRetirement = false
+                    setRetirementReconnectBarrier(false)
 
                 case .disconnected:
                     logger.warning(.coordinatorDisconnected)

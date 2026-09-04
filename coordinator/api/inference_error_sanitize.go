@@ -322,8 +322,10 @@ func clientSafeInferenceErrorMessage(msg protocol.InferenceErrorMessage) string 
 
 // normalizeInferenceErrorForInternalUse hardens helpers that are also called by
 // tests and coordinator-synthetic paths rather than only by provider read-loop
-// delivery. It preserves the one non-wire coordinator cause and otherwise
-// applies the same provider ingress boundary.
+// delivery. The disconnect flavours of the non-wire coordinator cause are
+// rebuilt here; every other message goes through the provider ingress
+// boundary, which itself carries CoordinatorCause through (so the late-content
+// deadline conversion keeps its marker on both routes).
 func normalizeInferenceErrorForInternalUse(msg protocol.InferenceErrorMessage) protocol.InferenceErrorMessage {
 	if msg.CoordinatorCause.IsProviderDisconnect() {
 		// The abrupt flush carries no reason and stays provider_error; the

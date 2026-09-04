@@ -138,24 +138,6 @@ export function capacitySegments(counts: FleetCounts) {
     .filter((s) => s.count > 0);
 }
 
-/** Largest decode TPS across the fleet — used to scale per-card TPS bars. */
-export function fleetMaxDecodeTps(providers: MyProvider[]): number {
-  let max = 0;
-  for (const p of providers) {
-    if (typeof p.decode_tps === "number" && p.decode_tps > max) max = p.decode_tps;
-  }
-  return max;
-}
-
-/** Aggregate live decode throughput across connected machines. */
-export function fleetDecodeTps(providers: MyProvider[]): number {
-  let sum = 0;
-  for (const p of providers) {
-    if (typeof p.decode_tps === "number" && Number.isFinite(p.decode_tps)) sum += p.decode_tps;
-  }
-  return sum;
-}
-
 /** Count machines that are currently connected (online or serving). */
 export function onlineCount(providers: MyProvider[]): number {
   return providers.filter((p) => p.status === "online" || p.status === "serving").length;

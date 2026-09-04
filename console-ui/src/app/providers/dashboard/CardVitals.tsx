@@ -5,6 +5,8 @@
 
 import type { MyProvider } from "../types";
 import { clampPct, formatTps, pct } from "./format";
+import { modelDisplayName, type ModelNames } from "./modelNames";
+import { resolveThroughput } from "./throughput";
 import { MeterBar, StackedBar, pressureColor, cpuColor } from "./gauges/MeterBar";
 import { ThermalPips } from "./gauges/ThermalPips";
 import { ConcurrencyDots } from "./gauges/ConcurrencyDots";
@@ -32,9 +34,11 @@ function Vital({
 export function CardVitals({
   provider,
   fleetMaxDecodeTps,
+  names,
 }: {
   provider: MyProvider;
   fleetMaxDecodeTps: number;
+  names: ModelNames;
 }) {
   const sm = provider.system_metrics;
   const cap = provider.backend_capacity;
@@ -47,8 +51,7 @@ export function CardVitals({
     return <p className="px-4 py-3 text-xs text-text-tertiary">{msg}</p>;
   }
 
-  const decode = provider.decode_tps ?? 0;
-  const prefill = provider.prefill_tps ?? 0;
+  const { decode, prefill, decodeFallbackModel } = resolveThroughput(provider);
   const decodePct = fleetMaxDecodeTps > 0 ? (decode / fleetMaxDecodeTps) * 100 : 0;
 
   return (
@@ -95,6 +98,14 @@ export function CardVitals({
           {formatTps(decode)}
           <span className="text-text-tertiary"> tok/s</span>
         </span>
+        {decodeFallbackModel && (
+          <span
+            className="text-[11px] font-mono text-text-tertiary shrink-0 truncate max-w-[9rem]"
+            title={`Measured on ${decodeFallbackModel}; the active model has not served a request yet`}
+          >
+            on {modelDisplayName(decodeFallbackModel, names)}
+          </span>
+        )}
         {prefill > 0 && (
           <span className="text-[11px] font-mono text-text-tertiary shrink-0 hidden sm:inline">
             prefill {formatTps(prefill)}

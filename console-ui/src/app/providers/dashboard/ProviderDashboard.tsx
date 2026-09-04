@@ -8,12 +8,9 @@
 import { useMemo } from "react";
 import { useFleetData } from "./useFleetData";
 import { semverLess } from "../warnings";
-import {
-  buildAttentionGroups,
-  deriveFleetVerdict,
-  fleetMaxDecodeTps,
-  onlineCount,
-} from "./aggregate";
+import { buildAttentionGroups, deriveFleetVerdict, onlineCount } from "./aggregate";
+import { fleetMaxDecodeTps } from "./throughput";
+import { modelNamesFrom } from "./modelNames";
 import { DashboardHeader } from "./DashboardHeader";
 import { FleetHealthStrip } from "./FleetHealthStrip";
 import { AttentionFeed } from "./AttentionFeed";
@@ -39,6 +36,7 @@ export function ProviderDashboard() {
   } = useFleetData();
 
   const providers = useMemo(() => providersResp?.providers ?? [], [providersResp]);
+  const modelNames = useMemo(() => modelNamesFrom(providersResp), [providersResp]);
 
   const verdict = useMemo(() => deriveFleetVerdict(providers, ctx), [providers, ctx]);
   const groups = useMemo(() => buildAttentionGroups(providers, ctx), [providers, ctx]);
@@ -85,7 +83,7 @@ export function ProviderDashboard() {
       />
       <FleetHealthStrip verdict={verdict} summary={summary} />
       <AttentionFeed groups={groups} />
-      <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} />
+      <MachineGrid providers={providers} ctx={ctx} fleetMaxDecodeTps={maxDecode} onRemoved={refetch} names={modelNames} />
       <TrustFooter hardwareCount={hardwareCount} total={providers.length} />
     </Shell>
   );

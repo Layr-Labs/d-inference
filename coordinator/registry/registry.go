@@ -2524,7 +2524,13 @@ func TruncHash(h string) string {
 
 // CatalogEntry holds metadata about an active model in the catalog.
 type CatalogEntry struct {
-	ID                           string
+	ID string
+	// DisplayName is the operator-published human-readable name ("Qwen 3.8
+	// 27B"); empty when the catalog row has none. Quantization ("4bit", "fp8")
+	// tells apart builds that share a DisplayName. Both are presentation only —
+	// never consulted by routing.
+	DisplayName                  string
+	Quantization                 string
 	WeightHash                   string  // expected SHA-256 weight fingerprint (empty = not enforced)
 	SizeGB                       float64 // disk/GPU footprint of the model weights (zero = unknown, gate disabled)
 	RequiredProviderCapabilities []string

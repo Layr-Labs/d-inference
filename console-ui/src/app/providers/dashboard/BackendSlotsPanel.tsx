@@ -1,9 +1,11 @@
 // Backend detail (inside the "Backend slots" accordion): GPU memory mini-stats
 // plus a per-model slot table. The token-budget bar (active / max potential) is
-// the literal headroom the coordinator admits new requests against.
+// the literal headroom the coordinator admits new requests against; each slot's
+// measured decode tok/s is the per-model view of the card's headline Decode line.
 
 import type { MyBackendCapacity } from "../types";
-import { abbreviateNumber, clampPct, shortModelName } from "./format";
+import { abbreviateNumber, clampPct, formatTps } from "./format";
+import { modelDisplayName, type ModelNames } from "./modelNames";
 import { MeterBar } from "./gauges/MeterBar";
 
 const STATE_TAG: Record<string, string> = {
@@ -22,7 +24,7 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
+export function BackendSlotsPanel({ cap, names }: { cap: MyBackendCapacity; names: ModelNames }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-2.5">
@@ -39,7 +41,9 @@ export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
             return (
               <div key={s.model} className="rounded-lg bg-bg-tertiary/40 px-3 py-2 space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-mono text-text-secondary truncate">{shortModelName(s.model)}</span>
+                  <span className="text-xs font-mono text-text-secondary truncate" title={s.model}>
+                    {modelDisplayName(s.model, names)}
+                  </span>
                   <div className="flex items-center gap-2 shrink-0">
                     <span
                       className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase ${
@@ -50,6 +54,7 @@ export function BackendSlotsPanel({ cap }: { cap: MyBackendCapacity }) {
                     </span>
                     <span className="text-[11px] font-mono text-text-tertiary">
                       {s.num_running} run · {s.num_waiting} wait
+                      {(s.observed_decode_tps ?? 0) > 0 && ` · ${formatTps(s.observed_decode_tps)} tok/s`}
                     </span>
                   </div>
                 </div>

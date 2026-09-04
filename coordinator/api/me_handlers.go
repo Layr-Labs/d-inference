@@ -118,6 +118,11 @@ type myProvidersResponse struct {
 	MinProviderVersion    string       `json:"min_provider_version"`
 	HeartbeatTimeoutSec   int          `json:"heartbeat_timeout_seconds"`
 	ChallengeMaxAgeSec    int          `json:"challenge_max_age_seconds"`
+	// ModelDisplayNames maps every active catalog model ID to its published
+	// human-readable name, so the dashboard can label loaded/catalog/slot
+	// models without a second fetch. IDs without a published name are absent;
+	// the UI falls back to the raw ID.
+	ModelDisplayNames map[string]string `json:"model_display_names"`
 }
 
 // myFleetCounts aggregates machine counts by status for the dashboard header.
@@ -343,6 +348,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		MinProviderVersion:    s.minProviderVersion,
 		HeartbeatTimeoutSec:   90,
 		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
+		ModelDisplayNames:     s.registry.CatalogDisplayNames(),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -555,8 +561,11 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		}
 		mp.LifetimeRequestsServed = live.Stats.RequestsServed
 		mp.LifetimeTokensGenerated = live.Stats.TokensGenerated
-		mp.PrefillTPS = live.PrefillTPS
-		mp.DecodeTPS = live.DecodeTPS
+		// Measured per-slot EWMA; the registration benchmark is only a legacy
+		// fallback inside the resolver.
+		tp := live.MeasuredThroughputLocked()
+		mp.PrefillTPS = tp.PrefillTPS
+		mp.DecodeTPS = tp.DecodeTPS
 
 		if live.AttestationResult != nil {
 			ar := live.AttestationResult

@@ -128,8 +128,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		modelSnapshot := publicProviderModels[p.ID]
 		provModels := modelSnapshot.Models
 
+		// Challenge time and heartbeat state (slots, active model) are written
+		// under p.mu; read both in one acquisition.
+		p.Mu().Lock()
+		last := p.LastChallengeVerified
+		decodeTPS := p.MeasuredThroughputLocked().DecodeTPS
+		p.Mu().Unlock()
 		lastChallengeVerified := ""
-		if last := p.GetLastChallengeVerified(); !last.IsZero() {
+		if !last.IsZero() {
 			lastChallengeVerified = last.UTC().Format(time.RFC3339)
 		}
 
@@ -145,7 +151,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"memory_bandwidth_gbs":           p.Hardware.MemoryBandwidthGBs,
 			"status":                         status,
 			"trust_level":                    string(p.TrustLevel),
-			"decode_tps":                     p.DecodeTPS,
+			"decode_tps":                     decodeTPS,
 			"requests_served":                p.Stats.RequestsServed,
 			"tokens_generated":               p.Stats.TokensGenerated,
 			"cancellations_received":         p.Stats.CancellationsReceived,

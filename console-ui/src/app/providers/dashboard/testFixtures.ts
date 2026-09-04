@@ -1,7 +1,24 @@
 // Shared test fixtures for the provider dashboard. Builds a fully-populated
-// MyProvider so individual tests only override the few fields they exercise.
+// MyProvider so individual tests only override the few fields they exercise,
+// plus the catalog ids/names the model-label tests share.
 
-import type { MyProvider, MyReputation } from "../types";
+import type { MyBackendSlot, MyProvider, MyReputation } from "../types";
+import { modelNamesFrom, type ModelNames } from "./modelNames";
+
+/** Raw catalog build ids as providers advertise them. */
+export const QWEN27_ID = "EigenLabs/Qwen3.8-27B-4bit-mtp";
+export const MOE_ID = "qwen3.6-35b-a3b-vl-mtp-mxfp8";
+export const QWEN27_NAME = "Qwen 3.8 27B";
+export const MOE_NAME = "Qwen 3.6 35B A3B";
+
+/** Display names for the two fixture builds, as /v1/me/providers ships them. */
+export function makeModelNames(): ModelNames {
+  return modelNamesFrom({ model_display_names: { [QWEN27_ID]: QWEN27_NAME, [MOE_ID]: MOE_NAME } });
+}
+
+export function makeSlot(model: string, overrides: Partial<MyBackendSlot> = {}): MyBackendSlot {
+  return { model, state: "idle", num_running: 0, num_waiting: 0, active_tokens: 0, max_tokens_potential: 8192, ...overrides };
+}
 
 export function makeReputation(overrides: Partial<MyReputation> = {}): MyReputation {
   return {

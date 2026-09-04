@@ -1,8 +1,12 @@
 # KV-cache lookup shadowing on small-window hybrid models
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Superseded by** [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md) (re-verified 2026-09-03 at `5d400cf75` — `PrefixCacheManager` and `PrefixCacheRAM` no longer exist; the v0.8.16 tier has one durable SSD store whose blocks are staged into RAM per request (`SSDPrefixCache.stage`), so no second tier can shadow it).
+
 **Status:** Superseded in v0.7.5. The one-engine `KVCacheSSD` path removed the
 RAM-first checkpoint lookup described below. See
-[`../../reference/ssd-kv-cache-hybrid-models.md`](../reference/ssd-kv-cache-hybrid-models.md).
+[`../architecture/prefix-cache.md`](../architecture/prefix-cache.md).
 
 ## Context
 

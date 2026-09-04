@@ -27,24 +27,24 @@
 - [`architecture/overview.md`](architecture/overview.md): components, trust boundaries, and the request path end to end.
 - [`architecture/data-flow.md`](architecture/data-flow.md): one request from consumer HTTP through routing, encryption, the provider WebSocket, and back as SSE.
 - [`architecture/components/coordinator.md`](architecture/components/coordinator.md): the Go control plane — process layout, HTTP/WebSocket servers, store, background jobs.
-- [`architecture/components/provider.md`](architecture/components/provider.md): the Swift provider — connection loop, engine bridge, hardened runtime, auto-update.
+- [`architecture/components/provider.md`](architecture/components/provider.md): the Swift provider process — binaries, `ProviderCore` components, process boundaries, what stays in-process.
 - [`architecture/components/consumer.md`](architecture/components/consumer.md): the consumer surface — OpenAI/Anthropic compatibility, SDKs, console.
 - [`architecture/components/console-ui.md`](architecture/components/console-ui.md): the Next.js console — pages, `/api/*` relay handlers, Privy auth, SSE chat.
 - [`architecture/components/admin-ui.md`](architecture/components/admin-ui.md): the internal read-only operator dashboard.
-- [`architecture/components/mlx-swift.md`](architecture/components/mlx-swift.md): how the provider uses the pinned `mlx-swift` / `mlx-swift-lm` forks.
+- [`architecture/components/mlx-swift.md`](architecture/components/mlx-swift.md): the three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what `MLXLMServer` is actually used for, and the source-matched `mlx.metallib`.
 - [`architecture/routing.md`](architecture/routing.md): how a request becomes a provider choice — eligibility gates, cost model, selection, hedged dispatch, breakers.
 - [`architecture/scheduling.md`](architecture/scheduling.md): per-model queues, slot states, token-budget admission, model swaps, warm pool, heartbeat and eviction.
 - [`architecture/cache-aware-routing.md`](architecture/cache-aware-routing.md): provider-confirmed exact prefix-cache routing and its kill switch.
-- [`architecture/inference.md`](architecture/inference.md): the engine — continuous batching, KV cache, memory model, MTP, vision, deadlines.
-- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): RAM and encrypted-SSD prefix caches — lookup rules, adoption, exactness.
+- [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
+- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts (contiguous default, paged), 256-token block hashing, the prefix-reuse plan per model family, RAM staging plus the encrypted SSD tier, and why a default box builds no SSD cache.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
-- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, Stripe deposits and payouts, referrals, base rewards.
+- [`architecture/billing.md`](architecture/billing.md): pricing, reservations, ledger, the platform fee (stated only here), Stripe deposits and payouts, referrals, base rewards.
 - [`architecture/telemetry.md`](architecture/telemetry.md): what telemetry exists, how the Go/Swift/TS mirrors stay symmetric, where it goes.
 - [`architecture/request-outcome-observability.md`](architecture/request-outcome-observability.md): the closed outcome taxonomy for client, provider, and billing dimensions.
 - [`architecture/system-profiler.md`](architecture/system-profiler.md): per-attempt request profiles and fleet snapshots — schema, clocks, validation.
-- [`architecture/hardware-support.md`](architecture/hardware-support.md): Apple Silicon tiers and what each unlocks.
+- [`architecture/hardware-support.md`](architecture/hardware-support.md): the memory model — unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates.
 
 ## Security and privacy
 
@@ -67,8 +67,7 @@
 - [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected, its producer, sink, and cadence.
 - [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, fees, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
-- [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): on-disk format and configuration of the encrypted SSD prefix cache.
-- [`reference/ssd-kv-cache-hybrid-models.md`](reference/ssd-kv-cache-hybrid-models.md): adoption and recompute rules on hybrid sliding-window models.
+- [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
 
 ## Consumer how-tos
@@ -85,7 +84,7 @@
 
 - [`provider/installation.md`](provider/installation.md): install, update, uninstall; what the installer verifies.
 - [`provider/quickstart.md`](provider/quickstart.md): login, start, check status, start earning.
-- [`provider/hardware-requirements.md`](provider/hardware-requirements.md): minimum and recommended hardware; which models fit which memory.
+- [`provider/hardware-requirements.md`](provider/hardware-requirements.md): minimum hardware, chip families, RAM tiers → which catalog models load, disk for the SSD cache.
 - [`provider/cli-reference.md`](provider/cli-reference.md): every `darkbloom` subcommand, flag, path, and runtime constant.
 - [`provider/attestation.md`](provider/attestation.md): trust levels from the operator's side.
 - [`provider/direct-mode.md`](provider/direct-mode.md): serve a local OpenAI-compatible endpoint without the coordinator.

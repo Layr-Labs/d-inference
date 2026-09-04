@@ -27,7 +27,7 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 | [components/consumer.md](components/consumer.md) | Consumer surface: OpenAI and Anthropic compatibility, SDKs, console |
 | [components/console-ui.md](components/console-ui.md) | Next.js 16 / React 19 console: pages, `/api/*` relay handlers, Privy and console-key credential paths, SSE chat, optional browser-side sealing; the static `landing/` site |
 | [components/admin-ui.md](components/admin-ui.md) | Internal read-only operator dashboard: HTTP Basic gate, single `pg.Pool` on the read replica, SELECT-only server components |
-| [components/mlx-swift.md](components/mlx-swift.md) | How the provider uses the pinned `mlx-swift` / `mlx-swift-lm` forks and the source-matched `mlx.metallib` |
+| [components/mlx-swift.md](components/mlx-swift.md) | The three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what each provides, what `MLXLMServer` is used for, and the source-matched `mlx.metallib` |
 
 ## Security
 
@@ -51,9 +51,9 @@ how-to and runbook directories listed in [`../README.md`](../README.md).
 
 | Page | Concern |
 |---|---|
-| [inference.md](inference.md) | Continuous batching, KV cache, unified-memory cap and activation reserve, MTP, vision, prefill and generation deadlines, supported families |
-| [prefix-cache.md](prefix-cache.md) | RAM and encrypted-SSD prefix caches: lookup order, adoption exactness, hybrid-model rules |
-| [hardware-support.md](hardware-support.md) | Apple Silicon tiers, detection, and what each tier unlocks |
+| [inference.md](inference.md) | CBv2 request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families and quantization |
+| [prefix-cache.md](prefix-cache.md) | KV layouts (contiguous default, paged), 256-token block hashing, prefix-reuse plan per family, RAM staging and the encrypted SSD tier; why a default box builds no SSD cache |
+| [hardware-support.md](hardware-support.md) | Memory model: unified-memory cap, activation floors, load gate, KV budget and re-slice; platform and hardware gates |
 | [model-registry.md](model-registry.md) | Model manifests, aliases, publishing to R2, registration, provider downloads |
 
 ## Data, money, and observability

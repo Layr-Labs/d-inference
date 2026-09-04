@@ -1,5 +1,9 @@
 # Encrypted SSD prefix KV cache
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **Superseded by** [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) (re-verified 2026-09-03 at `5d400cf75` — the pre-v0.7.5 implementation below is gone; the as-built tier is `provider-swift/Sources/ProviderCore/KVCacheSSD/` with DBK3 `formatVersion = 3` under `darkbloom/kv3`, and in v0.8.16 it is constructed only on resolved-paged slots: [`../architecture/prefix-cache.md`](../architecture/prefix-cache.md)).
+
 **Status:** Superseded in v0.7.5 by the EngineV2 `KVCacheSSD` implementation.
 See [`../../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md). The
 decision record below describes the retired pre-v0.7.5 implementation.

@@ -1,71 +1,159 @@
-# MLX-Swift
+# MLX stack: the three pinned submodules and the metallib
 
-MLX-Swift is the machine-learning stack that runs inside the provider. Darkbloom vendors two upstream repositories under `libs/`:
+> Last updated: 2026-09-03 · commit `5d400cf75`
 
-- `libs/mlx-swift` — the core MLX array framework for Apple Silicon.
-- `libs/mlx-swift-lm` — language-model and vision-model implementations, tokenizers, downloaders, and an OpenAI-compatible inference server built on top of MLX-Swift.
+What the provider links from `libs/`, at which commits, what each submodule
+contributes, how the Metal kernel library (`mlx.metallib`) is built from the
+same source and pinned at runtime, and what the provider actually takes from the
+upstream `MLXLMServer` library. Build steps live in
+[`../../developer/build.md`](../../developer/build.md); the serving path in
+[`../inference.md`](../inference.md).
 
-Both are git submodules/forked vendored copies. The provider links them as Swift Package Manager dependencies from `provider-swift/Package.swift`.
+## Context
 
-## Responsibilities
+The provider is one Swift package (`provider-swift/Package.swift`) whose
+`ProviderCore` target links the MLX array framework and the language-model
+libraries as **local path dependencies** — `.package(path: "../libs/mlx-swift")`
+and `.package(path: "../libs/mlx-swift-lm")` — so every MLX byte in a build
+comes from the git submodule commits the superproject pins. Nothing about MLX
+is fetched at build time: `provider-swift/Package.resolved` has no `mlx-swift`
+or `mlx-swift-lm` entry, and `libs/mlx-swift-lm/Package.swift`'s own
+`Layr-Labs/mlx-swift.git` (`branch: "main"`) dependency resolves to the root
+package's path dependency of the same identity.
 
-| Responsibility | Where it lives |
+## Mechanism
+
+### The pinned submodules
+
+`.gitmodules` declares three submodules, all Layr-Labs forks. The pin is the
+gitlink in the superproject tree; read it with `git ls-tree HEAD libs/`:
+
+| Submodule | Fork | Pinned commit (`5d400cf75`) | What the provider gets from it |
+|---|---|---|---|
+| `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `6b0505cc790f512ae49d740b21e13f80802946bd` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`734241bb`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`9ff12fab`) — the tree the metallib is built from |
+| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `c4089870a24b082a9d70f31dc853380e9cff92ca` | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
+| `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`CLAUDE.md`) |
+
+A bump is a superproject commit that moves a gitlink (check out the new commit
+inside the submodule, `git add libs/<name>`); the checkout procedure is step 1
+of [`../../developer/build.md`](../../developer/build.md). Engine facts in the
+architecture pages are read at the pinned `libs/mlx-swift-lm` commit.
+
+### What `ProviderCore` links
+
+| Product | Package (`provider-swift/Package.swift`) | Why |
+|---|---|---|
+| `MLX`, `MLXNN` | `mlx-swift` (path) | Arrays, Metal backend, layers |
+| `MLXLLM`, `MLXVLM`, `MLXLMCommon`, `MLXLMServer` | `mlx-swift-lm` (path) | Models, CBv2 engine, request types and parsers |
+| `Transformers` | `swift-transformers` `from: "1.3.0"` | First release whose `TokenizerModel.knownTokenizers` includes `TokenizersBackend`, the tokenizer class of Qwen 3.5 / Qwen3-VL checkpoints |
+| `Jinja` | `swift-jinja` `from: "2.3.5"` (also linked by `ProviderCoreFoundation`) | `TemplateRenderCheck` compiles chat templates with the exact engine the runtime tokenizer uses |
+| `Hummingbird` | `hummingbird` `exact: "2.23.0"` | Matches the `from: "2.23.0"` that `MLXLMServer` declares |
+
+Platform floor: `provider-swift/Package.swift` and `libs/mlx-swift-lm/Package.swift`
+both declare `.macOS(.v14)`; `libs/mlx-swift/Package.swift` declares no
+`platforms:` at all. There is no runtime macOS-version gate — `darkbloom doctor`
+only warns below `recommendedMacOSMajorVersion = 26`
+([`../hardware-support.md`](../hardware-support.md)).
+
+### What `MLXLMServer` is used for
+
+The provider does not run the upstream inference server. Generation goes
+`MultiModelBatchSchedulerEngine` → `EngineV2Bridge` → `EngineV2` (CBv2), and
+`MLXLMServer` contributes contracts and parsers around that path:
+
+| Provider code | `MLXLMServer` symbols used |
 |---|---|
-| Array framework + Metal GPU backend | `libs/mlx-swift/` |
-| LLM/VLM model implementations | `libs/mlx-swift-lm/Libraries/MLXLLM/`, `MLXVLM/` |
-| Common model loading, tokenization, chat templating | `libs/mlx-swift-lm/Libraries/MLXLMCommon/` |
-| OpenAI-compatible inference server | `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
-| Integration packages for model downloaders and tokenizers | `libs/mlx-swift-lm/` and its transitive dependencies |
+| `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift` | Conforms to `MLXServerEngine`; consumes the OpenAI `ChatCompletionRequest` types; resolves tool parsers with `ServerToolParser.resolve` |
+| `provider-swift/Sources/ProviderCore/ProviderLoop.swift` | `ReasoningParser`, `ReasoningParserFormat` (`inferReasoningParser`) |
+| `provider-swift/Sources/ProviderCore/Server/StandaloneServer+HTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalInferenceHTTP.swift`, `provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift` | `MLXServerApplication` router, `MLXOpenAIService`, `InMemoryResponseStore`, `ServerMetrics`, `OpenAIErrorEnvelope` — the local / standalone OpenAI-compatible HTTP surface, served by the same `MultiModelBatchSchedulerEngine` |
 
-## Key modules
+The upstream `MLXModelContainerEngine` (the server's own generation engine) is
+never instantiated by the provider.
 
-### MLX-Swift core (`libs/mlx-swift/`)
+### The source-matched metallib
 
-MLX-Swift exposes the MLX array framework to Swift. It targets macOS 14 and later and uses Metal for GPU acceleration on Apple Silicon. The provider links:
+SwiftPM does not compile the `Cmlx` target's Metal shaders, so the kernels
+ship as a separate `mlx.metallib` that must match the compiled C++ exactly.
 
-- `MLX` — arrays, device placement, and lazy evaluation.
-- `MLXNN` — neural network layers used by model implementations.
-
-See `libs/mlx-swift/README.md` for build instructions and platform notes. SwiftPM command-line builds cannot compile Metal shaders; release builds typically use `xcodebuild`.
-
-### MLX-Swift-LM (`libs/mlx-swift-lm/`)
-
-MLX-Swift-LM provides high-level LLM and VLM support. The provider consumes these products:
-
-- `MLXLLM` — large language model implementations.
-- `MLXVLM` — vision-language model implementations.
-- `MLXLMCommon` — shared loading, tokenizer integration, chat templates, and `LLMModelFactory` / `VLMModelFactory`.
-- `MLXLMServer` — an OpenAI-compatible HTTP inference server used by the provider's batch scheduler and optional unified local endpoint.
-
-Version 3.x of MLX-Swift-LM decoupled from specific tokenizer/downloader packages, so the provider also declares `swift-transformers` (≥ 1.3.0) and pins `swift-jinja` for template rendering parity.
-
-## Provider integration
-
-`provider-swift/Package.swift` declares the vendored packages as local path dependencies:
-
-```swift
-.package(path: "../libs/mlx-swift"),
-.package(path: "../libs/mlx-swift-lm"),
+```mermaid
+flowchart LR
+    S[libs/mlx-swift/Source/Cmlx/mlx] -- cmake, deployment target MLX_METALLIB_DEPLOYMENT_TARGET=26.2 --> M[mlx.metallib beside the binary]
+    M -- locateRuntimeMetallib --> C[mlx.metallib, then Resources/mlx.metallib]
+    C -- makeRuntimeMetallibSnapshot: copy to unlinked fd + SHA-256 --> A[/dev/fd/N snapshot]
+    A -- darkbloom_mlx_set_metallib_path --> MLX[MLX loader, before the first GPU op]
+    A -- digest --> H[template_hashes.mlx_metallib in RuntimeHashes]
 ```
 
-The `ProviderCore` target links:
+- **Build.** `scripts/fetch-metallib.sh` cmake-builds the kernels from
+  `MLX_SRC = libs/mlx-swift/Source/Cmlx/mlx`, with
+  `MLX_METALLIB_DEPLOYMENT_TARGET` defaulting to `26.2` so the `_nax` kernels
+  are compiled, and refuses a library missing any symbol of its
+  `COMPLETENESS_CONTRACT` (`_nax`, `gemv`, the Gemma 4 expert-tile builders
+  and the `affine_qmv_wide_*` kernels). Invocation and cache knobs:
+  [`../../developer/build.md`](../../developer/build.md) (step 5).
+- **Locate.** MLX's C++ loader tries the colocated `mlx.metallib` before
+  `Resources/mlx.metallib` (`load_colocated_library`,
+  `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`);
+  `locateRuntimeMetallib` mirrors exactly that order relative to the running
+  executable and ignores `MLX_METALLIB_PATH`, which MLX does not read
+  (`provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift`).
+- **Pin.** `bindRuntimeMetallibForMLX` copies the located file into an
+  unlinked open descriptor while hashing it (`makeRuntimeMetallibSnapshot`) and
+  points MLX at `/dev/fd/N` through `darkbloom_mlx_set_metallib_path`
+  (`provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp`).
+  `ServeRuntimePreparer` and `StartCommand` do this before any Metal probe
+  (`provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`); rebinding
+  with a different source or different bytes fails closed
+  (`RuntimeMetallibBindingError`).
+- **Report.** The snapshot digest is added to the runtime hashes as
+  `template_hashes["mlx_metallib"]` (`augmentRuntimeHashesWithMetallib`,
+  `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift`).
 
-- `MLX`, `MLXNN` from `mlx-swift`
-- `MLXLLM`, `MLXVLM`, `MLXLMCommon`, `MLXLMServer` from `mlx-swift-lm`
+## Invariants
 
-The provider's `MultiModelBatchSchedulerEngine` translates OpenAI requests and
-routes them to one `EngineV2Bridge` per resident model. `ProviderLoop` manages
-model loading and unloading, while `EngineV2Runtime` coordinates capacity and
-cancellation across the ContinuousBatchingV2 engines.
+1. Every MLX byte in a build comes from the pinned gitlinks: both MLX packages
+   are path dependencies and `provider-swift/Package.resolved` carries no MLX
+   entry — `provider-swift/Package.swift`.
+2. The metallib is compiled from the same tree the `Cmlx` target compiles —
+   `scripts/fetch-metallib.sh` (`MLX_SRC`).
+3. MLX loads only the anonymous snapshot bound before the first GPU
+   operation; replacing the colocated file afterwards cannot change loaded
+   kernels — `BinaryHasher.swift` (`makeRuntimeMetallibSnapshot`,
+   `bindRuntimeMetallibForMLX`).
+4. The digest the coordinator sees describes the inode MLX loaded, not a
+   pathname — `BinaryHasher.swift` (`RuntimeMetallibSnapshot`),
+   `ProviderLoop+Serve.swift`.
+5. Generation never runs through an upstream `MLXLMServer` engine —
+   `MultiModelBatchSchedulerEngine.swift` implements `MLXServerEngine` over
+   `EngineV2Bridge`.
 
-## Privacy-relevant boundaries
+## Failure modes
 
-- **In-process execution**: MLX-Swift and MLX-Swift-LM are linked directly into the `darkbloom` binary. There is no separate Python interpreter or subprocess; model weights, activations, and KV cache stay inside the hardened provider process.
-- **No network access for inference**: The libraries operate on tensors already loaded from local storage. Network access is limited to the provider's own coordinator client and model download/prefetch paths.
-- **Model weights integrity**: The provider computes SHA-256 weight hashes (`ProviderCoreFoundation/WeightHasher`) and advertises them to the coordinator. The coordinator cross-checks hashes against the model catalog before routing.
+| Symptom | Cause | Where |
+|---|---|---|
+| `swift build` succeeds, Metal work fails at start | No `mlx.metallib` beside the executable (or under `Resources/`) | `BinaryHasher.swift` (`locateRuntimeMetallib`); fix: [`../../developer/build.md`](../../developer/build.md) |
+| `fetch-metallib.sh` fails on a missing `_nax` symbol | Built with a deployment target below `26.2` or an SDK without Metal 4 | `scripts/fetch-metallib.sh` (`COMPLETENESS_CONTRACT`) |
+| Bumping `libs/mlx` changes nothing | The compiled core is `libs/mlx-swift/Source/Cmlx/mlx`, a different gitlink | `CLAUDE.md`, `scripts/fetch-metallib.sh` |
+| Qwen 3.5 load fails with `.unsupportedTokenizer("TokenizersBackend")` | `swift-transformers` below `1.3.0` | `provider-swift/Package.swift` |
+| Metallib rebind refused | Second bind with a different source or digest | `BinaryHasher.swift` (`RuntimeMetallibBindingError`) |
 
-## Outdated claims corrected
+## Code map
 
-- The old `ARCHITECTURE.md` described inference via a fork of `mlx-swift-lm` and `swift-sodium` for NaCl Box. The Swift stack is still forked/vendored under `libs/`, but the provider also uses `swift-sodium` directly for coordinator↔provider NaCl Box compatibility; MLX-Swift-LM itself does not handle network encryption.
-- The old doc claimed "no embedded Python interpreter and no local inference server." The first half remains true; the second half is partially outdated because `MLXLMServer` exposes an OpenAI-compatible server that the provider optionally surfaces via `LocalInferenceHTTP.swift` for local/unified mode.
-- The old doc's hardware support table listed specific chip/memory/model mappings. These are illustrative only; actual supported models depend on the model catalog's `min_ram_gb` and the provider's runtime memory check.
+| Concern | File / symbol |
+|---|---|
+| Package graph, pins as path dependencies | `provider-swift/Package.swift`, `provider-swift/Package.resolved` |
+| Submodule declarations | `.gitmodules` (superproject), `libs/mlx-swift/.gitmodules` (nested `mlx`, `mlx-c`) |
+| Metallib build | `scripts/fetch-metallib.sh` |
+| Metallib locate / snapshot / bind / hash | `provider-swift/Sources/ProviderCore/Security/BinaryHasher.swift`, `provider-swift/Sources/ProviderMetallibControl/ProviderMetallibControl.cpp` |
+| Bind before first GPU op | `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift`, `provider-swift/Sources/darkbloom/StartCommand.swift` |
+| Digest on the wire | `provider-swift/Sources/ProviderCore/ProviderLoop+Serve.swift` (`augmentRuntimeHashesWithMetallib`) |
+| `MLXLMServer` contracts used | `provider-swift/Sources/ProviderCore/Inference/MultiModelBatchSchedulerEngine.swift`, `libs/mlx-swift-lm/Libraries/MLXLMServer/` |
+| CBv2 engine | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/` — [`../inference.md`](../inference.md) |
+
+## Related
+
+- [`provider.md`](provider.md) — the process these libraries are linked into
+- [`../inference.md`](../inference.md) — the CBv2 serving path
+- [`../hardware-support.md`](../hardware-support.md) — platform floor and memory model
+- [`../../developer/build.md`](../../developer/build.md) — submodule checkout and metallib build steps
+- [`../../developer/release.md`](../../developer/release.md) — release builds ship the same source-matched metallib

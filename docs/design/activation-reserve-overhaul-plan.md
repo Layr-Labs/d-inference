@@ -1,5 +1,9 @@
 # Activation reserve overhaul — plan
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
+Status: **In progress** (re-verified 2026-09-03 at `5d400cf75` — Phase 1 shipped in v0.8.16: `measuredActivationFloorsBytes = ["gpt-oss-20b": 7 * 1024 * 1024 * 1024 / 2]` (`provider-swift/Sources/ProviderCore/Inference/UnifiedMemoryCap.swift`) mirrored by `servabilityModelActivationFloorsGB` with `servabilityPerModelFloorMinVersion = "0.8.16"`; Phase 3a shipped narrowed: `servabilityMeasuredResidentGiB` carries `gpt-oss-20b` only and feeds only the post-load token budget (`coordinator/registry/servability.go`); Phase 2's qwen floor entry and Phase 3b's default retune remain deferred behind a vision-inclusive measurement; as built: [`../architecture/hardware-support.md`](../architecture/hardware-support.md)).
+
 Fixes the over-reservation class that leaves machines online but unable to load (or
 serve) models they should fit: issue #653 (the 32 GB gpt-oss flap band, and the
 24 GB gpt-oss tier — which Phase 1 alone does NOT rescue: with the 4 GiB

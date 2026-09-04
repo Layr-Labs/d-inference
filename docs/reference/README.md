@@ -28,8 +28,7 @@ Every row cites the code that defines it. For how and why things work, use
 
 | Page | Content |
 |---|---|
-| [ssd-kv-cache.md](ssd-kv-cache.md) | On-disk format, paths, and configuration of the encrypted SSD prefix cache |
-| [ssd-kv-cache-hybrid-models.md](ssd-kv-cache-hybrid-models.md) | Adoption and recompute rules on hybrid sliding-window models |
+| [ssd-kv-cache.md](ssd-kv-cache.md) | DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status and outcome vocabularies |
 
 ## Vocabulary
 

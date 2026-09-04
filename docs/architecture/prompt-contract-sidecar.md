@@ -1,5 +1,7 @@
 # Prompt-contract sidecar
 
+> Last updated: 2026-09-03 · commit `5d400cf75`
+
 The prompt-contract sidecar derives deterministic, provider-compatible token
 boundaries for optional exact-cache routing. The inference path consults it
 only when routing mode is `on`, the request is inside the operational rollout
@@ -39,13 +41,22 @@ The production safety controls are explicit:
 | `STDERR_MAX_BYTES` | `16384` | Retained child stderr tail |
 | `MAX_LOADED_CONTRACTS` | `8` | LRU and explicit active-set bound |
 | `MEMORY_LIMIT_MIB` | `1024` | Linux address-space and observed RSS ceiling |
+| `SHUTDOWN_TIMEOUT_MS` | `2000` | `SIGTERM`-to-kill grace on shutdown |
+
+`promptcontract.ReadSupervisorConfig` (`coordinator/promptcontract/config.go`)
+also reads the non-safety knobs — `ENABLED`, `BINARY`, `SOCKET`,
+`ARTIFACT_ROOT`, `ARTIFACT_BASE_URL`, `ARTIFACT_TIMEOUT_MS`,
+`PROVISION_WORKERS`, `PROVISION_MAX_MODELS`, `HEADER_TIMEOUT_MS`,
+`RESTART_MIN_MS`, `RESTART_MAX_MS`, `MAX_BODY_BYTES`, `MAX_CONCURRENCY`,
+`MAX_CONNECTIONS`, `MAX_TOKENS` — with the defaults given there.
 
 The sidecar serves HTTP/1.1 only on
 `/run/darkbloom/promptsidecar.sock`. The socket is mode `0600`; there is no TCP
 listener and no network client. Connections stay alive and the Go client pools
 them. A 4 MiB request-body limit, 64-connection limit, four-worker planning
 semaphore, 1,048,576-token limit, eight-contract artifact cache, one-second
-request deadline, and 1 GiB address-space limit bound resource consumption.
+request deadline, and (on Linux) 1 GiB address-space limit bound resource
+consumption.
 Completed connection tasks are reaped continuously. Contract misses use a
 per-contract singleflight: one worker performs file verification/tokenizer
 construction and concurrent callers wait for that same result. Distinct
@@ -135,9 +146,11 @@ the first parent is 32 zero bytes. Only complete 256-token blocks are hashed,
 so the token sequence has an invariant length and needs no count field.
 Lookup always reserves the final token, so an exact 256-token prompt has no
 eligible boundary, 257 tokens has the 256-token boundary, and 512 tokens still
-uses only the 256-token boundary. Swift SSD data rotates to schema v3,
-extension `.dbk3`, root `darkbloom/kv3`, and snapshot epoch
-`cbv2-snap-2`; v2 files are ignored.
+uses only the 256-token boundary. Swift SSD data is DBK3 — header version 3,
+extension `.dbk3`, root `darkbloom/kv3`, layout epoch
+`cbv2-frozen-full-3|native-fp|<blockSize>|<digest>` (`SSDBlockStore.layoutEpoch`);
+other header versions are rejected. See
+[`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
 
 ## Artifact handoff and threat model
 
@@ -149,9 +162,10 @@ same-root temporary directory. `os.Root`, exclusive creation, relative-path
 validation, and symlink checks contain traversal. Published files are mode
 `0400` and directories mode `0500`; every reuse re-hashes every artifact.
 
-The Rust process never downloads. It rejects symlink final components with
-`O_NOFOLLOW`, rechecks sizes and hashes, verifies metadata and contract
-identity, and loads only a coordinator-published contract directory.
+The Rust process never downloads. It opens every path component from `/` with
+`O_NOFOLLOW`, so a symlink anywhere in the artifact path is rejected; it
+rechecks sizes and hashes, verifies metadata and contract identity, and loads
+only a coordinator-published contract directory.
 
 Protected failures include malicious JSON, oversized or slow bodies, unsafe
 paths, symlinks, changed artifacts, wrong contracts, incompatible templates,
@@ -190,24 +204,33 @@ cargo run --locked --release --bin prompt-fixtures -- \
   --manifest /immutable/catalog/model-b.json \
   --artifact-root /mnt/disks/userdata/prompt-contracts \
   --cases ../../fixtures/prompt-contract/v1/corpus.json \
-  --output ../../fixtures/prompt-contract/v1/generated.json
+  --output ../../fixtures/prompt-contract/v1/production_vectors.json
 ```
 
-`scripts/verify-prompt-parity.sh` snapshots every active public manifest,
-downloads only its verified prompt artifacts, regenerates the shared vectors,
-and compares them byte-for-byte with the checked-in inventory. Eligible models
-must produce every required request shape and exact token-count case through
-Rust and the real Swift provider prompt pipeline. Models with provider-local
-dynamic time are still present in the inventory but are explicitly marked
-`dynamic_time`, have no routable vectors, and must fail provider contract
-readiness. Missing models, artifacts, cases, or unrecognized incompatibilities
-fail the gate; no fabricated token IDs are accepted.
+`scripts/verify-prompt-parity.sh` replays the checked-in manifest snapshot in
+`fixtures/prompt-contract/v1/manifests/` (with `PROMPT_PARITY_UPDATE=1` it
+re-snapshots every active public manifest and rewrites the inventory), downloads
+only the verified prompt artifacts through `coordinator/cmd/promptfixtureinput`,
+regenerates the vectors with `prompt-fixtures --manifest-directory`, and `cmp`s
+them byte-for-byte against `production_vectors.json`; it then runs the Swift,
+Go, and Rust parity tests and drives the release binary through the real Go
+supervisor (`coordinator/cmd/promptsidecarloadproof`). Eligible models must
+produce every required request shape and exact token-count case through Rust
+and the real Swift provider prompt pipeline. Models with provider-local dynamic
+time stay in the inventory with `cache_routing_eligible: false` and
+`ineligibility_reason: "dynamic_time"` (written by `prompt-fixtures`), have no
+routable vectors, and must fail provider contract readiness
+(`PromptContractIdentity.compute(modelDirectory:)`). Missing models, artifacts,
+cases, or unrecognized incompatibilities fail the gate; no fabricated token IDs
+are accepted.
 
-On 2026-07-14, an arm64 Apple Silicon release build using Rust 1.88.0 measured
-1,000 warm plans of a 1,024-word deterministic local fixture at 72 microseconds
-p50 and 133 microseconds p99 in the planner. The persistent Unix HTTP/1.1 path,
-including JSON request/response work, measured 82 microseconds p50 and
-168 microseconds p99 over the same 1,000 samples. These figures do not include
-production model cold-load cost. The one-second deadline leaves substantial
-headroom until manifest-pinned production measurements can replace the
-synthetic gate.
+Latency is enforced by `coordinator/promptsidecar/tests/planner_fixture.rs`
+(`measure_fixture_planning_latency`, `measure_fixture_unix_http_latency`): 1,000
+warm plans of the 256-word local fixture, asserting `p99 <= 250 × p50` and
+`16 × p99 <= 1 s` for both the in-process planner and the persistent Unix
+HTTP/1.1 path. A one-off 2026-07-14 run of that harness (arm64 Apple Silicon
+release build, Rust 1.88.0) recorded 72 µs p50 / 133 µs p99 in the planner and
+82 µs / 168 µs over HTTP including JSON work; CI checks the ratios, not these
+absolute figures, and neither includes production model cold-load cost. The
+one-second deadline leaves the enforced ≥ 16× p99 margin until manifest-pinned
+production measurements replace the synthetic gate.

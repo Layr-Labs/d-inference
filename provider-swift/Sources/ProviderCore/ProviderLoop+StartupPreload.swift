@@ -312,7 +312,7 @@ extension ProviderLoop {
     /// announces the shrunken set. Pre-registration (the common case:
     /// preload finished inside the gate) both are nil and the `run()` filter
     /// handles it with no extra traffic.
-    private func retireModelAfterFailedSelfTest(modelId: String) async {
+    func retireModelAfterFailedSelfTest(modelId: String) async {
         // Tombstone for the whole retirement, including the unload drain:
         // with the slot still resident, a concurrent same-id prefetch sees
         // `.alreadyAvailable` and its verified-insert would re-advertise the
@@ -329,12 +329,14 @@ extension ProviderLoop {
         // the scanner maps: those keep a previous value when recomputation
         // fails, so a stale H1 could be recorded while H2's bytes actually
         // loaded and failed, and a later verified H2 would sail past the
-        // record. `cacheEligibleWeightHash` is the slot's own verified
-        // binding for the bytes it loaded; absent that (or a cold retire),
-        // the sentinel refuses every same-id build until a daemon restart —
-        // conservative, fail-closed.
+        // record. `loadedWeightHash` is the slot's own binding for the bytes
+        // it loaded (the bracketed hash on paged slots, the published
+        // fingerprint-path hash on contiguous ones — T4-01 keeps the record
+        // honest now that contiguous slots skip the bracket); absent that
+        // (or a cold retire), the sentinel refuses every same-id build until
+        // a daemon restart — conservative, fail-closed.
         failedSelfTestHashes[modelId] =
-            modelSlots[modelId]?.cacheEligibleWeightHash ?? ""
+            modelSlots[modelId]?.loadedWeightHash ?? ""
         // Un-advertise BEFORE unloading so unloadModel's own
         // refresh-then-regrow runs against the SHRUNKEN serving set — with
         // the old order the regrow was sized under the retiring model's

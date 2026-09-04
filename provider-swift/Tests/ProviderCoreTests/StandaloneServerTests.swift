@@ -1403,3 +1403,62 @@ private func expectPrometheusShapedLines(
     #expect(await server.setModels([measuredInfo]))
     #expect(await server.debugEngineKVGrant(modelId: measured) == Int(underMeasured))
 }
+
+
+// MARK: - T4-01: the reusable-SSD hash bracket runs only for paged-eligible slots
+
+private final class StandaloneHashPassCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func record() { lock.withLock { count += 1 } }
+    var passes: Int { lock.withLock { count } }
+}
+
+/// Drive the standalone load path through the pre-load hash on a config-only
+/// fake snapshot: `ModelContainerLoading.loadContainer` then fails naturally,
+/// so the count is exactly the PRE-load passes (the post-load pass is never
+/// reached in either version). `physicalMemoryBytes` keeps
+/// `fitsAtAllocation` deterministic; `beforeWeightLoad` stays unset because it
+/// fires BEFORE the pre-load hash and would make the test vacuous.
+private func standaloneHashPassesOnFakeLoad(kvBackend: String) async throws -> Int {
+    let modelId = "darkbloom-tests/standalone-bracket-\(kvBackend)-\(UUID().uuidString.prefix(8))"
+    let fakeDir = try makeStandaloneFakeHFSnapshot(modelId: modelId)
+    defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+    let server = StandaloneServer(
+        config: StandaloneServerConfig(engineV2KVBackend: kvBackend),
+        models: [
+            ModelInfo(
+                id: modelId, modelType: "gemma4", quantization: "4bit",
+                sizeBytes: 1, estimatedMemoryGb: 0.25)
+        ])
+    let counter = StandaloneHashPassCounter()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            computeWeightHash: { _, _ in
+                counter.record()
+                return String(repeating: "a", count: 64)
+            },
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    await #expect(throws: (any Error).self, "the config-only snapshot must fail at container load") {
+        try await server.ensureModelLoaded(modelId)
+    }
+    #expect(await server.debugOutstandingKVReservationBytes() == 0)
+    return counter.passes
+}
+
+@Test func standaloneAutoSlotSkipsTheWeightHashBracket() async throws {
+    // `.auto` resolves contiguous: no SSD cache will be built, so the
+    // bracket's fresh pre-load pass is pure cost — expect zero.
+    #expect(try await standaloneHashPassesOnFakeLoad(kvBackend: "auto") == 0)
+    #expect(try await standaloneHashPassesOnFakeLoad(kvBackend: "contiguous") == 0)
+}
+
+@Test func standaloneExplicitPagedSlotKeepsThePreLoadHashPass() async throws {
+    // Explicit paged keeps today's bracket: the pre-load pass runs (the
+    // post-load pass is never reached because the fake container load
+    // fails, in both versions).
+    #expect(try await standaloneHashPassesOnFakeLoad(kvBackend: "paged") == 1)
+}

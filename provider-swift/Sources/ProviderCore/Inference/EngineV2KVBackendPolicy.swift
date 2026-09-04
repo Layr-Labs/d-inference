@@ -127,6 +127,32 @@ public enum EngineV2KVBackendPolicy {
         }
     }
 
+    /// Could a slot for `modelID` resolve to the PAGED backend at all?
+    ///
+    /// A deliberately CONSERVATIVE SUPERSET of
+    /// `EngineV2Factory.prepareProductionBackend`'s resolution: an explicit
+    /// "paged" selection (global or per-model, layer 1) with the fleet kill
+    /// switch not thrown (layer 3). It ignores the VLM slot veto, model
+    /// capability, and the `.auto`-only crash-loop guard on purpose — a
+    /// paged request that later degrades still gets the fresh two-read
+    /// weight-hash bracket, and the factory still skips the SSD cache for
+    /// the resolved-contiguous slot, so no new state is needed.
+    ///
+    /// `.auto` resolves CONTIGUOUS (layer 4), so the production default is
+    /// `false`: the load path uses this to skip the reusable-SSD bracket —
+    /// whose only consumer (`SSDPrefixCacheFactory.make`) is reached only
+    /// on a paged slot — instead of paying two full SHA-256 passes over
+    /// the weights on every contiguous cold load.
+    public static func mayResolvePaged(
+        global: String,
+        byModel: [String: String],
+        modelID: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        parseSelection(global: global, byModel: byModel, modelID: modelID).selection == .paged
+            && !killSwitchDisabled(environment: environment)
+    }
+
     /// Layer 3b: true when the crash-loop backend guard forces `.auto` to
     /// contiguous — the record exists AND was tripped by exactly the
     /// running binary version.

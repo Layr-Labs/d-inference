@@ -370,7 +370,8 @@ extension ProviderLoop {
         sizing: SlotSizingSnapshot = SlotSizingSnapshot(
             weightsBytes: 0, fp16KVBytesPerToken: 0,
             maxContextLength: 0, defaultMaxTokens: 4096),
-        modelType: String? = nil
+        modelType: String? = nil,
+        loadedWeightHash: String? = nil
     ) {
         modelSlots[modelId] = ModelSlot(
             engineV2: engineV2,
@@ -378,10 +379,22 @@ extension ProviderLoop {
             tokenizer: tokenizer,
             sizing: sizing,
             cacheEligibleWeightHash: nil,
+            loadedWeightHash: loadedWeightHash,
             isVLM: false,
             modelType: modelType,
             lastInferenceAt: .now
         )
+    }
+
+    /// Test seam: the slot-bound hash the self-test retirement record keys on.
+    func loadedWeightHashForTesting(modelId: String) -> String? {
+        modelSlots[modelId]?.loadedWeightHash
+    }
+
+    /// Test seam: the durable fail-closed self-test record for `modelId`
+    /// (nil when no self-test failed; "" is the sentinel).
+    func failedSelfTestHashForTesting(modelId: String) -> String? {
+        failedSelfTestHashes[modelId]
     }
 
     func installModelBundleForTesting(

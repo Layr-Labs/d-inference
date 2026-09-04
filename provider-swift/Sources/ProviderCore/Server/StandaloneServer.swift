@@ -1513,7 +1513,13 @@ public actor StandaloneServer {
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let loadStartedAt = ContinuousClock.now
             stages.evictMs = ModelLoadStageReport.ms(loadStartedAt - evictStartedAt)
+            // Same gate as `ProviderLoop.ensureModelLoaded`: the two-read
+            // bracket feeds only the paged slot's SSD cache identity.
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+                && EngineV2KVBackendPolicy.mayResolvePaged(
+                    global: config.engineV2KVBackend,
+                    byModel: config.engineV2KVBackendByModel,
+                    modelID: modelId)
             let preLoadHashStartedAt = ContinuousClock.now
             let preLoadCacheHash = reusableSSDRequested
                 ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)

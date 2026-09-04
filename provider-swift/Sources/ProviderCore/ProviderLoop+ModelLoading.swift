@@ -408,7 +408,27 @@ extension ProviderLoop {
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `captureWeightHash` for the full rationale.)
+            //
+            // The reusable-SSD bracket (two FRESH cryptographic reads around
+            // the container load) exists for ONE consumer: the SSD prefix
+            // cache identity, which `EngineV2SlotFactory` builds only on a
+            // PAGED slot (`PrefixCachePolicy.adoptionIsExact`). `.auto`
+            // resolves contiguous, so gate the bracket on paged ELIGIBILITY
+            // as well as the cache switch — a contiguous slot takes the
+            // fingerprint-reuse path (0 passes when the start-time
+            // fingerprint is seeded, 1 on a miss) instead of two full
+            // passes it would throw away. Explicit paged slots are
+            // unchanged. Contract change to name: on a contiguous slot a
+            // hash-read failure keeps the previous hash (`publishWeightHash`
+            // guard) rather than removing it from registration, and a
+            // mid-load drift warns + recomputes + serves (the recomputed
+            // hash then trips the coordinator's catalog-pin check) rather
+            // than failing the load — the pre-#549 non-SSD contract.
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+                && EngineV2KVBackendPolicy.mayResolvePaged(
+                    global: loopConfig.config.backend.engineV2KVBackend,
+                    byModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                    modelID: modelId)
             let preLoadHashStartedAt = ContinuousClock.now
             let preLoadHash = try await captureWeightHash(
                 modelId: modelId,
@@ -495,7 +515,16 @@ extension ProviderLoop {
             // established. A missing observation serves cold; an actual mismatch
             // proves artifact mutation and fails before engine construction or
             // slot installation.
+            // `cacheEligibleWeightHash` keeps its strict two-fresh-reads
+            // meaning (cache identity). `loadedWeightHash` is the slot-bound
+            // hash of the bytes this load actually published — the SSD
+            // bracket's hash, or on the fingerprint path the pre-load hash
+            // when the post-load fingerprint matched / the drift recompute
+            // otherwise (nil when that read failed). The startup self-test
+            // retirement record keys on it, so a contiguous slot records the
+            // real hash rather than the fail-closed "" sentinel.
             let cacheEligibleWeightHash: String?
+            let loadedWeightHash: String?
             let postLoadHashStartedAt = ContinuousClock.now
             if reusableSSDRequested {
                 let postLoadHash = try await captureWeightHash(
@@ -508,6 +537,7 @@ extension ProviderLoop {
                     preLoad: preLoadHash,
                     postLoad: postLoadHash,
                     newcomer: newcomer)
+                loadedWeightHash = cacheEligibleWeightHash
             } else {
                 let postLoadFingerprint = await Task.detached(priority: .utility) {
                     WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
@@ -524,6 +554,9 @@ extension ProviderLoop {
                         fingerprint: postLoadFingerprint)
                     stages.hashPasses += 1
                     await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
+                    loadedWeightHash = postLoadHash.hash
+                } else {
+                    loadedWeightHash = preLoadHash.hash
                 }
                 cacheEligibleWeightHash = nil
             }
@@ -786,6 +819,7 @@ extension ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
+                loadedWeightHash: loadedWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now

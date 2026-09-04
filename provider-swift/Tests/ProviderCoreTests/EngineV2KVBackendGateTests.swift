@@ -1082,3 +1082,60 @@ struct EngineV2KVBackendGateTests {
         #expect(allowed.veto == nil, "an unvetoed slot has nothing to log")
     }
 }
+
+
+// MARK: - Paged-eligibility predicate (T4-01: gates the reusable-SSD hash bracket)
+
+@Suite("KV backend paged-eligibility predicate")
+struct EngineV2KVBackendPagedEligibilityTests {
+    private let model = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+
+    @Test("`auto`, `contiguous`, empty and unrecognized selections can never resolve paged")
+    func nonPagedSelectionsAreIneligible() {
+        for global in ["auto", "contiguous", "", "   ", "bogus", "PAGED-ish"] {
+            #expect(
+                !EngineV2KVBackendPolicy.mayResolvePaged(
+                    global: global, byModel: [:], modelID: model, environment: [:]),
+                "global=\(global)")
+        }
+        // A per-model contiguous override beats a global paged.
+        #expect(
+            !EngineV2KVBackendPolicy.mayResolvePaged(
+                global: "paged", byModel: [model: "contiguous"], modelID: model, environment: [:]))
+    }
+
+    @Test("an explicit paged selection — global or per-model — is eligible")
+    func explicitPagedIsEligible() {
+        #expect(
+            EngineV2KVBackendPolicy.mayResolvePaged(
+                global: "paged", byModel: [:], modelID: model, environment: [:]))
+        #expect(
+            EngineV2KVBackendPolicy.mayResolvePaged(
+                global: " Paged ", byModel: [:], modelID: model, environment: [:]))
+        #expect(
+            EngineV2KVBackendPolicy.mayResolvePaged(
+                global: "auto", byModel: [model: "paged"], modelID: model, environment: [:]))
+        // Another model's override does not leak.
+        #expect(
+            !EngineV2KVBackendPolicy.mayResolvePaged(
+                global: "auto", byModel: ["other/model": "paged"], modelID: model, environment: [:]))
+    }
+
+    @Test("the fleet kill switch makes an explicit paged selection ineligible; affirmative values do not")
+    func killSwitchOverridesExplicitPaged() {
+        for off in ["0", "false", "no", "off", " OFF "] {
+            #expect(
+                !EngineV2KVBackendPolicy.mayResolvePaged(
+                    global: "paged", byModel: [:], modelID: model,
+                    environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: off]),
+                "value=\(off)")
+        }
+        for on in ["1", "true", "yes", "", "anything"] {
+            #expect(
+                EngineV2KVBackendPolicy.mayResolvePaged(
+                    global: "paged", byModel: [:], modelID: model,
+                    environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: on]),
+                "value=\(on)")
+        }
+    }
+}

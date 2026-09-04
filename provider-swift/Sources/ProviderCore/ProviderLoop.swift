@@ -733,6 +733,11 @@ public actor ProviderLoop {
         /// Hash verified for the exact bytes bracketed around this slot's load.
         /// Reused only when rebuilding the engine over the retained container.
         let cacheEligibleWeightHash: String?
+        /// Hash PUBLISHED for the bytes this slot loaded — the bracketed hash
+        /// on a paged slot, the fingerprint-path hash on a contiguous one.
+        /// Keys the fail-closed startup self-test record; nil (⇒ the ""
+        /// sentinel) only when no trustworthy observation existed.
+        let loadedWeightHash: String?
         /// Stage timings + residency of the cold load that installed this
         /// slot (T4-04); nil for test-installed slots.
         var loadStages: ModelLoadStageReport? = nil
@@ -768,6 +773,7 @@ public actor ProviderLoop {
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
             cacheEligibleWeightHash: String? = nil,
+            loadedWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
@@ -777,6 +783,7 @@ public actor ProviderLoop {
             self.tokenizer = tokenizer
             self.sizing = sizing
             self.cacheEligibleWeightHash = cacheEligibleWeightHash
+            self.loadedWeightHash = loadedWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
             self.lastInferenceAt = lastInferenceAt
@@ -789,6 +796,7 @@ public actor ProviderLoop {
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
             cacheEligibleWeightHash: String? = nil,
+            loadedWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             mtpDrafter: (any AnyObject & Sendable)? = nil,
@@ -806,6 +814,7 @@ public actor ProviderLoop {
                 tokenizer: tokenizer,
                 sizing: sizing,
                 cacheEligibleWeightHash: cacheEligibleWeightHash,
+                loadedWeightHash: loadedWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
                 lastInferenceAt: lastInferenceAt)

@@ -75,7 +75,54 @@ public struct ModelScanner: Sendable {
         if let override = cacheDirectoryOverride() {
             return override
         }
-        return resolveCacheDirectory(environment: environment)
+        let resolved = resolveCacheDirectory(environment: environment)
+        warnOnceAboutLegacyCacheRoot(resolved: resolved)
+        return resolved
+    }
+
+    /// The root every release before HF-env support read and wrote
+    /// unconditionally — where an operator who ALREADY had `HF_HOME` /
+    /// `HF_HUB_CACHE` exported for Python tooling still has darkbloom's
+    /// weights.
+    public static var legacyCacheDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    }
+
+    /// Migration notice for that operator: non-nil when the env-resolved
+    /// root differs from the legacy root AND the legacy root still holds
+    /// `models--*` entries, naming them. Honouring the HF env is a config
+    /// change for this population (their next `darkbloom start` scans the
+    /// env root and finds none of those models); the notice is logged once
+    /// per process at the first resolution and surfaced by `doctor`.
+    public static func cacheRootMigrationNotice(
+        resolved: URL, legacy: URL, fileManager: FileManager = .default
+    ) -> String? {
+        guard resolved.standardizedFileURL.path != legacy.standardizedFileURL.path else { return nil }
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: legacy, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        else { return nil }
+        let models = entries.map(\.lastPathComponent).filter { $0.hasPrefix("models--") }.sorted()
+        guard !models.isEmpty else { return nil }
+        return "HuggingFace cache root is \(resolved.path) (from HF_HUB_CACHE/HF_HOME), but the legacy root "
+            + "\(legacy.path) still holds \(models.count) model dir(s) earlier darkbloom releases used: "
+            + models.joined(separator: ", ")
+            + ". Move them into the new root, re-download, or unset HF_HUB_CACHE/HF_HOME for darkbloom."
+    }
+
+    private static let migrationNoticeLock = NSLock()
+    nonisolated(unsafe) private static var migrationNoticeLogged = false
+
+    private static func warnOnceAboutLegacyCacheRoot(resolved: URL) {
+        let first = migrationNoticeLock.withLock { () -> Bool in
+            if migrationNoticeLogged { return false }
+            migrationNoticeLogged = true
+            return true
+        }
+        guard first,
+            let notice = cacheRootMigrationNotice(resolved: resolved, legacy: legacyCacheDirectory)
+        else { return }
+        logger.warning("\(notice)")
     }
 
     /// Pure resolver over an injected environment (no test override), so the
@@ -89,8 +136,7 @@ public struct ModelScanner: Sendable {
             return URL(fileURLWithPath: hfHome, isDirectory: true)
                 .appendingPathComponent("hub", isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+        return legacyCacheDirectory
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

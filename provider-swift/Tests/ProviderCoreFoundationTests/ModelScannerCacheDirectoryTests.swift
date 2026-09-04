@@ -44,6 +44,33 @@ final class ModelScannerCacheDirectoryTests: XCTestCase {
             ModelScanner.resolveCacheDirectory(environment: [:]))
     }
 
+    func testMigrationNoticeNamesLegacyModelsWhenTheEnvRootDiffers() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory
+            .appendingPathComponent("scanner-migration-\(UUID().uuidString)", isDirectory: true)
+        let legacy = base.appendingPathComponent("legacy", isDirectory: true)
+        let env = base.appendingPathComponent("env-root", isDirectory: true)
+        try fm.createDirectory(
+            at: legacy.appendingPathComponent("models--org--kept"), withIntermediateDirectories: true)
+        try fm.createDirectory(
+            at: legacy.appendingPathComponent("models--org--other"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: legacy.appendingPathComponent(".locks"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: env, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let notice = try XCTUnwrap(ModelScanner.cacheRootMigrationNotice(resolved: env, legacy: legacy))
+        XCTAssertTrue(notice.contains("models--org--kept, models--org--other"), notice)
+        XCTAssertTrue(notice.contains(legacy.path), notice)
+        XCTAssertTrue(notice.contains(env.path), notice)
+        // The same root, a legacy root without models, or no legacy root at
+        // all is not a migration.
+        XCTAssertNil(ModelScanner.cacheRootMigrationNotice(resolved: legacy, legacy: legacy))
+        XCTAssertNil(ModelScanner.cacheRootMigrationNotice(resolved: env, legacy: env))
+        XCTAssertNil(ModelScanner.cacheRootMigrationNotice(
+            resolved: env, legacy: base.appendingPathComponent("missing")))
+        XCTAssertTrue(ModelScanner.legacyCacheDirectory.path.hasSuffix("/.cache/huggingface/hub"))
+    }
+
     func testResolveLocalPathFollowsTheOverriddenCacheRoot() throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory

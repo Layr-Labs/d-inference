@@ -273,6 +273,17 @@ func buildDoctorChecks(
             detail: "not found"
         ))
     }
+    // HF_HUB_CACHE / HF_HOME moved the root for an operator who already had
+    // them exported: their weights are still in the legacy root.
+    if let cacheDir = ModelScanner.defaultCacheDirectory(),
+       let notice = ModelScanner.cacheRootMigrationNotice(
+           resolved: cacheDir, legacy: ModelScanner.legacyCacheDirectory) {
+        checks.append(.init(
+            name: "huggingface cache migration",
+            status: .warn,
+            detail: notice
+        ))
+    }
 
     checks.append(.init(
         name: "local mlx models",

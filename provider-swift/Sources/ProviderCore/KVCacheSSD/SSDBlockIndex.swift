@@ -167,16 +167,19 @@ final class SSDBlockIndex: @unchecked Sendable {
 // MARK: - Box-wide disk budget
 
 /// What the budget coordinator needs from a registered store: total disk
-/// bytes, the age of its oldest entry, and the ability to evict it
-/// (unlink + index removal).
+/// bytes, an oldest-first snapshot of its entries, and the ability to
+/// unlink a planned batch of them (unlink + index removal).
 protocol SSDEvictableStore: AnyObject, Sendable {
     var evictionRoot: URL { get }
     var diskBytesOnDisk: Int { get }
-    /// lastAccess of the store's LRU entry, or nil when empty.
-    func oldestEntryAccess() -> Int64?
-    /// Evict the store's single oldest entry. Returns bytes freed (0 when
-    /// nothing was evicted).
-    func evictOldestEntry() -> Int
+    /// Oldest-first snapshot of every entry (lastAccess, then tag). Box-wide
+    /// enforcement takes it ONCE per store per pass — never per victim.
+    func oldestEntries() -> [(tag16: Data, lastAccess: Int64, fileBytes: Int)]
+    /// Unlink `victims` (this store's slice of the global plan, oldest
+    /// first) until `targetBytes` are freed or the list is exhausted; stale
+    /// entries are dropped, undeletable files skipped. Returns bytes freed
+    /// and entries unlinked.
+    func evictEntries(_ victims: [Data], freeing targetBytes: Int) -> (freedBytes: Int, evicted: Int)
     /// Drop RAM-index entries whose files were removed by whole-root
     /// maintenance (including unloaded-model accounting).
     func reconcileExternalRemovals()
@@ -235,36 +238,78 @@ final class SSDDiskBudget: @unchecked Sendable {
 
     /// Evict oldest-by-last-hit (across all stores) until the box-wide
     /// total is at most `budgetBytes`. Returns the number of evictions.
+    ///
+    /// One sorted snapshot per store per pass, merged globally oldest-first
+    /// (lastAccess, then tag — the index's own order) into per-store victim
+    /// plans that together cover the excess, each unlinked in the store's
+    /// batched bracket. The per-victim form re-scanned every index and read
+    /// the epoch record once PER VICTIM under this lock: a budget drop
+    /// (free-disk/2 clamp after a large download) forced ~n/2 evictions in
+    /// one call, O(victims × entries) with every model's write-behind
+    /// consumer — and every ready receipt — waiting behind it.
     @discardableResult
     func enforce(budgetBytes: Int) -> Int {
         lock.withLock {
             var evicted = 0
             var blockedStores: Set<ObjectIdentifier> = []
             let limit = max(0, budgetBytes)
-            // Bounded: a pass either frees one entry or permanently excludes
-            // one store for this enforcement call. One undeletable oldest
-            // entry therefore cannot stop eviction in another store.
-            while stores.values.reduce(0, { $0 + $1.diskBytesOnDisk }) > limit {
-                var victim: SSDEvictableStore?
-                var victimAccess = Int64.max
-                for store in stores.values {
-                    guard !blockedStores.contains(ObjectIdentifier(store)) else {
-                        continue
+            // Bounded: every pass either shrinks a store (its bytes strictly
+            // fall) or permanently excludes one for this call, so the loop
+            // ends within entries + stores passes — one in practice, two
+            // when a planned victim turned out stale or undeletable.
+            while true {
+                let total = stores.values.reduce(0) { $0 + $1.diskBytesOnDisk }
+                guard total > limit else { return evicted }
+                let excess = total - limit
+
+                var cursors: [(store: SSDEvictableStore, entries: [(tag16: Data, lastAccess: Int64, fileBytes: Int)], next: Int)] = []
+                for store in stores.values where !blockedStores.contains(ObjectIdentifier(store)) {
+                    let entries = store.oldestEntries()
+                    if !entries.isEmpty { cursors.append((store, entries, 0)) }
+                }
+                guard !cursors.isEmpty else { return evicted }
+
+                var plans: [ObjectIdentifier: (store: SSDEvictableStore, victims: [Data], bytes: Int)] = [:]
+                var planned = 0
+                while planned < excess {
+                    var pick: Int?
+                    for i in cursors.indices where cursors[i].next < cursors[i].entries.count {
+                        guard let current = pick else {
+                            pick = i
+                            continue
+                        }
+                        let candidate = cursors[i].entries[cursors[i].next]
+                        let best = cursors[current].entries[cursors[current].next]
+                        if candidate.lastAccess < best.lastAccess
+                            || (candidate.lastAccess == best.lastAccess
+                                && candidate.tag16.lexicographicallyPrecedes(best.tag16))
+                        {
+                            pick = i
+                        }
                     }
-                    if let access = store.oldestEntryAccess(), access < victimAccess {
-                        victimAccess = access
-                        victim = store
+                    guard let pick else { break }
+                    let entry = cursors[pick].entries[cursors[pick].next]
+                    cursors[pick].next += 1
+                    let key = ObjectIdentifier(cursors[pick].store)
+                    var plan = plans[key] ?? (cursors[pick].store, [], 0)
+                    plan.victims.append(entry.tag16)
+                    plan.bytes += entry.fileBytes
+                    plans[key] = plan
+                    planned += entry.fileBytes
+                }
+
+                for plan in plans.values {
+                    let before = plan.store.diskBytesOnDisk
+                    let outcome = plan.store.evictEntries(plan.victims, freeing: plan.bytes)
+                    evicted += outcome.evicted
+                    _evictions += outcome.evicted
+                    // Nothing changed (every planned victim undeletable, or
+                    // the bracket refused): exclude the store for this call.
+                    if plan.store.diskBytesOnDisk >= before {
+                        blockedStores.insert(ObjectIdentifier(plan.store))
                     }
                 }
-                guard let victim else { return evicted }
-                guard victim.evictOldestEntry() > 0 else {
-                    blockedStores.insert(ObjectIdentifier(victim))
-                    continue
-                }
-                evicted += 1
-                _evictions += 1
             }
-            return evicted
         }
     }
 }

@@ -1850,7 +1850,52 @@ public final class SSDPrefixCache:
 
     func oldestEntryAccess() -> Int64? { index.oldest()?.lastAccess }
 
-    /// Unlink the LRU entry (box-wide budget enforcement).
+    func oldestEntries() -> [(tag16: Data, lastAccess: Int64, fileBytes: Int)] {
+        index.oldestEntries()
+    }
+
+    /// Victims per destructive-change bracket in `evictEntries`: a lookup on
+    /// the engine submit thread misses while a bracket is open, so a large
+    /// trim is cut into short windows rather than one long one.
+    static let evictionBracketVictims = 256
+
+    /// Box-wide enforcement's batch unlink: `victims` are this store's
+    /// entries from ONE `oldestEntries()` snapshot, merged globally
+    /// oldest-first by `SSDDiskBudget.enforce`, so unlinking them in order
+    /// keeps the LRU contract. Stops once `targetBytes` are freed; stale
+    /// index entries are dropped and undeletable files skipped (the caller
+    /// re-plans from a fresh snapshot). One epoch-record read per bracket
+    /// instead of one per victim.
+    func evictEntries(_ victims: [Data], freeing targetBytes: Int) -> (freedBytes: Int, evicted: Int) {
+        guard hasSafeRoot, !victims.isEmpty else { return (0, 0) }
+        var freed = 0
+        var evicted = 0
+        var start = victims.startIndex
+        while start < victims.endIndex, freed < targetBytes {
+            let end = min(start + Self.evictionBracketVictims, victims.endIndex)
+            let chunk = victims[start ..< end]
+            let alreadyFreed = freed
+            let outcome: (Int, Int)? = performDestructiveChange {
+                var chunkFreed = 0
+                var chunkEvicted = 0
+                for tag16 in chunk where alreadyFreed + chunkFreed < targetBytes {
+                    if case .freed(let bytes) = unlinkVictim(tag16) {
+                        chunkFreed += bytes
+                        chunkEvicted += 1
+                    }
+                }
+                return (chunkFreed, chunkEvicted)
+            }
+            guard let outcome else { break }
+            freed += outcome.0
+            evicted += outcome.1
+            start = end
+        }
+        return (freed, evicted)
+    }
+
+    /// Unlink the LRU entry (single-victim form, kept for tests and the
+    /// sorted-fallback contract; box-wide enforcement uses `evictEntries`).
     func evictOldestEntry() -> Int {
         guard hasSafeRoot else { return 0 }
         // Fast path: the linear-scan LRU victim, no copy or sort. Anything
@@ -2131,9 +2176,19 @@ public final class SSDPrefixCache:
             guard !closed, !destructiveChangeInProgress else { return false }
             destructiveChangeInProgress = true
             epochRotationInProgress = rotating
+            #if DEBUG
+            destructiveBracketsOpened += 1
+            #endif
             return true
         }
     }
+
+    #if DEBUG
+    private var destructiveBracketsOpened = 0
+    /// Destructive-change brackets opened so far (the batching gate: a
+    /// trim of N victims opens ceil(N / evictionBracketVictims), not N).
+    var destructiveBracketsOpenedForTesting: Int { lock.withLock { destructiveBracketsOpened } }
+    #endif
 
     private func endDestructiveChange() {
         lock.withLock {

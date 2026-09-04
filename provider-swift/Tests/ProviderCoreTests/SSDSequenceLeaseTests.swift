@@ -201,57 +201,23 @@ struct SSDSequenceLeaseTests {
         #expect(store.takeNextSequence(expectedEpoch: epoch) == 3)
     }
 
-    @Test("SSDPrefixCache issues sequences without holding its lock across epoch-store I/O")
-    func cacheSequenceReleasesLockBeforeStore() async throws {
-        let root = try leaseTempRoot("cache-lock")
+    @Test("a re-lease never holds the instance lock across the record: `current` answers while the record lock is held elsewhere")
+    func releaseDoesNotBlockCurrent() async throws {
+        let root = try leaseTempRoot("re-lease-current")
         defer { try? FileManager.default.removeItem(at: root) }
-        let modelRoot = root.appendingPathComponent("cccccccccccc", isDirectory: true)
-        try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
-        let otherRoot = root.appendingPathComponent("dddddddddddd", isDirectory: true)
-        try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: otherRoot)
-        let binding = leaseBinding()
-        let epochStore = try SSDCacheEpochStore(root: modelRoot, binding: binding)
-        let cache = SSDPrefixCache(
-            config: .init(
-                modelId: binding.modelId,
-                promptContractID: binding.promptContractId,
-                weightHash: binding.modelAggregateHash,
-                blockSize: binding.blockSize,
-                adoptionBoundTokens: 0,
-                layoutEpoch: binding.layoutEpoch,
-                epochStore: epochStore,
-                root: modelRoot,
-                ttlSeconds: 900,
-                minEffectiveTokens: 256,
-                maxStageBytes: 1 << 20,
-                maxStageMillis: 1_000,
-                nowSeconds: { 10_000 }),
-            kekKey: SymmetricKey(size: .bits256),
-            kvBudget: nil,
-            diskBudget: SSDDiskBudget(),
-            maxWriteBytesPerDay: 0,
-            strictFsync: false,
-            diskBudgetBytes: { 1 << 30 })
-        defer { cache.close() }
-        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
-        var capability: PrefixCacheV2Capability?
-        for _ in 0 ..< 500 where capability == nil {
-            capability = cache.prefixCacheV2Capability()
-            if capability == nil { try await Task.sleep(for: .milliseconds(10)) }
-        }
-        let epoch = try #require(capability).cacheEpoch
-
-        // Exhaust the window so the next take must re-lease (record I/O).
+        let storeRoot = root.appendingPathComponent("store", isDirectory: true)
+        let otherRoot = root.appendingPathComponent("other", isDirectory: true)
+        try FileManager.default.createDirectory(at: storeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let store = try SSDCacheEpochStore(root: storeRoot, binding: leaseBinding())
+        let epoch = try #require(store.current)
         for _ in 0 ..< Int(SSDCacheEpochStore.sequenceLeaseSize) {
-            _ = try #require(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch))
+            _ = try #require(store.takeNextSequence(expectedEpoch: epoch))
         }
-        // Hold the process-wide record lock from an unrelated root (an
-        // unloaded-root deletion), then issue the re-leasing take from another
-        // thread: it blocks on the record — but must NOT be holding
-        // SSDPrefixCache.lock while it does, or every path under that lock
-        // (staging pins, ticket release, receipt registration, the engine's
-        // submit-thread lookup) stalls behind a record write. `bytesInUse` is
-        // the pure lock-only probe: it reads the staging map and nothing else.
+
+        // The record lock is owned by an unrelated root's unloaded wipe (the
+        // periodic walk deleting an unloaded model's expired blocks — seconds
+        // at scale) while this store's 1-in-4096 re-lease lands.
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
         let holder = TimedValue<Bool>()
@@ -263,19 +229,95 @@ struct SSDSequenceLeaseTests {
                 })
         }
         #expect(await waitForSemaphore(entered, timeout: .now() + 30) == .success)
+        let started = DispatchSemaphore(value: 0)
         let taken = TimedValue<UInt64>()
         Thread.detachNewThread {
+            started.signal()
+            taken.set(store.takeNextSequence(expectedEpoch: epoch))
+        }
+        #expect(await waitForSemaphore(started, timeout: .now() + 30) == .success)
+        try await Task.sleep(for: .milliseconds(200))
+        // `current` is what lookup() reads under SSDPrefixCache.lock on the
+        // submit thread: it must answer while the take waits on the record.
+        let probe = TimedValue<String?>()
+        Thread.detachNewThread { probe.set(store.current) }
+        let answered = await waitForSemaphore(probe.done, timeout: .now() + 10)
+        #expect(taken.seen == nil, "the re-lease must still be waiting on the record lock")
+        release.signal()
+        #expect(await waitForSemaphore(holder.done, timeout: .now() + 30) == .success)
+        #expect(answered == .success, "`current` blocked behind a re-lease holding the instance lock")
+        #expect(probe.seen == epoch)
+        #expect(await waitForSemaphore(taken.done, timeout: .now() + 30) == .success)
+        #expect(taken.seen == 1 + SSDCacheEpochStore.sequenceLeaseSize)
+        #expect(store.takeNextSequence(expectedEpoch: epoch) == 2 + SSDCacheEpochStore.sequenceLeaseSize)
+    }
+
+    @Test("SSDPrefixCache issues sequences without holding its lock across epoch-store I/O")
+    func cacheSequenceReleasesLockBeforeStore() async throws {
+        let root = try leaseTempRoot("cache-lock")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelRoot = root.appendingPathComponent("cccccccccccc", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
+        let otherRoot = root.appendingPathComponent("dddddddddddd", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: otherRoot)
+        let binding = leaseBinding()
+        let epochStore = try SSDCacheEpochStore(root: modelRoot, binding: binding)
+        let (cache, epoch) = try await makeSequenceCache(
+            modelRoot: modelRoot, epochStore: epochStore, binding: binding)
+        defer { cache.close() }
+
+        // Exhaust the window so the next take must re-lease (record I/O).
+        for _ in 0 ..< Int(SSDCacheEpochStore.sequenceLeaseSize) {
+            _ = try #require(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch))
+        }
+        // Hold the process-wide record lock from an unrelated root (an
+        // unloaded-root deletion), then issue the re-leasing take from another
+        // thread: it blocks on the record — but must NOT be holding
+        // SSDPrefixCache.lock while it does, or every path under that lock
+        // (staging pins, ticket release, receipt registration, the engine's
+        // submit-thread lookup) stalls behind a record write. Three probes,
+        // each from its own thread with a timeout: `bytesInUse` (the pure
+        // cache-lock probe), `epochStore.current` (the store's instance lock,
+        // which lookup() reads UNDER the cache lock) and the heartbeat's
+        // capability build (both locks).
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let holder = TimedValue<Bool>()
+        Thread.detachNewThread {
+            holder.set(
+                SSDCacheEpochStore.performUnloadedDestructiveChange(root: otherRoot) {
+                    entered.signal()
+                    release.wait()
+                })
+        }
+        #expect(await waitForSemaphore(entered, timeout: .now() + 30) == .success)
+        let started = DispatchSemaphore(value: 0)
+        let taken = TimedValue<UInt64>()
+        Thread.detachNewThread {
+            started.signal()
             taken.set(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch))
         }
+        #expect(await waitForSemaphore(started, timeout: .now() + 30) == .success)
         try await Task.sleep(for: .milliseconds(200))
         let lockProbe = TimedValue<Int>()
         Thread.detachNewThread { lockProbe.set(cache.bytesInUse) }
-        let answered = await waitForSemaphore(lockProbe.done, timeout: .now() + 10)
+        let lockAnswered = await waitForSemaphore(lockProbe.done, timeout: .now() + 10)
+        let currentProbe = TimedValue<String?>()
+        Thread.detachNewThread { currentProbe.set(epochStore.current) }
+        let currentAnswered = await waitForSemaphore(currentProbe.done, timeout: .now() + 10)
+        let capabilityProbe = TimedValue<String?>()
+        Thread.detachNewThread { capabilityProbe.set(cache.prefixCacheV2Capability()?.cacheEpoch) }
+        let capabilityAnswered = await waitForSemaphore(capabilityProbe.done, timeout: .now() + 10)
+        #expect(taken.seen == nil, "the re-lease must still be waiting on the record lock")
         release.signal()
         #expect(await waitForSemaphore(holder.done, timeout: .now() + 30) == .success)
         #expect(holder.seen == true)
-        #expect(answered == .success, "SSDPrefixCache.lock was held across the epoch-store re-lease")
+        #expect(lockAnswered == .success, "SSDPrefixCache.lock was held across the epoch-store re-lease")
         #expect(lockProbe.seen == 0)
+        #expect(currentAnswered == .success, "epochStore.current blocked behind the re-lease (submit-thread lookup stall)")
+        #expect(currentProbe.seen == epoch)
+        #expect(capabilityAnswered == .success, "the heartbeat capability build blocked behind the re-lease")
+        #expect(capabilityProbe.seen == epoch)
         #expect(await waitForSemaphore(taken.done, timeout: .now() + 30) == .success)
         #expect(taken.seen == 1 + SSDCacheEpochStore.sequenceLeaseSize)
     }

@@ -131,47 +131,106 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     /// high-water mark (`nextSequence + sequenceLeaseSize`) BEFORE issuing
     /// from the window, so a crash or restart resumes above every value ever
     /// handed out and skips at most one window. Rotation resets the lease.
-    /// Lock order on re-lease is `lock -> recordLock`, the same as the
-    /// destructive-change bracket.
+    ///
+    /// The instance lock and the record lock are never nested here: the
+    /// record read/write runs under `recordLock` alone and the window is
+    /// installed under `lock` afterwards. `current` takes `lock`, and it is
+    /// read under `SSDPrefixCache.lock` on the engine submit thread
+    /// (`lookup()`, the heartbeat capability build), so a re-lease that held
+    /// `lock` while waiting for a record lock owned by an unloaded-root wipe
+    /// would stall every lookup of this model for the wipe's duration.
     func takeNextSequence(expectedEpoch: String) -> UInt64? {
-        lock.withLock {
-            guard let ownedEpoch = epoch,
-                ownedEpoch == expectedEpoch,
-                Self.epochs.current(root: rootKey) == ownedEpoch
-            else { return nil }
-            if leasedNext < leaseEnd {
-                defer { leasedNext += 1 }
-                return leasedNext
-            }
-            return Self.recordLock.withLock {
-                let url = root.appendingPathComponent(Self.fileName)
-                guard let existing = try? Self.readRecord(at: url),
-                    let record = existing.record,
-                    record.schema == Self.schema,
-                    record.epoch == ownedEpoch,
-                    record.binding == binding,
-                    record.nextSequence > 0,
-                    record.nextSequence < UInt64.max
-                else { return nil }
-                let (end, overflow) = record.nextSequence.addingReportingOverflow(
-                    Self.sequenceLeaseSize)
-                let windowEnd = overflow ? UInt64.max : end
-                do {
-                    try Self.write(
-                        record: Record(
-                            schema: record.schema,
-                            epoch: record.epoch,
-                            binding: record.binding,
-                            nextSequence: windowEnd),
-                        to: url)
-                } catch {
-                    return nil
+        // Bounded: a concurrent re-lease can install a newer window first;
+        // loop to lease again rather than install a lower one.
+        for _ in 0 ..< 4 {
+            let step: LeaseStep = lock.withLock {
+                guard let ownedEpoch = epoch,
+                    ownedEpoch == expectedEpoch,
+                    Self.epochs.current(root: rootKey) == ownedEpoch
+                else { return .refused }
+                if leasedNext < leaseEnd {
+                    defer { leasedNext += 1 }
+                    return .issued(leasedNext)
                 }
-                leasedNext = record.nextSequence
-                leaseEnd = windowEnd
-                defer { leasedNext += 1 }
-                return leasedNext
+                return .exhausted(ownedEpoch)
             }
+            let ownedEpoch: String
+            switch step {
+            case .refused: return nil
+            case .issued(let value): return value
+            case .exhausted(let owned): ownedEpoch = owned
+            }
+
+            guard let window = Self.leaseWindow(root: root, binding: binding, epoch: ownedEpoch)
+            else { return nil }
+
+            // Install under the instance lock, re-verifying ownership (a
+            // rotation meanwhile reset the lease and moved the epoch).
+            // Windows are disjoint and increasing in record-lock order, so a
+            // concurrent re-lease may have installed a HIGHER one: issue from
+            // the live window and let ours go unused — the persisted mark
+            // only moves up, a skipped window is a harmless gap — and never
+            // install a window below the current one (sequences must not go
+            // backwards). A live window that is already exhausted loops.
+            let installed: LeaseStep = lock.withLock {
+                guard epoch == ownedEpoch, Self.epochs.current(root: rootKey) == ownedEpoch
+                else { return .refused }
+                if window.start >= leaseEnd {
+                    leasedNext = window.start
+                    leaseEnd = window.end
+                }
+                if leasedNext < leaseEnd {
+                    defer { leasedNext += 1 }
+                    return .issued(leasedNext)
+                }
+                return .exhausted(ownedEpoch)
+            }
+            switch installed {
+            case .refused: return nil
+            case .issued(let value): return value
+            case .exhausted: continue
+            }
+        }
+        return nil
+    }
+
+    private enum LeaseStep {
+        case issued(UInt64)
+        case exhausted(String)
+        case refused
+    }
+
+    /// Reserve the next `sequenceLeaseSize` values for `epoch` on the durable
+    /// record — the only sequence I/O, under the record lock alone. nil when
+    /// the record no longer matches (raced rotation / drift) or the write
+    /// failed; the caller then refuses rather than issue unpersisted values.
+    private static func leaseWindow(
+        root: URL, binding: Binding, epoch: String
+    ) -> (start: UInt64, end: UInt64)? {
+        recordLock.withLock {
+            let url = root.appendingPathComponent(fileName)
+            guard let existing = try? readRecord(at: url),
+                let record = existing.record,
+                record.schema == schema,
+                record.epoch == epoch,
+                record.binding == binding,
+                record.nextSequence > 0,
+                record.nextSequence < UInt64.max
+            else { return nil }
+            let (end, overflow) = record.nextSequence.addingReportingOverflow(sequenceLeaseSize)
+            let windowEnd = overflow ? UInt64.max : end
+            do {
+                try write(
+                    record: Record(
+                        schema: record.schema,
+                        epoch: record.epoch,
+                        binding: record.binding,
+                        nextSequence: windowEnd),
+                    to: url)
+            } catch {
+                return nil
+            }
+            return (record.nextSequence, windowEnd)
         }
     }
 

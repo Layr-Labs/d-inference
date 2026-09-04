@@ -1265,7 +1265,11 @@ extension ProviderLoop {
                 // pump started; billing it (the same number a clean finish
                 // bills) makes `promptTokenFloor` — a full chat-template
                 // re-render plus BPE — unnecessary: the autoclosure below is
-                // only evaluated while promptTokens == 0.
+                // only evaluated while promptTokens == 0. For media requests
+                // the engine count includes the image soft tokens the
+                // text-only re-render never saw, so a cancelled VLM request
+                // now bills the same prompt figure as a clean finish rather
+                // than the old text-only floor.
                 if promptTokens == 0, let enginePrompt = v2UsageSignal.promptTokens,
                     enginePrompt > 0
                 {

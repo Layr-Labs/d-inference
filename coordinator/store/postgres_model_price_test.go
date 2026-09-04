@@ -38,16 +38,54 @@ func (c *sqlCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.Tra
 
 func (c *sqlCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
+// pausingTracer is sqlCounter that also parks the FIRST model_prices SELECT
+// at TraceQueryEnd — the row (or ErrNoRows) has been read, the cache has not
+// been written — until release is closed; paused is closed when it parks.
+// It injects the window in which a concurrent SetModelPrice commits and
+// invalidates between a lookup's SELECT and its cache store.
+type pausingTracer struct {
+	sqlCounter
+	paused  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type pausingTracerKey struct{}
+
+func (p *pausingTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+	ctx = p.sqlCounter.TraceQueryStart(ctx, conn, d)
+	if strings.Contains(d.SQL, p.needle) {
+		ctx = context.WithValue(ctx, pausingTracerKey{}, true)
+	}
+	return ctx
+}
+
+func (p *pausingTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if ctx.Value(pausingTracerKey{}) == nil {
+		return
+	}
+	p.once.Do(func() {
+		close(p.paused)
+		<-p.release
+	})
+}
+
 // pricedPostgresStore returns a migrated PostgresStore whose pool reports the
 // model_prices SELECT to counter. Skips without DATABASE_URL.
 func pricedPostgresStore(t *testing.T, counter *sqlCounter) *PostgresStore {
+	t.Helper()
+	return pricedPostgresStoreTraced(t, counter)
+}
+
+// pricedPostgresStoreTraced is pricedPostgresStore with an arbitrary tracer.
+func pricedPostgresStoreTraced(t *testing.T, tracer pgx.QueryTracer) *PostgresStore {
 	t.Helper()
 	testPostgresStore(t)
 	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	cfg.ConnConfig.Tracer = counter
+	cfg.ConnConfig.Tracer = tracer
 	cfg.MaxConns = 4
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -105,6 +143,84 @@ func TestPostgresGetModelPriceCachesMisses(t *testing.T) {
 	}
 }
 
+// TestPostgresGetModelPriceMissDoesNotOutliveConcurrentSet: a lookup reads
+// "no row", and before it stores the miss a SetModelPrice commits the row
+// and invalidates the key. The miss must NOT be cached afterwards — with the
+// negative cache that would have billed the default price for priceCacheTTL
+// against a custom row that exists — so the next lookup re-queries and sees
+// the row. Before the generation check the stale miss was stored after the
+// invalidation and the next Get answered (0, 0, false) from memory.
+func TestPostgresGetModelPriceMissDoesNotOutliveConcurrentSet(t *testing.T) {
+	tr := &pausingTracer{sqlCounter: sqlCounter{needle: "FROM model_prices"}, paused: make(chan struct{}), release: make(chan struct{})}
+	s := pricedPostgresStoreTraced(t, tr)
+	account, model := uniqueID("acct"), uniqueID("model")
+	key := account + ":" + model
+
+	type answer struct {
+		in, out int64
+		ok      bool
+	}
+	got := make(chan answer, 1)
+	go func() {
+		in, out, ok := s.GetModelPrice(account, model)
+		got <- answer{in, out, ok}
+	}()
+	select {
+	case <-tr.paused:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the miss SELECT never reached the tracer pause")
+	}
+	// The lookup has read ErrNoRows and is parked before storing the miss.
+	if err := s.SetModelPrice(account, model, 700, 2100); err != nil {
+		t.Fatalf("SetModelPrice: %v", err)
+	}
+	close(tr.release)
+	first := <-got
+	if first.ok {
+		t.Fatalf("in-flight lookup answered %+v; it read before the row committed and must report no row", first)
+	}
+	if e, cached := s.priceCacheEntry(key); cached && !e.found {
+		t.Fatal("stale miss cached after a concurrent SetModelPrice invalidated the key")
+	}
+	if in, out, ok := s.GetModelPrice(account, model); !ok || in != 700 || out != 2100 {
+		t.Fatalf("GetModelPrice after the concurrent Set = (%d, %d, %v), want (700, 2100, true)", in, out, ok)
+	}
+	if got := tr.count(); got != 2 {
+		t.Fatalf("model_prices statements = %d, want 2 (the parked miss and one re-query)", got)
+	}
+}
+
+// TestPostgresDeleteModelPriceInvalidatesCache: deleting a custom price
+// drops its cached positive entry; the next lookup re-queries and answers
+// no row. Before the change DeleteModelPrice invalidated nothing and the
+// deleted price was billed from memory for up to priceCacheTTL.
+func TestPostgresDeleteModelPriceInvalidatesCache(t *testing.T) {
+	// The SELECT only: the DELETE's `DELETE FROM model_prices` must not count.
+	counter := &sqlCounter{needle: "SELECT input_price, output_price FROM model_prices"}
+	s := pricedPostgresStore(t, counter)
+	account, model := uniqueID("acct"), uniqueID("model")
+	if err := s.SetModelPrice(account, model, 700, 2100); err != nil {
+		t.Fatalf("SetModelPrice: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if in, out, ok := s.GetModelPrice(account, model); !ok || in != 700 || out != 2100 {
+			t.Fatalf("GetModelPrice = (%d, %d, %v), want (700, 2100, true)", in, out, ok)
+		}
+	}
+	if got := counter.count(); got != 1 {
+		t.Fatalf("statements after Set + two Gets = %d, want 1 (second served from memory)", got)
+	}
+	if err := s.DeleteModelPrice(account, model); err != nil {
+		t.Fatalf("DeleteModelPrice: %v", err)
+	}
+	if in, out, ok := s.GetModelPrice(account, model); ok || in != 0 || out != 0 {
+		t.Fatalf("GetModelPrice after Delete = (%d, %d, %v), want (0, 0, false)", in, out, ok)
+	}
+	if got := counter.count(); got != 2 {
+		t.Fatalf("statements after Delete + Get = %d, want 2 (re-queried)", got)
+	}
+}
+
 func TestPostgresGetModelPriceNegativeEntryExpires(t *testing.T) {
 	counter := &sqlCounter{needle: "FROM model_prices"}
 	s := pricedPostgresStore(t, counter)
@@ -147,12 +263,12 @@ func TestPostgresGetModelPriceDoesNotCacheErrors(t *testing.T) {
 func TestPriceCacheBound(t *testing.T) {
 	s := &PostgresStore{priceCache: make(map[string]cachedPrice)}
 	for i := 0; i < priceCacheMaxEntries; i++ {
-		s.storePriceCache(uniqueID("k"), cachedPrice{at: time.Now()})
+		s.storePriceCache(uniqueID("k"), cachedPrice{at: time.Now()}, 0)
 	}
 	if got := len(s.priceCache); got != priceCacheMaxEntries {
 		t.Fatalf("len = %d, want %d", got, priceCacheMaxEntries)
 	}
-	s.storePriceCache("overflow", cachedPrice{at: time.Now()})
+	s.storePriceCache("overflow", cachedPrice{at: time.Now()}, 0)
 	if got := len(s.priceCache); got != 1 {
 		t.Fatalf("len after overflow = %d, want 1 (reset)", got)
 	}

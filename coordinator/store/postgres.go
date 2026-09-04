@@ -55,6 +55,14 @@ type PostgresStore struct {
 	// unavailable. Re-probed on the next process start.
 	analyticsTuningRejected atomic.Bool
 	analyticsTuningWarn     sync.Once
+
+	// priceCacheGen is bumped under priceCacheMu by every in-process price
+	// mutation (SetModelPrice, DeleteModelPrice). GetModelPrice snapshots it
+	// before its SELECT and storePriceCache drops the result when it moved:
+	// a lookup that read "no row" (or an old row) while a mutation was
+	// committing must not be remembered for priceCacheTTL after the
+	// mutation's invalidation ran (same pattern as api.apiKeyCacheGen).
+	priceCacheGen uint64
 }
 
 type cachedPrice struct {
@@ -3306,13 +3314,19 @@ func (s *PostgresStore) SetModelPrice(accountID, model string, inputPrice, outpu
 		return fmt.Errorf("store: set model price: %w", err)
 	}
 
-	// Invalidate cache.
+	s.invalidatePriceCache(accountID, model)
+	return nil
+}
+
+// invalidatePriceCache drops the cached entry for one (account, model) and
+// bumps priceCacheGen so a lookup already past the cache check cannot store
+// a pre-mutation answer.
+func (s *PostgresStore) invalidatePriceCache(accountID, model string) {
 	key := accountID + ":" + model
 	s.priceCacheMu.Lock()
+	s.priceCacheGen++
 	delete(s.priceCache, key)
 	s.priceCacheMu.Unlock()
-
-	return nil
 }
 
 func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bool) {
@@ -3324,6 +3338,7 @@ func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bo
 		s.priceCacheMu.RUnlock()
 		return cached.input, cached.output, cached.found
 	}
+	gen := s.priceCacheGen
 	s.priceCacheMu.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3341,24 +3356,30 @@ func (s *PostgresStore) GetModelPrice(accountID, model string) (int64, int64, bo
 		// caching that for a TTL would under-reserve / under-charge against a
 		// real custom row — a billing error, not a perf trade.
 		if errors.Is(err, pgx.ErrNoRows) {
-			s.storePriceCache(key, cachedPrice{at: time.Now()})
+			s.storePriceCache(key, cachedPrice{at: time.Now()}, gen)
 		}
 		return 0, 0, false
 	}
 
-	s.storePriceCache(key, cachedPrice{input: input, output: output, found: true, at: time.Now()})
+	s.storePriceCache(key, cachedPrice{input: input, output: output, found: true, at: time.Now()}, gen)
 	return input, output, true
 }
 
 // storePriceCache records one price lookup, resetting the map when it has
-// grown past priceCacheMaxEntries.
-func (s *PostgresStore) storePriceCache(key string, entry cachedPrice) {
+// grown past priceCacheMaxEntries. gen is the priceCacheGen the lookup
+// snapshotted before its SELECT: when a mutation bumped it since, the
+// answer may predate that mutation's commit and is dropped (the next lookup
+// re-queries) instead of masking the new price for priceCacheTTL.
+func (s *PostgresStore) storePriceCache(key string, entry cachedPrice, gen uint64) {
 	s.priceCacheMu.Lock()
+	defer s.priceCacheMu.Unlock()
+	if gen != s.priceCacheGen {
+		return
+	}
 	if len(s.priceCache) >= priceCacheMaxEntries {
 		s.priceCache = make(map[string]cachedPrice)
 	}
 	s.priceCache[key] = entry
-	s.priceCacheMu.Unlock()
 }
 
 func (s *PostgresStore) ListModelPrices(accountID string) []ModelPrice {
@@ -3396,6 +3417,9 @@ func (s *PostgresStore) DeleteModelPrice(accountID, model string) error {
 	if err != nil {
 		return fmt.Errorf("store: delete model price: %w", err)
 	}
+	// Invalidate whether or not a row went: a cached positive entry for a
+	// row that is now gone would keep billing the deleted custom price.
+	s.invalidatePriceCache(accountID, model)
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("no custom price for model %q", model)
 	}

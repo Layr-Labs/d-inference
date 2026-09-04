@@ -129,6 +129,15 @@ extension ProviderLoop {
         daemonStateFileOverride = url
     }
 
+    /// Test seam: stop the capacity-refresh monitor and its liveness
+    /// companion (production stops them in `run()`'s teardown).
+    func stopCapacityRefreshMonitorForTesting() {
+        capacityRefreshTask?.cancel()
+        capacityRefreshTask = nil
+        daemonStateLivenessTask?.cancel()
+        daemonStateLivenessTask = nil
+    }
+
     /// Test seam: toggle the persistence gate independently of the path
     /// override (pins the "inert unless serving" guard).
     func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {

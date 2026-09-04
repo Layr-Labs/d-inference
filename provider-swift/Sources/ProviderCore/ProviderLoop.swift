@@ -573,6 +573,16 @@ public actor ProviderLoop {
     /// long-running generations are still in flight.
     internal var capacityRefreshTask: Task<Void, Never>?
 
+    /// Watchdog liveness stamp, independent of the capacity tick. The tick
+    /// awaits every engine bridge before it writes the daemon-state file, so
+    /// a bridge stalled in synchronous engine work froze `written_at` and,
+    /// 90 s + the watchdog grace later, restarted a daemon that was still
+    /// serving on its other slots. This task only touches the loop actor
+    /// (cached postures, no bridge hop): a stalled BRIDGE leaves the actor
+    /// free and the stamp advancing; a wedged LOOP ACTOR stops it — which is
+    /// the one case the watchdog restart is for.
+    internal var daemonStateLivenessTask: Task<Void, Never>?
+
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
     /// before `run()` starts it.

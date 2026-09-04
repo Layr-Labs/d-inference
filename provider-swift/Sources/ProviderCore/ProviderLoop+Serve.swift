@@ -323,6 +323,8 @@ extension ProviderLoop {
         pendingRetirementReconnect?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()
+        daemonStateLivenessTask?.cancel()
+        daemonStateLivenessTask = nil
         trailingHeartbeatTask?.cancel()
         trailingHeartbeatTask = nil
         capacityRefreshTask = nil

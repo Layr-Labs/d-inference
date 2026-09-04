@@ -19,9 +19,27 @@ extension ProviderLoop {
 
     internal func startCapacityRefreshMonitor() {
         capacityRefreshTask?.cancel()
+        daemonStateLivenessTask?.cancel()
         let heartbeatInterval = max(1, loopConfig.config.coordinator.heartbeatIntervalSecs)
+        // Integer division: at the default 5 s heartbeat this is a 2 s poll
+        // (the "~half-heartbeat" the daemon-state staleness bars assume).
         let pollIntervalNs = UInt64(max(1, heartbeatInterval / 2)) * 1_000_000_000
         let me = self
+        // Liveness stamp on its own task, same cadence, never awaiting an
+        // engine bridge: `currentDaemonState()` is synchronous on the loop
+        // actor and reads the postures the last completed tick cached, so
+        // `written_at` keeps advancing while a tick below is parked on a
+        // stalled bridge (the same shape as `startPreloadLivenessRefresh`).
+        // The tick still writes at its end so the diagnostic payload is fresh
+        // the moment a rebuild completes; both writes run on the actor, so
+        // they are serialized and `written_at` never regresses.
+        daemonStateLivenessTask = Task.detached(priority: .utility) {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: pollIntervalNs)
+                if Task.isCancelled { break }
+                await me.writeDaemonState()
+            }
+        }
         capacityRefreshTask = Task {
             // Write once immediately so `status`/`doctor` have a fresh file soon
             // after the daemon starts, before the first poll interval elapses.

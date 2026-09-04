@@ -1,9 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"os"
 	"sort"
@@ -163,11 +165,35 @@ func recordedPostgresStore(t *testing.T, rec *sqlRecorder) *PostgresStore {
 	return &PostgresStore{pool: pool, priceCache: make(map[string]cachedPrice)}
 }
 
+// lowered returns the statements lower-cased, for prefix/contains checks.
+func lowered(sqls []string) []string {
+	lower := make([]string, len(sqls))
+	for i, q := range sqls {
+		lower[i] = strings.ToLower(q)
+	}
+	return lower
+}
+
+// assertBoundedAggregations checks that sqls[from:from+3] are the three
+// bounded usage aggregations (no `$1 IS NULL OR` form).
+func assertBoundedAggregations(t *testing.T, sqls []string, from int) {
+	t.Helper()
+	lower := lowered(sqls)
+	for i := from; i < from+3; i++ {
+		if !strings.Contains(lower[i], "from usage") || !strings.Contains(lower[i], "created_at >= $1") {
+			t.Fatalf("statement %d = %q, want a bounded usage aggregation", i, sqls[i])
+		}
+		if strings.Contains(lower[i], "is null or") {
+			t.Fatalf("statement %d still uses the nullable-OR predicate: %q", i, sqls[i])
+		}
+	}
+}
+
 // One UsageAnalyticsSince call is exactly one read-only transaction: BEGIN,
-// SET LOCAL work_mem, the three aggregations, COMMIT — and none of the
-// statements carries the `$1 IS NULL OR` form. The raised work_mem is scoped
-// to that transaction: a connection used afterwards still reports the server
-// default.
+// SET LOCAL work_mem, SET LOCAL max_parallel_workers_per_gather, the three
+// aggregations, COMMIT — and none of the statements carries the `$1 IS NULL
+// OR` form. The raised work_mem is scoped to that transaction: a connection
+// used afterwards still reports the server default.
 func TestPostgresUsageAnalyticsStatementShape(t *testing.T) {
 	rec := &sqlRecorder{}
 	s := recordedPostgresStore(t, rec)
@@ -178,29 +204,22 @@ func TestPostgresUsageAnalyticsStatementShape(t *testing.T) {
 		t.Fatalf("UsageAnalyticsSince: %v", err)
 	}
 	sqls := rec.snapshot()
-	if len(sqls) != 6 {
-		t.Fatalf("statements = %d, want 6 (begin, set local, 3 aggregations, commit):\n%s", len(sqls), strings.Join(sqls, "\n---\n"))
+	if len(sqls) != 7 {
+		t.Fatalf("statements = %d, want 7 (begin, 2 set local, 3 aggregations, commit):\n%s", len(sqls), strings.Join(sqls, "\n---\n"))
 	}
-	lower := make([]string, len(sqls))
-	for i, q := range sqls {
-		lower[i] = strings.ToLower(q)
-	}
+	lower := lowered(sqls)
 	if !strings.HasPrefix(lower[0], "begin") || !strings.Contains(lower[0], "read only") {
 		t.Fatalf("first statement = %q, want a read-only BEGIN", sqls[0])
 	}
 	if !strings.HasPrefix(lower[1], "set local work_mem") {
 		t.Fatalf("second statement = %q, want SET LOCAL work_mem", sqls[1])
 	}
-	for i := 2; i < 5; i++ {
-		if !strings.Contains(lower[i], "from usage") || !strings.Contains(lower[i], "created_at >= $1") {
-			t.Fatalf("statement %d = %q, want a bounded usage aggregation", i, sqls[i])
-		}
-		if strings.Contains(lower[i], "is null or") {
-			t.Fatalf("statement %d still uses the nullable-OR predicate: %q", i, sqls[i])
-		}
+	if !strings.HasPrefix(lower[2], "set local max_parallel_workers_per_gather = 0") {
+		t.Fatalf("third statement = %q, want SET LOCAL max_parallel_workers_per_gather = 0", sqls[2])
 	}
-	if !strings.HasPrefix(lower[5], "commit") {
-		t.Fatalf("last statement = %q, want COMMIT", sqls[5])
+	assertBoundedAggregations(t, sqls, 3)
+	if !strings.HasPrefix(lower[6], "commit") {
+		t.Fatalf("last statement = %q, want COMMIT", sqls[6])
 	}
 
 	var workMem string
@@ -209,6 +228,93 @@ func TestPostgresUsageAnalyticsStatementShape(t *testing.T) {
 	}
 	if strings.EqualFold(workMem, usageAnalyticsWorkMem) {
 		t.Fatalf("work_mem leaked out of the analytics transaction: %s", workMem)
+	}
+	if s.analyticsTuningRejected.Load() {
+		t.Fatal("tuning marked rejected after a successful tuned transaction")
+	}
+}
+
+// A server that rejects the transaction-local tuning does not make the
+// analytics unavailable: the aborted transaction is rolled back, the three
+// aggregations run again in a fresh transaction at the server defaults with
+// the same result, and later calls skip the tuning outright. Before this
+// fix the SET LOCAL error failed every refresh, so /v1/stats was a permanent
+// 503 once the last good body aged out.
+func TestPostgresAnalyticsDegradesWhenTuningRejected(t *testing.T) {
+	rec := &sqlRecorder{}
+	s := recordedPostgresStore(t, rec)
+	degraded := recordedPostgresStore(t, rec) // same database; its own rejection state
+	analyticsFixture(t, s)
+	want, err := s.UsageAnalyticsSince(context.Background(), time.Now().Add(-time.Hour), nil)
+	if err != nil {
+		t.Fatalf("tuned UsageAnalyticsSince: %v", err)
+	}
+	sortAnalytics(&want)
+	if want.TotalRequests != 10 || len(want.LocationBuckets) != 2 || len(want.FlowBuckets) != 2 {
+		t.Fatalf("fixture snapshot = %+v", want)
+	}
+
+	// A value the server refuses (SQLSTATE 22023 invalid_parameter_value) —
+	// the same failure class as a capped or non-settable GUC.
+	saved := usageAnalyticsWorkMem
+	usageAnalyticsWorkMem = "1 elephant"
+	t.Cleanup(func() { usageAnalyticsWorkMem = saved })
+	var logs bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	rec.reset()
+
+	got, err := degraded.UsageAnalyticsSince(context.Background(), time.Now().Add(-time.Hour), nil)
+	if err != nil {
+		t.Fatalf("UsageAnalyticsSince with rejected tuning: %v", err)
+	}
+	sortAnalytics(&got)
+	if got.TotalRequests != want.TotalRequests || len(got.LocationBuckets) != len(want.LocationBuckets) || got.LocationBuckets[0] != want.LocationBuckets[0] || got.FlowBuckets[0] != want.FlowBuckets[0] {
+		t.Fatalf("degraded snapshot = %+v, want %+v", got, want)
+	}
+	sqls := rec.snapshot()
+	lower := lowered(sqls)
+	// begin, set local work_mem (rejected), rollback, begin, 3 aggregations, commit
+	if len(sqls) != 8 {
+		t.Fatalf("statements = %d, want 8 (begin, rejected set local, rollback, begin, 3 aggregations, commit):\n%s", len(sqls), strings.Join(sqls, "\n---\n"))
+	}
+	if !strings.HasPrefix(lower[0], "begin") || !strings.HasPrefix(lower[1], "set local work_mem") || !strings.HasPrefix(lower[2], "rollback") {
+		t.Fatalf("first attempt = %q / %q / %q, want begin, set local work_mem, rollback", sqls[0], sqls[1], sqls[2])
+	}
+	if !strings.HasPrefix(lower[3], "begin") || !strings.Contains(lower[3], "read only") {
+		t.Fatalf("retry did not begin a fresh read-only transaction: %q", sqls[3])
+	}
+	assertBoundedAggregations(t, sqls, 4)
+	if !strings.HasPrefix(lower[7], "commit") {
+		t.Fatalf("retry did not commit: %q", sqls[7])
+	}
+	if !degraded.analyticsTuningRejected.Load() {
+		t.Fatal("rejected tuning was not remembered")
+	}
+
+	// Later calls skip the tuning: no SET LOCAL, no second transaction.
+	rec.reset()
+	if _, err := degraded.UsageAnalyticsSince(context.Background(), time.Now().Add(-time.Hour), nil); err != nil {
+		t.Fatalf("second degraded UsageAnalyticsSince: %v", err)
+	}
+	sqls = rec.snapshot()
+	if len(sqls) != 5 {
+		t.Fatalf("statements after the rejection = %d, want 5 (begin, 3 aggregations, commit):\n%s", len(sqls), strings.Join(sqls, "\n---\n"))
+	}
+	for _, q := range sqls {
+		if strings.HasPrefix(strings.ToLower(q), "set local") {
+			t.Fatalf("tuning re-attempted after rejection: %q", q)
+		}
+	}
+
+	// Only a server rejection degrades; a store that never saw one keeps tuning.
+	if s.analyticsTuningRejected.Load() {
+		t.Fatal("the rejection leaked into another store")
+	}
+	// Warned exactly once, with the server's reason.
+	if n := strings.Count(logs.String(), "transaction-local tuning rejected"); n != 1 || !strings.Contains(logs.String(), "1 elephant") {
+		t.Fatalf("tuning warnings = %d, want 1 naming the rejected value:\n%s", n, logs.String())
 	}
 }
 

@@ -20,11 +20,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,6 +47,14 @@ type PostgresStore struct {
 	// Postgres; only a genuine DB error is left uncached.
 	priceCacheMu sync.RWMutex
 	priceCache   map[string]cachedPrice
+
+	// analyticsTuningRejected is set once the server refused the
+	// transaction-local tuning of the usage analytics transaction (a role
+	// or pooler that caps the GUC, an administratively lowered maximum).
+	// From then on the analytics run at the server defaults: slower, never
+	// unavailable. Re-probed on the next process start.
+	analyticsTuningRejected atomic.Bool
+	analyticsTuningWarn     sync.Once
 }
 
 type cachedPrice struct {
@@ -2088,14 +2099,32 @@ const (
 	// usageAnalyticsTimeout bounds the whole analytics transaction. It is the
 	// envelope the three statements previously had individually (3 × 10 s).
 	usageAnalyticsTimeout = 30 * time.Second
-	// usageAnalyticsWorkMem is applied with SET LOCAL inside the analytics
-	// transaction only. COUNT(DISTINCT provider_id) forces a full sort of
-	// every located usage row in the window; at the server default of 4 MB
-	// that is an external merge sort spilling >1 GB of temp files per run.
-	// 1 GB keeps the sort in memory for this one connection without raising
-	// the instance-wide setting (which would multiply across the whole pool).
-	usageAnalyticsWorkMem = "1GB"
 )
+
+// usageAnalyticsWorkMem is applied with SET LOCAL inside the analytics
+// transaction only. COUNT(DISTINCT provider_id) forces a full sort of
+// every located usage row in the window; at the server default of 4 MB
+// that is an external merge sort spilling >1 GB of temp files per run.
+// 1 GB keeps the sort in memory for this one connection without raising
+// the instance-wide setting (which would multiply across the whole pool).
+// A variable so a test can make the server reject it.
+var usageAnalyticsWorkMem = "1GB"
+
+// errAnalyticsTuningRejected marks a SET LOCAL the server refused (as
+// opposed to a connection or context failure while sending it).
+var errAnalyticsTuningRejected = errors.New("store: usage analytics tuning rejected by the server")
+
+// usageAnalyticsTuning are the transaction-local settings, in order. Parallel
+// workers are disabled because work_mem is a per-process budget: with the
+// default max_parallel_workers_per_gather the leader and each worker could
+// claim the full 1 GB for the same sort; COUNT(DISTINCT) cannot be
+// partially aggregated in parallel anyway, so nothing is lost.
+func usageAnalyticsTuning() []string {
+	return []string{
+		"SET LOCAL work_mem = '" + usageAnalyticsWorkMem + "'",
+		"SET LOCAL max_parallel_workers_per_gather = 0",
+	}
+}
 
 // UsageAnalyticsSince runs the request-location, request-count and
 // consumer→provider flow aggregations for [since, now) in ONE read-only
@@ -2104,10 +2133,31 @@ const (
 // cached body with an empty map. The window is always bounded: the
 // predicate is a plain `created_at >= $1`, not the `$1 IS NULL OR …` form,
 // which a generic plan turns into a sequential scan of the usage table.
+//
+// If the server rejects the transaction-local tuning, the transaction is
+// aborted (Postgres ignores every statement after a failed one), so the
+// aggregations are re-run in a fresh transaction at the server defaults,
+// a warning is logged once, and later calls skip the tuning: the endpoint
+// degrades to slow rather than to unavailable.
 func (s *PostgresStore) UsageAnalyticsSince(ctx context.Context, since time.Time, _ map[string]*ProviderLocation) (UsageAnalytics, error) {
 	if since.IsZero() {
 		return UsageAnalytics{}, errors.New("store: usage analytics window must be bounded")
 	}
+	tuned := !s.analyticsTuningRejected.Load()
+	out, err := s.usageAnalyticsTx(ctx, since, tuned)
+	if tuned && errors.Is(err, errAnalyticsTuningRejected) {
+		s.analyticsTuningRejected.Store(true)
+		s.analyticsTuningWarn.Do(func() {
+			slog.Warn("usage analytics: transaction-local tuning rejected; running at server defaults until restart", "error", err)
+		})
+		out, err = s.usageAnalyticsTx(ctx, since, false)
+	}
+	return out, err
+}
+
+// usageAnalyticsTx is one attempt of UsageAnalyticsSince: a read-only
+// transaction, the tuning statements when tuned, the three aggregations.
+func (s *PostgresStore) usageAnalyticsTx(ctx context.Context, since time.Time, tuned bool) (UsageAnalytics, error) {
 	ctx, cancel := context.WithTimeout(ctx, usageAnalyticsTimeout)
 	defer cancel()
 
@@ -2117,9 +2167,17 @@ func (s *PostgresStore) UsageAnalyticsSince(ctx context.Context, since time.Time
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// SET LOCAL is scoped to this transaction; the constant is not user input.
-	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '"+usageAnalyticsWorkMem+"'"); err != nil {
-		return UsageAnalytics{}, fmt.Errorf("store: set usage analytics work_mem: %w", err)
+	if tuned {
+		// SET LOCAL is scoped to this transaction; the values are constants.
+		for _, stmt := range usageAnalyticsTuning() {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) {
+					return UsageAnalytics{}, fmt.Errorf("%w: %s: %w", errAnalyticsTuningRejected, stmt, err)
+				}
+				return UsageAnalytics{}, fmt.Errorf("store: usage analytics tuning: %w", err)
+			}
+		}
 	}
 	var out UsageAnalytics
 	if out.LocationBuckets, err = usageLocationBucketsSince(ctx, tx, since); err != nil {

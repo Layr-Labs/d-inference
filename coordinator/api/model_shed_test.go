@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,16 @@ func TestModelShedRejectsRequestedAlias(t *testing.T) {
 	}
 	if !recs[0].Stream || !recs[0].HasTools || recs[0].RetryAfterMs <= 0 {
 		t.Fatalf("record fields = %+v", recs[0])
+	}
+	// An operator-shed model stays out of rotation for at least 30 s (the
+	// former 30 s fallback was dead code and a shed model answered 2 s, so the
+	// aggregator re-fired the whole model every 2 s); jitter may add up to 50%.
+	header, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	if err != nil || header < modelShedRetryAfterFloorSeconds || header > modelShedRetryAfterFloorSeconds*3/2 {
+		t.Fatalf("model shed Retry-After = %q, want within [%d, %d]", w.Header().Get("Retry-After"), modelShedRetryAfterFloorSeconds, modelShedRetryAfterFloorSeconds*3/2)
+	}
+	if recs[0].RetryAfterMs != header*1000 {
+		t.Fatalf("ledger retryAfterMs = %d, header = %d s", recs[0].RetryAfterMs, header)
 	}
 }
 

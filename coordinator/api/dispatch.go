@@ -1317,12 +1317,12 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// The legacy loop's exhausted ladder wrote ONE request_rejections
 				// row and ONE OR-uptime outcome for a mid-ladder TTFT storm; keep
 				// both (the attempt-0 path emits neither, unchanged).
-				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
+				retryAfter := s.estimateTTFTRetryAfter(d.model, retryAfterJitterKey(r.Context()), bestTTFT, d.deadline)
 				s.recordRejection(d.rejectionInfoWithDecision("dispatch", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, decision))
 				d.recordDispatchedRequestOutcome(
 					d.kvBackendAttribution(), classifyOutcomeByCode(http.StatusTooManyRequests))
 			}
-			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
+			s.writeTTFTTooSlow(w, retryAfterJitterKey(r.Context()), d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
 		}
 
@@ -1427,7 +1427,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			// decision is recorded only after a successful enqueue); the
 			// placeholder carries the rejection vocabulary directly.
 			queuePR.Profile.SetOutcome("rejected", "queue_full", "", "", "")
-			retryAfter := s.estimateRetryAfter(d.model)
+			// queue_full: the caller would sit behind the whole queue, so the
+			// position is the model's current depth.
+			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),
+				s.registry.Queue().QueueSize(d.model), 0)
 			d.refundReservation()
 			info := d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
@@ -1484,7 +1487,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				s.recordWarmPoolTTFTMiss(d.model, d.deadline, d.attempt)
 				s.triggerWarmPool()
 				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
-				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
+				retryAfter := s.estimateTTFTRetryAfter(d.model, retryAfterJitterKey(r.Context()), bestTTFT, d.deadline)
 				d.ttftTooSlowTerminal(
 					d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision),
 					retryAfter,
@@ -1513,7 +1516,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
-			retryAfter := s.estimateRetryAfter(d.model)
+			// queue_timeout: the waiter's own enqueue position is how far it
+			// sat from the head when its wait expired.
+			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),
+				queuedReq.EnqueuePosition, 0)
 			info := d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
 				d.preContentTerminal(info, retryAfter, "machine_busy",
@@ -3577,22 +3583,17 @@ exhausted:
 		// pre-dispatch rejections emit from recordRejection instead).
 		d.recordDispatchedRequestOutcome(kvBackend, classifyOutcomeByCode(statusCode))
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
-			retryAfter := s.estimateRetryAfter(d.model)
-			if d.lastErrFeasibleAfterMS > 0 {
-				// Enriched rejection (routing v2): the rejecting provider
-				// forecast when a request of this shape could next be admitted
-				// — an honest Retry-After beats the queue-depth heuristic.
-				// Clamped to the heuristic's own [2,30]s band so a
-				// provider-authored value can neither hammer nor park clients.
-				hinted := int((d.lastErrFeasibleAfterMS + 999) / 1000)
-				if hinted < 2 {
-					hinted = 2
-				}
-				if hinted > 30 {
-					hinted = 30
-				}
-				retryAfter = hinted
-			}
+			// Enriched rejection (routing v2): the rejecting provider forecast
+			// when a request of this shape could next be admitted
+			// (feasible_after_ms). It is a FLOOR under the fleet-capacity /
+			// distress estimate, never an override (a 3 s hint under a 60 s
+			// distress answer used to emit 3 — the #799 death loop for hinted
+			// refusals), and shares the single [2,60] s pre-jitter band
+			// (retry_after.go) so a provider-authored value can neither hammer
+			// nor park clients.
+			hintSeconds := int((d.lastErrFeasibleAfterMS + 999) / 1000)
+			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),
+				s.registry.Queue().QueueSize(d.model), hintSeconds)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
 			if !stickyFault && (d.unservable || failure.deadline) {

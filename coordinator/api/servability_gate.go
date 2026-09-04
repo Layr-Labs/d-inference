@@ -101,7 +101,7 @@ func (s *Server) shedIfUnservable(
 		return false
 	}
 
-	retryAfter := s.estimateRetryAfter(model)
+	retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()), s.registry.Queue().QueueSize(model), 0)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	refundReservation()
 

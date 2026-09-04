@@ -245,6 +245,49 @@ func effectiveTriggerSpacing(interval time.Duration) time.Duration {
 	return warmPoolTriggerSpacing
 }
 
+// warmPoolSnapshotFreshness bounds how old the cached snapshots may be before
+// capacity-derived admission sizing (Retry-After, queue depth) stops trusting
+// them and falls back to the static heuristics. The controller ticks every
+// Interval (30 s in prod); anything older means it is not running, and a
+// frozen C / E[S] must not size live admission forever. (A release wave that
+// drops WarmProviders inside one tick under-states the answer for up to one
+// interval — accepted.)
+const warmPoolSnapshotFreshness = 5 * time.Minute
+
+// LatestWarmPoolSnapshotFor returns the cached snapshot for one model from the
+// controller's last planning tick. ok is false when the controller is disabled,
+// has not ticked, has no row for the model, or the cache is older than
+// warmPoolSnapshotFreshness. Read-only and side-effect free; it copies a single
+// row under lastMu rather than the whole slice (LatestWarmPoolSnapshots) so
+// admission paths can call it per request. Lock order: r.mu.RLock (released)
+// then lastMu — never p.mu, so no inversion with the routing scan.
+func (r *Registry) LatestWarmPoolSnapshotFor(model string) (snap WarmPoolSnapshot, ok bool) {
+	if r == nil || model == "" {
+		return WarmPoolSnapshot{}, false
+	}
+	r.mu.RLock()
+	controller := r.warmPool
+	r.mu.RUnlock()
+	if controller == nil {
+		return WarmPoolSnapshot{}, false
+	}
+	return controller.latestSnapshotFor(model, time.Now())
+}
+
+func (c *warmPoolController) latestSnapshotFor(model string, now time.Time) (WarmPoolSnapshot, bool) {
+	c.lastMu.RLock()
+	defer c.lastMu.RUnlock()
+	if c.lastSnapsAt.IsZero() || now.Sub(c.lastSnapsAt) > warmPoolSnapshotFreshness {
+		return WarmPoolSnapshot{}, false
+	}
+	for i := range c.lastSnaps {
+		if c.lastSnaps[i].Model == model {
+			return c.lastSnaps[i], true
+		}
+	}
+	return WarmPoolSnapshot{}, false
+}
+
 func (c *warmPoolController) run(ctx context.Context) {
 	interval := c.config.Interval
 	if interval <= 0 {

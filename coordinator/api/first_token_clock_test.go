@@ -282,7 +282,7 @@ func TestAbandonInflightDefersToPublishedIngress(t *testing.T) {
 func TestWriteFirstTokenTimeoutUsesOpenRouter429Contract(t *testing.T) {
 	s := newTestServerForDispatch(t)
 	rec := httptest.NewRecorder()
-	s.writeFirstTokenTimeout(rec, "m", "provider did not respond within TTFT deadline")
+	s.writeFirstTokenTimeout(rec, "", "m", "provider did not respond within TTFT deadline")
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d want 429", rec.Code)
 	}

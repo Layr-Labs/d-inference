@@ -156,10 +156,13 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 	if policy.enabled || !s.modelShed(model, publicModel) {
 		return false
 	}
-	retryAfter := s.estimateRetryAfter(model)
-	if retryAfter <= 0 {
-		retryAfter = 30
-	}
+	// The shed floor is a caller floor under the shared Retry-After source
+	// (retry_after.go): a rejected model stays out of rotation for at least
+	// 30 s, jittered like every other capacity rejection so the return herd is
+	// spread. (The former `retryAfter <= 0 → 30` fallback was dead code — the
+	// queue-depth estimate never returned < 2 — so a shed model answered 2 s.)
+	retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()),
+		s.registry.Queue().QueueSize(model), modelShedRetryAfterFloorSeconds)
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:model_shed"})
 	s.recordRejection(rejectionInfo{
 		r:                     r,
@@ -767,35 +770,30 @@ func fasterTTFTEstimate(primaryModel string, primary time.Duration, alternateMod
 	return primaryModel, primary
 }
 
-func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.Duration) int {
-	overage := bestTTFT - threshold
-	seconds := int(math.Ceil(overage.Seconds()))
-	if base := s.estimateRetryAfter(model); seconds < base {
-		seconds = base
-	}
-	if seconds < 2 {
-		seconds = 2
-	}
-	if seconds > 30 {
-		seconds = 30
-	}
-	return seconds
+// estimateTTFTRetryAfter is retryAfterSeconds with the TTFT overage (how far
+// the best estimate sits above the target, in whole seconds) as the caller
+// floor, so the answer is never shorter than the gap that has to close. It
+// no longer re-clamps to its own [2,30] band (which also capped the distress
+// term at 30 on this path). requestID is the jitter key.
+func (s *Server) estimateTTFTRetryAfter(model, requestID string, bestTTFT, threshold time.Duration) int {
+	overage := int(math.Ceil((bestTTFT - threshold).Seconds()))
+	return s.retryAfterSeconds(model, requestID, s.registry.Queue().QueueSize(model), overage)
 }
 
 // writeFirstTokenTimeout writes the OpenRouter-compatible retryable 429 used
 // when a request-absolute first-token clock expires after dispatch. Chat
 // exhausted already uses this shape (Retry-After + rate_limit_exceeded);
 // /v1/completions and /v1/messages must match so aggregators retry instead
-// of treating the timeout as a provider 504.
-func (s *Server) writeFirstTokenTimeout(w http.ResponseWriter, model, message string) {
-	retryAfter := s.estimateRetryAfter(model)
+// of treating the timeout as a provider 504. requestID is the jitter key.
+func (s *Server) writeFirstTokenTimeout(w http.ResponseWriter, requestID, model, message string) {
+	retryAfter := s.retryAfterSeconds(model, requestID, s.registry.Queue().QueueSize(model), 0)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 		message, withCode("rate_limit_exceeded")))
 }
 
-func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
-	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
+func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, requestID, model, publicModel string, bestTTFT, threshold time.Duration) {
+	retryAfter := s.estimateTTFTRetryAfter(model, requestID, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
@@ -1596,46 +1594,24 @@ func (s *Server) attempt0RouteEWMAMs() float64 {
 	return s.routeLatencyEWMAMs
 }
 
-// estimateRetryAfter returns a suggested wait time in seconds before retrying
-// a request for the given model. Based on queue depth as a rough proxy for
-// fleet backlog. OpenRouter uses the Retry-After header to schedule retries.
-//
-// Distress scaling (2026-09-01 congestion collapse): queue depth alone was a
-// LIAR under CPU saturation — the queue was empty (nothing could even reach
-// it), so every 429 carried "Retry-After: 2" and upstream obligingly hammered
-// the coordinator every 2s, sustaining the death loop. When the attempt-0
-// route-latency EWMA shows routing itself is degraded (> 1s), the answer
-// scales with the observed degradation — max(base, ceil(EWMA seconds)×5),
-// capped at 60s — so upstream backoff actually relieves pressure. Queue-depth
-// behavior is unchanged while routing is healthy.
+// estimateRetryAfter returns the PRE-JITTER Retry-After base for a model at
+// its current queue depth with no caller floor (retry_after.go): the fleet
+// capacity estimate from the warm-pool snapshot when one exists, else the
+// legacy queue-depth heuristic, max'ed with the #799 distress floor
+// (distressFloorSeconds: when the attempt-0 route-latency EWMA shows routing
+// itself is degraded (> 1 s) the answer scales with the observed degradation
+// — ceil(EWMA seconds) × 5, capped at 60 s — so upstream backoff actually
+// relieves pressure). No response writer calls this directly: writers go
+// through retryAfterSeconds, which adds the per-request jitter.
 func (s *Server) estimateRetryAfter(model string) int {
-	estimate := 2 // Light load, retry soon
-	if queueDepth := s.registry.Queue().QueueSize(model); queueDepth > 0 {
-		// Rough estimate: each queued request takes ~3 seconds to drain.
-		estimate = queueDepth * 3
-		if estimate < 2 {
-			estimate = 2
-		}
-		if estimate > 30 {
-			estimate = 30
-		}
-	}
-	if ewmaMs := s.attempt0RouteEWMAMs(); ewmaMs > degradedRouteEWMAThresholdMs {
-		scaled := int(math.Ceil(ewmaMs/1000)) * 5
-		if scaled > maxDistressRetryAfter {
-			scaled = maxDistressRetryAfter
-		}
-		if scaled > estimate {
-			estimate = scaled
-		}
-	}
-	return estimate
+	return s.retryAfterBaseSeconds(model, s.registry.Queue().QueueSize(model), 0)
 }
 
 // writeServiceUnavailable writes a retryable 503 with a Retry-After header so
 // clients (and OpenRouter) can schedule the retry instead of blind backoff.
-func (s *Server) writeServiceUnavailable(w http.ResponseWriter, model string) {
-	w.Header().Set("Retry-After", strconv.Itoa(s.estimateRetryAfter(model)))
+func (s *Server) writeServiceUnavailable(w http.ResponseWriter, r *http.Request, model string) {
+	w.Header().Set("Retry-After", strconv.Itoa(s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()),
+		s.registry.Queue().QueueSize(model), 0)))
 	writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable",
 		"service temporarily unavailable — please retry"))
 }

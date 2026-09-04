@@ -111,7 +111,7 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
 		} else {
 			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-			s.writeServiceUnavailable(w, p.model)
+			s.writeServiceUnavailable(w, r, p.model)
 		}
 		return reservedMicroUSD, serviceReservation, true
 	}
@@ -182,7 +182,7 @@ func (s *Server) topUpReservationForInlinedMedia(w http.ResponseWriter, r *http.
 		} else {
 			s.logger.Error("media reservation top-up failed (DB error)", "consumer_key", consumerKey, "error", err)
 			s.ddIncr("billing.media_reservation_topup", []string{"model:" + p.model, "outcome:error"})
-			s.writeServiceUnavailable(w, p.model)
+			s.writeServiceUnavailable(w, r, p.model)
 		}
 		return currentMicroUSD, true
 	}
@@ -311,7 +311,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		return model, true
 	case scanSlotTimeout:
 		refundReservation()
-		retryAfter := s.estimateRetryAfter(model)
+		retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()), s.registry.Queue().QueueSize(model), 0)
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		s.ddIncr("routing.scan_admission_timeout", []string{"model:" + model, "stage:preflight"})
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:routing_saturated"})
@@ -521,7 +521,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_queue_spill"})
 		} else {
 			// Fast-shed: immediate 429 when queue-before-shed is disabled.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()), s.registry.Queue().QueueSize(model), 0)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:capacity_429"})
@@ -585,7 +585,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// so shed to OpenRouter as a 429 + Retry-After (clean failover)
 			// rather than a 503 (which can get the endpoint marked unhealthy /
 			// deranked). Mirrors the capacity_429 path above.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()), s.registry.Queue().QueueSize(model), 0)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:dedicated_capacity_429"})
@@ -624,7 +624,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			// counting the event as a provider outage. A 503 here caused the
 			// post-deploy OpenRouter uptime collapse while the in-memory
 			// provider registry repopulated.
-			retryAfter := s.estimateRetryAfter(model)
+			retryAfter := s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()), s.registry.Queue().QueueSize(model), 0)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:no_eligible_provider"})
@@ -704,7 +704,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				modelTooLargeRejections: modelTooLarge,
 				bestTTFTMs:              float64(retryTTFT.Milliseconds()),
 			})
-			s.writeTTFTTooSlow(w, retryModel, publicModel, retryTTFT, ttftThreshold)
+			s.writeTTFTTooSlow(w, retryAfterJitterKey(r.Context()), retryModel, publicModel, retryTTFT, ttftThreshold)
 			return model, true
 		}
 	}

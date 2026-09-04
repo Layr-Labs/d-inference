@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -93,7 +94,8 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 				withCode("no_linked_machine")))
 			return true
 		}
-		w.Header().Set("Retry-After", "30")
+		w.Header().Set("Retry-After", strconv.Itoa(s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()),
+			s.registry.Queue().QueueSize(model), selfRouteOfflineRetryAfterFloorSeconds)))
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("machine_offline",
 			"your machine is offline — self-route will not fall back to paid providers; start your Darkbloom node and retry",
 			withCode("machine_offline")))
@@ -119,7 +121,8 @@ func (s *Server) selfRouteUnavailable(w http.ResponseWriter, r *http.Request, ow
 		return true
 	}
 	// Online, but no owned machine currently serves this model.
-	w.Header().Set("Retry-After", "15")
+	w.Header().Set("Retry-After", strconv.Itoa(s.retryAfterSeconds(model, retryAfterJitterKey(r.Context()),
+		s.registry.Queue().QueueSize(model), selfRouteNotLoadedRetryAfterFloorSeconds)))
 	writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_not_loaded",
 		fmt.Sprintf("model %q is not available on your machine — load it on your node and retry", model),
 		withCode("model_not_loaded")))

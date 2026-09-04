@@ -16,7 +16,7 @@ import (
 func TestWriteServiceUnavailableSetsRetryAfter(t *testing.T) {
 	srv, _ := testServer(t)
 	w := httptest.NewRecorder()
-	srv.writeServiceUnavailable(w, "gpt-oss-20b")
+	srv.writeServiceUnavailable(w, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), "gpt-oss-20b")
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
@@ -89,8 +89,10 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	if threshold != 5*time.Second {
 		t.Fatalf("FirstContentDeadline(0) = %v, want 5s", threshold)
 	}
-	if got := srv.estimateTTFTRetryAfter("no-queue", 8*time.Second, threshold); got != 3 {
-		t.Fatalf("Retry-After without queue = %d, want 3s over target", got)
+	// The 3 s overage floors the answer; the shared source then adds 0..50%
+	// jitter (retry_after.go), so the answer lands in [3, 4].
+	if got := srv.estimateTTFTRetryAfter("no-queue", "", 8*time.Second, threshold); got < 3 || got > 4 {
+		t.Fatalf("Retry-After without queue = %d, want within [3, 4] (3s over target + jitter)", got)
 	}
 
 	model := "slow-ttft-model"
@@ -101,13 +103,14 @@ func TestWriteTTFTTooSlowSets429RetryAfter(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	srv.writeTTFTTooSlow(w, model, model, 6*time.Second, threshold)
+	srv.writeTTFTTooSlow(w, "", model, model, 6*time.Second, threshold)
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
 	}
-	if got := w.Header().Get("Retry-After"); got != "15" {
-		t.Fatalf("Retry-After = %q, want 15 from existing queue-depth estimate", got)
+	// Five queued: legacy base 15 s, jittered to [15, 22].
+	if got, err := strconv.Atoi(w.Header().Get("Retry-After")); err != nil || got < 15 || got > 22 {
+		t.Fatalf("Retry-After = %q, want within [15, 22] from the queue-depth estimate + jitter", w.Header().Get("Retry-After"))
 	}
 	var body struct {
 		Error struct {

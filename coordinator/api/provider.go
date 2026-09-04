@@ -1791,6 +1791,12 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 			"error", err,
 		)
 		s.registry.MarkUntrusted(providerID)
+		// The provider is still generating: the synthesized terminal below
+		// settles the request on our side, so the committed writer's exit
+		// will not send a cancel for it (a settled terminal means "nothing
+		// left to stop"). Stop the real work here, like the deadline and
+		// overflow branches do.
+		s.sendProviderCancel(provider, msg.RequestID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,

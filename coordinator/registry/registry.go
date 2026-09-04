@@ -5794,9 +5794,12 @@ func trustRank(t TrustLevel) int {
 // Persistence is throttled to the same 30 s window the heartbeat path uses:
 // an unthrottled upsert per completion was ~46 statements and goroutines per
 // second in production for a row nothing reads until the provider's next
-// registration. Skipped writes are not lost — the in-memory counters keep
-// accumulating and the next window (or Disconnect's final persist) writes
-// them. Failures still persist immediately (RecordJobFailure).
+// registration. The in-memory counters keep accumulating and the next window
+// (or Disconnect's final persist) writes them. What can be lost is the last
+// <=30 s of counts for a provider whose connection ends without Disconnect —
+// a coordinator shutdown, which drains without disconnecting providers — the
+// same exposure the uptime counter already had. Failures still persist
+// immediately (RecordJobFailure).
 func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]

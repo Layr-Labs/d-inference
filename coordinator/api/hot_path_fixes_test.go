@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -236,5 +238,108 @@ func TestRoutingSaturatedShedRecordsNoServabilityWalk(t *testing.T) {
 			t.Fatal("routing_saturated rejection was never recorded")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDecryptFailureStillCancelsProviderGeneration: when a chunk fails to
+// decrypt AFTER the stream is committed, the coordinator synthesizes a
+// terminal error, which settles the request — so the committed writer's exit
+// no longer sends a cancel. The provider is still generating, so the cancel
+// must come from the decrypt-failure branch itself. (Before commit the
+// dispatch loop's own retry path cancels, which is why the bad chunk here
+// follows a good one.)
+func TestDecryptFailureStillCancelsProviderGeneration(t *testing.T) {
+	_, reg, _, ts := setupTestServer(t)
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pubKey := testPublicKeyB64()
+	const model = "decrypt-failure-model"
+	conn := connectProvider(t, ctx, ts.URL, []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}}, pubKey)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	challengeCtx, challengeCancel := context.WithTimeout(ctx, 5*time.Second)
+	waitForChallenge(t, challengeCtx, conn, pubKey)
+	challengeCancel()
+	time.Sleep(200 * time.Millisecond)
+	makeProviderRoutable(reg)
+
+	sawCancel := make(chan bool, 1)
+	go func() {
+		var inferReq protocol.InferenceRequestMessage
+		for {
+			_, data, err := conn.Read(ctx)
+			if err != nil {
+				sawCancel <- false
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(data, &env)
+			if env.Type == protocol.TypeAttestationChallenge {
+				_ = conn.Write(ctx, websocket.MessageText, makeValidChallengeResponse(data, pubKey))
+				continue
+			}
+			if env.Type != protocol.TypeInferenceRequest {
+				continue
+			}
+			_ = json.Unmarshal(data, &inferReq)
+			break
+		}
+		// Commit the stream with real content first...
+		writeEncryptedTestChunk(t, ctx, conn, inferReq, pubKey,
+			`data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"}}]}`+"\n\n")
+		// ...then a well-formed envelope whose ciphertext cannot be opened.
+		garbageKey := make([]byte, 32)
+		garbage := make([]byte, 64)
+		_, _ = rand.Read(garbageKey)
+		_, _ = rand.Read(garbage)
+		bad, _ := json.Marshal(protocol.InferenceResponseChunkMessage{
+			Type:      protocol.TypeInferenceResponseChunk,
+			RequestID: inferReq.RequestID,
+			EncryptedData: &protocol.EncryptedPayload{
+				EphemeralPublicKey: base64.StdEncoding.EncodeToString(garbageKey),
+				Ciphertext:         base64.StdEncoding.EncodeToString(garbage),
+			},
+		})
+		_ = conn.Write(ctx, websocket.MessageText, bad)
+		readCtx, readCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer readCancel()
+		for {
+			_, data, err := conn.Read(readCtx)
+			if err != nil {
+				sawCancel <- false
+				return
+			}
+			var env struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(data, &env)
+			if env.Type == protocol.TypeCancel {
+				sawCancel <- true
+				return
+			}
+		}
+	}()
+
+	body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	select {
+	case got := <-sawCancel:
+		if !got {
+			t.Fatal("provider received no cancel after its chunk failed to decrypt; it would keep generating")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("provider goroutine did not report")
 	}
 }

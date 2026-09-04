@@ -29,7 +29,6 @@ package api
 //     (EIGENINFERENCE_COMPLETION_CALIBRATION=off) restores the bound.
 
 import (
-	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -53,24 +52,27 @@ func (s *Server) expectedCompletionTokensForRouting(model string, parsed map[str
 }
 
 // observeCompletionLength feeds the completion-length calibrator
-// (registry/completion_calibration.go) from a provider's terminal usage.
-// Called from handleCompleteAt on the provider read-loop goroutine, which owns
-// msg.Usage; the pr fields read here are immutable after dispatch.
+// (registry/completion_calibration.go) one completion's
+// usage.completion_tokens. Reached only through settleCompletion /
+// settleDeferredCompletion, i.e. from the SERVED attempt's terminal; the pr
+// fields read here are immutable after dispatch.
 //
 // Skipped when the consumer had already disconnected (consumerGone): a
 // truncated sample would pull p90 down, the router would plan for shorter
 // decodes and pack boxes harder, and more streams would be abandoned — the
 // wrong feedback direction under exactly the load where it matters. Also
 // skipped when the completion is right-censored by the forwarded bound
-// (CompletionTokens >= RequestedMaxTokens): that observation is the bound,
-// not the completion length. Speculative-race attempts are NOT excluded:
-// token counts are not biased by the race the way TTFT is.
-func (s *Server) observeCompletionLength(pr *registry.PendingRequest, usage protocol.UsageInfo, consumerGone bool) {
+// (completionTokens >= RequestedMaxTokens): that observation is the bound,
+// not the completion length. A speculative-race loser's terminal is a
+// cancelled, truncated generation and never reaches here (settleCompletion
+// parks it and no commit follows); the winner's count is not biased by the
+// race the way TTFT is and is kept.
+func (s *Server) observeCompletionLength(pr *registry.PendingRequest, completionTokens int, consumerGone bool) {
 	if s == nil || s.registry == nil || pr == nil || consumerGone {
 		return
 	}
-	if pr.RequestedMaxTokens > 0 && usage.CompletionTokens >= pr.RequestedMaxTokens {
+	if pr.RequestedMaxTokens > 0 && completionTokens >= pr.RequestedMaxTokens {
 		return
 	}
-	s.registry.RecordCompletionObservation(pr.Model, usage.CompletionTokens)
+	s.registry.RecordCompletionObservation(pr.Model, completionTokens)
 }

@@ -299,6 +299,13 @@ type PendingRequest struct {
 	// timingMu (written in the dispatch/handler goroutine, read in the provider
 	// read-loop goroutine).
 	contentCommitted bool
+	// settlementTokens / settlementParked hold a provider terminal's
+	// completion tokens that arrived before this attempt was committed
+	// (RecordCompletionForSettlement), for MarkContentCommitted to settle if
+	// THIS attempt is the one committed. Guarded by timingMu with
+	// contentCommitted so the two goroutines see one total order.
+	settlementTokens int
+	settlementParked bool
 	// Provider ingress arbitration is guarded by one lock so the read loop and
 	// the absolute-deadline timer have a total order. A chunk is marked pending
 	// before decrypt/classification; completion is marked before asynchronous
@@ -658,13 +665,48 @@ func (pr *PendingRequest) FirstContentAtSafe() time.Time {
 // goroutine (commitFirstContent / the generic first-content stamp). See the
 // contentCommitted field for why it is per-attempt rather than on the shared
 // Timing.
-func (pr *PendingRequest) MarkContentCommitted() {
+//
+// It is also the dispatch goroutine's half of the served-attempt settlement
+// handshake with RecordCompletionForSettlement: when the provider terminal
+// reached the read loop BEFORE this commit and parked its completion tokens,
+// they are returned here (settle=true) so the committing goroutine settles
+// the OTPM admission and feeds the calibrator for the attempt it just served.
+func (pr *PendingRequest) MarkContentCommitted() (completionTokens int, settle bool) {
 	if pr == nil {
-		return
+		return 0, false
 	}
 	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
 	pr.contentCommitted = true
-	pr.timingMu.Unlock()
+	if !pr.settlementParked {
+		return 0, false
+	}
+	pr.settlementParked = false
+	return pr.settlementTokens, true
+}
+
+// RecordCompletionForSettlement is the provider read loop's half of the
+// served-attempt settlement handshake (see MarkContentCommitted). When THIS
+// attempt is already the committed one the terminal settles now (true).
+// Otherwise the completion tokens are parked under timingMu and false is
+// returned: if the dispatch goroutine commits this attempt later (a fast
+// single-chunk completion whose terminal outran the commit), MarkContentCommitted
+// hands the parked tokens back for settlement; if it never does (a speculative
+// loser whose content chunk lost the race), the parked tokens are never
+// settled — which is the point: the racers share one admission once-guard and
+// only the served attempt may claim it.
+func (pr *PendingRequest) RecordCompletionForSettlement(completionTokens int) (settleNow bool) {
+	if pr == nil {
+		return false
+	}
+	pr.timingMu.Lock()
+	defer pr.timingMu.Unlock()
+	if pr.contentCommitted {
+		return true
+	}
+	pr.settlementTokens = completionTokens
+	pr.settlementParked = true
+	return false
 }
 
 // ContentCommittedSafe reports whether THIS attempt committed its first content,

@@ -633,7 +633,13 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	// Mark THIS attempt as the committed one so handleComplete's fallback only
 	// ever stamps FirstContentAt for the attempt that actually delivered content —
 	// never a late-completing abandoned/retried attempt sharing the same Timing.
-	pr.MarkContentCommitted()
+	// A provider terminal that reached the read loop before this commit parked
+	// its completion tokens on the attempt (settleCompletion); the committing
+	// goroutine settles them here, so a fast single-chunk completion is still
+	// credited while a racing loser's terminal never is.
+	if tokens, settle := pr.MarkContentCommitted(); settle {
+		d.s.settleDeferredCompletion(pr, tokens)
+	}
 	d.s.observeTTFTCalibration(pr)
 	// First CONTENT chunk == the provider ACCEPTED and is serving: clear the
 	// pair's capacity-reject streak NOW rather than at completion. A long

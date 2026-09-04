@@ -2363,8 +2363,10 @@ func (s *Server) handleCompleteAt(
 			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
-	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
-	s.observeCompletionLength(pr, msg.Usage, consumerGone)
+	// OTPM settlement + calibrator sample, from the served attempt only
+	// (a racing loser's terminal parks and never settles; a terminal that
+	// outran the commit settles from commitFirstContent).
+	s.settleCompletion(pr, msg.Usage.CompletionTokens, consumerGone)
 
 	// Record job success and usage BEFORE signalling the consumer (see
 	// signalConsumer below): closing ChunkCh unblocks the consumer response

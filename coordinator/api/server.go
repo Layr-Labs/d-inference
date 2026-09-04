@@ -751,6 +751,43 @@ func (s *Server) reconcileOutputAdmission(pr *registry.PendingRequest, actualOut
 	s.countOutputSettlement(tags, "key", keyDelta)
 }
 
+// settleCompletion is the single gate deciding whether a provider terminal
+// settles the request's OTPM admission and feeds the completion-length
+// calibrator. Only the SERVED attempt's terminal may: primary and backup
+// racers copy one TokenAdmission and share its once-guard, and a loser whose
+// content chunk lost the race but whose terminal reached handleCompleteAt
+// before cancelDispatch removed it used to claim the settlement with its own
+// truncated usage — the winner's real completion was then skipped (OTPM
+// under-charged by the whole answer, calibrator fed a 2-token sample).
+//
+// Settles now when the consumer is already gone (a parked record: nothing
+// else will), when the terminal is an accepted empty completion (no content
+// ever, so no commit follows; the empty-completion loser returned before
+// RemovePending), or when this attempt is the committed one. Otherwise the
+// tokens are parked on the attempt (RecordCompletionForSettlement) and
+// commitFirstContent settles them if THIS attempt is committed later — a fast
+// single-chunk completion routinely reaches the read loop before the dispatch
+// goroutine commits its chunk — while a loser's parked tokens are never
+// settled. Runs on the provider read-loop goroutine.
+func (s *Server) settleCompletion(pr *registry.PendingRequest, completionTokens int, consumerGone bool) {
+	if pr == nil {
+		return
+	}
+	if !consumerGone && pr.HasFirstContentIngress() && !pr.RecordCompletionForSettlement(completionTokens) {
+		return
+	}
+	s.reconcileOutputAdmission(pr, completionTokens)
+	s.observeCompletionLength(pr, completionTokens, consumerGone)
+}
+
+// settleDeferredCompletion is commitFirstContent's half: the committing
+// dispatch goroutine settles the completion tokens a terminal parked before
+// the commit (see settleCompletion).
+func (s *Server) settleDeferredCompletion(pr *registry.PendingRequest, completionTokens int) {
+	s.reconcileOutputAdmission(pr, completionTokens)
+	s.observeCompletionLength(pr, completionTokens, false)
+}
+
 // countOutputSettlement emits the per-bucket settlement counter: an overage
 // debit lands in delta_tokens_total, an unused credit in credit_tokens_total.
 func (s *Server) countOutputSettlement(tags []string, bucket string, delta int) {

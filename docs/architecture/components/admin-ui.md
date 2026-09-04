@@ -100,7 +100,7 @@ Names and effect only; requiredness and defaults are in [`../../reference/config
 | A page fails once, then succeeds on Retry | Hot-standby WAL-replay conflict (SQLSTATE `40001`) that outlasted the single 250 ms retry | `query` (`admin-ui/src/lib/db.ts`) |
 | `/uptime` or the sessions section of `/providers/[id]` shows an "awaiting deploy" notice | `provider_sessions` does not exist yet on this database (SQLSTATE `42P01`) | `isUndefinedTable` (`admin-ui/src/lib/db.ts`), `admin-ui/src/app/uptime/page.tsx`, `admin-ui/src/app/providers/[id]/page.tsx` |
 | Table counts on `/` look stale or read `0` for a new table | `getTableCounts` uses `pg_class.reltuples` estimates (clamped at `0`), refreshed only by `ANALYZE`/autovacuum | `admin-ui/src/lib/queries/overview.ts` |
-| Connection succeeds against a replica with a self-signed certificate only when `ADMIN_DB_SSL_NO_VERIFY=true` | Default is full certificate verification; the RDS CA must be installed, or verification disabled (internal use only) | `makePool` (`admin-ui/src/lib/db.ts`), `admin-ui/README.md` |
+| Connection succeeds against a replica with a self-signed certificate only when `ADMIN_DB_SSL_NO_VERIFY=true` | The unset default ([configuration](../../reference/configuration.md#admin-ui)) verifies certificates; the RDS CA must be installed, or verification disabled (internal use only) | `makePool` (`admin-ui/src/lib/db.ts`), `admin-ui/README.md` |
 | Credential brute force is not throttled | The gate has no lockout or rate limit; the README requires a network gate in front of any exposed deployment | `admin-ui/src/proxy.ts`, `admin-ui/README.md` |
 
 ## Code map

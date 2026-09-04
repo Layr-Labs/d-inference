@@ -39,8 +39,9 @@ Requests never leave the machine and are never billed.
    `Start.runLocalServe` (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`)
    loads or creates the API token, filters the chosen models to those with an
    engine-v2 adapter (exit 1 with `No engine-v2-capable models available to
-   serve.` if none remain), waits up to 5 s for the socket to bind (`Local
-   server failed to bind <addr>:<port> within 5s` otherwise), writes the
+   serve.` if none remain), waits for the socket to bind (`waitUntilBound`,
+   bounded by the local bind wait in [runtime constants](./cli-reference.md#runtime-constants);
+   `Local server failed to bind <addr>:<port> within 5s` otherwise), writes the
    discovery file and holds a fan-control lease while running
    ([fan control](./fan-control.md)). Ctrl-C stops it and removes the
    discovery file.
@@ -116,7 +117,7 @@ the upstream `MLXLMServer` router
 | GET | `/health`, `/v1/health` | Unauthenticated |
 | GET | `/models`, `/v1/models` | Advertised catalog, not just resident models |
 | GET | `/props`, `/metrics` | `/metrics` adds per-slot MTP posture lines (`provider-swift/Sources/ProviderCore/Server/LocalMetricsResponder.swift`) |
-| POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; **32 MiB** body cap |
+| POST | `/v1/chat/completions`, `/chat/completions` | Streaming and non-streaming; inline media; body capped at `localInferenceMaxUploadBytes` |
 | POST | `/v1/chat/completions/batch` | Same cap |
 | POST | `/v1/completions`, `/completions`, `/completion` | Text; upstream 2 MiB body ceiling |
 | POST | `/v1/responses`, `/responses` | Responses API, in-memory store |
@@ -124,8 +125,9 @@ the upstream `MLXLMServer` router
 | POST | `/tokenize`, `/detokenize`, `/apply-template` | Tokenizer utilities |
 | POST | `/v1/embeddings`, `/embeddings`, `/embedding` | Registered upstream; the provider configures no embedding model, so they return an OpenAI error envelope with code `embeddings_not_configured` |
 
-The cap `localInferenceMaxUploadBytes = 32 * 1024 * 1024`
-(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`)
+The cap `localInferenceMaxUploadBytes`
+(`provider-swift/Sources/ProviderCore/Server/LocalChatUploadResponder.swift`;
+value in [runtime constants](./cli-reference.md#runtime-constants))
 matches the coordinator WebSocket frame allowance. Per-image, per-video and
 per-audio limits are the same as fleet serving and are configured through the
 variables in [`reference/configuration.md`](../reference/configuration.md).
@@ -148,7 +150,7 @@ the process prints its listening address and the daemon-state file is not used.
 |---|---|
 | `--local and --local-endpoint are mutually exclusive` | Use one flag |
 | `401 Unauthorized` | Send `Authorization: Bearer $(cat ~/.darkbloom/local_token)`; the token in `local.json` is authoritative |
-| `413` on a chat request with images | Body above 32 MiB; downscale or send fewer images |
+| `413` on a chat request with images | Body above `localInferenceMaxUploadBytes`; downscale or send fewer images |
 | `darkbloom local` says no server is running but a process is listening | The listener is not a Darkbloom server (foreign process on the port) or a stale `local.json` was cleaned; restart with a free port |
 | Model not in `/v1/models` | Only models with an engine-v2 adapter are advertised; `darkbloom models list` |
 | Endpoint unreachable from another machine | Default bind is loopback; `--bind 0.0.0.0` and open the port, then set a reverse proxy with TLS |

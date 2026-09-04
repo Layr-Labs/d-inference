@@ -130,8 +130,8 @@ yielding `.contiguousUnquantized`, but the production slot factory resolves the
 backend first, so a slot the `DARKBLOOM_CBV2_PAGED_KV=0` kill switch degraded
 to contiguous takes the `unsupportedBackend` path above and builds nothing.)
 `adoptionBoundTokens` is the capability's `conservativeReplayBoundTokens`, and
-`minEffectiveTokens = max(DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS,
-1_536 when the strategy is .frozenFullReplay and the bound ≥ 25_600)`.
+`minEffectiveTokens` is the raise-only donation floor whose constants are in
+[`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules).
 
 Lookup at submit (`provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge+PrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/KVCacheSSD/EngineV2Bridge+SSDPrefixCache.swift`):
@@ -140,11 +140,11 @@ the bridge calls `ssd.stage(...)`, which reads and authenticates matching
 `GlobalKVCacheBudget`; refused ⇒ silent recompute); the engine's synchronous
 `lookup()` hits the staging map; `applyAdoption` runs on the engine thread;
 `endAdoption` balances the ticket. On completion the bridge donates complete
-blocks to a write-behind queue (`writeQueueMaxJobs = 2`) subject to the
-donation floor `prefixTokens > adoptionBoundTokens + minEffectiveTokens`,
+blocks to a bounded write-behind queue subject to the donation floor,
 write-rate, low-disk, TTL and box-wide LRU guards
 (`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`,
-`donate`). The coordinator learns each slot's state from
+`donate`; every constant is in
+[`../reference/ssd-kv-cache.md#size-and-eviction-rules`](../reference/ssd-kv-cache.md#size-and-eviction-rules)). The coordinator learns each slot's state from
 `prefix_cache_statuses` and cumulative `prefix_cache_donation_outcomes`
 ([`cache-aware-routing.md`](cache-aware-routing.md)).
 
@@ -187,7 +187,7 @@ write-rate, low-disk, TTL and box-wide LRU guards
 | `disabled` / `unsupported_layout` | `supportsPrefixReuse == false` (Qwen3.5 family, Qwen3-VL) | `EngineV2SlotFactory.swift` |
 | `disabled` / `weight_hash_unavailable` or `runtime_identity_unavailable` | No verified weight hash or no `PromptContractIdentity` for the model directory | `SSDPrefixCacheFactory.swift` |
 | `pending` / `scan_pending`, `error` / `scan_failed` | Startup disk scan not finished or failed | `SSDPrefixCache.swift` |
-| Warm prompt served cold | Prefix shorter than one 256-token block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
+| Warm prompt served cold | Prefix shorter than one block; staging reservation refused; donation below the effective-token floor; TTL expiry; box-wide LRU eviction | `SSDPrefixCache.swift` (`donate`), `SSDBlockIndex.swift` |
 | Load refused with `pagedUnavailable` | Explicit `paged` and preflight/capacity/pool construction failed | `EngineV2Factory+Production.swift` |
 | Every slot contiguous despite `paged` config | `DARKBLOOM_CBV2_PAGED_KV` set to a negative value, or `supportsPagedKV == false` | `EngineV2KVBackendPolicy.swift`, `EngineV2Factory+Production.swift` |
 

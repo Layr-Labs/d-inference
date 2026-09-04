@@ -28,7 +28,7 @@
 - [`architecture/data-flow.md`](architecture/data-flow.md): one request from consumer HTTP through routing, encryption, the provider WebSocket, and back as SSE.
 - [`architecture/components/coordinator.md`](architecture/components/coordinator.md): the Go control plane — process layout, HTTP/WebSocket servers, store, background jobs.
 - [`architecture/components/provider.md`](architecture/components/provider.md): the Swift provider process — binaries, `ProviderCore` components, process boundaries, what stays in-process.
-- [`architecture/components/consumer.md`](architecture/components/consumer.md): the consumer surface — OpenAI/Anthropic compatibility, SDKs, console.
+- [`architecture/components/consumer.md`](architecture/components/consumer.md): the coordinator's OpenAI/Anthropic-compatible request pipeline, stage by stage — parsing, admission, routing, sealing, streaming, settlement.
 - [`architecture/components/console-ui.md`](architecture/components/console-ui.md): the Next.js console — pages, `/api/*` relay handlers, Privy auth, SSE chat.
 - [`architecture/components/admin-ui.md`](architecture/components/admin-ui.md): the internal read-only operator dashboard.
 - [`architecture/components/mlx-swift.md`](architecture/components/mlx-swift.md): the three pinned submodules (`mlx`, `mlx-swift`, `mlx-swift-lm`), what `MLXLMServer` is actually used for, and the source-matched `mlx.metallib`.
@@ -36,7 +36,7 @@
 - [`architecture/scheduling.md`](architecture/scheduling.md): per-model queues, slot states, token-budget admission, model swaps, warm pool, heartbeat and eviction.
 - [`architecture/cache-aware-routing.md`](architecture/cache-aware-routing.md): provider-confirmed exact prefix-cache routing and its kill switch.
 - [`architecture/inference.md`](architecture/inference.md): the CBv2 engine — request lifecycle and `CBv2RequestTiming`, scheduler and lease defaults, deadlines, MTP, sampling, tool parsers, vision constraints, supported families.
-- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts (contiguous default, paged), 256-token block hashing, the prefix-reuse plan per model family, RAM staging plus the encrypted SSD tier, and why a default box builds no SSD cache.
+- [`architecture/prefix-cache.md`](architecture/prefix-cache.md): KV layouts (contiguous default, paged), block hashing, the prefix-reuse plan per model family, RAM staging plus the encrypted SSD tier, and why a default box builds no SSD cache.
 - [`architecture/prompt-contract-sidecar.md`](architecture/prompt-contract-sidecar.md): the Rust sidecar that derives token boundaries for cache routing, and its failure isolation.
 - [`architecture/model-registry.md`](architecture/model-registry.md): model manifests, aliases, publishing, and provider downloads.
 - [`architecture/storage.md`](architecture/storage.md): coordinator persistence — Postgres schema, memory store, retention.
@@ -54,7 +54,7 @@
 - [`architecture/security/identity-binding.md`](architecture/security/identity-binding.md): how APNs, X25519, SE P-256, and MDA identities bind to one provider.
 - [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
 - [`consumer/verification.md`](consumer/verification.md): how to check a provider's attestation from the API.
-- [`provider/attestation.md`](provider/attestation.md): what runs on the provider to earn and keep trust, and what the operator can see.
+- [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
 - [`threat-model.yaml`](threat-model.yaml): machine-readable threat model reviewed by CI on security-relevant PRs.
 
 ## Reference (look up, do not read)
@@ -64,8 +64,8 @@
 - [`reference/protocol-messages.md`](reference/protocol-messages.md): every WebSocket message between coordinator and provider, field by field, Go ↔ Swift.
 - [`reference/configuration.md`](reference/configuration.md): every environment variable with type, default, reading file and effect — coordinator `EIGENINFERENCE_*` (routing, admission, TTFT, warm pool, cache routing, billing, MDM, telemetry), provider `DARKBLOOM_*`, console-ui and admin-ui — plus where each process gets its environment.
 - [`reference/telemetry-schema.md`](reference/telemetry-schema.md): telemetry event types, field allowlist, symmetry rules.
-- [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected, its producer, sink, and cadence; the Datadog metric-name inventory (`d_inference.*`) with tags and emitting file.
-- [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, fees, service accounts.
+- [`reference/telemetry-inventory.md`](reference/telemetry-inventory.md): every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file.
+- [`reference/pricing-model.md`](reference/pricing-model.md): micro-USD units, price resolution, formulas, every billing constant (the single home for money constants), routes, service accounts.
 - [`reference/model-registry-format.md`](reference/model-registry-format.md): manifest schema, registration payload, alias format.
 - [`reference/ssd-kv-cache.md`](reference/ssd-kv-cache.md): DBK3 on-disk format, paths, identity binding, env knobs, eviction rules, per-family reuse capability, status vocabularies.
 - [`glossary.md`](glossary.md): canonical terms and the page that owns each.
@@ -73,12 +73,12 @@
 ## Consumer how-tos
 
 - [`consumer/quickstart.md`](consumer/quickstart.md): first request, streaming, SDK base-URL swap.
-- [`consumer/authentication.md`](consumer/authentication.md): API keys, Privy sign-in, service accounts.
+- [`consumer/authentication.md`](consumer/authentication.md): create and manage API keys, sign in with Privy, run the device-code flow for the CLI; auth failures and fixes.
 - [`consumer/models.md`](consumer/models.md): the model catalog, aliases, capabilities, and how to query it.
 - [`consumer/billing.md`](consumer/billing.md): funding a balance, reading usage, what a 402 means.
 - [`consumer/verification.md`](consumer/verification.md): verify the provider that served you.
-- [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): privacy in practice.
-- [`provider/self-route.md`](provider/self-route.md): route your own requests to your own Mac for free.
+- [`consumer/privacy-expectations.md`](consumer/privacy-expectations.md): what a consumer can and cannot assume, in plain terms.
+- [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.
 
 ## Provider how-tos
 
@@ -86,9 +86,9 @@
 - [`provider/quickstart.md`](provider/quickstart.md): login, start, check status, start earning.
 - [`provider/hardware-requirements.md`](provider/hardware-requirements.md): minimum hardware, chip families, RAM tiers → which catalog models load, disk for the SSD cache.
 - [`provider/cli-reference.md`](provider/cli-reference.md): every `darkbloom` subcommand, flag, path, and runtime constant.
-- [`provider/attestation.md`](provider/attestation.md): trust levels from the operator's side.
+- [`provider/attestation.md`](provider/attestation.md): reach and keep `hardware` trust — enrol, approve the MDM profile, confirm posture; what `darkbloom status` shows.
 - [`provider/direct-mode.md`](provider/direct-mode.md): serve a local OpenAI-compatible endpoint without the coordinator.
-- [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider.
+- [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider machine.
 - [`provider/fan-control.md`](provider/fan-control.md): the opt-in root fan helper.
 - [`provider/beta-features.md`](provider/beta-features.md): `darkbloom beta` toggles and retired flags.
 - [`provider/troubleshooting.md`](provider/troubleshooting.md): symptom → check → fix, including "connected but not routable" and the `doctor` check names.
@@ -97,13 +97,15 @@
 
 - [`developer/build.md`](developer/build.md): build the coordinator, sidecar, provider, and UIs; toolchain pins.
 - [`developer/test.md`](developer/test.md): every test suite, what CI runs, how to run the e2e suite.
-- [`developer/release.md`](developer/release.md): cut a provider release — version bump, signing, notarization, hashing, registration.
 
 ## Operations runbooks (production; human approval per mutation)
 
 - [`operations/README.md`](operations/README.md): index and the two rules that apply to every runbook.
 - [`operations/coordinator-deploy.md`](operations/coordinator-deploy.md): swap the production coordinator to a reviewed build, verify, roll back.
 - [`operations/dev-environment.md`](operations/dev-environment.md): the GCP dev environment.
+- [`operations/provider-release.md`](operations/provider-release.md): cut a provider release — version bump, signing, notarization, hashing, registration, `latest/` publish, rollback.
+- [`operations/cache-routing-rollout.md`](operations/cache-routing-rollout.md): turn cache-aware routing on in production — percent ramp, verification, kill switch back to `off`.
+- [`operations/profiler-queries.md`](operations/profiler-queries.md): read-only SQL recipes against the profiler tables for latency, fleet and outcome questions.
 - [`operations/model-migration.md`](operations/model-migration.md): publish a model build and move an alias with zero downtime.
 - [`operations/release-policy-rollout.md`](operations/release-policy-rollout.md): shadow-then-enforce rollout of the release-policy routing gate.
 - [`operations/routing-v2-rollout.md`](operations/routing-v2-rollout.md): kill switches for the shipped routing-v2 behaviours.
@@ -133,7 +135,8 @@
 | `releases/` | release notes | yes |
 | `legal/` | policy text | as published |
 | `assets/` | diagrams (`.mmd` source + rendered SVG/PNG), CSVs | — |
-| `.private/` | internal drafts, not documentation | — |
+| root: `README.md`, `AGENTS.md`, `glossary.md`, `threat-model.yaml` | map, authoring rules, vocabulary, machine-readable threat model | no |
+| `.private/` | internal drafts, gitignored, not documentation | — |
 
 `make docs-check` lints every page (stamp, links, cited paths, orphans);
 `make docs-stamp FILES=docs/path.md` refreshes a stamp. Details in

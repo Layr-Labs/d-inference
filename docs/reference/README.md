@@ -20,8 +20,8 @@ Every row cites the code that defines it. For how and why things work, use
 |---|---|
 | [configuration.md](configuration.md) | Every environment variable of the coordinator, provider CLI, console UI, and admin UI: default, where read, effect |
 | [telemetry-schema.md](telemetry-schema.md) | Telemetry event types, field allowlist, optional-field and casing rules pinned by the symmetry tests |
-| [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected: producer, sink, cadence, retention |
-| [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, fees, reservations, service accounts |
+| [telemetry-inventory.md](telemetry-inventory.md) | Every telemetry datum collected — producer, sink, cadence, retention — and the Datadog metric-name inventory with tags and emitting file |
+| [pricing-model.md](pricing-model.md) | Micro-USD units, price resolution order, formulas, every billing constant (single home for money constants), routes, service accounts |
 | [model-registry-format.md](model-registry-format.md) | Manifest schema, registration payload, alias format |
 
 ## Prefix cache formats

@@ -31,7 +31,9 @@ curl -X POST https://api.darkbloom.dev/v1/billing/stripe/create-session \
   -d '{"amount_usd": "10.00"}'
 ```
 
-`amount_usd` is a string and must be at least `0.50`. Optional fields:
+`amount_usd` is a string and must be at least `0.50`, the Stripe deposit
+minimum in [`reference/pricing-model.md` → Constants](../reference/pricing-model.md#constants).
+Optional fields:
 `email` (prefilled on the Checkout page) and `referral_code` (see step 6). The
 response carries the Stripe page to open plus the coordinator's own session id:
 
@@ -79,7 +81,8 @@ curl https://api.darkbloom.dev/v1/payments/usage   -H "Authorization: Bearer sk-
  "withdrawable_micro_usd": 0, "withdrawable_usd": "0.000000"}
 ```
 
-`balance_micro_usd` is what requests can spend (1 USD = 1,000,000 µUSD).
+`balance_micro_usd` is what requests can spend, in
+[micro-USD](../reference/pricing-model.md#units).
 `withdrawable_micro_usd` is the part you earned (serving inference, referral
 rewards) and can pay out through Stripe Connect; deposits and invite credits
 never count toward it, so a pure consumer sees `0`. `GET /v1/payments/usage` lists settled
@@ -129,8 +132,9 @@ to their reservations (`coordinator/api/apikey_handlers.go` `checkKeySpendCap`).
 
 ### 6. Referral codes
 
-Register a code of your own (3–20 letters, digits, or hyphens; stored
-uppercased; **Privy**):
+Register a code of your own (3–20 letters, digits, or hyphens, stored
+uppercased — the rule is in [`reference/pricing-model.md` → Constants](../reference/pricing-model.md#constants);
+**Privy**):
 
 ```bash
 curl -X POST https://api.darkbloom.dev/v1/referral/register \
@@ -187,16 +191,16 @@ Details: [`architecture/billing.md` → Service accounts](../architecture/billin
 | Symptom | Cause | Fix |
 |---|---|---|
 | Paid on Stripe, balance unchanged | Webhook not delivered yet, or the coordinator's webhook secret is wrong | Poll the session status; if it stays `pending` for minutes, contact the operator with `stripe_session` |
-| `402`, `error.type` `insufficient_funds` (`error.code` is `insufficient_quota` on every 402) — "your balance is too low for this request — add funds at /billing or lower max_tokens" | Balance is below the worst-case reservation | Deposit, or lower `max_tokens`; see step 4 |
-| `402` `insufficient_quota` — "API key spend limit reached (monthly cap $25.00, used $24.90) — raise this key's limit or use another key" | Per-key cap | `PATCH /v1/keys/{id}` with a higher `limit_usd`, wait for the window to reset, or use another key |
-| `402` `provider_error` — "insufficient funds for provider price" | The only provider that could serve the model has a custom price above the platform price and your balance could not cover the extra reservation | Deposit; the request was not charged |
-| `400` "amount_usd must be at least $0.50" | Deposit below the minimum | Send `"amount_usd": "0.50"` or more, as a string |
+| `402` with `error.type` [`insufficient_funds`](../architecture/billing.md#payment-required-responses) | Balance is below the worst-case reservation | Deposit, or lower `max_tokens`; see step 4 |
+| `402` with `error.type` [`insufficient_quota`](../architecture/billing.md#payment-required-responses) | Per-key cap reached for the window | `PATCH /v1/keys/{id}` with a higher `limit_usd`, wait for the window to reset, or use another key |
+| `402` with `error.type` [`provider_error`](../architecture/billing.md#payment-required-responses) | The only provider that could serve the model has a custom price above the platform price and your balance could not cover the extra reservation | Deposit; the request was not charged |
+| `400` `invalid_request_error` on `create-session` about `amount_usd` | Deposit below the [minimum](../reference/pricing-model.md#constants) | Send `amount_usd` at or above the minimum, as a string (step 1) |
 | `400` "invalid referral code" on `create-session` | `referral_code` is not a registered code | Drop the field or fix the code |
 | `400` `referral_error` "account already has a referrer" / "cannot refer yourself" | One referrer per account; self-referral rejected | — |
 | `400` "invite code … is inactive / has expired / has reached max uses" or "account has already redeemed code" | Code exhausted or reused | Ask for a new code |
 | `404` `referral_error` "not a registered referrer" on `GET /v1/referral/info` | You have not registered a code | Step 6 |
 | `401` `auth_error` on `POST /v1/keys`, `/v1/referral/register`, `/v1/referral/apply` | Called with an API key | Use the Privy access token |
-| `429` on `create-session`, key mutations, referral or invite calls | Financial rate limit: 0.2 requests/s, burst 3 | Back off |
+| `429` on `create-session`, key mutations, referral or invite calls | The [financial rate limiter](../reference/pricing-model.md#constants) | Back off for `Retry-After` |
 | Balance dropped by more than the response should cost, then recovered | Reservation debited at admission, refund at settlement | Expected; read balance after the response completes |
 | `503` `billing_error` | Stripe or the referral service is not configured on this coordinator | Operator issue |
 

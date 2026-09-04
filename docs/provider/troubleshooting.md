@@ -18,10 +18,12 @@ darkbloom logs --last 1h       # unified logs, subsystem dev.darkbloom.provider
 
 `doctor` (`provider-swift/Sources/darkbloom/DoctorCommand.swift`, `Doctor`) and
 `status` read `~/.darkbloom/daemon-state.json`, which the daemon rewrites every
-`max(1, heartbeat_interval_secs / 2)` s (2 s by default). A snapshot older than
-90 s is `STALE`; older than `max(8 × refresh period, 90)` s and `doctor` reports
-the daemon as wedged (`provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`,
-`wedgedAfterSeconds`).
+`max(1, heartbeat_interval_secs / 2)` s. A snapshot older than the stale
+threshold is `STALE`; older than `max(8 × refresh period, stale threshold)` s
+and `doctor` reports the daemon as wedged
+(`provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift`,
+`wedgedAfterSeconds`). The heartbeat default and the stale threshold are in
+[`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 ## Installer exits
 
@@ -61,11 +63,11 @@ attestation readiness, trust, model fit, runtime, billing, version;
 | `huggingface cache`, `local mlx models` | `~/.cache/huggingface/hub` exists and holds serveable models | `darkbloom models download <id>` |
 | `sip`, `authenticated root`, `hardened runtime`, `debugger`, `binary hash`, `rdma` | Boot security and process integrity the coordinator scores | `csrutil enable` from Recovery; detach debuggers; reinstall if the binary hash is unknown. Effects on trust: [attestation](./attestation.md) |
 | `account link` | `~/.darkbloom/auth_token` present and accepted | `darkbloom login` |
-| `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; how and when the grant happens: [Reaching `hardware`](./attestation.md#reaching-hardware) |
+| `mdm enrollment`, `mdm verification` | Profile installed; coordinator has cross-checked `SecurityInfo` | `darkbloom enroll`; the steps and what to expect: [Reaching and keeping `hardware` trust](./attestation.md#steps) |
 | `console session`, `automatic login`, `auto-logout on idle`, `sleep prevention` | Attestation readiness (`provider-swift/Sources/ProviderCore/Diagnostics/AttestationReadiness.swift`) | A real console user must be logged in; enable automatic login; disable auto-logout; the daemon self-caffeinates while serving |
 | `active se key` | Secure Enclave signing key self-test | `darkbloom-enclave info`; hardware without SE runs at reduced trust |
 | `coordinator health`, `minimum version`, `coordinator trust` | Coordinator reachable, this version is accepted, trust verdict with reasons | `darkbloom update`; reasons are explained in [attestation](./attestation.md) |
-| `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching `hardware`](./attestation.md#reaching-hardware) |
+| `trust level` stuck at `self_signed` | The MDM `SecurityInfo` cross-check has not passed for this connection | `darkbloom enroll` if not enrolled; otherwise wait — see [Reaching and keeping `hardware` trust](./attestation.md#troubleshooting) |
 | `daemon`, `daemon connected`, `daemon state freshness` | Daemon process alive, WebSocket connected, snapshot refreshed | See [service lifecycle](#the-service-does-not-stay-running); a stale snapshot ⇒ `darkbloom restart` |
 | `recent model load` | Last model-load error recorded by the daemon | See [models and memory](#models-and-memory) |
 | `kv backend posture`, `kv backend crash-loop guard` | Explicit `engine_v2_kv_backend` request honoured; guard record present | See [KV-backend guard](#kv-backend-crash-loop-guard) |
@@ -102,40 +104,41 @@ tail -50 ~/.darkbloom/provider.log ~/.darkbloom/watchdog.log
 |---|---|---|
 | Service gone after `darkbloom stop` and a reboot | `stop` disables the label; auto-start returns only with `darkbloom start` (`provider-swift/Sources/darkbloom/StopCommand.swift`) | `darkbloom start` |
 | Daemon exits and nobody restarts it | The provider plist has `KeepAlive = false`; restarts are the watchdog's job, armed only when `provider.auto_restart = true` | Set `auto_restart = true`; `darkbloom restart` re-arms it (`provider-swift/Sources/darkbloom/RestartCommand.swift`) |
-| Models unload after an hour, daemon stays up | `backend.idle_timeout_mins = 60`; polled every 60 s; reload is lazy on the next request (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`) | Expected. `idle_timeout_mins = 0` disables unloading |
+| Models unload after a while, daemon stays up | `backend.idle_timeout_mins` elapsed (default in the [`provider.toml` table](./cli-reference.md#providertoml-keys-read-by-the-cli)); reload is lazy on the next request (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`) | Expected. `idle_timeout_mins = 0` disables unloading |
 | Provider offline after logout / at the login window | GUI LaunchAgents run only inside a logged-in session | Enable automatic login; see `console session` above |
-| Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold = 3` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
+| Daemon restarts every few minutes, then `kv backend crash-loop guard` appears | `crashLoopTripThreshold` restarts inside the watchdog window (`provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift`; value in [runtime constants](./cli-reference.md#runtime-constants)) | See [KV-backend guard](#kv-backend-crash-loop-guard) |
 | `darkbloom restart` prints `Provider is not running. Start it with darkbloom start.` | Plist not installed | `darkbloom start` |
 
 ## Coordinator connection
 
 | Symptom | Mechanism | Fix |
 |---|---|---|
-| `daemon connected` ⚠, console shows offline | The client reconnects with `ExponentialBackoff(base: 1.0, max: 30.0)` s (`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
-| Log: `WebSocket pong timeout (no response in 30s)` | Ping every `pingInterval = 10.0` s; no pong for `pongTimeout = 30.0` s closes the socket and the backoff restarts it | Network path stalls; nothing to configure on the provider |
-| Heartbeats arrive but requests do not | Heartbeat is `heartbeat_interval_secs = 5`; being connected is not being routable | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [attestation](./attestation.md#what-the-coordinator-checks-before-routing-to-you) |
+| `daemon connected` ⚠, console shows offline | The client reconnects with an exponential backoff (`ExponentialBackoff`, `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift`; bounds in [runtime constants](./cli-reference.md#runtime-constants)) | `curl -v https://api.darkbloom.dev/health`; check DNS, clock, TLS interception, firewall on 443 |
+| Log: `WebSocket pong timeout (no response in 30s)` | No pong within `pongTimeout` of a `pingInterval` ping closes the socket and the backoff restarts it ([runtime constants](./cli-reference.md#runtime-constants)) | Network path stalls; nothing to configure on the provider |
+| Heartbeats arrive but requests do not | A heartbeat every `heartbeat_interval_secs` proves the connection, not routability | `darkbloom doctor` → `trust level`, `coordinator trust`; the routing gates are listed in [`../architecture/security/attestation.md#routing-gate`](../architecture/security/attestation.md#routing-gate) |
 | `minimum version` ✗ | Coordinator rejects this `ProviderCore.version` | `darkbloom update` |
 
 ## Updates
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold = 3` times before surviving `defaultStabilizationSeconds = 600` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
+| `Latest release vX is quarantined on this machine.` | vX crashed `rollbackThreshold` times before surviving `defaultStabilizationSeconds` (`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values in [runtime constants](./cli-reference.md#runtime-constants)) | Wait for the next release (it installs normally), or `darkbloom update --override-quarantine` |
 | `vX is already installed on disk but this process is vY.` | Update landed, daemon not restarted | `darkbloom restart` |
 | `SHA-256 hash mismatch!` | Download ≠ `bundle_hash`/`binary_hash`/`metallib_hash` | Retry; persistent mismatch means the release record and artifact disagree |
 | `another update/recovery operation is active` | Watchdog recovery or a previous update holds the lock | Wait a minute; retry |
 | No automatic updates | `provider.auto_update = false`, or `DARKBLOOM_NO_UPDATE_CHECK` set in a `--foreground` shell | `darkbloom autoupdate status`, `darkbloom autoupdate enable` |
 | Fan control stops after an update | The unprivileged updater does not replace the root helper | `sudo darkbloom fan enable` ([fan control](./fan-control.md)) |
 
-Constants: first in-daemon check 300 s after start, then every 1800 s, install
-delayed up to `update_jitter_seconds = 300`, 120 s drain before restart
-(`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`).
+The check cadence (`autoUpdateInitialDelay`, `autoUpdateInterval`), the
+`update_jitter_seconds` install delay and the `updateDrainTimeout` before the
+restart (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`)
+are tabulated in [`cli-reference.md`](./cli-reference.md#runtime-constants).
 
 ## Models and memory
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`): loadable = min(total − `memory_reserve_gb`, OS-available) − resident MLX − live GPU-active | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
+| `model fit` ✗ / `recent model load` shows admission refused | `ModelLoadAdmission` (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift`) found less free-for-load memory than the model's padded weights plus headroom ([load gate](../architecture/hardware-support.md#load-gate-modelloadadmission)) | Close other apps; lower `max_model_slots`; pick a smaller quantisation ([hardware requirements](./hardware-requirements.md)) |
 | Model missing from `darkbloom models list` | Not in `~/.cache/huggingface/hub`, or filtered by `enabled_models` | `darkbloom models download <id>`; `darkbloom models list --all` |
 | Load fails after a catalog update | New build published for the alias | `darkbloom models remove <id>` then `darkbloom models download <id>` |
 | `Skipping <id>: model_type … has no engine-v2 adapter` | Family not served by CBv2 | Use a supported family; the model is never advertised |
@@ -144,7 +147,8 @@ delayed up to `update_jitter_seconds = 300`, 120 s drain before restart
 ## KV-backend crash-loop guard
 
 The watchdog writes `~/.darkbloom/kv-backend-guard.json` after
-`crashLoopTripThreshold = 3` restarts; while it matches the running version the
+`crashLoopTripThreshold` restarts ([runtime constants](./cli-reference.md#runtime-constants));
+while it matches the running version the
 engine forces contiguous KV and `doctor` shows `kv backend crash-loop guard`
 (`provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift`;
 `provider-swift/Sources/darkbloom/Diagnostics/KVBackendGuardDiagnostics.swift`).

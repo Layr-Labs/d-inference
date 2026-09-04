@@ -105,17 +105,9 @@ done
 ```
 
 **Prompt parity** — `./scripts/verify-prompt-parity.sh` proves the three
-prompt-contract implementations agree. It regenerates the production prompt
-vectors (Go `coordinator/cmd/promptfixtureinput` → Rust `prompt-fixtures` bin)
-and `cmp`s them against `fixtures/prompt-contract/v1/production_vectors.json`;
-then runs the Swift `ProductionPromptParityTests`, Go
-`TestProductionPlansConsumeSharedTokenVectors`, and the Rust `shared_vectors` /
-`planner_fixture` tests against the same vectors; and finally load-tests the
-release `promptsidecar` under its Go supervisor. Needs Go, `cargo +1.88.0`,
-Swift and `jq`. Manifests come from the committed snapshot
-`fixtures/prompt-contract/v1/manifests`; `PROMPT_PARITY_UPDATE=1` re-fetches
-them from `PROMPT_PARITY_CATALOG_URL` (default
-`https://api.darkbloom.dev/v1/models/catalog`) and rewrites the fixtures.
+prompt-contract implementations agree on the same production vectors; the
+procedure, its inputs and the regeneration flow are in
+[step 9](#9-prompt-contract-parity-fixtures-and-vectors).
 
 **Installer** — `./scripts/test-install-atomic.sh` exercises the atomic
 install/replace path of `scripts/install.sh` in a temp dir (and runs
@@ -135,7 +127,7 @@ node --test landing/earn-calculator-core.test.js
 
 ```bash
 make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contbatch/tests -t .   (in scripts/)
-./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see release.md)
+./scripts/check-release-version.sh # ProviderCore.version == coordinator LatestProviderVersion (see operations/provider-release.md)
 ./scripts/sync-install-embed.sh check   # coordinator/api/install.sh byte-identical to scripts/install.sh
 ./scripts/test-prod-env-refresh.sh      # deploy/gcp/prod/refresh-env.sh contract
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
@@ -186,7 +178,7 @@ binary that already has `mlx.metallib` beside it.
 | `DARKBLOOM_TESTBED_MODEL` / `DARKBLOOM_TESTBED_MODEL_B` | `e2e/testbed/config.go` | Override the default (`mlx-community/gpt-oss-20b-MXFP4-Q8`) and secondary (`mlx-community/gemma-4-26B-A4B-it-qat-4bit`) checkpoints; must be CBv2-servable |
 | `TESTBED_MODEL_ID` | `e2e/testbed/suite.go` | Per-suite model override |
 | `DARKBLOOM_TESTBED_KV_BACKEND` | `e2e/testbed/config.go` (`ResolveKVBackend`) | `auto` / `paged` / `contiguous` written to the provider TOML as `engine_v2_kv_backend`; unset = provider default |
-| `DARKBLOOM_TESTBED_MAX_CONCURRENT` | `e2e/testbed/config.go` (`ResolveMaxConcurrent`) | `engine_v2_max_concurrent`; unset = provider default (`4`); malformed value is a hard error |
+| `DARKBLOOM_TESTBED_MAX_CONCURRENT` | `e2e/testbed/config.go` (`ResolveMaxConcurrent`) | `engine_v2_max_concurrent`; unset = the provider default ([`../provider/cli-reference.md`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)); malformed value is a hard error |
 | `DARKBLOOM_TESTBED_EXPECT_KV_BACKEND` | `e2e/testbed/kv_expectation.go` | Pre-warm every slot and fail unless the heartbeat's `kv_backend` equals this |
 | `DARKBLOOM_CBV2_PAGED_KV` | `e2e/testbed/config.go` | Provider fleet kill switch; CI refuses to run the paged gate when it is set |
 | `DARKBLOOM_PROMPT_SIDECAR_BINARY` | `e2e/exact_cache_routing_test.go` | Path to a built `promptsidecar` for exact-cache routing |
@@ -206,6 +198,82 @@ binary that already has `mlx.metallib` beside it.
 | `e2e/mixed_version_test.go` | `TestIntegrationMixedVersionReleasedV0712Provider`, `TestIntegrationMixedVersionGateContract` |
 | `e2e/benchmark_test.go` | `TestBenchmark_SingleProviderStreaming`, `_SingleProviderNonStreaming`, `_MultiModelMultiProvider`, `_HighConcurrency`, `_QueueSaturation`, `_ManyUsers`, `_SingleModelScaling`, `_HeavyLoad_100Concurrent_10KB`; config tests `TestBenchmarkSuiteConfig*`, `TestBenchmarkControlSuiteIsIsolatedAndMatchesPosture`, `TestBenchmarkCapacitySaturationPolicy` |
 
+### 9. Prompt-contract parity fixtures and vectors
+
+`fixtures/prompt-contract/v1` is shared by the Rust, Go and Swift
+prompt-contract tests: `contract_vectors.json` and `block_hash_vectors.json`
+(identity and chain vectors), `corpus.json` (complete requests for tools, null
+sanitization, Harmony and Gemma normalization, reasoning effort, Unicode, all
+four endpoints, exact block multiples and long prompts),
+`production_vectors.json` (per-model normalized bodies, token IDs and
+boundaries) and `manifests/` (the catalog snapshot the vectors were generated
+from). Production tokenizer/template/config artifacts are **not** in the
+repository; the vectors are generated only from manifest-pinned,
+coordinator-provisioned artifacts. What the vectors protect is explained in
+[`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md#parity-fixtures-and-measured-latency).
+
+**Run the gate** (what CI's Provider Tests job runs; needs Go, `cargo +1.88.0`,
+Swift and `jq`):
+
+```bash
+./scripts/verify-prompt-parity.sh
+```
+
+The script, in order:
+
+1. Replays the committed manifest snapshot through
+   `go run ./cmd/promptfixtureinput --manifest-source-directory
+   fixtures/prompt-contract/v1/manifests …` (from `coordinator/`), which
+   downloads only the verified prompt artifacts into a temporary artifact root
+   (override with `PROMPT_PARITY_ARTIFACT_ROOT`; artifacts come from
+   `PROMPT_PARITY_CDN_URL`).
+2. Regenerates the vectors with the Rust generator:
+
+   ```bash
+   cargo +1.88.0 run --locked --quiet \
+     --manifest-path coordinator/promptsidecar/Cargo.toml \
+     --bin prompt-fixtures -- \
+     --manifest-directory "$MANIFEST_DIR" \
+     --artifact-root "$ARTIFACT_ROOT" \
+     --cases fixtures/prompt-contract/v1/corpus.json \
+     --output "$WORK/production_vectors.json"
+   ```
+
+   `prompt-fixtures` (`coordinator/promptsidecar/src/bin/prompt-fixtures.rs`)
+   also accepts one `--manifest <file>` per model instead of
+   `--manifest-directory`. Models whose template needs provider-local dynamic
+   time are written with `cache_routing_eligible: false` and
+   `ineligibility_reason: "dynamic_time"` and get no routable vectors.
+3. `cmp`s the generated file byte-for-byte against
+   `fixtures/prompt-contract/v1/production_vectors.json`.
+4. Runs the three implementations against the same vectors: Swift
+   `swift test --package-path provider-swift --filter ProductionPromptParityTests`
+   (with `PROMPT_PARITY_REQUIRED=1`, `PROMPT_PARITY_VECTORS`,
+   `PROMPT_PARITY_ARTIFACT_ROOT` set), Go
+   `go test ./promptcontract -run TestProductionPlansConsumeSharedTokenVectors`,
+   and Rust `--test shared_vectors production_plans_match_shared_token_vectors`
+   plus `--test planner_fixture concurrent_cold_contract_load_is_singleflight`.
+5. Builds the release `promptsidecar` and drives it through the real Go
+   supervisor with `go run ./coordinator/cmd/promptsidecarloadproof`
+   (`PROMPT_LOAD_PROOF_DURATION`, `PROMPT_LOAD_PROOF_QPS`,
+   `PROMPT_LOAD_PROOF_MAX_RSS_MIB` tune the run), failing on any plan mismatch,
+   timeout, overload, restart, child replacement or RSS escape.
+
+**Regenerate the fixtures** after a catalog, normalisation, renderer or
+tokenizer change:
+
+```bash
+PROMPT_PARITY_UPDATE=1 ./scripts/verify-prompt-parity.sh
+```
+
+This re-fetches every active public manifest from `PROMPT_PARITY_CATALOG_URL`
+(default `https://api.darkbloom.dev/v1/models/catalog`), rewrites
+`fixtures/prompt-contract/v1/manifests/` and `production_vectors.json`, then
+runs the same parity tests against the new vectors. Commit both. Missing
+models, artifacts or corpus cases and unrecognised template incompatibilities
+fail the gate (`require_model_manifests`, `require_case_ids`); no fabricated
+token IDs are accepted.
+
 ## CI workflow map
 
 | Workflow | Trigger | Jobs (name → what runs) |
@@ -213,7 +281,7 @@ binary that already has `mlx.metallib` beside it.
 | [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push, PR | **Release Integrity** — `scripts/check-release-version.sh`, `scripts/sync-install-embed.sh check`, `scripts/test-prod-env-refresh.sh` · **Docs Lint** — `scripts/docs-check.sh` · **Coordinator Tests** — `go test -race $(go list ./... \| grep -v /e2e)` with `postgres:16` service + `gofmt -l .` · **Coordinator Lint** — `golangci-lint run` (v2.1.6) · **Prompt Sidecar Tests** — cargo fmt/check/clippy/test on Rust 1.88.0, static musl Docker stage, `verify-prompt-sidecar-linux.sh` · **Provider Tests** (macOS 12-vcpu) — `swift build --build-tests`, metallib staging, `swift test`, `verify-prompt-parity.sh`, six nested suites via `run-nested-suite.sh` (each its own step, `if: !cancelled()`), `test-install-atomic.sh` · **Swift Build + Cache** — release build of `darkbloom` + `darkbloom-fan-helper`, warms the SwiftPM cache · **Console UI Lint & Build** — Node 22, `npm ci`, `npx eslint src/`, `npm run build` |
 | [`.github/workflows/integration.yml`](../../.github/workflows/integration.yml) | push to `master`/`main`, PR | **E2E Integration Tests** (macOS, 120 min budget): install Postgres 16, `swift build -c debug`, cargo sidecar build, metallib staging, HF snapshot downloads; lanes: paged @ 8 blocking gate (`TestIntegration\|TestProfile` minus exact-cache) → exact-cache routing paged @ 8 (expected red, `continue-on-error`) → default-posture smoke (`EXPECT_KV_BACKEND=contiguous`) → current coordinator vs released v0.7.12 provider (`scripts/fetch-v0712-provider.sh`, `DARKBLOOM_MIXED_VERSION_EXPECT=artifact`, fails unless `MIXED_VERSION_TIER_ARTIFACT_OK` appears) → released v0.7.12 coordinator (`git worktree add … v0.7.12`) vs candidate provider (`NonStreamingInference`, `StreamingInference`) |
 | [`.github/workflows/benchmarks.yml`](../../.github/workflows/benchmarks.yml) | PR, gated by the `benchmarks` environment (manual approval) | **E2E Benchmarks** — `go test ./e2e/ -count=1 -v -timeout 40m -p=1 -run 'TestBenchmark'`, posts `BENCHMARK_MD_PATH` as a PR comment |
-| [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [release.md](release.md) |
+| [`.github/workflows/release-swift.yml`](../../.github/workflows/release-swift.yml) | tag `v*`, manual | Provider release; see [`../operations/provider-release.md`](../operations/provider-release.md) |
 | [`.github/workflows/register-model.yml`](../../.github/workflows/register-model.yml) | manual | `POST /v1/admin/models/register`; see [`../operations/model-migration.md`](../operations/model-migration.md) |
 | `.github/workflows/threat-model-review.yml`, `.github/workflows/claude.yml`, `.github/workflows/codex.yml` | PR / comment | Review automation; not test gates |
 
@@ -239,6 +307,6 @@ binary that already has `mlx.metallib` beside it.
 ## Related
 
 - [build.md](build.md) — toolchain and build commands.
-- [release.md](release.md) — release checks that also run in CI.
+- [`../operations/provider-release.md`](../operations/provider-release.md) — release checks that also run in CI.
 - [`../architecture/components/provider.md`](../architecture/components/provider.md) — what the provider does at runtime.
 - [`../architecture/prompt-contract-sidecar.md`](../architecture/prompt-contract-sidecar.md) — what prompt parity protects.

@@ -14,8 +14,8 @@ and the event contract in [`../reference/telemetry-schema.md`](../reference/tele
 Providers run on machines the project does not own, next to prompts the
 project must never see. The first telemetry design gave every client (Swift
 provider, console, app) a free-form event API posted to
-`POST /v1/telemetry/events` (now `410 Gone`), sanitized and stored by the coordinator.
-That path is retired: the route answers `410` without reading the body, the Swift
+`POST /v1/telemetry/events`, sanitized and stored by the coordinator.
+That path is retired: the route answers `telemetry_ingest_disabled` without reading the body ([api-contracts](../reference/api-contracts.md#telemetry-1)), the Swift
 `TelemetryClient` and console `telemetry.ts` are no-op facades, and the
 `telemetry_events` table is gone. What replaced it is narrower and structural:
 
@@ -38,7 +38,7 @@ to start from them.
 ### Heartbeat telemetry
 
 ```
-provider (5 s baseline, event heartbeats ≤ 2/s)
+provider (every heartbeat_interval_secs, event heartbeats ≤ 2/s)
   → GET /ws/provider frame `heartbeat`
   → providerReadLoop            validate prefix-cache telemetry; reject → routing.cache_telemetry_rejected
   → Registry.Heartbeat          clamp system_metrics to [0,1]; canonicalHeartbeatModelState → clampBackendCapacity;
@@ -48,6 +48,8 @@ provider (5 s baseline, event heartbeats ≤ 2/s)
   → recordMLXCacheTelemetry     provider.mlx_memory.*{provider_id}, provider.mlx_cache.*{provider_id}
   → PersistProviderThrottled    providers / provider_reputation rows, at most every 30 s
 ```
+
+The baseline cadence is the provider's `heartbeat_interval_secs` ([CLI reference](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)).
 
 Metrics are emitted only from the accepted registry snapshot, never from the
 raw frame: values have been clamped (`maxDecodeTPS = 500`, `maxPrefillTPS =
@@ -64,18 +66,14 @@ platform gauges (`providers.online`, `utilization.*`, `capacity.*`,
 `datadog.Client` (`coordinator/datadog/datadog.go`) is constructed in
 `coordinator/cmd/coordinator/main.go` only when `DD_API_KEY` or `DD_AGENT_HOST`
 is set; otherwise `s.dd` is nil and every `ddIncr`/`ddGauge`/`ddHistogram`
-(`coordinator/api/server.go`) is a no-op. Configuration is environment only:
+(`coordinator/api/server.go`) is a no-op. Configuration is environment only —
+`DD_API_KEY`, `DD_AGENT_HOST`, `DD_DOGSTATSD_URL`, `DD_SITE`, `DD_ENV`, `DD_SERVICE`,
+`DD_HOSTNAME` — with defaults under [configuration](../reference/configuration.md#telemetry-datadog-and-profiling).
+`DD_API_KEY` enables the HTTPS paths (series, logs, events); `DD_AGENT_HOST` alone still
+constructs the client and starts the tracer.
 
-| Variable | Default | Role |
-|---|---|---|
-| `DD_API_KEY` | unset | enables the HTTPS paths (series, logs, events) |
-| `DD_AGENT_HOST` | unset | alternative trigger for constructing the client and starting the tracer |
-| `DD_DOGSTATSD_URL` | `localhost:8125` | DogStatsD UDP address |
-| `DD_SITE` | `datadoghq.com` | intake site for the HTTPS URLs |
-| `DD_ENV`, `DD_SERVICE` | `production`, `d-inference-coordinator` | constant tags on every metric and log |
-| `DD_HOSTNAME` | `DD_SERVICE` | host on the HTTPS series |
-
-All metric names take the `d_inference.` namespace (`statsd.WithNamespace`).
+Metric names in this page omit the Datadog namespace prefix (`statsd.WithNamespace`;
+owner: [telemetry-inventory](../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics)).
 Which leg carries a metric depends on kind and on whether an API key is set
 (`httpMetrics`):
 
@@ -149,7 +147,7 @@ and the `inference.timing.*` histograms are built from the same
    every provider-supplied string before it becomes a tag; `provider_id`
    appears only on the per-provider memory gauges.
 5. **Client ingestion is off, and stays off without reading a byte.**
-   `handleTelemetryIngest` returns `410` before touching the body
+   `handleTelemetryIngest` answers `telemetry_ingest_disabled` before touching the body
    (`TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`).
 
 ## Failure modes

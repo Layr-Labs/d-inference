@@ -82,7 +82,8 @@ Self-route to an owned machine relaxes exactly two gates in the scheduler
 (`coordinator/registry/scheduler.go`, `providerPassesRoutingGatesLocked`;
 `relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)`):
 
-- the hardware-trust floor (`Registry.MinTrustLevel`, default `hardware`), so an
+- the hardware-trust floor (`Registry.MinTrustLevel`, set by
+  [`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)), so an
   un-enrolled or `self_signed` machine of yours can serve you;
 - private-only admission, so a `private_only` provider is eligible.
 

@@ -9,8 +9,8 @@ public traffic requires.
 
 ## Prerequisites
 
-- A Mac that meets [hardware requirements](./hardware-requirements.md).
-  `darkbloom start` refuses machines with less than 8 GB RAM or without a
+- A Mac that meets [hardware requirements](./hardware-requirements.md#minimum-requirements).
+  `darkbloom start` refuses machines below the RAM floor or without a
   Metal GPU (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift`,
   `Start.runPreflightChecks`; `provider-swift/Sources/darkbloom/StartCommand.swift`,
   `Start.prepareServeRuntime`).
@@ -97,7 +97,7 @@ darkbloom enroll
 A freshly started provider is `self_signed`; the coordinator sends public
 requests only to `hardware`-level machines, which requires MDM enrolment of
 this Mac. What the command does, how long the upgrade takes and how to read the
-result are in [attestation → Reaching `hardware`](./attestation.md#reaching-hardware).
+result are in [Reaching and keeping `hardware` trust](./attestation.md#steps).
 Until then only your own [self-route](./self-route.md) requests reach the
 machine.
 
@@ -125,29 +125,25 @@ to reach `hardware` trust.
 The config file is optional: `~/.config/darkbloom/provider.toml`
 (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
 `defaultConfigPath`). Without it every key takes the code default; `darkbloom
-autoupdate` and `darkbloom beta` write it when they change a value. The defaults
-that matter on day one:
+autoupdate` and `darkbloom beta` write it when they change a value. The keys
+that matter on day one, with an omitted key taking its code default:
 
 ```toml
 [provider]
-memory_reserve_gb = 4
-auto_update = true
-auto_restart = true
-update_jitter_seconds = 300
+# memory_reserve_gb, auto_update, auto_restart, update_jitter_seconds
 
 [backend]
 enabled_models = []          # empty = every local model the box can serve
-idle_timeout_mins = 60       # unload a model idle this long; 0 disables
-max_model_slots = 3
-engine_v2_max_concurrent = 4
+# idle_timeout_mins (0 disables unloading), max_model_slots, engine_v2_max_concurrent
 
 [coordinator]
-url = "wss://api.darkbloom.dev/ws/provider"
-heartbeat_interval_secs = 5
 private_only = false         # true = serve only your own self-route traffic
+# url, heartbeat_interval_secs
 ```
 
-Every key, env var and default is in
+Every key and its default is in the
+[`provider.toml` table](./cli-reference.md#providertoml-keys-read-by-the-cli);
+every environment variable is in
 [`reference/configuration.md`](../reference/configuration.md).
 
 ## Earning

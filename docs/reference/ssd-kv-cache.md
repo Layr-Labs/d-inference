@@ -16,7 +16,7 @@ The tier owns one root per user, one directory per model.
 |---|---|---|
 | Root | `~/Library/Caches/darkbloom/kv3/` (`FileManager.urls(for: .cachesDirectory)` + `ssdRootDirectoryName = "darkbloom/kv3"`) | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift` (`cacheRootDirectory`) |
 | Per-model directory | `<root>/<modelKey>/`, `modelKey = SHA256(modelId)` first 12 hex characters | `SSDPrefixCacheFactory.swift` (`cacheDirectory`) |
-| Block file | `<tag>.dbk3`, one file per 256-token block; `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
+| Block file | `<tag>.dbk3`, one file per block ([block size](../architecture/prefix-cache.md#block-hashing)); `fileExtension = "dbk3"` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockStore.swift` |
 | Epoch record | `<modelKey>/cache-epoch.json`, schema `darkbloom.cache-epoch.v1` | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDCacheEpochStore.swift` |
 | Test root | `DARKBLOOM_PREFIX_CACHE_TEST_ROOT`, honoured only with `DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL` affirmative | `SSDPrefixCacheFactory.swift` (`isolatedTestRoot`) |
 | Legacy roots | `darkbloom/kv/` is swept at startup by `LegacyKVCacheSweeper`; `kv3/` is never touched by that sweep | `provider-swift/Sources/ProviderCore/KVCache/LegacyKVCacheSweeper.swift` |
@@ -64,8 +64,8 @@ parse or authentication failure deletes the file and is served as a cold miss
 | `weightHash` | Verified SHA-256 aggregate of the live weights; absent ⇒ tier disabled (`weight_hash_unavailable`) | `SSDPrefixCacheFactory.swift` (`make`) |
 | `promptContractId` | `PromptContractIdentity.compute(modelDirectory:)`; absent ⇒ tier disabled (`runtime_identity_unavailable`) | `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` |
 | `layoutEpoch` | `"cbv2-frozen-full-3\|native-fp\|<blockSize>\|<layerKindsDigest>"`, digest = SHA-256 of the canonical layer-kind list, hex prefix | `SSDBlockStore.swift` (`layoutEpoch(blockSize:layerKinds:)`) |
-| `blockSize` | `CBv2BlockHasher.defaultBlockSize = 256` | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`blockSize`) |
-| `blockHashVersion` | `darkbloom-block-chain-v1` | `PromptContractIdentity.swift` |
+| `blockSize` | `CBv2BlockHasher.defaultBlockSize`, mirrored by `PrefixCachePolicy.blockSize`; value in [`../architecture/prefix-cache.md#block-hashing`](../architecture/prefix-cache.md#block-hashing) | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` (`blockSize`) |
+| `blockHashVersion` | `PromptContractIdentity.blockHashVersion`; value in [`../architecture/prefix-cache.md#block-hashing`](../architecture/prefix-cache.md#block-hashing) | `PromptContractIdentity.swift` |
 | `keyFingerprint` | Fingerprint of the KEK in use | `SSDCacheEpochStore.swift` (`Binding`) |
 | Epoch | Random per-model generation in `cache-epoch.json`; any binding drift (for example the legacy `cbv2-snap-2\|f16\|…` layout that `SSDCacheEpochStoreTests` rotates away) wipes the model's blocks and mints a new epoch before `ready` is advertised | `SSDCacheEpochStore.swift` |
 
@@ -98,12 +98,12 @@ All constants are code constants of `SSDPrefixCachePolicy` and
 
 | Rule | Constant | Code |
 |---|---|---|
-| Disk budget | `defaultSSDDiskBudgetBytes = 20 * 1_073_741_824`; effective budget `min(20 GiB, volumeFree / 2)`, box-wide | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
+| Disk budget | `defaultSSDDiskBudgetBytes = 20 * 1_073_741_824` (20 GiB); effective budget `max(1, min(defaultSSDDiskBudgetBytes, volumeFree / 2))`, box-wide | `PrefixCachePolicy.swift` (`ssdDiskBudgetBytes`) |
 | Eviction order | LRU by last hit across the whole `kv3/` root; eviction is `unlink` + index removal | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDBlockIndex.swift` |
 | Maintenance sweep | `SSDWholeRootMaintainer`, `intervalSeconds = 60`: TTL expiry, budget eviction, crash-temp cleanup | `SSDPrefixCacheFactory.swift` (`startWholeRootMaintenance`), `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWholeRootMaintainer.swift` |
 | TTL | `defaultTTLSeconds = 900`, `maxTTLSeconds = 900`, sliding on hit | `SSDPrefixCachePolicy.swift` |
 | Daily write cap | `defaultMaxWriteBytesPerDay = 150 * 1_000_000_000` | `SSDPrefixCachePolicy.swift` |
-| Low-disk write stop | `lowDiskFloorBytes = max(lowDiskAbsoluteFloorBytes = 20 GiB, lowDiskCapacityFraction = 0.05 × volume)`; reads continue; ENOSPC starts `enospcCooldownSeconds = 600` | `SSDPrefixCachePolicy.swift` |
+| Low-disk write stop | `lowDiskFloorBytes = max(lowDiskAbsoluteFloorBytes = 20 * 1_073_741_824, lowDiskCapacityFraction = 0.05 × volume)`; reads continue; ENOSPC starts `enospcCooldownSeconds = 600` | `SSDPrefixCachePolicy.swift` |
 | Staging cap | `defaultMaxStageBytes = 1024 * 1_048_576`; `defaultMaxStageMillis = 1000` at `conservativeStageBytesPerSecond = 1_500_000_000` | `SSDPrefixCachePolicy.swift` |
 | Donation floor | `prefixTokens > adoptionBoundTokens + minEffectiveTokens`, whole blocks only; `defaultMinEffectiveTokens = 1024`, raised to 1_536 for `.frozenFullReplay` with bound ≥ 25_600 | `SSDPrefixCache.swift` (`donate`), `PrefixCachePolicy.swift` |
 | Write-behind queue | `writeQueueMaxJobs = 2`, `writeQueueMaxBytes = 512 * 1_048_576`, `writeQueueSlackBytes = 256 * 1_048_576`; overflow drops the donation | `SSDPrefixCachePolicy.swift`, `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDWriteBehind.swift` |
@@ -122,7 +122,7 @@ only for a resolved-paged slot).
 | Family (`model_type`) | `CBv2ModelCapabilities` | Layout | Engine strategy (contiguous / paged) | Cache built when |
 |---|---|---|---|---|
 | GPT-OSS (`gpt_oss`) | `.attentionOnly` (`prepareProductionBackend`) | Interleaved sliding/full hybrid | `.frozenFullReplay` / `.frozenFullReplay` | `engine_v2_kv_backend = "paged"` resolved paged |
-| Gemma 4 (`gemma4`, `gemma4_text`) | `.attentionOnly` | Interleaved sliding/full hybrid | `.frozenFullReplay` / `.frozenFullReplay` (bound ≥ 25_600 ⇒ 1_536-token floor) | `engine_v2_kv_backend = "paged"` resolved paged |
+| Gemma 4 (`gemma4`, `gemma4_text`) | `.attentionOnly` | Interleaved sliding/full hybrid | `.frozenFullReplay` / `.frozenFullReplay` (long-hybrid donation floor applies — [Size and eviction rules](#size-and-eviction-rules)) | `engine_v2_kv_backend = "paged"` resolved paged |
 | Qwen 3.5/3.8 dense (`qwen3_5`) | `.initialRecurrentTarget`: `supportsPrefixReuse: false`, `supportsPagedKV: false` | Recurrent state | unsupported (`.modelRequestStateUnsupported`) | never (`unsupported_layout`) |
 | Qwen 3.5/3.6 MoE (`qwen3_5_moe`) | `.initialRecurrentTarget` | Recurrent state | unsupported | never (`unsupported_layout`) |
 | Qwen3-VL MoE (`qwen3_vl_moe`) | `MLXVLM.Qwen3VL.cbv2Capabilities`: all `false` | Full attention | unsupported | never (`unsupported_layout`) |

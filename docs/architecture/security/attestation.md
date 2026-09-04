@@ -15,8 +15,8 @@ the thing being judged — so every claim that matters is either signed by a key
 the provider cannot extract (the Secure Enclave P-256 key), corroborated by
 Apple's MDM subsystem (SecurityInfo), or proven by a channel only genuine code
 can use (APNs). The result feeds one routing decision: the public floor is
-`Registry.MinTrustLevel`, default `hardware` (`EIGENINFERENCE_MIN_TRUST`,
-`coordinator/registry/config.go`).
+`Registry.MinTrustLevel` (`EIGENINFERENCE_MIN_TRUST`, default under
+[configuration](../../reference/configuration.md#routing-admission-and-ttft); `coordinator/registry/config.go`).
 
 ## Mechanism
 
@@ -27,7 +27,7 @@ flowchart TB
     end
     subgraph L1["Level self_signed (TrustSelfSigned)"]
         A1["Registration blob signed by the SE P-256 key<br/>verifyProviderAttestation → SetAttested(true, TrustSelfSigned)"]
-        A2["challengeLoop every DefaultChallengeInterval = 5m<br/>ChallengeResponseTimeout = 30s · routable while LastChallengeVerified ≤ 16m old"]
+        A2["challengeLoop every DefaultChallengeInterval<br/>reply within ChallengeResponseTimeout · routable while LastChallengeVerified ≤ challengeFreshnessMaxAge"]
     end
     subgraph L2["Level hardware (TrustHardware)"]
         A3["MDM SecurityInfo cross-check, scheduled per connection<br/>SIP on · SecureBootLevel == full · agrees with the SE blob<br/>recordTrustReuse → GrantHardwareEvidenceAtEpochIfNotUntrusted"]
@@ -45,7 +45,7 @@ flowchart TB
     A2 -->|"3 hard failures, SIP/Secure Boot off"| A0
     A3 -->|"posture mismatch (terminal)"| A0
     A3 -.->|"reconnect: RestoreProviderState caps to self_signed"| A1
-    G["Routing: providerLivenessGateReasonLocked<br/>status · private-only · trust floor · RuntimeVerified ·<br/>providerSupportsPrivateTextLocked · challenge ≤ 16m"]
+    G["Routing: providerLivenessGateReasonLocked<br/>status · private-only · trust floor · RuntimeVerified ·<br/>providerSupportsPrivateTextLocked · challenge within challengeFreshnessMaxAge"]
     A3 --> G
     B2 -->|"required once codeAttestationEnforcedLocked"| G
 ```
@@ -93,7 +93,7 @@ over SHA-256 of the exact `attestation` bytes as sent (`AttestationRaw`), with
 |---|---|---|
 | Blob present | Open Mode: stay `none`, connected. Policy configured: `MarkUntrusted` | `coordinator/api/provider.go` (`verifyProviderAttestation`) |
 | Signature verifies; `secureEnclaveAvailable`, `sipEnabled`, `secureBootEnabled` all true (`rdmaDisabled`, `authenticatedRootEnabled` recorded only) | `Valid = false`; `MarkUntrusted` only under a binary-hash policy | `coordinator/attestation/attestation.go` (`Verify`, `VerifyJSON`, `ParseP256PublicKey`) |
-| Freshness, providers ≥ `minProviderVersionForReconnectAttestation` = `0.8.15`: `timestamp` within ±`RegistrationAttestationMaxAge` = 2m of coordinator time | `MarkUntrusted` ("attestation replay rejected"). Older providers keep their blob but `ChipFamily`, `RuntimeCapabilities`, `MetallibHash` are stripped | `coordinator/api/provider.go` (`verifyProviderAttestation`); `coordinator/attestation/attestation.go` (`CheckTimestamp`) |
+| Freshness, providers ≥ `minProviderVersionForReconnectAttestation` ([version gating](../../reference/api-contracts.md#version-gating)): `timestamp` within ±`RegistrationAttestationMaxAge` = 2m of coordinator time | `MarkUntrusted` ("attestation replay rejected"). Older providers keep their blob but `ChipFamily`, `RuntimeCapabilities`, `MetallibHash` are stripped | `coordinator/api/provider.go` (`verifyProviderAttestation`); `coordinator/attestation/attestation.go` (`CheckTimestamp`) |
 | Key binding: `register.public_key` == blob `encryptionPublicKey` | Invalid; `MarkUntrusted` only under a policy | `coordinator/api/provider.go` (`verifyProviderAttestation`) |
 | Binary hash, only when `binaryHashEnforce && policyConfigured`: `binaryHash` present and in the known-good set | `MarkUntrusted`. Otherwise the hash is drift telemetry (v0.6.0: code identity replaced it as the control) | `coordinator/api/provider.go` (`verifyProviderAttestation`, `binaryHashPolicySnapshot`) |
 | Success | `SetAttested(true, TrustSelfSigned)`; `trust_status{self_signed, online, "SE attestation verified, awaiting MDM verification"}`; `LastChallengeVerified = now` | `coordinator/api/provider.go` (`verifyProviderAttestation`, `sendTrustStatus`) |
@@ -118,7 +118,7 @@ The coordinator's Secure Boot signal is MDM `SecurityInfo.SecureBootLevel`
 | Checks after the signatures | `sip_enabled` must be present (fail closed) and true — false → `MarkUntrusted`; `secure_boot_enabled == false` → `MarkUntrusted`; `rdma_disabled` must be present (value informational); binary-hash / metallib / model-hash drift against registration → `MarkUntrusted`; `ReconcileAttestedRuntimeCapabilities` mismatch → `MarkUntrusted` + `StatusPolicyViolation` close; provider version ≥ `MinProviderVersion` | `coordinator/api/provider.go` (`verifyChallengeResponse`) |
 | Success | `ChallengeVerifiedSIP = sip_enabled`; `UpdateModelWeightHashes`; `RecordChallengeSuccess` (clears a transient untrust and drains queued requests); then `tryTrustReuseFastSkip` may re-grant `hardware` from durable device evidence | `coordinator/api/provider.go` (`verifyChallengeResponse`); `coordinator/api/trust_reuse.go` (`tryTrustReuseFastSkip`) |
 | Failure accounting | `RecordChallengeFailure(providerID, transient)`; `transient` = reason `timeout` / `no response`. A hard failure clears `LastChallengeVerified` and `ChallengeVerifiedSIP` at once (unroutable immediately); at `MaxFailedChallenges` = 3 consecutive failures the provider is `MarkUntrusted` (hard) or `MarkUntrustedTransient` (transient); at `MaxConsecutiveChallengeTimeoutsBeforeReconnect` = 6 transient timeouts the WebSocket is closed with `StatusPolicyViolation` to force a clean re-registration | `coordinator/api/provider.go` (`handleChallengeFailure`, `handleTransientChallengeFailure`); `coordinator/registry/registry.go` (`RecordChallengeFailure`, `MaxFailedChallenges`) |
-| Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` = 16m, else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
+| Freshness for routing | `now − LastChallengeVerified ≤ challengeFreshnessMaxAge` ([routing](../routing.md#challenge-freshness)), else the scheduler skips the provider (`GateChallengeStale`) | `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`); `coordinator/registry/routing_eligibility.go` (`providerLivenessGateReasonLocked`) |
 | Stop | `ChallengeShouldStop` when hard-untrusted or gone | `coordinator/registry/registry.go` (`ChallengeShouldStop`) |
 
 ### Layer 3 — MDM SecurityInfo (the `hardware` grant)
@@ -140,7 +140,7 @@ challenge, so a throttled APNs push cannot strand a genuine device.
 | Outcome classes | `mdmVerifyGranted` (stop) · `mdmVerifyTransient` (retry; `MDMFailureReason` ∈ `error`, `device-not-found`, `found-not-enrolled`, `securityinfo-timeout`; trust unchanged) · `mdmVerifyTerminal` (`posture-mismatch`, `MarkUntrusted`, stop). A response proven by a received SecurityInfo is the only path to terminal | `coordinator/api/provider.go` (`mdmVerifyOutcome`, `verifyProviderViaMDM`) |
 | Grant | Persist first (`recordTrustReuse` → store CAS `RecoverProviderTrustReuse` / `UpsertProviderTrustReuse`), then apply atomically at the observed untrust epoch: `GrantHardwareEvidenceAtEpochIfNotUntrusted` sets `Attested`, `TrustLevel = hardware`, `DeviceEvidence`; `trust_status{hardware, online, "MDM verification passed"}`; scheduler workers then enqueue the `mda` task | `coordinator/api/trust_reuse.go` (`recordTrustReuseAtGeneration`); `coordinator/registry/registry.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`) |
 | Late response | A SecurityInfo webhook arriving after the await window is applied only for the exact scheduler binding and `CommandUUID` that issued it; reason `"MDM verification passed (late SecurityInfo)"` | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`); `coordinator/api/trust_reuse.go` (`recordLateTrustReuse`) |
-| Webhook gate | Only responses whose `CommandUUID` matches an outstanding command (TTL `outstandingCommandTTL` = 30m) are honoured; only `SecurityInfo` and `DeviceInformation` may ever be sent | `coordinator/mdm/mdm.go` (`HandleWebhook`, `assertReadOnlyCommand`, `readOnlyMDMRequestTypes`) |
+| Webhook gate | Only responses whose `CommandUUID` matches an outstanding command (within `outstandingCommandTTL`, [enrollment](enrollment.md#coordinator--micromdm)) are honoured; only `SecurityInfo` and `DeviceInformation` may ever be sent | `coordinator/mdm/mdm.go` (`HandleWebhook`, `assertReadOnlyCommand`, `readOnlyMDMRequestTypes`) |
 | Reconnect | `RestoreProviderState` caps a stored `hardware` to `self_signed`, resets `MDAVerified`, and only *stages* a stored MDA chain. The first fresh signed challenge may re-grant via trust reuse (next table) | `coordinator/registry/persistence.go` (`RestoreProviderState`) |
 | Observability | `mdm.verification{outcome}` counter; `mdm.scheduler.*` (`enqueued`, `attempts`, `grants`, `timeouts`, `queue_depth`, `retry_delay_seconds`, …); gauges `providers.by_trust_status{trust_level,status}` and `providers.by_mdm_failure{reason}` | `coordinator/api/mdm_scheduler_metrics.go`; `coordinator/api/provider.go`; `coordinator/registry/registry.go` |
 
@@ -219,7 +219,7 @@ this order; the first failure is the `GateReason`
 | 4 | `trustRank(TrustLevel) ≥ trustRank(minTrust)` | `GateTrustFloor` |
 | 5 | `RuntimeVerified` | `GateRuntimeUnverified` |
 | 6 | `providerSupportsPrivateTextLocked` (below) | `GatePrivateText` |
-| 7 | `LastChallengeVerified` non-zero and ≤ `challengeFreshnessMaxAge` = 16m old | `GateChallengeStale` |
+| 7 | `LastChallengeVerified` non-zero and within [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) | `GateChallengeStale` |
 
 `providerSupportsPrivateTextLocked` (`coordinator/registry/registry.go`) requires
 all of: non-empty X25519 `PublicKey`; `Backend == "mlx-swift"`
@@ -233,7 +233,7 @@ self-reported); current application evidence when a release policy is enforced
 `dangerous_modules_blocked`, and `sip_enabled` in `PrivacyCapabilities` are
 wire-compatibility fields and are not consulted.
 
-| Level | Public routing — `publiclyRoutableLocked`, which is the liveness gate called with `minTrust = MinTrustLevel` (default `hardware`) and `allowPrivate = false` | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
+| Level | Public routing — `publiclyRoutableLocked`, which is the liveness gate called with `minTrust = MinTrustLevel` ([default](../../reference/configuration.md#routing-admission-and-ttft)) and `allowPrivate = false` | Owner self-route (`minTrust = TrustNone`, `allowPrivate = true`) |
 |---|---|---|
 | `none` | no (`GateTrustFloor`) | yes, if gates 1–2 and 5–7 pass |
 | `self_signed` | no (`GateTrustFloor`) | yes, same conditions |
@@ -263,7 +263,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 6. `sip_enabled == false` or `secure_boot_enabled == false` in any challenge reply, a binary/model-hash drift, or an encrypted-chunk violation untrusts the provider immediately, without the three-strike count — `coordinator/api/provider.go` (`verifyChallengeResponse`, `decryptTextResponseChunk`).
 7. A code-identity proof is accepted only for the exact (SE key, APNs token, `K`) it was issued to and only within `challengeValidity`; cached proofs authorise a resume challenge, never a grant — `coordinator/api/provider_codeattest.go` (`codeAttestLoopForGeneration`, `handleCodeAttestationResponse`), `coordinator/api/code_attest_throttle.go`.
 8. Code identity becomes mandatory only when an attestor is configured and `APNS_ENFORCE_AFTER` has passed — `coordinator/registry/registry.go` (`codeAttestationEnforcedLocked`).
-9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than 16 minutes — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go` (`challengeFreshnessMaxAge`).
+9. Routing evaluates `providerLivenessGateReasonLocked` in a fixed order and skips any provider whose last verified challenge is older than [`challengeFreshnessMaxAge`](../routing.md#challenge-freshness) — `coordinator/registry/routing_eligibility.go`, `coordinator/registry/scheduler.go`.
 10. Hard untrust writes a durable tombstone that wins any race with a pending hardware grant — `coordinator/api/trust_reuse.go` (`invalidateTrustReuse`), `coordinator/registry/registry.go` (`GrantHardwareEvidenceAtEpochIfNotUntrusted`).
 11. Effective `RuntimeCapabilities` require hardware trust and code proof; `SetAttested` below hardware and `SetCodeAttested(false)` clear them — `coordinator/registry/registry.go`.
 
@@ -272,10 +272,10 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | Failure | Effect | Code |
 |---|---|---|
 | No attestation blob | `none`; connected in Open Mode; `untrusted` when a binary-hash policy is configured | `coordinator/api/provider.go` (`verifyProviderAttestation`) |
-| Blob timestamp outside ±2m (provider ≥ 0.8.15) | `untrusted` ("attestation replay rejected") | `coordinator/api/provider.go` |
+| Blob timestamp outside ±`RegistrationAttestationMaxAge` (providers ≥ `minProviderVersionForReconnectAttestation`, [Layer 1](#layer-1--secure-enclave-registration-blob)) | `untrusted` ("attestation replay rejected") | `coordinator/api/provider.go` |
 | `register.public_key` ≠ blob `encryptionPublicKey` | Invalid attestation; `untrusted` under a policy; never private-text routable | `coordinator/api/provider.go` |
-| Challenge unanswered (30s) | Transient failure; 3 → `MarkUntrustedTransient` (recoverable); 6 → WebSocket closed | `coordinator/api/provider.go` (`handleTransientChallengeFailure`) |
-| Nonce / signature / status-signature failure | Hard failure: unroutable at once; 3 → `untrusted` | `coordinator/api/provider.go` (`handleChallengeFailure`) |
+| Challenge unanswered within `ChallengeResponseTimeout` | Transient failure; `MaxFailedChallenges` consecutive → `MarkUntrustedTransient` (recoverable); `MaxConsecutiveChallengeTimeoutsBeforeReconnect` → WebSocket closed ([Layer 2](#layer-2--periodic-challenge)) | `coordinator/api/provider.go` (`handleTransientChallengeFailure`) |
+| Nonce / signature / status-signature failure | Hard failure: unroutable at once; `MaxFailedChallenges` consecutive → `untrusted` | `coordinator/api/provider.go` (`handleChallengeFailure`) |
 | SIP or Secure Boot reported off | `untrusted` immediately | `coordinator/api/provider.go` (`verifyChallengeResponse`) |
 | MDM `device-not-found` / `found-not-enrolled` | Stays `self_signed`; retried on the scheduler cadence; provider must complete enrolment | `coordinator/api/provider.go` (`verifyProviderViaMDM`) |
 | MDM `securityinfo-timeout` / `error` | Stays `self_signed`; retried; a late webhook can still grant | `coordinator/api/provider.go` (`ApplyLateSecurityInfo`) |
@@ -283,7 +283,7 @@ received (`darkbloom status`, `Trust: <level> / <status>`).
 | MDA chain invalid or unbound | `mda_verified` stays false; level unaffected | `coordinator/api/provider.go` (`verifyAppleDeviceAttestation`) |
 | No APNs token / no Aqua session / pushes unanswered | `CodeAttested` false; routable in grace mode, derouted from private text after `APNS_ENFORCE_AFTER` | `coordinator/api/provider_codeattest.go` |
 | APNs token rotates after a grant | `CodeAttested` cleared; new challenge cycle | `coordinator/api/provider_codeattest.go` |
-| Reconnect | Level capped to `self_signed`, `MDAVerified` reset; trust reuse may restore `hardware` on the first passing challenge within 5m or a ≤ 90s measured gap | `coordinator/registry/persistence.go`, `coordinator/api/trust_reuse.go` |
+| Reconnect | Level capped to `self_signed`, `MDAVerified` reset; trust reuse may restore `hardware` on the first passing challenge within `defaultTrustReuseWindow` or a measured gap ≤ `defaultTrustReuseReconnectGap` ([Layer 3 trust reuse](#layer-3--mdm-securityinfo-the-hardware-grant)) | `coordinator/registry/persistence.go`, `coordinator/api/trust_reuse.go` |
 
 ## Code map
 

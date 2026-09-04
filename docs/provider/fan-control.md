@@ -5,8 +5,9 @@
 Hold the fans of an Apple Silicon Mac at a fixed speed while the provider is
 serving and the GPU is hot, so thermal throttling does not cut decode
 throughput. For operators who run the daemon on a Mac they own; the result is
-a root helper that engages at 45 °C and hands control back to macOS whenever
-the provider stops. Optional: inference never depends on it.
+a root helper that engages above a GPU-temperature threshold and hands control
+back to macOS whenever the provider stops. Optional: inference never depends on
+it.
 
 ## Prerequisites
 
@@ -44,14 +45,15 @@ the provider stops. Optional: inference never depends on it.
 2. Install and enable the helper:
 
    ```bash
-   sudo darkbloom fan enable                          # 80 % at 45 °C
+   sudo darkbloom fan enable                          # policy defaults (table below)
    sudo darkbloom fan enable --speed 70 --temperature 50
    ```
 
-   `--speed` is a percentage of each fan's maximum RPM, accepted range
-   `60`–`90`, default `80`; `--temperature` is the engage threshold in °C,
-   default `45`; the release threshold is always 5 °C below it
-   (`FanPolicyConfiguration`, `provider-swift/Sources/DarkbloomFanCore/FanPolicy.swift`).
+   `--speed` is a percentage of each fan's maximum RPM; `--temperature` is the
+   engage threshold in °C, and the release threshold sits a fixed margin below
+   it (`FanPolicyConfiguration`, `provider-swift/Sources/DarkbloomFanCore/FanPolicy.swift`).
+   Defaults and the accepted speed range are in
+   [`cli-reference.md` → `darkbloom fan`](./cli-reference.md#darkbloom-fan).
    `FanServiceManager.enable` (`provider-swift/Sources/darkbloom/Fan/FanServiceManager.swift`)
    requires `geteuid() == 0` and a non-root `SUDO_UID` naming the provider
    account (error otherwise: `run this command through sudo from the provider
@@ -66,9 +68,10 @@ the provider stops. Optional: inference never depends on it.
    `--local` — wraps its run in `withFanActivityLease`
    (`provider-swift/Sources/darkbloom/StartCommand+Modes.swift`;
    `provider-swift/Sources/darkbloom/FanActivityLease.swift`). The provider
-   asks the helper for a 15 s lease and renews it every 5 s
+   asks the helper for a short lease and renews it well inside its lifetime
    (`FanIPC.leaseDurationSeconds`, `renewalIntervalSeconds`,
-   `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift`); a missing or
+   `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift`; values in
+   [runtime constants](./cli-reference.md#runtime-constants)); a missing or
    failing helper is logged and ignored.
 
 4. Adjust later without reinstalling:
@@ -90,11 +93,12 @@ once per second and runs `FanPolicyStateMachine`
 
 | Rule | Value |
 |---|---|
-| Engage | GPU temperature ≥ `--temperature` (45 °C) for 3 consecutive samples **and** a provider lease is active |
-| Release | temperature ≤ threshold − 5 °C (40 °C) for 30 consecutive samples, or the lease lapses |
-| Speed while engaged | `--speed` % of each fan's maximum RPM (80 %) |
+| Engage | GPU temperature ≥ `--temperature` for the engage sample count **and** a provider lease is active |
+| Release | temperature ≤ the release threshold below `--temperature` for the release sample count, or the lease lapses |
+| Speed while engaged | `--speed` % of each fan's maximum RPM, within the allowed range |
 | No lease | `waiting_for_provider`: fans stay under macOS control even when hot |
-| Lease lapse | Without a renewal inside 15 s (provider stopped, crashed, slept) the helper restores automatic control |
+| Lease lapse | Without a renewal inside `leaseDurationSeconds` (provider stopped, crashed, slept) the helper restores automatic control |
+| Defaults | Trigger and release temperatures, speed and its range, sample counts, lease and renewal periods: [`cli-reference.md` → Runtime constants](./cli-reference.md#runtime-constants) |
 | Safety | If a reading fails or the SMC refuses a write the helper restores automatic control and reports `safety_override` / `error` |
 
 Modes reported by `fan status` are `disabled`, `waiting_for_provider`,
@@ -121,8 +125,9 @@ sudo launchctl print system/io.darkbloom.fan | head
 
 With the provider serving and the GPU above threshold for a few seconds,
 `mode` moves from `waiting_for_temperature` to `manual` and the fan RPM column
-rises to the configured percentage. Stop the provider (`darkbloom stop`); within
-15 s the mode returns to `waiting_for_provider` and macOS controls the fans.
+rises to the configured percentage. Stop the provider (`darkbloom stop`); once
+the lease lapses the mode returns to `waiting_for_provider` and macOS controls
+the fans.
 
 ## Disable and uninstall
 

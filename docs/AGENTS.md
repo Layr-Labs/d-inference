@@ -29,6 +29,14 @@ record types that engineering repos need and Diátaxis does not name.
 Apply the compass at the sentence level too: a how-to that starts explaining
 *why* has drifted; move the why to `architecture/` and link.
 
+The audience directories hold how-tos first, but a reference or explanation
+page that only that audience reads lives beside them rather than in
+`reference/` or `architecture/`: `provider/cli-reference.md`,
+`provider/hardware-requirements.md` and `consumer/models.md` are reference
+pages; `consumer/privacy-expectations.md` is an explanation. Such a page names
+its type in the lede and follows the skeleton of that type (§3), not the how-to
+skeleton.
+
 ## 2. Principles (and where they come from)
 
 1. **One mode per page.** Mixed pages fail every reader: the operator wants
@@ -58,7 +66,12 @@ Apply the compass at the sentence level too: a how-to that starts explaining
    cognitive-load theory (split-attention effect).
 7. **Compress: one canonical home per fact.** State a fact once, in the page
    whose type owns it, and link from everywhere else. Restating drifts;
-   linking does not. The privacy model lives in
+   linking does not. The owner is the `reference/` page that covers the fact,
+   or, when none does, the `architecture/` page that owns the mechanism. A
+   how-to or runbook may repeat a value in a prerequisite or step the reader
+   must act on ("requires macOS 26") and then links the owner in the same
+   sentence; other pages name the identifier and link, never the value. The
+   privacy model lives in
    [`architecture/security/encryption.md`](architecture/security/encryption.md)
    and nowhere else. Delete superseded text instead of caveating it. Where code
    says it better, cite the code instead of paraphrasing it.
@@ -97,7 +110,7 @@ sentence lede (principle 3). Then, by type:
 - **No line numbers** outside `reports/` and `releases/`. Lines rot within
   days; symbols survive refactors and are searchable.
 - Quote constants and defaults exactly as the code spells them
-  (`challengeFreshnessMaxAge = 6m`), not rounded.
+  (`challengeFreshnessMaxAge = 16 * time.Minute`), not rounded.
 - Environment variables, message `type` strings, HTTP paths, and CLI flags are
   always in backticks and spelled exactly.
 - A claim you cannot tie to code is either a design intention (put it in
@@ -142,7 +155,7 @@ git-tracked files by default; `--all` includes untracked drafts.
 | Trust level, attestation, enrollment, encryption | `architecture/security/*.md`; `provider/attestation.md`; `consumer/verification.md`; `threat-model.yaml` |
 | Pricing, ledger, payouts, referral | `architecture/billing.md`, `reference/pricing-model.md`, `consumer/billing.md` |
 | Store schema / migration | `architecture/storage.md` |
-| Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `developer/release.md`; `CHANGELOG.md` |
+| Provider version bump (`ProviderCore.version` ↔ `LatestProviderVersion`) | `operations/provider-release.md`; `CHANGELOG.md` |
 | Build, test, CI, or script | `developer/build.md`, `developer/test.md`; `operations/` runbook that invokes it |
 | New model family or engine capability | `architecture/inference.md`, `consumer/models.md`, `provider/hardware-requirements.md` |
 | Anything user-visible | `CHANGELOG.md` |

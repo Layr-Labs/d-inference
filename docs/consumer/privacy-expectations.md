@@ -2,92 +2,26 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-What Darkbloom's coordinator and the serving provider can and cannot see when
-you send an inference request. The mechanism — which key opens which hop, wire
-formats, error codes, and the code that enforces each guarantee — lives in
-[`../architecture/security/encryption.md`](../architecture/security/encryption.md);
-this page is the consumer-facing summary and does not restate it.
+What you can and cannot rely on when you send an inference request through Darkbloom. For consumers deciding what to send; the mechanism — which key opens which hop, wire formats, error codes, and the code that enforces each guarantee — is stated once in [`../architecture/security/encryption.md`](../architecture/security/encryption.md) and is not restated here.
 
-## The statement
+## What you can rely on
 
-The provider is the decryption endpoint: the prompt and the completion are
-plaintext inside the provider process, because in-process inference at native
-speed requires it. The coordinator handles plaintext only in memory for the life
-of one request (parsed for routing, cache affinity, and billing) and never logs
-or stores it; the consumer → coordinator hop is TLS plus optional NaCl Box
-sealing, and the coordinator → provider and provider → coordinator hops are
-mandatory NaCl Box. The full per-party table is in
-[`../architecture/security/encryption.md`](../architecture/security/encryption.md#what-each-party-can-observe);
-code identity bounds *which* binary may act as the decryption endpoint.
+1. The two legs between the coordinator and the provider are always encrypted with NaCl Box, whether or not you sealed your request; a provider without a registered key is never selected — [hop 2](../architecture/security/encryption.md#hop-2--coordinator--provider-mandatory), [hop 3](../architecture/security/encryption.md#hop-3--provider--coordinator-mandatory).
+2. You can seal your request body to the coordinator's published key so that TLS-terminating intermediaries in front of the coordinator never see it; the response comes back sealed to your ephemeral key with `X-Eigen-Sealed: true` — [hop 1](../architecture/security/encryption.md#hop-1--consumer--coordinator-optional); wire shape in [`../reference/api-contracts.md#sealed-transport-wire-shape`](../reference/api-contracts.md#sealed-transport-wire-shape).
+3. The coordinator holds your prompt, attached media and the completion in memory only for the life of the request and writes none of it to logs or the store; the only content-derived artifacts are keyed digests used for cache routing — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
+4. Your request is dispatched only to a provider that passes every privacy gate: an X25519 key bound to an attested Secure Enclave identity, in-process inference, coordinator-verified SIP, and code identity once it is enforced — [invariants](../architecture/security/encryption.md#invariants), [routing gate](../architecture/security/attestation.md#routing-gate).
+5. A provider that returns a plaintext or wrong-key response chunk is marked `untrusted` and your request fails rather than being served insecurely — [hop 3](../architecture/security/encryption.md#hop-3--provider--coordinator-mandatory).
+6. The provider never sees your API key, Privy identity or balance, and never sees another consumer's prompts — [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
+7. Provider error text is reduced to a closed vocabulary before it is logged or returned to you, and client telemetry ingest is disabled so no free-form fields reach the coordinator — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
 
-Darkbloom is therefore **not** "the coordinator never sees plaintext". The
-precise claim is that plaintext exists in the coordinator only in memory (the
-production coordinator runs in a hardware-encrypted Confidential VM), is never
-logged or retained, and is re-encrypted for the selected provider, which is
-bound to an attested Secure Enclave identity
-([`verification.md`](./verification.md)).
+## What you cannot rely on
 
-## Hop by hop
-
-```mermaid
-flowchart LR
-    C["Consumer"] -- "TLS + optional NaCl Box<br/>(Content-Type application/eigeninference-sealed+json)" --> K["Coordinator<br/>plaintext in memory only"]
-    K -- "mandatory NaCl Box<br/>sealed to the provider's registered X25519 key" --> P["Provider<br/>decryption endpoint"]
-    P -- "mandatory NaCl Box<br/>sealed to the request's session key" --> K
-    K -- "TLS; sealed to your ephemeral key<br/>when you sealed the request" --> C
-```
-
-| Hop | What protects it | What you control |
-|---|---|---|
-| Consumer → coordinator | TLS always. Optionally seal the body to the coordinator's X25519 key from `GET /v1/encryption-key` and send it as `Content-Type: application/eigeninference-sealed+json`; the response comes back sealed to your ephemeral key with `X-Eigen-Sealed: true` | Whether to seal. Plaintext JSON on the same routes is accepted; the console's toggle defaults to off |
-| Inside the coordinator | The body is opened in memory, parsed as JSON, re-marshalled and capped at 16 MiB, then sealed for exactly one provider. Nothing content-derived is logged or stored except keyed digests used for cache affinity; provider error text is reduced to a closed vocabulary; provider telemetry ingest is disabled (HTTP 410) | Nothing to configure |
-| Coordinator → provider | A fresh X25519 session key pair per request seals the body to the provider's registered key, which is bound to its Secure Enclave attestation. Providers without a key, or failing any privacy gate, are never selected | Nothing to configure |
-| Provider → coordinator | Every response chunk is sealed from the provider's static registered key to the request's session key; a plaintext or wrong-key chunk untrusts the provider and fails the request | Nothing to configure |
-
-## What the coordinator can see
-
-| Data | Visible to the coordinator? | Notes |
-|---|---|---|
-| Prompt and attached media | Yes, in memory for one request | Parsed for routing, cache affinity, and billing; never logged or stored |
-| Completion text | Yes, in memory while relaying | Never logged or stored |
-| Model, sampling parameters, `stream`, `max_tokens` | Yes | Stored as non-content request parameters |
-| Token counts, latency, request and trace IDs, selected provider | Yes | Stored and logged; this is the billing and routing record |
-| Your identity: API key hash, Privy DID, balance | Yes | Ledger and auth records |
-| Provider identity and attestation state | Yes | Drives trust-based routing |
-
-## What the coordinator cannot see
-
-| Data | Why |
-|---|---|
-| Prompt or completion at rest | Never persisted; the only content-derived artifacts are keyed digests for cache routing |
-| The provider's X25519 private key or Secure Enclave key | Live only in the provider process and the Secure Enclave |
-| Your plaintext response after it leaves | When you sealed the request, the response is sealed to your ephemeral key before it is written |
-
-## What the provider can see
-
-By design the provider sees the plaintext prompt, the completion it generates,
-and the model and sampling parameters. It does not see your API key or Privy
-credentials, your balance, or any other consumer's prompts or responses. Which
-provider gets your request is decided by the coordinator's routing gate
-(`hardware` trust floor by default plus every privacy gate) — see
-[`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate).
-
-## Sender encryption is optional
-
-`GET /v1/encryption-key` returns `503 encryption_unavailable` when the
-coordinator has no configured key; in that deployment the consumer → coordinator
-hop is TLS only. The coordinator → provider and provider → coordinator hops are
-always sealed, regardless of whether you sealed your request.
-
-## Logging policy
-
-- Prompt and completion content is never written to logs or the store.
-- Billing records hold token counts, model IDs, and costs, not text.
-- Request logs hold metadata: model, token counts, latency, request and trace
-  IDs, provider ID.
-- The itemised list of what is retained and what is explicitly avoided, with
-  the enforcing code, is in
-  [`../architecture/security/encryption.md`](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
+1. "The coordinator never sees plaintext" is false. The coordinator opens your request in memory to route, bill and enforce the request contract, then re-encrypts it for exactly one provider — [what each party can observe](../architecture/security/encryption.md#what-each-party-can-observe).
+2. The provider sees your prompt and the completion in plaintext: it is the decryption endpoint, because in-process inference at native speed requires it. The guarantee is about *which* process holds the key — [`../architecture/security/attestation.md`](../architecture/security/attestation.md), [`../architecture/security/identity-binding.md`](../architecture/security/identity-binding.md).
+3. Sealing is optional and deployment-dependent: plaintext JSON is accepted on the same routes, and `GET /v1/encryption-key` returns `503 encryption_unavailable` when the coordinator has no sealing key, leaving the consumer → coordinator hop TLS-only — [failure modes](../architecture/security/encryption.md#failure-modes).
+4. A sealed request cannot use remote `image_url` media: the coordinator refuses to fetch on behalf of a sealed body — [hop 1](../architecture/security/encryption.md#hop-1--consumer--coordinator-optional).
+5. Metadata is retained: model, sampling parameters, token counts, latency, request and trace IDs, the selected provider, and your account identity (API key hash, Privy DID, balance) — [what the coordinator logs and retains](../architecture/security/encryption.md#what-the-coordinator-logs-and-retains).
+6. There is no per-response signature or receipt: the `X-Provider-*` headers are the coordinator's assertion over TLS, not a provider-signed proof — [`verification.md`](./verification.md).
 
 ## Related
 

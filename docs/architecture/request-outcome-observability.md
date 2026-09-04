@@ -80,7 +80,7 @@ Two pairings deserve a note. `dispatchErrorClass` maps the dispatch loop's own f
 
 ### `error_reason`
 
-`error_reason` is the durable, low-cardinality reason used as the `reason` tag on `d_inference.inference.error`. It is derived by `inferenceErrorReason` in `route_outcome.go`: a provider-supplied `error_reason` wins if it is in the allowlist below, otherwise the coordinator derives one from status, class, code and (allowlisted substrings of) the message, and anything unrecognised becomes `unknown`.
+`error_reason` is the durable, low-cardinality reason used as the `reason` tag on `inference.error`. It is derived by `inferenceErrorReason` in `route_outcome.go`: a provider-supplied `error_reason` wins if it is in the allowlist below, otherwise the coordinator derives one from status, class, code and (allowlisted substrings of) the message, and anything unrecognised becomes `unknown`.
 
 | `error_reason` | Origin |
 |---|---|
@@ -128,7 +128,7 @@ The `RejectionRecord` comment also names `auth` and `rate_limit` stages; no code
 
 ### Datadog counters
 
-All counters go through `ddIncr`/`ddHistogram`, which are no-ops when Datadog is not configured. Names are shown without the `d_inference.` prefix; the full metric inventory is in [telemetry-inventory.md](../reference/telemetry-inventory.md).
+All counters go through `ddIncr`/`ddHistogram`, which are no-ops when Datadog is not configured. Names are shown without the Datadog namespace prefix; the prefix and the full metric inventory are owned by [telemetry-inventory.md](../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics).
 
 | Metric | Tags | Emitted from | Semantics |
 |---|---|---|---|

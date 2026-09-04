@@ -185,7 +185,7 @@ and how the scheduler reads them: [`../architecture/scheduling.md`](../architect
 | `slots` | `[]BackendSlotCapacity` | `[BackendSlotCapacity]` | req | [`slots[]`](#slots) |
 | `gpu_memory_active_gb`, `gpu_memory_peak_gb`, `gpu_memory_cache_gb` | `float64` | `Double` | req | Metal active / peak / reclaimable cache, shared across slots |
 | `total_memory_gb` | `float64` | `Double` | req | |
-| `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the 90 % unified-memory cap, the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
+| `free_for_load_gb` | `*float64` | `Double` (always encoded) | ptr | **The single source of truth for cold-load admission**: max additional model-weight GB loadable now, net of the unified-memory cap (`defaultCapFraction`, [`../architecture/hardware-support.md#constants`](../architecture/hardware-support.md#constants)), the OS/operator reserve and activation + minimum-KV headroom, clamped to real OS-available memory, with idle resident models counted as evictable. Nil (legacy provider) → the coordinator falls back to its total-memory heuristic |
 | `mlx_cache_reclaimer` | `*MLXCacheReclaimerTelemetry` | `MLXCacheReclaimerTelemetry?` | opt | cumulative allocator-reclaim counters (`uint64`, reset on restart): `cache_limit_bytes`, `sweep_signals`, `reclaims`, `reclaimed_bytes`, `last_reclaimed_bytes`, `last_reclaim_duration_ms` |
 | `capacity_seq` | `uint64` | `UInt64` | opt | per-connection monotonic snapshot sequence; the coordinator discards stale or reordered snapshots, and any `seq > 0` marks the connection quote-capable (`capacity_probe`). 0/omitted = legacy last-write-wins |
 | `telemetry` | `*CapacityTelemetry` | `CapacityTelemetry?` | opt | [`backend_capacity.telemetry`](#backend_capacitytelemetry) |
@@ -412,7 +412,7 @@ drift correction for the coordinator's ledger, not reservations.
 | JSON key | Go | Presence | Notes |
 |---|---|---|---|
 | `quote_id` | `string` | req | echo of the probe's random, request-local id |
-| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the 250 ms probe window and does not compare seqs |
+| `capacity_seq` | `uint64` | req | snapshot the quote was computed from; the coordinator trusts the probe window (`capacityProbeWindow`, [`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) and does not compare seqs |
 | `admissible_now` | `bool` | req | advisory — the inference request itself is the reservation |
 | `rejection_reason` | `CapacityRejectionReason` | opt | present **exactly when** `admissible_now` is false: `token_budget`, `kv_headroom`, `memory_cap`, `slot_state`, `template`, `capability`, `deadline` |
 | `ttft_p50_ms`, `ttft_p90_ms` | `float64` | req | end-to-end quantiles from completed comparable requests, never summed per-stage p95s |
@@ -527,10 +527,11 @@ The coordinator never tells a provider to unload. Residency changes reach a
 provider only as a `desired_models` reconciliation (prefetch → hard-swap →
 `models_update`) and through the provider's own idle timeout
 (`provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift`;
-`idle_timeout_mins` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`,
-default `60`, `0` disables). The coordinator observes the result on the next
-heartbeat (`warm_models`, `slots[]`); its 1 h idle-unload assumption lives in
-`coordinator/registry/capacity_cooldown.go`.
+`idle_timeout_mins` in `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`;
+default in [`../provider/cli-reference.md#providertoml-keys-read-by-the-cli`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli),
+`0` disables). The coordinator observes the result on the next heartbeat
+(`warm_models`, `slots[]`); its assumption about that idle-unload cycle is a
+comment in `coordinator/registry/capacity_cooldown.go`.
 
 ## Tests that pin the wire
 

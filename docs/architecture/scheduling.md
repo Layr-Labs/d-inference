@@ -31,12 +31,11 @@ plus whatever it has dispatched since. Scheduling therefore has three jobs:
 
 ### Per-model request queue
 
-`RequestQueue` (`coordinator/registry/queue.go`) keeps one FIFO per model.
-
-| Parameter | Default | Override |
-|---|---|---|
-| `defaultQueueMaxDepth` | `32` queued requests per model | `EIGENINFERENCE_QUEUE_MAX_DEPTH` |
-| `defaultQueueMaxWait` | `120 * time.Second` per request | `EIGENINFERENCE_QUEUE_MAX_WAIT` |
+`RequestQueue` (`coordinator/registry/queue.go`) keeps one FIFO per model,
+bounded by `defaultQueueMaxDepth` queued requests per model (`maxSize`) and
+`defaultQueueMaxWait` per request (`maxWait`); the `EIGENINFERENCE_QUEUE_*`
+overrides and their defaults are in
+[configuration.md → Routing, admission and TTFT](../reference/configuration.md#routing-admission-and-ttft).
 
 `Enqueue` sweeps the model's stale entries, then returns `ErrQueueFull` when
 the queue already holds `maxSize` requests. Each waiter blocks in
@@ -87,12 +86,15 @@ the wire string:
 
 | `SlotState` | Wire `state` | Weights resident | Routable | Cost effect (`slotStatePenalty`) |
 |---|---|---|---|---|
-| `running` | `running` | yes — actively serving | yes | `slotStatePenaltyRunning = 0.0` |
-| `idle` | `idle` | yes — loaded, nothing in flight | yes | `0.0` |
-| `idle_shutdown` | `idle_shutdown` | no — evicted after idle, engine warm | yes | `slotStatePenaltyIdleShutdown = 20_000.0` |
+| `running` | `running` | yes — actively serving | yes | `slotStatePenaltyRunning` |
+| `idle` | `idle` | yes — loaded, nothing in flight | yes | `slotStatePenaltyRunning` |
+| `idle_shutdown` | `idle_shutdown` | no — evicted after idle, engine warm | yes | `slotStatePenaltyIdleShutdown` |
 | `crashed` | `crashed` | no | **no** (`slot_crashed`) | ineligible |
 | `reloading` | `reloading` | no — load in progress | **no** (`slot_reloading`) | ineligible |
-| `other` | anything else, or no slot | no | yes | `slotStatePenaltyUnknown = 30_000.0` |
+| `other` | anything else, or no slot | no | yes | `slotStatePenaltyUnknown` |
+
+The penalty values are part of the cost model, stated once in
+[`routing.md` → Cost model](routing.md#cost-model).
 
 `slotStateModelLoaded` (`coordinator/registry/scheduler.go`) treats
 `running` and `idle` as *resident*; that is the definition of **warm** used
@@ -142,15 +144,15 @@ slots share, in bytes when the provider reports byte-mode budgets.
 
 **Memory fallback** for slots without a token budget: a resident model needs
 no weight memory; a non-resident one needs `modelSizeGB` plus the request's
-KV estimate (`tokens × kvCacheBytesPerToken / bytesPerGB`, `kvCacheBytesPerToken
-= 400_000`). An idle on-disk provider with nothing in flight is judged against
+KV estimate (`tokens × kvCacheBytesPerToken / bytesPerGB`; the fallback
+`kvCacheBytesPerToken` is in [`routing.md` → Cost model](routing.md#cost-model)). An idle on-disk provider with nothing in flight is judged against
 its reported `FreeForLoadGB` when present, otherwise against
 `modelSizeGB + kvCacheGB + osReserveGB ≤ totalMemoryGB` with
 `osReserveGB = 4.0`; a busy provider must satisfy
 `totalMemoryGB − GPUMemoryActiveGB ≥ required`.
 
 The **absolute hardware-fit gate** (`modelFitsHardware`,
-`modelMemoryHeadroomFactor = 2.0`) precedes both paths for non-resident models
+`modelMemoryHeadroomFactor`) precedes both paths for non-resident models
 and is described with the other gates in [`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary).
 
 ### Concurrency caps
@@ -177,7 +179,8 @@ count across all models must be below its *provider cap*.
 `MaxConcurrency` when positive, else the provider cap.
 
 **Quality cap** (`effectiveMaxConcurrencyForModelRateLocked`), enabled by
-`EIGENINFERENCE_QUALITY_CONCURRENCY_CAP` (default `true`): the base cap is
+[`EIGENINFERENCE_QUALITY_CONCURRENCY_CAP`](../reference/configuration.md#routing-admission-and-ttft):
+the base cap is
 lowered to `ceil(qualityConcurrency × overcommit)`, where
 `qualityConcurrency` (`coordinator/registry/warm_pool_target.go`) is the
 largest batch that keeps per-request decode at or above the floor:
@@ -186,22 +189,26 @@ largest batch that keeps per-request decode at or above the floor:
 qualityConcurrency = clamp(floor((soloDecodeTPS / floorTPS − 1) / effectiveTPSLoadFactor), 1, baseCap)
 ```
 
-with `floorTPS` the warm-pool `DecodeFloorTPS` (default `15`) and
-`effectiveTPSLoadFactor = 0.39`. The overcommit multiplier is
-`defaultQualityCapOvercommit = 1.2` unless
-`EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT` is set explicitly
-(`SetQualityConcurrencyCap` ignores the `2.0` legacy fallback that
+with `floorTPS` the warm-pool `DecodeFloorTPS`
+([configuration.md → Warm pool](../reference/configuration.md#warm-pool)) and
+`effectiveTPSLoadFactor` from the cost model
+([`routing.md`](routing.md#cost-model)). The overcommit multiplier is
+`defaultQualityCapOvercommit` unless
+[`EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`](../reference/configuration.md#routing-admission-and-ttft)
+is set explicitly (`SetQualityConcurrencyCap` ignores the legacy fallback that
 `config.go` parses when the variable is absent). Per-model overrides come
 from `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT_BY_MODEL`; the solo
 decode rate is the provider's median solo sample (at least
-`defaultQualityCapSoloMinSamples = 5`), or a seeded/benchmark rate.
+`defaultQualityCapSoloMinSamples`, the default of
+`EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES`), or a seeded/benchmark rate.
 
 ### Model slots, pending loads and swaps
 
 **`maxModelSlots`.** The number of models a provider keeps resident at once
 is a provider-side setting: `maxModelSlots` in
-`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`, default
-`3`. The coordinator does not enforce it; it observes the result through slot
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` (the
+`max_model_slots` key of [`provider.toml`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)).
+The coordinator does not enforce it; it observes the result through slot
 states and, when it asks for a load, relies on the provider to evict.
 
 **Pending model loads.** When the coordinator sends `load_model` (or
@@ -214,7 +221,7 @@ states and, when it asks for a load, relies on the provider to evict.
 | `pendingModelLoadTTL` | `2 * time.Minute` | Default suppression after a `load_model`, and after a failed load. |
 | `pendingModelLoadDrainBackoff` | `30 * time.Second` | Provider rejected the load because it is draining for an auto-update restart. |
 | `pendingModelLoadMemoryBackoff` | `30 * time.Second` | Proactive load failed for a non-draining reason (typically transient memory pressure). |
-| `dispatchLoadCooldownTTL` | `2 * time.Minute` | Routing skips the pair after a *dispatch-time* load failure (`dispatch_load_cooldown` gate). |
+| `dispatchLoadCooldownTTL` | see [`routing.md`](routing.md#cooldowns-breakers-and-ejection) | Routing skips the pair after a *dispatch-time* load failure (`dispatch_load_cooldown` gate). |
 
 Pending entries are cleared when the load completes, when the provider
 disconnects (`Disconnect`), and by the warm-pool sweep as they expire.
@@ -224,7 +231,7 @@ runs after every heartbeat and queue drain. For each model with queued
 requests and no warm provider, it picks a cold provider that has the model
 on disk (`bestModelLoadProviderLocked`) and sends `load_model`, so demand
 that no resident slot can satisfy pulls the model in rather than waiting out
-the queue. Cold dispatch (`EIGENINFERENCE_COLD_DISPATCH`, default `true`,
+the queue. Cold dispatch ([`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft),
 `coordinator/api/cold_dispatch.go`) additionally kicks this machinery the
 moment a request is enqueued.
 
@@ -320,21 +327,21 @@ previous heartbeat when that gap is at most `maxUptimeCredit =
 2 * time.Minute`, releases satisfied budget clamps, drains the provider's
 model queues with `DrainTriggerHeartbeat`, and calls `TriggerModelSwaps`.
 
-The provider CLI heartbeats every `heartbeat_interval_secs` (the TOML key of
-`ProviderConfig.heartbeatIntervalSecs`), default `5`
-(`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`).
+The provider CLI heartbeats every
+[`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
+(the TOML key of `ProviderConfig.heartbeatIntervalSecs`,
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`).
 Coordinator-side comments still describe a 30 s cadence; the eviction math
 below is sized for that slower cadence and is therefore conservative for the
-5 s default.
+provider's faster default.
 
 **Eviction** (`StartEvictionLoop`, `evictStale`): the coordinator binary
 starts the loop with a `90*time.Second` timeout
-(`coordinator/cmd/coordinator/main.go`). The sweep runs every `timeout / 3`
-(30 s). A provider whose heartbeat age exceeds the timeout earns a strike;
-at `evictStrikeThreshold = 2` consecutive strikes it is disconnected. A
-provider must therefore be silent for more than 90 s at two successive
-sweeps — at least ~120 s — before eviction, which rides out a single
-delayed heartbeat.
+(`coordinator/cmd/coordinator/main.go`). The sweep runs every `timeout / 3`.
+A provider whose heartbeat age exceeds the timeout earns a strike; at
+`evictStrikeThreshold = 2` consecutive strikes it is disconnected. A provider
+must therefore be silent past the timeout at two successive sweeps — at
+least ~120 s — before eviction, which rides out a single delayed heartbeat.
 
 ### Provider writer: two lanes
 
@@ -402,8 +409,8 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
    (`coordinator/registry/warm_pool_target.go`).
 7. **Warm-pool loads per tick are bounded** — `rampLoadsThisTick`,
    `MaxGlobalPendingLoads`.
-8. **A provider is evicted only after two consecutive stale sweeps** —
-   `evictStale`, `evictStrikeThreshold`.
+8. **A provider is evicted only after `evictStrikeThreshold` consecutive stale
+   sweeps** — `evictStale` ([above](#heartbeat-cadence-and-eviction)).
 9. **Control frames never wait behind queued data frames** — lane priority
    in `providerWriter`.
 10. **Disconnect preserves stable-identity fault state** — `Disconnect`.
@@ -412,13 +419,13 @@ keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 
 | Symptom | Cause | What the code does |
 |---|---|---|
-| `429` with `Retry-After`, reason queue full | 32 requests already queued for the model. | `ErrQueueFull`; the API sheds immediately. |
-| `429` after ~120 s | No eligible provider appeared within `maxWait`. | `ErrQueueTimeout`; `Retry-After` per [`routing.md`](routing.md#retry-after-derivation). |
+| `429` with `Retry-After`, reason queue full | `maxSize` requests already queued for the model. | `ErrQueueFull`; the API sheds immediately. |
+| `429` after `maxWait` | No eligible provider appeared within the queue's wait bound. | `ErrQueueTimeout`; `Retry-After` per [`routing.md`](routing.md#retry-after-derivation). |
 | Requests queue although a provider looks idle | Provider's slot is `idle_shutdown`, `reloading` or `crashed`, or its token budget is exhausted. | Routing gates it (`slot_*`, `free_memory`); `TriggerModelSwaps` or the warm pool loads elsewhere. |
 | Model never loads despite demand | Every cold candidate is disqualified (`ColdDisqualifiers`) or `MaxGlobalPendingLoads` is saturated. | `warm_pool_tick` logs the reason tally; pending entries expire after `pendingModelLoadTTL`. |
 | Warm count oscillates | `MinDwell` too short for the load duration. | Anti-flap holds a lowered target for `MinDwell`; raise it or set `MinWarmByModel`. |
-| Provider evicted while alive | Heartbeats delayed > 90 s at two consecutive sweeps (network stall, sleeping Mac). | `Disconnect`; the provider re-registers, fault state persists by stable identity. |
-| Cancel arrives late at provider | A multi-MiB data frame was mid-write. | Control priority is non-preemptive; worst case one `providerWriteMaxTimeout` (30 s). |
+| Provider evicted while alive | Heartbeats older than the eviction timeout at `evictStrikeThreshold` consecutive sweeps ([above](#heartbeat-cadence-and-eviction)); network stall, sleeping Mac. | `Disconnect`; the provider re-registers, fault state persists by stable identity. |
+| Cancel arrives late at provider | A multi-MiB data frame was mid-write. | Control priority is non-preemptive; worst case one `providerWriteMaxTimeout`. |
 | Attestation timeout under load | Same cause as above. | Control lane exists to bound this; see `providerWriter` doc comment. |
 
 ## Code map

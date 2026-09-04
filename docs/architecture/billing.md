@@ -142,13 +142,13 @@ billed at the platform price with no provider-custom-price top-up
 `coordinator/api/server_config.go` `ReadServerConfig`) reservations are
 in-memory holds (`mode:service_hold`) and the actual cost is debited at
 settlement; requests use the dedicated service rate limiter
-(`coordinator/ratelimit/config.go` `Service`, `200` rps / burst `600`).
+(`Service`; values under [pricing-model constants](../reference/pricing-model.md#constants)).
 The platform fee follows the same per-user override as everyone else.
 
 ### Deposits (Stripe Checkout)
 
 1. `POST /v1/billing/stripe/create-session` (`handleStripeCreateSession`;
-   auth + financial limiter) requires `amount_usd ≥ 0.50`, validates an
+   auth + financial limiter) requires `amount_usd` at or above the [Stripe deposit minimum](../reference/pricing-model.md#constants), validates an
    optional `referral_code`, creates a Checkout Session whose metadata carries
    `billing_session_id`, `consumer_key`, and `referral_code`
    (`coordinator/billing/stripe.go` `CreateCheckoutSession`), stores a
@@ -177,15 +177,15 @@ sequence is stated under Failure modes.
 |---|---|---|
 | Onboard | `coordinator/api/stripe_payouts.go` `handleStripeOnboard` (Privy only) | Creates or reuses an Express account (`coordinator/billing/stripe_connect.go` `CreateExpressAccount`) with the service agreement chosen by `coordinator/billing/stripe_regions.go` `RequiredServiceAgreement` (`full` or `recipient`), returns a hosted onboarding link (`CreateAccountLink`). Local status ∈ {`""`, `pending`, `ready`, `restricted`, `rejected`} is mirrored from `account.updated`. |
 | Status | `handleStripeStatus` | Returns `status`, `destination_type`, `destination_last4`, `instant_eligible`, `min_withdraw_micro_usd`, `instant_fee_bps`, `instant_fee_min_usd`; `?refresh=1` re-syncs from Stripe. |
-| Withdraw | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` (Privy only, status `ready`) | Body `{amount_usd, method: standard \| instant}`. Pre-validates the account with Stripe (gone → unlink + 409 `stripe_account_gone`; agreement mismatch → 409 `stripe_account_recreate_required`; payouts disabled → 403 `not_onboarded`; a `manual` payout schedule is healed to automatic). `gross ≥ MinWithdrawMicroUSD` ($1.00); `fee = FeeForMethodMicroUSD` — `0` for standard, `max(gross × InstantFeeBps / 10_000, InstantFeeMinMicroUSD)` (1.5%, floor $0.50) for instant; `net = gross − fee` must round to ≥ 1 cent. One store transaction debits both columns (`stripe_payout`, reference `stripe_withdraw:<id>`) and inserts the `pending` row **before** any Stripe call. Then `transfers.create` for `net` cents with idempotency key `wd-tr-<id>` (`retryAmbiguousStripe`). Definitive failure → refund gross via `creditRefundOnceWithRetry`, row `failed`. Ambiguous (no answer) → row stays `pending`, **no refund**, 502. Success → `transferred`. |
+| Withdraw | `coordinator/api/stripe_withdraw.go` `handleStripeWithdraw` (Privy only, status `ready`) | Body `{amount_usd, method: standard \| instant}`. Pre-validates the account with Stripe (gone → unlink + 409 `stripe_account_gone`; agreement mismatch → 409 `stripe_account_recreate_required`; payouts disabled → 403 `not_onboarded`; a `manual` payout schedule is healed to automatic). `gross ≥ MinWithdrawMicroUSD`; `fee = FeeForMethodMicroUSD` (`0` for standard; the instant fee is the [withdrawal-fee formula](../reference/pricing-model.md#formulas) over `InstantFeeBps` / `InstantFeeMinMicroUSD`, values under [Constants](../reference/pricing-model.md#constants)); `net = gross − fee` must round to ≥ 1 cent. One store transaction debits both columns (`stripe_payout`, reference `stripe_withdraw:<id>`) and inserts the `pending` row **before** any Stripe call. Then `transfers.create` for `net` cents with idempotency key `wd-tr-<id>` (`retryAmbiguousStripe`). Definitive failure → refund gross via `creditRefundOnceWithRetry`, row `failed`. Ambiguous (no answer) → row stays `pending`, **no refund**, 502. Success → `transferred`. |
 | Deliver | `handleStripeWithdraw`, Stripe schedule | Standard: nothing more; Stripe's automatic daily payout sweeps the connected balance to the bank in local currency. Instant: `payouts.create` (`wd-po-<id>`) to the debit card; a definitive failure refunds only the instant fee (`stripe_withdraw_fee:<id>`) and the sweep delivers via the standard rail; an ambiguous failure refunds nothing (202). |
 | Webhooks | `coordinator/api/stripe_payouts_webhooks.go` `handleStripeConnectWebhook` (no auth, `VerifyConnectWebhookSignature`) | See the Connect webhook table under Failure modes. |
-| Reconcile | `coordinator/api/stripe_reconcile.go` `StartStripePayoutReconciler` | Every `stripeReconcileInterval = 1 * time.Hour` (first pass 1 min after boot), inspects up to `stripeReconcileBatch = 200` rows, heals `manual` payout schedules, and alerts on rows non-terminal for more than `stripeStuckThreshold = 48 * time.Hour`. Never touches the ledger. |
+| Reconcile | `coordinator/api/stripe_reconcile.go` `StartStripePayoutReconciler` | Every `stripeReconcileInterval` (first pass 1 min after boot), inspects up to `stripeReconcileBatch` rows, heals `manual` payout schedules, and alerts on rows non-terminal for more than `stripeStuckThreshold` (values under [Constants](../reference/pricing-model.md#constants)). Never touches the ledger. |
 | Self-service | `handleStripeDashboardLink` (`POST /v1/billing/stripe/dashboard`, Privy + financial limiter), `handleStripeUnlink` (`DELETE /v1/billing/stripe/account`), `handleStripeWithdrawals` (`GET /v1/billing/stripe/withdrawals`) | Express dashboard login link; unlink; withdrawal history. |
 
 Withdrawal row state machine: `pending → transferred → paid | failed`
 (`handleStripeWithdraw` comment block). There is no coordinator-side payout
-schedule or threshold beyond the $1.00 minimum.
+schedule or threshold beyond `MinWithdrawMicroUSD`.
 
 ### Consumer referral
 
@@ -197,12 +197,12 @@ links the caller to a referrer once — no self-referral, no second referrer
 deposit. Register and apply require a Privy user and run under the financial
 limiter. `GET /v1/referral/stats` and `GET /v1/referral/info` read back.
 Reward: `DistributeReferralReward` credits the referrer
-`referralSharePercent` (default `20`, from `EIGENINFERENCE_REFERRAL_SHARE_PCT`,
-clamped to `(0, 50]`) of the **platform fee** of each referred request as
+`referralSharePercent` (`EIGENINFERENCE_REFERRAL_SHARE_PCT`; default and clamp under
+[Constants](../reference/pricing-model.md#constants)) of the **platform fee** of each referred request as
 withdrawable `referral_reward`. Because the fee is what invariant 4 says it
 is, the reward is zero unless the referred consumer has a per-user fee
 override. The provider referral program described in
-`docs/reports/2026-08-21-provider-referral-growth-program-design.md` is not
+[`design/provider-referral-growth-program.md`](../design/provider-referral-growth-program.md) is not
 implemented: no tables, ledger types, or handlers exist.
 
 ### Invite codes and admin credits
@@ -255,9 +255,9 @@ draw   = max(0, floor − k × organicEarnings),  k = DefaultReductionK = 0.0   
 ```
 
 `AllocateDraws` (`alloc.go`) caps the epoch's total at
-`PeriodBudget(FloorPoolBudgetMicroUSD = 9_000_000_000 µUSD/month)` minus
-what earlier runs already settled for the epoch, funds the 48–96 GB
-workhorse band first from a `WorkhorseReserveFrac = 0.5` sub-pool, then
+`PeriodBudget(FloorPoolBudgetMicroUSD)` minus
+what earlier runs already settled for the epoch, funds the
+`workhorseMinGB`–`workhorseMaxGB` band first from a `WorkhorseReserveFrac` sub-pool, then
 water-fills by `valuePerFloorDollar`; `PerAccountCapFrac = 0` disables the
 per-account cap. `SettleProviderFloorDraw` writes one
 `provider_floor_draws` row per `(provider_key, epoch_id)`, credits the
@@ -391,9 +391,9 @@ balance still serves free self-route.
 
 | Condition | HTTP | `error.type` | Where |
 |---|---|---|---|
-| Deposit below $0.50 | 400 | `invalid_request_error` | `handleStripeCreateSession` |
+| Deposit below the [Stripe deposit minimum](../reference/pricing-model.md#constants) | 400 | `invalid_request_error` | `handleStripeCreateSession` |
 | Unknown `referral_code` on deposit | 400 | `invalid_request_error` | `handleStripeCreateSession` |
-| Withdrawal below `MinWithdrawMicroUSD` ($1.00), non-positive, or net < 1 cent | 400 | `invalid_request_error` | `handleStripeWithdraw` |
+| Withdrawal below [`MinWithdrawMicroUSD`](../reference/pricing-model.md#constants), non-positive, or net < 1 cent | 400 | `invalid_request_error` | `handleStripeWithdraw` |
 | Withdrawal exceeds `withdrawable_micro_usd` | 400 | `insufficient_withdrawable` | `handleStripeWithdraw` |
 | Instant requested without a debit-card destination | 400 | `instant_unavailable` | `handleStripeWithdraw` |
 | Not onboarded / payouts disabled | 403 | `not_onboarded` | `handleStripeWithdraw` |
@@ -443,7 +443,7 @@ help (`coordinator/api/stripe_payouts_webhooks.go`).
 
 ### Datadog billing metrics
 
-All names carry the `d_inference.` namespace (`coordinator/datadog/datadog.go`).
+Names are written without the Datadog namespace prefix, which is owned by [telemetry-inventory](../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics).
 
 | Metric | Kind | Tags | Emitter |
 |---|---|---|---|

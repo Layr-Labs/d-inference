@@ -41,7 +41,7 @@ pieces fit together, and what they guarantee, is explained in
 | Invite code default `max_uses` | `1`; auto-generated code `INV-<8 hex>` | `handleAdminCreateInviteCode` | `coordinator/api/invite_handlers.go` |
 | Financial rate limiter | `0.2` rps, burst `3` | `create-session`, `POST/PATCH/DELETE /v1/keys`, referral register/apply, invite create/redeem, Stripe dashboard link | `coordinator/ratelimit/config.go` (`Financial`) |
 | Service rate limiter | `200` rps, burst `600` | `RoleService` accounts | `coordinator/ratelimit/config.go` (`Service`) |
-| Datadog namespace | `d_inference.` | prefix on every metric | `coordinator/datadog/datadog.go` |
+| `FloorPoolBudgetMicroUSD` | `9_000_000_000` | base-rewards monthly pool ($9,000), prorated per epoch by `PeriodBudget` | `coordinator/payments/baserewards/alloc.go`, `epoch.go` |
 
 ## Price resolution
 
@@ -142,7 +142,7 @@ rather than "work" earnings on the leaderboard and in `GET /v1/me/summary`
 | Cost function | `CalculateCostWithOverridesNoMinimum` | `coordinator/api/provider.go` (`handleCompleteAt`) |
 | Price | platform price; provider custom prices and the provider top-up are skipped | `handleCompleteAt`; `coordinator/api/consumer.go` (`isServiceConsumer`, `reserveAdditionalForProvider`) |
 | Reservation mode | ledger debit, or in-memory hold when `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED=true` | `coordinator/api/reservations.go` (`useServiceReservation`) |
-| Rate limiter | `Service` (`200` rps / burst `600`) | `coordinator/ratelimit/config.go` |
+| Rate limiter | `Service` ([Constants](#constants)) | `coordinator/ratelimit/config.go` |
 | Platform fee | same per-user override mechanism as other accounts | `handleCompleteAt` |
 
 ## Stripe Connect withdrawal states
@@ -162,7 +162,7 @@ Connected-account status `users.stripe_account_status`
 | Constant | Value | Citation |
 |---|---|---|
 | `SettlementPeriod` | `5 * time.Minute` | `epoch.go` |
-| `FloorPoolBudgetMicroUSD` | `9_000_000_000` ($9,000 / month), prorated per epoch by `PeriodBudget` | `alloc.go`, `epoch.go` |
+| `FloorPoolBudgetMicroUSD` | see [Constants](#constants) | `alloc.go`, `epoch.go` |
 | `workhorseMinGB` … `workhorseMaxGB` | `48` … `96` | `alloc.go` |
 | `WorkhorseReserveFrac` | `0.5` | `engine.go` (`DefaultConfig`) |
 | `PerAccountCapFrac` | `0` (disabled) | `engine.go` (`DefaultConfig`) |
@@ -200,7 +200,7 @@ check inside the handler: `requireAuth` accepts an API key or a Privy JWT;
 `requirePrivyAuth` / "Privy" requires a Privy user (`requirePrivyUser`);
 "admin" is `isAdminAuthorized` / `requireAdminKey` (`EIGENINFERENCE_ADMIN_KEY`
 bearer or a Privy user listed in `EIGENINFERENCE_ADMIN_EMAILS`); "financial" is
-the financial rate limiter.
+the financial rate limiter ([Constants](#constants)).
 
 | Method and path | Auth | Handler |
 |---|---|---|
@@ -268,24 +268,17 @@ prompt_tokens, completion_tokens, cost_micro_usd, timestamp}]}`
 
 ## Environment variables
 
-| Variable | Default | Effect | Citation |
-|---|---|---|---|
-| `EIGENINFERENCE_STRIPE_SECRET_KEY` | — | enables Stripe Checkout and Stripe Connect | `coordinator/billing/config.go` (`ReadConfig`) |
-| `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET` | — | Checkout webhook signature | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | — | Checkout redirects | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | — | Connect webhook signature | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` | `US` | platform country for the service-agreement choice | `coordinator/billing/config.go`; `coordinator/billing/stripe_regions.go` (`RequiredServiceAgreement`) |
-| `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | — | onboarding redirects | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_BILLING_MOCK` | `false` | mock billing; `Config.Check` rejects it alongside a real Stripe key | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_REFERRAL_SHARE_PCT` | `20` | referrer share of the platform fee | `coordinator/billing/config.go` |
-| `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | — | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | `coordinator/billing/config.go` |
-| `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | `false` | in-memory reservation holds for `RoleService` accounts | `coordinator/api/server_config.go` (`ReadServerConfig`) |
-| `EIGENINFERENCE_BASE_REWARDS` | `false` | wire and run the base-rewards engine | `coordinator/api/server_config.go`; `coordinator/cmd/coordinator/main.go` |
-| `EIGENINFERENCE_BASE_REWARDS_K` | `0` | reduction factor `k` | `coordinator/api/server_config.go` |
-| `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO` | `9_000_000_000` | monthly pool (µUSD) | `coordinator/api/server_config.go` |
-| `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME` | `0.90` | eligibility uptime fraction | `coordinator/api/server_config.go` |
-| `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | `0` | per-account cap fraction (`0` = none) | `coordinator/api/server_config.go` |
-| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | — | admin authorization for admin billing routes | `coordinator/api/server_config.go`; `coordinator/api/release_handlers.go` (`isAdminAuthorized`) |
-| `MODEL_REGISTRY_PUBLISHING_KEY` | — | bootstrap publishing key accepted by `POST /v1/admin/models/register` | `coordinator/api/model_registry_handlers.go` (`requirePublishingAPIKey`) |
-| `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST` | `0.2`, `3` | financial endpoint limiter | `coordinator/ratelimit/config.go` |
-| `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | `200`, `600` | service-account limiter (`0` rps bypasses) | `coordinator/ratelimit/config.go` |
+Defaults and validation live in [configuration.md](configuration.md); this table only maps each variable to its owning section there.
+
+| Variable | Effect | Owner |
+|---|---|---|
+| `EIGENINFERENCE_STRIPE_SECRET_KEY`, `EIGENINFERENCE_STRIPE_WEBHOOK_SECRET`, `EIGENINFERENCE_STRIPE_SUCCESS_URL`, `EIGENINFERENCE_STRIPE_CANCEL_URL` | Stripe Checkout: API key, webhook signature, redirects | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET`, `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY`, `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | Stripe Connect: webhook signature, platform country for the service-agreement choice (`RequiredServiceAgreement`, `coordinator/billing/stripe_regions.go`), onboarding redirects | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_BILLING_MOCK` | mock billing; `Config.Check` rejects it alongside a real Stripe key | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_REFERRAL_SHARE_PCT` | referrer share of the platform fee (`ReferralSharePercent`, [Constants](#constants)) | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED` | in-memory reservation holds for `RoleService` accounts | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `EIGENINFERENCE_BASE_REWARDS`, `EIGENINFERENCE_BASE_REWARDS_K`, `EIGENINFERENCE_BASE_REWARDS_POOL_MICRO`, `EIGENINFERENCE_BASE_REWARDS_MIN_UPTIME`, `EIGENINFERENCE_BASE_REWARDS_ACCOUNT_CAP` | base-rewards engine switch, reduction factor `k`, monthly pool (µUSD), eligibility uptime fraction, per-account cap fraction | [Billing, Stripe and base rewards](configuration.md#billing-stripe-and-base-rewards) |
+| `MNEMONIC`, `EIGENINFERENCE_MNEMONIC` | read by billing config but used for the coordinator's X25519 request-encryption key, not for money | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
+| `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
+| `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
+| `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |

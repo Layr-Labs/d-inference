@@ -50,8 +50,8 @@ sequenceDiagram
   participant C as Consumer (SDK / curl)
   participant K as Coordinator
   participant P as Provider (darkbloom)
-  P->>K: WebSocket register + attestation, heartbeat every 5 s
-  K->>P: challenge every 5 min (30 s to answer)
+  P->>K: WebSocket register + attestation, periodic heartbeat
+  K->>P: periodic attestation challenge
   C->>K: POST /v1/chat/completions (TLS; optional sealed body)
   K->>K: auth, rate limit, validate, resolve alias → build, reserve balance
   K->>K: select provider (eligibility gates → cost model → reserve slot)
@@ -66,12 +66,14 @@ sequenceDiagram
 1. **Provider joins.** `darkbloom start` connects outbound to `GET /ws/provider`
    and sends `register` with a Secure Enclave–signed attestation blob. The
    coordinator verifies it (`coordinator/attestation/attestation.go`), assigns a
-   trust level, and re-challenges every `DefaultChallengeInterval` (5 min) with a
-   `ChallengeResponseTimeout` of 30 s (`coordinator/api/provider.go`). The
-   provider heartbeats every `heartbeat_interval_secs` (5;
-   `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`) with
-   capacity, slot state, and telemetry. Messages:
-   [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
+   trust level, and re-challenges every
+   [`DefaultChallengeInterval`](security/attestation.md#layer-2--periodic-challenge),
+   allowing [`ChallengeResponseTimeout`](security/attestation.md#layer-2--periodic-challenge)
+   for the answer (`coordinator/api/provider.go`). The provider heartbeats every
+   [`heartbeat_interval_secs`](../provider/cli-reference.md#providertoml-keys-read-by-the-cli)
+   with capacity, slot state, and telemetry; the coordinator's heartbeat timeout
+   and eviction rule are in [`scheduling.md`](scheduling.md#heartbeat-cadence-and-eviction).
+   Messages: [`../reference/protocol-messages.md`](../reference/protocol-messages.md).
 2. **Consumer calls.** Every route passes
    `corsMiddleware → recoverMiddleware → loggingMiddleware → bodyLimitMiddleware`;
    inference routes add `drainGate → requireAuth → rateLimitConsumer →
@@ -79,8 +81,9 @@ sequenceDiagram
    and `/v1/responses` share `handleChatCompletions`; `/v1/completions` and
    `/v1/messages` share `handleGenericInference` (`coordinator/api/consumer.go`).
    Routes and shapes: [`../reference/api-contracts.md`](../reference/api-contracts.md).
-3. **Admission.** The handler validates the body (16 MiB cap, tool-schema
-   normalisation), resolves the public alias to a concrete build
+3. **Admission.** The handler validates the body (size cap
+   [`maxInferenceBodyBytes`](../reference/api-contracts.md#limits-and-validation),
+   tool-schema normalisation), resolves the public alias to a concrete build
    ([`model-registry.md`](model-registry.md)), reserves the consumer's balance for
    the worst-case output ([`billing.md`](billing.md)), and applies token-rate
    admission ([`../reference/api-contracts.md`](../reference/api-contracts.md)).
@@ -88,7 +91,7 @@ sequenceDiagram
    gate (`providerLivenessGateReasonLocked`,
    `coordinator/registry/routing_eligibility.go`) — online, trusted at or above
    the floor, runtime-verified, private-text capable, challenge verified within
-   `challengeFreshnessMaxAge` (16 min) — then scores survivors with an
+   [`challengeFreshnessMaxAge`](routing.md#challenge-freshness) — then scores survivors with an
    estimated-completion-time cost model and reserves the cheapest
    (`coordinator/registry/scheduler.go`). Every rejection has a name from a
    closed vocabulary (`coordinator/registry/gate_reason.go`).
@@ -96,9 +99,10 @@ sequenceDiagram
 5. **Dispatch.** The request body is sealed with a per-request NaCl Box to the
    provider's attested X25519 key (`coordinator/internal/e2e/e2e.go`) and sent
    as `inference_request`. If the first content is late, a speculative second
-   dispatch starts at `speculativeTimerRatio` (0.5) of the first-content
-   deadline; the coordinator tries at most `maxDispatchAttempts` (64) providers
-   (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
+   dispatch starts at [`speculativeTimerRatio`](routing.md#hedged-speculative-dispatch)
+   of the first-content deadline; the coordinator tries at most
+   [`maxDispatchAttempts`](../reference/api-contracts.md#timeouts-and-constants)
+   providers (`coordinator/api/consumer.go`). [`data-flow.md`](data-flow.md).
 6. **Inference.** The provider decrypts in-process, runs the continuous-batching
    engine over the pinned MLX forks, and encrypts every response chunk to the
    coordinator's ephemeral key. [`inference.md`](inference.md),
@@ -119,9 +123,11 @@ sequenceDiagram
 
 Providers hold one of three trust levels — `none`, `self_signed`, `hardware`
 (`TrustLevel`, `coordinator/registry/registry.go`). Public traffic requires at
-least `MinTrustLevel`, default `hardware` (`EIGENINFERENCE_MIN_TRUST`,
-`coordinator/registry/config.go`), which means a Secure Enclave key bound to an
-Apple Managed Device Attestation chain plus an MDM posture check; APNs
+least `MinTrustLevel`, configured by
+[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft)
+(`coordinator/registry/config.go`); at the `hardware` level that means a Secure
+Enclave key bound to an Apple Managed Device Attestation chain plus an MDM
+posture check; APNs
 code-identity attestation additionally proves the running binary is the
 released one. The only backend is `mlx-swift` (`BackendMLXSwift`); providers
 that proxy text to another process, disable anti-debug, or fail the SIP check
@@ -179,7 +185,7 @@ consumer routing to a provider it owns (self-route) pays nothing.
 | No eligible provider for a model | 503 with a structured error before any bytes are streamed; rejection reasons tallied | [`routing.md`](routing.md) |
 | Provider slow to first content | Speculative second dispatch; the first to produce content wins; the other is cancelled | [`data-flow.md`](data-flow.md) |
 | Provider fails after commit | In-band error event on the SSE stream (the HTTP status is already sent); settlement follows whatever usage the provider reported | [`data-flow.md`](data-flow.md), [`billing.md`](billing.md) |
-| Consumer disconnects before the provider finishes | Billing record parked for `defaultTerminalSettleGrace` (30 s), then settled or refunded (`coordinator/api/settlement.go`) | [`billing.md`](billing.md) |
+| Consumer disconnects before the provider finishes | Billing record parked for [`defaultTerminalSettleGrace`](../reference/pricing-model.md#constants), then settled or refunded (`coordinator/api/settlement.go`) | [`billing.md`](billing.md) |
 | Attestation challenge fails or goes stale | Provider marked untrusted / `challenge_stale`; leaves routing until re-verified | [`security/attestation.md`](security/attestation.md) |
 | Coordinator restart | Providers reconnect with backoff 1 → 30 s; state is in Postgres; trust may be reused within a window | [`components/provider.md`](components/provider.md), [`security/attestation.md`](security/attestation.md) |
 

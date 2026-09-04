@@ -26,8 +26,8 @@ per-token cost, or a free-form provider string to storage.
 
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
-| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | 14 d (`profileRetainProfiles`) |
-| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | 30 d (`profileRetainFleet`) |
+| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
+| `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
 
@@ -120,7 +120,8 @@ Go pointer with `omitempty` and a Swift optional; absent = did not happen, and
 inside a present object an absent numeric reads as 0. `_us` offsets are from
 `t0p` = WS frame receipt on the provider's `SuspendingClock`
 (`mach_absolute_time`, the engine's `DispatchTime` domain); `slept_us` =
-continuous Δ − suspending Δ. Encoded size ≤ `MaxInferenceProfileBytes = 4096`;
+continuous Δ − suspending Δ. Encoded size ≤ `MaxInferenceProfileBytes`
+([`../reference/protocol-messages.md#inference_complete`](../reference/protocol-messages.md#inference_complete));
 Swift encodes through `saturatedToWireRanges()` so values already sit inside
 the coordinator's ranges.
 
@@ -166,7 +167,8 @@ Both sides load `coordinator/protocol/testdata/profiler_wire_fixture.json`
 
 The WS read loop does one thing with `profile`: `SetProviderProfileRaw`
 (`coordinator/registry/attempt_profile.go`) length-checks it against
-`maxProviderProfileBytes = 4096` and retains the bytes on the attempt, first
+`maxProviderProfileBytes` (the same bound as `MaxInferenceProfileBytes`) and
+retains the bytes on the attempt, first
 profile wins. Everything else runs on the profile-sink worker
 (`decodeInferenceProfile`, `applyProviderProfile`, `coordinator/api/profiler_provider.go`)
 after the terminal has been fully processed.
@@ -174,7 +176,7 @@ after the terminal has been fully processed.
 | Step | Rule | Outcome (`provider_profile_invalid_reason`) |
 |---|---|---|
 | 1 | no object on the terminal | `absent` (`providerProfileAbsent`, `profiler_record.go`) |
-| 2 | `len(raw) > 4096` | `size` |
+| 2 | `len(raw) > maxProviderProfileBytes` | `size` |
 | 3 | second profile for the attempt; profile after finalize | `duplicate`; `late` (`ProviderProfileStatus`) |
 | 4 | decode into the pointer-typed struct fails (unknown keys are ignored) | `decode` — stored `NULL` |
 | 5 | `schema != 1` | `schema` — stored `NULL` |
@@ -290,12 +292,15 @@ profiler build.
 
 ### Operations
 
-The only two knobs (`newProfilerFromEnv`, `coordinator/api/profiler.go`):
-
-| Variable | Default | Effect |
-|---|---|---|
-| `EIGENINFERENCE_PROFILER` | `on` | `off` (trimmed, case-insensitive) = no `RequestProfile` is created, no sink, no fleet sampler, no provider-profile decode. The retention sweep still runs. Any other value = on |
-| `EIGENINFERENCE_PROFILE_SAMPLE_RATE` | `0.1` (`defaultProfileSample`) | clamped to [0, 1]; unparseable → default; bypassed by the always-record predicates |
+The only two knobs are the kill switch `EIGENINFERENCE_PROFILER` and the
+sample rate `EIGENINFERENCE_PROFILE_SAMPLE_RATE` (`newProfilerFromEnv`,
+`coordinator/api/profiler.go`; values and defaults in
+[`../reference/configuration.md#telemetry-datadog-and-profiling`](../reference/configuration.md#telemetry-datadog-and-profiling)).
+`off` (trimmed, case-insensitive) means no `RequestProfile` is created, no
+sink, no fleet sampler and no provider-profile decode — the retention sweep
+still runs; any other value is on. The sample rate is clamped to [0, 1], an
+unparseable value falls back to the default (`defaultProfileSample`), and the
+always-record predicates bypass it.
 
 Admin endpoints (`requireAdminKey`; `coordinator/api/profiler_admin.go`):
 
@@ -309,18 +314,12 @@ Admin endpoints (`requireAdminKey`; `coordinator/api/profiler_admin.go`):
 CSV is not offered for these tables; `?format=` is ignored and exports always
 set `application/x-ndjson` with filename `<profiles|snapshots>-<RFC3339>.ndjson`.
 
-Datadog counters (tags never include a request id, a provider id or a
-provider-authored string):
-
-| Metric | Type | Tags |
-|---|---|---|
-| `telemetry.sink_dropped` | count | `sink:profile` |
-| `telemetry.sink_depth` | gauge, per fleet tick | `sink:profile`, `sink:route` |
-| `profiler.records` | count | `status:written`, `write_failed`, `sampled_out` |
-| `profiler.fleet_snapshot` | count | `status:written`, `write_failed` |
-| `profiler.pruned_rows` | count | none |
-| `profiler.provider_profile` | count | `valid`, `reason` (`none`, `size`, `decode`, `schema`, `range`, `order`, `enum`, `duplicate`, `late`) |
-| `inference.unknown_request_frames` | count | `kind:chunk`, `complete`, `duplicate_complete`, `error`, `duplicate_error` |
+The profiler's Datadog counters (`profiler.*`, `telemetry.sink_dropped`,
+`telemetry.sink_depth`, `inference.unknown_request_frames`) are listed once,
+with types and tags, in
+[`../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics`](../reference/telemetry-inventory.md#coordinator-derived-datadog-metrics);
+their tags never include a request id, a provider id or a provider-authored
+string.
 
 Percentiles come from Postgres, never from Datadog: the prod VM may run no
 DogStatsD agent, and histograms do not survive the HTTPS series path
@@ -389,113 +388,6 @@ to the replication set, and accepts the hourly retention DELETE volume.
 | Sampler holds `r.mu` too long | not possible by design: phase A is `p.mu`-only, phase B is per-provider brief read locks | — |
 | `request_waterfall` view stale after a new column | `TestRequestWaterfallViewListsEveryProfileColumn` fails until the SQL is updated and re-applied | CI |
 
-## Query recipes
-
-Run against the read replica. All offsets are µs from `received_at`; subtract
-two coordinator columns to get a segment, never a coordinator column and a
-provider column.
-
-```sql
--- Waterfall for one logical request (every attempt, backups included)
-SELECT attempt, backup_of, winning, provider_id, final_status, error_reason,
-       handler_entry_us, parsed_us, reserved_us, preflight_done_us, plan_done_us,
-       attempt_start_us, reserve_lock_acquired_us, reserve_done_us, queued_us, dequeued_us,
-       encrypted_us, write_submitted_us, write_dequeued_us, write_done_us, accepted_us,
-       first_chunk_ingress_us, first_content_ingress_us, first_content_us, headers_written_us,
-       first_flush_us, last_flush_us, client_gone_us, cancel_sent_us, complete_ingress_us,
-       done_flushed_us, finalized_us, prov_total_us, transport_est_us
-FROM request_profiles WHERE coord_request_id = $1 ORDER BY attempt, id;
-
--- p50 / p95 per coordinator segment by model, last 24 h (winning attempts)
-SELECT model, seg,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY us) AS p50_us,
-       percentile_cont(0.95) WITHIN GROUP (ORDER BY us) AS p95_us, count(*) AS n
-FROM request_profiles p
-CROSS JOIN LATERAL (VALUES
-  ('pre_handler', handler_entry_us),
-  ('parse',       parsed_us - handler_entry_us),
-  ('reserve',     reserved_us - parsed_us),
-  ('preflight',   preflight_done_us - reserved_us),
-  ('route',       reserve_done_us - attempt_start_us),
-  ('queue',       dequeued_us - queued_us),
-  ('encrypt',     encrypted_us - GREATEST(reserve_done_us, topup_done_us)),
-  ('writer',      write_dequeued_us - write_submitted_us),
-  ('socket',      write_done_us - write_dequeued_us),
-  ('provider_ack',accepted_us - write_done_us),
-  ('to_first_chunk', first_chunk_ingress_us - write_done_us),
-  ('to_first_flush', first_flush_us - first_chunk_ingress_us),
-  ('stream',      last_flush_us - first_flush_us)) AS s(seg, us)
-WHERE p.created_at > now() - interval '24 hours' AND p.winning AND s.us IS NOT NULL AND s.us >= 0
-GROUP BY model, seg ORDER BY model, p95_us DESC;
-
--- Provider-vs-coordinator split (NULL for pre-profiler providers)
-SELECT model, provider_id,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY complete_ingress_us - write_done_us) AS p50_round_trip_us,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY prov_total_us)                        AS p50_provider_us,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY transport_est_us)                     AS p50_transport_est_us,
-       percentile_cont(0.95) WITHIN GROUP (ORDER BY slept_us)                            AS p95_slept_us
-FROM request_profiles
-WHERE created_at > now() - interval '24 hours' AND provider_profile_valid
-GROUP BY model, provider_id ORDER BY p50_transport_est_us DESC;
-
--- Routing regret proxy: runner-up vs winner cost against realised first-content latency
-SELECT model, selection_path,
-       CASE WHEN runner_up_provider_id = '' THEN 'no_runner_up'
-            WHEN runner_up_cost_ms - (candidates->0->>'cost_ms')::float < 250 THEN 'near_tie'
-            ELSE 'clear_winner' END AS margin,
-       count(*) AS n,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY predicted_ttft_ms) AS p50_predicted_ttft_ms,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY (first_content_us - write_done_us) / 1000.0) AS p50_realised_first_content_ms,
-       percentile_cont(0.95) WITHIN GROUP (ORDER BY (first_content_us - write_done_us) / 1000.0) AS p95_realised_first_content_ms
-FROM request_profiles
-WHERE created_at > now() - interval '24 hours' AND winning AND candidates IS NOT NULL
-GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
-
--- How often an idle warm alternative existed and was not chosen
-SELECT model, date_trunc('hour', created_at) AS hour, count(*) AS n,
-       count(*) FILTER (WHERE best_idle_provider_id <> '' AND best_idle_provider_id <> provider_id) AS idle_alternative,
-       count(*) FILTER (WHERE best_idle_provider_id <> '' AND best_idle_provider_id <> provider_id
-                          AND best_idle_ttft_ms < predicted_ttft_ms) AS idle_alternative_faster_by_estimate
-FROM request_profiles WHERE created_at > now() - interval '24 hours' AND winning
-GROUP BY 1, 2 ORDER BY 1, 2;
-
--- Gate rejection reasons by hour
-SELECT date_trunc('hour', created_at) AS hour, g.key AS reason, sum(g.value::int) AS rejections, count(*) AS attempts
-FROM request_profiles, jsonb_each_text(gate_rejections) AS g
-WHERE created_at > now() - interval '24 hours'
-GROUP BY 1, 2 ORDER BY 1, 3 DESC;
-
--- Slot occupancy time series for one provider session
-SELECT sampled_at, model, slot_state, eligibility_reason, num_running, num_waiting,
-       active_token_budget_used, active_token_budget_max, pending_count, effective_cap,
-       cooldown_active, breaker_open, clamp_active, heartbeat_age_ms, observed_decode_tps
-FROM fleet_snapshots
-WHERE provider_id = $1 AND sampled_at > now() - interval '6 hours' ORDER BY sampled_at, model;
-
--- Sink drop rate (coordinator row; cumulative counters → per-minute deltas)
-SELECT sampled_at,
-       profile_sink_dropped_total - lag(profile_sink_dropped_total) OVER (ORDER BY sampled_at) AS profile_drops,
-       route_sink_dropped_total   - lag(route_sink_dropped_total)   OVER (ORDER BY sampled_at) AS route_drops,
-       unknown_request_frames_total - lag(unknown_request_frames_total) OVER (ORDER BY sampled_at) AS unknown_frames,
-       profile_sink_depth, queue_depth_total, inflight_requests, goroutines
-FROM fleet_snapshots WHERE provider_id = 'coordinator' AND sampled_at > now() - interval '24 hours'
-ORDER BY sampled_at;
-
--- Which providers were routed on a stale snapshot
-SELECT provider_id, count(*) AS n,
-       percentile_cont(0.5) WITHIN GROUP (ORDER BY snapshot_age_ms)  AS p50_age_ms,
-       percentile_cont(0.95) WITHIN GROUP (ORDER BY snapshot_age_ms) AS p95_age_ms,
-       count(*) FILTER (WHERE snapshot_age_ms > 10000) AS older_than_10s
-FROM request_profiles WHERE created_at > now() - interval '24 hours' AND winning
-GROUP BY provider_id ORDER BY p95_age_ms DESC LIMIT 30;
-```
-
-```sh
-curl -sS -H "Authorization: Bearer $ADMIN_KEY" "$COORD/v1/admin/profiles/export?since=24h&model=$MODEL"  > profiles.ndjson
-curl -sS -H "Authorization: Bearer $ADMIN_KEY" "$COORD/v1/admin/snapshots/export?since=6h&provider=$PID" > snapshots.ndjson
-curl -sS -H "Authorization: Bearer $ADMIN_KEY" "$COORD/v1/admin/profiles?coord_request_id=$CID&limit=20" | jq .
-```
-
 ## Not built
 
 Stated so nobody reads a `NULL` as a defect: full-pool candidate sample
@@ -552,3 +444,4 @@ ring or `DaemonState` mirror.
 - [`../reference/telemetry-inventory.md`](../reference/telemetry-inventory.md) — where the profiler sits among every other datum
 - [`scheduling.md`](scheduling.md), [`routing.md`](routing.md) — the decisions the routing context records
 - [`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers) — `X-Timing`
+- [`../operations/profiler-queries.md`](../operations/profiler-queries.md) — copy-paste SQL for the recurring latency, routing and fleet questions

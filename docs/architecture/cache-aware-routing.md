@@ -2,15 +2,28 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Cache-aware routing lets the scheduler prefer a provider that has *proven* it
-holds the exact token prefix of a request in its encrypted SSD prefix cache,
-by applying a bounded discount to that provider's routing cost. It is
-flag-gated: `EIGENINFERENCE_CACHE_ROUTING_MODE` defaults to `off`
-(`CacheRoutingOff`, `coordinator/registry/cache_routing.go`), in which state
-none of the machinery below runs. The general cost model it discounts is
-described in [`routing.md`](routing.md).
+Exact prefix cache routing lets the scheduler prefer a provider that has
+*proven* it holds the exact token prefix of a request in its encrypted SSD
+prefix cache. This page explains the mechanism — proof, evidence lifecycle,
+discount — and the guarantees that bound it; it is for engineers changing the
+scheduler, the receipt path or the prompt-contract sidecar. The operator
+procedure for turning it on is
+[`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md).
 
-## Guarantee
+## Context
+
+A provider that already holds a request's exact token prefix in its encrypted
+SSD prefix cache ([`prefix-cache.md`](prefix-cache.md)) can skip that prefill,
+but the scheduler's cost model ([`routing.md`](routing.md#cost-model)) knows
+nothing about where a prefix lives. Cache-aware routing closes that gap by
+pricing a *proven* cache hit as a bounded discount on the provider's estimated
+cost — never as a hard affinity, and never on the strength of a caller-supplied
+field. It is flag-gated:
+[`EIGENINFERENCE_CACHE_ROUTING_MODE`](../reference/configuration.md#routing-admission-and-ttft)
+selects `off` (`CacheRoutingOff`, `coordinator/registry/cache_routing.go`) or
+`on` (`CacheRoutingOn`); while `off`, none of the machinery below runs.
+
+### Guarantee
 
 Cache routing is an optimization, never an inference dependency. When routing is
 `off`, the coordinator emits no reusable remote scope, tracks no receipts, and
@@ -23,7 +36,9 @@ The provider's encrypted SSD cache is the only production reusable prefix tier.
 No caller field, session identifier, JSON-body hash, probabilistic conversation
 anchor, or coordinator heuristic establishes cache ownership.
 
-## Request flow
+## Mechanism
+
+### Request flow
 
 ```mermaid
 flowchart LR
@@ -61,7 +76,7 @@ process-local token bucket bounding sidecar plan QPS
 participation; they never reject, delay, or otherwise change ordinary
 inference.
 
-## Identity and isolation
+### Identity and isolation
 
 One cache plan contains:
 
@@ -85,7 +100,7 @@ aggregate hash, prompt contract, provider cache epoch, boundary token count, and
 provider-confirmed chain hash. Route keys, account identifiers, raw boundaries,
 and prompts are not persisted or attached to telemetry.
 
-## Protocol v2 proof
+### Protocol v2 proof
 
 Every ready model advertises a connection-scoped capability containing:
 
@@ -111,7 +126,7 @@ A prompt-proof mismatch quarantines that exact capability. The request continues
 without preference. A changed capability or cache epoch may participate only
 after a fresh valid proof.
 
-## Holder lifecycle
+### Holder lifecycle
 
 A holder is created only by a valid SSD hit or by a durable-ready callback after
 the encrypted DBK3 blocks have been written, indexed, reopened, authenticated,
@@ -137,13 +152,14 @@ conservative.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Attempt and holder maps are memory-only, capped
-(`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`, default
-`defaultCacheRoutingMaxHolders = 4` per boundary; lifetime
-`defaultCacheRoutingTTL = 10 * time.Minute`), and heap-evicted. V1 receipt
+per boundary ([`EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS`](../reference/configuration.md#routing-admission-and-ttft),
+`defaultCacheRoutingMaxHolders`) with a bounded lifetime
+([`EIGENINFERENCE_CACHE_ROUTING_TTL`](../reference/configuration.md#routing-admission-and-ttft), `defaultCacheRoutingTTL`), and
+heap-evicted. V1 receipt
 frames remain decodable for mixed-version safety but cannot mutate routing
 evidence (`coordinator/registry/cache_receipts.go`).
 
-## Scheduler
+### Scheduler
 
 All ordinary trust, model, trait, memory, token-budget, queue, cooldown, health,
 and time-to-first-token gates run first ([`routing.md`](routing.md#eligibility-gates-and-the-gatereason-vocabulary)).
@@ -158,11 +174,12 @@ discount = min(net_ms, configured_max_ms, baseline_cost * configured_fraction)
 adjusted_cost = baseline_cost - discount
 ```
 
-with `configured_max_ms` from `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS`
-(default `defaultCacheRoutingMaxDiscountMs = 1000.0`) and
-`configured_fraction` from `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION`
-(default `defaultCacheRoutingMaxCostFraction = 0.35`). The discount is
-recorded as `CacheDiscountMs` in the cost breakdown.
+with `configured_max_ms` from
+[`EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS`](../reference/configuration.md#routing-admission-and-ttft)
+(`defaultCacheRoutingMaxDiscountMs`) and `configured_fraction` from
+[`EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION`](../reference/configuration.md#routing-admission-and-ttft)
+(`defaultCacheRoutingMaxCostFraction`). The discount is recorded as
+`CacheDiscountMs` in the cost breakdown.
 
 Unknown or non-positive staging cost yields no hint. There is no confidence
 multiplier, hard affinity, hypothetical winner, dedicated-cache mode, or stacking
@@ -252,24 +269,14 @@ identifier as a metric tag (`PendingRequest` in
 `coordinator/registry/registry.go`; `cacheSelectionTerminalTags` in
 `coordinator/api/provider.go`).
 
-## Configuration and rollback
+### Configuration and rollback
 
 All variables are read once at startup by `ReadConfig`
 (`coordinator/registry/config.go`) and applied through
-`ConfigureCacheRouting` (`coordinator/registry/registry.go`). The general
-coordinator environment reference is
-[`configuration.md`](../reference/configuration.md).
-
-| Environment variable | Default | Purpose |
-|---|---:|---|
-| `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` | `off` or `on` (`CacheRoutingOff`, `CacheRoutingOn`) |
-| `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | `100` | Deterministic percentage of otherwise eligible requests admitted to planning while mode is `on` (`defaultCacheRoutingActivationPct = 100.0`) |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | `0` | Process-local sidecar planning cap while mode is `on`; `0` is unlimited; upper bound `maxCacheRoutingPlanQPS = 1_000_000.0` |
-| `EIGENINFERENCE_CACHE_ROUTING_TTL` | `10m` | Holder lifetime (`defaultCacheRoutingTTL = 10 * time.Minute`) |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | `4` | Holders per boundary, 1–32 |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | `1000` | Absolute discount cap, 0–10000 |
-| `EIGENINFERENCE_CACHE_ROUTING_MAX_COST_FRACTION` | `0.35` | Relative discount cap, 0–1 |
-| `EIGENINFERENCE_CACHE_MASTER_KEY` | none | 32-byte base64 or hex HMAC key |
+`ConfigureCacheRouting` (`coordinator/registry/registry.go`). The
+`EIGENINFERENCE_CACHE_ROUTING_*` variables and `EIGENINFERENCE_CACHE_MASTER_KEY`,
+with their types, ranges and defaults, are listed once in
+[configuration.md → Routing, admission and TTFT](../reference/configuration.md#routing-admission-and-ttft).
 
 `CacheRoutingConfig.Check` fails startup when the mode is `on` and the master
 key is missing or malformed. `off` requires no key. `ConfigureCacheRouting`
@@ -282,10 +289,11 @@ stays in the same cohort, allowing a sampled cold miss to donate and later hit,
 without logging or exporting the cohort input. The QPS cap only declines cache
 planning; ordinary inference continues cold.
 
-Provider caching has one local kill switch, `DARKBLOOM_PREFIX_CACHE`
+Provider caching has one local kill switch,
+[`DARKBLOOM_PREFIX_CACHE`](../reference/configuration.md#ssd-prefix-cache)
 (`PrefixCachePolicy.environmentFlag`,
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`);
-unset defaults to encrypted SSD on. Providers advertise a model as protocol-v2
+`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`).
+Providers advertise a model as protocol-v2
 only after SSD scan readiness
 (`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`,
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift`,
@@ -305,15 +313,61 @@ it never closes registration. Model removal, unload heartbeats, capability
 changes, and disconnects remove connection-scoped status/evidence so stale
 slots cannot remain in aggregates.
 
-Rollout starts with coordinator routing `off`. Verify sidecar health, contract
-parity, provider capability identity, and proof mismatch rate before enabling
-`on` in an isolated development or canary environment. The first production
-activation uses `PERCENT=1` and `MAX_PLAN_QPS=1`; raise one bound at a time only
-after a clean observation window. Rollback always sets routing to `off` before
-rolling back binaries. Production activation is a separate operational
-decision: positive durable-hit evidence, stable correlation telemetry, healthy
-prompt artifacts, routing-mode enablement, and a separately provisioned
-256-bit cache master key remain required.
+Turning routing on in production, widening the activation bounds and rolling
+back are operator procedures, kept in the runbook
+[`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md).
+
+## Invariants
+
+1. **Routing `off` runs none of the machinery, and applying `off` clears all
+   in-memory evidence** — `ConfigureCacheRouting` installs a fresh, empty
+   holder/attempt tracker on every application
+   (`coordinator/registry/registry.go`).
+2. **Cache routing never rejects, delays or otherwise changes ordinary
+   inference.** The activation cohort and the plan-QPS bucket only decline
+   participation (`cacheActivationGate`,
+   `coordinator/registry/cache_activation.go`); a sidecar failure or a media
+   request yields a non-participating plan and the request still dispatches
+   (`planCacheRoute`, `coordinator/api/prompt_artifacts.go`).
+3. **Only exact text-token prefix proofs from protocol-v2 providers affect
+   selection**; V1 receipt frames stay decodable but cannot mutate routing
+   evidence (`coordinator/registry/cache_receipts.go`).
+4. **Cache ownership is never derived from a caller-controlled field.** The
+   provider-visible scope and the route keys are domain-separated HMACs over
+   authenticated account, concrete build, aggregate hash and prompt contract
+   (`coordinator/registry/cache_route_keys.go`).
+5. **Ordinary gates run first and the discount is bounded**:
+   `min(net_ms, configured_max_ms, baseline_cost × configured_fraction)`,
+   never below zero, never stacked across boundaries
+   (`applyCacheRoutingDiscount`, `coordinator/registry/scheduler.go`).
+6. **A proof mismatch quarantines that exact capability**; a changed
+   capability or cache epoch participates only after a fresh valid proof, and
+   evidence sequence numbers increase strictly per provider/model/epoch
+   (`rejectCapability`, `acceptV2SequenceLocked`,
+   `coordinator/registry/cache_receipts_v2.go`).
+7. **Route keys, account identifiers, raw boundaries and prompts are never
+   persisted or attached to telemetry**; `GET /v1/cache/status` and the
+   terminal tags carry bounded categorical values only
+   (`handleExactCacheStatus`, `coordinator/api/exact_cache_status.go`;
+   `cacheSelectionTerminalTags`, `coordinator/api/provider.go`).
+8. **Cache-participating attempts never train TTFT calibration or
+   first-content reputation** (`observeTTFTCalibration`,
+   `coordinator/api/settlement.go`; `coordinator/api/dispatch.go`).
+9. **Mode `on` without a valid master key does not start**
+   (`CacheRoutingConfig.Check`, `coordinator/registry/config.go`).
+
+## Failure modes
+
+| Symptom | Cause | What the code does |
+|---|---|---|
+| Coordinator exits at startup with `cache routing configuration rejected` | Mode `on` with a missing or malformed `EIGENINFERENCE_CACHE_MASTER_KEY`, or an out-of-range bound | `CacheRoutingConfig.Check` refuses the configuration; `coordinator/cmd/coordinator/main.go` exits |
+| Requests dispatch but no plan participates (`plan_failed`, `plan_empty` counters climb) | Sidecar timeout, crash, malformed output, unavailable artifacts or dynamic-time templates | Non-participating plan; cold routing; sidecar supervision in [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
+| Media requests never earn a discount | `HasMedia` requests are excluded by design | No participating plan is produced |
+| A capability stops participating after a hit | Prompt-proof mismatch quarantined that exact capability | Request continues without preference; participation resumes only after a fresh valid proof |
+| Holders vanish fleet-wide for one model | Provider capacity eviction rotated the model's cache epoch | Coarse invalidation of every old holder for that model |
+| Holders vanish for one provider | Disconnect or live-connection replacement, capability/contract/aggregate-hash change, verified miss or corruption, TTL, cap eviction | Removal counted under one of the six `CacheRoutingLifecycleStatus` reasons (`coordinator/registry/cache_routing.go`) |
+| `/v1/cache/status` shows a provider's models as `unreported` | Status array beyond `maxPrefixCacheStatuses`, duplicate keys, a blank model ID, or a status contradicting the v2 capability | `sanitizePrefixCacheStatuses` drops the optional snapshot; routing capability is never weakened (`coordinator/registry/cache_snapshot.go`) |
+| A cached provider loses to a cold one | Its adjusted cost is still worse, or staging cost is unknown/non-positive | No hint or a smaller discount; there is no hard affinity |
 
 ## Code map
 
@@ -323,7 +377,7 @@ prompt artifacts, routing-mode enablement, and a separately provisioned
 | Configuration and validation | `coordinator/registry/config.go` — `CacheRoutingConfig`, `Check`; `coordinator/registry/registry.go` — `ConfigureCacheRouting` |
 | Activation cohort and plan QPS | `coordinator/registry/cache_activation.go` — `cacheActivationGate`, `CacheRoutingActivationStatus` |
 | Route keys and scopes | `coordinator/registry/cache_route_keys.go` |
-| Receipts and legacy cache-bust key | `coordinator/registry/cache_receipts.go` |
+| Receipts, v2 proof acceptance and quarantine, legacy cache-bust key | `coordinator/registry/cache_receipts.go`, `coordinator/registry/cache_receipts_v2.go` — `ApplyPrefixCacheLookupV2`, `ApplyPrefixCacheReadyV2`, `rejectCapability` |
 | Status vocabularies and sanitization | `coordinator/registry/cache_eligibility.go`, `coordinator/registry/cache_status.go`, `coordinator/registry/cache_snapshot.go` |
 | Discount in the cost model | `coordinator/registry/scheduler.go` — `applyCacheRoutingDiscount`, `SelectionCacheTiebreak` |
 | Plan construction and sealed body | `coordinator/api/prompt_artifacts.go` — `planCacheRoute`; `coordinator/api/consumer.go` — `bodyForCacheAttempt` |
@@ -338,5 +392,6 @@ prompt artifacts, routing-mode enablement, and a separately provisioned
 - [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) — the local planner that produces exact token boundaries.
 - [`prefix-cache.md`](prefix-cache.md) — the provider side: when a request is a hit, hashing, gates and tiers.
 - [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) — on-disk layout and cryptography of the SSD cache.
-- [`../reference/configuration.md`](../reference/configuration.md) — coordinator environment reference.
-- [`../reports/2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md`](../reports/2026-08-31-prefix-cache-deep-dive-and-cached-routing-plan.md), [`../reports/2026-07-19-frozen-full-prefix-cache-proof.md`](../reports/2026-07-19-frozen-full-prefix-cache-proof.md) — the analyses that led to this design.
+- [`../reference/configuration.md`](../reference/configuration.md#routing-admission-and-ttft) — the `EIGENINFERENCE_CACHE_ROUTING_*` variables and `EIGENINFERENCE_CACHE_MASTER_KEY`.
+- [`../operations/cache-routing-rollout.md`](../operations/cache-routing-rollout.md) — turning routing on in production, widening the activation bounds, rolling back.
+- [`../design/prefix-cache-and-cached-routing.md`](../design/prefix-cache-and-cached-routing.md), [`../reports/2026-07-19-frozen-full-prefix-cache-proof.md`](../reports/2026-07-19-frozen-full-prefix-cache-proof.md) — the analyses that led to this design.

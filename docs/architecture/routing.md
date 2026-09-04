@@ -97,7 +97,7 @@ Gates run in the order below. The first failing gate names the rejection;
 | 2 | `GateExcluded` | `excluded` | `scanCandidatesLocked` | Provider is in the caller's exclude set (already failed this request, or a prior attempt). |
 | 3 | `GateNotServingModel` | `not_serving_model` | `providerServesRoutableModelReasonLocked` | Provider does not advertise the model. |
 | 4 | `GateDedicated` | `dedicated` | `providerServesRoutableModelReasonLocked` | Model belongs to a dedicated family and the provider's catalog is not exclusively that family. Owners self-routing to their own box are exempt. |
-| 5 | `GateDispatchLoadCooldown` | `dispatch_load_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is cooling down after a dispatch-time `load_model` failure (`dispatchLoadCooldownTTL = 2 * time.Minute`, `coordinator/registry/registry.go`). |
+| 5 | `GateDispatchLoadCooldown` | `dispatch_load_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is cooling down after a dispatch-time `load_model` failure (`dispatchLoadCooldownTTL`, [below](#cooldowns-breakers-and-ejection)). |
 | 6 | `GateErrorCooldown` | `error_cooldown` | `providerRoutingGateReasonLockedEx` | Shape-keyed inference-error breaker is open ([constants](#cooldowns-breakers-and-ejection)). |
 | 7 | `GateCapacityCooldown` | `capacity_cooldown` | `providerRoutingGateReasonLockedEx` | Pair is in capacity-reject cooldown (black-hole 503s). |
 | 8 | `GateBreaker` | `breaker` | `providerRoutingGateReasonLockedEx` | Node-health breaker open for genuine-fault errors. |
@@ -148,9 +148,9 @@ freshness, slot state, memory — still applies to owned machines.
 
 `challengeFreshnessMaxAge = 16 * time.Minute`
 (`coordinator/registry/scheduler.go`). A provider whose `LastChallengeVerified`
-is zero or older than this fails `challenge_stale`. Earlier revisions of this
-page said 6 minutes; the constant was raised to 16 minutes when attestation
-churn was reworked (`design/routing-v2-attestation-churn.md`).
+is zero or older than this fails `challenge_stale`. The constant was raised
+from 6 minutes when attestation churn was reworked
+([`../design/routing-v2-attestation-churn.md`](../design/routing-v2-attestation-churn.md)).
 
 `MaxFailedChallenges = 3` (`coordinator/registry/registry.go`) governs how
 failures clear that timestamp in `RecordChallengeFailure`: a *security*
@@ -253,14 +253,15 @@ leaves at least one candidate (`scanCandidatesLocked`):
    just failed this request (version-diverse retry).
 3. `MinDecodeTPS` — keep only providers whose
    `projectedPerRequestDecodeTPS` meets the request's floor. The coordinator
-   binary sets the floor from `EIGENINFERENCE_MIN_DECODE_TPS`, default
-   `15.0` tok/s; `0` disables it.
+   binary sets the floor from
+   [`EIGENINFERENCE_MIN_DECODE_TPS`](../reference/configuration.md#routing-admission-and-ttft);
+   `0` disables it.
 
 `selectRoutingCandidate` then picks from the pool:
 
 1. **Best cost.** The minimum `costMs`.
-2. **Near ties.** Every candidate within `nearTieCostWindowMs = 3_000.0` of
-   the best. Among near ties the winner is the lowest `effectiveQueue`, then
+2. **Near ties.** Every candidate within `nearTieCostWindowMs` ([cost
+   model](#cost-model)) of the best. Among near ties the winner is the lowest `effectiveQueue`, then
    the lowest `totalPending`.
 3. **Equivalents.** Near ties sharing the winner's queue depth and pending
    count. If any equivalent carries a cache discount, the cheapest equivalent
@@ -345,25 +346,29 @@ resident it is `coldTokenBudgetEstimate`:
 
 ```text
 weightsGiB   = measured resident GiB (version ≥ 0.8.16 and model in table) else catalogGB × coldLoadCatalogGBToMemGiB
-postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # servabilityCapFraction = 0.90
+postLoadGiB  = servabilityCapFraction × totalMemoryGB − weightsGiB        # mirrors the provider cap fraction
 tokens       = (postLoadGiB − activationFloorGiB) × 2^30 / kvBytesPerToken  # kvCacheBytesPerToken when unreported
 ```
 
 `coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30))` (≈ 1.1176,
-`coordinator/registry/scheduler.go`). The activation floor is version-gated
+`coordinator/registry/scheduler.go`). `servabilityCapFraction`,
+`servabilityActivationFloorGB` and `servabilityModelActivationFloorsGB` mirror
+the provider's `UnifiedMemoryCap` constants, whose values are stated once in
+[`hardware-support.md`](hardware-support.md#constants); the two tables move in
+the same commit. The activation floor is version-gated
 (`servabilityActivationFloor`):
 
 | Provider version | Floor |
 |---|---|
 | empty or `< 0.8.0` (`servabilityActivationFloorMinVersion = "0.8.0"`) | `servabilityLegacyActivationFloorGB = 3.0` |
-| `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB = 5.5` |
-| `≥ 0.8.16` | per-model table, else `5.5` |
+| `< 0.8.16` (`servabilityPerModelFloorMinVersion = "0.8.16"`) | `servabilityActivationFloorGB` |
+| `≥ 0.8.16` | per-model table, else `servabilityActivationFloorGB` |
 
 Per-model tables (`coordinator/registry/servability.go`):
 
 | Table | Entries |
 |---|---|
-| `servabilityModelActivationFloorsGB` | `"gpt-oss-20b": 3.5` |
+| `servabilityModelActivationFloorsGB` | `gpt-oss-20b` (mirrors `measuredActivationFloorsBytes`) |
 | `servabilityMeasuredResidentGiB` | `"gpt-oss-20b": 11.5` |
 
 The consumer path turns an unservable verdict into an immediate `429` instead
@@ -386,13 +391,13 @@ requires both a heartbeat delivered after the clamp showing at least
 (`releaseBudgetClampsOnHeartbeat`) and an accept for the pair after the clamp
 (`noteBudgetClampAcceptLocked`). A clamp fails open after
 `defaultBudgetClampTTL = 5 * time.Minute`. Kill switch
-`EIGENINFERENCE_BUDGET_CLAMP` (default on); TTL override
-`EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
+[`EIGENINFERENCE_BUDGET_CLAMP`](../reference/configuration.md#routing-admission-and-ttft);
+TTL override `EIGENINFERENCE_BUDGET_CLAMP_TTL_SECONDS`.
 
 **Capacity-rate penalty** (`coordinator/registry/capacity_rate.go`). A pair
 whose capacity-503 rate over `capacityRateWindow = 5 * time.Minute` exceeds
 `capacityRateThreshold = 0.25` with at least `capacityRateMinSample = 8`
-outcomes pays `rate × defaultCapacityRatePenaltyMs` (`15_000.0`,
+outcomes pays `rate × defaultCapacityRatePenaltyMs` ([cost model](#cost-model);
 override `EIGENINFERENCE_CAPACITY_RATE_PENALTY_MS`) in the cost model. A soft
 derater: the candidate stays in the pool.
 
@@ -461,8 +466,9 @@ When the consumer path sheds a request with `429`, `estimateRetryAfter`
 2. Distress override: if the attempt-0 route latency EWMA
    (`routeLatencyEWMAAlpha = 0.2`) exceeds
    `degradedRouteEWMAThresholdMs = 1000.0`, use
-   `ceil(ewmaSeconds) × 5`, capped at `maxDistressRetryAfter = 60`, when
-   larger than the base.
+   `ceil(ewmaSeconds) × 5`, capped at
+   [`maxDistressRetryAfter`](../reference/api-contracts.md#timeouts-and-constants),
+   when larger than the base.
 
 For a TTFT shed, `estimateTTFTRetryAfter` uses `ceil(bestTTFT − threshold)`
 in seconds, floored at the base estimate and clamped to [2, 30]. Self-route
@@ -531,12 +537,12 @@ must not run in parallel with other scheduler tests in the same process.
 
 | Symptom | Cause | What the code does |
 |---|---|---|
-| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With `EIGENINFERENCE_COLD_DISPATCH` (default `true`) and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
+| `no_provider` | No provider advertises the model, or every advertising provider fails a non-capacity gate (`candidateCount == 0` with no capacity rejections). | Preflight returns `429` with `Retry-After` and reason code `no_provider` (`coordinator/api/inference_admission.go`). With [`EIGENINFERENCE_COLD_DISPATCH`](../reference/configuration.md#routing-admission-and-ttft) enabled and an idle on-disk provider that could load the model, the request is queued for a cold dispatch instead (`coldSpillAvailable`, `coordinator/api/cold_dispatch.go`). With breaker-only rejections, fail-open re-scans first (`shouldBypassBreakerFailOpen`). |
 | `model_too_large` | Every advertising provider is cold and `modelFitsHardware` fails (`rejectModelTooLarge`). | Permanent rejection for this fleet composition; `routingsim` reports `OutcomeModelTooLarge`. |
-| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With `EIGENINFERENCE_QUEUE_BEFORE_SHED` (default `true`, `coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
+| All gated on capacity (`machine_busy`) | Providers serve the model but all are at `no_headroom`, `free_memory` or `capacity_cooldown`. | With [`EIGENINFERENCE_QUEUE_BEFORE_SHED`](../reference/configuration.md#routing-admission-and-ttft) enabled (`coordinator/api/cold_dispatch.go`) the request queues per [`scheduling.md`](scheduling.md); otherwise `429` with `Retry-After` from `estimateRetryAfter`. |
 | `ttft_too_slow` | Every candidate's estimated TTFT exceeds the first-content deadline. | Soft by default: the best-available provider still serves. `EIGENINFERENCE_TTFT_HARD_REJECT=true` restores the legacy `429`; vision requests are never TTFT-gated. |
 | Queue timeout | A queued request found no eligible provider within the queue's wait bound. | `ErrQueueTimeout` → `429` with `Retry-After`; see [`scheduling.md`](scheduling.md#per-model-request-queue). |
-| Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or the 5 min TTL; heartbeat headroom plus one accept releases early. |
+| Budget-clamped fleet | Every pair for the model is clamped after capacity 503s. | Pairs show as `free_memory` until release or `defaultBudgetClampTTL` ([above](#gray-box-capacity-signals)); heartbeat headroom plus one accept releases early. |
 | Hedge suppressed under load | Governor returns a suppress verdict. | Primary alone is waited on for the remaining deadline (`waitNoBackup`); `routing.hedge_governor_suppressed` counts the verdict. |
 
 ## Code map

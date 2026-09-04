@@ -160,17 +160,21 @@ daemon checks once at start (`runStartupAutoUpdate`,
 `provider-swift/Sources/darkbloom/StartCommand+Modes.swift`) and then on a loop
 (`provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift`):
 
-| Constant | Value | Symbol |
-|---|---|---|
-| First in-daemon check | 300 s after start | `autoUpdateInitialDelay` |
-| Check interval | 1800 s | `autoUpdateInterval` |
-| Random delay before installing | up to `provider.update_jitter_seconds`, default `300` | `updateJitterSeconds` |
-| Drain of in-flight requests before restart | 120 s | `updateDrainTimeout` |
-| Skip every check (banner, start, loop, watchdog) | `DARKBLOOM_NO_UPDATE_CHECK` set to any value | — |
+| Step | Symbol |
+|---|---|
+| First in-daemon check after start | `autoUpdateInitialDelay` |
+| Check interval | `autoUpdateInterval` |
+| Random delay before installing | up to `provider.update_jitter_seconds` (`updateJitterSeconds`) |
+| Drain of in-flight requests before restart | `updateDrainTimeout` |
+| Skip every check (banner, start, loop, watchdog) | `DARKBLOOM_NO_UPDATE_CHECK` set to any value |
 
-A freshly installed version that crashes `rollbackThreshold = 3` times before
-surviving `defaultStabilizationSeconds = 600` is quarantined on this machine
-(`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`). Only
+The values are in [`cli-reference.md`](./cli-reference.md#runtime-constants)
+(the jitter default in its [`provider.toml` table](./cli-reference.md#providertoml-keys-read-by-the-cli)).
+
+A freshly installed version that crashes `rollbackThreshold` times before
+surviving `defaultStabilizationSeconds` is quarantined on this machine
+(`provider-swift/Sources/ProviderCore/Update/UpdateRecoveryState.swift`; values
+in [runtime constants](./cli-reference.md#runtime-constants)). Only
 that exact version is blocked; a newer release installs normally.
 `darkbloom update --override-quarantine` reinstalls it anyway, and
 `darkbloom doctor` reports the quarantine under `up to date`.

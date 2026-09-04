@@ -84,10 +84,10 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 
 | Step | Endpoint / value | Code |
 |---|---|---|
-| 1 | `POST /v1/device/code` (no auth, body ≤ 64 KiB) → `{device_code, user_code, verification_uri, expires_in, interval}`. `device_code` = 32 random bytes hex; `user_code` = 8 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` formatted `XXXX-XXXX`; `expires_in` = `DeviceCodeExpiry` = 15m (900); `interval` = `DeviceCodePollInterval` = 5; `verification_uri` = `EIGENINFERENCE_CONSOLE_URL` + `/link`, else `<scheme>://<host>/link` | `handleDeviceCode`, `generateUserCode` |
-| 2 | Operator signs in to the console and submits the code: `POST /v1/device/approve {user_code}` behind `requirePrivyAuth` and `rateLimitFinancial`; code normalised to upper-case; `404 invalid_code`, `410 expired_code`, `409 already_used`; success → `ApproveDeviceCode(device_code, account_id)` | `handleDeviceApprove` |
-| 3 | CLI polls `POST /v1/device/token {device_code}` (no auth; the secret is the code): `200 {status: "authorization_pending"}` while pending; `404 invalid_grant` unknown; `410 expired_token` after 15m or once consumed; on approval `200 {status: "authorized", token, account_id}` | `handleDeviceToken` |
-| 4 | Token = `"eigeninference-pt-" + 32 random bytes hex`; only its SHA-256 is stored (`ProviderToken{TokenHash, AccountID, Label: "device-" + user_code, Active}`); the CLI writes it to `~/.darkbloom/auth_token` with mode `0600` | `handleDeviceToken`; `AuthTokenStore` |
+| 1 | `POST /v1/device/code` (no auth, body capped at `maxControlPlaneBodyBytes`) → `{device_code, user_code, verification_uri, expires_in, interval}`. `device_code` = 32 random bytes hex; `user_code` = 8 chars from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` formatted `XXXX-XXXX`; `expires_in` = `DeviceCodeExpiry` and `interval` = `DeviceCodePollInterval` ([api-contracts](../../reference/api-contracts.md#device-code-flow-3)); `verification_uri` = `EIGENINFERENCE_CONSOLE_URL` + `/link`, else `<scheme>://<host>/link` | `handleDeviceCode`, `generateUserCode` |
+| 2 | Operator signs in to the console and submits the code: `POST /v1/device/approve {user_code}` behind `requirePrivyAuth` and `rateLimitFinancial`; code normalised to upper-case; errors `invalid_code`, `expired_code`, `already_used`; success → `ApproveDeviceCode(device_code, account_id)` | `handleDeviceApprove` |
+| 3 | CLI polls `POST /v1/device/token {device_code}` (no auth; the secret is the code): `200 {status: "authorization_pending"}` while pending; `invalid_grant` when unknown; `expired_token` after `DeviceCodeExpiry` or once consumed; on approval `200 {status: "authorized", token, account_id}` | `handleDeviceToken` |
+| 4 | Token = the provider token whose shape is under [api-contracts](../../reference/api-contracts.md#device-code-flow-3); the store keeps `ProviderToken{TokenHash, AccountID, Label: "device-" + user_code, Active}`; the CLI writes the token to `~/.darkbloom/auth_token` with mode `0600` | `handleDeviceToken`; `AuthTokenStore` |
 | 5 | The daemon sends it as `register.auth_token` (binding B6) | `coordinator/api/provider.go` |
 | Logging | `device code created {user_code, expires_in}`, `provider token issued {account_id, user_code}`, `device approved {user_code, account_id, email}` at `Info` — never the `device_code` or the token | `coordinator/api/device_auth.go` |
 
@@ -124,7 +124,7 @@ RFC 8628-style flow implemented in `coordinator/api/device_auth.go` and
 | MDA leaf serial ≠ blob serial and nonce does not bind the SE key | `mda_verified` stays false | `coordinator/registry/registry.go` (`SetMDAProofIfHardwareBound`) |
 | Invalid or revoked provider token | Warning logged; provider connects unlinked (no account, no owner self-route, no payouts) | `coordinator/api/provider.go` |
 | Privy key rotated upstream | Every consumer token fails `401` until the coordinator is restarted with the new PEM | `coordinator/auth/privy.go` |
-| Device code expired or reused | `410 expired_token` / `409 already_used`; operator reruns `darkbloom login` | `coordinator/api/device_auth.go` |
+| Device code expired or reused | `expired_token` / `already_used`; operator reruns `darkbloom login` | `coordinator/api/device_auth.go` |
 
 ## Code map
 

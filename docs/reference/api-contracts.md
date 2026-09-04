@@ -13,25 +13,25 @@ Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handle
 | Label | Mechanism | Symbol |
 |---|---|---|
 | `—` | No authentication | — |
-| `key` | Bearer is an API key (`sk-db-…`, legacy `eigeninference-…`), a Privy JWT, or the admin key. Missing or invalid → 401 `authentication_error` | `requireAuth` |
+| `key` | Bearer is an API key ([shape](#api-key-shapes); legacy `eigeninference-…` keys are also accepted), a Privy JWT, or the admin key. Missing or invalid → 401 `authentication_error` | `requireAuth` |
 | `privy` | Bearer must be a Privy JWT. API keys → 403 `forbidden` | `requirePrivyAuth` |
 | `user` | `key` or `privy` plus an in-handler check that a resolved account user is in the context (Privy JWT, or an API key linked to a Privy account). Admin key and unlinked legacy keys → 401 `auth_error` | `requirePrivyUser` (`coordinator/api/billing_handlers.go`) |
 | `admin` | In-handler check: Bearer equals the admin key (`EIGENINFERENCE_ADMIN_KEY`), or the context holds a Privy user whose email is in the admin list. Otherwise 403 `forbidden`. When the route is registered *without* `requireAuth` no user is ever placed in the context, so only the admin key can pass; those rows say `admin-key` | `isAdminAuthorized` (`coordinator/api/release_handlers.go`), `requireAdminKey` (`coordinator/api/invite_handlers.go`), `isAdmin` (`coordinator/api/billing_handlers.go`) |
 | `publishing` | `X-Darkbloom-Publishing-Key` header or Bearer equal to the bootstrap `MODEL_REGISTRY_PUBLISHING_KEY`, the admin key, or a publishing key stored in the DB | `requirePublishingAPIKey` (`coordinator/api/model_registry_handlers.go`) |
 | `release` | Bearer equal to `EIGENINFERENCE_RELEASE_KEY`; otherwise 401 `unauthorized` | `handleRegisterRelease` (`coordinator/api/release_handlers.go`) |
 | `stripe-sig` | Stripe webhook signature | `handleStripeWebhook` (`coordinator/api/billing_handlers.go`), `handleStripeConnectWebhook` (`coordinator/api/stripe_payouts_webhooks.go`) |
-| `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at `maxMDMWebhookBodyBytes` = 1 MiB | `HandleMDMWebhook` |
+| `mdm-secret` | Webhook secret via `X-Webhook-Token` header or `?token=`; body capped at [`maxMDMWebhookBodyBytes`](#limits-and-validation) | `HandleMDMWebhook` |
 | `ws` | Provider WebSocket handshake (enrollment credentials + attestation); see [`protocol-messages.md`](protocol-messages.md) | `handleProviderWS` (`coordinator/api/provider.go`) |
 
 **Limiter column** — the rate-limit middleware in the chain. All limiters share one implementation, `rateLimitWithTier`, keyed by the authenticated account id (`consumerKeyFromContext`); the admin key bypasses it.
 
 | Label | Behaviour | Symbol |
 |---|---|---|
-| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After: 3` (`coordinatorDrainRetryAfter`, written through `writeTokenRateLimited`) | `drainGate` (`coordinator/api/drain.go`) |
+| `drain` | While draining, new inference requests get **429** `rate_limit_exceeded` with `Retry-After` set to [`coordinatorDrainRetryAfter`](#timeouts-and-constants) (written through `writeTokenRateLimited`) | `drainGate` (`coordinator/api/drain.go`) |
 | `rpm` | Consumer tier: first the key's own `rpm_limit` (`applyKeyRPMLimit`), then the account limiter; service-role accounts use the elevated service limiter. Rejection → 429 `rate_limit_exceeded` (`code: rate_limit_exceeded`) with `Retry-After` and `X-RateLimit-Reset` | `rateLimitConsumer` |
 | `fin` | Financial tier: the stricter limiter installed by `SetFinancialRateLimiter`, applied to every account regardless of role; same 429 shape | `rateLimitFinancial` |
 
-Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` on allowed *and* rejected responses (`setRequestRateLimitHeaders`). Limiter `Retry-After` values are clamped to `[DefaultRetryAfter, maxRetryAfter]` = `[1 s, 60 s]` (`coordinator/ratelimit/ratelimit.go`).
+Both tiers set `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` on allowed *and* rejected responses (`setRequestRateLimitHeaders`). Limiter `Retry-After` values are clamped to `[DefaultRetryAfter, maxRetryAfter]` ([Timeouts and constants](#timeouts-and-constants)).
 
 ## Routes
 
@@ -58,16 +58,16 @@ All four share the chain `drainGate → requireAuth → rateLimitConsumer → se
 | GET | `/v1/models/catalog/manifest/` | `handleModelCatalogManifest` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Per-model manifest by path suffix |
 | GET | `/v1/models/catalog/` | `handleModelCatalogItem` (`coordinator/api/model_registry_handlers.go`) | `—` | — | Single catalog item by path suffix |
 | GET | `/v1/runtime/manifest` | `handleRuntimeManifest` | `—` | — | Runtime bundle manifest consumed by providers |
-| GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached 1 s (`exactCacheStatusCacheTTL`) |
+| GET | `/v1/cache/status` | `handleExactCacheStatus` (`coordinator/api/exact_cache_status.go`) | `—` | — | Exact-cache status, cached for [`exactCacheStatusCacheTTL`](#timeouts-and-constants) |
 
 ### Authentication and API keys (10)
 
 | Method | Path | Handler | Auth | Limiter | Notes |
 |---|---|---|---|---|---|
 | POST | `/v1/auth/keys` | `handleCreateKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Legacy mint: `CreateKeyResponse` `{api_key, account_id}` |
-| DELETE | `/v1/auth/keys` | `handleRevokeKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | Body `{"key": "sk-db-..."}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
+| DELETE | `/v1/auth/keys` | `handleRevokeKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | Body `{"key": "<api key>"}`; 400 `bad_request` otherwise; `RevokeKeyResponse` `{status}` |
 | GET | `/v1/keys` | `handleListAPIKeys` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyListResponse` `{object: "list", data: [APIKeyResponse]}` |
-| POST | `/v1/keys` | `handleCreateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is returned only here and on rotate |
+| POST | `/v1/keys` | `handleCreateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | `CreateAPIKeyResponse` `{key, data}`; `key` is the plaintext secret ([API key shapes](#api-key-shapes)) |
 | GET | `/v1/keys/{id}` | `handleGetAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | — | `APIKeyResponse` |
 | PATCH | `/v1/keys/{id}` | `handleUpdateAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Partial update, fields under [API key shapes](#api-key-shapes) |
 | DELETE | `/v1/keys/{id}` | `handleDeleteAPIKey` (`coordinator/api/apikey_handlers.go`) | `privy` | `fin` | Revoke |
@@ -85,7 +85,7 @@ Lifecycle semantics: [`../consumer/authentication.md`](../consumer/authenticatio
 | POST | `/v1/device/token` | `handleDeviceToken` (`coordinator/api/device_auth.go`) | `—` | — | Body `{"device_code"}` (400 `invalid_request` if missing). 200 `{status: "authorization_pending"}` until approved; 200 `{status: "authorized", token, account_id}` once approved; 404 `invalid_grant`; 410 `expired_token` |
 | POST | `/v1/device/approve` | `handleDeviceApprove` (`coordinator/api/device_auth.go`) | `privy` | `fin` | Body `{"user_code"}`. 404 `invalid_code`, 409 `already_used`, 410 `expired_code` |
 
-Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + hex, labelled `device-<user_code>`) used by the provider CLI to link a machine to the account; it is not a consumer API key. Small-body cap `maxControlPlaneBodyBytes` = 64 KiB applies to these unauthenticated endpoints.
+Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInterval` = 5 (`interval`). The `token` is a **provider token** (`eigeninference-pt-` + 64 hex characters, labelled `device-<user_code>`; only its SHA-256 hash is stored) used by the provider CLI to link a machine to the account; it is not a consumer API key. The small-body cap [`maxControlPlaneBodyBytes`](#limits-and-validation) applies to these unauthenticated endpoints.
 
 ### Account, balance, usage and pricing (13)
 
@@ -156,7 +156,7 @@ Ledger semantics, reservations and payouts: [`../architecture/billing.md`](../ar
 | GET | `/v1/releases/latest` | `handleLatestRelease` (`coordinator/api/release_handlers.go`) | `—` | Latest release record |
 | GET | `/readyz` | `handleReadyz` (`coordinator/api/drain.go`) | `—` | 200 normally; 503 while draining |
 
-Release publishing: [`../developer/release.md`](../developer/release.md).
+Release publishing: [`../operations/provider-release.md`](../operations/provider-release.md).
 
 ### Enrollment and provider transport (3)
 
@@ -164,7 +164,7 @@ Release publishing: [`../developer/release.md`](../developer/release.md).
 |---|---|---|---|---|
 | POST | `/v1/enroll` | `handleEnroll` (`coordinator/api/enroll.go`) | `—` (enrollment token in body) | Exchanges an enrollment token for provider credentials; see [`../architecture/security/enrollment.md`](../architecture/security/enrollment.md) |
 | GET | `/ws/provider` | `handleProviderWS` (`coordinator/api/provider.go`) | `ws` | Provider WebSocket; message catalogue in [`protocol-messages.md`](protocol-messages.md) |
-| POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at `maxLogReportBodySize` = 10 MB; 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
+| POST | `/v1/provider/log-report` | `handleUploadLogReport` (`coordinator/api/log_report_handlers.go`) | `key` | Body capped at [`maxLogReportBodySize`](#timeouts-and-constants); 426 `upgrade_required` when `?serial=` names a provider below the minimum version |
 
 ### Telemetry (1)
 
@@ -197,7 +197,7 @@ Release publishing: [`../developer/release.md`](../developer/release.md).
 | GET | `/v1/admin/metrics` | `handleAdminMetrics` | `admin-key` | Telemetry counters |
 | GET | `/v1/admin/base-rewards` | `handleAdminBaseRewards` (`coordinator/api/base_rewards_handlers.go`) | `admin-key` | |
 | GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
-| POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace `DefaultDrainGrace` = 600 s |
+| POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
 | GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections |
 | GET | `/v1/admin/profiles`, `/v1/admin/profiles/export` | `handleAdminProfiles`, `handleAdminProfilesExport` (`coordinator/api/profiler_admin.go`) | `admin-key` | Request profiles; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
@@ -233,7 +233,7 @@ Total: 4 + 9 + 10 + 3 + 13 + 11 + 6 + 5 + 5 + 3 + 1 + 34 + 1 = **105 registratio
 | Header | Where | When |
 |---|---|---|
 | `X-Request-ID` | `loggingMiddleware` | Every response |
-| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `drainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, 3 s); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at `maxDistressRetryAfter` = 60 s; a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
+| `Retry-After` | `rateLimitWithTier`, `applyKeyRPMLimit`, `writeTokenRateLimited`, `drainGate`, `shedIfModelRejected`, `writeTTFTTooSlow`, `writeServiceUnavailable`, `runInferenceAdmission`, `selfRouteUnavailable`, `preContentTerminal`, the exhausted branch of `dispatchState.run` (`coordinator/api/dispatch.go`) | Every 429 (including the drain 429, [`coordinatorDrainRetryAfter`](#timeouts-and-constants)); 503 `service_unavailable`, `machine_offline` (30 s), `model_not_loaded` (15 s), and 503 `provider_error` from dispatch exhaustion. **Not** set on 503 `model_unavailable`, 502, or 504. Admission values come from `estimateRetryAfter` (`coordinator/api/consumer.go`), capped at [`maxDistressRetryAfter`](#timeouts-and-constants); a provider-forecast `feasible_after_ms` overrides it, clamped to 2–30 s |
 | `X-RateLimit-Reset`, `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`, `x-ratelimit-reset-requests` | `rateLimitWithTier`, `setRequestRateLimitHeaders` | Request-rate limited routes (`rpm`, `fin`); the first only on rejection |
 | `x-ratelimit-limit-input-tokens`, `x-ratelimit-remaining-input-tokens`, `x-ratelimit-reset-input-tokens`, and the `-output-tokens` triple | `setTokenRateLimitHeaders` | Inference responses when token limits are configured |
 | `X-Timing` | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | Committed inference responses. A JSON object with the `RequestTimingDetails` fields (`coordinator/api/types/types.go`): `parse_us`, `reserve_us`, `media_fetch_us`, `route_us`, `queue_us`, `encrypt_us`, `dispatch_us`, `provider_us`, plus profiler-only additive keys (`pre_handler_us`, `preflight_us`, `route_reserve_us`, `queue_pure_us`, `writer_us`, `socket_us`, `provider_ack_us`, `timing_anomaly`) |
@@ -270,12 +270,12 @@ Every error body has one shape (`errorResponse`, `writeJSON`, `withCode` in `coo
 | 403 | `forbidden`, `model_not_allowed` | API key on a `privy` route; non-admin on an `admin` route; model outside the key's `allowed_models` (`keyModelAllowed`, `coordinator/api/apikey_handlers.go`) |
 | 404 | `model_not_found`, `not_found`, `invalid_grant`, `invalid_code`, `referral_error`, `invalid_request_error` | Model or alias not in the catalog; unknown key id; device codes; `/v1/` catch-all; state export when disabled |
 | 409 | `no_linked_machine`, `already_used`, `conflict`, `stripe_account_gone`, `stripe_account_recreate_required` | Self-route without a linked machine; device-approve replay; invite-code collision; Stripe Connect state |
-| 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | Telemetry endpoint; expired device codes |
+| 410 | `telemetry_ingest_disabled`, `expired_token`, `expired_code` | [Telemetry endpoint](#telemetry-1); expired [device codes](#device-code-flow-3) |
 | 412 | `precondition_failed` | State export without an encryption recipient |
-| 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over 16 MiB (`parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
+| 413 | `invalid_request_error` (plain, or with `code: payload_too_large`) | Inference body over `maxInferenceBodyBytes` ([Limits and validation](#limits-and-validation); `parseInferencePrelude`); admission rejects a prompt no provider can accept (`runInferenceAdmission`) |
 | 422 | `invalid_request_error` | Tool-constraint schema the parser cannot compile (`validateResolvedToolConstraintParser`, `coordinator/api/tool_constraints.go`) |
 | 426 | `upgrade_required` | Log report from a provider below the minimum version |
-| 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`preContentTerminal`, `coordinator/api/dispatch.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After: 3`), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `classifyExhaustedStatus`, `coordinator/api/dispatch.go`), or the request fits no provider; always with `Retry-After` |
+| 429 | `rate_limit_exceeded`, `machine_busy` | `machine_busy`: self-route (`X-Darkbloom-Route: self`) when the owned machine is at capacity, with `Retry-After` (`preContentTerminal`, `coordinator/api/dispatch.go`). `rate_limit_exceeded`: key RPM, account RPM, input/output tokens per minute, coordinator drain (`Retry-After` = [`coordinatorDrainRetryAfter`](#timeouts-and-constants)), admission shedding, model-rejection shedding, fleet TTFT too slow, and dispatch exhausted on capacity: every attempt refused for capacity, no provider produced first content within the deadline (the coordinator's own pre-content timeout is reclassified from 504 by `classifyExhaustedStatus`, `coordinator/api/dispatch.go`), or the request fits no provider; always with `Retry-After` |
 | 500 | `internal_error`, `server_error`, `auth_error`, `otp_error` | Store failures, token generation, account lookup, admin OTP delivery |
 | 502 | `provider_error`, `stripe_error` | Provider returned an error or no usable output; Stripe API failures |
 | 503 | `model_unavailable` (no `Retry-After`; may carry `code: model_capability_unsupported`), `service_unavailable`, `encryption_unavailable`, `machine_offline`, `model_not_loaded`, `billing_error`, `not_configured`, `provider_error` | No routable provider for the resolved model; no serving capacity (`writeServiceUnavailable`); sealing not configured; self-route machine states; ledger or Stripe not configured; Privy not configured for admin OTP; `/readyz` while draining; dispatch exhausted on a genuine provider 503 |
@@ -371,8 +371,9 @@ Built by `handleStreamingResponseWithFirstChunk` (`coordinator/api/consumer.go`)
 | Rule | Value / behaviour | Symbol |
 |---|---|---|
 | Global request body | 64 MiB ceiling on every request (`maxRequestBodyBytes`, `bodyLimitMiddleware`) | `coordinator/api/server.go` |
-| Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same 16 MiB cap | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` |
+| Inference body | 16 MiB (`maxInferenceBodyBytes`) → 413 `invalid_request_error`; sealed bodies are read with the same cap (400 `invalid_request_error` when exceeded) | `parseInferencePrelude` (`coordinator/api/inference_preprocess.go`), `sealedTransport` (`coordinator/api/sender_encryption.go`) |
 | Control-plane bodies | 64 KiB (`maxControlPlaneBodyBytes`) for enroll, device token, admin auth | `coordinator/api/server.go` |
+| MDM webhook body | 1 MiB (`maxMDMWebhookBodyBytes`) | `HandleMDMWebhook` (`coordinator/api/server.go`) |
 | `n` | Must be 1 | `handleChatCompletions` |
 | `max_tokens` | `max_completion_tokens` → `max_tokens`; an explicit value is not clamped, a missing one is filled from the [output bound](pricing-model.md#formulas) | `ensureMaxTokensBound` |
 | Prompt size at admission | 413 `payload_too_large` when the estimated prompt exceeds what the model's providers can accept | `runInferenceAdmission` (`coordinator/api/inference_admission.go`) |
@@ -391,13 +392,13 @@ Built by `handleStreamingResponseWithFirstChunk` (`coordinator/api/consumer.go`)
 | Constant | Value | Where | Effect |
 |---|---|---|---|
 | `inferenceTimeout` | 600 s | `coordinator/api/consumer.go` | Streaming: maximum silence between chunks (the timer resets on every chunk) → terminal SSE `error` event, type `timeout`. Non-streaming: total wait for the response → 504 `timeout` |
-| `defaultFirstContentDeadlineBase` | 5 s | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline when `EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS` is unset (production sets 9000 ms; `coordinator/cmd/coordinator/main.go`). Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
+| `defaultFirstContentDeadlineBase` | the compiled default of [`EIGENINFERENCE_TTFT_LIVE_DEADLINE_BASE_MS`](configuration.md#routing-admission-and-ttft) | `coordinator/api/consumer.go` | Fallback base of the request-absolute first-content deadline when the variable is unset. Deadline = `CoordinatorFirstContentDeadline(model, promptTokens, base)` = base + 1 ms per estimated prompt token, tightened per model by exact-model overrides (`coordinator/modelpolicy/first_content_deadline.go`, replaceable via `EIGENINFERENCE_MODEL_FIRST_CONTENT_BASES`). Expiry before any content → 429 `rate_limit_exceeded` + `Retry-After` (the pre-content 504 is reclassified by `classifyExhaustedStatus`) |
 | `preambleContentTimeout` | 90 s | `coordinator/api/consumer.go` | Cap from a provider's first preamble chunk (role delta / Responses lifecycle event, nothing written to the client yet) to its first content chunk; a provider that stalls after preamble fails over instead of holding the request for `inferenceTimeout`. Never exceeds the remaining first-content budget |
 | `maxDispatchAttempts` | 64 | `coordinator/api/consumer.go` | Upper bound on provider attempts per request |
 | `chunkBufferSize` | 256 | `coordinator/api/consumer.go` | Pre-commit chunk buffer per attempt |
-| `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; revocation takes effect within 60 s |
+| `apiKeyCacheTTL` | 60 s | `coordinator/api/server.go` | API-key lookups are cached; a revocation takes effect within one TTL |
 | `coordinatorDrainRetryAfter` / `DefaultDrainGrace` | 3 s / 600 s | `coordinator/api/drain.go` | `Retry-After` on the drain 429; default drain window |
-| `DeviceCodeExpiry` / `DeviceCodePollInterval` | 15 min / 5 s | `coordinator/api/device_auth.go` | Device-code lifetime and poll interval |
+| `DeviceCodeExpiry` / `DeviceCodePollInterval` | see [Device-code flow](#device-code-flow-3) | `coordinator/api/device_auth.go` | Device-code lifetime and poll interval |
 | `maxLogReportBodySize` | 10 MB | `coordinator/api/log_report_handlers.go` | Provider log upload cap |
 | `degradedRouteEWMAThresholdMs` / `maxDistressRetryAfter` | 1000 ms / 60 s | `coordinator/api/consumer.go` | Input threshold and cap for `estimateRetryAfter` |
 | `DefaultRetryAfter` / `maxRetryAfter` | 1 s / 60 s | `coordinator/ratelimit/ratelimit.go` | Clamp for limiter `Retry-After` |
@@ -433,7 +434,7 @@ Sealed mode hides request and response bodies from TLS-terminating intermediarie
 
 ### API key shapes
 
-`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/apikey.go`) and is returned only by create and rotate. `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/apikey_handlers.go`).
+`APIKeyResponse` (`coordinator/api/types/types.go`): `id` (`key_<hex>`, `GenerateKeyID`), `name`, `label`, `disabled`, `limit_usd`, `limit_reset`, `usage_usd`, `remaining_usd`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `self_route_only`, `expires_at`, `created_at`, `last_used_at`. The secret is `KeyPrefix` (`sk-db-`) + 64 hex characters (`GenerateRawKey`, `coordinator/store/apikey.go`), is returned only by create and rotate, and is stored only as its SHA-256 hash (`hashKey`, `coordinator/store/postgres.go`). `POST /v1/keys` and `PATCH /v1/keys/{id}` accept `name`, `limit_usd`, `limit_reset`, `rpm_limit`, `itpm_limit`, `otpm_limit`, `allowed_models`, `expires_at`, `self_route_only`; PATCH also accepts `disabled` (`coordinator/api/apikey_handlers.go`).
 
 ### Device code shapes
 

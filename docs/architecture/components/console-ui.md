@@ -79,7 +79,7 @@ Credential column: **Privy (required)** = `privyAuth()` must be non-empty or the
 | `/api/payments/withdraw/stripe` | POST | `POST /v1/billing/withdraw/stripe` | Privy (if present) | Payout request |
 | `/api/pricing` | GET | `GET /v1/pricing` | none | `cacheControl(300, 600)` |
 | `/api/stats` | GET | `GET /v1/stats` | none | `cacheControl(10, 30)`; `?mock=geo` merges `mock-geo.ts` geography for offline development, uncached |
-| `/api/telemetry` | POST | **none** | — | Always `410 {"error":{"code":"telemetry_ingest_disabled"}}`; the body is never read |
+| `/api/telemetry` | POST | **none** | — | Always answers `telemetry_ingest_disabled` (the same response as the coordinator's [telemetry route](../../reference/api-contracts.md#telemetry-1)); the body is never read |
 
 ### Two credential paths
 
@@ -145,7 +145,7 @@ Next 16 loads the request interceptor from `src/proxy.ts` (default export `proxy
 - **Google Analytics** (`console-ui/src/lib/google-analytics.ts`, `components/GoogleAnalytics.tsx`): gtag loads when `getGoogleAnalyticsMeasurementId()` is non-empty and `hasGoogleAnalyticsConsent()` is true. `getGoogleAnalyticsConsentStatus()` returns `"granted"` for every client — **consent defaults to granted, and there is no prompt**; `revokeGoogleAnalyticsConsent()` removes `darkbloom_ga_consent` from localStorage but still writes the cookie as `granted`, so revocation is not effective. Page-view URLs are sanitised (`buildTrackedPageLocation`) before sending.
 - **Vercel Analytics**: `<Analytics/>` in the layout; no configuration.
 - **Datadog RUM** (`console-ui/src/components/DatadogRUM.tsx`): inert unless both `NEXT_PUBLIC_DD_APPLICATION_ID` and `NEXT_PUBLIC_DD_CLIENT_TOKEN` are set; then `datadogRum.init` with `service: "darkbloom-console"`, `sessionSampleRate: 100`, `sessionReplaySampleRate: 20`, `defaultPrivacyLevel: "mask-user-input"`, and `setUser({id, email})` once authenticated.
-- **Client telemetry is disabled.** `emit()` and `installGlobalHandlers()` (`console-ui/src/lib/telemetry.ts`) are empty functions kept for source compatibility; `TelemetryInitializer` and `global-error.tsx` call them to no effect; `POST /api/telemetry` answers 410 without reading the body. The wire types in `console-ui/src/lib/telemetry-types.ts` remain for the tests and the schema in [`../telemetry.md`](../telemetry.md).
+- **Client telemetry is disabled.** `emit()` and `installGlobalHandlers()` (`console-ui/src/lib/telemetry.ts`) are empty functions kept for source compatibility; `TelemetryInitializer` and `global-error.tsx` call them to no effect; `POST /api/telemetry` answers `telemetry_ingest_disabled` without reading the body. The wire types in `console-ui/src/lib/telemetry-types.ts` remain for the tests and the schema in [`../telemetry.md`](../telemetry.md).
 
 ### Environment variables
 
@@ -172,7 +172,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 5. **Sealed bodies are forwarded byte-for-byte.** `POST` in `console-ui/src/app/api/chat/route.ts` reads `req.arrayBuffer()` when `isSealed` and never JSON-round-trips it; the `X-Darkbloom-Route` header travels outside the sealed body (`streamChat`).
 6. **Encryption never degrades silently.** With the toggle on, a failed `getCoordinatorKey` aborts the send through `callbacks.onError` (`prepareBody` in `console-ui/src/lib/chat/stream.ts`); a sealed response that fails `unsealSseEvent` aborts the stream.
 7. **`/api/*` is outside the interceptor.** The `matcher` in `console-ui/src/proxy.ts` excludes `api/`.
-8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns 410 unconditionally.
+8. **No client telemetry leaves the page.** `emit` and `installGlobalHandlers` are empty (`console-ui/src/lib/telemetry.ts`); `POST` in `console-ui/src/app/api/telemetry/route.ts` returns `telemetry_ingest_disabled` unconditionally ([api-contracts](../../reference/api-contracts.md#telemetry-1)).
 9. **Persisted chat state carries no image bytes or live flags.** `partialize` in `console-ui/src/lib/store.ts` sets `images: undefined` and `streaming: false`.
 10. **Key provisioning is bounded.** One in-flight `POST /api/auth/keys` per tab (`provisionInFlight`) and a `PROVISION_FAILURE_COOLDOWN_MS` back-off after failure (`console-ui/src/hooks/useAuth.ts`).
 

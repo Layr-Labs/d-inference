@@ -6,7 +6,8 @@ The shape of a telemetry *event* as it exists in three mirrors (Go, Swift,
 TypeScript), the closed enums it carries, the field allowlist, and the tests
 that keep the mirrors identical. Only one producer of this shape is live today:
 the coordinator's own emitter, which forwards to Datadog. Client ingestion is
-switched off — `POST /v1/telemetry/events` answers `410 Gone` without reading
+switched off — `POST /v1/telemetry/events` answers `telemetry_ingest_disabled`
+([`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)) without reading
 the body — but the allowlist still governs what the Swift and console filters
 let through and what the coordinator emits about itself. What each live datum
 is and where it goes: [`telemetry-inventory.md`](telemetry-inventory.md);
@@ -116,13 +117,13 @@ fails on stale entries.
 
 | Route | Handler | Behaviour |
 |---|---|---|
-| `POST /v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | Always `410 Gone`, body `{"error": {"code": "telemetry_ingest_disabled", …}}`, without reading, decoding, logging or forwarding the request body. The route stays registered so old providers get a terminal answer; `TelemetryClient.swift` no longer posts at all |
+| `POST /v1/telemetry/events` | `handleTelemetryIngest` (`coordinator/api/telemetry_handlers.go`) | Always the `telemetry_ingest_disabled` error (status and route-table entry: [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1)), without reading, decoding, logging or forwarding the request body. The route stays registered so old providers get a terminal answer; `TelemetryClient.swift` no longer posts at all |
 
 Retained but unreachable from any route: `sanitizeTelemetryEvent`,
 `telemetryLimiter` (`newTelemetryLimiter`: burst 200 / 100 events per minute per
 machine or account, burst 30 / 10 per minute anonymous), and the batch and body
 limits above. `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody` pins
-the 410.
+the `telemetry_ingest_disabled` response.
 
 ## Coordinator emitter
 
@@ -147,7 +148,7 @@ and their fields are enumerated in
 | `TestTelemetryJSONSymmetry`, `TestTelemetryKindsMatch` | `coordinator/protocol/telemetry_symmetry_test.go` | canonical event encodes to the exact JSON string; the kind set |
 | `telemetryEventJSONSymmetry`, `telemetryKindsMatch`, `sourceAndSeverityRawValues` | `provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift` | the Swift mirror of the two Go tests plus the source/severity raw values |
 | `TestTelemetryAllowlistThreeWayParity`, `TestTelemetryAllowlistKnownGapsAreStillReal`, `TestTelemetryAllowlistDiffDetectsNewDrift` | `coordinator/api/telemetry_allowlist_parity_test.go` | Go ↔ Swift ↔ TS allowlist sets, parsed from source; known gaps stay real |
-| `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the 410, allowlist membership, message truncation |
+| `TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody`, `TestTelemetryFieldAllowlistHasKnownKeys`, `TestSanitizeTruncatesLongMessage` | `coordinator/api/telemetry_handlers_test.go` | the `telemetry_ingest_disabled` response, allowlist membership, message truncation |
 | `TelemetryClientTests.swift`, `TelemetryOverflowQueueTests.swift` | `provider-swift/Tests/ProviderCoreTests/` | the facade stays inert |
 
 ## Related
@@ -155,4 +156,4 @@ and their fields are enumerated in
 - [`telemetry-inventory.md`](telemetry-inventory.md) — every datum, producer, sink, cadence, retention
 - [`../architecture/telemetry.md`](../architecture/telemetry.md) — mechanism, invariants, failure modes, Datadog metric names
 - [`protocol-messages.md`](protocol-messages.md) — the heartbeat fields the coordinator turns into metrics
-- [`api-contracts.md`](api-contracts.md) — the route table entry for `/v1/telemetry/events` (`410`)
+- [`api-contracts.md#telemetry-1`](api-contracts.md#telemetry-1) — the route table entry for `/v1/telemetry/events` (`telemetry_ingest_disabled`)

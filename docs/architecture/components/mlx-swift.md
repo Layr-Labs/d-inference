@@ -52,8 +52,8 @@ architecture pages are read at the pinned `libs/mlx-swift-lm` commit.
 Platform floor: `provider-swift/Package.swift` and `libs/mlx-swift-lm/Package.swift`
 both declare `.macOS(.v14)`; `libs/mlx-swift/Package.swift` declares no
 `platforms:` at all. There is no runtime macOS-version gate — `darkbloom doctor`
-only warns below `recommendedMacOSMajorVersion = 26`
-([`../hardware-support.md`](../hardware-support.md)).
+only warns below `recommendedMacOSMajorVersion`, whose value is in
+[`../hardware-support.md#constants`](../hardware-support.md#constants).
 
 ### What `MLXLMServer` is used for
 
@@ -77,7 +77,7 @@ ship as a separate `mlx.metallib` that must match the compiled C++ exactly.
 
 ```mermaid
 flowchart LR
-    S[libs/mlx-swift/Source/Cmlx/mlx] -- cmake, deployment target MLX_METALLIB_DEPLOYMENT_TARGET=26.2 --> M[mlx.metallib beside the binary]
+    S[libs/mlx-swift/Source/Cmlx/mlx] -- cmake, deployment target MLX_METALLIB_DEPLOYMENT_TARGET --> M[mlx.metallib beside the binary]
     M -- locateRuntimeMetallib --> C[mlx.metallib, then Resources/mlx.metallib]
     C -- makeRuntimeMetallibSnapshot: copy to unlinked fd + SHA-256 --> A[/dev/fd/N snapshot]
     A -- darkbloom_mlx_set_metallib_path --> MLX[MLX loader, before the first GPU op]
@@ -85,12 +85,12 @@ flowchart LR
 ```
 
 - **Build.** `scripts/fetch-metallib.sh` cmake-builds the kernels from
-  `MLX_SRC = libs/mlx-swift/Source/Cmlx/mlx`, with
-  `MLX_METALLIB_DEPLOYMENT_TARGET` defaulting to `26.2` so the `_nax` kernels
-  are compiled, and refuses a library missing any symbol of its
+  `MLX_SRC = libs/mlx-swift/Source/Cmlx/mlx`, with a
+  `MLX_METALLIB_DEPLOYMENT_TARGET` default high enough that the `_nax`
+  kernels are compiled, and refuses a library missing any symbol of its
   `COMPLETENESS_CONTRACT` (`_nax`, `gemv`, the Gemma 4 expert-tile builders
-  and the `affine_qmv_wide_*` kernels). Invocation and cache knobs:
-  [`../../developer/build.md`](../../developer/build.md) (step 5).
+  and the `affine_qmv_wide_*` kernels). Default, invocation and cache knobs:
+  [`../../developer/build.md#5-provider-cli-swift-with-source-matched-metallib`](../../developer/build.md#5-provider-cli-swift-with-source-matched-metallib).
 - **Locate.** MLX's C++ loader tries the colocated `mlx.metallib` before
   `Resources/mlx.metallib` (`load_colocated_library`,
   `libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`);
@@ -132,7 +132,7 @@ flowchart LR
 | Symptom | Cause | Where |
 |---|---|---|
 | `swift build` succeeds, Metal work fails at start | No `mlx.metallib` beside the executable (or under `Resources/`) | `BinaryHasher.swift` (`locateRuntimeMetallib`); fix: [`../../developer/build.md`](../../developer/build.md) |
-| `fetch-metallib.sh` fails on a missing `_nax` symbol | Built with a deployment target below `26.2` or an SDK without Metal 4 | `scripts/fetch-metallib.sh` (`COMPLETENESS_CONTRACT`) |
+| `fetch-metallib.sh` fails on a missing `_nax` symbol | Built with a deployment target below the `MLX_METALLIB_DEPLOYMENT_TARGET` default or an SDK without Metal 4 | `scripts/fetch-metallib.sh` (`COMPLETENESS_CONTRACT`) |
 | Bumping `libs/mlx` changes nothing | The compiled core is `libs/mlx-swift/Source/Cmlx/mlx`, a different gitlink | `CLAUDE.md`, `scripts/fetch-metallib.sh` |
 | Qwen 3.5 load fails with `.unsupportedTokenizer("TokenizersBackend")` | `swift-transformers` below `1.3.0` | `provider-swift/Package.swift` |
 | Metallib rebind refused | Second bind with a different source or digest | `BinaryHasher.swift` (`RuntimeMetallibBindingError`) |
@@ -154,6 +154,6 @@ flowchart LR
 
 - [`provider.md`](provider.md) — the process these libraries are linked into
 - [`../inference.md`](../inference.md) — the CBv2 serving path
-- [`../hardware-support.md`](../hardware-support.md) — platform floor and memory model
+- [`../hardware-support.md`](../hardware-support.md) — hardware gates, `recommendedMacOSMajorVersion` and the memory model
 - [`../../developer/build.md`](../../developer/build.md) — submodule checkout and metallib build steps
-- [`../../developer/release.md`](../../developer/release.md) — release builds ship the same source-matched metallib
+- [`../../operations/provider-release.md`](../../operations/provider-release.md) — release builds ship the same source-matched metallib

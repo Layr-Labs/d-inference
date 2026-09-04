@@ -2,9 +2,12 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-Every `darkbloom` subcommand, flag, path and runtime constant, as declared in
-`provider-swift/Sources/darkbloom/` (`Darkbloom`, version `ProviderCore.version`
-= `0.8.16` in `provider-swift/Sources/ProviderCore/ProviderCore.swift`). Types
+Reference for the `darkbloom` command-line tool: every subcommand and flag, the
+files and identifiers it creates, the `provider.toml` keys it reads with their
+defaults, the environment variables it forwards to the daemon, and its runtime
+constants, as declared in `provider-swift/Sources/darkbloom/` (`Darkbloom`,
+version `ProviderCore.version` = `0.8.16` in
+`provider-swift/Sources/ProviderCore/ProviderCore.swift`). For operators; types
 and defaults are the ArgumentParser declarations; `—` means required.
 
 ## Global options
@@ -91,7 +94,8 @@ disarms it when `false`.
 Only `--config`. Read-only. Prints the daemon snapshot (refresh cadence under
 [Runtime constants](#runtime-constants)) and the last trust message the
 coordinator sent; what the levels mean is in
-[attestation](./attestation.md#trust-levels).
+[`architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels),
+and how to read the line in [attestation → Verify](./attestation.md#verify).
 
 ### `darkbloom doctor`
 
@@ -328,7 +332,7 @@ once in [`reference/configuration.md`](../reference/configuration.md).
 | `DARKBLOOM_CBV2_MTP` | `provider-swift/Sources/ProviderCore/SpecDec/SpecDecArtifactFunnel.swift` |
 | `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS` | MTP verification policy (tighten-only cap) |
 | `DARKBLOOM_KV_BACKEND_GUARD` | `provider-swift/Sources/ProviderCore/Service/KVBackendGuard.swift` |
-| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` (default `defaultCacheLimitGB = 8`) |
+| `DARKBLOOM_MLX_CACHE_LIMIT_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` (`defaultCacheLimitGB`) |
 | `DARKBLOOM_MLX_MEMORY_RESERVE_GB` | `provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift` |
 | `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS` | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` (`maxPartialPrefillsKey`) |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` (`environmentKey`) |
@@ -346,10 +350,9 @@ automatic updates with `darkbloom autoupdate disable`.
 |---|---|---|
 | Coordinator reconnect backoff | `ExponentialBackoff(base: 1.0, max: 30.0)` s | `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Connection.swift` |
 | WebSocket ping interval / pong timeout | `pingInterval = 10.0` s / `pongTimeout = 30.0` s | same |
-| Heartbeat | `heartbeat_interval_secs` = `5` | `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` |
-| State-file and capacity refresh | every `max(1, heartbeat / 2)` s → 2 s | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
+| State-file and capacity refresh | every `max(1, heartbeat_interval_secs / 2)` s; the heartbeat default is in the [`provider.toml` table](#providertoml-keys-read-by-the-cli) | `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift` |
 | State-file stale threshold | `isStale(maxAge: 90)` s; `doctor` calls the daemon wedged after `max(8 × refresh period, 90)` s | `provider-swift/Sources/ProviderCore/Service/DaemonStateFile.swift`; `provider-swift/Sources/darkbloom/Diagnostics/KVBackendPosture.swift` (`wedgedAfterSeconds`) |
-| Idle unload | `idle_timeout_mins = 60`; polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
+| Idle unload | `idle_timeout_mins` ([`provider.toml` table](#providertoml-keys-read-by-the-cli)); polled every 60 s; unloads the model, the daemon keeps running | `provider-swift/Sources/ProviderCore/ProviderLoop+IdleTimeout.swift` |
 | Watchdog check interval | `checkIntervalSeconds = 60` | `provider-swift/Sources/ProviderCore/Service/WatchdogAgent.swift` |
 | Crash-loop guard trip | `crashLoopTripThreshold = 3` restarts | `provider-swift/Sources/ProviderCore/Service/WatchdogDecision.swift` |
 | Auto-update first check / interval / drain | `300` s / `1800` s / `120` s | `provider-swift/Sources/ProviderCore/ProviderLoop+AutoUpdate.swift` (`autoUpdateInitialDelay`, `autoUpdateInterval`, `updateDrainTimeout`) |
@@ -360,7 +363,7 @@ automatic updates with `darkbloom autoupdate disable`.
 | Local bind wait | 5 s | `provider-swift/Sources/darkbloom/StartCommand+Modes.swift` (`waitUntilBound`) |
 | Fan lease / renewal | `leaseDurationSeconds = 15` / `renewalIntervalSeconds = 5` | `provider-swift/Sources/DarkbloomFanProtocol/FanIPC.swift` |
 | Fan policy defaults | trigger `45` °C, release `40` °C, speed `80` %, engage after `3` samples, release after `30`; speed range `60`–`90` | `provider-swift/Sources/DarkbloomFanCore/FanPolicy.swift` |
-| Minimum RAM to serve | 8 GB | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` |
+| Minimum RAM to serve | `hardware.memoryGb` floor — [`../architecture/hardware-support.md#context`](../architecture/hardware-support.md#context) | `provider-swift/Sources/darkbloom/StartCommand+Preflight.swift` |
 
 ## Related
 

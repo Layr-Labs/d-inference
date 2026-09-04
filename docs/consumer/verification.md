@@ -36,23 +36,29 @@ the `code_attested` flag.
 
 ## What the levels mean
 
-| `trust_level` | The coordinator has verified |
+| `trust_level` | What it tells you |
 |---|---|
-| `hardware` | A Secure-Enclave-signed attestation, a passing periodic challenge, **and** an MDM `SecurityInfo` report from Apple's management subsystem on that Mac confirming SIP and full Secure Boot in agreement with the attestation. MDM `SecurityInfo` is the only path to `hardware`; the MDA certificate chain is not required for it |
-| `self_signed` | A Secure-Enclave-signed attestation and a passing periodic challenge (every 5 minutes, routable while the last pass is under 16 minutes old), but no MDM confirmation yet |
+| `hardware` | Apple's MDM subsystem on that Mac confirmed SIP and full Secure Boot in agreement with the provider's Secure-Enclave-signed attestation. MDM `SecurityInfo` is the only path to this level; the MDA certificate chain is not required for it |
+| `self_signed` | The Secure-Enclave-signed attestation verified and the provider is passing the coordinator's periodic challenge, but there is no MDM confirmation yet |
 | `none` | No verified attestation |
+
+The grant and loss conditions for each level are tabulated in
+[`../architecture/security/attestation.md#trust-levels`](../architecture/security/attestation.md#trust-levels);
+the challenge cadence is in [Layer 2](../architecture/security/attestation.md#layer-2--periodic-challenge)
+and the routing freshness window is
+[`challengeFreshnessMaxAge`](../architecture/routing.md#challenge-freshness).
 
 `mda_verified: true` adds that Apple issued a Managed Device Attestation whose
 certificate chain verifies to the Apple Enterprise Attestation Root CA and
 binds the provider's SE key (or serial) — proof of *which* genuine Apple device
 holds the key. It is a flag on top of `hardware`, not a level, and it does not
-gate routing. The full state machine is in
-[`../architecture/security/attestation.md`](../architecture/security/attestation.md).
+gate routing ([Flag — Apple Managed Device Attestation](../architecture/security/attestation.md#flag--apple-managed-device-attestation)).
 
-Public routing uses a `hardware` floor by default plus every privacy gate
-(encrypted response chunks, coordinator-verified SIP, required privacy
-capabilities, code identity once enforced), so a request you send without
-self-routing is served only by a provider that passes all of them
+Public routing applies the coordinator's trust floor (`MinTrustLevel`, set by
+[`EIGENINFERENCE_MIN_TRUST`](../reference/configuration.md#routing-admission-and-ttft))
+plus every privacy gate (encrypted response chunks, coordinator-verified SIP,
+required privacy capabilities, code identity once enforced), so a request you
+send without self-routing is served only by a provider that passes all of them
 ([`../architecture/security/attestation.md`](../architecture/security/attestation.md#routing-gate)).
 
 ## Per-response signals

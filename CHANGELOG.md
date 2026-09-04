@@ -29,6 +29,19 @@
   `provider/attestation.md`, `reference/ssd-kv-cache-hybrid-models.md` →
   `reference/ssd-kv-cache.md`; PR screenshot folders removed. Security
   diagrams redrawn from the code (`docs/assets/diagrams/*.mmd` → SVG/PNG).
+- **One home per fact** (follow-up to an organisation audit of the new tree)
+  — every constant, default, limit and status code is now stated on one owner
+  page (`reference/api-contracts.md`, `reference/configuration.md`,
+  `reference/pricing-model.md`, the owning `architecture/` page) and linked,
+  by identifier, from every other page; operator procedures and SQL recipes
+  left the explanation pages for `operations/cache-routing-rollout.md` and
+  `operations/profiler-queries.md`; `developer/release.md` became
+  `operations/provider-release.md` (it registers releases with production);
+  six plan and decision memos moved from `reports/` to `design/` with a
+  status line each (`design/README.md` lists all seventeen with status and
+  date); `provider/attestation.md` is now the operator how-to for reaching
+  and keeping `hardware` trust, and `consumer/privacy-expectations.md` a
+  short list that links the encryption page instead of restating it.
 - **Docs tooling** — `scripts/docs-stamp.sh` writes or refreshes the stamp
   (`--from-git` for frozen records); `scripts/docs-check.sh` fails on a
   missing or malformed stamp, a relative link that does not resolve, a cited

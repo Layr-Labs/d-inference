@@ -2,7 +2,7 @@
 
 > Last updated: 2026-09-03 · commit `5d400cf75`
 
-The model catalog is database-driven: model builds, their capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)). There is no static list to reproduce here; `GET /v1/models` is the list. This page is the reference for that response, for how the `model` you send is resolved, and for the capability fields the API exposes.
+Reference for `GET /v1/models` and `GET /v1/models/{id}`: every field of a `ModelEntry`, how the `model` you send is resolved, and the capability flags the API exposes and enforces. For SDK users and integrators. The catalog itself is database-driven — builds, capabilities and prices live in the coordinator's registry and price tables, and public names are aliases maintained by operators (`coordinator/api/model_alias_handlers.go`, [`../architecture/model-registry.md`](../architecture/model-registry.md)) — so there is no static list to reproduce here; `GET /v1/models` is the list.
 
 ## `GET /v1/models`
 

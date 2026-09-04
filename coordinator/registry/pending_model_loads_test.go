@@ -212,7 +212,7 @@ func TestDisconnectClearsPendingModelLoad(t *testing.T) {
 
 // TestExpiredPendingLoadIgnoredWithoutSweep pins lazy expiry: an expired
 // entry is invisible to every planner read (providerHasPendingLoad,
-// reservePendingModelLoads' per-provider check, PendingModelLoadDuration)
+// reservePendingModelLoads' per-provider check, inFlightLoadsForModel)
 // with no sweep having run, and the warm-pool tick's pendingModelLoadCount
 // reaps it.
 func TestExpiredPendingLoadIgnoredWithoutSweep(t *testing.T) {
@@ -222,8 +222,8 @@ func TestExpiredPendingLoadIgnoredWithoutSweep(t *testing.T) {
 	if !hasPendingLoad(r, "p1") {
 		t.Fatal("fresh reservation not visible")
 	}
-	if d := r.PendingModelLoadDuration("p1", "m1"); d <= 0 {
-		t.Fatalf("live reservation duration = %v, want > 0", d)
+	if n := r.inFlightLoadsForModel("m1", now, pendingLoadHedgeFloor); n != 1 {
+		t.Fatalf("live reservation in flight = %d, want 1", n)
 	}
 
 	// Back-date the entry past its TTL without running any sweep.
@@ -234,8 +234,8 @@ func TestExpiredPendingLoadIgnoredWithoutSweep(t *testing.T) {
 	if hasPendingLoad(r, "p1") {
 		t.Fatal("expired entry still reported as pending")
 	}
-	if d := r.PendingModelLoadDuration("p1", "m1"); d != 0 {
-		t.Fatalf("expired entry duration = %v, want 0", d)
+	if n := r.inFlightLoadsForModel("m1", now, pendingLoadHedgeFloor); n != 0 {
+		t.Fatalf("expired entry in flight = %d, want 0", n)
 	}
 	again := r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m2"}}, now)
 	if len(again) != 1 {

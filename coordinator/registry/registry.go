@@ -5014,21 +5014,6 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 	return time.Since(started)
 }
 
-// PendingModelLoadDuration returns how long the unexpired pending load for
-// the pair has been outstanding, or 0 when there is no live entry.
-func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
-	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
-	now := time.Now()
-	r.mu.RLock()
-	expiresAt, live := r.pendingModelLoads[key]
-	started := r.pendingModelLoadStarted[key]
-	r.mu.RUnlock()
-	if !live || now.After(expiresAt) || started.IsZero() {
-		return 0
-	}
-	return now.Sub(started)
-}
-
 // HasPendingModelLoad reports whether an unexpired coordinator-issued
 // load_model command exists for exactly this provider/model pair. It lets the
 // WebSocket boundary reject unsolicited load_model_status messages before

@@ -268,7 +268,7 @@ func (r *Registry) RecordWarmPoolQueueCleared(model string) {
 // depth is recorded (possibly zero) rather than a phantom Depth=1 stamped with
 // the timed-out age, which kept demand pressure — and a warm+1 target — alive
 // for a full window after the queue had emptied.
-func (r *Registry) RecordWarmPoolQueueTimeout(model string, _ time.Duration) {
+func (r *Registry) RecordWarmPoolQueueTimeout(model string) {
 	if r.warmPool == nil || model == "" {
 		return
 	}

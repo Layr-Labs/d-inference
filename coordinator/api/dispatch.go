@@ -1605,7 +1605,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.queuedExitOutcome(queuePR.Profile, "timeout", "queue_timeout", http.StatusTooManyRequests)
 			d.refundReservation()
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
-			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
+			s.registry.RecordWarmPoolQueueTimeout(d.model)
 			// queue_timeout: the waiter's own enqueue position is how far it
 			// sat from the head when its wait expired.
 			retryAfter := s.retryAfterSeconds(d.model, retryAfterJitterKey(r.Context()),

@@ -315,7 +315,7 @@ func TestQueueTimeoutRecordsLiveDepth(t *testing.T) {
 	reg.ConfigureWarmPool(testWarmPoolConfig())
 	reg.SetQueue(NewRequestQueue(16, 30*time.Second))
 	reg.RecordWarmPoolQueueEnqueued(inflightModel, 3, 0)
-	reg.RecordWarmPoolQueueTimeout(inflightModel, 120*time.Second)
+	reg.RecordWarmPoolQueueTimeout(inflightModel)
 	if q := reg.warmPool.queueSnapshot(time.Now(), time.Minute); len(q) != 0 {
 		t.Fatalf("queue timeout on an empty queue left phantom pressure: %+v", q)
 	}
@@ -325,7 +325,7 @@ func TestQueueTimeoutRecordsLiveDepth(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reg.RecordWarmPoolQueueTimeout(inflightModel, 120*time.Second)
+	reg.RecordWarmPoolQueueTimeout(inflightModel)
 	q := reg.warmPool.queueSnapshot(time.Now(), time.Minute)[inflightModel]
 	if q.Depth != 2 {
 		t.Fatalf("queue timeout recorded depth %d, want the live 2", q.Depth)

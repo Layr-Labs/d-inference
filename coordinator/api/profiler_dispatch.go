@@ -54,14 +54,11 @@ func (d *dispatchState) applyProfileTiming(tj *types.RequestTimingDetails, pr *r
 	tj.TimingAnomaly = anomaly
 
 	rp := d.profile
+	// pre_handler_us is ingress (the same t0 ReceivedAt carries) → handler
+	// entry; the legacy parse_us is anchored at handler entry
+	// (RequestTiming.ParseAnchor) for every consumer, so the two segments are
+	// additive by construction and nothing is subtracted here.
 	tj.PreHandlerUs = rp.HandlerEntryUS.Load()
-	// ReceivedAt is the ingress instant (ingressStartFromContext) — the same
-	// t0 HandlerEntryUS is measured from — so the legacy parse segment
-	// (ParsedAt − ReceivedAt) already contains the pre-handler time. Take it
-	// back out so parse_us and pre_handler_us stay additive, never overlapping.
-	if tj.PreHandlerUs > 0 && tj.ParseUs >= tj.PreHandlerUs {
-		tj.ParseUs -= tj.PreHandlerUs
-	}
 	tj.PreflightUs = rp.PreflightUS
 	ap := pr.Profile
 	if ap == nil {

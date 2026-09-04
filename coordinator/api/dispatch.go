@@ -593,11 +593,18 @@ func timingMsBetween(a, b time.Time) float64 {
 // called from the provider read-loop goroutine (handleComplete) with a value
 // obtained via PendingRequest.FirstChunkAtSafe; t.FirstChunkAt itself must only
 // be read directly by the dispatch goroutine that owns the request.
+//
+// ParseMs starts at handler entry (RequestTiming.ParseAnchor), not at
+// ReceivedAt: ReceivedAt is the HTTP ingress instant, and anchoring parse on
+// it would fold the pre-handler auth/rate-limit/decrypt time (a ~300 ms
+// API-key cache miss, a large sealed decrypt) into the inference_routes
+// parse_ms column and the inference.timing.parse_ms histogram as a "parse
+// regression". TotalDurationMs deliberately keeps the ingress anchor.
 func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.RequestTiming, firstChunk time.Time) {
 	if out == nil || t == nil {
 		return
 	}
-	out.ParseMs = timingMsBetween(t.ReceivedAt, t.ParsedAt)
+	out.ParseMs = timingMsBetween(t.ParseAnchor(), t.ParsedAt)
 	out.ReserveMs = timingMsBetween(t.ParsedAt, t.ReservedAt)
 	// Remote-media fetch (when it happened) sits between ReservedAt and
 	// RoutedAt; anchor the route segment past it so a multi-second download

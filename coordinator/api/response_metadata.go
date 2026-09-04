@@ -168,7 +168,9 @@ func requestTimingDetails(timing *registry.RequestTiming) *types.RequestTimingDe
 	}
 	tj := &types.RequestTimingDetails{}
 	if !timing.ParsedAt.IsZero() {
-		tj.ParseUs = timing.ParsedAt.Sub(timing.ReceivedAt).Microseconds()
+		// Handler entry → parsed: the pre-handler segment (ingress → handler
+		// entry) is the profiler's pre_handler_us, never part of parse_us.
+		tj.ParseUs = timing.ParsedAt.Sub(timing.ParseAnchor()).Microseconds()
 	}
 	if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
 		tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()

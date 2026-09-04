@@ -1882,7 +1882,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// ReceivedAt is the HTTP ingress instant, not handler entry: the
 	// first-content clock (and the media-fetch budget derived from it) must
 	// not silently gain the pre-handler auth/rate-limit/decrypt time.
-	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context())}
+	// HandlerEntryAt anchors the parse segment so that same pre-handler time
+	// never reads as a parse regression.
+	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context()), HandlerEntryAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas, parse, require a model,
@@ -4465,7 +4467,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 // and provider routing as chat completions.
 func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, endpoint string) {
 	// Ingress-anchored like the chat handler (see handleChatCompletions).
-	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context())}
+	timing := &registry.RequestTiming{ReceivedAt: ingressStartFromContext(r.Context()), HandlerEntryAt: time.Now()}
 	rp := s.newRequestProfile(r, "", "", false)
 
 	// Shared prelude: read body, normalize tool schemas (Anthropic /v1/messages

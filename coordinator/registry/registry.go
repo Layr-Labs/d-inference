@@ -849,9 +849,19 @@ func (pr *PendingRequest) MarkRouteOutcomeFinalized() bool {
 }
 
 type RequestTiming struct {
-	ReceivedAt time.Time // handler entry
-	ParsedAt   time.Time // after parse + validate
-	ReservedAt time.Time // after balance reservation
+	// ReceivedAt is the HTTP ingress instant (loggingMiddleware's t0): the
+	// anchor of the request-absolute first-content clock and the media-fetch
+	// budget, so the pre-handler auth/rate-limit/decrypt time counts against
+	// the deadline.
+	ReceivedAt time.Time
+	// HandlerEntryAt is stamped at the top of the inference handler. It is the
+	// anchor of the parse segment (parse_ms / parse_us): the pre-handler time
+	// lives between ReceivedAt and HandlerEntryAt and is the profiler's
+	// pre_handler_us, never part of parse. Zero on fixtures that only set
+	// ReceivedAt — ParseAnchor falls back to ReceivedAt then.
+	HandlerEntryAt time.Time
+	ParsedAt       time.Time // after parse + validate
+	ReservedAt     time.Time // after balance reservation
 	// MediaFetchedAt is set when remote media URLs were fetched and inlined
 	// post-reservation (api.resolveRemoteMedia); zero when the request needed
 	// no fetches. It sits between ReservedAt and RoutedAt in the lifecycle and
@@ -869,6 +879,19 @@ type RequestTiming struct {
 	// emits a fast preamble then stalls can't earn an undeserved score;
 	// FirstChunkAt remains the X-Timing provider-first-byte diagnostic.
 	FirstContentAt time.Time
+}
+
+// ParseAnchor is the start of the parse segment: HandlerEntryAt when stamped,
+// else ReceivedAt (fixtures and legacy callers that never stamp handler
+// entry, where the two instants coincide).
+func (t *RequestTiming) ParseAnchor() time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	if !t.HandlerEntryAt.IsZero() {
+		return t.HandlerEntryAt
+	}
+	return t.ReceivedAt
 }
 
 // DeviceEvidence and ApplicationEvidence are independent live snapshots. A

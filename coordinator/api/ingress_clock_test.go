@@ -73,8 +73,9 @@ func (s *slowUserStore) Unwrap() store.Store { return s.Store }
 // ingressClockHarness boots a coordinator over a store whose user lookup takes
 // authDelay, with a linked API key so requireAuth pays that lookup, and one
 // real WebSocket provider that serves every request. Returns the test server,
-// the registry and the bearer key.
-func ingressClockHarness(t *testing.T, ctx context.Context, cfg ServerConfig, authDelay time.Duration, model string) (*httptest.Server, string) {
+// the bearer key, the memory store (route rows) and the provider handle
+// (dispatch count).
+func ingressClockHarness(t *testing.T, ctx context.Context, cfg ServerConfig, authDelay time.Duration, model string) (*httptest.Server, string, *store.MemoryStore, *failoverProvider) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mem := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -91,11 +92,28 @@ func ingressClockHarness(t *testing.T, ctx context.Context, cfg ServerConfig, au
 	srv.challengeInterval = time.Hour
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+	fp := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
 		Name: "ingress-provider", Version: "0.8.10", DecodeTPS: 100,
 		Models: []failoverModelSpec{{ID: model}}, Script: fullServeScript(model),
 	})
-	return ts, apiKey
+	return ts, apiKey, mem, fp
+}
+
+// finalRouteRecordFor polls the memory store until model's route row carries
+// its terminal outcome (the sink merges it asynchronously) and returns it.
+func finalRouteRecordFor(t *testing.T, st *store.MemoryStore, model string) store.InferenceRouteRecord {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, rec := range st.InferenceRouteRecordsSince(time.Time{}) {
+			if rec.Model == model && rec.FinalStatus != "" {
+				return rec
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no terminal route record for %s", model)
+	return store.InferenceRouteRecord{}
 }
 
 func ingressClockChat(t *testing.T, ctx context.Context, ts *httptest.Server, apiKey, model string) (*http.Response, string) {
@@ -137,8 +155,12 @@ func parseXTiming(t *testing.T, resp *http.Response) types.RequestTimingDetails 
 //     handler runs, so the request must be shed as a retryable 429 without a
 //     dispatch. Before the change ReceivedAt was stamped at handler entry, the
 //     request kept a fresh 250 ms and the provider served it (200).
-//   - With the profiler OFF, X-Timing's legacy parse_us segment (ParsedAt −
-//     ReceivedAt) now includes the 300 ms pre-handler time (it was ~0).
+//   - The parse segment keeps its handler-entry anchor in every consumer:
+//     X-Timing's legacy parse_us, the inference_routes parse_ms column (and
+//     therefore the inference.timing.parse_ms histogram, which reads the same
+//     outcome struct) all stay ~0 while total_duration_ms, ingress-anchored,
+//     carries the 300 ms. Anchoring parse on the ingress ReceivedAt turned an
+//     API-key cache miss or a sealed decrypt into a "parse regression".
 //   - With the profiler ON, pre_handler_us carries the 300 ms and parse_us
 //     does NOT — the two segments never double-count.
 //
@@ -152,7 +174,7 @@ func TestFirstContentClockAnchorsAtIngressLive(t *testing.T) {
 	t.Run("expired_at_entry_is_shed_without_dispatch", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		ts, key := ingressClockHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 250 * time.Millisecond}, authDelay, model)
+		ts, key, _, _ := ingressClockHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 250 * time.Millisecond}, authDelay, model)
 		resp, body := ingressClockChat(t, ctx, ts, key, model)
 		if resp.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("status = %d, want 429 (clock anchored at ingress is already spent); body=%s", resp.StatusCode, body)
@@ -165,21 +187,31 @@ func TestFirstContentClockAnchorsAtIngressLive(t *testing.T) {
 		}
 	})
 
-	t.Run("x_timing_parse_segment_is_ingress_anchored_profiler_off", func(t *testing.T) {
+	t.Run("parse_segment_stays_handler_anchored_in_every_consumer", func(t *testing.T) {
 		t.Setenv(envProfiler, "off")
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		ts, key := ingressClockHarness(t, ctx, ServerConfig{}, authDelay, model)
+		ts, key, st, _ := ingressClockHarness(t, ctx, ServerConfig{}, authDelay, model)
 		resp, body := ingressClockChat(t, ctx, ts, key, model)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, body=%s", resp.StatusCode, body)
 		}
 		tj := parseXTiming(t, resp)
-		if tj.ParseUs < authDelay.Microseconds() {
-			t.Fatalf("parse_us = %d, want >= %d: the legacy segment must start at ingress", tj.ParseUs, authDelay.Microseconds())
+		if tj.ParseUs >= authDelay.Microseconds() {
+			t.Fatalf("X-Timing parse_us = %d carries the %d us pre-handler segment: parse must start at handler entry", tj.ParseUs, authDelay.Microseconds())
 		}
 		if tj.PreHandlerUs != 0 {
 			t.Fatalf("pre_handler_us = %d with the profiler off, want 0 (legacy header byte-for-byte)", tj.PreHandlerUs)
+		}
+		// inference_routes.parse_ms (the same outcome struct feeds the
+		// inference.timing.parse_ms histogram) is handler-anchored too, while
+		// total_duration_ms keeps the ingress anchor.
+		rec := finalRouteRecordFor(t, st, model)
+		if rec.ParseMs >= float64(authDelay.Milliseconds()) {
+			t.Fatalf("route parse_ms = %.0f carries the %d ms pre-handler segment", rec.ParseMs, authDelay.Milliseconds())
+		}
+		if rec.TotalDurationMs < float64(authDelay.Milliseconds()) {
+			t.Fatalf("route total_duration_ms = %.0f, want >= %d (ingress-anchored: the pre-handler time is part of the request's wall time)", rec.TotalDurationMs, authDelay.Milliseconds())
 		}
 	})
 
@@ -187,7 +219,7 @@ func TestFirstContentClockAnchorsAtIngressLive(t *testing.T) {
 		t.Setenv(envProfiler, "on")
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		ts, key := ingressClockHarness(t, ctx, ServerConfig{}, authDelay, model)
+		ts, key, _, _ := ingressClockHarness(t, ctx, ServerConfig{}, authDelay, model)
 		resp, body := ingressClockChat(t, ctx, ts, key, model)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, body=%s", resp.StatusCode, body)

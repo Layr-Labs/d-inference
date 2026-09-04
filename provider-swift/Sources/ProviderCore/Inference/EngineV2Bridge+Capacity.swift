@@ -157,6 +157,12 @@ extension EngineV2Bridge {
             boundedKVBytesCapacity = min(
                 boundedKVBytesCapacity, snapshot.kvBytesBackendCapacity)
         }
+        // The profiler's `kv_bytes_capacity` (fleet_snapshots) keeps the
+        // pool-bound GRANT — comparable with `kv_bytes_in_use` (engine
+        // ledger truth) and with rows from providers before the watermark
+        // mirror below; only the routing figure `activeTokenBudgetMax`
+        // is watermarked.
+        let profilerKVBytesCapacity = boundedKVBytesCapacity
         // The engine refuses (`AdmissionV2.canEverFit`) any request whose
         // worst case exceeds `capacity − watermark` (5% by default; the
         // provider passes no admissionConfig), so the top 5% of the grant is
@@ -221,7 +227,7 @@ extension EngineV2Bridge {
             mtpProposedTotal: Int64(mtp.proposedTokens),
             mtpAcceptedTotal: Int64(mtp.acceptedDraftTokens),
             kvBytesInUse: Int64(snapshot.kvBytesInUse),
-            kvBytesCapacity: Int64(boundedKVBytesCapacity),
+            kvBytesCapacity: Int64(profilerKVBytesCapacity),
             evalInFlightMs: evalInFlightMs,
             stepWallNsTotal: Int64(clamping: snapshot.stepWallNanosTotal),
             decodeRowsTotal: Int64(clamping: snapshot.decodeRowsTotal))

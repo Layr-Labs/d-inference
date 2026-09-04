@@ -1126,10 +1126,13 @@ struct EngineV2CapacityTests {
         #expect(slot.maxTokensPotential == 308)
         #expect(slot.activeTokenBudgetUsed == 308)
         #expect(slot.queuedTokenBudget == 0)
-        // Budget ceiling: the engine's byte capacity in tokens.
         // Budget ceiling: the engine's ADMISSIBLE byte capacity in tokens —
         // 95% of the 40 MB grant (the engine's 5% watermark, T3-05) / 4000 B.
         #expect(slot.activeTokenBudgetMax == 9500)
+        // The profiler's slot field keeps the raw pool-bound grant, not the
+        // watermarked routing figure (review fix, S4 P3).
+        #expect(slot.telemetry?.kvBytesCapacity == 40_000_000)
+        #expect(slot.telemetry?.kvBytesInUse == 4_000_000)
         #expect(slot.kvBytesPerToken == 4000)
         #expect(slot.maxConcurrency == 4)
         // The engine's own monotonic step counter flows straight through.

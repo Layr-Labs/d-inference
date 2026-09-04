@@ -513,11 +513,26 @@ public enum LaunchAgent: Sendable {
     /// the binary, racing the stage-then-swap. Crash-recovery is instead owned by
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
+    /// Margin launchd's `ExitTimeOut` leaves PAST the graceful drain bound.
+    /// On the stuck-request path the drain returns at the bound, then the
+    /// stragglers are force-cancelled and their terminals get a flush
+    /// window (`ProviderLoop.terminalFlushTimeout`, 2 s), then the goingAway
+    /// frame is awaited (`CoordinatorClient.closeFrameFlushBound`, 500 ms),
+    /// plus the 250 ms drain poll — so with a zero margin launchd's SIGKILL
+    /// (measured at ExitTimeOut + 0.7 s) landed BEFORE the close frame in
+    /// precisely the scenario the bound exists for. The rest is room for the
+    /// post-close teardown. The same margin is what the daemon keeps below
+    /// its job's EFFECTIVE ExitTimeOut when it clamps its drain
+    /// (`ProviderLoop.shutdownDrainBound(forLaunchdExitTimeOut:)`).
+    static let shutdownCloseMarginSeconds = 15
+
     /// launchd `ExitTimeOut` for the provider job: the graceful drain bound
-    /// (`ProviderLoop.gracefulDrainTimeout`), so a SIGTERM'd daemon gets its
-    /// full drain before SIGKILL. Reaches installs on the next `darkbloom
-    /// start` plist rewrite.
-    static let exitTimeOutSeconds = Int(ProviderLoop.gracefulDrainTimeout.components.seconds)
+    /// (`ProviderLoop.gracefulDrainTimeout`) plus the close margin, so a
+    /// SIGTERM'd daemon gets its full drain AND its close frame out before
+    /// SIGKILL. Written on `darkbloom start`; auto-updated installs are
+    /// reconciled by `LaunchAgent+ExitTimeOut`.
+    public static let exitTimeOutSeconds =
+        Int(ProviderLoop.gracefulDrainTimeout.components.seconds) + shutdownCloseMarginSeconds
 
     static func makeServicePlist(
         label: String,
@@ -539,10 +554,11 @@ public enum LaunchAgent: Sendable {
             // it `ExitTimeOut` seconds later (default 20 s). The daemon traps
             // SIGTERM and drains in-flight requests for up to the graceful
             // drain bound before it closes the link and exits; the timeout
-            // matches that bound so launchd never cuts a drain that is still
-            // inside it. Measured on macOS 26: `bootout` returns at once
-            // regardless, `kickstart -k` blocks until the old process exits —
-            // so `darkbloom restart` on a busy box waits for the drain.
+            // exceeds that bound by the close margin so launchd never cuts a
+            // drain that is still inside it, nor the close frame after it.
+            // Measured on macOS 26: `bootout` returns at once regardless,
+            // `kickstart -k` blocks until the old process exits — so
+            // `darkbloom restart` on a busy box waits for the drain.
             "ExitTimeOut": exitTimeOutSeconds,
         ]
 

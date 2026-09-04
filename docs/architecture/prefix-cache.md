@@ -124,8 +124,11 @@ diverge from the cold run on `gemma-4-26B-A4B-it-qat-4bit` and
 resolved-contiguous slot and records
 `PrefixCacheConstructionStatus(state: .disabled, reason: .unsupportedBackend)`
 (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift`).
-When a cache is built, `prefixReuseCapability` maps `.paged` to `.pagedFP16`
-(or `.contiguousUnquantized` if the kill switch degraded it);
+When a cache is built, `prefixReuseCapability` maps the resolved `.paged`
+backend to `.pagedFP16`. (The policy function also has a `pagedKilled` branch
+yielding `.contiguousUnquantized`, but the production slot factory resolves the
+backend first, so a slot the `DARKBLOOM_CBV2_PAGED_KV=0` kill switch degraded
+to contiguous takes the `unsupportedBackend` path above and builds nothing.)
 `adoptionBoundTokens` is the capability's `conservativeReplayBoundTokens`, and
 `minEffectiveTokens = max(DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS,
 1_536 when the strategy is .frozenFullReplay and the bound ≥ 25_600)`.

@@ -91,7 +91,7 @@
 - [`provider/self-route.md`](provider/self-route.md): pin your own API traffic to your own provider.
 - [`provider/fan-control.md`](provider/fan-control.md): the opt-in root fan helper.
 - [`provider/beta-features.md`](provider/beta-features.md): `darkbloom beta` toggles and retired flags.
-- [`provider/troubleshooting.md`](provider/troubleshooting.md): symptom → check → fix.
+- [`provider/troubleshooting.md`](provider/troubleshooting.md): symptom → check → fix, including "connected but not routable" and the `doctor` check names.
 
 ## Developer how-tos
 

@@ -320,7 +320,8 @@ previous heartbeat when that gap is at most `maxUptimeCredit =
 2 * time.Minute`, releases satisfied budget clamps, drains the provider's
 model queues with `DrainTriggerHeartbeat`, and calls `TriggerModelSwaps`.
 
-The provider CLI heartbeats every `heartbeatIntervalSecs`, default `5`
+The provider CLI heartbeats every `heartbeat_interval_secs` (the TOML key of
+`ProviderConfig.heartbeatIntervalSecs`), default `5`
 (`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`).
 Coordinator-side comments still describe a 30 s cadence; the eviction math
 below is sized for that slower cadence and is therefore conservative for the
@@ -357,7 +358,13 @@ with `providerWriteDrainErrorString = "provider websocket writer stopped"`.
 ### `Disconnect()`
 
 `Registry.Disconnect` (`coordinator/registry/registry.go`) is the single
-teardown path, reached from socket close and from eviction. It:
+teardown path, reached from socket close and from eviction. On socket close
+the provider handler (`coordinator/api/provider.go`) first flips the record to
+`StatusOffline` — failing the routing gate `offline` at once, so a slow
+session-close write can never leave a dead provider selectable — and only then
+runs the deferred `Disconnect`. `offline` is therefore a transient state between
+a socket dying and its teardown, never a resting state; an untrusted provider
+keeps `StatusUntrusted` instead. Eviction reaches `Disconnect` directly. It:
 
 1. Removes the provider from the registry map and deletes its pending
    model-load entries.

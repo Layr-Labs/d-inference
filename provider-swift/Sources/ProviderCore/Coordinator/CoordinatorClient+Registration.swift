@@ -77,6 +77,10 @@ extension CoordinatorClient {
         let capacity = state.stampAndPublishHeartbeatCapacity(state.backendCapacity)
         let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
+        // The ONE collect() per heartbeat build (its CPU figure is a window
+        // delta on a process-wide sampler); the daemon-state file reads this
+        // stored copy for `status`/`doctor` instead of collecting again.
+        state.lastSystemMetrics = metrics
 
         // Carry the APNs device token in every heartbeat (W5 Fix 2) so the
         // coordinator can re-arm a code-identity challenge WITHOUT a reconnect when

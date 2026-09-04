@@ -663,3 +663,27 @@ private final class LiveTokenBox: @unchecked Sendable {
     func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
     func set(_ newValue: String?) { lock.lock(); value = newValue; lock.unlock() }
 }
+
+/// T13-06 (b): the heartbeat builder stores the one system-metrics sample it
+/// collected so the daemon-state file can carry it without a second collect()
+/// (the CPU figure is a window delta on a process-wide sampler).
+@Test func heartbeatStoresItsSystemMetricsForTheDaemonState() async throws {
+    let state = ProviderState()
+    #expect(state.lastSystemMetrics == nil)
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj"
+    )
+    let client = CoordinatorClient(config: config, stats: AtomicProviderStats(), state: state)
+
+    let json = await client.buildHeartbeatJSON()
+    let object = try clientJSONObject(Data(json.utf8))
+    let wire = try #require(object["system_metrics"] as? [String: Any])
+    let stored = try #require(state.lastSystemMetrics)
+    #expect(wire["memory_pressure"] as? Double == stored.memoryPressure)
+    #expect(wire["cpu_usage"] as? Double == stored.cpuUsage)
+    #expect(wire["thermal_state"] as? String == stored.thermalState.rawValue)
+}

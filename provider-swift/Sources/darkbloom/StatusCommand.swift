@@ -118,6 +118,9 @@ struct Status: AsyncParsableCommand {
         print("Warm models: \(WarmModelsFormat.warmModelsLine(warmModels: state.warmModels, currentModel: state.currentModel))")
         print("\(WarmModelsFormat.mostRecentlyUsedLabel): \(WarmModelsFormat.mostRecentlyUsedLine(currentModel: state.currentModel))")
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
+        if let system = state.system {
+            print(systemLine(system))
+        }
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
         }
@@ -181,6 +184,16 @@ struct Status: AsyncParsableCommand {
         return "Daemon: running (pid \(state.pid), up \(uptime)) but last update \(ageText) ago "
             + "(expected every ~\(Int(period))s) — snapshot stale, the fields below may be "
             + "out of date"
+    }
+
+    /// The heartbeat's own `system_metrics` — the memory-pressure, CPU and
+    /// thermal figures the coordinator penalizes this box on — as the daemon
+    /// last reported them. Absent (nil) on a state file from a daemon that
+    /// has not built a heartbeat yet, or from a pre-T13-06 daemon.
+    func systemLine(_ system: DaemonState.SystemInfo) -> String {
+        let percent: (Double) -> String = { "\(Int((min(max($0, 0), 1) * 100).rounded()))%" }
+        return "System: memory pressure \(percent(system.memoryPressure))  |  "
+            + "CPU \(percent(system.cpuUsage))  |  thermal \(system.thermalState)"
     }
 
     private func formatUptime(_ seconds: Double) -> String {

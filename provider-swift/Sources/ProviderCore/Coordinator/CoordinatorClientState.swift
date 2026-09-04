@@ -185,6 +185,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _lastSystemMetrics: SystemMetrics? = nil
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
     private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
     private var _prefixCacheRuntimeIdentityAvailable = true
@@ -224,6 +225,16 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    /// The system metrics of the LAST heartbeat built (`buildHeartbeatJSON`),
+    /// for the daemon-state file (`status`/`doctor`). Read, never
+    /// re-collected: the CPU figure is a delta on a process-wide tick sampler
+    /// (`SystemMetricsCollector`), so a second `collect()` caller would halve
+    /// the window and corrupt both readings.
+    public var lastSystemMetrics: SystemMetrics? {
+        get { lock.withLock { _lastSystemMetrics } }
+        set { lock.withLock { _lastSystemMetrics = newValue } }
     }
 
     /// Mirror of the ProviderLoop's "refuse new work" windows (update drain,

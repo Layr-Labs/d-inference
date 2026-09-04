@@ -51,6 +51,15 @@ extension ProviderLoop {
                 tokensGenerated: stats.tokensGenerated,
                 usageGaps: stats.usageGaps
             ),
+            // The last heartbeat's own system metrics — what the coordinator
+            // is penalizing this box on — read from the stored copy, never a
+            // second collect() (the CPU figure is a window delta).
+            system: state.lastSystemMetrics.map {
+                DaemonState.SystemInfo(
+                    memoryPressure: $0.memoryPressure,
+                    cpuUsage: $0.cpuUsage,
+                    thermalState: $0.thermalState.rawValue)
+            },
             capacity: cap.map {
                 DaemonState.Capacity(
                     totalMemoryGb: $0.totalMemoryGb,

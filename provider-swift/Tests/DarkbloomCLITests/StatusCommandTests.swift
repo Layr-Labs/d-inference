@@ -115,3 +115,23 @@ func mainStatusBetaPostures() {
     #expect(betaFeaturesStatus(config(.on)).contains("mtp=on"))
     #expect(betaFeaturesStatus(config(.off)).contains("mtp=off"))
 }
+
+/// T13-06 (b): `status` renders the heartbeat's own system metrics.
+@Suite("status system line")
+struct StatusSystemLineTests {
+    @Test("renders memory pressure, CPU and thermal state as the heartbeat reported them")
+    func rendersSystemLine() throws {
+        let status = try Status.parse([])
+        let line = status.systemLine(
+            DaemonState.SystemInfo(memoryPressure: 0.4321, cpuUsage: 0.07, thermalState: "fair"))
+        #expect(line == "System: memory pressure 43%  |  CPU 7%  |  thermal fair")
+    }
+
+    @Test("clamps out-of-range fractions and reads the raw thermal string")
+    func clampsAndPassesThermal() throws {
+        let status = try Status.parse([])
+        let line = status.systemLine(
+            DaemonState.SystemInfo(memoryPressure: 1.7, cpuUsage: -0.2, thermalState: "critical"))
+        #expect(line == "System: memory pressure 100%  |  CPU 0%  |  thermal critical")
+    }
+}

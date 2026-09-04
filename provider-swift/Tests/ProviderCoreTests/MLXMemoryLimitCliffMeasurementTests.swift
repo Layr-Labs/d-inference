@@ -14,10 +14,16 @@
 // Two shapes are timed: one long lazy chain evaluated once (buffers commit
 // only every max_ops_per_buffer ops, so the regime bites at most every few
 // dozen primitives) and a step loop of small evals (a buffer is in flight at
-// every primitive, the decode-step shape). Opt-in (`DARKBLOOM_LIVE_MLX_TESTS`)
-// because it mutates the process-global limit for a short window, restored
-// in `defer`. Prints the ratios; asserts nothing tight, because a loaded
-// machine makes timing noisy — the numbers are the deliverable.
+// every primitive, the decode-step shape). Opt-in behind its OWN switch
+// (`DARKBLOOM_MLX_CLIFF_MEASUREMENT=1`, on top of `DARKBLOOM_LIVE_MLX_TESTS`)
+// and documented as RUN ALONE: it mutates the process-global MLX limit for
+// a short window (restored in `defer`), and any other suite evaluating in
+// parallel — the live suites do — would run inside the regime it induces.
+// Prints the ratios; asserts nothing tight, because a loaded machine makes
+// timing noisy — the numbers are the deliverable.
+//
+//   DARKBLOOM_LIVE_MLX_TESTS=1 DARKBLOOM_MLX_CLIFF_MEASUREMENT=1 \
+//     swift test --skip-build --filter MLXMemoryLimitCliffMeasurementTests
 
 import Foundation
 import MLX
@@ -30,7 +36,9 @@ struct MLXMemoryLimitCliffMeasurementTests {
 
     @Test("lazy chain of 400 primitives and a 200-step eval loop: limit above vs below active")
     func perPrimitiveSerializationAboveTheLimit() {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
+        guard LiveInferenceFixtures.liveTestsEnabled,
+            ProcessInfo.processInfo.environment["DARKBLOOM_MLX_CLIFF_MEASUREMENT"] == "1"
+        else { return }
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         let originalLimit = MLX.Memory.memoryLimit
         defer { MLX.Memory.memoryLimit = originalLimit }

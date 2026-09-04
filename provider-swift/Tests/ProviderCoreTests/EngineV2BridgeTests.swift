@@ -3111,6 +3111,43 @@ struct EngineV2ReservationShrinkTests {
         #expect(await budget.reservationIDsForTesting().isEmpty)
     }
 
+    @Test("the shrunk remainder carries the block-rounded auxiliary term: rate × remaining + aux × roundUp(remaining + padding, granularity)")
+    func shrinkKeepsBlockRoundedAuxiliaryTerm() async {
+        // Review fix (S4 P3): the other shrink cases run with aux = 0, so
+        // the auxiliary rounding `variableReservationBytes` applies to the
+        // REMAINDER was never exercised on the shrink path.
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.ample()
+        // rate 100 B/token of which 20 B/token is auxiliary state allocated
+        // in blocks of 4 tokens with 1 token of padding; 250 B fixed.
+        let bridge = makeBridge(
+            engine: engine, kvBytesPerToken: 100, fixedRequestBytes: 250,
+            auxiliaryBytesPerToken: 20, auxiliaryTokenGranularity: 4,
+            auxiliaryTokenAllocationPadding: 1, kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1],
+            request: makeRequest(maxTokens: 8),
+            requestId: "req-shrink-aux")
+        // Worst case for 9 tokens: 80 × 9 target + 20 × roundUp(9 + 1, 4)
+        // = 720 + 240 = 960 variable, + 250 fixed.
+        #expect(await bridge.requestReservationBytes(tokenCount: 9) == 1_210)
+        #expect(await budget.outstandingReservedBytes() == 1_210)
+        var iterator = stream.makeAsyncIterator()
+
+        // First token: 7 tokens of growth remain — 80 × 7 + 20 ×
+        // roundUp(7 + 1, 4) = 560 + 160 = 720, no fixed term.
+        engine.manualContinuation?.yield(.delta(text: "a", tokens: [10], logprobs: nil))
+        #expect(await nextChunk(&iterator) == "a")
+        #expect(await bridge.variableReservationBytes(tokenCount: 7) == 720)
+        #expect(await budget.outstandingReservedBytes() == 720)
+
+        engine.manualContinuation?.yield(
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 1, completionTokens: 1)))
+        engine.manualContinuation?.finish()
+        while await iterator.next() != nil {}
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
     @Test("a delta past maxTokens shrinks the promise to zero growth, and the terminal still drains the entry")
     func overrunShrinksToZeroThenReleases() async {
         let engine = ScriptedCBv2Engine(script: .manual)

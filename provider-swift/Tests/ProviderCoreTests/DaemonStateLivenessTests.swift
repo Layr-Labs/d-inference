@@ -180,7 +180,76 @@ struct DaemonStateLivenessTests {
         // The payload is the cached last-good snapshot, not a half-built one.
         #expect(latest.pid == getpid())
 
+        // Stop the writers BEFORE the temp file is removed (the defers run
+        // after this returns, and the fire-and-forget stop would otherwise
+        // race the file removal and leak a rewritten file).
+        await loop.stopCapacityRefreshMonitorForTesting()
         engine.release()
+    }
+
+    /// The stamp is independent of the bridges but NOT of tick progress: a
+    /// tick parked past the progress bound is a wedged bridge (which can
+    /// never self-recover — recovery needs the same actor), and the stamp
+    /// stops so the watchdog's restart still reaches it. Once the tick
+    /// completes again the stamp resumes. Pre-fix the stamp never stops.
+    @Test("the stamp is withheld once the tick stalls past the progress bound, and resumes when it completes")
+    func stampWithheldWhileTickIsWedged() async throws {
+        let url = tmpStateURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let loop = try makeLivenessLoop()
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setDaemonStateFileForTesting(url)
+        // Poll cadence 1 s; a tick that has not completed for 1.5 s counts
+        // as wedged (production: 180 s).
+        await loop.setLivenessTickProgressBoundForTesting(.milliseconds(1500))
+
+        let engine = BlockingCapacityEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "test/wedged-model",
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            eosTokenIds: [])
+        await runtime.register(modelId: "test/wedged-model", bridge: bridge)
+        await loop.installModelSlotForTesting(
+            modelId: "test/wedged-model",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            engineV2: bridge)
+        defer { engine.release() }
+
+        engine.block()
+        await loop.startCapacityRefreshMonitor()
+        defer { Task { await loop.stopCapacityRefreshMonitorForTesting() } }
+
+        // Wait until the tick is parked and the bound has passed, then the
+        // stamp must have stopped: the file's age keeps growing.
+        let parked = ContinuousClock.now.advanced(by: .seconds(15))
+        while engine.blockedCalls < 1, ContinuousClock.now < parked {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try #require(engine.blockedCalls >= 1, "the capacity tick never reached the blocked bridge")
+        // Let the bound (1.5 s) and one more poll (1 s) elapse.
+        try await Task.sleep(for: .seconds(3))
+        let frozen = try #require(DaemonStateFile.read(from: url)).writtenAt
+        try await Task.sleep(for: .seconds(2))
+        let stillFrozen = try #require(DaemonStateFile.read(from: url)).writtenAt
+        #expect(stillFrozen == frozen, "the stamp kept advancing on a wedged tick: \(frozen) → \(stillFrozen)")
+
+        // The tick completes: the stamp resumes within a couple of polls.
+        engine.release()
+        let resumed = ContinuousClock.now.advanced(by: .seconds(15))
+        var advanced = false
+        while !advanced, ContinuousClock.now < resumed {
+            if let state = DaemonStateFile.read(from: url), state.writtenAt > stillFrozen {
+                advanced = true
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(advanced, "the stamp did not resume after the tick completed")
+
+        await loop.stopCapacityRefreshMonitorForTesting()
     }
 
     /// The monitor's teardown cancels the liveness task too — no stamp is

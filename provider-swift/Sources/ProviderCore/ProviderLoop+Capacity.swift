@@ -36,11 +36,17 @@ extension ProviderLoop {
         // priority, not `.utility`: this stamp is what keeps the watchdog
         // from restarting a busy daemon, so it must not be the first thing a
         // saturated cooperative pool starves.
+        // ...but gated on tick PROGRESS (`stampLivenessIfTickProgressing`):
+        // a tick parked past `livenessTickProgressBound` is a bridge that
+        // is wedged, not busy, and the stamp stops so the watchdog's
+        // restart — the only recovery for a blocked bridge actor — still
+        // fires.
+        lastCapacityTickCompleted = .now
         daemonStateLivenessTask = Task.detached {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: pollIntervalNs)
                 if Task.isCancelled { break }
-                await me.writeDaemonState()
+                await me.stampLivenessIfTickProgressing()
             }
         }
         capacityRefreshTask = Task {
@@ -90,6 +96,34 @@ extension ProviderLoop {
         // on every request event): the MLX over-limit regime sampler.
         sampleMLXMemoryLimitRegime()
         await recoverWedgedEngineV2Slots()
+        writeDaemonState()
+        lastCapacityTickCompleted = .now
+    }
+
+    /// The liveness task's write. A stalled BRIDGE leaves the loop actor
+    /// free and this keeps `written_at` advancing — until the tick has gone
+    /// `livenessTickProgressBound` without completing: `capacitySummary`
+    /// awaits every bridge and `recoverWedgedEngineV2Slots` needs the same
+    /// actor, so a bridge blocked that long can never self-recover, every
+    /// `finishInflightRequest` parks on it, and the coordinator routes on a
+    /// stale snapshot. Withholding the stamp lets the file go stale and the
+    /// watchdog restart the daemon: a false positive needs the tick blocked
+    /// for bound + 90 s staleness + the watchdog's 300 s grace — a wedge,
+    /// never a busy slot.
+    internal func stampLivenessIfTickProgressing() {
+        let sinceLastTick = ContinuousClock.now - lastCapacityTickCompleted
+        guard sinceLastTick <= livenessTickProgressBound else {
+            if !livenessWithheldLogged {
+                livenessWithheldLogged = true
+                logger.warning(
+                    "Capacity tick has not completed for \(sinceLastTick.components.seconds)s (bound \(livenessTickProgressBound.components.seconds)s): withholding the watchdog liveness stamp so a wedged engine bridge is recovered by restart")
+            }
+            return
+        }
+        if livenessWithheldLogged {
+            livenessWithheldLogged = false
+            logger.info("Capacity tick completed again; watchdog liveness stamp resumed")
+        }
         writeDaemonState()
     }
 

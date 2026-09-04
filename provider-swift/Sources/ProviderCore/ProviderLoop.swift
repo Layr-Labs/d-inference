@@ -587,6 +587,20 @@ public actor ProviderLoop {
     /// the one case the watchdog restart is for.
     internal var daemonStateLivenessTask: Task<Void, Never>?
 
+    /// When the last `capacityRefreshTick` finished (set at monitor start
+    /// too, so the stamp runs before the first tick). Read by the liveness
+    /// task: a tick parked longer than `livenessTickProgressBound` stops the
+    /// stamp — see `stampLivenessIfTickProgressing`.
+    internal var lastCapacityTickCompleted: ContinuousClock.Instant = .now
+    internal var livenessTickProgressBound: Duration = ProviderLoop.defaultLivenessTickProgressBound
+    internal var livenessWithheldLogged = false
+
+    /// Twice the daemon-state staleness window (90 s): far past any
+    /// legitimate synchronous engine step a bridge can be busy with, and
+    /// still short enough that the watchdog recovers a permanently blocked
+    /// bridge in bound + 90 s + its 300 s grace.
+    internal static let defaultLivenessTickProgressBound: Duration = .seconds(180)
+
     /// Background task that periodically checks for provider updates and
     /// applies them automatically. nil when auto-update is disabled or
     /// before `run()` starts it.

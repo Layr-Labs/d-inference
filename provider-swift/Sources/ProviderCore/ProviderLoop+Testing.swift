@@ -166,6 +166,14 @@ extension ProviderLoop {
     /// Test seam: stand in for the background auto-update cycle task.
     func installAutoUpdateTaskForTesting(_ task: Task<Void, Never>) { autoUpdateTask = task }
 
+    // MARK: - Liveness seams
+
+    /// Test seam: how long the capacity tick may go without completing
+    /// before the liveness stamp is withheld.
+    func setLivenessTickProgressBoundForTesting(_ bound: Duration) {
+        livenessTickProgressBound = bound
+    }
+
     /// Test seam: stop the capacity-refresh monitor and its liveness
     /// companion (production stops them in `run()`'s teardown).
     func stopCapacityRefreshMonitorForTesting() {

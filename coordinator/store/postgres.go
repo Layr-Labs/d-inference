@@ -1219,11 +1219,36 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
 	}
-	if err := s.dropRedundantRouteIndex(ctx); err != nil {
-		return err
-	}
+	s.retireRedundantRouteIndex(ctx)
 	return nil
 }
+
+// retireRedundantRouteIndex is the boot-time wrapper around
+// dropRedundantRouteIndex: perf-only hygiene, never a boot blocker. A drop
+// that could not finish inside routeIndexDropTimeout (an open transaction on
+// inference_routes — an idle-in-transaction psql session, a research query,
+// a backup — makes DROP INDEX CONCURRENTLY wait) or failed is logged and
+// retried on the next boot. The index is harmless while it stays (INVALID
+// if the drop was interrupted; still maintained on DML, so the
+// write-amplification win lands only once a drop succeeds). No error return
+// by design: migrate cannot fail on it.
+func (s *PostgresStore) retireRedundantRouteIndex(ctx context.Context) {
+	if err := s.dropRedundantRouteIndex(ctx); err != nil {
+		slog.Warn("postgres: redundant inference_routes index not dropped; will retry on the next boot",
+			"index", redundantRouteIndexName, "timeout", routeIndexDropTimeout, "error", err)
+	}
+}
+
+// redundantRouteIndexName is the single-column inference_routes(request_id)
+// index that dropRedundantRouteIndex retires.
+const redundantRouteIndexName = "idx_inference_routes_request"
+
+// routeIndexDropTimeout bounds the boot-time DROP INDEX CONCURRENTLY of
+// redundantRouteIndexName: both the Postgres lock wait (lock_timeout) and
+// the statement (statement_timeout) on the dedicated connection, with the
+// context deadline as the client-side backstop. A variable so the test can
+// shorten it.
+var routeIndexDropTimeout = 30 * time.Second
 
 // dropRedundantRouteIndex removes idx_inference_routes_request(request_id).
 // inference_routes carries UNIQUE(request_id, attempt) plus the explicit
@@ -1234,8 +1259,14 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 // CREATE INDEX CONCURRENTLY it cannot run inside the extended protocol's
 // implicit transaction) so the hottest telemetry table is never taken under
 // ACCESS EXCLUSIVE at boot; every boot after the first finds nothing to do.
+//
+// DROP INDEX CONCURRENTLY waits for every transaction that could still use
+// the index, so the wait is bounded by routeIndexDropTimeout (session
+// lock_timeout/statement_timeout on a connection hijacked from the pool and
+// closed afterwards, so the settings never leak into pooled sessions) and
+// the caller treats an error as retry-next-boot, not a failed migration.
 func (s *PostgresStore) dropRedundantRouteIndex(ctx context.Context) error {
-	const idxName = "idx_inference_routes_request"
+	idxName := redundantRouteIndexName
 	var present bool
 	if err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i')`, idxName,
@@ -1245,13 +1276,20 @@ func (s *PostgresStore) dropRedundantRouteIndex(ctx context.Context) error {
 	if !present {
 		return nil
 	}
-	conn, err := s.pool.Acquire(ctx)
+	ctx, cancel := context.WithTimeout(ctx, routeIndexDropTimeout+5*time.Second)
+	defer cancel()
+	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("store: acquire conn to drop %s: %w", idxName, err)
 	}
-	defer conn.Release()
-	mrr := conn.Conn().PgConn().Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+idxName)
-	if _, err := mrr.ReadAll(); err != nil {
+	conn := pooled.Hijack()
+	defer conn.Close(context.Background())
+	pg := conn.PgConn()
+	timeoutMs := strconv.FormatInt(routeIndexDropTimeout.Milliseconds(), 10)
+	if _, err := pg.Exec(ctx, `SET lock_timeout = `+timeoutMs+`; SET statement_timeout = `+timeoutMs).ReadAll(); err != nil {
+		return fmt.Errorf("store: bound the drop of %s: %w", idxName, err)
+	}
+	if _, err := pg.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+idxName).ReadAll(); err != nil {
 		return fmt.Errorf("store: drop %s concurrently: %w", idxName, err)
 	}
 	return nil

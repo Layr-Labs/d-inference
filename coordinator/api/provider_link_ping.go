@@ -55,6 +55,18 @@ import (
 // 15 s / 10 s / 2-miss policy could reap healthy providers faster than
 // evictStale's two-strike protection — a false close takes the abrupt
 // disconnect path (502 flush plus strikes).
+//
+// Observe mode is not strictly close-free either: nhooyr writes the ping
+// frame under the shared frame mutex with its own fixed 5 s budget
+// (write.go writeControl) and its timeoutLoop closes the connection when
+// that budget expires mid-flush. WriteInFlight() skips the probe while the
+// data writer is inside conn.Write, but a fragmented write can start right
+// after the check, and a saturated kernel send buffer to a stalled peer can
+// hold the flush past 5 s. A ping that fails to WRITE ("failed to write
+// control frame": lock not acquired, or the library-closed socket) is a
+// coordinator-side write stall — never a miss against the peer — and is
+// skipped with its own counter (provider.ws.ping_skipped_write_stall); if
+// the library did close the socket, the read loop labels that read_error.
 const (
 	// linkPingInterval is the steady-state ping cadence per connection. Fleet
 	// cost at ~1,300 providers is ~90 control frames/s each way.
@@ -75,6 +87,16 @@ const (
 	// inside a handler.
 	linkPingRetryWhileWriting = 1 * time.Second
 )
+
+// isLinkPingWriteStall reports whether a Conn.Ping error came from writing
+// the ping frame rather than from the pong wait. nhooyr wraps the former as
+// "failed to write control frame <op>: ..." (write.go writeControl) and the
+// latter as "failed to wait for pong: ..." (conn.go ping); the text is the
+// only discriminator the library exposes, matched the same way
+// readErrorDisconnectReason classifies "failed to handle control frame".
+func isLinkPingWriteStall(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "failed to write control frame")
+}
 
 // linkPingModeFromEnv maps the EIGENINFERENCE_LINK_PING value to the two
 // loop flags: enabled (observe or close) and close (close only). Any other
@@ -179,6 +201,17 @@ func (s *Server) linkPingLoop(ctx context.Context, providerID string, provider *
 			// verdict: leave the read loop to classify it (read_error, OOM,
 			// close code) and stand down.
 			return
+		case isLinkPingWriteStall(err) || provider.WriteInFlight():
+			// The ping frame itself could not be written within nhooyr's 5 s
+			// control budget (frame mutex held by a data write that began
+			// after the pre-probe check, or a saturated send buffer), or a
+			// data write started while we waited. The pong we owe and the
+			// pong we are owed share that budget, so nothing here says the
+			// peer is silent: a coordinator-side stall, retried soon and
+			// never counted as a miss.
+			s.ddIncr("provider.ws.ping_skipped_write_stall", nil)
+			timer.Reset(linkPingRetryWhileWriting)
+			continue
 		case provider.ReadLoopBusy():
 			// The pong may well have arrived — nhooyr only consumes pongs
 			// inside Read, and the read goroutine was in a handler (heartbeat

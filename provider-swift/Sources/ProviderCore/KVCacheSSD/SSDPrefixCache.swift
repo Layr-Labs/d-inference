@@ -428,10 +428,14 @@ public final class SSDPrefixCache:
     }
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
-        lock.withLock {
-            guard !closed, !destructiveChangeInProgress else { return nil }
-            return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
-        }
+        // Gate under the cache lock, then RELEASE it before asking the store:
+        // an exhausted lease persists the next window (record rewrite +
+        // fsync under the process-wide record lock), and `lookup()` takes
+        // this lock on the engine submit thread — no epoch-store I/O may run
+        // under it. The store validates its own epoch, so a raced rotation
+        // still returns nil.
+        guard lock.withLock({ !closed && !destructiveChangeInProgress }) else { return nil }
+        return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
     }
 
     /// Shutdown for model unload / bridge teardown: stop background work,

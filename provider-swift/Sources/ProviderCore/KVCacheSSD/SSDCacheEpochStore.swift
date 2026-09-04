@@ -45,6 +45,10 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     private static let schema = "darkbloom.cache-epoch.v1"
     private static let invalidatingSchema = "darkbloom.cache-epoch.invalidating.v1"
     private static let maxRecordBytes = 64 * 1024
+    /// Receipt sequences are leased in windows of this size: one record write
+    /// reserves the window, values are issued from memory, and the persisted
+    /// `nextSequence` is the high-water mark a restart resumes above.
+    static let sequenceLeaseSize: UInt64 = 4096
     private static let epochs = EpochLedger()
     private static let recordLock = NSLock()
 
@@ -53,6 +57,10 @@ final class SSDCacheEpochStore: @unchecked Sendable {
     private let rootKey: String
     private let binding: Binding
     private var epoch: String?
+    /// In-memory receipt-sequence lease `[leasedNext, leaseEnd)`; empty until
+    /// the first take, reset by rotation so a fresh epoch starts at 1.
+    private var leasedNext: UInt64 = 0
+    private var leaseEnd: UInt64 = 0
 
     init(root: URL, binding: Binding) throws {
         self.root = root
@@ -117,32 +125,52 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         return ownedEpoch
     }
 
+    /// Next v2 receipt sequence for `expectedEpoch`, strictly increasing per
+    /// epoch (all the coordinator requires). Values come from an in-memory
+    /// lease; only an exhausted lease touches the record, persisting the new
+    /// high-water mark (`nextSequence + sequenceLeaseSize`) BEFORE issuing
+    /// from the window, so a crash or restart resumes above every value ever
+    /// handed out and skips at most one window. Rotation resets the lease.
+    /// Lock order on re-lease is `lock -> recordLock`, the same as the
+    /// destructive-change bracket.
     func takeNextSequence(expectedEpoch: String) -> UInt64? {
-        guard let ownedEpoch = lock.withLock({ epoch }),
-            ownedEpoch == expectedEpoch,
-            current == ownedEpoch
-        else { return nil }
-        return Self.recordLock.withLock {
-            let url = root.appendingPathComponent(Self.fileName)
-            guard let existing = try? Self.readRecord(at: url),
-                let record = existing.record,
-                record.schema == Self.schema,
-                record.epoch == ownedEpoch,
-                record.binding == binding,
-                record.nextSequence > 0,
-                record.nextSequence < UInt64.max
+        lock.withLock {
+            guard let ownedEpoch = epoch,
+                ownedEpoch == expectedEpoch,
+                Self.epochs.current(root: rootKey) == ownedEpoch
             else { return nil }
-            do {
-                try Self.write(
-                    record: Record(
-                        schema: record.schema,
-                        epoch: record.epoch,
-                        binding: record.binding,
-                        nextSequence: record.nextSequence + 1),
-                    to: url)
-                return record.nextSequence
-            } catch {
-                return nil
+            if leasedNext < leaseEnd {
+                defer { leasedNext += 1 }
+                return leasedNext
+            }
+            return Self.recordLock.withLock {
+                let url = root.appendingPathComponent(Self.fileName)
+                guard let existing = try? Self.readRecord(at: url),
+                    let record = existing.record,
+                    record.schema == Self.schema,
+                    record.epoch == ownedEpoch,
+                    record.binding == binding,
+                    record.nextSequence > 0,
+                    record.nextSequence < UInt64.max
+                else { return nil }
+                let (end, overflow) = record.nextSequence.addingReportingOverflow(
+                    Self.sequenceLeaseSize)
+                let windowEnd = overflow ? UInt64.max : end
+                do {
+                    try Self.write(
+                        record: Record(
+                            schema: record.schema,
+                            epoch: record.epoch,
+                            binding: record.binding,
+                            nextSequence: windowEnd),
+                        to: url)
+                } catch {
+                    return nil
+                }
+                leasedNext = record.nextSequence
+                leaseEnd = windowEnd
+                defer { leasedNext += 1 }
+                return leasedNext
             }
         }
     }
@@ -237,6 +265,9 @@ final class SSDCacheEpochStore: @unchecked Sendable {
                             nextSequence: 1),
                         to: url)
                     epoch = fresh
+                    // A fresh generation starts its receipts at 1.
+                    leasedNext = 0
+                    leaseEnd = 0
                     Self.epochs.publish(root: rootKey, epoch: nil)
                     let result = body()
                     Self.epochs.publish(root: rootKey, epoch: fresh)

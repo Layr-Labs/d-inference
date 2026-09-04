@@ -30,7 +30,11 @@ struct SSDCacheEpochStoreTests {
         let reopened = try SSDCacheEpochStore(root: root, binding: originalBinding)
         #expect(reopened.current == firstEpoch)
         #expect(first.takeNextSequence(expectedEpoch: firstEpoch) == 1)
-        #expect(reopened.takeNextSequence(expectedEpoch: firstEpoch) == 2)
+        // A second live instance leases the next window above the persisted
+        // high-water mark, so the two can never issue the same value.
+        #expect(
+            reopened.takeNextSequence(expectedEpoch: firstEpoch)
+                == 1 + SSDCacheEpochStore.sequenceLeaseSize)
 
         let rotatedEpoch = try #require(first.rotate())
         #expect(rotatedEpoch != firstEpoch)

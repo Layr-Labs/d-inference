@@ -4,6 +4,22 @@
 against production on 2026-09-03 (build `4ce5c0409` at 21:07 UTC, then master `5d400cf75`
 after the human redeploy at 21:13 UTC) and against master `5d400cf75` in the repo.
 
+**Execution status (2026-09-04 UTC):** Tiers 1–3 are built and up as PRs; nothing is merged.
+
+| PR | Branch | Contents | Base | CI |
+|---|---|---|---|---|
+| #821 | `test/mdm-scheduler-race-fix-2026-09-03` | test-only: the two pre-existing MDM scheduler flakes (`-race` failures on master and on every PR) | master | green |
+| #818 | `perf/coordinator-tier1-2026-09-03` | Tier 1 (13 commits) + rollout runbook | master | green |
+| #820 | `perf/coordinator-store-api-2026-09-03` | Tier 2 PR A: perf program store/api half | master | green after a test fix (batched outcome flush) |
+| #819 | `perf/coordinator-registry-scan-2026-09-03` | Tier 2 PR B: perf program registry half (4–8× on fleet benches) | master | green |
+| #822 | `perf/coordinator-registry-lock-2026-09-03` | Tier 3: per-identity gate state + commit under the read lock; `EIGENINFERENCE_RESERVE_COMMIT_MODE` (`shared` default, `global` kill switch) | #819's branch | pending |
+| (next) | `perf/coordinator-wave-fixes-2026-09-03` | Tier 2 C/D: WS fragmentation, queue-drain bound, drain-neutral faults, cancel hygiene, relay decode, telemetry re-key | `perf/coordinator-tier2-base-2026-09-03` (A+B) | in progress |
+
+Merge order: #821 → #818 → #820 → #819 → #822 → C/D (retarget to master after #820/#819). The Threat Model
+CI check fails on every PR with an invalid Anthropic API key in CI (infra, not code). Human-only items
+(`GOGC=400` after 1.1 is live 24 h, Tier 0 knobs, `ROUTING_CONCURRENCY` re-size after Tier 3) are in
+`docs/operations/coordinator-perf-tier1-rollout.md` on #818.
+
 **Grades used throughout:** **M** measured in prod or on a benchmark · **C** computed from
 measurements (arithmetic shown in the section) · **E** estimated, assumptions stated.
 

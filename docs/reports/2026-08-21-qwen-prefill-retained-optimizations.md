@@ -42,7 +42,10 @@ below `4.6e-6` for the small A/B projections.
 
 Qwen's sorted expert output is reduced through the inverse permutation directly
 into `[tokens, hidden]`, avoiding the `[tokens, topK, hidden]` assignment-order
-intermediate. This is enabled by default. `MLX_QWEN_DIRECT_EXPERT_REDUCTION=0` restores
+intermediate. This is OPT-IN (off by default since PR #112 landed it that way after the
+v0.8.8 decode/uptime regression): `MLX_QWEN_DIRECT_EXPERT_REDUCTION=1` enables it, and
+it only ever applies to prefill forwards (sequence axis > 1) — decode steps of any batch
+width keep the scatter/unsort + `weightedExpertSum` path. Unset (or `0`) restores
 the legacy assignment-tensor reduction for rollback and controlled A/B. A paired 25-sample primitive benchmark at the exact 2,048-token stripe
 geometry measured the legacy tensor as `[2,048, 8, 2,048]`, flattened to
 `[16,384, 2,048]` for the direct path:

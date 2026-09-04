@@ -314,11 +314,13 @@ extension Start {
         )
 
         do {
-            if let schedule {
-                try await runScheduled(loopConfig: loopConfig, schedule: schedule)
-            } else {
-                let loop = try ProviderLoop(config: loopConfig)
-                try await runProviderLoopWithFanLease(loop)
+            try await runUntilTerminationSignal {
+                if let schedule {
+                    try await runScheduled(loopConfig: loopConfig, schedule: schedule)
+                } else {
+                    let loop = try ProviderLoop(config: loopConfig)
+                    try await runProviderLoopWithFanLease(loop)
+                }
             }
         } catch {
             TelemetryClient.shared.emit(
@@ -433,6 +435,44 @@ extension Start {
     private func runProviderLoopWithFanLease(_ loop: ProviderLoop) async throws {
         try await withFanActivityLease(providerVersion: ProviderCore.version) {
             try await loop.run()
+        }
+    }
+
+    /// Run `serve` until it returns or the process receives SIGTERM/SIGINT.
+    /// launchd delivers SIGTERM on `bootout` (`darkbloom stop`) and on
+    /// `kickstart -k` (`darkbloom restart`, the watchdog's recovery, the
+    /// auto-update relaunch); a foreground human run gets SIGINT from Ctrl-C.
+    /// Without a trap the default action killed the daemon instantly and
+    /// every in-flight request became a 502 "provider disconnected" on the
+    /// coordinator. The trap cancels the serve task instead, which is
+    /// `ProviderLoop.run()`'s refuse → drain → close path; launchd's
+    /// `ExitTimeOut` (set by `LaunchAgent` to the drain bound) and a second
+    /// signal (see `ShutdownSignalTrap`) remain the hard stops.
+    private func runUntilTerminationSignal(
+        _ serve: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await serve() }
+            group.addTask { await ShutdownSignalTrap.waitForTermination() }
+            // Whichever finishes first ends the other: a signal cancels the
+            // serve task; a serve exit releases the trap.
+            do {
+                try await group.next()
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+            group.cancelAll()
+            // Wait for the drain to complete. The trap task's release, and a
+            // schedule wait interrupted by the cancellation, surface as
+            // CancellationError — not a serve failure.
+            while true {
+                do {
+                    guard try await group.next() != nil else { break }
+                } catch is CancellationError {
+                    continue
+                }
+            }
         }
     }
 

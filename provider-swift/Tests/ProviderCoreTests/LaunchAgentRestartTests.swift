@@ -335,6 +335,25 @@ struct LaunchAgentServicePlistTests {
             == [GemmaOptimizationEnvironment.safeR1Key: "1"])
     }
 
+    /// launchd SIGKILLs a job `ExitTimeOut` seconds after its SIGTERM
+    /// (default 20 s). The daemon now drains in-flight requests on SIGTERM
+    /// for up to the graceful drain bound, so the plist must give it that
+    /// long — otherwise launchd cuts the drain and the coordinator sees the
+    /// very 502s the drain exists to prevent.
+    @Test func exitTimeOutCoversTheGracefulDrain() {
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [:]
+        )
+        let exitTimeOut = plist["ExitTimeOut"] as? Int
+        #expect(exitTimeOut == LaunchAgent.exitTimeOutSeconds)
+        #expect((exitTimeOut ?? 0) >= Int(ProviderLoop.gracefulDrainTimeout.components.seconds))
+        // Still a bounded stop: a wedged daemon is killed, not waited on forever.
+        #expect((exitTimeOut ?? 0) <= 600)
+    }
+
     @Test func omitsEnvironmentWhenNoAllowlistedVarsSet() {
         let plist = LaunchAgent.makeServicePlist(
             label: "io.darkbloom.provider",

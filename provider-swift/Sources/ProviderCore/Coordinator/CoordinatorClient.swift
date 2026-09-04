@@ -235,11 +235,58 @@ public actor CoordinatorClient {
         return (eventStream, sendFn)
     }
 
-    public func shutdown() {
+    /// How long `shutdown()`/`closeForRestart()` wait for the goingAway close
+    /// frame to be handed to the transport before cancelling the connection.
+    /// Bounded because a wedged or still-handshaking connection never fires
+    /// the send completion; 500 ms is far above a loopback/TLS write and far
+    /// below anything an operator notices at stop time.
+    static let closeFrameFlushBound: Duration = .milliseconds(500)
+
+    public func shutdown() async {
         shutdownFlag.request()
-        closeCurrentConnection()
+        await closeCurrentConnection(awaitingCloseFrameFor: Self.closeFrameFlushBound)
         eventContinuation?.finish()
         outboundRouter.finish()
+    }
+
+    /// Close the current connection with a goingAway frame — awaited, bounded
+    /// — WITHOUT requesting shutdown. Used right before the auto-update
+    /// process restart so the coordinator records a clean `ws_close_1001`
+    /// instead of a `read_error` when launchd kills this process. Because
+    /// shutdown is not requested, the reconnect loop re-registers after its
+    /// backoff if the restart command fails and the daemon keeps serving the
+    /// old binary (`resumeServing`); on success the process is gone first.
+    public func closeForRestart() async {
+        await closeCurrentConnection(awaitingCloseFrameFor: Self.closeFrameFlushBound)
+    }
+
+    /// Enqueue the goingAway close frame, wait up to `bound` for the transport
+    /// to take it, then cancel. See `closeCurrentConnection()` for why the
+    /// fire-and-forget variant exists; this one is for the paths where the
+    /// frame's delivery is the point (the coordinator flushes every pending
+    /// request as a 502 "provider disconnected" on a read error, but records
+    /// a clean close on a 1001).
+    private func closeCurrentConnection(awaitingCloseFrameFor bound: Duration) async {
+        guard let connection = nwConnection else { return }
+        nwConnection = nil
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.goingAway)
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        let flushed = ResumeOnceContinuation()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            flushed.arm(cont)
+            connection.send(
+                content: nil,
+                contentContext: context,
+                isComplete: true,
+                completion: .contentProcessed { _ in flushed.resume() }
+            )
+            Task {
+                try? await taskSleep(bound)
+                flushed.resume()
+            }
+        }
+        connection.cancel()
     }
 
     /// Send a WebSocket close frame (going-away) on the current connection and
@@ -317,6 +364,28 @@ public actor CoordinatorClient {
         healthySessionMinimumOverride = minimum
     }
 
+}
+
+// MARK: - ResumeOnceContinuation
+
+/// A continuation that may be resumed from two racing places (a send
+/// completion on `connectionQueue` and a timeout task) exactly once.
+private final class ResumeOnceContinuation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func arm(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func resume() {
+        let pending: CheckedContinuation<Void, Never>? = lock.withLock {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        pending?.resume()
+    }
 }
 
 // MARK: - Security Checks Namespace

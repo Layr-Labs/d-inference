@@ -129,6 +129,17 @@ extension ProviderLoop {
         daemonStateFileOverride = url
     }
 
+    /// Test seam: register a fake in-flight coordinator request so the
+    /// drain/shutdown ordering tests have work to wait for without an engine.
+    /// The task MUST call `finishInflightRequest(requestId:)` when it ends,
+    /// exactly as the production detached task does in its defer.
+    func installInflightRequestForTesting(requestId: String, task: Task<Void, Never>) {
+        inflightTasks[requestId] = task
+    }
+
+    /// Test seam: the admission gate's shutdown flag.
+    func isShuttingDownForTesting() -> Bool { isShuttingDown }
+
     /// Test seam: stop the capacity-refresh monitor and its liveness
     /// companion (production stops them in `run()`'s teardown).
     func stopCapacityRefreshMonitorForTesting() {

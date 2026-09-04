@@ -24,12 +24,6 @@ extension ProviderLoop {
     /// Interval between subsequent update checks (30 minutes).
     private static let autoUpdateInterval: Duration = .seconds(1800)
 
-    /// How long to wait for in-flight requests to drain after installing a new
-    /// binary before force-cancelling them and restarting. Generous enough for
-    /// normal generations to finish; bounded so one stuck request can't block
-    /// updates forever.
-    private static let updateDrainTimeout: Duration = .seconds(120)
-
     /// Start the background auto-update monitor. Checks the coordinator for a
     /// newer release every 30 minutes (after an initial 5-minute delay). On a
     /// new release it downloads + verifies + installs the binary *while still
@@ -120,7 +114,11 @@ extension ProviderLoop {
             prepareInstalledRestart: {
                 await me.prepareInstalledCandidateRestart(updater: updater)
             },
-            restart: { try ProcessLifecycle.restartAfterUpdate() },
+            restart: {
+                try await me.closeLinkThenRestart {
+                    try ProcessLifecycle.restartAfterUpdate()
+                }
+            },
             restartDidFail: {
                 try? updater.cancelPendingCandidateAttempt(
                     operation: "background-restart-failure")
@@ -128,7 +126,7 @@ extension ProviderLoop {
             log: { logger.info("\($0)") }
         )
 
-        let controller = AutoUpdateController(deps: deps, drainTimeout: Self.updateDrainTimeout)
+        let controller = AutoUpdateController(deps: deps, drainTimeout: Self.gracefulDrainTimeout)
         let outcome = await controller.run()
         switch outcome {
         case .alreadyRunning:
@@ -262,6 +260,22 @@ extension ProviderLoop {
         case .failure(let error):
             return .failed("\(error)")
         }
+    }
+
+    /// The restart step, in the order the coordinator needs: close the link
+    /// with a goingAway frame FIRST (awaited, bounded), THEN hand the process
+    /// to launchd/execv. `restartAfterUpdate` is `kickstart -k` + exit — the
+    /// socket used to die with the process, which the coordinator classified
+    /// as a `read_error` disconnect (and, with anything in flight, as OOM
+    /// suspected). The drain has already run, so nothing is in flight; the
+    /// close is not a shutdown request, so if the restart command throws the
+    /// reconnect loop re-registers and `resumeServing` keeps the old binary
+    /// serving.
+    internal func closeLinkThenRestart(
+        restartProcess: @Sendable () async throws -> Void
+    ) async throws {
+        await coordinatorClient?.closeForRestart()
+        try await restartProcess()
     }
 
     private func prepareInstalledCandidateRestart(

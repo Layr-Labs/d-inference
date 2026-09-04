@@ -47,6 +47,10 @@ public struct CapturedMessages: Sendable {
     public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var capacityQuotes: [ProviderMessage.CapacityQuote] = []
     public var telemetryBatches: [TelemetryBatch] = []
+    /// Number of provider WebSocket connections that have ENDED (close frame
+    /// or transport drop) — shutdown-ordering tests read it to prove the link
+    /// outlived the drain and closed afterwards.
+    public var socketCloses: Int = 0
 
     public init() {}
 }
@@ -417,6 +421,7 @@ public final class MockCoordinator: @unchecked Sendable {
                     if self.activeOutbound != nil {
                         self.activeOutbound = nil
                     }
+                    self.captured.socketCloses += 1
                 }
                 self.eventContinuation.yield(.wsClosed)
             }

@@ -441,6 +441,12 @@ public enum LaunchAgent: Sendable {
     /// the binary, racing the stage-then-swap. Crash-recovery is instead owned by
     /// the separate `WatchdogAgent`, which waits out a grace period before
     /// relaunching (so it never races the updater) and honours `darkbloom stop`.
+    /// launchd `ExitTimeOut` for the provider job: the graceful drain bound
+    /// (`ProviderLoop.gracefulDrainTimeout`), so a SIGTERM'd daemon gets its
+    /// full drain before SIGKILL. Reaches installs on the next `darkbloom
+    /// start` plist rewrite.
+    static let exitTimeOutSeconds = Int(ProviderLoop.gracefulDrainTimeout.components.seconds)
+
     static func makeServicePlist(
         label: String,
         programArguments: [String],
@@ -456,6 +462,16 @@ public enum LaunchAgent: Sendable {
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
             "Nice": -5,
+            // launchd SIGTERMs the job on `bootout` (stop) and `kickstart -k`
+            // (restart / watchdog recovery / auto-update relaunch) and SIGKILLs
+            // it `ExitTimeOut` seconds later (default 20 s). The daemon traps
+            // SIGTERM and drains in-flight requests for up to the graceful
+            // drain bound before it closes the link and exits; the timeout
+            // matches that bound so launchd never cuts a drain that is still
+            // inside it. Measured on macOS 26: `bootout` returns at once
+            // regardless, `kickstart -k` blocks until the old process exits —
+            // so `darkbloom restart` on a busy box waits for the drain.
+            "ExitTimeOut": exitTimeOutSeconds,
         ]
 
         // launchd does NOT inherit the installing shell's environment, so any

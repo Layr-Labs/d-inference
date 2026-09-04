@@ -596,6 +596,19 @@ public actor ProviderLoop {
     internal let logger = ProviderLogger(subsystem: "dev.darkbloom.provider", category: "loop")
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
+
+    /// Bound on the graceful drain — how long in-flight requests may finish
+    /// after admission closes — for BOTH the auto-update hot-swap and the
+    /// cancellation-path shutdown (`beginShutdownDrain`: schedule window
+    /// close, SIGTERM/SIGINT). Generous enough for normal generations;
+    /// bounded so one stuck request cannot block an update or a stop forever.
+    /// `LaunchAgent` sets the launchd `ExitTimeOut` to the same figure so
+    /// launchd never SIGKILLs a drain that is still inside its own bound.
+    internal static let gracefulDrainTimeout: Duration = .seconds(120)
+
+    /// Set by `beginShutdownDrain` so a second cancellation (or the post-loop
+    /// teardown) cannot start a second drain.
+    internal var shutdownDrainStarted: Bool = false
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
     private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 

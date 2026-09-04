@@ -221,95 +221,34 @@ extension ProviderLoop {
 
         logger.info(.coordinatorClientStarted)
 
-        // 5. Process events. Cancellation is used by schedule enforcement
-        // and service shutdown; explicitly close the WebSocket so the stream
-        // unblocks instead of waiting for the next coordinator event.
-        await withTaskCancellationHandler {
+        // 5. Process events. Cancellation is used by schedule enforcement and
+        // service shutdown (the serve command's SIGTERM/SIGINT trap).
+        //
+        // The consumer is an UNSTRUCTURED task, deliberately: an AsyncStream
+        // iterated from a cancelled task returns nil at once and terminates
+        // the stream, and `waitForInflightDrain` short-circuits under
+        // cancellation — so a `for await` here would end the moment run()'s
+        // task was cancelled, and the old onCancel closed the socket
+        // immediately. The coordinator then flushed every in-flight request
+        // as a 502 "provider disconnected" (a served fault on the stable
+        // identity) while the detached generation tasks kept decoding into a
+        // finished router. Instead, cancellation starts `beginShutdownDrain`
+        // (refuse → drain → close) in its own non-cancelled task while this
+        // consumer keeps answering the coordinator — routed requests bounce
+        // with the slot_state 503 (`isShuttingDown` gate in the handler) so
+        // they reroute instead of timing out, and cancels still land — until
+        // the drain closes the link, which finishes `events` and ends the
+        // consumer.
+        let me = self
+        let consumer = Task {
             for await event in events {
-                switch event {
-                case .connected:
-                    logger.info(.coordinatorConnected)
-                    // The post-retirement reconnect's admission barrier
-                    // (see `fireRetirementReconnect`) lifts with the new
-                    // session: the register it carried excluded every
-                    // retired id, so routed work is safe to admit again.
-                    isReconnectingAfterRetirement = false
-
-                case .disconnected:
-                    logger.warning(.coordinatorDisconnected)
-                    // Cancel all in-flight requests on disconnect -- the coordinator
-                    // will not route responses for a dead connection.
-                    await cancelAllInflight()
-
-                case .inferenceRequest(
-                    let requestId, let ciphertext, let senderPublicKey,
-                    let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
-                    let toolSchemaMetadataProtocol, let firstContentDeadline,
-                    let receivedAt,
-                    let profile
-                ):
-                    await handleInferenceRequest(
-                        requestId: requestId,
-                        ciphertext: ciphertext,
-                        senderPublicKey: senderPublicKey,
-                        cacheReceiptNonce: cacheReceiptNonce,
-                        authenticatedCacheScope: cacheScope,
-                        prefixCacheProtocol: prefixCacheProtocol,
-                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
-                        firstContentDeadline: firstContentDeadline,
-                        receivedAt: receivedAt,
-                        profile: profile,
-                        send: send
-                    )
-
-                case .cancel(let requestId):
-                    await handleCancellation(requestId: requestId)
-
-                case .attestationChallenge(let nonce, let timestamp):
-                    await handleAttestationChallenge(
-                        nonce: nonce,
-                        timestamp: timestamp,
-                        send: send
-                    )
-
-                case .codeAttestationResumeChallenge(let challenge):
-                    handleCodeChallenge(challenge, send: send)
-
-                case .runtimeOutdated(let mismatches):
-                    logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
-                    for m in mismatches {
-                        logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
-                    }
-
-                case .loadModel(let modelId):
-                    handleLoadModelRequest(modelId: modelId, send: send)
-
-                case .prefetchModel(let modelId, let priority):
-                    if isDrainingForUpdate {
-                        sendDrainingPrefetchFailure(modelId: modelId, send: send)
-                    } else {
-                        staleDesiredPrefetches.remove(modelId)
-                        await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
-                    }
-
-                case .desiredModels(let entries):
-                    if isDrainingForUpdate {
-                        // Keep only the latest push (desired state is
-                        // declarative). A successful restart makes it moot —
-                        // registration receives fresh desired state — but an
-                        // aborted restart replays it via resumeServingAfterUpdate.
-                        deferredDesiredModels = entries
-                        logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
-                    } else {
-                        await reconcileDesiredModels(entries, send: send)
-                    }
-
-                case .trustStatus(let trustLevel, let status, let reason):
-                    handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
-                }
+                await me.dispatchCoordinatorEvent(event, send: send)
             }
+        }
+        await withTaskCancellationHandler {
+            await consumer.value
         } onCancel: {
-            Task { await coordinator.shutdown() }
+            Task { await me.beginShutdownDrain(coordinator: coordinator) }
         }
 
         logger.info(.coordinatorEventStreamEnded)
@@ -375,6 +314,155 @@ extension ProviderLoop {
             }
         }
         powerAssertion.releaseAll()
+    }
+
+    // MARK: - Event dispatch
+
+    /// One coordinator event, on the loop actor. Split out of `run()` so the
+    /// shutdown-ordering tests drive the exact production consumer.
+    internal func dispatchCoordinatorEvent(_ event: CoordinatorEvent, send: SendHandle) async {
+        switch event {
+        case .connected:
+            logger.info(.coordinatorConnected)
+            // The post-retirement reconnect's admission barrier
+            // (see `fireRetirementReconnect`) lifts with the new
+            // session: the register it carried excluded every
+            // retired id, so routed work is safe to admit again.
+            isReconnectingAfterRetirement = false
+
+        case .disconnected:
+            logger.warning(.coordinatorDisconnected)
+            // Cancel all in-flight requests on disconnect -- the coordinator
+            // will not route responses for a dead connection.
+            await cancelAllInflight()
+
+        case .inferenceRequest(
+            let requestId, let ciphertext, let senderPublicKey,
+            let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
+            let toolSchemaMetadataProtocol, let firstContentDeadline,
+            let receivedAt,
+            let profile
+        ):
+            await handleInferenceRequest(
+                requestId: requestId,
+                ciphertext: ciphertext,
+                senderPublicKey: senderPublicKey,
+                cacheReceiptNonce: cacheReceiptNonce,
+                authenticatedCacheScope: cacheScope,
+                prefixCacheProtocol: prefixCacheProtocol,
+                toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
+                firstContentDeadline: firstContentDeadline,
+                receivedAt: receivedAt,
+                profile: profile,
+                send: send
+            )
+
+        case .cancel(let requestId):
+            await handleCancellation(requestId: requestId)
+
+        case .attestationChallenge(let nonce, let timestamp):
+            await handleAttestationChallenge(
+                nonce: nonce,
+                timestamp: timestamp,
+                send: send
+            )
+
+        case .codeAttestationResumeChallenge(let challenge):
+            handleCodeChallenge(challenge, send: send)
+
+        case .runtimeOutdated(let mismatches):
+            logger.warning("Runtime outdated: \(mismatches.count) mismatch(es)")
+            for m in mismatches {
+                logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")
+            }
+
+        case .loadModel(let modelId):
+            handleLoadModelRequest(modelId: modelId, send: send)
+
+        case .prefetchModel(let modelId, let priority):
+            if isDrainingForUpdate {
+                sendDrainingPrefetchFailure(modelId: modelId, send: send)
+            } else {
+                staleDesiredPrefetches.remove(modelId)
+                await handlePrefetchModelRequest(modelId: modelId, priority: priority, send: send)
+            }
+
+        case .desiredModels(let entries):
+            if isDrainingForUpdate {
+                // Keep only the latest push (desired state is
+                // declarative). A successful restart makes it moot —
+                // registration receives fresh desired state — but an
+                // aborted restart replays it via resumeServingAfterUpdate.
+                deferredDesiredModels = entries
+                logger.info("Deferring desired_models during update drain (\(entries.count) entr(ies)); replayed if the restart is aborted")
+            } else {
+                await reconcileDesiredModels(entries, send: send)
+            }
+
+        case .trustStatus(let trustLevel, let status, let reason):
+            handleTrustStatus(trustLevel: trustLevel, status: status, reason: reason)
+        }
+    }
+
+    // MARK: - Graceful shutdown: refuse → drain → close
+
+    /// Bound on the post-cancel wait for force-cancelled generation tasks to
+    /// push their 499 terminals through the outbound router before the link
+    /// closes. The cancel lands at the next step boundary; this only has to
+    /// cover that plus one router hop.
+    internal static let terminalFlushTimeout: Duration = .seconds(2)
+
+    /// The cancellation-path shutdown, in the order the coordinator needs:
+    /// stop admitting (routed requests bounce with the slot_state 503 and
+    /// reroute; quotes refuse), let in-flight generations finish (bounded by
+    /// `gracefulDrainTimeout`, force-cancelled past it with a short window
+    /// for their terminals to flush), and only THEN send the goingAway close.
+    /// Runs in a non-cancelled task started by run()'s cancellation handler;
+    /// idempotent so a second cancellation (or the post-loop teardown) is a
+    /// no-op. `coordinator.shutdown()` finishes the event stream, which ends
+    /// run()'s consumer and lets its teardown proceed.
+    internal func beginShutdownDrain(
+        coordinator: CoordinatorClient,
+        drainTimeout: Duration = ProviderLoop.gracefulDrainTimeout
+    ) async {
+        guard !shutdownDrainStarted else { return }
+        shutdownDrainStarted = true
+        isShuttingDown = true
+        // Quote path mirror (routing v2): quotes refuse with slot_state for
+        // the window the socket stays up, exactly like the admission gate.
+        state.refusingNewWork = true
+        let inflight = inflightTasks.count
+        if inflight > 0 {
+            logger.info("Shutdown requested: refusing new work; draining \(inflight) in-flight request(s) (bound \(drainTimeout.components.seconds)s) before closing the coordinator link")
+        }
+        let drained = await waitForInflightDrain(timeout: drainTimeout, reason: "shutdown")
+        if !drained {
+            logger.warning("Shutdown drain timed out after \(drainTimeout.components.seconds)s; cancelling \(inflightTasks.count) remaining request(s)")
+            let stragglers = Array(inflightTasks.values)
+            await cancelAllInflight()
+            await Self.waitForTasksToSettle(stragglers, timeout: Self.terminalFlushTimeout)
+        }
+        await coordinator.shutdown()
+    }
+
+    /// Wait up to `timeout` for the given (already cancelled) tasks to finish.
+    /// Awaiting a `Task.value` is not itself cancellable, so the waiting is
+    /// done by side tasks that decrement a counter, and this polls it.
+    nonisolated internal static func waitForTasksToSettle(
+        _ tasks: [Task<Void, Never>], timeout: Duration
+    ) async {
+        guard !tasks.isEmpty else { return }
+        let remaining = SettleCounter(tasks.count)
+        for task in tasks {
+            Task {
+                await task.value
+                remaining.decrement()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while remaining.value > 0, ContinuousClock.now < deadline {
+            try? await taskSleep(.milliseconds(25))
+        }
     }
 
     // MARK: - Security Hardening
@@ -484,4 +572,18 @@ extension ProviderLoop {
         }
     }
 
+}
+
+// MARK: - SettleCounter
+
+/// Lock-boxed countdown for `ProviderLoop.waitForTasksToSettle`.
+private final class SettleCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: Int
+
+    init(_ count: Int) { remaining = count }
+
+    var value: Int { lock.withLock { remaining } }
+
+    func decrement() { lock.withLock { remaining -= 1 } }
 }

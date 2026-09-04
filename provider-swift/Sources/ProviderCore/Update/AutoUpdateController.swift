@@ -77,9 +77,10 @@ public struct AutoUpdateController: Sendable {
         /// Arm the already-installed candidate before retrying a restart after
         /// a prior restart command or process died.
         public var prepareInstalledRestart: @Sendable () async -> StepOutcome
-        /// Restart the process into the new binary. In production this does not
+        /// Restart the process into the new binary. In production this closes
+        /// the coordinator link with a goingAway frame first and then does not
         /// return (the process is replaced/relaunched by launchd).
-        public var restart: @Sendable () throws -> Void
+        public var restart: @Sendable () async throws -> Void
         /// Undo the pending-attempt marker if `restart` throws before launch.
         public var restartDidFail: @Sendable () async -> Void
         /// Emit a human-readable progress line.
@@ -96,7 +97,7 @@ public struct AutoUpdateController: Sendable {
             forceCancelInflight: @escaping @Sendable () async -> Void,
             commitInstall: @escaping @Sendable () async -> StepOutcome,
             prepareInstalledRestart: @escaping @Sendable () async -> StepOutcome = { .completed },
-            restart: @escaping @Sendable () throws -> Void,
+            restart: @escaping @Sendable () async throws -> Void,
             restartDidFail: @escaping @Sendable () async -> Void = {},
             log: @escaping @Sendable (String) -> Void
         ) {
@@ -186,7 +187,7 @@ public struct AutoUpdateController: Sendable {
                 return .restartFailed(reason)
             case .completed:
                 do {
-                    try deps.restart()
+                    try await deps.restart()
                     return .restarted(from: current, to: installed, drained: drained)
                 } catch {
                     await deps.restartDidFail()
@@ -254,7 +255,7 @@ public struct AutoUpdateController: Sendable {
                         break
                     }
                     do {
-                        try deps.restart()
+                        try await deps.restart()
                     } catch {
                         // Restart failed but the binary is already installed; resume
                         // serving (on the old in-memory binary) so we aren't wedged.

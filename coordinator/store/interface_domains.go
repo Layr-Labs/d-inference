@@ -556,6 +556,12 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// AccountEarningsWindows returns the account's last-24h and last-7d row
+	// count and micro-USD sum as of now, aggregated by the store over the
+	// 7 d window only. Every provider_earnings row counts (base_reward rows
+	// included), matching the dashboard header's historical semantics.
+	AccountEarningsWindows(accountID string, now time.Time) (AccountEarningsWindows, error)
+
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
 
@@ -684,6 +690,11 @@ type ProviderStore interface {
 
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
+
+	// GetReputations returns the reputation records that exist for the given
+	// provider IDs, keyed by provider ID, in one lookup. Unknown IDs are
+	// simply absent from the result.
+	GetReputations(ctx context.Context, providerIDs []string) (map[string]*ReputationRecord, error)
 
 	// --- APNs code-identity attestation reuse cache (survives deploys) ---
 

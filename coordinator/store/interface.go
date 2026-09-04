@@ -827,6 +827,16 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
+// AccountEarningsWindows holds an account's rolling-window earnings (row count
+// and micro-USD sum over the last 24 h and the last 7 d) as computed by the
+// store, so the dashboard header never sums a truncated row page.
+type AccountEarningsWindows struct {
+	Last24hMicroUSD int64 `json:"last_24h_micro_usd"`
+	Last24hJobs     int64 `json:"last_24h_jobs"`
+	Last7dMicroUSD  int64 `json:"last_7d_micro_usd"`
+	Last7dJobs      int64 `json:"last_7d_jobs"`
+}
+
 // ProviderPayout records a provider payout event. This is separate from
 // account-linked provider earnings because some providers are paid directly
 // without being linked to a Privy account.

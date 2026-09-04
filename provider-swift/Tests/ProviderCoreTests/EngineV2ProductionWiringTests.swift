@@ -1320,9 +1320,15 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted.count == 1)
     }
 
-    @Test("no injection without a pre-opened think tail")
-    func plainPromptTailDoesNotInject() async throws {
-        let (_, providerEngine) = makeThinkProbeEngine(
+    @Test("a plain (not pre-opened) think tail injects the empty pair, never the open")
+    func plainPromptTailInjectsEmptyPair() async throws {
+        // qwen3-vl instruct / thinking-off shape: the parser would otherwise
+        // park in `.undecided` and buffer the tagless answer whole. The
+        // empty pair is two empty-span transitions (no frame reaches the
+        // consumer) that unlock per-token content; the model's own output
+        // follows untouched. The synthetic `<think>` open is reserved for a
+        // tail that actually ends inside a think block.
+        let (engine, providerEngine) = makeThinkProbeEngine(
             decodedTail: "<|im_start|>assistant\n")
         var request = makeOpenAIRequest(model: "qwen3.6-test")
         request.stream = true
@@ -1330,7 +1336,10 @@ struct EngineV2RequestRoutingTests {
 
         let stream = try await providerEngine.streamChatCompletion(request: request)
         let events = try await recordServerStream(stream)
-        #expect(events.first == .content("step one "))
+        #expect(events.first == .content(ReasoningPromptProbe.thinkEmptyPair))
+        #expect(events.dropFirst().first == .content("step one "))
+        // The marker is synthetic — it must never reach the engine/prompt.
+        #expect(engine.submitted.count == 1)
     }
 
     @Test("no injection for a non-think reasoning parser even with a pre-opened tail")

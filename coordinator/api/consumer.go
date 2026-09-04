@@ -273,7 +273,9 @@ func writeProviderInferenceRequestDeferred(
 	onHandoff registry.TextFrameHandoff,
 ) (registry.TextFrameWriteMetadata, error) {
 	if provider == nil || provider.Conn == nil {
-		return registry.TextFrameWriteMetadata{}, errors.New("provider websocket is not connected")
+		// Same class as a dead writer (the socket is gone), so the send-failed
+		// ladder tags it writer_stopped.
+		return registry.TextFrameWriteMetadata{}, fmt.Errorf("provider websocket is not connected: %w", registry.ErrProviderWriterStopped)
 	}
 	return provider.WriteTextDeferred(ctx, builder, onHandoff)
 }
@@ -1402,7 +1404,11 @@ func (s *Server) dispatchWithReserver(
 			errors.Is(writeErr, errFirstContentDeadlineAtWriter) {
 			return nil, nil, decision, plan, errFirstContentDeadlineExpired, http.StatusGatewayTimeout
 		}
-		return nil, nil, decision, plan, "failed to send request to provider", http.StatusBadGateway
+		// Status 0, not 502: no provider ran the request, so the exhausted
+		// ladder classifies this class itself (rejectionReasonProviderUnreachable).
+		s.ddIncr("routing.dispatch_to_capacity_503", []string{
+			"model:" + pr.Model, "reason:send_failed", "kind:" + providerSendFailureKind(writeErr)})
+		return nil, nil, decision, plan, errProviderSendFailedText, 0
 	}
 	pendingCleanup = false
 

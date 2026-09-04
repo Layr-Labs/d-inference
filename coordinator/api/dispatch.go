@@ -211,6 +211,12 @@ type dispatchState struct {
 	// congestion collapse; see the constant). Each counted attempt was on a
 	// distinct provider — the timed-out provider joins excludeProviders.
 	firstChunkTimeoutRetries int
+	// sendFailedRetries counts attempts that failed to hand the request frame
+	// to the selected provider's writer (errProviderSendFailedText). Capped at
+	// maxCapacityClassRetries like the transient-capacity class: each such
+	// attempt is a full reservation scan for a provider that never saw the
+	// request (see rejectionReasonProviderUnreachable).
+	sendFailedRetries int
 	// lastFailureDeadline is scoped to the most recent terminal attempt. A
 	// deadline refusal remains eligible for deadline_unreachable only while no
 	// later genuine provider fault has replaced it.
@@ -1031,7 +1037,7 @@ func dispatchErrorClass(errText string) string {
 		return "encryption_error"
 	case errFirstContentDeadlineExpired:
 		return "first_chunk_timeout"
-	case "failed to send request to provider":
+	case errProviderSendFailedText:
 		return "provider_error"
 	default:
 		if errText == "" {
@@ -1404,6 +1410,9 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		providerWasRejected := dispatchErr != "no provider available"
 		if providerWasRejected {
 			d.setLastError(dispatchErr, dispatchErrCode)
+			if dispatchErr == errProviderSendFailedText {
+				return d.noteProviderSendFailed()
+			}
 			return outcomeRetry
 		}
 
@@ -1792,9 +1801,11 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
 				return outcomeFailFast
 			}
-			d.setLastError("failed to send request to provider", 0)
+			s.ddIncr("routing.dispatch_to_capacity_503", []string{
+				"model:" + d.model, "reason:send_failed", "kind:" + providerSendFailureKind(writeErr)})
+			d.setLastError(errProviderSendFailedText, 0)
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
-			return outcomeRetry
+			return d.noteProviderSendFailed()
 		}
 	}
 	// The request is now on a slot. Latch that slot's KV backend so the
@@ -1806,6 +1817,27 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	// request; zero added primary latency by construction).
 	d.maybeProbePlanCandidates()
 	return outcomeProceed
+}
+
+// noteProviderSendFailed bounds the errProviderSendFailedText retry class.
+// dispatchPrimary treats every dispatch error other than "no provider
+// available" as outcomeRetry with no health feedback, and shouldStopFailover
+// never sees this class (it runs only after waitFirstChunk / waitAccepted),
+// so a send failure used to walk up to maxDispatchAttempts distinct providers
+// — one routingScanSem-gated reservation scan each — in a cascade where
+// writers were dying or data lanes were full fleet-wide. Each failed send
+// still excludes its provider (per-attempt exclusion); this caps how many.
+// At the cap the request is latched unservable with
+// rejectionReasonProviderUnreachable so the exhausted ladder emits exactly
+// one uptime-neutral 429 with Retry-After.
+func (d *dispatchState) noteProviderSendFailed() dispatchOutcome {
+	d.sendFailedRetries++
+	if d.sendFailedRetries >= maxCapacityClassRetries {
+		d.unservable = true
+		d.unservableReason = rejectionReasonProviderUnreachable
+		return outcomeFailFast
+	}
+	return outcomeRetry
 }
 
 // noteDispatchRetry feeds the inference-error breaker + refund for a pre-commit
@@ -1856,6 +1888,44 @@ func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *regis
 // maxCapacityClassRetries). Distinct from the preflight "context_exceeded" /
 // "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
 const rejectionReasonOversized = "oversized_request"
+
+// rejectionReasonProviderUnreachable is the rejection-ledger reason_code for a
+// request whose dispatch attempts could not hand the frame to the selected
+// provider's writer at all (writer stopped — closed by the write watchdog or
+// a read error — or a full data lane): no provider ever ran the request. The
+// class is bounded like the transient-capacity class (maxCapacityClassRetries
+// distinct providers) and resolves to one uptime-neutral 429 with this reason
+// — never the raw 502 it used to surface at exhaustion (45-55K/h in the
+// 2026-08-31 cascade, counted as provider_5xx against uptime although no
+// provider was ever contacted), and never the oversized vocabulary the
+// utilization dashboards key on. No MarkUnreachable / StatusOffline flip: a
+// dead writer's read loop fails and Disconnect runs within milliseconds, and
+// a provider with a full data lane is alive and already excluded from this
+// request's later attempts.
+const rejectionReasonProviderUnreachable = "provider_unreachable"
+
+// errProviderSendFailedText is the dispatch error text for that class. Both
+// write-failure branches (first attempt and the queued/retry path) return it
+// with status 0, so the exhausted ladder's own classification — not a
+// coordinator-invented 502 — decides the answer.
+const errProviderSendFailedText = "failed to send request to provider"
+
+// providerSendFailureKind maps a provider write error to the bounded kind
+// tag on routing.dispatch_to_capacity_503{reason:send_failed}.
+func providerSendFailureKind(err error) string {
+	switch {
+	case errors.Is(err, registry.ErrProviderWriterQueueFull):
+		return "queue_full"
+	case errors.Is(err, registry.ErrProviderWriterStopped):
+		return "writer_stopped"
+	case errors.Is(err, registry.ErrProviderWriteTimeout):
+		return "write_timeout"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "ctx"
+	default:
+		return "other"
+	}
+}
 
 // rejectionReasonRoutingSaturated is the rejection-ledger reason_code for a
 // request shed because no provider-selection scan slot freed up within its
@@ -3614,15 +3684,29 @@ exhausted:
 			// skip the quick-capacity probe and the 5xx→429 reclassification below:
 			// emit a single uptime-neutral 429. This is the proactive complement to
 			// the always-on backstop — it converts the request BEFORE storming the
-			// fleet, not after 64 attempts.
-			s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			// fleet, not after 64 attempts. A send-failed cap keeps its own
+			// counter and reason: no provider was ever contacted, and the
+			// oversized series must stay a request-shape signal.
+			if reason == rejectionReasonProviderUnreachable {
+				s.ddIncr("routing.provider_unreachable_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			} else {
+				s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			}
 		case exhaustedDeadline:
 			// Every refusal was health-neutral and did not consume the generic
 			// capacity retry cap. Once no untried candidate remains, expose one
 			// uptime-neutral 429 with its own closed reason.
 			s.ddIncr("routing.deadline_unreachable_rejected", []string{"model:" + d.model, "stage:dispatch"})
 		case exhaustedUndecided:
-			if statusCode == 0 {
+			if failure.errText == errProviderSendFailedText {
+				// The last attempt never reached a provider (writer dead or
+				// data lane full) and the candidates ran out before the
+				// send-failed cap latched: still one uptime-neutral 429 with
+				// the unreachable reason, never the raw 502 this used to be.
+				statusCode = http.StatusTooManyRequests
+				reason = rejectionReasonProviderUnreachable
+				s.ddIncr("routing.provider_unreachable_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			} else if statusCode == 0 {
 				// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 				// A quick capacity check tells us if providers exist but are full.
 				_, capRej, _ := s.registry.QuickCapacityCheckForRequest(
@@ -3687,9 +3771,12 @@ exhausted:
 			// A terminal verdict (the request exceeds the model context, or
 			// every attempted provider refused the remaining deadline) is
 			// recorded not-servable; otherwise the ladder's last scan seeds
-			// the counterfactual (see exhaustedRejectionInfo).
+			// the counterfactual (see exhaustedRejectionInfo). An unreachable
+			// verdict (provider writers dead / data lanes full) is about the
+			// links, not the request shape, so it is not a terminal verdict:
+			// its counterfactual comes from the last scan like any other.
 			s.recordRejection(d.exhaustedRejectionInfo(reason, statusCode, retryAfter*1000,
-				!stickyFault && (d.unservable || failure.deadline)))
+				!stickyFault && ((d.unservable && d.unservableReason != rejectionReasonProviderUnreachable) || failure.deadline)))
 		} else {
 			s.recordRejection(d.exhaustedRejectionInfo(reason, statusCode, 0, false))
 		}
@@ -3700,6 +3787,11 @@ exhausted:
 			rateLimitMessage = fmt.Sprintf(
 				"no provider could produce first content within the remaining deadline for model %q",
 				d.publicModel)
+		}
+		if reason == rejectionReasonProviderUnreachable {
+			rateLimitMessage = fmt.Sprintf(
+				"no provider accepted the request for model %q after %d attempt(s); retry shortly",
+				d.publicModel, d.exhaustionAttemptCount())
 		}
 		if statusCode == http.StatusTooManyRequests {
 			writeJSON(w, statusCode, errorResponse("rate_limit_exceeded",

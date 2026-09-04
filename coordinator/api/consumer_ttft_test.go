@@ -230,7 +230,9 @@ func TestTTFTAdmission429ForInferenceEndpoints(t *testing.T) {
 // non-zero pr.MaxTTFTMs causing ReserveProviderEx to drop every candidate. With
 // a single eligible provider and no capacity pressure, the only possible 429 is
 // the TTFT shed, so asserting "not 429" pins the fix. (The request can't truly
-// stream over a nil test conn; it just must never be ttft-rejected.)
+// stream over a nil test conn — its dead writer resolves to the send-failed
+// ladder's own 429, "no provider accepted the request", which is not a TTFT
+// rejection; it just must never be ttft-rejected.)
 func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 	srv, _ := testServer(t) // default: soft gate (ttftHardReject=false)
 	model := "soft-serve-ttft-model"
@@ -248,8 +250,11 @@ func TestTTFTSoftGateDoesNotShedAtDispatch(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Code == http.StatusTooManyRequests {
+	if w.Code == http.StatusTooManyRequests && !strings.Contains(w.Body.String(), "no provider accepted the request") {
 		t.Fatalf("soft gate shed an over-deadline request with 429 (P1 regression); body=%s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "TTFT target") || strings.Contains(w.Body.String(), "temporarily rate-limited") {
+		t.Fatalf("soft gate shed an over-deadline request (P1 regression); body=%s", w.Body.String())
 	}
 }
 
@@ -279,7 +284,9 @@ func TestTTFTHardGateDoesNotRejectMediaOnTextOnlyEstimate(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, req)
 
-	if w.Code == http.StatusTooManyRequests || strings.Contains(w.Body.String(), "TTFT target") {
+	// The nil test conn resolves to the send-failed ladder's own 429 ("no
+	// provider accepted the request"); only a TTFT-shaped rejection fails this.
+	if strings.Contains(w.Body.String(), "TTFT target") || strings.Contains(w.Body.String(), "temporarily rate-limited") {
 		t.Fatalf("hard gate used a text-only estimate to reject media: status=%d body=%s", w.Code, w.Body.String())
 	}
 	found := false

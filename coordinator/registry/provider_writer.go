@@ -52,6 +52,9 @@ var errProviderWriteTimeout = errors.New("provider websocket write timeout")
 var (
 	ErrProviderWriterQueueFull = errProviderWriterQueueFull
 	ErrProviderWriterStopped   = errProviderWriterStopped
+	// ErrProviderWriteTimeout: the write watchdog closed the socket because a
+	// frame exceeded its byte-proportional budget.
+	ErrProviderWriteTimeout = errProviderWriteTimeout
 )
 
 // TextFrameWriteMetadata describes the writer-owned handoff of a deferred

@@ -65,7 +65,6 @@ struct ModelLoadStageTelemetryLiveTests {
             }
         }
 
-        let peakBefore = MLX.Memory.peakMemory
         try await loop.ensureModelLoaded(modelId: Self.gptossID)
         let report = try #require(await loop.loadStageReportForTesting(modelId: Self.gptossID))
         // Surface the measured stages on stdout so a quiet re-run of this
@@ -83,23 +82,22 @@ struct ModelLoadStageTelemetryLiveTests {
         #expect(report.hashMs >= 0)
         #expect(report.hashPasses >= 0 && report.hashPasses <= 2)
 
-        // Residency: the weights are resident after the post-load clearCache,
-        // and the peak is either a real rise or honestly masked by an earlier
-        // peak in this process (other live suites may have loaded first).
+        // Residency: the weights are resident after the post-load clearCache.
+        // The peak is THIS load's — `ModelLoadTransientProbe.begin()` resets
+        // MLX's counter right before shard staging (T3-08), so an earlier
+        // suite's higher peak in this process cannot mask it — and the ratio
+        // is the per-load footprint over the pre-load baseline, on the disk
+        // scale the 1.2 admit padding uses.
         #expect(report.steadyActiveGb > 8)
         #expect(report.diskGb > 10)
         #expect(report.estimatedGb == 14.0)
-        if MLX.Memory.peakMemory > peakBefore {
-            let peak = try #require(report.peakActiveGb)
-            #expect(peak >= report.steadyActiveGb * 0.9)
-            #expect(report.transientRatio != nil)
-        } else {
-            #expect(report.peakMasked)
-        }
-
-        // The process-wide peak was READ, never reset: it is monotone across
-        // the load.
-        #expect(MLX.Memory.peakMemory >= peakBefore)
+        let peak = try #require(report.peakActiveGb)
+        #expect(!report.peakMasked)
+        #expect(peak >= report.steadyActiveGb * 0.9)
+        #expect(report.peakBaselineGb <= report.steadyActiveGb)
+        #expect(report.steadyDeltaGb > 8, "this load's own residency: \(report.steadyDeltaGb)")
+        let ratio = try #require(report.transientRatio)
+        #expect(ratio > 0.5 && ratio < 2.0, "per-load peak over disk: \(ratio)")
         // The telemetry payload carries every field the log line does.
         let fields = report.telemetryFields
         #expect(fields["total_ms"] != nil && fields["container_load_ms"] != nil && fields["build_ms"] != nil)

@@ -440,7 +440,7 @@ func (c *warmPoolController) planObserveOnly(now time.Time, reserve func([]model
 			actions = reserve(actions, now)
 		}
 		loadsRemaining -= len(actions)
-		c.state.rememberTarget(model, target, now)
+		c.state.rememberTarget(model, target, now, c.reactiveFloorArmed(p, q))
 		// Surface why cold boxes aren't warmable (counts only). For a dedicated pool
 		// this explains a gap between the raw cold count and what we can actually warm.
 		if f.coldIneligible > 0 && c.registry != nil && c.registry.logger != nil && c.registry.IsDedicatedModel(model) {
@@ -514,7 +514,16 @@ func (c *warmPoolController) targetInputs(fleet warmPoolModelSnapshot, pressure 
 		PrefillTPS:       fleet.prefillTPS,
 		MaxProviderConc:  fleet.maxProviderConc,
 		DemandPressure:   c.hasDemandPressure(fleet, pressure, queue),
+		ReactiveFloor:    c.reactiveFloorArmed(pressure, queue),
 	}
+}
+
+// reactiveFloorArmed reports whether the reactive warm+1 floor applies this
+// tick: a demand event, or a queue-state change with waiters, newer than the
+// last tick that applied it. Consumed by rememberTarget.
+func (c *warmPoolController) reactiveFloorArmed(pressure warmPoolPressureBucket, queue warmPoolQueuePressure) bool {
+	return pressure.lastEventAt.After(pressure.reactiveAppliedAt) ||
+		(queue.Depth > 0 && queue.UpdatedAt.After(pressure.reactiveAppliedAt))
 }
 
 // hasDemandPressure reports whether any pressure signal crossed its threshold

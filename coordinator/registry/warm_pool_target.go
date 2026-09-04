@@ -67,6 +67,12 @@ type warmTargetInputs struct {
 	// DemandPressure is true when any pressure signal crossed its threshold this
 	// window. With no demand pressure the pool is left as-is (no growth).
 	DemandPressure bool
+	// ReactiveFloor is true when a demand event (or a queue-state change with
+	// waiters) is newer than the last tick that applied the reactive warm+1
+	// floor. The floor is applied once per such event: sustained demand keeps
+	// re-arming it, a single unmet event no longer re-applies it on every
+	// tick for as long as its window stays open.
+	ReactiveFloor bool
 }
 
 // qualityConcurrency returns the largest batch B a provider can run while every
@@ -151,12 +157,13 @@ func demandConcurrency(in warmTargetInputs, svc time.Duration) float64 {
 //
 //	target = ceil( demandConcurrency / qualityConcurrency ) + burstBuffer
 //
-// A single unmet pressure event always justifies at least one more warm provider
-// (the reactive floor), so the controller still nudges forward while the smoothed
-// arrival rate is small. The result never shrinks below the current warm count
-// within a tick (dwell is enforced by the caller) and never exceeds what the
-// fleet can actually warm (warm + eligibleCold). With no demand pressure the pool
-// is left as-is.
+// A single unmet pressure event justifies at least one more warm provider (the
+// reactive floor), so the controller still nudges forward while the smoothed
+// arrival rate is small — but the floor is applied ONCE per demand event
+// (in.ReactiveFloor), not on every tick the event's window stays open. The
+// result never shrinks below the current warm count within a tick (dwell is
+// enforced by the caller) and never exceeds what the fleet can actually warm
+// (warm + eligibleCold). With no demand pressure the pool is left as-is.
 func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int {
 	if !in.DemandPressure {
 		return in.Warm
@@ -167,7 +174,7 @@ func warmTarget(in warmTargetInputs, p warmTargetParams, svc time.Duration) int 
 	}
 	L := demandConcurrency(in, svc)
 	target := int(math.Ceil(L/float64(qc))) + p.BurstBuffer
-	if reactive := in.Warm + 1; reactive > target {
+	if reactive := in.Warm + 1; in.ReactiveFloor && reactive > target {
 		target = reactive
 	}
 	if target < in.Warm {

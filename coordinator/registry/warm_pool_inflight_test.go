@@ -82,10 +82,10 @@ func TestWarmPoolOneLoadForOneQueuedColdRequest(t *testing.T) {
 // completions refreshed the demand window and every tick re-applied warm+1 to
 // a gap that ignored in-flight loads, so the ratchet was self-sustaining and
 // all 12 boxes were loaded. After: the demand window closes 120 s after the
-// reject regardless of the loads, so the pool is bounded by one reactive
-// warm+1 per tick inside the window: 1 + 120/30 = 5 loads, then nothing
-// (warm=5 stays). The per-episode reactive floor lands separately and takes
-// this to 2 (t=0 floor, t=30 Little's law + burst).
+// reject regardless of the loads, and the reactive warm+1 floor applies once
+// per demand event: t=0 floor → 1 load; t=30 Little's law (one arrival over
+// 30 s × E[S]) + burst → 2; then the gap stays closed and the window closes
+// at t=120. Exactly 2 loads (5 with in-flight counting alone, 12 before).
 func TestWarmPoolRatchetBounded(t *testing.T) {
 	reg, sent := inflightFixture(t, 12)
 	cfg := ReadConfig().WarmPool
@@ -131,11 +131,8 @@ func TestWarmPoolRatchetBounded(t *testing.T) {
 		}
 	}
 	t.Log("\n" + trajectory)
-	if len(*sent) > 5 {
-		t.Fatalf("one capacity reject grew the pool to %d loads over 240 s, want <= 5 (bounded by the closed window):\n%s", len(*sent), trajectory)
-	}
-	if len(*sent) < 2 {
-		t.Fatalf("pool did not reach the Little's-law target: %d loads, want >= 2", len(*sent))
+	if len(*sent) != 2 {
+		t.Fatalf("one capacity reject produced %d loads over 240 s, want exactly 2 (floor once, then Little's law + burst):\n%s", len(*sent), trajectory)
 	}
 }
 
@@ -335,5 +332,77 @@ func TestQueueTimeoutRecordsLiveDepth(t *testing.T) {
 	}
 	if q.OldestAge >= 120*time.Second {
 		t.Fatalf("queue timeout recorded the timed-out age %v, want the live oldest age", q.OldestAge)
+	}
+}
+
+// TestWarmPoolReactiveFloorOncePerEpisode: one capacity reject raises the
+// target by one on the next tick; later ticks inside the same window do not
+// re-apply the floor (they follow Little's law), and a NEW demand event
+// re-arms it.
+func TestWarmPoolReactiveFloorOncePerEpisode(t *testing.T) {
+	reg, sent := inflightFixture(t, 4)
+	reg.ConfigureWarmPool(testWarmPoolConfig()) // Interval 1 s → window 60 s, burst 0
+	t0 := time.Now()
+	reg.warmPool.state.recordEvent(inflightModel, warmPoolEventCapacityReject, t0)
+
+	reg.warmPool.tick(t0)
+	if len(*sent) != 1 {
+		t.Fatalf("first tick after a reject sent %d loads, want 1 (reactive floor)", len(*sent))
+	}
+	// The load lands: warm=1, nothing in flight.
+	reg.MarkModelWarm((*sent)[0].providerID, inflightModel)
+	reg.ClearPendingModelLoad((*sent)[0].providerID, inflightModel)
+	reg.warmPool.state.recordLoad(inflightModel, true, 30*time.Second, t0.Add(30*time.Second))
+	for k := 31; k <= 50; k += 5 {
+		reg.warmPool.tick(t0.Add(time.Duration(k) * time.Second))
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("ticks inside the window re-applied the floor: %d loads, want 1 (%v)", len(*sent), *sent)
+	}
+	// A new demand event re-arms the floor once more.
+	reg.warmPool.state.recordEvent(inflightModel, warmPoolEventCapacityReject, t0.Add(55*time.Second))
+	reg.warmPool.tick(t0.Add(56 * time.Second))
+	if len(*sent) != 2 {
+		t.Fatalf("new demand event did not re-arm the floor: %d loads, want 2", len(*sent))
+	}
+	reg.warmPool.tick(t0.Add(57 * time.Second))
+	if len(*sent) != 2 {
+		t.Fatalf("floor re-applied without a new event: %d loads, want 2", len(*sent))
+	}
+}
+
+// TestWarmPoolSustainedPressureConvergesThenStops: rejects keep arriving
+// (one per tick) only while the pool is short of the capacity the demand
+// needs — three warm boxes here — so the pool grows one per tick under the
+// re-armed floor, then stops once the rejects do; no further loads follow.
+func TestWarmPoolSustainedPressureConvergesThenStops(t *testing.T) {
+	reg, sent := inflightFixture(t, 8)
+	reg.ConfigureWarmPool(testWarmPoolConfig())
+	const needWarm = 3
+	t0 := time.Now()
+	warm := 0
+	for k := 0; k < 12; k++ {
+		now := t0.Add(time.Duration(k) * 10 * time.Second)
+		if warm < needWarm {
+			reg.warmPool.state.recordEvent(inflightModel, warmPoolEventCapacityReject, now)
+		}
+		before := len(*sent)
+		reg.warmPool.tick(now)
+		// Loads land before the next tick.
+		for _, a := range (*sent)[before:] {
+			reg.MarkModelWarm(a.providerID, inflightModel)
+			reg.ClearPendingModelLoad(a.providerID, inflightModel)
+			reg.warmPool.state.recordLoad(inflightModel, true, 5*time.Second, now.Add(5*time.Second))
+			warm++
+		}
+		if warm >= needWarm && len(*sent) > needWarm+1 {
+			t.Fatalf("tick %d: pool kept growing after the rejects stopped: %d loads (warm %d)", k, len(*sent), warm)
+		}
+	}
+	if warm < needWarm {
+		t.Fatalf("pool never reached the needed capacity: warm=%d", warm)
+	}
+	if len(*sent) > needWarm+1 {
+		t.Fatalf("pool overshot: %d loads for a demand of %d warm (+1 tolerance)", len(*sent), needWarm)
 	}
 }

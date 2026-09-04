@@ -631,12 +631,21 @@ func TestWarmTargetLittlesLaw(t *testing.T) {
 	if got := warmTarget(capped, params, 5*time.Second); got != 3 {
 		t.Fatalf("warmTarget(capped) = %d, want 3", got)
 	}
-	// A lone pressure event still nudges the pool forward by one (reactive floor).
+	// A lone pressure event still nudges the pool forward by one (reactive
+	// floor) on the tick that first sees it ...
 	reactive := warmTargetInputs{
 		Warm: 2, EligibleCold: 5, SoloDecodeTPS: 100, MaxProviderConc: 8, DemandPressure: true,
+		ReactiveFloor: true,
 	}
 	if got := warmTarget(reactive, params, time.Second); got != 3 {
 		t.Fatalf("warmTarget(reactive floor) = %d, want 3", got)
+	}
+	// ... and not again on later ticks inside the same window: with the floor
+	// consumed, the same inputs follow Little's law (here: keep warm).
+	consumed := reactive
+	consumed.ReactiveFloor = false
+	if got := warmTarget(consumed, params, time.Second); got != 2 {
+		t.Fatalf("warmTarget(floor consumed) = %d, want 2", got)
 	}
 }
 

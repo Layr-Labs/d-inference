@@ -234,9 +234,13 @@ func (c *warmPoolController) latestSnapshots() ([]WarmPoolSnapshot, time.Time) {
 // lock in pendingModelLoadCount and an Info line per model. A trigger inside
 // the window is not dropped: it arms ONE trailing tick at the end of the
 // window, so new demand is observed within the spacing instead of on the
-// baseline interval. Deliberately a constant, not an env knob; clamped to
-// Interval/4 when Interval < 4 s so tests with tiny intervals keep their
-// cadence (prod Interval is 30 s, so the 1 s constant applies).
+// baseline interval. Note that this bounds trigger-driven ticks to >= 1 s
+// apart (they used to run back-to-back); it does not shorten the latency at
+// which a trigger is observed, which was already immediate. Deliberately a
+// constant, not an env knob; clamped to Interval/4 when Interval < 4 s so
+// tests with tiny intervals keep their cadence (the default Interval is
+// 10 s, EIGENINFERENCE_WARM_POOL_INTERVAL, and prod runs 30 s, so the 1 s
+// constant applies to both).
 const warmPoolTriggerSpacing = time.Second
 
 // effectiveTriggerSpacing returns the trigger spacing for a run loop with the

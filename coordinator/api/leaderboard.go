@@ -121,22 +121,42 @@ func windowParamOrDefault(s string) string {
 // GET /v1/network/totals?window=24h|7d|30d|all
 func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 	windowParam := r.URL.Query().Get("window")
-	since, ok := parseLeaderboardWindow(windowParam)
-	if !ok {
+	if _, ok := parseLeaderboardWindow(windowParam); !ok {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
 			"window must be one of: 24h, 7d, 30d, all"))
 		return
 	}
 
-	cacheKey := "network_totals:" + windowParamOrDefault(windowParam)
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	// Served from the refresher-owned entry (stats_refresher.go); a miss
+	// recomputes through the same coalesced refresh, and a failed refresh is
+	// reported rather than cached as an all-zero network.
+	window := windowParamOrDefault(windowParam)
+	if cached, ok := s.readCacheGet(networkTotalsCacheKey(window)); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, err := s.refreshNetworkTotals(window)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network totals are not available yet"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
 
-	totals := s.store.NetworkTotals(since)
+// buildNetworkTotalsBody computes the /v1/network/totals body for one window
+// (a value windowParamOrDefault returns). A store error means no usable
+// result: the caller keeps its previous value.
+func (s *Server) buildNetworkTotalsBody(window string) ([]byte, error) {
+	since, ok := parseLeaderboardWindow(window)
+	if !ok {
+		return nil, fmt.Errorf("network totals: unknown window %q", window)
+	}
+	totals, err := s.store.NetworkTotals(since)
+	if err != nil {
+		return nil, err
+	}
 	resp := map[string]any{
-		"window":                    windowParamOrDefault(windowParam),
+		"window":                    window,
 		"earnings_micro_usd":        totals.EarningsMicroUSD,
 		"work_earnings_micro_usd":   totals.WorkEarningsMicroUSD,
 		"reward_earnings_micro_usd": totals.RewardEarningsMicroUSD,
@@ -147,9 +167,7 @@ func (s *Server) handleNetworkTotals(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode response"))
-		return
+		return nil, fmt.Errorf("network totals: encode: %w", err)
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	return body, nil
 }

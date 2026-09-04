@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -80,16 +82,36 @@ type flowEndpoint struct {
 	Longitude   float64 `json:"longitude,omitempty"`
 }
 
+// statsCacheKey is the readCache entry for /v1/stats. The stats refresher
+// (stats_refresher.go) owns it: it is recomputed on a timer, never
+// invalidated, and a slow or failed refresh leaves the previous body in place.
+const statsCacheKey = "stats:v1"
+
 // handleStats returns aggregate platform statistics for the frontend dashboard.
 //
-// Cached for 60s — the underlying SQL aggregation runs in <5ms but this
-// endpoint is hit by every dashboard refresh and the homepage live ticker.
+// Served from the refresher-maintained cache entry, so the request path never
+// runs the analytics pipeline once the cache is warm. A miss (cold start, or a
+// Server that never started the refresher) recomputes through the same
+// coalesced refresh, so N concurrent misses run one pipeline; if that refresh
+// fails there is nothing truthful to serve and the handler says so instead of
+// caching an empty body.
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "stats:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCacheGet(statsCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
+	body, err := s.refreshStats(context.Background())
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("service_unavailable", "network stats are not available yet"))
+		return
+	}
+	writeCachedJSON(w, body)
+}
+
+// buildStatsBody computes the /v1/stats response body. It fails — rather than
+// returning a partial body — when the usage analytics query fails or times
+// out, so no caller ever caches an empty request-location map.
+func (s *Server) buildStatsBody(ctx context.Context) ([]byte, error) {
 	var (
 		totalRequests    int64
 		totalTokensGen   int64
@@ -227,11 +249,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	// --- Provider location aggregation ---
 	providerLocations, providerRegions, unknownLocationProviders, suppressedCityProviders := s.aggregateProviderLocations()
 
-	// --- Request location aggregation ---
-	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := s.aggregateRequestLocations(analyticsCutoff)
-
-	// --- Request flow aggregation ---
-	requestFlows := s.aggregateRequestFlows(analyticsCutoff)
+	// --- Request location + flow aggregation: one consistent store snapshot
+	// (one read-only transaction on Postgres). A failure here is the whole
+	// body's failure — see the contract above.
+	analytics, err := s.store.UsageAnalyticsSince(ctx, analyticsCutoff, s.liveProviderLocations())
+	if err != nil {
+		return nil, fmt.Errorf("usage analytics: %w", err)
+	}
+	requestLocations, requestRegions, unknownRequestLocReqs, suppressedReqCityReqs := aggregateRequestLocations(analytics)
+	requestFlows := aggregateRequestFlows(analytics.FlowBuckets)
 
 	// --- APNs code-identity coverage (for watching the grace→enforce rollout) ---
 	codeAttestedProviders, _ := s.registry.CodeAttestationCoverage()
@@ -294,11 +320,23 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode stats"))
-		return
+		return nil, fmt.Errorf("encode stats: %w", err)
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
-	writeCachedJSON(w, body)
+	return body, nil
+}
+
+// liveProviderLocations snapshots provider locations from the registry so
+// recently-connected providers (not yet persisted) take part in the in-memory
+// flow aggregation; the Postgres store joins its persisted providers instead.
+func (s *Server) liveProviderLocations() map[string]*store.ProviderLocation {
+	providerLocs := make(map[string]*store.ProviderLocation)
+	s.registry.ForEachProvider(func(p *registry.Provider) {
+		if p.Location != nil {
+			cp := *p.Location
+			providerLocs[p.ID] = &cp
+		}
+	})
+	return providerLocs
 }
 
 // aggregateProviderLocations builds privacy-floored city and region
@@ -441,24 +479,22 @@ func (s *Server) aggregateProviderLocations() (
 }
 
 // aggregateRequestLocations builds privacy-floored city and region
-// buckets from usage records with request-origin locations.
-func (s *Server) aggregateRequestLocations(since time.Time) (
+// buckets from the analytics snapshot's request-origin buckets.
+func aggregateRequestLocations(analytics store.UsageAnalytics) (
 	cityBuckets []publicRequestLocationBucket,
 	regionBuckets []publicRequestLocationBucket,
 	unknownRequests int64,
 	suppressedCityRequests int64,
 ) {
-	locBuckets := s.store.UsageLocationBuckets(since)
+	locBuckets := analytics.LocationBuckets
 
 	// Count requests without any location by subtracting located requests
-	// from total requests in the window.
+	// from total requests in the window (both from the same snapshot).
 	var locatedRequests int64
 	for _, b := range locBuckets {
 		locatedRequests += b.Requests
 	}
-	// Total usage records in the window (SQL COUNT, no row transfer).
-	totalInWindow := s.store.UsageCountSince(since)
-	unknownRequests = totalInWindow - locatedRequests
+	unknownRequests = analytics.TotalRequests - locatedRequests
 
 	type cityKey struct {
 		City, Region, RegionCode, Country, CountryCode string
@@ -571,22 +607,9 @@ func (s *Server) aggregateRequestLocations(since time.Time) (
 }
 
 // aggregateRequestFlows builds directional request flow buckets between
-// consumer and provider regions. Uses a SQL JOIN via UsageFlowBuckets to
-// avoid loading all usage rows + all provider rows into Go memory (the
-// previous approach held two pool connections for up to 10s each).
-func (s *Server) aggregateRequestFlows(since time.Time) []publicRequestFlowBucket {
-	// Build live provider location map from the registry so recently-
-	// connected providers (not yet persisted) are included.
-	providerLocs := make(map[string]*store.ProviderLocation)
-	s.registry.ForEachProvider(func(p *registry.Provider) {
-		if p.Location != nil {
-			cp := *p.Location
-			providerLocs[p.ID] = &cp
-		}
-	})
-
-	buckets := s.store.UsageFlowBuckets(since, providerLocs)
-
+// consumer and provider regions from the analytics snapshot's flow buckets
+// (a SQL JOIN on Postgres, so no usage or provider rows cross the wire).
+func aggregateRequestFlows(buckets []store.UsageFlowBucket) []publicRequestFlowBucket {
 	out := make([]publicRequestFlowBucket, 0, len(buckets))
 	for _, b := range buckets {
 		if b.Requests < int64(minRequestsPerFlowBucket) {

@@ -660,10 +660,9 @@ func (s *MemoryStore) UsageRecordsSince(since time.Time) []UsageRecord {
 	return out
 }
 
-// UsageCountSince returns the number of usage records created at or after the given time.
-func (s *MemoryStore) UsageCountSince(since time.Time) int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// usageCountSinceLocked returns the number of usage records created at or
+// after the given time. Caller holds s.mu.
+func (s *MemoryStore) usageCountSinceLocked(since time.Time) int64 {
 	if since.IsZero() {
 		return int64(len(s.usage))
 	}
@@ -829,7 +828,7 @@ func (s *MemoryStore) Leaderboard(metric LeaderboardMetric, since time.Time, lim
 // rewards. Base-reward rows count as reward earnings, not work/jobs/tokens.
 // Ledger rewards are only counted for accounts that also have provider earnings
 // rows in the window, so consumer-only reward recipients do not inflate totals.
-func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+func (s *MemoryStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var t NetworkTotalsRow
@@ -862,7 +861,7 @@ func (s *MemoryStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	}
 	t.EarningsMicroUSD = t.WorkEarningsMicroUSD + t.RewardEarningsMicroUSD
 	t.ActiveAccounts = int64(len(providers))
-	return t
+	return t, nil
 }
 
 // UsageByConsumer returns usage records for a specific consumer key.
@@ -1147,11 +1146,25 @@ func (s *MemoryStore) addKeySpendLocked(keyID string, amount int64, at time.Time
 	}
 }
 
-// UsageLocationBuckets returns approximate request-origin aggregates (in-memory).
-func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
+// UsageAnalyticsSince composes the in-memory location, count and flow
+// aggregations under one read lock so the three views describe the same
+// snapshot (unknown-location requests are total − located).
+func (s *MemoryStore) UsageAnalyticsSince(_ context.Context, since time.Time, providerLocs map[string]*ProviderLocation) (UsageAnalytics, error) {
+	if since.IsZero() {
+		return UsageAnalytics{}, errors.New("store: usage analytics window must be bounded")
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return UsageAnalytics{
+		LocationBuckets: s.usageLocationBucketsLocked(since),
+		TotalRequests:   s.usageCountSinceLocked(since),
+		FlowBuckets:     s.usageFlowBucketsLocked(since, providerLocs),
+	}, nil
+}
 
+// usageLocationBucketsLocked returns approximate request-origin aggregates.
+// Caller holds s.mu.
+func (s *MemoryStore) usageLocationBucketsLocked(since time.Time) []UsageLocationBucket {
 	type bucketKey struct {
 		City        string
 		Region      string
@@ -1227,13 +1240,11 @@ func (s *MemoryStore) UsageLocationBuckets(since time.Time) []UsageLocationBucke
 	return out
 }
 
-// UsageFlowBuckets aggregates directional consumer→provider flows in memory.
+// usageFlowBucketsLocked aggregates directional consumer→provider flows.
 // providerLocs supplies live provider locations from the registry; the store's
 // own providerRecords are used as a fallback for disconnected providers.
-func (s *MemoryStore) UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+// Caller holds s.mu.
+func (s *MemoryStore) usageFlowBucketsLocked(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket {
 	type flowKey struct {
 		cCity, cRegion, cCountry string
 		pCity, pRegion, pCountry string

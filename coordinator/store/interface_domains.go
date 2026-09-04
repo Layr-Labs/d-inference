@@ -118,11 +118,6 @@ type UsageStore interface {
 	// Zero since returns all records.
 	UsageRecordsSince(since time.Time) []UsageRecord
 
-	// UsageCountSince returns the number of usage records created at or after
-	// the given time. Zero since returns all records. Uses SQL COUNT(*) to
-	// avoid transferring rows over the wire.
-	UsageCountSince(since time.Time) int64
-
 	// UsageTotals returns aggregated lifetime totals across all usage records
 	// without transferring per-row data over the wire.
 	UsageTotals() UsageTotals
@@ -136,25 +131,24 @@ type UsageStore interface {
 	// thirty-day maximum lookback, and bounded result cardinality.
 	UsageTimeSeries(since, until time.Time, bucketSize time.Duration) []UsageBucket
 
-	// UsageLocationBuckets returns approximate request-origin aggregates for
-	// public stats. Implementations must not store or return raw client IPs.
-	UsageLocationBuckets(since time.Time) []UsageLocationBucket
-
-	// UsageFlowBuckets returns aggregated directional flow buckets between
-	// consumer and provider regions. providerLocs supplies live provider
-	// locations from the registry so recently-connected providers that
-	// haven't been persisted yet are included. PostgresStore uses a SQL
-	// JOIN with the providers table and merges the live map; MemoryStore
-	// uses providerLocs directly.
-	UsageFlowBuckets(since time.Time, providerLocs map[string]*ProviderLocation) []UsageFlowBucket
+	// UsageAnalyticsSince returns the public-stats analytics for the bounded
+	// window [since, now): request-origin location buckets, the total request
+	// count, and consumer→provider flow buckets, as one consistent snapshot.
+	// since must be non-zero. providerLocs supplies live provider locations
+	// from the registry for the flow view; PostgresStore joins the persisted
+	// providers table instead. Implementations must not store or return raw
+	// client IPs. An error (including a timeout) means NO usable result —
+	// callers keep their previous value rather than caching an empty one.
+	UsageAnalyticsSince(ctx context.Context, since time.Time, providerLocs map[string]*ProviderLocation) (UsageAnalytics, error)
 
 	// Leaderboard returns the top N accounts ranked by the given metric
 	// over the given time window. Zero `since` means all-time.
 	Leaderboard(metric LeaderboardMetric, since time.Time, limit int) []LeaderboardRow
 
 	// NetworkTotals returns aggregated metrics across the network for the
-	// given window. Zero `since` means all-time.
-	NetworkTotals(since time.Time) NetworkTotalsRow
+	// given window. Zero `since` means all-time. An error (including a
+	// timeout) means no usable result — callers must not cache zeros.
+	NetworkTotals(since time.Time) (NetworkTotalsRow, error)
 
 	// UsageByConsumer returns usage records for a specific consumer key.
 	UsageByConsumer(consumerKey string) []UsageRecord

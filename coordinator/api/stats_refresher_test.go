@@ -1,0 +1,439 @@
+package api
+
+// Stats refresher coverage: the request path is served from the cache the
+// refresher owns; concurrent misses coalesce into one pipeline; a slow
+// refresh serves the previous body (stale-while-refreshing); a failed or
+// timed-out refresh never replaces a good body with an empty one; provider
+// registration and catalog changes no longer evict the entry; and the
+// Postgres-backed count of analytics executions per N requests.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
+)
+
+// gatedAnalyticsStore forwards to a real store and counts the two refresher
+// reads. It can hold an analytics call open (to observe stale-while-refreshing)
+// or make either read fail the way a timeout does.
+type gatedAnalyticsStore struct {
+	store.Store
+	analyticsCalls atomic.Int64
+	totalsCalls    atomic.Int64
+	failAnalytics  atomic.Bool
+	failTotals     atomic.Bool
+
+	mu      sync.Mutex
+	hold    chan struct{} // when non-nil, analytics calls block until it is closed
+	entered chan struct{} // receives one token per analytics call that reached the gate
+}
+
+func newGatedAnalyticsStore(inner store.Store) *gatedAnalyticsStore {
+	return &gatedAnalyticsStore{Store: inner, entered: make(chan struct{}, 128)}
+}
+
+// arm makes subsequent analytics calls block until the returned release is called.
+func (g *gatedAnalyticsStore) arm() (release func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	hold := make(chan struct{})
+	g.hold = hold
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			g.hold = nil
+			g.mu.Unlock()
+			close(hold)
+		})
+	}
+}
+
+func (g *gatedAnalyticsStore) UsageAnalyticsSince(ctx context.Context, since time.Time, locs map[string]*store.ProviderLocation) (store.UsageAnalytics, error) {
+	g.analyticsCalls.Add(1)
+	if g.failAnalytics.Load() {
+		return store.UsageAnalytics{}, context.DeadlineExceeded
+	}
+	g.mu.Lock()
+	hold := g.hold
+	g.mu.Unlock()
+	if hold != nil {
+		g.entered <- struct{}{}
+		<-hold
+	}
+	return g.Store.UsageAnalyticsSince(ctx, since, locs)
+}
+
+func (g *gatedAnalyticsStore) NetworkTotals(since time.Time) (store.NetworkTotalsRow, error) {
+	g.totalsCalls.Add(1)
+	if g.failTotals.Load() {
+		return store.NetworkTotalsRow{}, context.DeadlineExceeded
+	}
+	return g.Store.NetworkTotals(since)
+}
+
+func newRefresherTestServer(t *testing.T, inner store.Store) (*Server, *gatedAnalyticsStore) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st := newGatedAnalyticsStore(inner)
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+	return srv, st
+}
+
+func getStats(t *testing.T, srv *Server) (int, []byte) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	srv.handleStats(rr, httptest.NewRequest(http.MethodGet, "/v1/stats", nil))
+	return rr.Code, rr.Body.Bytes()
+}
+
+func getNetworkTotals(t *testing.T, srv *Server, window string) (int, []byte) {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	srv.handleNetworkTotals(rr, httptest.NewRequest(http.MethodGet, "/v1/network/totals?window="+window, nil))
+	return rr.Code, rr.Body.Bytes()
+}
+
+func seedUsage(st *store.MemoryStore, n int) {
+	loc := &store.ProviderLocation{City: "New York", Region: "New York", RegionCode: "NY", Country: "United States", CountryCode: "US", Latitude: 40.7128, Longitude: -74.0060}
+	for i := 0; i < n; i++ {
+		st.RecordUsageWithCostAndLocation("provider-a", "consumer", "model", "", 10, 20, 0, loc)
+	}
+}
+
+func concurrentStats(t *testing.T, srv *Server, n int) (codes []int, bodies [][]byte) {
+	t.Helper()
+	codes = make([]int, n)
+	bodies = make([][]byte, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i], bodies[i] = getStats(t, srv)
+		}()
+	}
+	wg.Wait()
+	return codes, bodies
+}
+
+// While a refresh is in flight, every request is served the previous body
+// and none of them starts a pipeline; the new body appears only once the
+// refresh completes.
+func TestStatsServesStaleWhileRefreshing(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 5)
+
+	code, previous := getStats(t, srv)
+	if code != http.StatusOK {
+		t.Fatalf("warm status = %d: %s", code, previous)
+	}
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("warm analytics calls = %d, want 1", got)
+	}
+
+	seedUsage(mem, 5) // the next body will differ (total_requests changes)
+	release := st.arm()
+	defer release()
+	done := make(chan struct{})
+	go func() {
+		srv.refreshStatsCaches(context.Background())
+		close(done)
+	}()
+	select {
+	case <-st.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh never reached the analytics query")
+	}
+
+	const n = 50
+	codes, bodies := concurrentStats(t, srv, n)
+	for i := 0; i < n; i++ {
+		if codes[i] != http.StatusOK || !bytes.Equal(bodies[i], previous) {
+			t.Fatalf("request %d during refresh: status %d, body changed=%v", i, codes[i], !bytes.Equal(bodies[i], previous))
+		}
+	}
+	if got := st.analyticsCalls.Load(); got != 2 {
+		t.Fatalf("analytics calls during refresh = %d, want 2 (warm + the in-flight tick)", got)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh did not complete after release")
+	}
+	code, fresh := getStats(t, srv)
+	if code != http.StatusOK || bytes.Equal(fresh, previous) {
+		t.Fatalf("post-refresh: status %d, body still the stale one=%v", code, bytes.Equal(fresh, previous))
+	}
+	if got := st.analyticsCalls.Load(); got != 2 {
+		t.Fatalf("analytics calls after refresh = %d, want 2 (request path never computes)", got)
+	}
+	if got := st.totalsCalls.Load(); got != int64(len(networkTotalsWindows)) {
+		t.Fatalf("network totals calls = %d, want one per window (%d)", got, len(networkTotalsWindows))
+	}
+	for _, w := range networkTotalsWindows {
+		if _, ok := srv.readCache.Get(networkTotalsCacheKey(w)); !ok {
+			t.Fatalf("network_totals:%s not populated by the tick", w)
+		}
+	}
+}
+
+// Fifty concurrent cold misses run exactly one pipeline and all receive its body.
+func TestStatsColdMissesCoalesce(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 3)
+	release := st.arm()
+	defer release()
+
+	const n = 50
+	var (
+		codes  = make([]int, n)
+		bodies = make([][]byte, n)
+		wg     sync.WaitGroup
+	)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i], bodies[i] = getStats(t, srv)
+		}()
+	}
+	select {
+	case <-st.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no request reached the analytics query")
+	}
+	// Give the other 49 a moment to pile up on the flight before releasing.
+	time.Sleep(50 * time.Millisecond)
+	release()
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if codes[i] != http.StatusOK || !bytes.Equal(bodies[i], bodies[0]) {
+			t.Fatalf("request %d: status %d, identical=%v", i, codes[i], bytes.Equal(bodies[i], bodies[0]))
+		}
+	}
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("analytics calls for %d cold misses = %d, want 1", n, got)
+	}
+}
+
+// A refresh whose analytics query times out leaves the previous stats body
+// in place; a NetworkTotals failure leaves the previous totals in place; with
+// no previous body at all the handlers report unavailability instead of
+// serving (and caching) an empty/zero result.
+func TestStatsRefreshFailureKeepsPreviousBody(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 4)
+	if err := mem.RecordProviderEarning(&store.ProviderEarning{AccountID: "acct", ProviderKey: "pk", JobID: "job-1", Model: "m", AmountMicroUSD: 1234, PromptTokens: 1, CompletionTokens: 2, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	srv.refreshStatsCaches(context.Background())
+	_, statsBefore := getStats(t, srv)
+	_, totalsBefore := getNetworkTotals(t, srv, "24h")
+	var totals struct {
+		Earnings int64 `json:"earnings_micro_usd"`
+	}
+	if err := json.Unmarshal(totalsBefore, &totals); err != nil || totals.Earnings != 1234 {
+		t.Fatalf("warm totals = %s (err %v)", totalsBefore, err)
+	}
+
+	st.failAnalytics.Store(true)
+	st.failTotals.Store(true)
+	seedUsage(mem, 4)
+	calls := st.analyticsCalls.Load()
+	srv.refreshStatsCaches(context.Background())
+	if st.analyticsCalls.Load() != calls+1 {
+		t.Fatal("failing refresh did not attempt the analytics query")
+	}
+	if code, body := getStats(t, srv); code != http.StatusOK || !bytes.Equal(body, statsBefore) {
+		t.Fatalf("stats after failed refresh: status %d, previous body kept=%v", code, bytes.Equal(body, statsBefore))
+	}
+	if code, body := getNetworkTotals(t, srv, "24h"); code != http.StatusOK || !bytes.Equal(body, totalsBefore) {
+		t.Fatalf("totals after failed refresh: status %d, previous body kept=%v", code, bytes.Equal(body, totalsBefore))
+	}
+
+	// No previous body and a failing store: unavailable, and nothing cached.
+	srv.readCache.expireAllForTest()
+	if code, body := getStats(t, srv); code != http.StatusServiceUnavailable {
+		t.Fatalf("cold stats with failing analytics: status %d, body %s", code, body)
+	}
+	if code, body := getNetworkTotals(t, srv, "24h"); code != http.StatusServiceUnavailable {
+		t.Fatalf("cold totals with failing store: status %d, body %s", code, body)
+	}
+	if _, ok := srv.readCache.Get(statsCacheKey); ok {
+		t.Fatal("a failed cold refresh cached a stats body")
+	}
+	if _, ok := srv.readCache.Get(networkTotalsCacheKey("24h")); ok {
+		t.Fatal("a failed cold refresh cached a totals body")
+	}
+
+	// Recovery: the next request recomputes and serves the new data.
+	st.failAnalytics.Store(false)
+	st.failTotals.Store(false)
+	if code, body := getStats(t, srv); code != http.StatusOK || bytes.Equal(body, statsBefore) {
+		t.Fatalf("recovered stats: status %d, body unchanged=%v", code, bytes.Equal(body, statsBefore))
+	}
+	if code, _ := getNetworkTotals(t, srv, "24h"); code != http.StatusOK {
+		t.Fatalf("recovered totals: status %d", code)
+	}
+}
+
+type stubGeoResolver struct{ loc *store.ProviderLocation }
+
+func (s stubGeoResolver) Lookup(*http.Request) *store.ProviderLocation { return s.loc }
+
+// Provider location resolution and catalog cache invalidation no longer evict
+// the stats entry: the next request is still a cache hit and runs no pipeline.
+func TestStatsEntrySurvivesProviderLocationAndCatalogInvalidation(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 2)
+	_, warm := getStats(t, srv)
+
+	srv.geoResolver = stubGeoResolver{loc: &store.ProviderLocation{City: "Austin", Region: "Texas", RegionCode: "TX", Country: "United States", CountryCode: "US"}}
+	p := srv.registry.Register("prov-geo", nil, &protocol.RegisterMessage{
+		Hardware: protocol.Hardware{ChipFamily: "M3", ChipTier: "Max", MemoryGB: 64, GPUCores: 40},
+		Models:   []protocol.ModelInfo{{ID: "mlx-community/gemma-4-26b-a4b-it-8bit"}},
+	})
+	srv.attachProviderLocation("prov-geo", p, httptest.NewRequest(http.MethodPost, "/ws/provider", nil))
+	if p.Location == nil || p.Location.City != "Austin" {
+		t.Fatalf("location not attached: %+v", p.Location)
+	}
+	srv.invalidateCatalogCache()
+
+	if _, ok := srv.readCache.Get(statsCacheKey); !ok {
+		t.Fatal("stats:v1 was evicted")
+	}
+	code, body := getStats(t, srv)
+	if code != http.StatusOK || !bytes.Equal(body, warm) {
+		t.Fatalf("post-registration stats: status %d, cache hit=%v", code, bytes.Equal(body, warm))
+	}
+	if got := st.analyticsCalls.Load(); got != 1 {
+		t.Fatalf("analytics calls = %d, want 1 (no pipeline after registration)", got)
+	}
+}
+
+// The refresher populates every owned key immediately at start (not after the
+// first tick) and stops on context cancel.
+func TestStatsRefresherRunsImmediatelyAndStops(t *testing.T) {
+	mem := store.NewMemory(store.Config{})
+	srv, st := newRefresherTestServer(t, mem)
+	seedUsage(mem, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		srv.runStatsRefresher(ctx, time.Hour)
+		close(done)
+	}()
+	deadline := time.After(5 * time.Second)
+	for {
+		_, statsOK := srv.readCache.Get(statsCacheKey)
+		totalsOK := true
+		for _, w := range networkTotalsWindows {
+			if _, ok := srv.readCache.Get(networkTotalsCacheKey(w)); !ok {
+				totalsOK = false
+			}
+		}
+		if statsOK && totalsOK {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("refresher did not populate the owned keys at start")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if st.analyticsCalls.Load() != 1 || st.totalsCalls.Load() != int64(len(networkTotalsWindows)) {
+		t.Fatalf("calls at start: analytics %d totals %d", st.analyticsCalls.Load(), st.totalsCalls.Load())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresher did not stop on context cancel")
+	}
+}
+
+// Measurement against real Postgres (DATABASE_URL, e.g. the docker
+// perf-pg-bridge database): after one refresh, N concurrent public requests
+// to /v1/stats and /v1/network/totals run ZERO analytics executions — the
+// one refresh is the only pipeline. Logs the refresh wall time.
+func TestStatsPipelineCountAgainstPostgres(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set — skipping PostgreSQL-backed stats measurement")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dbURL})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(pg.Close)
+	loc := &store.ProviderLocation{City: "New York", Region: "New York", RegionCode: "NY", Country: "United States", CountryCode: "US", Latitude: 40.7128, Longitude: -74.0060}
+	for i := 0; i < 20; i++ {
+		pg.RecordUsageWithCostAndLocation("prov-pgstats", "consumer", "model", "", 10, 20, 0, loc)
+	}
+
+	srv, st := newRefresherTestServer(t, pg)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	started := time.Now()
+	srv.refreshStatsCaches(context.Background())
+	t.Logf("loaded machine: one full refresh (stats + %d totals windows) took %s", len(networkTotalsWindows), time.Since(started))
+	if st.analyticsCalls.Load() != 1 || st.totalsCalls.Load() != int64(len(networkTotalsWindows)) {
+		t.Fatalf("refresh calls: analytics %d totals %d", st.analyticsCalls.Load(), st.totalsCalls.Load())
+	}
+
+	const n = 50
+	var wg sync.WaitGroup
+	var failures atomic.Int64
+	for i := 0; i < n; i++ {
+		for _, path := range []string{"/v1/stats", "/v1/network/totals?window=24h", "/v1/network/totals?window=all"} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				resp, err := http.Get(ts.URL + path)
+				if err != nil {
+					failures.Add(1)
+					return
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					failures.Add(1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	if failures.Load() != 0 {
+		t.Fatalf("%d of %d requests failed", failures.Load(), 3*n)
+	}
+	if st.analyticsCalls.Load() != 1 || st.totalsCalls.Load() != int64(len(networkTotalsWindows)) {
+		t.Fatalf("after %d requests: analytics executions %d (want 1), totals executions %d (want %d)",
+			3*n, st.analyticsCalls.Load(), st.totalsCalls.Load(), len(networkTotalsWindows))
+	}
+}

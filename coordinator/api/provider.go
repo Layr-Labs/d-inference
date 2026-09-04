@@ -942,9 +942,6 @@ func (s *Server) attachProviderLocation(providerID string, provider *registry.Pr
 	provider.Location = loc
 	provider.Mu().Unlock()
 	s.registry.PersistProvider(provider)
-	if s.readCache != nil {
-		s.readCache.Invalidate("stats:v1")
-	}
 	s.logger.Info("provider location resolved",
 		"provider_id", providerID,
 		"city", loc.City,

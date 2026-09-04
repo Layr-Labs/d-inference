@@ -2030,12 +2030,62 @@ func (s *PostgresStore) RejectionRecordsSince(since time.Time) []RejectionRecord
 	return records
 }
 
-// UsageLocationBuckets aggregates usage by approximate request origin.
-func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+const (
+	// usageAnalyticsTimeout bounds the whole analytics transaction. It is the
+	// envelope the three statements previously had individually (3 × 10 s).
+	usageAnalyticsTimeout = 30 * time.Second
+	// usageAnalyticsWorkMem is applied with SET LOCAL inside the analytics
+	// transaction only. COUNT(DISTINCT provider_id) forces a full sort of
+	// every located usage row in the window; at the server default of 4 MB
+	// that is an external merge sort spilling >1 GB of temp files per run.
+	// 1 GB keeps the sort in memory for this one connection without raising
+	// the instance-wide setting (which would multiply across the whole pool).
+	usageAnalyticsWorkMem = "1GB"
+)
+
+// UsageAnalyticsSince runs the request-location, request-count and
+// consumer→provider flow aggregations for [since, now) in ONE read-only
+// transaction with a raised work_mem, and reports failure instead of
+// returning empty results, so a timed-out refresh never replaces a good
+// cached body with an empty map. The window is always bounded: the
+// predicate is a plain `created_at >= $1`, not the `$1 IS NULL OR …` form,
+// which a generic plan turns into a sequential scan of the usage table.
+func (s *PostgresStore) UsageAnalyticsSince(ctx context.Context, since time.Time, _ map[string]*ProviderLocation) (UsageAnalytics, error) {
+	if since.IsZero() {
+		return UsageAnalytics{}, errors.New("store: usage analytics window must be bounded")
+	}
+	ctx, cancel := context.WithTimeout(ctx, usageAnalyticsTimeout)
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx,
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return UsageAnalytics{}, fmt.Errorf("store: begin usage analytics: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// SET LOCAL is scoped to this transaction; the constant is not user input.
+	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '"+usageAnalyticsWorkMem+"'"); err != nil {
+		return UsageAnalytics{}, fmt.Errorf("store: set usage analytics work_mem: %w", err)
+	}
+	var out UsageAnalytics
+	if out.LocationBuckets, err = usageLocationBucketsSince(ctx, tx, since); err != nil {
+		return UsageAnalytics{}, err
+	}
+	if out.TotalRequests, err = usageCountSince(ctx, tx, since); err != nil {
+		return UsageAnalytics{}, err
+	}
+	if out.FlowBuckets, err = usageFlowBucketsSince(ctx, tx, since); err != nil {
+		return UsageAnalytics{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UsageAnalytics{}, fmt.Errorf("store: commit usage analytics: %w", err)
+	}
+	return out, nil
+}
+
+// usageLocationBucketsSince aggregates usage by approximate request origin.
+func usageLocationBucketsSince(ctx context.Context, q pgQuerier, since time.Time) ([]UsageLocationBucket, error) {
+	rows, err := q.Query(ctx,
 		`SELECT
 			COALESCE(request_location->>'city', '') AS city,
 			COALESCE(request_location->>'region', '') AS region,
@@ -2050,13 +2100,13 @@ func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBuc
 			COUNT(DISTINCT provider_id)
 		 FROM usage
 		 WHERE request_location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR created_at >= $1)
+		   AND created_at >= $1
 		 GROUP BY city, region, region_code, country, country_code
 		 ORDER BY COUNT(*) DESC`,
-		nullSince(since),
+		since,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: usage location buckets: %w", err)
 	}
 	defer rows.Close()
 
@@ -2076,22 +2126,33 @@ func (s *PostgresStore) UsageLocationBuckets(since time.Time) []UsageLocationBuc
 			&b.CompletionTokens,
 			&b.Providers,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan usage location bucket: %w", err)
 		}
 		buckets = append(buckets, b)
 	}
-	return buckets
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate usage location buckets: %w", err)
+	}
+	return buckets, nil
 }
 
-// UsageFlowBuckets aggregates directional consumer→provider flows by JOINing
-// the usage table with providers in SQL. This replaces loading all rows into
-// Go and doing the aggregation in-process. The query only returns the top 50
-// flows (by request count) so the result set is bounded.
-func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*ProviderLocation) []UsageFlowBucket {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// usageCountSince counts usage rows in the window (index-only on
+// idx_usage_created; no row transfer).
+func usageCountSince(ctx context.Context, q pgQuerier, since time.Time) (int64, error) {
+	var count int64
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM usage WHERE created_at >= $1`, since,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: usage count: %w", err)
+	}
+	return count, nil
+}
 
-	rows, err := s.pool.Query(ctx,
+// usageFlowBucketsSince aggregates directional consumer→provider flows by
+// JOINing the usage table with providers in SQL. Only the top 50 flows (by
+// request count) are returned so the result set is bounded.
+func usageFlowBucketsSince(ctx context.Context, q pgQuerier, since time.Time) ([]UsageFlowBucket, error) {
+	rows, err := q.Query(ctx,
 		`SELECT
 			COALESCE(u.request_location->>'city', '')         AS c_city,
 			COALESCE(u.request_location->>'region', '')       AS c_region,
@@ -2114,15 +2175,15 @@ func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*Provider
 		 JOIN providers p ON p.id = u.provider_id
 		 WHERE u.request_location IS NOT NULL
 		   AND p.location IS NOT NULL
-		   AND ($1::timestamptz IS NULL OR u.created_at >= $1)
+		   AND u.created_at >= $1
 		 GROUP BY c_city, c_region, c_region_code, c_country, c_country_code,
 		          p_city, p_region, p_region_code, p_country, p_country_code
 		 ORDER BY requests DESC
 		 LIMIT 50`,
-		nullSince(since),
+		since,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("store: usage flow buckets: %w", err)
 	}
 	defer rows.Close()
 
@@ -2138,11 +2199,14 @@ func (s *PostgresStore) UsageFlowBuckets(since time.Time, _ map[string]*Provider
 			&b.ProviderLatitude, &b.ProviderLongitude,
 			&b.Requests, &b.PromptTokens, &b.CompletionTokens,
 		); err != nil {
-			continue
+			return nil, fmt.Errorf("store: scan usage flow bucket: %w", err)
 		}
 		buckets = append(buckets, b)
 	}
-	return buckets
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate usage flow buckets: %w", err)
+	}
+	return buckets, nil
 }
 
 func nullSince(since time.Time) any {
@@ -2166,21 +2230,6 @@ func (s *PostgresStore) RecordPayment(txHash, consumerAddr, providerAddr, amount
 		return fmt.Errorf("store: insert payment: %w", err)
 	}
 	return nil
-}
-
-// UsageCountSince returns the number of usage records created at or after the
-// given time. Uses idx_usage_created for an index-only count.
-func (s *PostgresStore) UsageCountSince(since time.Time) int64 {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int64
-	_ = s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM usage
-		 WHERE ($1::timestamptz IS NULL OR created_at >= $1)`,
-		nullSince(since),
-	).Scan(&count)
-	return count
 }
 
 // UsageTotals returns aggregated lifetime totals from the materialized
@@ -2368,7 +2417,10 @@ func (s *PostgresStore) Leaderboard(metric LeaderboardMetric, since time.Time, l
 // admin_reward), but rewards are only counted for provider accounts (those with
 // inference work in the window) so consumer-only reward recipients don't inflate
 // network provider totals. ActiveAccounts counts distinct provider accounts.
-func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
+// A failed or timed-out query is reported, never returned as zeros: the
+// three full scans behind this statement can exceed the 10 s budget, and a
+// caller that cached the zero row would publish an empty network for a minute.
+func (s *PostgresStore) NetworkTotals(since time.Time) (NetworkTotalsRow, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -2413,9 +2465,11 @@ func (s *PostgresStore) NetworkTotals(since time.Time) NetworkTotalsRow {
 	      FROM work, base_reward, reward`
 
 	var t NetworkTotalsRow
-	_ = s.pool.QueryRow(ctx, q, args...).
-		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts)
-	return t
+	if err := s.pool.QueryRow(ctx, q, args...).
+		Scan(&t.EarningsMicroUSD, &t.WorkEarningsMicroUSD, &t.RewardEarningsMicroUSD, &t.Tokens, &t.Jobs, &t.ActiveAccounts); err != nil {
+		return NetworkTotalsRow{}, fmt.Errorf("store: network totals: %w", err)
+	}
+	return t, nil
 }
 
 // UsageRecords returns usage records from the database, ordered by creation time.
@@ -2529,9 +2583,11 @@ func nullableCreatedAt(ts time.Time) any {
 }
 
 // pgQuerier is the subset of *pgxpool.Pool and pgx.Tx the single-statement
-// ledger helpers need, so one helper serves both a standalone call (pool: one
-// round trip in an implicit transaction) and a caller's open transaction.
+// ledger helpers and the usage-analytics statements need, so one helper serves
+// both a standalone call (pool: one round trip in an implicit transaction) and
+// a caller's open transaction.
 type pgQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 

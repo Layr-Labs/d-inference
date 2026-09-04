@@ -420,6 +420,11 @@ type Server struct {
 	// per-key. Never nil.
 	readCache *ttlCache
 
+	// refreshFlights coalesces recomputation of the refresher-owned readCache
+	// entries (stats:v1, network_totals:*) so concurrent misses and the timer
+	// share one pipeline per key. Zero value ready.
+	refreshFlights keyedFlights
+
 	// emitter writes coordinator-side telemetry events (panics, handler
 	// failures, attestation failures, etc.). Set via SetEmitter; nil before
 	// main.go wires it up.
@@ -1289,7 +1294,10 @@ func (s *Server) invalidateCatalogCache() {
 		s.readCache.Invalidate(modelListBodyCacheKey(includeBuilds))
 	}
 	s.readCache.Invalidate(openRouterFeedCacheKey)
-	s.readCache.Invalidate("stats:v1")
+	// stats:v1 is deliberately not invalidated: the stats refresher owns it
+	// and recomputes on its own cadence; catalog changes surface within one
+	// refresh interval. Deleting the entry here would push the next request
+	// onto the cold path and re-run the analytics pipeline.
 }
 
 // SetKnownBinaryHashes configures the set of accepted provider binary hashes.

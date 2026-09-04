@@ -309,6 +309,16 @@ type UsageBucket struct {
 	CompletionTokens int64     `json:"completion_tokens"`
 }
 
+// UsageAnalytics is one consistent snapshot of the public-stats analytics for
+// a bounded window: request-origin buckets, the total request count (so
+// unknown-location requests are total − located), and consumer→provider flows.
+// The Postgres store computes all three inside one read-only transaction.
+type UsageAnalytics struct {
+	LocationBuckets []UsageLocationBucket
+	FlowBuckets     []UsageFlowBucket
+	TotalRequests   int64
+}
+
 // UsageLocationBucket aggregates request-origin location data for public stats.
 type UsageLocationBucket struct {
 	City             string  `json:"city"`

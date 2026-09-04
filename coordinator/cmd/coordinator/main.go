@@ -875,6 +875,11 @@ func main() {
 	// Reclaim expired read-cache entries periodically (bounds memory growth).
 	go srv.StartReadCacheJanitor(ctx)
 
+	// Own the public stats / network-totals cache entries: recompute on a
+	// timer and serve stale while refreshing, so the request path never runs
+	// the analytics pipeline and a timed-out refresh keeps the last good body.
+	go srv.StartStatsRefresher(ctx)
+
 	// Flag any model decoding far below its active-param/hardware class (W8 —
 	// auto-detects the gemma-dense decode bug). Spawns its own panic-safe loop.
 	srv.StartThroughputAnomalyDetector(ctx)

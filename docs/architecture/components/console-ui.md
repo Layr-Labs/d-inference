@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-04 · commit `fcecc3675`
+> Last updated: 2026-09-04 · commit `d286db14d`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -26,10 +26,10 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 | `/` | `page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
 | `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
-| `/settings` | `settings/page.tsx` | Coordinator-URL field (localStorage `darkbloom_coordinator_url`), health check via `/api/health` (`healthCheck`, `console-ui/src/lib/api/health.ts`), encrypt-to-coordinator toggle (`setEncryptionEnabled`) | None |
+| `/settings` | `settings/page.tsx`, `settings/useConsoleSettings.ts` | Theme, API example URL (`darkbloom_api_example_url`), health check via `/api/health`, and encrypt-to-coordinator toggle | None |
 | `/models` | `models/page.tsx` | Catalog and pricing table from `/api/models` and `/api/pricing` (`console-ui/src/lib/api/models.ts`, `console-ui/src/lib/api/pricing.ts`) | Public; `x-api-key` sent when cached, which switches `/api/models` to the keyed `/v1/models` path |
 | `/billing` | `billing/page.tsx` → `billing/BillingContent.tsx` (`next/dynamic`, `ssr: false`) | Balance and usage (`fetchBalance`, `fetchUsage`), Buy Credits (`createStripeCheckout`), invite redeem (`console-ui/src/lib/api/invite.ts`), Stripe Connect payouts (`components/payouts/useStripePayouts.ts`) | API key for balance/usage; Privy session for Stripe routes |
-| `/api-console` | `api-console/page.tsx`, `components/api-keys/*` (`ApiKeysManager`) | API reference snippets (base URL = `clientCoordinatorUrl()`) and the **API key manager** — list/create/edit/rotate/delete through `/api/keys*` (`console-ui/src/lib/api/keys.ts`, `managementHeaders`); self-route-only toggle reads `/api/me/provider-models` | Page public; key management Privy |
+| `/api-console` | `api-console/page.tsx`, `components/api-keys/*` (`ApiKeysManager`) | API reference snippets (base URL = `apiExampleUrl()`) and the **API key manager** — list/create/edit/rotate/delete through `/api/keys*` (`console-ui/src/lib/api/keys.ts`, `managementHeaders`); self-route-only toggle reads `/api/me/provider-models` | Page public; key management Privy |
 | `/providers` | `providers/layout.tsx` (tabs), `providers/page.tsx`, `providers/dashboard/useFleetData.ts` | Fleet dashboard: polls `/api/me/providers` and `/api/me/summary` every `REFRESH_MS` = `15_000` ms with a Privy Bearer; remove machine via `DELETE /api/me/providers/[id]`; Setup/Earnings tabs appear when `useHasLinkedProviders()` is true | Privy |
 | `/providers/setup` | `providers/setup/page.tsx` | Static install and `darkbloom login` steps | None |
 | `/providers/earnings` | `providers/earnings/page.tsx` → `EarningsContent.tsx` (`ssr: false`) | `GET /api/me/earnings?limit=100` with the Privy token (falls back to the API key as Bearer), payouts card | Privy (or API key) |
@@ -106,7 +106,7 @@ The console key is provisioned by `provisionConsoleKey` (`console-ui/src/hooks/u
 
 ### Coordinator URL resolution
 
-`coordinatorUrl()` (`console-ui/src/lib/server/coordinator.ts`) is `process.env.NEXT_PUBLIC_COORDINATOR_URL || DEFAULT_COORDINATOR_URL`, where `DEFAULT_COORDINATOR_URL = "https://api.darkbloom.dev"`. It is the only upstream base every route handler uses, and it is resolved from the server environment alone — no request header, cookie, or body can change it. **The Settings coordinator-URL field is cosmetic.** `handleSave` (`console-ui/src/app/settings/page.tsx`) writes `darkbloom_coordinator_url`; `clientCoordinatorUrl()` (`console-ui/src/lib/coordinator-url.ts`) reads it back for the displayed base URL on `/api-console` and as the cache key for the coordinator's encryption public key (`getCoordinatorKey`, `console-ui/src/lib/encryption.ts`). No `/api/*` handler reads it, no `x-coordinator-url` header exists, and `useAuth` removes the key from localStorage on every login (session-poisoning guard). `NEXT_PUBLIC_*` values are inlined at build time, so changing the coordinator requires a rebuild.
+`coordinatorUrl()` (`console-ui/src/lib/server/coordinator.ts`) is `process.env.NEXT_PUBLIC_COORDINATOR_URL || DEFAULT_COORDINATOR_URL`, where `DEFAULT_COORDINATOR_URL = "https://api.darkbloom.dev"`. It is the only upstream base every route handler uses, and it is resolved from the server environment alone — no request header, cookie, or body can change it. The Settings API example URL is a separate display preference. `handleSave` (`console-ui/src/app/settings/useConsoleSettings.ts`) validates an HTTP(S) URL without credentials, query, or fragment and writes `darkbloom_api_example_url`. `apiExampleUrl()` (`console-ui/src/lib/api-example-url.ts`) reads that preference for API-console examples, falling back to `PUBLIC_COORDINATOR_URL`. It never controls console routing or encryption-key lookup. The legacy `darkbloom_coordinator_url` key remains a client-side encryption-cache namespace through `clientCoordinatorUrl()`; `useAuth` removes it on login. `NEXT_PUBLIC_*` values are inlined at build time, so changing the coordinator requires a rebuild.
 
 ### Authentication (Privy)
 
@@ -167,7 +167,7 @@ Names and effect only; values, defaults, and where each is set are in [`../../re
 
 | Variable | Read in | Effect |
 |---|---|---|
-| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts`, `console-ui/src/app/settings/page.tsx` | Upstream coordinator for every `/api/*` handler; displayed base URL |
+| `NEXT_PUBLIC_COORDINATOR_URL` | `console-ui/src/lib/server/coordinator.ts`, `console-ui/src/lib/coordinator-url.ts` | Upstream coordinator for every `/api/*` handler; displayed base URL |
 | `NEXT_PUBLIC_PRIVY_APP_ID` | `console-ui/src/components/providers/PrivyClientProvider.tsx` | Privy app; unset or `"placeholder"` selects mock auth |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | `console-ui/src/lib/google-analytics.ts` | GA property; empty string disables GA |
 | `NEXT_PUBLIC_DD_APPLICATION_ID`, `NEXT_PUBLIC_DD_CLIENT_TOKEN` | `console-ui/src/components/DatadogRUM.tsx` | Both required to initialise RUM |
@@ -196,7 +196,7 @@ There is no server-only variable: the route handlers read `NEXT_PUBLIC_COORDINAT
 |---|---|---|
 | Everyone appears signed in, yet key creation, fleet, and earnings return `401 {"error":"missing privy token"}` and chat never becomes sendable | Mock auth (`NEXT_PUBLIC_PRIVY_APP_ID` unset or `"placeholder"`): `getAccessToken()` is `null`, so `provisionConsoleKey` returns `null` and management calls carry no `Authorization` | `MOCK_AUTH` (`console-ui/src/components/providers/PrivyClientProvider.tsx`), `missingPrivyToken` |
 | 401 on a Privy-required route in a real deployment | No `Authorization` header and no `privy-token` cookie (logged out, or the SDK has not set the cookie yet) | `privyAuth` |
-| "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/page.tsx`) |
+| "Sender encryption is not configured on this coordinator" in Settings; every send fails with "Encryption setup failed" while the toggle is on | Coordinator returned 503 to `/api/encryption-key` → `encryption_unavailable`; the toggle stays on by design | `getCoordinatorKey`, `handleEncryptionToggle` (`console-ui/src/app/settings/useConsoleSettings.ts`) |
 | First sealed request after a coordinator key rotation fails with 400 | Cached key `kid` no longer matches; `streamChat` clears `darkbloom_coord_enc_key_v2` so the retry refetches | `clearCoordinatorKeyCache` |
 | "Session expired — please try again" mid-chat | `/api/chat` returned 401; the key is dropped and re-provisioned via `darkbloom-key-expired` | `streamChat`, `useAuth` |
 | `/stats` retains an older snapshot or shows unknown model capacity | A primary refresh failed, or an auxiliary catalog/capacity request failed; the page retains dated primary data and clears unavailable auxiliary values | `useNetworkStats` (`console-ui/src/app/stats/useNetworkStats.ts`) |
@@ -249,6 +249,24 @@ annualRevenueUSD       = monthlyRevenueUSD × 12
 It is a decode-bandwidth capacity estimate at the chosen duty cycle, not a forecast, and it excludes base rewards (`calc.ts` keeps `FLOOR_TIERS` only for the unmounted `BaseRewardsPanel`). `landing/earn-calculator.js` binds the `<select>` elements in `landing/index.html` to the core.
 
 **Network stats.** `landing/network-stats.js` reads `GET <coordinator>/v1/stats` (default `https://api.darkbloom.dev`, overridable with `?coord=<origin>`) and estimates fleet power from `POWER_TABLE` (`machineWatts`, `formatPower`). The `<script src="network-stats.js">` tag in `landing/index.html` is commented out — the HTML comment records that the `/v1/stats` CORS allowance is not yet deployed — so the live-network strip is not rendered; the console's `/stats` page, which goes through `/api/stats`, is the working equivalent.
+
+## Visual reference
+
+These browser captures document the console redesign on 2026-09-04. Desktop
+views use a 1440 × 1000 viewport; mobile uses 390 × 844. Network values are
+snapshots captured at different times. The API console capture has no signed-in
+Privy session; it shows the corresponding API-key state.
+
+| Surface | Screenshot |
+|---|---|
+| Chat workspace | [Desktop chat](../../assets/console-redesign/01-chat-desktop.jpg) |
+| Network overview | [Summary and geography](../../assets/console-redesign/02-stats-overview.jpg) |
+| Activity | [Request and token graphs](../../assets/console-redesign/03-stats-activity.jpg) |
+| Model capacity | [Comparable capacity lanes](../../assets/console-redesign/04-model-capacity.jpg) |
+| Hardware | [Silicon, memory, and identity](../../assets/console-redesign/05-hardware-composition.jpg) |
+| Model library | [Searchable model catalog](../../assets/console-redesign/06-model-library.jpg) |
+| API console | [SDK setup and API-key state](../../assets/console-redesign/07-api-console.jpg) |
+| Mobile | [Mobile chat](../../assets/console-redesign/08-chat-mobile.jpg) |
 
 ## Related
 

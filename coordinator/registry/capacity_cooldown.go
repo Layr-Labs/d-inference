@@ -415,12 +415,18 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 //   - the budget clamp's accept proof (release condition b) is granted only
 //     when the clamp was armed at or before observedAt — a clamp re-armed by
 //     a later reject keeps waiting for an accept that follows it;
-//   - the cooldown entry, its trip count and the node-level capacity streak
-//     are cleared as before. In the correct order the accept would have
-//     cleared the OLDER strikes first, so a trip fired inside the gap would
-//     usually not have fired at all; and when Threshold or more NEWER strikes
-//     survive, the very next reject re-arms it. The node streak is a bare
-//     count that cannot be split by time; keeping it would over-count toward
+//   - the cooldown entry and its trip count are cleared unless Threshold or
+//     more NEWER strikes survive. Those survivors are the black-hole
+//     signature on their own (Threshold rejects with no accept after them),
+//     and the cooldown they armed while this accept waited for the lock
+//     stands — in the correct order the accept would have cleared only the
+//     OLDER strikes and the newer ones would have tripped it just the same,
+//     whereas clearing it here would route to the failing pair again until
+//     another reject re-tripped it. With fewer survivors the accept disproves
+//     whatever armed the entry (those survivors alone would not have tripped
+//     it), so it is cleared as before;
+//   - the node-level capacity streak is always cleared: it is a bare count
+//     that cannot be split by time; keeping it would over-count toward
 //     ejection of a node that has just served content, and completion
 //     (RecordProviderServeOutcome ok=true) clears it anyway;
 //   - the capacity-503 RATE outcome is stamped with the apply time: the rate
@@ -460,6 +466,7 @@ func (r *Registry) RecordCapacityAcceptObserved(providerID, modelID string, obse
 	key := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	// Clear the strikes this accept answers — those recorded up to the instant
 	// it was observed. Strikes are chronological, so the survivors are a suffix.
+	survivors := 0
 	if strikes := r.capacityRejectStrikes[key]; len(strikes) > 0 {
 		kept := strikes[:0]
 		for _, ts := range strikes {
@@ -467,14 +474,22 @@ func (r *Registry) RecordCapacityAcceptObserved(providerID, modelID string, obse
 				kept = append(kept, ts)
 			}
 		}
-		if len(kept) == 0 {
+		survivors = len(kept)
+		if survivors == 0 {
 			delete(r.capacityRejectStrikes, key)
 		} else {
 			r.capacityRejectStrikes[key] = kept
 		}
 	}
-	delete(r.capacityCooldowns, key)
-	delete(r.capacityCooldownTrips, key)
+	// The cooldown entry and its trip count belong to the strikes that armed
+	// them. Threshold or more survivors are the black-hole signature by
+	// themselves, so a cooldown they tripped while this accept waited for the
+	// lock stands (see the doc comment); fewer survivors could not have tripped
+	// it on their own, so the accept clears it as before.
+	if cfg := r.capacityCooldownCfg; cfg.Threshold <= 0 || survivors < cfg.Threshold {
+		delete(r.capacityCooldowns, key)
+		delete(r.capacityCooldownTrips, key)
+	}
 	// Gray-box trackers: the accept is PROOF for the clamp's release condition
 	// (b) — never an instant release, which still needs a strictly-fresher
 	// heartbeat with meaningful headroom — and ONE served outcome for the rate

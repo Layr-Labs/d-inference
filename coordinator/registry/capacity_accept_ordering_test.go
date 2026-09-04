@@ -109,3 +109,119 @@ func TestCapacityAcceptObservedBeforeClampDoesNotProveRelease(t *testing.T) {
 		t.Fatal("fresh heartbeat + accept observed after the clamp must release it")
 	}
 }
+
+// capacityTripsOf returns the pair's cooldown trip count (0 = never tripped or
+// accept-cleared).
+func capacityTripsOf(r *Registry, providerID, modelID string) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.capacityCooldownTrips[capacityRejectKey{ProviderID: providerID, ModelID: modelID}]
+}
+
+// TestCapacityAcceptAppliedLateKeepsCooldownArmedByNewerStrikes: while the
+// commit-time accept waits for the write lock, Threshold rejects for the same
+// pair can arrive and trip the cooldown. Every one of those strikes postdates
+// the accept, so together they are the black-hole signature on their own; the
+// late accept keeps the strikes (previous test) AND the cooldown they armed —
+// otherwise the failing pair would be routable again until the next reject
+// re-tripped it. The accept is applied through the real reject path with an
+// observation time that predates the strikes, so the test is deterministic.
+func TestCapacityAcceptAppliedLateKeepsCooldownArmedByNewerStrikes(t *testing.T) {
+	r := New(nil)
+	const provider, model = "prov-late-accept-tripped", "gemma-4-26b-8bit"
+	threshold := r.capacityCooldownCfg.Threshold
+
+	observedAt := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	for i := 1; i <= threshold; i++ {
+		if tripped := r.RecordCapacityReject(provider, model); tripped != (i == threshold) {
+			t.Fatalf("reject %d/%d tripped=%v", i, threshold, tripped)
+		}
+	}
+	if !r.CapacityCooldownActive(provider, model) {
+		t.Fatal("cooldown not active after Threshold rejects")
+	}
+
+	// The accept observed before every one of those strikes is applied now.
+	r.RecordCapacityAcceptObserved(provider, model, observedAt, true)
+	if !r.CapacityCooldownActive(provider, model) {
+		t.Fatal("a late-applied accept cleared a cooldown armed by strikes recorded after it")
+	}
+	if got := capacityTripsOf(r, provider, model); got != 1 {
+		t.Fatalf("trip count after the late accept = %d, want 1 (the backoff state survives with the cooldown)", got)
+	}
+	if got := capacityStrikesOf(r, provider, model); len(got) != threshold {
+		t.Fatalf("strikes after the late accept = %d, want all %d newer strikes", len(got), threshold)
+	}
+
+	// An accept observed NOW — after the strikes — is the real recovery signal.
+	r.RecordCapacityAccept(provider, model)
+	if r.CapacityCooldownActive(provider, model) {
+		t.Fatal("cooldown still active after a current accept")
+	}
+	if got := capacityTripsOf(r, provider, model); got != 0 {
+		t.Fatalf("trip count after a current accept = %d, want 0", got)
+	}
+	if got := capacityStrikesOf(r, provider, model); len(got) != 0 {
+		t.Fatalf("strikes after a current accept = %v, want none", got)
+	}
+}
+
+// TestCapacityAcceptAppliedLateClearsCooldownTrippedWithOlderStrikes: the
+// cooldown survives a late accept only when the surviving strikes reach the
+// threshold by themselves. A trip that needed strikes from BEFORE the accept
+// was observed is disproven by it — in the correct order the accept would have
+// cleared those older strikes and the newer ones alone would not have tripped
+// — so the entry and trip count are cleared and the survivors start a fresh
+// streak.
+func TestCapacityAcceptAppliedLateClearsCooldownTrippedWithOlderStrikes(t *testing.T) {
+	r := New(nil)
+	const provider, model = "prov-late-accept-mixed", "gemma-4-26b-8bit"
+	threshold := r.capacityCooldownCfg.Threshold
+	const newer = 2
+	if threshold <= newer {
+		t.Skipf("threshold %d leaves no room for older strikes", threshold)
+	}
+
+	for i := 1; i <= threshold-newer; i++ {
+		if r.RecordCapacityReject(provider, model) {
+			t.Fatalf("older reject %d tripped early", i)
+		}
+	}
+	time.Sleep(2 * time.Millisecond)
+	observedAt := time.Now()
+	time.Sleep(2 * time.Millisecond)
+	for i := 1; i <= newer; i++ {
+		if tripped := r.RecordCapacityReject(provider, model); tripped != (i == newer) {
+			t.Fatalf("newer reject %d/%d tripped=%v", i, newer, tripped)
+		}
+	}
+	if !r.CapacityCooldownActive(provider, model) {
+		t.Fatal("cooldown not active after Threshold rejects")
+	}
+
+	r.RecordCapacityAcceptObserved(provider, model, observedAt, true)
+	if r.CapacityCooldownActive(provider, model) {
+		t.Fatal("a cooldown that needed strikes from before the accept survived it")
+	}
+	if got := capacityTripsOf(r, provider, model); got != 0 {
+		t.Fatalf("trip count after the late accept = %d, want 0", got)
+	}
+	if got := capacityStrikesOf(r, provider, model); len(got) != newer {
+		t.Fatalf("strikes after the late accept = %d, want the %d recorded after the observation", len(got), newer)
+	}
+
+	// The survivors are the start of a new streak: threshold-newer more
+	// rejects with no accept in between trip the pair again, from trips == 0.
+	for i := newer + 1; i < threshold; i++ {
+		if r.RecordCapacityReject(provider, model) {
+			t.Fatalf("reject %d/%d tripped early", i, threshold)
+		}
+	}
+	if !r.RecordCapacityReject(provider, model) {
+		t.Fatalf("reject %d/%d did not trip", threshold, threshold)
+	}
+	if got := capacityTripsOf(r, provider, model); got != 1 {
+		t.Fatalf("trip count after the re-trip = %d, want 1 (fresh backoff)", got)
+	}
+}

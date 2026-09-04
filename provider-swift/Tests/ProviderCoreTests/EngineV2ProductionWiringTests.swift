@@ -317,12 +317,16 @@ struct EngineV2SlotBuildTests {
         #expect(
             MTPAutomaticVerificationPolicy.fixedDraftTokens(
                 usesRequestStatefulDrafter: true, environment: [:]) == nil)
-        // A stateless assistant gets the MEASURED fixed depth, not the old
-        // could-not-be-wrong pin of 1.
+        // A stateless assistant is ALSO handed to the controller now: a pin
+        // measured +35.7% at 64-token chat prompts and -15.7% at THE TEST,
+        // while adaptive measured -3.8% and -1.2%. A constant cannot be right
+        // at both shapes; the controller can pick per request.
         #expect(
             MTPAutomaticVerificationPolicy.fixedDraftTokens(
-                usesRequestStatefulDrafter: false, environment: [:])
-                == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
+                usesRequestStatefulDrafter: false, environment: [:]) == nil)
+        #expect(MTPAutomaticVerificationPolicy.statelessUsesAdaptiveController)
+        // The measured pin is retained as the operator override's default
+        // reference point, not as what everyone gets.
         #expect(MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens == 4)
     }
 
@@ -384,8 +388,11 @@ struct EngineV2SlotBuildTests {
         #expect(depth("ADAPTIVE") == nil)
         // Garbage and blanks fall back to the measured default rather than
         // silently disabling speculation.
+        // Garbage falls back to the measured pin rather than silently
+        // disabling speculation; a blank key is an absent key, so it takes the
+        // default policy (the controller).
         #expect(depth("banana") == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
-        #expect(depth("  ") == MTPAutomaticVerificationPolicy.defaultStatelessDraftTokens)
+        #expect(depth("  ") == nil)
         // An override never applies to a request-stateful drafter.
         #expect(
             MTPAutomaticVerificationPolicy.fixedDraftTokens(

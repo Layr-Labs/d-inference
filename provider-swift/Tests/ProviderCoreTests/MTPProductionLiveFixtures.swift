@@ -59,6 +59,16 @@ enum MTPProductionLiveFixtures {
     /// THE TEST is one prompt of 17,408.
     static func prompts(bundle: MTPProductionModelBundle) throws -> [MTPBenchmarkPrompt] {
         if let promptTokens = benchmarkPromptTokens {
+            if let path = benchmarkPromptFile {
+                let text = try String(contentsOfFile: path, encoding: .utf8)
+                return try (0..<benchmarkPromptCount).map { index in
+                    try bundle.filePrompt(
+                        name: "file-\(promptTokens)-\(index)",
+                        totalTokens: promptTokens,
+                        text: text,
+                        variant: index)
+                }
+            }
             return try (0..<benchmarkPromptCount).map { index in
                 try bundle.syntheticPrompt(
                     name: "long-\(promptTokens)-\(index)",
@@ -86,6 +96,20 @@ enum MTPProductionLiveFixtures {
               let tokens = Int(value), tokens > 0
         else { return nil }
         return tokens
+    }
+
+    /// Real-text source for the prompt body. Requires
+    /// `DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS` — the file is sized to exactly
+    /// that many tokens.
+    static var benchmarkPromptFile: String? {
+        guard let value = environment["DARKBLOOM_MTP_BENCHMARK_PROMPT_FILE"],
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return value
+    }
+
+    static var benchmarkPromptSource: String {
+        benchmarkPromptFile == nil ? "synthetic" : "file"
     }
 
     static var benchmarkPromptCount: Int {

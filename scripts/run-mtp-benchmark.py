@@ -24,7 +24,7 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 6
+REPORT_SCHEMA_VERSION = 7
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
@@ -961,6 +961,7 @@ def validate_report(
     include_adaptive: bool,
     prompt_tokens: int,
     prompt_count: int,
+    prompt_source: str,
     parity_policy: str,
     stop_policy: str,
 ) -> None:
@@ -997,6 +998,11 @@ def validate_report(
         )
     if report.get("parityPolicy") != parity_policy:
         raise ValueError("report parity policy does not match this launch")
+    if report.get("promptSource") != prompt_source:
+        raise ValueError(
+            f"report prompt source is {report.get('promptSource')!r}, "
+            f"expected {prompt_source!r}"
+        )
     prompt_counts = report.get("promptTokenCounts")
     if not isinstance(prompt_counts, list) or not prompt_counts:
         raise ValueError("report carries no prompt token counts")
@@ -1310,6 +1316,10 @@ def fingerprint_for(
             "adaptive": not args.no_adaptive,
             "prompt_tokens": args.prompt_tokens,
             "prompt_count": args.prompt_count,
+            "prompt_source": prompt_source_of(args),
+            "prompt_file_sha256": (
+                sha256_file(args.prompt_file) if args.prompt_file else None
+            ),
             "parity_policy": args.parity_policy,
             "stop_policy": args.stop_policy,
             "warmup": warmup,
@@ -1380,6 +1390,9 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                     "0" if args.no_adaptive else "1"
                 ),
                 "DARKBLOOM_MTP_BENCHMARK_PROMPT_TOKENS": str(args.prompt_tokens),
+                "DARKBLOOM_MTP_BENCHMARK_PROMPT_FILE": (
+                    str(args.prompt_file) if args.prompt_file else ""
+                ),
                 "DARKBLOOM_MTP_BENCHMARK_PROMPT_COUNT": str(args.prompt_count),
                 "DARKBLOOM_MTP_BENCHMARK_PARITY_POLICY": args.parity_policy,
                 "DARKBLOOM_MTP_BENCHMARK_STOP_POLICY": args.stop_policy,
@@ -1463,6 +1476,7 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                     include_adaptive=not args.no_adaptive,
                     prompt_tokens=args.prompt_tokens,
                     prompt_count=args.prompt_count,
+                    prompt_source=prompt_source_of(args),
                     parity_policy=args.parity_policy,
                     stop_policy=args.stop_policy,
                 )
@@ -1679,6 +1693,16 @@ def parse_arguments() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--prompt-file",
+        type=Path,
+        help=(
+            "size REAL TEXT from this file to exactly --prompt-tokens tokens instead of "
+            "the built-in synthetic filler. Longer files are trimmed inside the measured "
+            "body region; shorter ones are repeated with a separator. Requires "
+            "--prompt-tokens"
+        ),
+    )
+    parser.add_argument(
         "--prompt-count",
         type=int,
         default=1,
@@ -1749,9 +1773,27 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--prompt-count must be positive")
     if args.prompt_count > 1 and args.prompt_tokens == 0:
         parser.error("--prompt-count applies only with --prompt-tokens")
+    if args.prompt_file is not None:
+        if args.prompt_tokens == 0:
+            parser.error("--prompt-file requires --prompt-tokens")
+        try:
+            resolved = args.prompt_file.resolve(strict=True)
+        except OSError as error:
+            parser.error(f"--prompt-file is unreadable: {error}")
+        if not resolved.is_file():
+            parser.error("--prompt-file must name a regular file")
+        if resolved.stat().st_size == 0:
+            parser.error("--prompt-file is empty")
+        args.prompt_file = resolved
     if args.stop_policy == "raw" and args.mode != "production-performance":
         parser.error("--stop-policy raw applies only to production-performance mode")
     return args
+
+
+def prompt_source_of(args: argparse.Namespace) -> str:
+    """What the report must claim its prompt bodies came from. A synthetic
+    report and a real-text report are not comparable, so the launch pins it."""
+    return "file" if getattr(args, "prompt_file", None) else "synthetic"
 
 
 def parse_int_list(value: str) -> list[int]:

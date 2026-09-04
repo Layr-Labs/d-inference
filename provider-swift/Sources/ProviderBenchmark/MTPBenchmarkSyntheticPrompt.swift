@@ -200,6 +200,80 @@ public enum MTPBenchmarkSyntheticPrompt {
             .filter { !$0.isEmpty }
     }
 
+    /// Variable-region bounds for a body that carries NO trailing instruction
+    /// of its own — a real-text prompt file, which supplies its own ending.
+    ///
+    /// Two probes are enough here: a templated prompt with an empty body and
+    /// one with a single copy of the text. They differ only in the body, so
+    /// their common prefix is the template's head and their common suffix is
+    /// its tail. Nothing is assumed about either.
+    public struct BodyBounds: Equatable, Sendable {
+        public let templateHead: Int
+        public let templateTail: Int
+        /// Tokens one copy of the source text contributes. At least 1.
+        public let tokensPerCopy: Int
+        /// The shortest well-formed turn this template can produce.
+        public var minimumTokens: Int { templateHead + templateTail }
+
+        public init(templateHead: Int, templateTail: Int, tokensPerCopy: Int) {
+            self.templateHead = templateHead
+            self.templateTail = templateTail
+            self.tokensPerCopy = max(1, tokensPerCopy)
+        }
+    }
+
+    public static func bodyBounds(empty: [Int], oneCopy: [Int]) -> BodyBounds {
+        let head = commonPrefixLength(empty, oneCopy)
+        var tail = commonSuffixLength(empty, oneCopy)
+        // In the EMPTY prompt the head and the tail are the whole thing, so
+        // they may not overlap. A tokenizer whose body boundary merges into a
+        // neighbouring token can otherwise report both as the full array.
+        if head + tail > empty.count { tail = max(0, empty.count - head) }
+        return BodyBounds(
+            templateHead: head, templateTail: tail,
+            tokensPerCopy: oneCopy.count - empty.count)
+    }
+
+    /// The single removable region of a file-sourced prompt: everything
+    /// between the measured template head and tail. The template's own control
+    /// tokens are outside it and are never cut.
+    public static func bodyRegion(
+        promptTokens count: Int, bounds: BodyBounds
+    ) -> [Range<Int>] {
+        let start = min(bounds.templateHead, count)
+        let end = max(start, count - bounds.templateTail)
+        return start < end ? [start ..< end] : []
+    }
+
+    /// How many copies of the source text to ask for to reach `target`,
+    /// from the measured per-copy slope. A file longer than the target needs
+    /// one copy and a trim; a short file is repeated.
+    public static func copies(
+        forTarget target: Int, bounds: BodyBounds, alreadyProduced: Int
+    ) -> Int {
+        guard target > alreadyProduced else { return 0 }
+        let shortfall = target - alreadyProduced
+        return (shortfall + bounds.tokensPerCopy - 1) / bounds.tokensPerCopy
+    }
+
+    /// Body text for a file-sourced prompt: `copies` copies of `text` joined
+    /// by a separator that names the copy, so a repeated short file still
+    /// reads as a document rather than as an unexplained duplication.
+    public static func fileBody(text: String, copies: Int, variant: Int) -> String {
+        let copies = max(0, copies)
+        guard copies > 0 else { return variantPrefix(variant) }
+        guard copies > 1 else { return variantPrefix(variant) + text }
+        var out = variantPrefix(variant)
+        out.reserveCapacity(copies * (text.count + 64))
+        for index in 0..<copies {
+            if index > 0 { out += "\n\n===== continued (part \(index + 1)) =====\n\n" }
+            out += text
+        }
+        return out
+    }
+
+    public static func variantPrefix(_ variant: Int) -> String { "Revision \(variant). " }
+
     static func commonPrefixLength(_ a: [Int], _ b: [Int]) -> Int {
         var index = 0
         let limit = min(a.count, b.count)

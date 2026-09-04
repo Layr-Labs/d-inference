@@ -707,7 +707,7 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 6
+    public static let currentSchemaVersion = 7
 
     public let schemaVersion: Int
     public let runFingerprint: String
@@ -719,6 +719,12 @@ public struct MTPBenchmarkReport: Codable, Sendable {
     /// Prompt lengths in tokens, in submission order. THE TEST's evidence that
     /// the measured context really was 17,408 tokens lives here.
     public let promptTokenCounts: [Int]
+    /// Where the prompt bodies came from: `synthetic` for the built-in filler,
+    /// `file` for real text supplied by the operator. A4b showed the filler
+    /// measures itself — acceptance 0.65 at 512 tokens and 0.66 at 17,408
+    /// against 0.91 on real chat prompts — so a report that does not say which
+    /// it used cannot be compared with one that used the other.
+    public let promptSource: String
     public let startedAt: Date
     public let generatedAt: Date
     public let completedAt: Date?
@@ -752,6 +758,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         stopPolicy: MTPBenchmarkStopPolicy,
         parityPolicy: MTPBenchmarkParityPolicy = .enforce,
         promptTokenCounts: [Int] = [],
+        promptSource: String = "synthetic",
         startedAt: Date,
         generatedAt: Date = Date(),
         completedAt: Date?,
@@ -779,6 +786,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         self.stopPolicy = MTPBenchmarkStopPolicySummary(stopPolicy)
         self.parityPolicy = parityPolicy
         self.promptTokenCounts = promptTokenCounts
+        self.promptSource = promptSource
         self.startedAt = startedAt
         self.generatedAt = generatedAt
         self.completedAt = completedAt

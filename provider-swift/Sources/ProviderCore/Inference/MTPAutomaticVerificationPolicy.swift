@@ -52,6 +52,29 @@ public enum MTPAutomaticVerificationPolicy {
     /// length-keyed branch.
     public static let defaultStatelessDraftTokens = 4
 
+    /// Whether a stateless drafter gets a fixed pin at all, or is handed to
+    /// the engine's cost/acceptance controller like a stateful one.
+    ///
+    /// It is handed to the controller. A constant cannot adapt and a
+    /// controller can, and the arms say the difference is large in both
+    /// directions: at 64-token chat prompts a pin of 4 measured +35.7% while
+    /// adaptive measured -3.8%, and at THE TEST's 17,408-token prompt the same
+    /// pin measures **-15.7%** while adaptive measures **-1.2%** — because the
+    /// controller priced speculation, found it unprofitable at that shape, and
+    /// selected depth 0 for 1,002 of 1,018 decisions (`unprofitable: 1001` in
+    /// `controllerFallbacks`).
+    ///
+    /// A pin that is +36% at one context and -16% at another is shape coupling
+    /// expressed as a constant instead of as a branch — the same defect the
+    /// depth policy is otherwise careful to avoid. Adaptive's one measured
+    /// loss came from a 64-token run, which gives the controller three rounds
+    /// to warm up and ends while it is still exploring; that is not a fair
+    /// test of a controller, and no production request is 64 tokens long.
+    ///
+    /// `DARKBLOOM_MTP_DRAFT_TOKENS=<int>` remains the fixed override for an
+    /// operator who has measured their own shape and wants to pin it.
+    public static let statelessUsesAdaptiveController = true
+
     /// Retained name for the historical pin. It is no longer the default; it
     /// is the depth an operator asks for with `DARKBLOOM_MTP_DRAFT_TOKENS=1`.
     public static let initialDraftTokens = 1
@@ -83,7 +106,7 @@ public enum MTPAutomaticVerificationPolicy {
         guard let raw = environment[draftTokensEnvironmentKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !raw.isEmpty
-        else { return defaultStatelessDraftTokens }
+        else { return statelessUsesAdaptiveController ? nil : defaultStatelessDraftTokens }
         if raw.lowercased() == "adaptive" { return nil }
         guard let value = Int(raw) else { return defaultStatelessDraftTokens }
         return min(max(value, 0), CBv2MTPConfig.testedMaxDraftTokens)

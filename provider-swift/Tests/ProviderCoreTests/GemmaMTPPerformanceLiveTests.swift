@@ -41,6 +41,7 @@ struct GemmaMTPPerformanceLiveTests {
                     MTPProductionLiveFixtures.benchmarkUsesRawStopPolicy,
                 longContextEvidence:
                     MTPProductionLiveFixtures.benchmarkLongContextEvidence,
+                promptSource: MTPProductionLiveFixtures.benchmarkPromptSource,
                 checkpointDestination: output,
                 deadline: MTPProductionLiveFixtures.benchmarkDeadline),
             sessions: bundle.makeSessionFactory())

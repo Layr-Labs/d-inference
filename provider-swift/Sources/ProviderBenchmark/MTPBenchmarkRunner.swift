@@ -64,6 +64,9 @@ public struct MTPBenchmarkConfiguration: Sendable {
     /// Declares that every prompt crosses the target's sliding window, so the
     /// report's long-context coverage gate may say `covered`.
     public let longContextEvidence: Bool
+    /// `synthetic` or `file`; recorded so two reports are only compared when
+    /// their prompt bodies came from the same kind of source.
+    public let promptSource: String
     public let checkpointDestination: MTPBenchmarkReportDestination?
     /// Elapsed run budget checked around factory creation, submission,
     /// consumption, and shutdown. Synchronous MLX calls are not safely
@@ -88,6 +91,7 @@ public struct MTPBenchmarkConfiguration: Sendable {
         parityPolicy: MTPBenchmarkParityPolicy = .enforce,
         allowsRawFixedLengthPerformance: Bool = false,
         longContextEvidence: Bool = false,
+        promptSource: String = "synthetic",
         checkpointDestination: MTPBenchmarkReportDestination? = nil,
         deadline: Duration = .seconds(3600)
     ) {
@@ -107,6 +111,7 @@ public struct MTPBenchmarkConfiguration: Sendable {
         self.parityPolicy = parityPolicy
         self.allowsRawFixedLengthPerformance = allowsRawFixedLengthPerformance
         self.longContextEvidence = longContextEvidence
+        self.promptSource = promptSource
         self.checkpointDestination = checkpointDestination
         self.deadline = deadline
     }
@@ -184,6 +189,7 @@ public enum MTPBenchmarkRunner {
                 stopPolicy: configuration.stopPolicy,
                 parityPolicy: configuration.parityPolicy,
                 promptTokenCounts: configuration.prompts.map { $0.tokenIDs.count },
+                promptSource: configuration.promptSource,
                 startedAt: startedDate,
                 completedAt: complete ? Date() : nil,
                 complete: complete,

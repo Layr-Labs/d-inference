@@ -681,11 +681,12 @@ func TestStatsRefresherWarmupFollowsFleetReconnect(t *testing.T) {
 	const warmupWindow = 400 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	started := time.Now()
 	go srv.runStatsRefresher(ctx, testRefreshSchedule(time.Hour, warmupWindow))
 
-	// Boot refresh: empty fleet.
+	// Boot refresh: empty fleet. The window opens when the boot refresh
+	// completes, which is at or shortly after this observation.
 	waitForActiveProviders(t, srv, 0, 5*time.Second)
+	bootObserved := time.Now()
 	if got := st.analyticsCalls.Load(); got != 1 {
 		t.Fatalf("analytics calls after the boot refresh = %d, want 1", got)
 	}
@@ -705,10 +706,13 @@ func TestStatsRefresherWarmupFollowsFleetReconnect(t *testing.T) {
 		t.Fatalf("analytics calls after three registrations = %d, want 2..4", got)
 	}
 
-	// After the window, a registration waits for the tick.
-	if remaining := warmupWindow - time.Since(started); remaining > 0 {
-		time.Sleep(remaining + 20*time.Millisecond)
+	// After the window, a registration waits for the tick. The window is
+	// anchored on the boot refresh's completion (the totals goroutines may
+	// finish a little after the stats body was observed), hence the slack.
+	if remaining := warmupWindow - time.Since(bootObserved); remaining > 0 {
+		time.Sleep(remaining)
 	}
+	time.Sleep(100 * time.Millisecond)
 	calls := st.analyticsCalls.Load()
 	registerStatsProvider(t, srv, "late-d")
 	time.Sleep(50 * time.Millisecond)

@@ -431,6 +431,11 @@ extension ProviderLoop {
         // Quote path mirror (routing v2): quotes refuse with slot_state for
         // the window the socket stays up, exactly like the admission gate.
         state.refusingNewWork = true
+        // Stamp `shutting_down` before the first suspension: a newcomer
+        // taking the single-instance lock (`darkbloom start --foreground`
+        // over this daemon) reads it to wait for the drain instead of
+        // sending the second SIGTERM that would cut it.
+        writeDaemonState()
         let inflight = inflightTasks.count
         if inflight > 0 {
             logger.info("Shutdown requested: refusing new work; draining \(inflight) in-flight request(s) (bound \(drainTimeout.components.seconds)s) before closing the coordinator link")

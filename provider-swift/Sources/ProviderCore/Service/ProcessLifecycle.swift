@@ -23,33 +23,53 @@ public enum ProcessLifecycle {
             .appendingPathComponent(".darkbloom/provider.pid")
     }
 
+    /// Bound on the wait for a live predecessor to exit: the daemon drains
+    /// in-flight work on SIGTERM for up to `ProviderLoop.gracefulDrainTimeout`
+    /// and launchd SIGKILLs it at `ExitTimeOut`; this is that budget plus a
+    /// margin, so a takeover never cuts a drain that is inside its own bound.
+    public static let defaultPredecessorExitBound: TimeInterval =
+        LaunchAgent.previousInstanceExitBound.timeInterval
+
     /// Acquire the single-instance lock. If an older provider is already
-    /// running, send it SIGTERM, wait briefly, then SIGKILL if it didn't
-    /// exit. Always writes our own PID to the file at the end.
+    /// running: a predecessor that is already draining (its daemon-state
+    /// record says so — launchd's `bootout`/`kickstart -k` or an operator
+    /// already sent it SIGTERM) is left alone, since a SECOND SIGTERM is the
+    /// trap's forced-exit path (exit 130, no goingAway frame, in-flight
+    /// requests flushed as 502 on the coordinator); otherwise it gets one
+    /// SIGTERM to start its drain. Either way this waits up to
+    /// `predecessorExitBound` for it to exit and SIGKILLs only past that.
+    /// Always writes our own PID to the file at the end.
     ///
     /// Returns the path of the PID file on success, throws on inability to
     /// write.
     @discardableResult
     public static func acquireSingleInstanceLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        predecessorExitBound: TimeInterval = ProcessLifecycle.defaultPredecessorExitBound,
+        daemonStateFile: URL = DaemonStateFile.path()
     ) throws -> URL {
         let myPID = ProcessInfo.processInfo.processIdentifier
         let fm = FileManager.default
 
-        // Best-effort kill of any previous instance.
         if let existing = readPID(at: pidFile),
            existing != myPID,
            processIsAlive(existing)
         {
-            sendSignal(SIGTERM, to: existing)
-            // Spin-wait up to `terminationGracePeriod` for graceful shutdown.
-            let deadline = Date().addingTimeInterval(terminationGracePeriod)
-            while Date() < deadline, processIsAlive(existing) {
-                Thread.sleep(forTimeInterval: 0.1)
+            if !predecessorIsDraining(pid: existing, stateFile: daemonStateFile) {
+                sendSignal(SIGTERM, to: existing)
             }
-            if processIsAlive(existing) {
+            let exited = ProcessExitWait.wait(
+                bound: .seconds(predecessorExitBound),
+                onWaiting: { bound in
+                    FileHandle.standardError.write(Data(
+                        ("Waiting for the previous provider (pid \(existing)) to finish "
+                            + "in-flight work (up to \(bound.components.seconds) s)...\n").utf8))
+                },
+                gone: { !processIsAlive(existing) })
+            if !exited {
                 sendSignal(SIGKILL, to: existing)
+                // Let the kill land before the PID file changes hands.
+                ProcessExitWait.wait(bound: .seconds(1)) { !processIsAlive(existing) }
             }
         }
 
@@ -74,13 +94,13 @@ public enum ProcessLifecycle {
     @discardableResult
     public static func acquireMediaServingLock(
         at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
-        terminationGracePeriod: TimeInterval = 2.0
+        predecessorExitBound: TimeInterval = ProcessLifecycle.defaultPredecessorExitBound
     ) throws -> URL {
         try acquireMediaServingLock(
             acquireLock: {
                 try acquireSingleInstanceLock(
                     at: pidFile,
-                    terminationGracePeriod: terminationGracePeriod)
+                    predecessorExitBound: predecessorExitBound)
             },
             purgeLegacyTelemetryQueue: {
                 TelemetryOverflowQueue.shared.purge()
@@ -221,6 +241,14 @@ public enum ProcessLifecycle {
     }
 
     // MARK: - Internals
+
+    /// Whether the daemon-state record belongs to `pid` and says it is
+    /// shutting down (`ProviderLoop.beginShutdownDrain` stamps it before its
+    /// first suspension). A record for another pid proves nothing.
+    static func predecessorIsDraining(pid: Int32, stateFile: URL) -> Bool {
+        guard let state = DaemonStateFile.read(from: stateFile) else { return false }
+        return state.pid == pid && state.shuttingDown == true
+    }
 
     private static func readPID(at url: URL) -> Int32? {
         guard let raw = try? String(contentsOf: url, encoding: .utf8) else {

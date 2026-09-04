@@ -58,7 +58,8 @@ extension Start {
             configPath: configPath,
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
-            )
+            ),
+            progress: { print($0) }
         )
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;

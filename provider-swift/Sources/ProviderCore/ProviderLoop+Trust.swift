@@ -81,7 +81,10 @@ extension ProviderLoop {
                 // default: 0 (unload disabled) never expires by age, a
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
-                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            // Read by a newcomer's single-instance lock: a draining
+            // predecessor must not be sent a second SIGTERM.
+            shuttingDown: isShuttingDown
         )
     }
 

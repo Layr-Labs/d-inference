@@ -36,7 +36,7 @@ private func integrationHardware() -> HardwareInfo {
         gpuCores: 40, memoryBandwidthGbs: 546)
 }
 
-private func makeLoop() throws -> ProviderLoop {
+private func makeLoop() async throws -> ProviderLoop {
     let config = ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/ignored",
         hardware: integrationHardware(),
@@ -47,7 +47,13 @@ private func makeLoop() throws -> ProviderLoop {
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
-    return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    let loop = try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    // The drain stamps the daemon-state file (`shutting_down`); keep that
+    // off the operator's real ~/.darkbloom/daemon-state.json.
+    let stateURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("shutdown-ordering-\(UUID().uuidString).json")
+    await loop.setDaemonStateFileForTesting(stateURL)
+    return loop
 }
 
 private func makeClient(url: String, publicKey: String, state: ProviderState) -> CoordinatorClient {
@@ -83,7 +89,7 @@ struct ProviderShutdownOrderingTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let loop = try makeLoop()
+        let loop = try await makeLoop()
         let providerKey = await loop.keyPair.publicKeyBase64
         let state = await loop.state
         let client = makeClient(
@@ -164,7 +170,7 @@ struct ProviderShutdownOrderingTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let loop = try makeLoop()
+        let loop = try await makeLoop()
         let providerKey = await loop.keyPair.publicKeyBase64
         let state = await loop.state
         let client = makeClient(
@@ -208,7 +214,7 @@ struct ProviderShutdownOrderingTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let loop = try makeLoop()
+        let loop = try await makeLoop()
         let providerKey = await loop.keyPair.publicKeyBase64
         let state = await loop.state
         let client = makeClient(

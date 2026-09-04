@@ -103,23 +103,32 @@ public enum LaunchAgent: Sendable {
         }
     }
 
+    ///   - progress: Receives one human-readable line when the start has to
+    ///     wait for a running provider to drain (the CLI prints it).
     public static func installAndStart(
         coordinatorURL: String,
         models: [String] = [],
         idleTimeout: UInt64? = nil,
         configPath: URL? = nil,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        progress: (String) -> Void = { _ in }
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
 
-        // If already loaded, unload first so we pick up plist changes.
-        if isLoaded() {
-            try unloadService()
-            Thread.sleep(forTimeInterval: 0.5)
-        }
-        for legacyLabel in legacyLabels where isLoaded(label: legacyLabel) {
-            try unloadService(label: legacyLabel)
+        // If already loaded, unload first so we pick up plist changes — and
+        // WAIT for the old instance to leave launchd's table. The daemon
+        // traps SIGTERM and drains (refuse → drain → close, up to the
+        // graceful drain bound), so after `bootout` returns the old process
+        // is still alive: seconds for an idle daemon's teardown, up to
+        // `ExitTimeOut` for a busy one. `launchctl print` keeps succeeding
+        // for exactly that long (measured on a throwaway label), and a
+        // bootstrap issued meanwhile fails with "5: Input/output error" —
+        // the old job already booted out, the new one never loaded, the
+        // provider offline. Canonical label first, then any legacy label.
+        for serviceLabel in supportedLabels where isLoaded(label: serviceLabel) {
+            try unloadService(label: serviceLabel)
+            try waitForPreviousInstanceToExit(label: serviceLabel, progress: progress)
         }
 
         try writePlist(
@@ -131,6 +140,33 @@ public enum LaunchAgent: Sendable {
             localEndpoint: localEndpoint
         )
         try loadService()
+    }
+
+    /// Bound on the wait for a booted-out instance to exit: launchd's own
+    /// SIGKILL budget for the job (`ExitTimeOut`) plus a margin for the kill
+    /// to land. Past it the old process is dead by construction.
+    static let previousInstanceExitBound: Duration = .seconds(exitTimeOutSeconds + 5)
+
+    /// Poll until `launchctl print` no longer finds the job — launchd
+    /// removes it only once the process has exited — bounded by
+    /// `previousInstanceExitBound`. Announces the wait through `progress`
+    /// once it exceeds a second (a drain, not an idle teardown).
+    static func waitForPreviousInstanceToExit(
+        label serviceLabel: String,
+        progress: (String) -> Void
+    ) throws {
+        let gone = ProcessExitWait.wait(
+            bound: previousInstanceExitBound,
+            onWaiting: { bound in
+                progress(
+                    "Waiting for the running provider to finish in-flight work before "
+                        + "restarting (up to \(bound.components.seconds) s)...")
+            },
+            gone: { !isLoaded(label: serviceLabel) })
+        guard gone else {
+            throw LaunchAgentError.previousInstanceStillRunning(
+                label: serviceLabel, waitedSeconds: Int(previousInstanceExitBound.components.seconds))
+        }
     }
 
     // MARK: - Stop
@@ -626,9 +662,15 @@ public enum LaunchAgentError: Error, CustomStringConvertible, Sendable {
     case kickstartFailed(String)
     case disableFailed(String)
     case notInstalled
+    /// The booted-out instance did not exit inside launchd's SIGKILL budget,
+    /// so the new plist was not bootstrapped (it would have failed with EIO).
+    case previousInstanceStillRunning(label: String, waitedSeconds: Int)
 
     public var description: String {
         switch self {
+        case .previousInstanceStillRunning(let label, let waited):
+            return "the running provider (\(label)) did not exit within \(waited)s; "
+                + "check `darkbloom status`, then run `darkbloom stop` and retry"
         case .bootstrapFailed(let detail):
             return "launchctl bootstrap failed: \(detail)"
         case .bootoutFailed(let detail):

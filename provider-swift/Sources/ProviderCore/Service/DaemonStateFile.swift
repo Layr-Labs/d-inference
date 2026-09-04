@@ -60,6 +60,12 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// True once the daemon has started its graceful shutdown (refuse →
+    /// drain → close). A newcomer taking the single-instance lock reads it
+    /// to leave a draining predecessor alone instead of sending the second
+    /// SIGTERM that cuts the drain. Optional: absent in files from older
+    /// daemons, which never drained on SIGTERM.
+    public var shuttingDown: Bool?
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -216,7 +222,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        shuttingDown: Bool? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -236,6 +243,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.shuttingDown = shuttingDown
     }
 
     // MARK: - Reader helpers

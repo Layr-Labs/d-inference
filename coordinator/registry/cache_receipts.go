@@ -53,11 +53,18 @@ func (r *Registry) ForgetCacheAttempt(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if tracker != nil {
-		tracker.forgetAttempt(pr.CacheReceiptNonce)
+	// Only a nonce names a tracked attempt; without one there is nothing to
+	// forget and Registry.mu (the write-contended routing lock) is not worth
+	// an RLock. The field resets below still run: a protocol-0 attempt sets
+	// LegacyCacheBustKey with no nonce and must not leak it into the next
+	// dispatch.
+	if pr.CacheReceiptNonce != "" {
+		r.mu.RLock()
+		tracker := r.cacheRouting
+		r.mu.RUnlock()
+		if tracker != nil {
+			tracker.forgetAttempt(pr.CacheReceiptNonce)
+		}
 	}
 	pr.CacheReceiptNonce = ""
 	pr.CacheScope = ""
@@ -98,7 +105,10 @@ func (t *cacheRoutingTracker) markAttemptTerminal(nonce string, now time.Time) {
 }
 
 func (r *Registry) MarkCacheAttemptTerminal(pr *PendingRequest) {
-	if r == nil || pr == nil {
+	// Reached from every RemovePending; a request without a nonce (every
+	// request while cache routing is off) has no attempt to expire, so it
+	// must not queue on Registry.mu.
+	if r == nil || pr == nil || pr.CacheReceiptNonce == "" {
 		return
 	}
 	r.mu.RLock()

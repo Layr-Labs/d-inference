@@ -66,6 +66,15 @@ func (s *Server) planCacheRoute(
 	if s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
 		return registry.CachePlan{}
 	}
+	// With the gate off no plan can be produced (PlanCacheRouteWithResult
+	// answers CachePlanOff), so skip the artifact status read, the preload
+	// gate (provisioner snapshot + supervisor status), and the Registry.mu
+	// RLock that precede that answer. The off outcome is still recorded once
+	// per request so the dashboard keeps showing that the gate is dark.
+	if !s.registry.CacheRoutingActive() {
+		s.emitExactCachePlan(registry.CachePlanResult{Outcome: registry.CachePlanOff})
+		return registry.CachePlan{}
+	}
 	status, ok := s.promptArtifacts.Status(model)
 	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
 		return registry.CachePlan{}

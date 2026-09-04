@@ -2368,9 +2368,13 @@ type Registry struct {
 	// without New(). See capacity_quotes.go.
 	capacityQuotes quoteTracker
 
-	cacheRouting                *cacheRoutingTracker
-	cacheActivation             *cacheActivationGate
-	cacheRoutingMode            string
+	cacheRouting     *cacheRoutingTracker
+	cacheActivation  *cacheActivationGate
+	cacheRoutingMode string
+	// cacheRoutingActive mirrors cacheRoutingMode == on for the request path,
+	// which consults it before any sidecar or registry work so a dark gate
+	// costs no Registry.mu acquisition. Written only by ConfigureCacheRouting.
+	cacheRoutingActive          atomic.Bool
 	cacheRouteKeys              cacheRouteKeys
 	cacheRoutingMaxDiscountMs   float64
 	cacheRoutingMaxCostFraction float64
@@ -2496,11 +2500,20 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	r.cacheRouting = tracker
 	r.cacheActivation = activation
 	r.cacheRoutingMode = cfg.Mode
+	r.cacheRoutingActive.Store(cfg.Mode == CacheRoutingOn)
 	r.cacheRouteKeys = keys
 	r.cacheRoutingMaxDiscountMs = cfg.MaxDiscountMs
 	r.cacheRoutingMaxCostFraction = cfg.MaxCostFraction
 	r.mu.Unlock()
 	return nil
+}
+
+// CacheRoutingActive reports whether the cache-routing gate is on without
+// taking Registry.mu. It is the request path's early-out: when false, no
+// plan can be produced (PlanCacheRouteWithResult answers CachePlanOff), so the
+// artifact status read, the preload gate, and the registry lock are skipped.
+func (r *Registry) CacheRoutingActive() bool {
+	return r != nil && r.cacheRoutingActive.Load()
 }
 
 func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {

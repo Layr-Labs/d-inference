@@ -10,6 +10,11 @@ import (
 // All exact-cache telemetry is intentionally low-cardinality. It never tags a
 // model, provider, account, request, scope, hash, route key, or prompt-derived
 // value.
+//
+// exact_cache_plan_total{outcome=off} is exact: one increment per planned
+// request while the gate is off. The DogStatsD mirror is aggregated
+// client-side and flushed on the client's interval, so it costs no packet per
+// request.
 func (s *Server) emitExactCachePlan(result registry.CachePlanResult) {
 	outcome := string(result.Outcome)
 	if outcome == "" {

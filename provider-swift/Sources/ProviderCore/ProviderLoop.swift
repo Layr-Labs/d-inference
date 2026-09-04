@@ -160,11 +160,15 @@ internal final class OneShotBoolContinuation: @unchecked Sendable {
 
 internal enum ProviderLoopError: Error, CustomStringConvertible {
     case binaryHashUnavailable
+    /// An auto-update restart was requested after the shutdown drain began.
+    case shuttingDown
 
     var description: String {
         switch self {
         case .binaryHashUnavailable:
             return "provider binary hash could not be computed"
+        case .shuttingDown:
+            return "provider is shutting down; the update restart was not issued"
         }
     }
 }

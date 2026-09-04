@@ -444,6 +444,15 @@ extension ProviderLoop {
         // over this daemon) reads it to wait for the drain instead of
         // sending the second SIGTERM that would cut it.
         writeDaemonState()
+        // An auto-update cycle still checking/staging/jittering must not
+        // commit or restart during this shutdown: cancel it (it aborts at
+        // its next cancellation check). A cycle already DRAINING is left to
+        // finish its wait — cancelling it would short-circuit its
+        // `waitForInflightDrain` and force-cancel the very work this drain
+        // protects; the shutdown guards on commit/restart stop it instead.
+        if updatePhase != .draining {
+            autoUpdateTask?.cancel()
+        }
         let inflight = inflightTasks.count
         if inflight > 0 {
             logger.info("Shutdown requested: refusing new work; draining \(inflight) in-flight request(s) (bound \(drainTimeout.components.seconds)s) before closing the coordinator link")

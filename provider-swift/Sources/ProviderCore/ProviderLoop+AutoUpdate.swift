@@ -186,10 +186,13 @@ extension ProviderLoop {
     /// admission, drop any staged-but-uncommitted bundle, and replay the
     /// desired-models state that was deferred during the drain so the
     /// provider converges back onto the coordinator's current desired set.
-    private func resumeServingAfterUpdate() async {
+    internal func resumeServingAfterUpdate() async {
         updatePhase = .idle
-        // Quote path mirror (routing v2): quotes may admit again.
-        state.refusingNewWork = false
+        // Quote path mirror (routing v2): quotes may admit again — unless
+        // the shutdown drain has begun meanwhile (a cycle refused at commit
+        // or restart lands here): the admission gate keeps answering 503 for
+        // the rest of that drain, so quotes must keep refusing too.
+        state.refusingNewWork = isShuttingDown
 
         if let staged = stagedUpdateBundle {
             stagedUpdateBundle = nil
@@ -210,7 +213,7 @@ extension ProviderLoop {
     /// Enter the `.draining` phase: new requests are refused (503 reroute /
     /// local queue-full) while in-flight work finishes ahead of the commit +
     /// hot-swap.
-    private func beginUpdateDraining() {
+    internal func beginUpdateDraining() {
         updatePhase = .draining
         // Quote path mirror (routing v2): while draining, capacity quotes
         // refuse with `slot_state` exactly like the live admission gate.
@@ -259,7 +262,16 @@ extension ProviderLoop {
     /// force-cancelled), so no request can observe the swap window. The
     /// tree-hash + codesign re-verification runs off the actor like the
     /// stage (a local endpoint may still be serving).
-    private func commitStagedUpdateBundle(updater: SelfUpdater) async -> AutoUpdateController.StepOutcome {
+    internal func commitStagedUpdateBundle(updater: SelfUpdater) async -> AutoUpdateController.StepOutcome {
+        // A cycle that claimed before the shutdown drain began must not
+        // swap the live layout under a process launchd is waiting on (the
+        // restart that would follow is an execv of this draining PID under
+        // `stop`, or a `kickstart -k` whose SIGTERM is the trap's forced
+        // exit). `resumeServing` discards the staged bundle; the next
+        // daemon retries the update at its own first check.
+        guard !isShuttingDown else {
+            return .failed("provider is shutting down; leaving the live layout untouched")
+        }
         guard let staged = stagedUpdateBundle else {
             return .failed("no staged update bundle to install")
         }
@@ -299,13 +311,18 @@ extension ProviderLoop {
     internal func closeLinkThenRestart(
         restartProcess: @Sendable () async throws -> Void
     ) async throws {
+        // See `commitStagedUpdateBundle`: never restart a draining process.
+        guard !isShuttingDown else { throw ProviderLoopError.shuttingDown }
         await coordinatorClient?.closeForRestart()
         try await restartProcess()
     }
 
-    private func prepareInstalledCandidateRestart(
+    internal func prepareInstalledCandidateRestart(
         updater: SelfUpdater
     ) -> AutoUpdateController.StepOutcome {
+        guard !isShuttingDown else {
+            return .failed("provider is shutting down; the candidate restart was not armed")
+        }
         guard let session = updateSession else {
             return .failed("cross-process update lease was lost before candidate restart")
         }

@@ -143,6 +143,29 @@ extension ProviderLoop {
     /// Test seam: the bound `beginShutdownDrain` uses by default.
     func shutdownDrainBoundForTesting() -> Duration { shutdownDrainBound }
 
+    // MARK: - Auto-update seams (update cycle vs shutdown drain)
+
+    func commitStagedUpdateBundleForTesting(updater: SelfUpdater) async
+        -> AutoUpdateController.StepOutcome
+    {
+        await commitStagedUpdateBundle(updater: updater)
+    }
+
+    func prepareInstalledCandidateRestartForTesting(updater: SelfUpdater)
+        -> AutoUpdateController.StepOutcome
+    {
+        prepareInstalledCandidateRestart(updater: updater)
+    }
+
+    func resumeServingAfterUpdateForTesting() async { await resumeServingAfterUpdate() }
+
+    func beginUpdateDrainingForTesting() { beginUpdateDraining() }
+
+    func setUpdatePhaseForTesting(_ phase: UpdatePhase) { updatePhase = phase }
+
+    /// Test seam: stand in for the background auto-update cycle task.
+    func installAutoUpdateTaskForTesting(_ task: Task<Void, Never>) { autoUpdateTask = task }
+
     /// Test seam: stop the capacity-refresh monitor and its liveness
     /// companion (production stops them in `run()`'s teardown).
     func stopCapacityRefreshMonitorForTesting() {

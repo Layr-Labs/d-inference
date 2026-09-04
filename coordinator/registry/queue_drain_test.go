@@ -293,6 +293,14 @@ func TestHeartbeatDrainSuppressedAfterSaturatedPass(t *testing.T) {
 	heartbeat()
 	drainTestExpectScans(t, scans, 0, "heartbeat right after SetProviderIdle")
 
+	// A steady-state challenge success (already fresh, SIP already verified)
+	// performs no drain at all (RecordChallengeSuccess drains only on a state
+	// transition), so drive the transition that does: the first success after
+	// registration, which flips the SIP gate. That drain must bypass the
+	// heartbeat window like every other capacity-freeing trigger.
+	p.mu.Lock()
+	p.ChallengeVerifiedSIP = false
+	p.mu.Unlock()
 	reg.RecordChallengeSuccess(p.ID)
 	drainTestExpectScans(t, scans, 1, "RecordChallengeSuccess inside the window")
 	reg.DrainQueuedRequestsForModel(drainTestModel)

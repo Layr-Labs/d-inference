@@ -222,7 +222,10 @@ func filterRouteRecords(in []store.InferenceRouteRecord, provider, model, outcom
 // filterRejectionRecords applies the optional in-memory filters supported by the
 // rejections endpoints. Empty filter values are ignored. model matches either
 // RequestedModel or ResolvedModel; couldHaveServed filters on the boolean only
-// when it is exactly "true" or "false".
+// when it is exactly "true" or "false". A row whose counterfactual was not
+// computed (candidate_count = -1: the sink's servability walk was skipped
+// because the routing scans were saturated at record time) matches neither
+// value — its could_have_served=false is the marker's default, not a verdict.
 func filterRejectionRecords(in []store.RejectionRecord, reason, model, couldHaveServed string) []store.RejectionRecord {
 	var wantServed *bool
 	switch strings.ToLower(strings.TrimSpace(couldHaveServed)) {
@@ -244,7 +247,7 @@ func filterRejectionRecords(in []store.RejectionRecord, reason, model, couldHave
 		if model != "" && rec.RequestedModel != model && rec.ResolvedModel != model {
 			continue
 		}
-		if wantServed != nil && rec.CouldHaveServed != *wantServed {
+		if wantServed != nil && (rec.CouldHaveServed != *wantServed || rec.CandidateCount < 0) {
 			continue
 		}
 		out = append(out, rec)

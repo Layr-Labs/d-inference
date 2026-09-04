@@ -79,8 +79,8 @@ Sinks: **hdr** = `X-Timing` field (`api/dispatch.go:3409-3456`, committed respon
 | `actual_decode_tps` | `provider.go:2190-2227` = completion tokens ÷ (`FirstChunkAt` → completion), clamped | row `actual_decode_tps`; DD-H `inference.decode_tps{model,kv_backend,…}` (`kv_backend_metrics.go:39`) | per completion |
 | Settlement (reputation persist, price lookups, ledger charge/credit) | `provider.go:1915-2143, 2275-2335` — synchronous **before** `CompleteCh` is signalled `:2343-2347` | DD-H `store.debit/credit.latency_ms{op}` only (aggregated); log `inference complete{request_id,provider_id,prompt_tokens,completion_tokens,cost_micro_usd,provider_payout_micro_usd}` `:2352-2359` | per completion |
 | OR-uptime outcome | `api/or_uptime.go:41, 59-93` (commit time) | DD-C `inference.request_outcome{model,class,kv_backend,kv_backend_fallback}`; `/v1/completions`, `/v1/messages` excluded `:55-64` | per request |
-| Pre-dispatch rejection | `recordRejection` `api/rejection_telemetry.go:66-158` (counterfactual `QuickCapacityCheck` on the sink worker `:131-157`) | rej row (`stage, reason_code, http_status, client_class, requested/resolved_model, shape, could_have_served, candidate_count, *_rejections, warm_provider_existed, best_ttft_ms, retry_after_ms`); DD-C `inference.request_outcome` `:121`. **Not recorded:** 401s (`server.go:2261-2373`), vision/tools fail-fast 503/400 (`api/inference_preprocess.go:196-287`), drain-gate 429s (`api/drain.go:80-101`) | per 4xx/5xx exit |
-| Exhausted ladder | `dispatch.go:3149-3278` | telemetry event `inference failed after N attempt(s){reason,attempt,status_code,last_error,kv_backend}` `:3214`; DD-C `inference.dispatches{status:failure}` `:3226`; rej `{stage:dispatch}` `:3242-3244`; **no `X-Timing`** | per exhausted request |
+| Pre-dispatch rejection | `recordRejection` `api/rejection_telemetry.go:66-158` (counterfactual `QuickCapacityCheck` on the sink worker `:131-157`, only when a request-path routing-scan slot is free) | rej row (`stage, reason_code, http_status, client_class, requested/resolved_model, shape, could_have_served, candidate_count, *_rejections, warm_provider_existed, best_ttft_ms, retry_after_ms`); DD-C `inference.request_outcome` `:121`; DD-C `rejection.counterfactual_skipped{model}` when the walk is skipped under scan saturation — that row carries `candidate_count = -1` and `could_have_served=false` **as a "not computed" marker, not a verdict** (filter `candidate_count >= 0` in every ratio; the admin `?could_have_served=` filter already excludes it). **Not recorded:** 401s (`server.go:2261-2373`), vision/tools fail-fast 503/400 (`api/inference_preprocess.go:196-287`), drain-gate 429s (`api/drain.go:80-101`) | per 4xx/5xx exit |
+| Exhausted ladder | `dispatch.go:3149-3278` | telemetry event `inference failed after N attempt(s){reason,attempt,status_code,last_error,kv_backend}` `:3214`; DD-C `inference.dispatches{status:failure}` `:3226`; rej `{stage:dispatch}` `:3242-3244` seeded from the ladder's last informative routing decision (`exhaustedRejectionInfo`): its `candidate_count`/`could_have_served` are the **scan-time** counts of the reserve that dispatched the failed attempt(s), not a record-time walk (a terminal verdict such as deadline_unreachable writes 0/false); **no `X-Timing`** | per exhausted request |
 
 ### 2.3 Wire: provider → coordinator, per request
 
@@ -252,9 +252,14 @@ FROM inference_routes
 WHERE created_at > now() - interval '7 days' AND final_status = 'success' AND actual_ttft_ms > 0
 GROUP BY 1, 2 ORDER BY 2 DESC, 1;
 
--- Rejection reasons by hour (pre-dispatch + exhausted); could_have_served = counterfactual capacity existed
+-- Rejection reasons by hour (pre-dispatch + exhausted); could_have_served = counterfactual capacity existed.
+-- candidate_count = -1 marks a rejection whose counterfactual was NOT computed (routing scans saturated
+-- at record time): count those separately and keep them out of the false-rejection denominator.
 SELECT date_trunc('hour', created_at) AS hour, stage, reason_code, http_status,
-       count(*) AS n, count(*) FILTER (WHERE could_have_served) AS could_have_served
+       count(*) AS n,
+       count(*) FILTER (WHERE candidate_count >= 0) AS counterfactual_computed,
+       count(*) FILTER (WHERE candidate_count < 0) AS counterfactual_skipped,
+       count(*) FILTER (WHERE could_have_served AND candidate_count >= 0) AS could_have_served
 FROM request_rejections
 WHERE created_at > now() - interval '24 hours'
 GROUP BY 1, 2, 3, 4 ORDER BY 1 DESC, 5 DESC;

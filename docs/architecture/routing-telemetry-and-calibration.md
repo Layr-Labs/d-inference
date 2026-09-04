@@ -281,8 +281,8 @@ The pre-flight *already* calls `QuickCapacityCheckWithTTFTForRequest`
 read-only fleet scan at rejection time:
 | Field | Meaning |
 |-------|---------|
-| `could_have_served` (bool) | `candidate_count_at_reject > 0` — **the headline signal** |
-| `candidate_count_at_reject`, `capacity_rejections_at_reject`, `model_too_large_at_reject`, `vision_rejections_at_reject` | The fleet picture at the moment we said no |
+| `could_have_served` (bool) | `candidate_count_at_reject > 0` — **the headline signal**. Only a verdict when `candidate_count >= 0`: the sink skips the walk while the routing scans are saturated and writes `candidate_count = -1` (rejection.counterfactual_skipped), and that row's `false` is the marker's default, not a verdict — exclude `candidate_count < 0` rows from every ratio, as the admin `?could_have_served=` filter does |
+| `candidate_count_at_reject`, `capacity_rejections_at_reject`, `model_too_large_at_reject`, `vision_rejections_at_reject` | The fleet picture at the moment we said no (`-1` = not computed). For `stage=dispatch` rows (the exhausted ladder) these are the ladder's **last informative scan** — the reserve that dispatched the attempt(s) that then failed — not a record-time walk, so a request whose only candidate was tried and errored lands `could_have_served=true` |
 | `warm_provider_existed` (bool) | Was the model already resident somewhere? |
 | `best_ttft_ms_at_reject` | For `ttft_429`: how close to the ceiling were we? |
 | `shortfall_micro_usd` | For 402: required − available (the *amount*, never the balance) → lost revenue |
@@ -329,9 +329,12 @@ Concrete analyses, each tied to a constant/decision in §2:
 
 The next group uses `request_rejections` (§4.9) — the "what are we saying no to":
 
-10. **False-rejection rate.** % of 4xx where `could_have_served=true`. The
-    headline "are we needlessly saying no" metric — alert on regressions. A
-    rising false-429 rate means a limit or ordering bug, not real saturation.
+10. **False-rejection rate.** % of 4xx where `could_have_served=true`, over the
+    rows whose counterfactual was computed (`candidate_count >= 0`; the `-1`
+    marker rows are skipped walks under scan saturation and would bias the
+    rate downward in exactly the windows that matter). The headline "are we
+    needlessly saying no" metric — alert on regressions. A rising false-429
+    rate means a limit or ordering bug, not real saturation.
 11. **Lost-demand by reason.** Group rejections by `reason_code × model × tier` →
     decide *what to fix first*: add capacity, raise a limit, load a VLM build, or
     onboard a new model.

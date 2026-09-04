@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -192,12 +193,26 @@ func TestDrainBenchFixtureSaturated(t *testing.T) {
 func benchDrainHeartbeat(b *testing.B, modelsPerProvider, depth int) {
 	reg := buildDrainBenchFleet(b, drainBenchFleetSize, modelsPerProvider, depth)
 	models := drainBenchModels(modelsPerProvider)
+	// Suppressed heartbeats arm a real trailing pass (one full saturated scan
+	// per model and window) on a time.AfterFunc goroutine: it runs OFF the
+	// timed loop, so the per-op figure excludes it, and it pops/requeues the
+	// queue concurrently, so the integrity check below must wait for every
+	// armed pass to finish or it can observe a mid-pass depth and fail.
+	var trailing sync.WaitGroup
+	reg.drainSuppress.afterFunc = func(d time.Duration, f func()) {
+		trailing.Add(1)
+		time.AfterFunc(d, func() {
+			defer trailing.Done()
+			f()
+		})
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		reg.Heartbeat(drainBenchProviderID(i%drainBenchFleetSize), drainBenchHeartbeat(i, models))
 	}
 	b.StopTimer()
+	trailing.Wait()
 	requireDrainBenchQueueIntact(b, reg, models, depth)
 }
 
@@ -221,7 +236,9 @@ func benchDrainSetProviderIdleDominance(b *testing.B, modelsPerProvider, depth i
 // BenchmarkDrain_Heartbeat_* is the ~260/s fleet-wide event: a heartbeat from
 // a provider serving the queued model while the whole fleet is at capacity.
 // Consecutive iterations land inside the 20 ms suppression window, so this
-// row measures the suppressed path plus one trailing pass per window; the
+// row measures the suppressed path plus the first un-suppressed pass of each
+// window; the trailing pass each window arms runs off the timed loop and is
+// NOT in the per-op figure (amortised: one scan per model per 20 ms). The
 // SetProviderIdle rows isolate the unsuppressed per-pass cost.
 func BenchmarkDrain_Heartbeat_1300x1_Depth8(b *testing.B)  { benchDrainHeartbeat(b, 1, 8) }
 func BenchmarkDrain_Heartbeat_1300x1_Depth32(b *testing.B) { benchDrainHeartbeat(b, 1, 32) }

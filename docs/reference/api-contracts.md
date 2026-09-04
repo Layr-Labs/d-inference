@@ -1,6 +1,6 @@
 # HTTP API contracts
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 The complete public HTTP surface of the coordinator, derived from the 105 `HandleFunc` registrations in `routes()` (`coordinator/api/server.go`), including the `/v1/` catch-all. Every route is listed once below with its handler symbol, authentication requirement, and rate-limit bucket; the second half of the page gives the wire shapes, headers, error table, SSE framing, limits, timeouts, and version-gate semantics that those routes share. For *why* the pipeline is built this way see [`../architecture/components/consumer.md`](../architecture/components/consumer.md); for the crypto model behind sealed transport see [`../architecture/security/encryption.md`](../architecture/security/encryption.md).
 
@@ -204,7 +204,7 @@ Release publishing: [`../operations/provider-release.md`](../operations/provider
 | GET | `/v1/admin/utilization` | `handleAdminUtilization` (`coordinator/api/admin_utilization.go`) | `admin-key` | |
 | POST | `/v1/admin/drain` | `handleAdminDrain` (`coordinator/api/drain.go`) | `admin` | Start a drain; default grace [`DefaultDrainGrace`](#timeouts-and-constants) |
 | GET | `/v1/admin/routes`, `/v1/admin/routes/export` | `handleAdminRoutes`, `handleAdminRoutesExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Route records |
-| GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections |
+| GET | `/v1/admin/rejections`, `/v1/admin/rejections/export` | `handleAdminRejections`, `handleAdminRejectionsExport` (`coordinator/api/admin_telemetry.go`) | `admin-key` | Admission rejections; `could_have_served` is nullable: `null` means not evaluated. CSV uses an empty cell; `could_have_served=true|false` filters exclude unknowns. |
 | GET | `/v1/admin/profiles`, `/v1/admin/profiles/export` | `handleAdminProfiles`, `handleAdminProfilesExport` (`coordinator/api/profiler_admin.go`) | `admin-key` | Request profiles; see [`../architecture/system-profiler.md`](../architecture/system-profiler.md) |
 | GET | `/v1/admin/snapshots`, `/v1/admin/snapshots/export` | `handleAdminSnapshots`, `handleAdminSnapshotsExport` (`coordinator/api/profiler_admin.go`) | `admin-key` | |
 

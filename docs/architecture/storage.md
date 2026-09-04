@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -128,6 +128,11 @@ The store keeps most business rows forever; the loops that exist are narrow.
 | Memory-store pruner, every 15 minutes | `coordinator/cmd/coordinator/main.go` (`memory_store_pruner`, `MemoryStore.Prune`) | Append-only history slices to `DefaultPruneMaxEntries` (100 000); memory store only. |
 | Session reconciliation, once at boot | `coordinator/cmd/coordinator/main.go` (`CloseOpenProviderSessions`) | Closes `provider_sessions` rows whose last heartbeat is more than 3 minutes old, so a blue-green cutover does not truncate live sessions. |
 | Read-cache janitor, every minute | `coordinator/api/server.go` (`StartReadCacheJanitor`) | In-process response cache, not a table. |
+
+The existing nullable `request_rejections.could_have_served` column stores NULL
+when counterfactual servability is not evaluated. Go reads it as `*bool`
+(`coordinator/store/interface.go`, `RejectionRecord`); both stores preserve
+unknown, false, and true. This requires no schema migration.
 
 `usage`, `inference_routes`, `request_rejections` and `ledger_entries` have no
 automatic retention. `DeleteExpiredDeviceCodes` exists on the interface but has

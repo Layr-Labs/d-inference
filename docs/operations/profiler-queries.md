@@ -1,6 +1,6 @@
 # Profiler queries
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 How to answer the recurring latency, routing and fleet questions from the
 system profiler's two Postgres tables, `request_profiles` and
@@ -168,7 +168,20 @@ GROUP BY 1, 2 ORDER BY 1, 3 DESC;
 `reason` is a `GateReason` name (`coordinator/registry/gate_reason.go`);
 `rejections` counts candidate providers rejected for that reason across the
 hour's attempts. Only attempts that reached routing appear — pre-dispatch
-rejections live in `request_rejections`, not here.
+rejections live in `request_rejections`, not here. For their counterfactual
+servable rate, count only evaluated rows and report unknowns separately:
+
+```sql
+SELECT count(*) FILTER (WHERE could_have_served IS NULL) AS unknown,
+       count(could_have_served) AS evaluated,
+       count(*) FILTER (WHERE could_have_served IS TRUE)::float
+         / NULLIF(count(could_have_served), 0) AS servable_rejection_fraction
+FROM request_rejections
+WHERE created_at > now() - interval '24 hours';
+```
+
+The [rejection record contract](../architecture/request-outcome-observability.md)
+defines the nullable field; saturation shedding skips its fleet scan.
 
 ### 7. Slot occupancy for one provider session
 

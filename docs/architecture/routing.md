@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -418,8 +418,9 @@ First-content accepts carry their observation time from
 `coordinator/registry/capacity_cooldown.go` (`RecordCapacityAcceptObserved`).
 The recorder runs asynchronously so the first client byte does not wait for
 `registry.mu`. Reject strikes after the observation survive a delayed accept;
-a cooldown remains when those surviving strikes independently reach the
-threshold. A later budget clamp also requires a later accept to prove release.
+a cooldown is rebuilt from fresh backoff when those surviving strikes
+independently reach the threshold. Old exponential trip history is reset,
+and a valid newer half-open probe remains claimed. A later budget clamp also requires a later accept to prove release.
 The request is stamped before scheduling the recorder to count its capacity-rate
 outcome exactly once at first content or completion.
 

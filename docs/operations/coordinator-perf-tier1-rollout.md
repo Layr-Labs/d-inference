@@ -1,6 +1,6 @@
 # Coordinator Performance Tier 1 Rollout
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-04 · commit `d574bd5af`
 
 Operator companion to the `perf/coordinator-tier1-2026-09-03` branch (the
 code items 1.1, 1.3–1.8 of the 2026-09-03 coordinator performance proposal).
@@ -28,7 +28,7 @@ Canonical code (code wins over this doc; find declarations by symbol):
 | Throttled reputation persist | `coordinator/registry/registry.go` (`RecordJobSuccess`, `Disconnect`); `coordinator/registry/persistence.go` (`persistReputationThrottled`) |
 | Single provider-frame decode | `coordinator/api/provider.go` (`providerReadLoop`) |
 | Cancel only when generation still needs stopping | `coordinator/api/dispatch.go` (`writeCommittedResponse`); `coordinator/api/provider.go` (`handleChunk`, synthesized-error cancellation) |
-| No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `servabilityComputed`) |
+| No shed-path fleet walk | `coordinator/api/inference_admission.go` (`runInferenceAdmission`, `skipServability`) |
 | Lock-wait histogram by call site | `coordinator/registry/lock_wait.go` (`lockWrite`); `coordinator/api/server.go` (`NewServer`) |
 | Scan counter | `coordinator/registry/scheduler.go` (`RoutingDecision.ScanCount`); `coordinator/api/dispatch.go` (`recordRoutingDecisionFor`) |
 | Contention profiles | `coordinator/cmd/coordinator/main.go` (`enableContentionProfiling`) |
@@ -249,14 +249,14 @@ flowchart LR
   end
   subgraph After
     direction TB
-    A1[refresher tick, 60 s] --> A2[stats:v1 + network_totals:*<br/>one computation, 5 min safety TTL<br/>last good value kept on timeout]
+    A1[refresher tick, 60 s] --> A2[stats:v1 + network_totals:*<br/>one query per family, 5 min safety TTL<br/>last good value kept on timeout]
     A3[provider registers] -.->|no eviction| A2
     A5[provider first content] --> A7[first client byte]
     A5 -.->|goroutine| A6[RecordCapacityAccept]
     A8[completion] --> A9[reputation persist <= 1/30 s,<br/>no cancel after terminal,<br/>ledger capped at 100/consumer]
     A10[verification job due, workers busy] --> A11[250 ms wake, no table read;<br/>durable rows re-read 1/s, initial page capacity <= 256]
-    A12[/v1/me/summary] --> A13[one FILTER aggregate over 7 d,<br/>exact, 15 s per-account cache]
-    A14[routing_saturated shed] --> A15[rejection row only]
+    A12[/v1/me/summary] --> A13[one FILTER aggregate over 7 d,<br/>coalesced 15 s per-account cache]
+    A14[routing_saturated shed] --> A15[rejection row with unknown servability]
   end
 ```
 

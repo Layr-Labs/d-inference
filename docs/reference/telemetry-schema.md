@@ -294,6 +294,18 @@ The other two axes move to their own keys:
 4. `EngineV2Bridge+MTP.swift` (`engine_v2_slot_posture`) — new recurring per-slot
    sample, described under [MTP](#mtp-speculative-decode) below.
 
+**Process-wide regime events (T13-05).** `ProviderLoop+Capacity.swift` emits
+`operation=mlx_memory_limit_exceeded` (WARN) and `mlx_memory_limit_recovered`
+(INFO), edge-triggered from the 2 s capacity tick when MLX `activeMemory`
+crosses `Memory.memoryLimit` (exit only below 0.95 × limit — hysteresis), with
+`mlx_active_bytes` and `mlx_cache_bytes`. Above the limit MLX commits and waits
+after every primitive (measured ×1.2–×3 decode slowdown, larger with more,
+smaller dispatches). `backend` is `engine_v2`; `model` is the sorted,
+comma-joined list of every loaded slot because the regime is process-wide;
+there is no `kv_backend` and no `num_running` (that key means in-flight
+requests everywhere else — correlate with the heartbeat's per-slot
+`num_running` instead).
+
 `kv_backend` is **omitted** rather than guessed when a slot's backend was never
 resolved (`EngineV2SlotFactory`'s no-prepared-backend branch). Absent means
 UNKNOWN, matching `BackendSlotCapacity.KVBackend`'s `*string` + `omitempty`

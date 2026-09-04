@@ -110,8 +110,17 @@ struct ProviderLoopMLXMemoryLimitRegimeTests {
         #expect(entered.first?.kind == .engineHealth)
         #expect(entered.first?.severity == .warn)
         #expect(entered.first?.fields?["backend"]?.description == "engine_v2")
+        #expect(entered.first?.fields?["component"]?.description == "engine")
+        // Built through the shared engine_health base: the `model` key is
+        // present (every loaded slot, none here), and the allowlisted
+        // `num_running` key — which means in-flight REQUESTS everywhere
+        // else — does not ride this process-wide event with a loaded-slot
+        // count (review fix, S4 P2).
+        #expect(entered.first?.fields?["model"] != nil)
+        #expect(entered.first?.fields?["num_running"] == nil)
         let active = Int64(entered.first?.fields?["mlx_active_bytes"]?.description ?? "")
         #expect((active ?? 0) > 1, "mlx_active_bytes must ride the enter event")
+        #expect(entered.first?.fields?["mlx_cache_bytes"] != nil)
 
         // Limit far above active: EXIT once; a further tick is quiet.
         await loop.setMLXMemoryLimitBytesForTesting(Int.max)

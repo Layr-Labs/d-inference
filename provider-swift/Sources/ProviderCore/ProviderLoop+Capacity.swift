@@ -152,8 +152,11 @@ extension ProviderLoop {
 
     /// MLX active-over-limit regime detector (T13-05, `MLXMemoryLimitRegime`).
     /// Above `Memory.memoryLimit` MLX's eval commits and waits after EVERY
-    /// primitive — a silent ~10× decode slowdown shaped exactly like a wedged
-    /// slot. Edge-triggered: WARN + `engine_health` telemetry
+    /// primitive — a silent decode slowdown shaped exactly like a wedged
+    /// slot (measured on this box by `MLXMemoryLimitCliffMeasurementTests`:
+    /// ×3.0 on a 400-primitive lazy chain, ×1.18 on a 200-step eval loop;
+    /// larger with more, smaller dispatches). Edge-triggered: WARN +
+    /// `engine_health` telemetry
     /// (`operation=mlx_memory_limit_exceeded`) on entry, INFO +
     /// `mlx_memory_limit_recovered` on exit, a tick counter while over. The
     /// limit comes from `MLXMemoryGuard.configuredLimitsSnapshot()` — the
@@ -188,28 +191,26 @@ extension ProviderLoop {
                     + "%d over-limit tick(s)",
                 active, limitBytes, ratio, mlxOverLimitTicks)
         if entered { logger.warning(message) } else { logger.info(message) }
-        // Allowlisted keys only (the limit rides the message); the engine_v2
-        // health kind + the slot-hook sink so the loop-level test can capture
-        // it — production falls through to the shared client.
-        let event = TelemetryEvent(
-            source: .provider,
-            severity: entered ? .warn : .info,
-            kind: .engineHealth,
-            message: message
-        ).withFields([
-            "component": .string("engine"),
-            "operation": .string(
-                entered ? "mlx_memory_limit_exceeded" : "mlx_memory_limit_recovered"),
-            "backend": .string("engine_v2"),
-            "mlx_active_bytes": .int64(Int64(active)),
-            "mlx_cache_bytes": .int64(Int64(max(0, MLX.Memory.cacheMemory))),
-            "num_running": .int(modelSlots.count),
-        ])
-        if let emit = engineV2SlotHooks?.emitTelemetry {
-            emit(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // The shared engine_health base (the limit rides the message). The
+        // regime is PROCESS-WIDE, so `model` names every loaded slot (sorted,
+        // comma-joined) rather than one, and there is no `kv_backend`. No
+        // `num_running`: that allowlisted key means in-flight REQUESTS on
+        // every other engine_health emitter and the heartbeat slot field,
+        // and the loaded-slot count is not that (review fix, S4 P2) — the
+        // heartbeat's per-slot `num_running` is the request-load signal to
+        // correlate this event with.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: entered ? .warn : .info,
+                message: message,
+                operation: entered ? "mlx_memory_limit_exceeded" : "mlx_memory_limit_recovered",
+                model: modelSlots.keys.sorted().joined(separator: ","),
+                kvBackend: nil,
+                extra: [
+                    "mlx_active_bytes": .int64(Int64(active)),
+                    "mlx_cache_bytes": .int64(Int64(max(0, MLX.Memory.cacheMemory))),
+                ]),
+            sink: engineV2SlotHooks?.emitTelemetry)
     }
 
     /// `attempt`: internal retry counter for the stale-snapshot guard below;

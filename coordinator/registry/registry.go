@@ -2488,8 +2488,8 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 // by the provider's stable fault key (faultKeyLocked) so the cool-down
 // survives a reconnect within its TTL.
 func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	hold := r.lockWrite("dispatch_load_failure")
+	defer hold.unlock()
 	now := time.Now()
 	// Opportunistic sweep: bound the map by dropping expired entries when it
 	// grows (churned identities are never re-keyed).

@@ -52,6 +52,7 @@ type rejectionInfo struct {
 	// below are authoritative — recordRejection will NOT recompute. Otherwise, when
 	// a resolvedModel is set, recordRejection computes servability itself.
 	servabilityComputed     bool
+	skipServability         bool // shedding under saturation must not start another fleet scan
 	candidateCount          int
 	capacityRejections      int
 	modelTooLargeRejections int
@@ -130,7 +131,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	rec.BestTTFTMs = info.bestTTFTMs
 
 	// Decide whether we still need to compute servability inside the goroutine.
-	computeServability := !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
+	computeServability := !info.skipServability && !info.servabilityComputed && info.resolvedModel != "" && s.registry != nil
 	reg := s.registry
 	resolvedModel := info.resolvedModel
 	estPrompt := info.estimatedPromptTokens
@@ -153,7 +154,10 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		}
 		// A request could have produced output iff at least one provider could
 		// serve it right now. This is the headline "was the 'no' necessary?" flag.
-		rec.CouldHaveServed = rec.CandidateCount > 0
+		if info.servabilityComputed || computeServability {
+			couldHaveServed := rec.CandidateCount > 0
+			rec.CouldHaveServed = &couldHaveServed
+		}
 		_ = s.store.RecordRejection(rec)
 	})
 }

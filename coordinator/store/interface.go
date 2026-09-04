@@ -269,8 +269,9 @@ type RejectionRecord struct {
 	RequestBodyBytes      int             `json:"request_body_bytes,omitempty"`
 	RetryAfterMs          int             `json:"retry_after_ms,omitempty"`
 
-	// Counterfactual servability — "could it have produced output?"
-	CouldHaveServed         bool    `json:"could_have_served"`
+	// Counterfactual servability: nil means not evaluated; only a non-nil
+	// value answers whether the fleet could have produced output.
+	CouldHaveServed         *bool   `json:"could_have_served"`
 	CandidateCount          int     `json:"candidate_count"`
 	CapacityRejections      int     `json:"capacity_rejections"`
 	ModelTooLargeRejections int     `json:"model_too_large_rejections"`

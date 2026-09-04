@@ -78,6 +78,10 @@ func (s *Server) refreshNetworkTotals(window string) ([]byte, bool) {
 }
 
 func (s *Server) computeNetworkTotals(window string) ([]byte, error) {
+	// Cold fills for distinct windows share the background loop's one-query
+	// concurrency bound; each transaction raises work_mem for several scans.
+	s.networkTotalsRefresh.queryMu.Lock()
+	defer s.networkTotalsRefresh.queryMu.Unlock()
 	since, ok := parseLeaderboardWindow(window)
 	if !ok {
 		return nil, fmt.Errorf("invalid network totals window: %s", window)

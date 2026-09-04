@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -223,5 +224,56 @@ func TestCapacityAcceptAppliedLateClearsCooldownTrippedWithOlderStrikes(t *testi
 	}
 	if got := capacityTripsOf(r, provider, model); got != 1 {
 		t.Fatalf("trip count after the re-trip = %d, want 1 (fresh backoff)", got)
+	}
+}
+
+// A late accept clears pre-observation exponential history even when enough
+// later rejects independently justify a new cooldown.
+func TestCapacityAcceptRebuildsNewCooldownWithFreshBackoff(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("old_active_%v", active), func(t *testing.T) {
+			r := New(nil)
+			const provider, model = "old-backoff", "model"
+			key := capacityRejectKey{ProviderID: provider, ModelID: model}
+			observed := time.Now().Add(-time.Second)
+			oldExpiry := time.Now().Add(-time.Second)
+			if active {
+				oldExpiry = time.Now().Add(5 * time.Minute)
+			}
+			r.mu.Lock()
+			r.capacityCooldownTrips[key] = 4
+			r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: oldExpiry}
+			r.mu.Unlock()
+			for range r.capacityCooldownCfg.Threshold {
+				r.RecordCapacityReject(provider, model)
+			}
+			strikes := capacityStrikesOf(r, provider, model)
+			wantExpiry := strikes[r.capacityCooldownCfg.Threshold-1].Add(r.capacityCooldownCfg.BaseTTL)
+			r.RecordCapacityAcceptObserved(provider, model, observed, true)
+			r.mu.RLock()
+			got, trips := *r.capacityCooldowns[key], r.capacityCooldownTrips[key]
+			r.mu.RUnlock()
+			if trips != 1 || !got.expiry.Equal(wantExpiry) {
+				t.Fatalf("rebuilt cooldown: trips=%d expiry=%v, want 1/%v", trips, got.expiry, wantExpiry)
+			}
+		})
+	}
+}
+
+func TestCapacityAcceptRebuildPreservesNewProbe(t *testing.T) {
+	r := New(nil)
+	key := capacityRejectKey{ProviderID: "probe", ModelID: "model"}
+	now := time.Now()
+	r.capacityCooldownCfg = capacityCooldownConfig{Threshold: 2, Window: time.Minute, BaseTTL: time.Second, MaxTTL: time.Minute}
+	r.capacityRejectStrikes[key] = []time.Time{now.Add(-4 * time.Second), now.Add(-3 * time.Second)}
+	probeAt := now.Add(-time.Second)
+	r.capacityCooldowns[key] = &capacityCooldownEntry{expiry: now.Add(-2 * time.Second), probeAt: probeAt}
+	r.capacityCooldownTrips[key] = 4
+	r.RecordCapacityAcceptObserved(key.ProviderID, key.ModelID, now.Add(-5*time.Second), false)
+	if entry := r.capacityCooldowns[key]; entry == nil || !entry.probeAt.Equal(probeAt) {
+		t.Fatalf("lost current probe: %+v", entry)
+	}
+	if !r.CapacityCooldownActive(key.ProviderID, key.ModelID) {
+		t.Fatal("rebuild allowed a second probe while the first is pending")
 	}
 }

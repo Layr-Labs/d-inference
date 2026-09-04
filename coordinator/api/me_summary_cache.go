@@ -2,36 +2,49 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/eigeninference/d-inference/coordinator/store"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-// mySummaryWindowsCacheTTL matches the dashboard's poll interval, so an
-// account with several open tabs computes its rolling windows once per poll.
 const mySummaryWindowsCacheTTL = 15 * time.Second
 
-// accountEarningsWindows returns the account's rolling-window earnings from a
-// per-account read-cache entry, computing them in the store on a miss. The
-// aggregate replaces a 5,000-row page summed in Go, which truncated the 7 d
-// figures for any account with more rows than that.
+// accountEarningsWindows coalesces concurrent misses per account. The flight
+// group forgets completed calls, so inactive account IDs do not accumulate.
 func (s *Server) accountEarningsWindows(accountID string) (store.AccountEarningsWindows, error) {
 	key := "me:summary:windows:" + accountID
-	if s.readCache != nil {
-		if cached, ok := s.readCache.Get(key); ok {
-			var w store.AccountEarningsWindows
-			if err := json.Unmarshal(cached, &w); err == nil {
-				return w, nil
+	cached := func() (store.AccountEarningsWindows, bool) {
+		var windows store.AccountEarningsWindows
+		if s.readCache != nil {
+			if body, ok := s.readCache.Get(key); ok && json.Unmarshal(body, &windows) == nil {
+				return windows, true
 			}
 		}
+		return windows, false
 	}
-	w, err := s.store.AccountEarningsWindows(accountID, time.Now())
+	if windows, ok := cached(); ok {
+		return windows, nil
+	}
+	value, err, _ := s.summaryWindowsFlights.Do(key, func() (any, error) {
+		// Another fill may have completed after this caller observed its miss.
+		if windows, ok := cached(); ok {
+			return windows, nil
+		}
+		windows, err := s.store.AccountEarningsWindows(accountID, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		if s.readCache != nil {
+			body, err := json.Marshal(windows)
+			if err != nil {
+				return nil, err
+			}
+			s.readCache.Set(key, body, mySummaryWindowsCacheTTL)
+		}
+		return windows, nil
+	})
 	if err != nil {
 		return store.AccountEarningsWindows{}, err
 	}
-	if s.readCache != nil {
-		if body, err := json.Marshal(w); err == nil {
-			s.readCache.Set(key, body, mySummaryWindowsCacheTTL)
-		}
-	}
-	return w, nil
+	return value.(store.AccountEarningsWindows), nil
 }

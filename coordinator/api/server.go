@@ -54,6 +54,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
 	"golang.org/x/mod/semver"
+	"golang.org/x/sync/singleflight"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -423,8 +424,10 @@ type Server struct {
 	// networkTotalsRefresh owns one network_totals:<window> entry per window
 	// (network_totals.go). Both are driven by the refresher machinery in
 	// cache_refresher.go.
-	statsRefresh         cacheRefresher
-	networkTotalsRefresh struct {
+	summaryWindowsFlights singleflight.Group
+	statsRefresh          cacheRefresher
+	networkTotalsRefresh  struct {
+		queryMu sync.Mutex
 		mu      sync.Mutex
 		entries map[string]*cacheRefresher
 	}

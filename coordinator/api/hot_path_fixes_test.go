@@ -186,7 +186,7 @@ func TestNormalCompletionSendsNoProviderCancel(t *testing.T) {
 // TestRoutingSaturatedShedRecordsNoServabilityWalk: a request shed because the
 // routing-scan semaphore is saturated records its rejection without the
 // telemetry worker walking the fleet. A servable provider exists, so a walk
-// would have reported one candidate; the row must say zero / not evaluated.
+// would have reported one candidate; the row must preserve unknown servability.
 func TestRoutingSaturatedShedRecordsNoServabilityWalk(t *testing.T) {
 	srv, reg, st, ts := setupTestServer(t)
 	defer ts.Close()
@@ -228,7 +228,7 @@ func TestRoutingSaturatedShedRecordsNoServabilityWalk(t *testing.T) {
 			if rec.ReasonCode != rejectionReasonRoutingSaturated {
 				continue
 			}
-			if rec.CandidateCount != 0 || rec.CouldHaveServed {
+			if rec.CandidateCount != 0 || rec.CouldHaveServed != nil {
 				t.Fatalf("shed rejection ran the counterfactual fleet walk: candidate_count=%d could_have_served=%v",
 					rec.CandidateCount, rec.CouldHaveServed)
 			}

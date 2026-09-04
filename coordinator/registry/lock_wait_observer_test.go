@@ -166,3 +166,15 @@ func TestReserveProviderCountsScans(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchLoadFailureReportsLockWait(t *testing.T) {
+	reg := New(testLogger())
+	rec := &lockWaitRecorder{}
+	reg.SetLockWaitObserver(rec.observe)
+	if !reg.RecordDispatchLoadFailure("load-failure", "model") {
+		t.Fatal("first failure did not start a cooldown")
+	}
+	if got := rec.bySite("dispatch_load_failure"); len(got) != 1 {
+		t.Fatalf("failure lock samples = %d, want 1", len(got))
+	}
+}

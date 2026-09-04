@@ -147,12 +147,61 @@ final class SSDCacheEpochStore: @unchecked Sendable {
         }
     }
 
-    /// Rotate after any destructive capacity eviction. A persistence failure
-    /// disables v2 advertisement instead of exposing an unpersisted generation.
+    /// Explicit invalidation of every block under this root (binding drift,
+    /// whole-root wipe). A persistence failure disables v2 advertisement
+    /// instead of exposing an unpersisted generation. Capacity eviction, TTL
+    /// expiry, reconciliation, and corrupt-block drops do NOT rotate — they go
+    /// through `performOwnedNonRotatingChange`, so the coordinator's holders
+    /// for the surviving blocks stay valid.
     @discardableResult
     func rotate() -> String? {
         guard performOwnedDestructiveChange({}) != nil else { return nil }
         return current
+    }
+
+    /// Serializes a destructive change that KEEPS the current epoch: the same
+    /// ownership verification (in-process ledger, then the durable record
+    /// under the process-wide record lock, so constructors and unloaded-root
+    /// maintenance cannot interleave with `body`), but no fresh generation, no
+    /// record rewrite, and no unpublication — a heartbeat inside `body`
+    /// advertises the unchanged epoch.
+    ///
+    /// The instance lock is deliberately NOT held across `body`: `current` is
+    /// read under `SSDPrefixCache.lock` on the engine submit thread, and an
+    /// unlink must never stall a lookup. The record lock still is, which keeps
+    /// the `lock → recordLock` order of the rotating variant; the failure path
+    /// therefore disowns after leaving the record lock.
+    func performOwnedNonRotatingChange<T>(_ body: () -> T) -> T? {
+        let ownedEpoch: String? = lock.withLock {
+            guard let owned = epoch, Self.epochs.current(root: rootKey) == owned else {
+                epoch = nil
+                return nil
+            }
+            return owned
+        }
+        guard let ownedEpoch else { return nil }
+        let url = root.appendingPathComponent(Self.fileName)
+        var verified = false
+        let result: T? = Self.recordLock.withLock {
+            guard let existing = try? Self.readRecord(at: url),
+                let record = existing.record,
+                record.schema == Self.schema,
+                record.epoch == ownedEpoch,
+                record.binding == binding
+            else {
+                Self.epochs.publish(root: rootKey, epoch: nil)
+                return nil
+            }
+            verified = true
+            return body()
+        }
+        guard verified else {
+            lock.withLock {
+                if epoch == ownedEpoch { epoch = nil }
+            }
+            return nil
+        }
+        return result
     }
 
     /// Serializes epoch replacement, destructive I/O, and publication for an

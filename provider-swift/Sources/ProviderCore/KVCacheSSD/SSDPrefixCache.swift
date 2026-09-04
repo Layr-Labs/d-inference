@@ -251,7 +251,14 @@ public final class SSDPrefixCache:
     private var scanReady = false
     private var scanFailed = false
     private var cacheStatusFailure: PrefixCacheStatusReason?
+    /// Mutual exclusion for destructive changes; gates lookup, staging, and
+    /// sequence issue for the duration of an unlink.
     private var destructiveChangeInProgress = false
+    /// Set only while an explicit epoch rotation runs (binding drift,
+    /// whole-root wipe). Capability and status publication gate on THIS flag,
+    /// so a heartbeat inside a non-rotating unlink keeps advertising the
+    /// unchanged epoch instead of forcing a capability-change disconnect.
+    private var epochRotationInProgress = false
     /// tag16 of the run's TERMINAL block → staged entry.
     private var stagedEntries: [Data: StagedEntry] = [:]
     /// requestID → terminal tag16 (the bridge-backstop handle).
@@ -379,7 +386,7 @@ public final class SSDPrefixCache:
     private func prefixCacheV2CapabilityLocked() -> PrefixCacheV2Capability? {
         guard !closed,
             scanReady,
-            !destructiveChangeInProgress,
+            !epochRotationInProgress,
             let epoch = config.epochStore?.current,
             config.blockSize > 0,
             config.blockSize <= Int(UInt32.max)
@@ -405,7 +412,7 @@ public final class SSDPrefixCache:
             status = (.error, .scanFailed)
         } else if let cacheStatusFailure {
             status = (.error, cacheStatusFailure)
-        } else if !scanReady || destructiveChangeInProgress {
+        } else if !scanReady || epochRotationInProgress {
             status = (.pending, .scanPending)
         } else if config.epochStore != nil && config.epochStore?.current == nil {
             status = (.error, .cacheInitFailed)
@@ -2060,13 +2067,25 @@ public final class SSDPrefixCache:
         }
     }
 
-    /// Persist a fresh generation before deleting or forgetting durable
-    /// blocks, and suppress capability publication until the mutation ends.
-    private func performDestructiveChange<T>(_ body: () -> T) -> T? {
-        guard beginDestructiveChange() else { return nil }
+    /// Serialize a destructive change (delete or forget durable blocks)
+    /// against lookup, staging, and sequence issue, and run it inside the
+    /// epoch store's ownership bracket. `rotating: false` — capacity eviction,
+    /// TTL expiry, reconciliation, corrupt-block drops — keeps the epoch and
+    /// keeps the capability advertised, so the coordinator's holders for the
+    /// surviving blocks survive too. Only an explicit invalidation persists a
+    /// fresh generation and suppresses capability publication until the
+    /// mutation ends.
+    private func performDestructiveChange<T>(
+        rotating: Bool = false,
+        _ body: () -> T
+    ) -> T? {
+        guard beginDestructiveChange(rotating: rotating) else { return nil }
         defer { endDestructiveChange() }
         guard let epochStore = config.epochStore else { return body() }
-        guard let result = epochStore.performOwnedDestructiveChange(body) else {
+        let result = rotating
+            ? epochStore.performOwnedDestructiveChange(body)
+            : epochStore.performOwnedNonRotatingChange(body)
+        guard let result else {
             lock.withLock {
                 scanReady = false
                 cacheStatusFailure = .cacheInitFailed
@@ -2076,10 +2095,11 @@ public final class SSDPrefixCache:
         return result
     }
 
-    private func beginDestructiveChange() -> Bool {
+    private func beginDestructiveChange(rotating: Bool) -> Bool {
         lock.withLock {
             guard !closed, !destructiveChangeInProgress else { return false }
             destructiveChangeInProgress = true
+            epochRotationInProgress = rotating
             return true
         }
     }
@@ -2088,6 +2108,7 @@ public final class SSDPrefixCache:
         lock.withLock {
             precondition(destructiveChangeInProgress)
             destructiveChangeInProgress = false
+            epochRotationInProgress = false
         }
     }
 
@@ -2098,8 +2119,8 @@ public final class SSDPrefixCache:
     }
 
     #if DEBUG
-    func holdDestructiveEpochForTesting(_ body: () -> Void) -> Bool {
-        performDestructiveChange(body) != nil
+    func holdDestructiveEpochForTesting(rotating: Bool, _ body: () -> Void) -> Bool {
+        performDestructiveChange(rotating: rotating, body) != nil
     }
     #endif
 

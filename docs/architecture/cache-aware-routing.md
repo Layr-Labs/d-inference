@@ -101,8 +101,14 @@ Evidence is removed or made unreachable on:
 - holder expiry or deterministic cap eviction;
 - routing transition to `off`.
 
-Provider capacity eviction rotates the model cache epoch, coarsely invalidating
-all old holders for that model. This is intentionally conservative.
+The model cache epoch rotates only on binding drift (weights, prompt contract,
+block layout, or key) and on a whole-root wipe of an unloaded model root.
+Provider capacity eviction, TTL expiry, external-removal reconciliation, and
+corrupt-block drops keep the epoch, so holders for the surviving blocks stay
+valid and a heartbeat inside an unlink window keeps advertising the same
+capability. A holder for an evicted block is eventually consistent: it costs
+at most one discounted attempt (capped at 1,000 ms / 35% of cost) whose
+verified miss prunes it, or it expires with the holder TTL.
 
 Attempts remain briefly after inference terminal state because encrypted SSD
 write-behind can finish later. Attempt and holder maps are memory-only, capped,

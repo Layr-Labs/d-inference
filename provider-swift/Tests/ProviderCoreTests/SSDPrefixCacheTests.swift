@@ -154,6 +154,33 @@ private func waitForSemaphore(
     }
 }
 
+/// The binding `makeCache` fixtures advertise, for tests that pair the cache
+/// with a durable `SSDCacheEpochStore`.
+private func fixtureEpochBinding() -> SSDCacheEpochStore.Binding {
+    SSDCacheEpochStore.Binding(
+        modelId: "test-model",
+        modelAggregateHash: "test-weight-hash",
+        promptContractId: "test-prompt-contract",
+        blockHashVersion: CBv2BlockHasher.version,
+        blockSize: fixtureBlockSize,
+        layoutEpoch: SSDBlockStore.layoutEpoch(
+            blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+        keyFingerprint: String(repeating: "e", count: 64))
+}
+
+/// Poll until the startup scan flips `scanReady` and the v2 capability is
+/// advertised (the caller must have started background tasks).
+private func advertisedCapability(
+    _ cache: SSDPrefixCache, timeout: Duration = .seconds(5)
+) async -> PrefixCacheV2Capability? {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if let capability = cache.prefixCacheV2Capability() { return capability }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return cache.prefixCacheV2Capability()
+}
+
 // MARK: - HMAC name derivation
 
 @Suite("SSD prefix cache: HMAC lookup keys")
@@ -1034,21 +1061,94 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
     }
 
-    @Test("active capacity eviction persists a new epoch before unlink")
-    func activeEvictionRotatesEpoch() async throws {
+    @Test("capacity eviction keeps the epoch and the advertised capability")
+    func capacityEvictionKeepsEpoch() async throws {
         let dir = tempDir("active-epoch-eviction")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let layoutEpoch = SSDBlockStore.layoutEpoch(
-            blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds)
-        let binding = SSDCacheEpochStore.Binding(
-            modelId: "test-model",
-            modelAggregateHash: "test-weight-hash",
-            promptContractId: "test-prompt-contract",
-            blockHashVersion: CBv2BlockHasher.version,
-            blockSize: fixtureBlockSize,
-            layoutEpoch: layoutEpoch,
-            keyFingerprint: String(repeating: "e", count: 64))
+        let binding = fixtureEpochBinding()
         let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let originalEpoch = try #require(epochStore.current)
+        let budget = SSDDiskBudget()
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            diskBudget: budget,
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let original = try #require(await advertisedCapability(cache))
+        #expect(original.cacheEpoch == originalEpoch)
+
+        // Five blocks against a three-block box-wide budget: the two LRU
+        // victims are unlinked through the same path the write-behind
+        // consumer's per-job enforcement uses. Holders the coordinator already
+        // has for this epoch must survive, so the epoch must not move and the
+        // heartbeat must keep advertising it.
+        donateFixture(cache, tokens: Array(0 ..< 5 * fixtureBlockSize), seed: 1)
+        #expect(await waitForIndexCount(cache, atLeast: 5))
+        await cache.waitForWritesForTesting()
+        let perBlockBytes = cache.index.totalBytes / 5
+        #expect(budget.enforce(budgetBytes: perBlockBytes * 3) == 2)
+        #expect(cache.index.count == 3)
+        #expect(cache.stats().evictions == 2)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
+
+        #expect(cache.evictOldestEntry() > 0)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
+        // The durable record is untouched: a fresh store over the same root
+        // adopts the same generation.
+        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == originalEpoch)
+    }
+
+    @Test("TTL sweep and external-removal reconciliation keep the epoch")
+    func ttlSweepAndReconcileKeepEpoch() async throws {
+        let dir = tempDir("ttl-reconcile-epoch")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureEpochBinding())
+        let originalEpoch = try #require(epochStore.current)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            ttlSeconds: 100,
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        #expect(await advertisedCapability(cache)?.cacheEpoch == originalEpoch)
+
+        donateFixture(cache, tokens: Array(0 ..< 2 * fixtureBlockSize), seed: 1)
+        #expect(await waitForIndexCount(cache, atLeast: 2))
+        await cache.waitForWritesForTesting()
+
+        // An external removal (the periodic whole-root walk, an operator):
+        // reconciliation forgets the RAM entry without rotating.
+        let files = dbk3Files(under: dir)
+        #expect(files.count == 2)
+        try FileManager.default.removeItem(at: try #require(files.first))
+        cache.reconcileExternalRemovals()
+        #expect(cache.index.count == 1)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
+
+        // TTL expiry unlinks the survivor without rotating.
+        clock.advance(100)
+        cache.sweepExpiredEntries()
+        #expect(cache.index.count == 0)
+        #expect(dbk3Files(under: dir).isEmpty)
+        #expect(cache.stats().ttlExpired == 1)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
+    }
+
+    @Test("a corrupt block dropped at stage time keeps the epoch")
+    func corruptBlockDropKeepsEpoch() async throws {
+        let dir = tempDir("corrupt-drop-epoch")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureEpochBinding())
         let originalEpoch = try #require(epochStore.current)
         let cache = makeCache(
             dir: dir,
@@ -1056,13 +1156,25 @@ struct SSDPrefixCacheLifecycleTests {
             clock: ClockBox(10_000),
             epochStore: epochStore)
         defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        #expect(await advertisedCapability(cache)?.cacheEpoch == originalEpoch)
 
-        donateFixture(cache, tokens: Array(0 ..< tokenCount), seed: 1)
-        #expect(await waitForIndexCount(cache, atLeast: 1))
-        #expect(cache.evictOldestEntry() > 0)
-        let rotatedEpoch = try #require(epochStore.current)
-        #expect(rotatedEpoch != originalEpoch)
-        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
+        let tokens = Array(0 ..< 2 * fixtureBlockSize)
+        donateFixture(cache, tokens: tokens, seed: 1)
+        #expect(await waitForIndexCount(cache, atLeast: 2))
+        await cache.waitForWritesForTesting()
+        for file in dbk3Files(under: dir) {
+            var bytes = try Data(contentsOf: file)
+            bytes[bytes.count - 8] ^= 0xff
+            try bytes.write(to: file)
+        }
+
+        let result = await cache.stage(requestID: "r-corrupt", promptTokens: tokens + [1], cacheScope: "")
+        #expect(!result.staged)
+        #expect(cache.stats().corruptDropped >= 1)
+        #expect(cache.index.count < 2)
+        #expect(epochStore.current == originalEpoch)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == originalEpoch)
     }
 
     // `holdDestructiveEpochForTesting` exists only under `#if DEBUG` in SSDPrefixCache.swift,
@@ -1101,7 +1213,7 @@ struct SSDPrefixCacheLifecycleTests {
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let release = DispatchSemaphore(value: 0)
         let mutation = Task.detached {
-            cache.holdDestructiveEpochForTesting {
+            cache.holdDestructiveEpochForTesting(rotating: true) {
                 enteredContinuation.yield(())
                 release.wait()
             }
@@ -1126,6 +1238,88 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(await mutation.value)
         let current = try #require(cache.prefixCacheV2Capability())
         #expect(current.cacheEpoch != original.cacheEpoch)
+    }
+
+    @Test("a non-rotating destructive change keeps the capability advertised")
+    func nonRotatingMutationKeepsCapabilityAdvertised() async throws {
+        let dir = tempDir("epoch-non-rotating-hold")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: fixtureEpochBinding())
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        let original = try #require(await advertisedCapability(cache))
+
+        // The heartbeat-visible surface: a model is advertised only while its
+        // status is concretely ready, so a pending status hides the capability
+        // even when the capability itself is non-nil.
+        let state = ProviderState()
+        state.setPrefixCacheSnapshot(
+            sources: ["test-model": cache],
+            statuses: [PrefixCacheModelStatus(
+                modelId: "test-model",
+                backend: .contiguous,
+                replayStrategy: .direct,
+                state: .pending,
+                reason: .scanPending)],
+            runtimeIdentityAvailable: true)
+        #expect(state.prefixCacheV2Advertisement().protocolVersion == 2)
+
+        let (entered, enteredContinuation) = AsyncStream.makeStream(
+            of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let release = DispatchSemaphore(value: 0)
+        let mutation = Task.detached {
+            cache.holdDestructiveEpochForTesting(rotating: false) {
+                enteredContinuation.yield(())
+                release.wait()
+            }
+        }
+        var enteredIterator = entered.makeAsyncIterator()
+        _ = await enteredIterator.next()
+
+        // Inside an unlink window (capacity eviction, TTL sweep, reconcile,
+        // corrupt drop) the epoch is unchanged and stays advertised.
+        let held = cache.prefixCacheAdvertisement(
+            base: PrefixCacheModelStatus(
+                modelId: "test-model",
+                backend: .contiguous,
+                replayStrategy: .direct,
+                state: .pending,
+                reason: .scanPending))
+        #expect(held.capability?.cacheEpoch == original.cacheEpoch)
+        #expect(held.status.state == .ready)
+        #expect(held.status.reason == .ready)
+        let heartbeat = state.prefixCacheV2Advertisement()
+        #expect(heartbeat.protocolVersion == 2)
+        #expect(heartbeat.models.map(\.cacheEpoch) == [original.cacheEpoch])
+        // The store's own view, probed from another thread with a timeout: a
+        // bracket that held the store's instance lock across the unlink would
+        // stall this read (and with it every submit-thread lookup) instead of
+        // answering. The probe is detached so a stalled read fails the
+        // expectation rather than wedging the test before `release`.
+        final class EpochProbe: @unchecked Sendable {
+            let done = DispatchSemaphore(value: 0)
+            private let lock = NSLock()
+            private var value: String??
+            func set(_ epoch: String?) {
+                lock.withLock { value = epoch }
+                done.signal()
+            }
+            var seen: String?? { lock.withLock { value } }
+        }
+        let probe = EpochProbe()
+        Task.detached { probe.set(epochStore.current) }
+        #expect(await waitForSemaphore(probe.done, timeout: .now() + 5) == .success)
+        #expect(probe.seen == .some(original.cacheEpoch))
+
+        release.signal()
+        #expect(await mutation.value)
+        #expect(cache.prefixCacheV2Capability()?.cacheEpoch == original.cacheEpoch)
+        #expect(state.prefixCacheV2Advertisement().models.map(\.cacheEpoch) == [original.cacheEpoch])
     }
     #endif
 
@@ -2515,7 +2709,7 @@ struct SSDWholeRootMaintenanceTests {
         #expect(rotated != original)
     }
 
-    @Test("whole-root eviction keeps an active cache on the rotated epoch")
+    @Test("whole-root eviction through an active cache keeps its epoch and capability")
     func activeWholeRootEvictionKeepsCapabilityReady() async throws {
         let root = tempDir("whole-root-active-epoch")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -2565,8 +2759,12 @@ struct SSDWholeRootMaintenanceTests {
         #expect(result.budgetEvicted > 0)
         SSDDiskBudget.shared.reconcileAll()
 
-        let rotated = try #require(cache.prefixCacheV2Capability())
-        #expect(rotated.cacheEpoch != original.cacheEpoch)
+        // The walk deleted through the active store's ownership bracket, so
+        // the store forgot the entries; the epoch — and every holder the
+        // coordinator has for it — survives.
+        let current = try #require(cache.prefixCacheV2Capability())
+        #expect(current.cacheEpoch == original.cacheEpoch)
+        #expect(epochStore.current == original.cacheEpoch)
         #expect(cache.index.count == 0)
     }
 

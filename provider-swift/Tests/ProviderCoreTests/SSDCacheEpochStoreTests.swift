@@ -57,6 +57,58 @@ struct SSDCacheEpochStoreTests {
         #expect(!FileManager.default.fileExists(atPath: block.path))
     }
 
+    @Test("non-rotating change keeps the epoch, the record, publication, and sequences")
+    func nonRotatingChangeKeepsEpoch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-nonrotating-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let binding = binding(contract: String(repeating: "b", count: 64))
+        let store = try SSDCacheEpochStore(root: root, binding: binding)
+        let epoch = try #require(store.current)
+        #expect(store.takeNextSequence(expectedEpoch: epoch) == 1)
+
+        // The epoch stays published for the whole body: a heartbeat inside an
+        // unlink window advertises the unchanged epoch. Probed from another
+        // thread with a timeout so a held instance lock fails instead of
+        // hanging the suite.
+        final class Probe: @unchecked Sendable {
+            let done = DispatchSemaphore(value: 0)
+            private let lock = NSLock()
+            private var value: String??
+            func set(_ epoch: String?) { lock.withLock { value = epoch }; done.signal() }
+            var seen: String?? { lock.withLock { value } }
+        }
+        let probe = Probe()
+        let result: Int? = store.performOwnedNonRotatingChange {
+            Task.detached { probe.set(store.current) }
+            _ = probe.done.wait(timeout: .now() + 5)
+            return 7
+        }
+        #expect(result == 7)
+        #expect(probe.seen == .some(epoch))
+        #expect(store.current == epoch)
+        // Record untouched: a fresh store adopts the same generation.
+        #expect(try SSDCacheEpochStore(root: root, binding: binding).current == epoch)
+        // Sequences are per epoch and must not reset when the epoch does not.
+        #expect(store.takeNextSequence(expectedEpoch: epoch) == 2)
+
+        // Explicit rotation still rotates and still resets sequences.
+        let rotated = try #require(store.rotate())
+        #expect(rotated != epoch)
+        #expect(store.takeNextSequence(expectedEpoch: rotated) == 1)
+
+        // A disowned instance (another store rotated the root) refuses the body.
+        let other = try SSDCacheEpochStore(root: root, binding: binding)
+        _ = try #require(other.rotate())
+        var ran = false
+        #expect(store.performOwnedNonRotatingChange { ran = true } == nil)
+        #expect(!ran)
+        #expect(store.current == nil)
+        #expect(other.performOwnedNonRotatingChange { true } == true)
+    }
+
     @Test("frozen-full layout epoch purges snap-2 blocks before publication")
     func frozenReplayEpochRotation() throws {
         let root = FileManager.default.temporaryDirectory

@@ -310,12 +310,18 @@ extension ProviderLoop {
         // builds). The prefetcher already aggregate-verified the snapshot, so
         // this hash is over a known-good build. Returns nil if the on-disk
         // snapshot cannot be resolved/scanned.
-        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?)? in
+        let computed = await Task.detached(priority: .utility) { () -> (ModelInfo, String?, String?)? in
             guard let info = Self.scanVerifiedModelInfo(modelId: modelId) else { return nil }
+            // Fingerprint BEFORE the hash — the same safe direction as
+            // `attachWeightHashes`: a stale fingerprint forces a re-hash at
+            // the first load, whereas the reverse order could pair newer
+            // metadata with a hash of older bytes and silently skip it.
+            let fingerprint = ModelScanner.resolveLocalPath(modelID: modelId)
+                .flatMap { WeightHasher.snapshotFingerprint(snapshotDir: $0) }
             let hash = WeightHasher.computeHash(for: modelId)
             var withHash = info
             withHash.weightHash = hash
-            return (withHash, hash)
+            return (withHash, hash, fingerprint)
         }.value
 
         // A verified prefetch whose snapshot we can't scan must NOT be
@@ -323,7 +329,7 @@ extension ProviderLoop {
         // estimatedMemoryGb == 0, bypassing memory sizing/admission until the
         // real load overcommits. Drop it instead — without a models_update the
         // coordinator simply never routes this build here, which is the safe outcome.
-        guard let (info, maybeHash) = computed else {
+        guard let (info, maybeHash, fingerprint) = computed else {
             desiredSwapDrop.removeValue(forKey: modelId)
             logger.error("Prefetch verified \(modelId) but its on-disk snapshot could not be scanned; not advertising (would bypass memory sizing)")
             return
@@ -480,6 +486,15 @@ extension ProviderLoop {
         reserveDeferredPrefetches.remove(modelId)  // the capacity deferral is over
         modelHashes[modelId] = hash
         liveModelHashes[modelId] = hash
+        // Seed the reload fingerprint beside the hash (T4-06): without it the
+        // first load of a freshly prefetched build always missed the
+        // fingerprint-reuse path and recomputed the full hash. A nil
+        // fingerprint drops any stale one (re-hash is the safe direction).
+        if let fingerprint {
+            modelHashFingerprints[modelId] = fingerprint
+        } else {
+            modelHashFingerprints.removeValue(forKey: modelId)
+        }
         syncWarmModelState()
         // Re-refresh AFTER the insert too: a concurrent refresh (idle unload,
         // retire) interleaving in the pre-insert await computed WITHOUT the

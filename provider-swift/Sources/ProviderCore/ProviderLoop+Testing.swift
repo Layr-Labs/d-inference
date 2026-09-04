@@ -41,6 +41,9 @@ extension ProviderLoop {
 
     func liveModelHashForTesting(_ id: String) -> String? { liveModelHashes[id] }
 
+    /// Test seam: the reload fingerprint recorded beside the live hash.
+    func modelHashFingerprintForTesting(_ id: String) -> String? { modelHashFingerprints[id] }
+
     func captureWeightHashForTesting(
         modelId: String,
         modelPath: URL,

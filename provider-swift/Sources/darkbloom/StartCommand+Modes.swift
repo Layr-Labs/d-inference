@@ -179,7 +179,6 @@ extension Start {
             throw ExitCode.failure
         }
 
-        let (models, modelHashes, modelHashFingerprints) = attachWeightHashes(to: selectedModels)
         let runtimeHashes = (try? RuntimeHashReporter().report().coordinatorRuntimeHashes)
         let authToken = AuthTokenStore.load()
         if let identity = ProcessIdentity.current() {
@@ -190,9 +189,19 @@ extension Start {
             )
         }
 
-        if config.provider.autoUpdate {
-            try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
-        }
+        // Update check BEFORE the startup weight-hash pass (T4-02): on
+        // `.updated`/`.restartRequired` the updater execs the new binary,
+        // which used to discard a finished full SHA-256 pass over every
+        // advertised model (12-60 s per release-day restart, paid twice).
+        // Nothing between the two consumed the hashes. `StartupHashOrdering`
+        // pins the order so it cannot silently regress.
+        let (models, modelHashes, modelHashFingerprints) = try await StartupHashOrdering.run(
+            checkForUpdate: {
+                if config.provider.autoUpdate {
+                    try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
+                }
+            },
+            hashModels: { attachWeightHashes(to: selectedModels) })
 
         // ----- Process lifecycle: PID lock, legacy-artifact housekeeping, caffeinate. -----
         // Housekeeping runs once here, outside telemetry configuration and any

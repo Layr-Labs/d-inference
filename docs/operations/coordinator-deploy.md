@@ -971,7 +971,7 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MDM_WEBHOOK_SECRET` | Optional; unset logs a startup warning (webhook then relies on the CommandUUID gate alone) |
 | `MNEMONIC` | X25519 key derivation (legacy name) |
 | `EIGENINFERENCE_TTFT_HARD_REJECT`, `_TTFT_LIVE_DEADLINE_BASE_MS`, `_TTFT_CALIBRATION`, `_TTFT_TERMINAL_REJECT` | TTFT gate + calibration + ladder termination |
-| `EIGENINFERENCE_QUEUE_BEFORE_SHED`, `_QUEUE_MAX_DEPTH`, `_QUEUE_MAX_WAIT` | Capacity queueing (dedicated pools included) |
+| `EIGENINFERENCE_QUEUE_BEFORE_SHED`, `_QUEUE_MAX_DEPTH`, `_QUEUE_MAX_WAIT` | Capacity queueing (dedicated pools included). `_QUEUE_MAX_DEPTH` is a **ceiling** on the capacity-derived per-model depth `clamp(ceil(C × 3 s / E[S]), 8, 512)` (`registry/queue_depth.go`), not an exact depth: with prod's `8` it is inert; a larger value lets a well-served model queue deeper while a small-fleet model may still get the dynamic 8; unset means no ceiling (static 32 only until warm-pool snapshots exist) |
 | `EIGENINFERENCE_HEALTH_EJECTION` | Stable-identity ejection kill switch — **`on` in prod**; `off` disables black-hole ejection entirely |
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
 | `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | Quality cap reads each model's own solo decode rate (default `true`; `false` restores the provider-level benchmark) |

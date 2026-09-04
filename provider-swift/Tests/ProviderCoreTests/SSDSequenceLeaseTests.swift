@@ -62,6 +62,41 @@ private func waitForSemaphore(
     }
 }
 
+/// An SSDPrefixCache over `modelRoot` bound to `epochStore`, with the
+/// capability advertised (scan ready).
+private func makeSequenceCache(
+    modelRoot: URL, epochStore: SSDCacheEpochStore, binding: SSDCacheEpochStore.Binding
+) async throws -> (cache: SSDPrefixCache, epoch: String) {
+    let cache = SSDPrefixCache(
+        config: .init(
+            modelId: binding.modelId,
+            promptContractID: binding.promptContractId,
+            weightHash: binding.modelAggregateHash,
+            blockSize: binding.blockSize,
+            adoptionBoundTokens: 0,
+            layoutEpoch: binding.layoutEpoch,
+            epochStore: epochStore,
+            root: modelRoot,
+            ttlSeconds: 900,
+            minEffectiveTokens: 256,
+            maxStageBytes: 1 << 20,
+            maxStageMillis: 1_000,
+            nowSeconds: { 10_000 }),
+        kekKey: SymmetricKey(size: .bits256),
+        kvBudget: nil,
+        diskBudget: SSDDiskBudget(),
+        maxWriteBytesPerDay: 0,
+        strictFsync: false,
+        diskBudgetBytes: { 1 << 30 })
+    cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+    var capability: PrefixCacheV2Capability?
+    for _ in 0 ..< 500 where capability == nil {
+        capability = cache.prefixCacheV2Capability()
+        if capability == nil { try await Task.sleep(for: .milliseconds(10)) }
+    }
+    return (cache, try #require(capability).cacheEpoch)
+}
+
 @Suite("SSD cache epoch: receipt sequence lease")
 struct SSDSequenceLeaseTests {
 
@@ -243,5 +278,70 @@ struct SSDSequenceLeaseTests {
         #expect(lockProbe.seen == 0)
         #expect(await waitForSemaphore(taken.done, timeout: .now() + 30) == .success)
         #expect(taken.seen == 1 + SSDCacheEpochStore.sequenceLeaseSize)
+    }
+
+    @Test("a non-rotating unlink window issues sequences; a rotating one refuses promptly")
+    func nonRotatingWindowIssuesSequences() async throws {
+        let root = try leaseTempRoot("gate")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelRoot = root.appendingPathComponent("eeeeeeeeeeee", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(dedicatedRoot: root, modelRoot: modelRoot)
+        let binding = leaseBinding()
+        let epochStore = try SSDCacheEpochStore(root: modelRoot, binding: binding)
+        let (cache, epoch) = try await makeSequenceCache(
+            modelRoot: modelRoot, epochStore: epochStore, binding: binding)
+        defer { cache.close() }
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == 1)
+
+        // Capacity eviction / TTL sweep / reconcile / corrupt drop: the epoch
+        // is unchanged inside the window, so a lookup or ready receipt that
+        // lands meanwhile must get its sequence — a nil is never retried by
+        // the evidence sequencer and the donation is never reported durable.
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let held = TimedValue<Bool>()
+        Thread.detachNewThread {
+            held.set(
+                cache.holdDestructiveEpochForTesting(rotating: false) {
+                    entered.signal()
+                    release.wait()
+                })
+        }
+        #expect(await waitForSemaphore(entered, timeout: .now() + 30) == .success)
+        let taken = TimedValue<UInt64>()
+        Thread.detachNewThread { taken.set(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch)) }
+        let answered = await waitForSemaphore(taken.done, timeout: .now() + 10)
+        release.signal()
+        #expect(await waitForSemaphore(held.done, timeout: .now() + 30) == .success)
+        #expect(held.seen == true)
+        #expect(answered == .success)
+        #expect(taken.seen == 2, "sequence refused inside a non-rotating unlink window")
+
+        // An explicit rotation holds the store's instance lock across its
+        // body: the cache must answer nil at once (the epoch is dying), not
+        // park the sequencer actor on that lock.
+        let rotatingEntered = DispatchSemaphore(value: 0)
+        let rotatingRelease = DispatchSemaphore(value: 0)
+        let rotated = TimedValue<Bool>()
+        Thread.detachNewThread {
+            rotated.set(
+                cache.holdDestructiveEpochForTesting(rotating: true) {
+                    rotatingEntered.signal()
+                    rotatingRelease.wait()
+                })
+        }
+        #expect(await waitForSemaphore(rotatingEntered, timeout: .now() + 30) == .success)
+        let refused = TimedValue<UInt64>()
+        Thread.detachNewThread { refused.set(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch)) }
+        let refusedPromptly = await waitForSemaphore(refused.done, timeout: .now() + 10)
+        rotatingRelease.signal()
+        #expect(await waitForSemaphore(rotated.done, timeout: .now() + 30) == .success)
+        #expect(refusedPromptly == .success, "a take inside a rotation blocked on the store's instance lock")
+        #expect(refused.seen == nil)
+        // The old epoch is dead after the rotation; the new one starts at 1.
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: epoch) == nil)
+        let fresh = try #require(epochStore.current)
+        #expect(fresh != epoch)
+        #expect(cache.takeNextPrefixCacheV2Sequence(expectedEpoch: fresh) == 1)
     }
 }

@@ -251,8 +251,10 @@ public final class SSDPrefixCache:
     private var scanReady = false
     private var scanFailed = false
     private var cacheStatusFailure: PrefixCacheStatusReason?
-    /// Mutual exclusion for destructive changes; gates lookup, staging, and
-    /// sequence issue for the duration of an unlink.
+    /// Mutual exclusion for destructive changes; gates lookup and staging
+    /// for the duration of an unlink (sequence issue gates on
+    /// `epochRotationInProgress` — the epoch is intact inside a
+    /// non-rotating window and the store validates it itself).
     private var destructiveChangeInProgress = false
     /// Set only while an explicit epoch rotation runs (binding drift,
     /// whole-root wipe). Capability and status publication gate on THIS flag,
@@ -434,7 +436,17 @@ public final class SSDPrefixCache:
         // this lock on the engine submit thread — no epoch-store I/O may run
         // under it. The store validates its own epoch, so a raced rotation
         // still returns nil.
-        guard lock.withLock({ !closed && !destructiveChangeInProgress }) else { return nil }
+        //
+        // Refuse only while an epoch ROTATION runs. A non-rotating unlink
+        // window (capacity eviction, TTL sweep, reconcile, corrupt drop)
+        // keeps the epoch, and a nil here is final: the evidence sequencer
+        // never re-emits a ready receipt it could not number and never
+        // registers the request of a lookup it could not number, so the
+        // donation's durability is simply never reported. A rotating window
+        // holds the store's instance lock across the unlink; answering nil
+        // (rather than calling into the store) keeps the sequencer actor off
+        // that wait — the sequence would be dead on the new epoch anyway.
+        guard lock.withLock({ !closed && !epochRotationInProgress }) else { return nil }
         return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
     }
 

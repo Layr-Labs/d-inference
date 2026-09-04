@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -12,8 +13,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -34,10 +38,41 @@ const (
 	// ipAPIFields is the comma-separated ip-api.com field selector. Kept minimal:
 	// only the geo fields ProviderLocation needs, plus status for success checks.
 	ipAPIFields = "status,country,countryCode,regionName,region,city,lat,lon,timezone"
+
+	// geoLookupTimeout bounds one ip-api.com round trip. Only the synchronous
+	// provider-registration path ever waits on it; consumer requests go through
+	// LookupAsync and never block on the network.
+	geoLookupTimeout = 3 * time.Second
+	// geoCacheMaxEntries bounds the per-IP cache (random eviction when full).
+	// OpenRouter and the other wholesale channels arrive from a handful of
+	// egress IPs, so steady-state occupancy is tiny; the bound only matters
+	// under an IP-diverse scan.
+	geoCacheMaxEntries = 10_000
+	// geoCachePositiveTTL is how long a resolved location is reused;
+	// geoCacheNegativeTTL is how long a failed/unknown lookup is remembered so
+	// a degraded ip-api does not get one round trip per request.
+	geoCachePositiveTTL = time.Hour
+	geoCacheNegativeTTL = 5 * time.Minute
+	// geoLookupMaxInflight caps concurrent background fills so an IP-diverse
+	// request burst cannot fan out into unbounded goroutines / sockets; misses
+	// past the cap are dropped (the next request from that IP retries).
+	geoLookupMaxInflight = 64
 )
 
+// providerGeoResolver resolves the approximate location of an HTTP request's
+// client. Lookup blocks on the network (once per provider WebSocket connect);
+// LookupAsync never does (once per consumer inference request) — it serves
+// the per-IP cache and fills misses in the background.
 type providerGeoResolver interface {
 	Lookup(*http.Request) *store.ProviderLocation
+	LookupAsync(*http.Request) *store.ProviderLocation
+}
+
+// geoCacheEntry is one cached lookup; a nil loc is a negative entry (the
+// lookup failed or ip-api answered with a non-success status).
+type geoCacheEntry struct {
+	loc *store.ProviderLocation
+	at  time.Time
 }
 
 type ipAPIGeoResolver struct {
@@ -50,10 +85,25 @@ type ipAPIGeoResolver struct {
 	// construction and response parsing can be exercised against httptest without
 	// hitting the live service.
 	baseURL string
-	// httpClient performs the lookup. Defaults to http.DefaultClient; overridable
-	// in tests. A nil client falls back to http.DefaultClient at call time.
+	// httpClient performs the lookup. Production uses a dedicated client (own
+	// idle-connection pool, request timeout); overridable in tests. A nil client
+	// falls back to http.DefaultClient at call time.
 	httpClient *http.Client
 	logger     *slog.Logger
+	// now is the cache clock (nil => time.Now); tests inject a fake clock to
+	// exercise TTL expiry without sleeping.
+	now func() time.Time
+
+	// mu guards cache and inflight. Both are lazily allocated so resolvers
+	// built as struct literals (tests) work without a constructor.
+	mu       sync.Mutex
+	cache    map[string]geoCacheEntry
+	inflight map[string]struct{}
+
+	// networkLookups counts ip-api round trips (sync and async); asyncDropped
+	// counts misses not filled because geoLookupMaxInflight was reached.
+	networkLookups atomic.Uint64
+	asyncDropped   atomic.Uint64
 }
 
 func newProviderGeoResolverFromEnv(logger *slog.Logger) providerGeoResolver {
@@ -67,43 +117,194 @@ func newProviderGeoResolverFromEnv(logger *slog.Logger) providerGeoResolver {
 		trustHeaders: trustHeaders,
 		apiKey:       apiKey,
 		baseURL:      baseURL,
-		httpClient:   http.DefaultClient,
+		httpClient:   newGeoHTTPClient(),
 		logger:       logger,
 	}
 }
 
-func (g *ipAPIGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
-	if g == nil || r == nil {
+// newGeoHTTPClient builds the resolver's own client: http.DefaultTransport
+// keeps only 2 idle connections per host, so sharing http.DefaultClient meant
+// a fresh TLS handshake to pro.ip-api.com on most lookups. A dedicated
+// transport with a deeper idle pool keeps the (now background) fills cheap,
+// and the client-level timeout bounds every round trip even when a caller
+// forgets the context deadline.
+func newGeoHTTPClient() *http.Client {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Timeout: geoLookupTimeout}
+	}
+	t := transport.Clone()
+	t.MaxIdleConnsPerHost = 8
+	return &http.Client{Timeout: geoLookupTimeout, Transport: t}
+}
+
+func (g *ipAPIGeoResolver) clock() time.Time {
+	if g.now != nil {
+		return g.now()
+	}
+	return time.Now()
+}
+
+// headerLocation is the trusted-proxy shortcut: behind a proxy that sets geo
+// headers (Cloudflare, Vercel) the answer is already on the request and no
+// lookup — cached or not — is needed.
+func (g *ipAPIGeoResolver) headerLocation(r *http.Request) *store.ProviderLocation {
+	if !g.trustHeaders {
 		return nil
 	}
-	// If behind a trusted proxy that sets geo headers (Cloudflare, Vercel),
-	// use those directly — no external API call needed.
-	if g.trustHeaders {
-		remoteIP := parseIPHost(r.RemoteAddr)
-		if remoteIP != nil && trustedProxyIP(remoteIP) {
-			if loc := locationFromTrustedGeoHeaders(r); loc != nil {
-				return loc
-			}
-		}
+	remoteIP := parseIPHost(r.RemoteAddr)
+	if remoteIP == nil || !trustedProxyIP(remoteIP) {
+		return nil
 	}
+	return locationFromTrustedGeoHeaders(r)
+}
 
-	// Extract the provider's real public IP and look it up via ip-api.com.
+// lookupIP extracts the client's public IP, or nil when there is nothing an
+// external geo service could resolve (private, loopback, unparseable).
+func lookupIP(r *http.Request) net.IP {
 	ip := providerClientIP(r)
 	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() {
 		return nil
 	}
-	return g.lookupIPAPI(ip)
+	return ip
 }
 
-// lookupIPAPI resolves geolocation via ip-api.com.
+// Lookup resolves synchronously: header shortcut, then the per-IP cache, then
+// one ip-api round trip whose result (nil included) populates the cache. Used
+// by provider registration, which runs once per WebSocket connect and stores
+// the location on the Provider record.
+func (g *ipAPIGeoResolver) Lookup(r *http.Request) *store.ProviderLocation {
+	if g == nil || r == nil {
+		return nil
+	}
+	if loc := g.headerLocation(r); loc != nil {
+		return loc
+	}
+	ip := lookupIP(r)
+	if ip == nil {
+		return nil
+	}
+	key := ip.String()
+	if loc, ok := g.cached(key); ok {
+		return loc
+	}
+	loc := g.lookupIPAPI(ip)
+	g.storeResult(key, loc)
+	return cloneLocation(loc)
+}
+
+// LookupAsync is the consumer-request path: it never waits on the network.
+// A cache hit (positive or negative) answers immediately; a miss schedules one
+// background fill per IP (deduplicated while in flight, bounded fleet-wide by
+// geoLookupMaxInflight) and returns nil, so the first request from an IP per
+// TTL carries no location — telemetry-only, never routing or billing.
+func (g *ipAPIGeoResolver) LookupAsync(r *http.Request) *store.ProviderLocation {
+	if g == nil || r == nil {
+		return nil
+	}
+	if loc := g.headerLocation(r); loc != nil {
+		return loc
+	}
+	ip := lookupIP(r)
+	if ip == nil {
+		return nil
+	}
+	key := ip.String()
+	if loc, ok := g.cached(key); ok {
+		return loc
+	}
+	g.mu.Lock()
+	if g.inflight == nil {
+		g.inflight = make(map[string]struct{})
+	}
+	if _, busy := g.inflight[key]; busy {
+		g.mu.Unlock()
+		return nil
+	}
+	if len(g.inflight) >= geoLookupMaxInflight {
+		g.mu.Unlock()
+		g.asyncDropped.Add(1)
+		return nil
+	}
+	g.inflight[key] = struct{}{}
+	g.mu.Unlock()
+
+	saferun.Go(g.logger, "geo_lookup", func() {
+		loc := g.lookupIPAPI(ip)
+		g.storeResult(key, loc)
+		g.mu.Lock()
+		delete(g.inflight, key)
+		g.mu.Unlock()
+	})
+	return nil
+}
+
+// cached returns a copy of the cached location for key and whether the entry
+// is live. Negative entries hit too (ok=true, nil location) so a failing
+// lookup is retried at most once per geoCacheNegativeTTL. Expired entries are
+// dropped on read.
+func (g *ipAPIGeoResolver) cached(key string) (*store.ProviderLocation, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	entry, ok := g.cache[key]
+	if !ok {
+		return nil, false
+	}
+	ttl := geoCachePositiveTTL
+	if entry.loc == nil {
+		ttl = geoCacheNegativeTTL
+	}
+	if g.clock().Sub(entry.at) >= ttl {
+		delete(g.cache, key)
+		return nil, false
+	}
+	return cloneLocation(entry.loc), true
+}
+
+// storeResult records a lookup result (nil = negative), evicting one random
+// entry when the cache is full. Map iteration order is random in Go, so the
+// first ranged key is a uniformly-random victim without any bookkeeping.
+func (g *ipAPIGeoResolver) storeResult(key string, loc *store.ProviderLocation) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cache == nil {
+		g.cache = make(map[string]geoCacheEntry)
+	}
+	if _, present := g.cache[key]; !present && len(g.cache) >= geoCacheMaxEntries {
+		for victim := range g.cache {
+			delete(g.cache, victim)
+			break
+		}
+	}
+	g.cache[key] = geoCacheEntry{loc: cloneLocation(loc), at: g.clock()}
+}
+
+// cacheLen reports the number of cached IPs (tests / diagnostics).
+func (g *ipAPIGeoResolver) cacheLen() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.cache)
+}
+
+func cloneLocation(loc *store.ProviderLocation) *store.ProviderLocation {
+	if loc == nil {
+		return nil
+	}
+	cp := *loc
+	return &cp
+}
+
+// lookupIPAPI resolves geolocation via ip-api.com with one blocking round trip.
 //
 // With a PRO key (EIGENINFERENCE_IPAPI_KEY) it uses the unmetered
 // https://pro.ip-api.com endpoint; without one it falls back to the free
-// http://ip-api.com endpoint (45 req/min by source IP — called once per provider
-// WebSocket connection, so even 250 concurrent providers is fine on the free
-// tier). The Source field records which tier answered ("ip-api-pro" vs "ip-api").
+// http://ip-api.com endpoint (45 req/min by source IP). Callers go through the
+// per-IP cache, so the free tier sees at most one request per client IP per
+// TTL rather than one per inference request or provider connect. The Source
+// field records which tier answered ("ip-api-pro" vs "ip-api").
 func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	g.networkLookups.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), geoLookupTimeout)
 	defer cancel()
 
 	apiURL := g.buildLookupURL(ip)
@@ -118,7 +319,9 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	resp, err := client.Do(req)
 	if err != nil {
 		if g.logger != nil {
-			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "pro", g.apiKey != "", "error", err)
+			// A *url.Error's text embeds the request URL, which on the PRO tier
+			// carries ?key=<secret>: log only the underlying transport error.
+			g.logger.Debug("ip-api lookup failed", "ip", ip.String(), "pro", g.apiKey != "", "error", redactLookupError(err))
 		}
 		return nil
 	}
@@ -156,6 +359,16 @@ func (g *ipAPIGeoResolver) lookupIPAPI(ip net.IP) *store.ProviderLocation {
 	}
 }
 
+// redactLookupError strips the request URL from a client error so the keyed
+// PRO URL never reaches a log line; other errors pass through unchanged.
+func redactLookupError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		return urlErr.Err
+	}
+	return err
+}
+
 // buildLookupURL constructs the ip-api.com request URL for ip. When a PRO key is
 // configured it targets baseURL (https://pro.ip-api.com by default) and appends
 // &key=<key>; otherwise it uses the free endpoint with no key. The /json/<ip>
@@ -182,11 +395,15 @@ func (g *ipAPIGeoResolver) sourceLabel() string {
 	return "ip-api"
 }
 
+// requestLocation resolves the consumer's approximate location for the usage
+// row (telemetry only — never routing or billing). It runs on the inference
+// request goroutine, so it takes the non-blocking path: a cache miss returns
+// nil for this request and fills in the background for the next one.
 func (s *Server) requestLocation(r *http.Request) *store.ProviderLocation {
 	if s == nil || s.geoResolver == nil || r == nil {
 		return nil
 	}
-	loc := s.geoResolver.Lookup(r)
+	loc := s.geoResolver.LookupAsync(r)
 	if loc == nil {
 		return nil
 	}

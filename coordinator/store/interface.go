@@ -846,6 +846,19 @@ type ProviderEarningsSummary struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 }
 
+// AccountEarningsWindow is one window's job count and micro-USD total.
+type AccountEarningsWindow struct {
+	Jobs          int64 `json:"jobs"`
+	TotalMicroUSD int64 `json:"total_micro_usd"`
+}
+
+// AccountEarningsWindows holds the inner (e.g. 24 h) and outer (e.g. 7 d)
+// windows GetAccountEarningsWindows computes together.
+type AccountEarningsWindows struct {
+	Inner AccountEarningsWindow `json:"inner"`
+	Outer AccountEarningsWindow `json:"outer"`
+}
+
 // ProviderPayout records a provider payout event. This is separate from
 // account-linked provider earnings because some providers are paid directly
 // without being linked to a Privy account.

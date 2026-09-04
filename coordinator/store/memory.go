@@ -2799,6 +2799,30 @@ func (s *MemoryStore) GetAccountEarnings(accountID string, limit int) ([]Provide
 	return results, nil
 }
 
+// GetAccountEarningsWindows sums every earning row for the account in each
+// window (created_at >= since, matching the SQL bound) with no page limit.
+func (s *MemoryStore) GetAccountEarningsWindows(accountID string, innerSince, outerSince time.Time) (AccountEarningsWindows, error) {
+	if innerSince.Before(outerSince) {
+		return AccountEarningsWindows{}, errors.New("store: inner earnings window must lie inside the outer window")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var w AccountEarningsWindows
+	for _, e := range s.providerEarnings {
+		if e.AccountID != accountID || e.CreatedAt.Before(outerSince) {
+			continue
+		}
+		w.Outer.Jobs++
+		w.Outer.TotalMicroUSD += e.AmountMicroUSD
+		if !e.CreatedAt.Before(innerSince) {
+			w.Inner.Jobs++
+			w.Inner.TotalMicroUSD += e.AmountMicroUSD
+		}
+	}
+	return w, nil
+}
+
 // GetProviderEarningsSummary returns lifetime aggregates for a provider node.
 func (s *MemoryStore) GetProviderEarningsSummary(providerKey string) (ProviderEarningsSummary, error) {
 	s.mu.RLock()
@@ -3262,6 +3286,19 @@ func (s *MemoryStore) GetReputation(_ context.Context, providerID string) (*Repu
 	}
 	cp := *rep
 	return &cp, nil
+}
+
+func (s *MemoryStore) GetReputations(_ context.Context, providerIDs []string) (map[string]ReputationRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[string]ReputationRecord, len(providerIDs))
+	for _, id := range providerIDs {
+		if rep, ok := s.reputationRecords[id]; ok {
+			out[id] = *rep
+		}
+	}
+	return out, nil
 }
 
 // --- APNs code-identity attestation reuse cache (W5 Fix 2) ---

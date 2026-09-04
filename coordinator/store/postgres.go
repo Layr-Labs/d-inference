@@ -4262,6 +4262,34 @@ func (s *PostgresStore) GetAccountEarningsSummary(accountID string) (ProviderEar
 	return summary, nil
 }
 
+// GetAccountEarningsWindows aggregates an account's earnings over two nested
+// windows in ONE statement: the FILTER clauses count the inner window inside
+// the outer scan, and the WHERE bound rides idx_provider_earnings_account
+// (account_id, created_at DESC). No rows cross the wire and no page limit
+// truncates the sums (the previous LIMIT 5000 page under-counted ≈60 % of
+// weekly-active accounts).
+func (s *PostgresStore) GetAccountEarningsWindows(accountID string, innerSince, outerSince time.Time) (AccountEarningsWindows, error) {
+	if innerSince.Before(outerSince) {
+		return AccountEarningsWindows{}, errors.New("store: inner earnings window must lie inside the outer window")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var w AccountEarningsWindows
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FILTER (WHERE created_at >= $2),
+		        COALESCE(SUM(amount_micro_usd) FILTER (WHERE created_at >= $2), 0),
+		        COUNT(*),
+		        COALESCE(SUM(amount_micro_usd), 0)
+		   FROM provider_earnings
+		  WHERE account_id = $1 AND created_at >= $3`,
+		accountID, innerSince, outerSince,
+	).Scan(&w.Inner.Jobs, &w.Inner.TotalMicroUSD, &w.Outer.Jobs, &w.Outer.TotalMicroUSD); err != nil {
+		return AccountEarningsWindows{}, fmt.Errorf("store: account earnings windows: %w", err)
+	}
+	return w, nil
+}
+
 // RecordProviderPayout stores a payout record for a provider wallet.
 func (s *PostgresStore) RecordProviderPayout(payout *ProviderPayout) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -4922,6 +4950,46 @@ func (s *PostgresStore) GetReputation(ctx context.Context, providerID string) (*
 		return nil, fmt.Errorf("store: reputation not found: %w", err)
 	}
 	return &rep, nil
+}
+
+// GetReputations reads the reputation rows for providerIDs in one statement
+// (the per-provider GetReputation loop behind /v1/me/providers was an N+1).
+func (s *PostgresStore) GetReputations(ctx context.Context, providerIDs []string) (map[string]ReputationRecord, error) {
+	out := make(map[string]ReputationRecord, len(providerIDs))
+	if len(providerIDs) == 0 {
+		return out, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT provider_id, total_jobs, successful_jobs, failed_jobs,
+			total_uptime_seconds, avg_response_time_ms,
+			challenges_passed, challenges_failed
+		 FROM provider_reputation WHERE provider_id = ANY($1)`, providerIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: reputations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id  string
+			rep ReputationRecord
+		)
+		if err := rows.Scan(
+			&id, &rep.TotalJobs, &rep.SuccessfulJobs, &rep.FailedJobs,
+			&rep.TotalUptimeSeconds, &rep.AvgResponseTimeMs,
+			&rep.ChallengesPassed, &rep.ChallengesFailed,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan reputation: %w", err)
+		}
+		out[id] = rep
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate reputations: %w", err)
+	}
+	return out, nil
 }
 
 // --- APNs code-identity attestation reuse cache (W5 Fix 2) ---

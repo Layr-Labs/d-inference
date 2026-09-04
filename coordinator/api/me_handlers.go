@@ -162,26 +162,14 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recent, err := s.store.GetAccountEarnings(accountID, 5000)
+	// One aggregate for both windows: the previous 5,000-row page summed in Go
+	// under-counted every account with more rows than that in a week.
+	now := time.Now()
+	windows, err := s.store.GetAccountEarningsWindows(accountID, now.Add(-24*time.Hour), now.Add(-7*24*time.Hour))
 	if err != nil {
-		s.logger.Error("get account earnings failed", "error", err)
+		s.logger.Error("get account earnings windows failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to fetch earnings"))
 		return
-	}
-	now := time.Now()
-	cutoff24h := now.Add(-24 * time.Hour)
-	cutoff7d := now.Add(-7 * 24 * time.Hour)
-	var last24Money, last7dMoney int64
-	var last24Jobs, last7dJobs int64
-	for _, e := range recent {
-		if e.CreatedAt.After(cutoff7d) {
-			last7dMoney += e.AmountMicroUSD
-			last7dJobs++
-			if e.CreatedAt.After(cutoff24h) {
-				last24Money += e.AmountMicroUSD
-				last24Jobs++
-			}
-		}
 	}
 
 	fleet, err := s.mergeFleet(r.Context(), accountID)
@@ -203,10 +191,10 @@ func (s *Server) handleMySummary(w http.ResponseWriter, r *http.Request) {
 		PayoutReady:                 user.StripeAccountStatus == "ready",
 		LifetimeMicroUSD:            summary.TotalMicroUSD,
 		LifetimeJobs:                summary.Count,
-		Last24hMicroUSD:             last24Money,
-		Last24hJobs:                 last24Jobs,
-		Last7dMicroUSD:              last7dMoney,
-		Last7dJobs:                  last7dJobs,
+		Last24hMicroUSD:             windows.Inner.TotalMicroUSD,
+		Last24hJobs:                 windows.Inner.Jobs,
+		Last7dMicroUSD:              windows.Outer.TotalMicroUSD,
+		Last7dJobs:                  windows.Outer.Jobs,
 		Counts:                      counts,
 		LatestProviderVersion:       s.latestReleasedVersion(),
 		MinProviderVersion:          s.minProviderVersion,
@@ -333,9 +321,7 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i := range fleet {
-		s.attachStoredReputation(r.Context(), &fleet[i])
-	}
+	s.attachStoredReputations(r.Context(), fleet)
 
 	resp := myProvidersResponse{
 		Providers:             fleet,
@@ -423,14 +409,41 @@ func emittedIdentity(mp *myProvider) string {
 	return "id:" + mp.ID
 }
 
-func (s *Server) attachStoredReputation(ctx context.Context, mp *myProvider) {
-	if mp.ID == "" || mp.Reputation.TotalJobs > 0 || mp.Reputation.ChallengesPassed > 0 || mp.Reputation.ChallengesFailed > 0 {
+// attachStoredReputations fills in the persisted reputation of every fleet
+// entry whose live snapshot carries none, in ONE store read. The previous
+// per-entry GetReputation was an N+1 (≈14 statements per call in prod).
+func (s *Server) attachStoredReputations(ctx context.Context, fleet []myProvider) {
+	ids := make([]string, 0, len(fleet))
+	for i := range fleet {
+		if needsStoredReputation(&fleet[i]) {
+			ids = append(ids, fleet[i].ID)
+		}
+	}
+	if len(ids) == 0 {
 		return
 	}
-	rep, err := s.store.GetReputation(ctx, mp.ID)
-	if err != nil || rep == nil {
+	reps, err := s.store.GetReputations(ctx, ids)
+	if err != nil {
+		s.logger.Warn("batch reputation read failed; fleet reputation left as live snapshot", "error", err)
 		return
 	}
+	for i := range fleet {
+		if !needsStoredReputation(&fleet[i]) {
+			continue
+		}
+		if rep, ok := reps[fleet[i].ID]; ok {
+			applyStoredReputation(&fleet[i], rep)
+		}
+	}
+}
+
+// needsStoredReputation reports whether a fleet entry's live snapshot carried
+// no reputation, so the persisted record should stand in for it.
+func needsStoredReputation(mp *myProvider) bool {
+	return mp.ID != "" && mp.Reputation.TotalJobs == 0 && mp.Reputation.ChallengesPassed == 0 && mp.Reputation.ChallengesFailed == 0
+}
+
+func applyStoredReputation(mp *myProvider, rep store.ReputationRecord) {
 	r := registry.NewReputation()
 	r.TotalJobs = rep.TotalJobs
 	r.SuccessfulJobs = rep.SuccessfulJobs

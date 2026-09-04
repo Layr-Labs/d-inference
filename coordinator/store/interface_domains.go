@@ -562,6 +562,15 @@ type ProviderEarningsStore interface {
 	// GetAccountEarningsSummary returns lifetime aggregates for an account across all linked nodes.
 	GetAccountEarningsSummary(accountID string) (ProviderEarningsSummary, error)
 
+	// GetAccountEarningsWindows returns job counts and micro-USD totals for an
+	// account over two nested windows, [innerSince, now) within
+	// [outerSince, now), as one aggregate (Postgres: one FILTER aggregate on
+	// idx_provider_earnings_account). Every provider_earnings row for the
+	// account counts, base-reward rows included, exactly as the /v1/me/summary
+	// tally always did — without the 5,000-row page that truncated busy
+	// accounts. Both bounds are inclusive (created_at >= since).
+	GetAccountEarningsWindows(accountID string, innerSince, outerSince time.Time) (AccountEarningsWindows, error)
+
 	// RecordProviderPayout stores a payout record for a provider wallet.
 	RecordProviderPayout(payout *ProviderPayout) error
 
@@ -690,6 +699,10 @@ type ProviderStore interface {
 
 	// GetReputation returns a provider's reputation record.
 	GetReputation(ctx context.Context, providerID string) (*ReputationRecord, error)
+
+	// GetReputations returns the reputation records for providerIDs in one
+	// read; IDs without a record are absent from the map.
+	GetReputations(ctx context.Context, providerIDs []string) (map[string]ReputationRecord, error)
 
 	// --- APNs code-identity attestation reuse cache (survives deploys) ---
 

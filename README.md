@@ -310,10 +310,12 @@ Running a node also makes your **own** inference free.
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
+| `admin-ui/` | Next.js | Internal read-only operator dashboard over the Postgres read replica |
 | `landing/` | Static HTML | Marketing landing page |
 | `e2e/` | Go | System-level end-to-end & load test harness |
-| `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers |
-| `docs/` | Markdown | Architecture, security, operations, and reference docs |
+| `scripts/` | Shell | Installer, admin CLI, model publishing, deploy helpers, docs lint (`docs-check.sh`, `docs-stamp.sh`) |
+| `libs/` | Git submodules | Pinned forks of `mlx`, `mlx-swift`, `mlx-swift-lm` compiled into the provider |
+| `docs/` | Markdown | How-tos, runbooks, reference, architecture, design records, dated reports — map in [`docs/README.md`](docs/README.md), rules in [`docs/AGENTS.md`](docs/AGENTS.md) |
 
 The coordinator and provider share WebSocket message types that must stay in sync (`coordinator/protocol/` ↔ `provider-swift/Sources/ProviderCore/Protocol/`).
 

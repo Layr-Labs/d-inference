@@ -88,7 +88,10 @@ func (s *mdmVerificationScheduler) nextDispatchDelay() time.Duration {
 			delay = candidate
 		}
 	}
-	if dueBlocked {
+	// The busy floor is a ceiling on the wake interval, not a replacement for
+	// it: a job that becomes due sooner (an urgent one may take the reserved
+	// slot) still gets its own timer instead of waiting out the floor.
+	if dueBlocked && delay > mdmSchedulerBusyRetryDelay {
 		return mdmSchedulerBusyRetryDelay
 	}
 	return delay

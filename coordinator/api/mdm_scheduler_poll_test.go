@@ -175,3 +175,39 @@ func TestMDMSchedulerRetryTimerStaysFastWhenWorkerFree(t *testing.T) {
 		t.Fatalf("delay with the reserved slot free and an urgent job due = %s, want 1ms", got)
 	}
 }
+
+// TestMDMSchedulerBusyFloorDoesNotDelayNearerDueJob: the 250 ms busy floor is
+// a ceiling on the wake interval. With a due refresh job blocked behind the
+// reserved urgent slot, a job that becomes due sooner than the floor (an
+// urgent one may take that slot) still gets its own, shorter timer; only a
+// job due later than the floor is covered by it.
+func TestMDMSchedulerBusyFloorDoesNotDelayNearerDueJob(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	_, _, sch := newSchedulerTestServer(t, MDMSchedulerConfig{Workers: 2, QueueCapacity: 8}, mdmSchedulerDeps{
+		now: func() time.Time { return now },
+	})
+	sch.mu.Lock()
+	// One worker busy leaves only the reserved urgent slot: the due refresh
+	// job cannot dispatch.
+	sch.active[store.VerificationTaskSecurityInfo] = 1
+	sch.jobs["blocked-refresh"] = &mdmScheduledJob{record: store.VerificationJob{
+		Kind: store.VerificationTaskMDA, Priority: store.VerificationPriorityRefresh,
+		State: store.VerificationStatePending, NextAttemptAt: now.Add(-time.Second),
+	}}
+	sch.jobs["urgent-soon"] = &mdmScheduledJob{record: store.VerificationJob{
+		Kind: store.VerificationTaskSecurityInfo, Priority: store.VerificationPriorityFirstOrExpired,
+		State: store.VerificationStateBackoff, NextAttemptAt: now.Add(100 * time.Millisecond),
+	}}
+	sch.mu.Unlock()
+	if got := sch.nextDispatchDelay(); got != 100*time.Millisecond {
+		t.Fatalf("delay with a blocked due job and an urgent job due in 100ms = %s, want 100ms", got)
+	}
+
+	// A job due beyond the floor does not extend the wait past it.
+	sch.mu.Lock()
+	sch.jobs["urgent-soon"].record.NextAttemptAt = now.Add(300 * time.Millisecond)
+	sch.mu.Unlock()
+	if got := sch.nextDispatchDelay(); got != mdmSchedulerBusyRetryDelay {
+		t.Fatalf("delay with a blocked due job and the next job due in 300ms = %s, want %s", got, mdmSchedulerBusyRetryDelay)
+	}
+}

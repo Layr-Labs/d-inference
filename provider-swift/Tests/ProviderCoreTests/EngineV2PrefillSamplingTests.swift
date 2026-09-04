@@ -858,9 +858,12 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
 
         let admission = try #require(engine.deadlineAdmissions.first)
         #expect(admission.deadline == expectedDeadline.instant)
-        #expect(
-            admission.conservativePrefillTokensPerSecond
-                == measured * EngineV2Bridge.deadlineProjectionRateHaircut)
+        // Identical seeds ⇒ zero dispersion ⇒ the derived haircut sits at
+        // its 0.85 ceiling (never 1.0: the engine window still spans one
+        // sampling step and the readback).
+        let haircut = await bridge.deadlineProjectionRateHaircut
+        #expect(haircut == EngineV2Bridge.deadlineProjectionRateHaircutCeiling)
+        #expect(admission.conservativePrefillTokensPerSecond == measured * haircut)
         #expect(admission.conservativeDecodeTokensPerSecond == nil)
         #expect(
             await bridge._testSubmissionInstant(requestId: "atomic-admit")
@@ -942,9 +945,8 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             requestId: "atomic-with-decode-rate",
             firstContentDeadline: deadline())
         let admission = try #require(engine.deadlineAdmissions.last)
-        #expect(
-            admission.conservativeDecodeTokensPerSecond
-                == measuredDecode * EngineV2Bridge.deadlineProjectionRateHaircut)
+        let haircut = await bridge.deadlineProjectionRateHaircut
+        #expect(admission.conservativeDecodeTokensPerSecond == measuredDecode * haircut)
         try await finishLatestSubmission(deadlineStream, engine: engine)
     }
 
@@ -1154,11 +1156,13 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         _ = await consumer.value
 
         let healedRate = await bridge._testIsolatedPrefillTps()
-        // The probe's window is the 100 ms backdate plus whatever the test
-        // scheduler added; bound the expected jump by a 1 s window so the
-        // assertion is deterministic under load (α = 0.3 of the gap).
-        let worstCaseTruth = Double(promptTokens.count) / 1.0
-        #expect(healedRate - seededRate >= 0.3 * (worstCaseTruth - seededRate))
+        // Token-weighted ΣP/Σt: the probe adds 200 tokens over ~0.1 s against
+        // three decayed 1,000 s seed windows, so the rate moves UP but by the
+        // harmonic amount (≈ +65 % here, not 30 % of the gap the per-request
+        // EWMA would have jumped). `jitSeedHealsUnderTokenWeighting` pins
+        // the healing curve with prod-shaped samples.
+        #expect(healedRate > seededRate)
+        #expect(healedRate <= 200 * 2.533 / (1_000 * 1.533) * 1.05)
         #expect(await bridge._testIsolatedPrefillSampleCount() == sampleFloor + 1)
 
         // A probe is still a hard-expiry subject: an expired request never
@@ -1778,6 +1782,119 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(await second.value == .deadlineUnreachable)
         #expect(await bridge._testPendingEngineIDCount() == 0)
         #expect(await bridge._testPendingSubmissionCount() == 0)
+    }
+
+    // MARK: - Honest isolated rate: token weighting + derived haircut (T2-03)
+
+    /// One isolated cold sample measured over an ENGINE window (stamps on
+    /// the usage), so the rate is exact and independent of the scheduler.
+    private func recordStampedIsolatedSample(
+        bridge: EngineV2Bridge,
+        engine: PrefillScriptEngine,
+        requestId: String,
+        tokens: Int,
+        tokensPerSecond: Double
+    ) async throws {
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: tokens),
+            request: request,
+            requestId: requestId)
+        let consumer = Task { for await _ in stream {} }
+        var usage = CBv2Usage(promptTokens: tokens, completionTokens: 1)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1
+        timing.firstTokenNanos = 1 + UInt64(Double(tokens) / tokensPerSecond * 1e9)
+        usage.timing = timing
+        let continuation = try #require(engine.continuations.last)
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(reason: .stop, usage: usage))
+        continuation.finish()
+        _ = await consumer.value
+    }
+
+    @Test("the isolated rate is token-weighted: one 16K prompt outweighs five 200-token ones")
+    func tokenWeightedRateFollowsLongPrompts() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        for index in 0 ..< 5 {
+            try await recordStampedIsolatedSample(
+                bridge: bridge, engine: engine, requestId: "short-\(index)",
+                tokens: 200, tokensPerSecond: 400)
+        }
+        #expect(abs((await bridge._testIsolatedPrefillTps()) - 400) < 1e-6)
+        try await recordStampedIsolatedSample(
+            bridge: bridge, engine: engine, requestId: "long",
+            tokens: 16_000, tokensPerSecond: 1_500)
+        let rate = await bridge._testIsolatedPrefillTps()
+        // ΣP/Σt over decayed samples ≈ 1,408 tok/s; the per-request EWMA
+        // would have read 0.3·1500 + 0.7·400 = 730.
+        #expect(rate >= 1_200, "token-weighted rate \(rate)")
+        #expect(rate <= 1_500)
+        #expect(await bridge.observedPrefillTpsEwma == rate)
+        // Heartbeat telemetry reports the same accessor.
+        #expect(await bridge.backendSlotCapacity().telemetry?.isolatedPrefillTps == rate)
+        #expect(await bridge.backendSlotCapacity().observedPrefillTps == rate)
+    }
+
+    @Test("the haircut is derived from dispersion: consistent samples ⇒ 0.85, scattered samples ⇒ 0.5")
+    func haircutFollowsDispersion() {
+        #expect(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: 0) == 0.85)
+        #expect(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: 0.05) == 0.85)
+        #expect(abs(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: 0.1) - 0.8) < 1e-9)
+        #expect(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: 0.25) == 0.5)
+        #expect(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: 3) == 0.5)
+        #expect(EngineV2Bridge.deadlineProjectionRateHaircut(dispersion: .nan) == 0.5)
+    }
+
+    @Test("a slot whose isolated samples scatter projects at the 0.5 floor; one whose samples agree at 0.85")
+    func bridgeHaircutTracksItsSamples() async throws {
+        let scattered = PrefillScriptEngine()
+        let scatteredBridge = makeBridge(engine: scattered, mode: .enforce)
+        for (index, rate) in [100.0, 1_000.0, 100.0, 1_000.0].enumerated() {
+            try await recordStampedIsolatedSample(
+                bridge: scatteredBridge, engine: scattered, requestId: "scatter-\(index)",
+                tokens: 200, tokensPerSecond: rate)
+        }
+        #expect(await scatteredBridge._testIsolatedPrefillDispersion() >= 0.25)
+        #expect(await scatteredBridge.deadlineProjectionRateHaircut == 0.5)
+
+        let steady = PrefillScriptEngine()
+        let steadyBridge = makeBridge(engine: steady, mode: .enforce)
+        for index in 0 ..< 4 {
+            try await recordStampedIsolatedSample(
+                bridge: steadyBridge, engine: steady, requestId: "steady-\(index)",
+                tokens: 2_000, tokensPerSecond: 1_000)
+        }
+        #expect(await steadyBridge._testIsolatedPrefillDispersion() < 1e-9)
+        #expect(await steadyBridge.deadlineProjectionRateHaircut == 0.85)
+    }
+
+    @Test("a JIT-poisoned seed heals under token weighting with prod-shaped samples")
+    func jitSeedHealsUnderTokenWeighting() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        // The startup self-test: ~50 tokens across a 5 s Metal-JIT window.
+        try await recordStampedIsolatedSample(
+            bridge: bridge, engine: engine, requestId: "jit-seed",
+            tokens: 50, tokensPerSecond: 10)
+        // Real traffic: 2K prompts at 1,000 tok/s.
+        for index in 0 ..< 2 {
+            try await recordStampedIsolatedSample(
+                bridge: bridge, engine: engine, requestId: "warm-\(index)",
+                tokens: 2_000, tokensPerSecond: 1_000)
+        }
+        // At the enforcement floor the seed's 5 s still weighs 0.49 in Σt:
+        // ≈ 585 tok/s. Conservative, not wedged (the old EWMA read ≈ 515).
+        let atFloor = await bridge._testIsolatedPrefillTps()
+        #expect(atFloor >= 500 && atFloor <= 700, "at floor: \(atFloor)")
+        for index in 2 ..< 7 {
+            try await recordStampedIsolatedSample(
+                bridge: bridge, engine: engine, requestId: "warm-\(index)",
+                tokens: 2_000, tokensPerSecond: 1_000)
+        }
+        // Eight samples in: the seed is at 0.7^7 ≈ 8 % weight — ≥ 90 % of truth.
+        let healed = await bridge._testIsolatedPrefillTps()
+        #expect(healed >= 900, "healed: \(healed)")
     }
 
     // MARK: - The refusal carries the engine's projection (T2-02)

@@ -362,15 +362,37 @@ public actor EngineV2Bridge {
     /// engine prefill-start marker for the LEGACY engine; the v2 bridge
     /// already owns both timestamps, so no engine change is needed) with
     /// the same plausibility bounds — see `recordPrefillSample`.
+    ///
+    /// STORAGE (kept under the historical name so the heartbeat and every
+    /// reader stay untouched): the current rate ΣP/Σt over exponentially
+    /// decayed samples (`prefillSampleDecay` per sample — the same memory as
+    /// the α = 0.3 per-request EWMA it replaces). Token-weighted: a 16K
+    /// prompt weighs 80× a 200-token one, so the rate long prompts are
+    /// projected against is the one long prompts measured; a per-request
+    /// EWMA let a fleet of short prompts (fixed overhead inside every window)
+    /// drag the rate to a fraction of the chip's capability.
     var observedPrefillTpsEwma: Double = 0
     var prefillEwmaInitialized = false
-    /// Queue- and decode-excluded cold-prefill service-rate EWMA used ONLY by
+    var observedPrefillTokensSum: Double = 0
+    var observedPrefillSecondsSum: Double = 0
+    /// Queue- and decode-excluded cold-prefill service rate used ONLY by
     /// atomic scheduler deadline projection. A sample is eligible only when
     /// no other request of any phase is active or pending at its exact submit
     /// boundary. Mixed decode work is priced separately; it must never be
-    /// hidden inside this prefill denominator.
+    /// hidden inside this prefill denominator. Same decayed ΣP/Σt storage as
+    /// `observedPrefillTpsEwma`.
     var isolatedPrefillTpsEwma: Double = 0
     var isolatedPrefillEwmaInitialized = false
+    var isolatedPrefillTokensSum: Double = 0
+    var isolatedPrefillSecondsSum: Double = 0
+    /// Dispersion of the isolated rate: decayed mean (α = 0.3) of each new
+    /// sample's absolute deviation from the rate that would have projected
+    /// it, |sample/rate − 1|. Sets the projection haircut.
+    var isolatedPrefillDispersion: Double = 0
+    var isolatedPrefillDispersionInitialized = false
+    /// Per-sample decay of the (ΣP, Σt) pairs: 0.7 ⇒ the same effective
+    /// memory as an α = 0.3 EWMA.
+    static let prefillSampleDecay = 0.7
     /// Isolated cold samples folded into `isolatedPrefillTpsEwma` so far.
     /// Deadline projection is enforced only once `isolatedPrefillSampleFloor`
     /// samples exist: the FIRST request after a load (the startup self-test
@@ -391,11 +413,30 @@ public actor EngineV2Bridge {
     /// expiry still applies to the probe.
     var consecutiveDeadlineRefusals = 0
     static let deadlineRefusalProbeThreshold = 3
-    /// Observed EWMAs are point estimates, not hard lower bounds. Deadline
-    /// projection halves each available phase rate, providing a fixed 2x
-    /// service-time envelope without letting one pathological minimum poison
-    /// the bridge forever.
-    static let deadlineProjectionRateHaircut = 0.5
+    /// Observed rates are point estimates, not hard lower bounds. Deadline
+    /// projection scales each available phase rate by a haircut DERIVED from
+    /// the isolated rate's measured dispersion: 1 − 2·CV, clamped to
+    /// [0.5, 0.85]. A slot whose isolated samples agree within a few percent
+    /// projects at 0.85 of its measured rate; one whose samples scatter by
+    /// ±25 % or more keeps the historical 0.5 envelope. Never above 0.85: the
+    /// engine window still spans one sampling step and host readback, and
+    /// the absolute expiry — not this margin — is the backstop.
+    static let deadlineProjectionRateHaircutFloor = 0.5
+    static let deadlineProjectionRateHaircutCeiling = 0.85
+
+    static func deadlineProjectionRateHaircut(dispersion: Double) -> Double {
+        guard dispersion.isFinite, dispersion >= 0 else {
+            return deadlineProjectionRateHaircutFloor
+        }
+        return min(
+            deadlineProjectionRateHaircutCeiling,
+            max(deadlineProjectionRateHaircutFloor, 1 - 2 * dispersion))
+    }
+
+    /// The haircut deadline projection applies right now.
+    var deadlineProjectionRateHaircut: Double {
+        Self.deadlineProjectionRateHaircut(dispersion: isolatedPrefillDispersion)
+    }
     /// Cold-start model load time (ms) for this slot, recorded by
     /// `ProviderLoop.ensureModelLoaded` once the load completes (the
     /// bridge exists before the load finishes, so this arrives post-init).
@@ -1253,10 +1294,9 @@ public actor EngineV2Bridge {
             return nil
         }
 
-        let prefillRate =
-            isolatedPrefillTpsEwma * Self.deadlineProjectionRateHaircut
-        let decodeCandidate =
-            observedDecodeTpsEwma * Self.deadlineProjectionRateHaircut
+        let haircut = deadlineProjectionRateHaircut
+        let prefillRate = isolatedPrefillTpsEwma * haircut
+        let decodeCandidate = observedDecodeTpsEwma * haircut
         let decodeRate =
             ewmaInitialized && decodeCandidate.isFinite && decodeCandidate > 0
             ? decodeCandidate
@@ -2360,21 +2400,26 @@ public actor EngineV2Bridge {
             let tps = Self.classifyPrefillSample(
                 prefilledTokens: promptTokens, prefillSeconds: prefillSeconds)
         else { return }
-        let alpha = 0.3
-        if prefillEwmaInitialized {
-            observedPrefillTpsEwma = alpha * tps + (1 - alpha) * observedPrefillTpsEwma
-        } else {
-            observedPrefillTpsEwma = tps
-            prefillEwmaInitialized = true
-        }
+        let decay = Self.prefillSampleDecay
+        observedPrefillTokensSum = decay * observedPrefillTokensSum + Double(promptTokens)
+        observedPrefillSecondsSum = decay * observedPrefillSecondsSum + prefillSeconds
+        observedPrefillTpsEwma = observedPrefillTokensSum / observedPrefillSecondsSum
+        prefillEwmaInitialized = true
         guard isolatedAtSubmit else { return }
-        if isolatedPrefillEwmaInitialized {
-            isolatedPrefillTpsEwma =
-                alpha * tps + (1 - alpha) * isolatedPrefillTpsEwma
-        } else {
-            isolatedPrefillTpsEwma = tps
-            isolatedPrefillEwmaInitialized = true
+        if isolatedPrefillEwmaInitialized, isolatedPrefillTpsEwma > 0 {
+            // Deviation from the rate that would have projected THIS sample.
+            let alpha = 0.3
+            let deviation = abs(tps / isolatedPrefillTpsEwma - 1)
+            isolatedPrefillDispersion =
+                isolatedPrefillDispersionInitialized
+                ? alpha * deviation + (1 - alpha) * isolatedPrefillDispersion
+                : deviation
+            isolatedPrefillDispersionInitialized = true
         }
+        isolatedPrefillTokensSum = decay * isolatedPrefillTokensSum + Double(promptTokens)
+        isolatedPrefillSecondsSum = decay * isolatedPrefillSecondsSum + prefillSeconds
+        isolatedPrefillTpsEwma = isolatedPrefillTokensSum / isolatedPrefillSecondsSum
+        isolatedPrefillEwmaInitialized = true
         isolatedPrefillSampleCount += 1
     }
 
@@ -2605,6 +2650,8 @@ public actor EngineV2Bridge {
     /// Seed the isolated cold-prefill EWMA so `firstTokenDeadlineAdmission`
     /// takes the atomic deadline-submit path against a fake engine.
     func _testSeedIsolatedPrefillEwma(_ tokensPerSecond: Double) {
+        isolatedPrefillTokensSum = tokensPerSecond
+        isolatedPrefillSecondsSum = 1
         isolatedPrefillTpsEwma = tokensPerSecond
         isolatedPrefillEwmaInitialized = true
         // The seed stands in for a fully measured slot: arm the enforcement
@@ -2618,6 +2665,9 @@ public actor EngineV2Bridge {
 
     /// Consecutive `deadline_unreachable` refusals since the last submission.
     func _testConsecutiveDeadlineRefusals() -> Int { consecutiveDeadlineRefusals }
+
+    /// Decayed dispersion of the isolated prefill samples (haircut input).
+    func _testIsolatedPrefillDispersion() -> Double { isolatedPrefillDispersion }
 
     /// Number of deterministic/monotonic engine IDs reserved across admission.
     func _testPendingEngineIDCount() -> Int { pendingEngineIDs.count }

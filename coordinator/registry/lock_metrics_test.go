@@ -68,6 +68,40 @@ func TestRegistryMutexRecordsWriterWait(t *testing.T) {
 	}
 }
 
+// TestLockWaitSampleWindowIsIndependentOfTheGaugeWindow: the fleet sampler
+// and the DogStatsD gauge loop each own a window; every Lock() lands in
+// both, and either owner's reset leaves the other's accumulation intact, so
+// the sampler's row never depends on the gauge loop's phase. Fails before
+// the fix (one shared window: the gauge reset zeroed what the sampler read).
+func TestLockWaitSampleWindowIsIndependentOfTheGaugeWindow(t *testing.T) {
+	reg := New(testLogger())
+	reg.LockWaitSnapshot()
+	reg.LockWaitSample()
+	for range 3 {
+		reg.mu.Lock()
+		reg.mu.Unlock()
+	}
+	if g := reg.LockWaitSnapshot(); g.Count != 3 {
+		t.Fatalf("gauge window Count = %d, want 3", g.Count)
+	}
+	// The gauge reset above must not have touched the sample window.
+	if s := reg.LockWaitSample(); s.Count != 3 {
+		t.Fatalf("sample window Count after the gauge reset = %d, want 3 (independent window)", s.Count)
+	}
+	// And the sample reset does not touch the gauge window.
+	reg.mu.Lock()
+	reg.mu.Unlock()
+	if s := reg.LockWaitSample(); s.Count != 1 {
+		t.Fatalf("sample window Count = %d, want 1 (returns-and-resets)", s.Count)
+	}
+	if g := reg.LockWaitPeek(); g.Count != 1 {
+		t.Fatalf("gauge window Count after the sample reset = %d, want 1", g.Count)
+	}
+	if s := reg.LockWaitSample(); s.Count != 0 {
+		t.Fatalf("empty sample window Count = %d, want 0", s.Count)
+	}
+}
+
 // TestLockWaitBuckets pins the log2 bucket layout and its percentile
 // estimate: bucket i holds waits in [2^(i-1), 2^i) µs and the estimate reports
 // the bucket's upper bound clamped to the exact maximum.
@@ -90,7 +124,7 @@ func TestLockWaitBuckets(t *testing.T) {
 	for range 10 {
 		m.recordWait(3 * time.Millisecond)
 	}
-	stats := m.stats(false)
+	stats := m.gauge.stats(false, 0)
 	if stats.Count != 100 || stats.MaxUS != 3000 {
 		t.Fatalf("stats = %+v, want Count 100 MaxUS 3000", stats)
 	}

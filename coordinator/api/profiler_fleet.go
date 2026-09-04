@@ -56,9 +56,14 @@ func (s *Server) sampleFleetOnce(now time.Time) {
 	rows := s.registry.FleetSample(now)
 	coord := s.registry.CoordinatorSample(now)
 	coord.Goroutines = runtime.NumGoroutine()
-	// Writer wait on Registry.mu since the last DogStatsD gauge tick (the
-	// gauge loop owns the reset; the sampler only peeks).
-	coord.ReserveLockWaitP95US = s.registry.LockWaitPeek().P95US
+	// Writer-wait p95 on Registry.mu over the sampler's own window (since the
+	// previous fleet sample — LockWaitSample owns its reset, independent of
+	// the 15 s gauge loop). NULL when no exclusive acquisition happened in
+	// the window: "no sample" must never read as "writers waited 0 µs".
+	if lw := s.registry.LockWaitSample(); lw.Count > 0 {
+		p95 := lw.P95US
+		coord.ReserveLockWaitP95US = &p95
+	}
 	if s.profiler != nil && s.profiler.sink != nil {
 		coord.ProfileSinkDepth = s.profiler.sink.depth()
 		coord.ProfileSinkDroppedTotal = s.profiler.sink.droppedTotal()

@@ -31,12 +31,24 @@ const lockWaitBuckets = 32
 // r.mu.Lock()/RLock()/Unlock()/RUnlock() call compiles unchanged; only Lock()
 // is wrapped. The zero value is ready to use (zero RWMutex + zero atomics), so
 // Registry literals in tests remain valid.
+//
+// Two consumers read the wait instrument on unrelated clocks — the DogStatsD
+// gauge loop every 15 s and the fleet sampler every 60 s — and each needs a
+// window it owns: a shared returns-and-resets window would hand the sampler
+// whatever 0-15 s slice happened to elapse since the last gauge tick. Every
+// Lock() therefore records into two independent windows (a few more atomic
+// adds at a few hundred acquisitions per second), each reset only by its
+// owner: gauge by LockWaitSnapshot, sample by LockWaitSample.
 type registryMutex struct {
 	sync.RWMutex
 	// writersWaiting is the number of goroutines parked in Lock() right now.
 	writersWaiting atomic.Int32
-	// waitNS / waitMaxNS accumulate the wait of every Lock() since the last
-	// reset; waitBuckets counts acquisitions by log2(wait µs).
+	gauge, sample  lockWaitWindow
+}
+
+// lockWaitWindow accumulates the wait of every Lock() since its last reset:
+// sum, max, and acquisitions by log2(wait µs).
+type lockWaitWindow struct {
 	waitNS      atomic.Int64
 	waitMaxNS   atomic.Int64
 	waitBuckets [lockWaitBuckets]atomic.Int64
@@ -57,14 +69,19 @@ func (m *registryMutex) recordWait(wait time.Duration) {
 	if ns < 0 {
 		ns = 0
 	}
-	m.waitNS.Add(ns)
+	m.gauge.record(ns)
+	m.sample.record(ns)
+}
+
+func (w *lockWaitWindow) record(ns int64) {
+	w.waitNS.Add(ns)
 	for {
-		cur := m.waitMaxNS.Load()
-		if ns <= cur || m.waitMaxNS.CompareAndSwap(cur, ns) {
+		cur := w.waitMaxNS.Load()
+		if ns <= cur || w.waitMaxNS.CompareAndSwap(cur, ns) {
 			break
 		}
 	}
-	m.waitBuckets[lockWaitBucket(ns/1000)].Add(1)
+	w.waitBuckets[lockWaitBucket(ns/1000)].Add(1)
 }
 
 // lockWaitBucket maps a wait in microseconds to its log2 bucket.
@@ -102,27 +119,28 @@ type LockWaitStats struct {
 }
 
 // stats reads the window; reset=true also zeroes it (returns-and-resets).
-func (m *registryMutex) stats(reset bool) LockWaitStats {
+// writersWaiting is the instrument-wide parked-writer count at read time.
+func (w *lockWaitWindow) stats(reset bool, writersWaiting int32) LockWaitStats {
 	var buckets [lockWaitBuckets]int64
 	var count int64
 	for i := range buckets {
 		if reset {
-			buckets[i] = m.waitBuckets[i].Swap(0)
+			buckets[i] = w.waitBuckets[i].Swap(0)
 		} else {
-			buckets[i] = m.waitBuckets[i].Load()
+			buckets[i] = w.waitBuckets[i].Load()
 		}
 		count += buckets[i]
 	}
 	var sumNS, maxNS int64
 	if reset {
-		sumNS, maxNS = m.waitNS.Swap(0), m.waitMaxNS.Swap(0)
+		sumNS, maxNS = w.waitNS.Swap(0), w.waitMaxNS.Swap(0)
 	} else {
-		sumNS, maxNS = m.waitNS.Load(), m.waitMaxNS.Load()
+		sumNS, maxNS = w.waitNS.Load(), w.waitMaxNS.Load()
 	}
 	out := LockWaitStats{
 		Count:          count,
 		MaxUS:          maxNS / 1000,
-		WritersWaiting: m.writersWaiting.Load(),
+		WritersWaiting: writersWaiting,
 	}
 	if count == 0 {
 		return out
@@ -152,18 +170,25 @@ func (m *registryMutex) stats(reset bool) LockWaitStats {
 	return out
 }
 
-// LockWaitSnapshot returns the Registry.mu writer-wait window since the
-// previous call and resets it. The DogStatsD gauge loop is its one owner
-// (registry.mu.* series, every 15 s); everything else reads LockWaitPeek.
+// LockWaitSnapshot returns the gauge window — the Registry.mu writer waits
+// since the previous call — and resets it. The DogStatsD gauge loop is its
+// one owner (registry.mu.* series, every 15 s).
 func (r *Registry) LockWaitSnapshot() LockWaitStats {
-	return r.mu.stats(true)
+	return r.mu.gauge.stats(true, r.mu.writersWaiting.Load())
 }
 
-// LockWaitPeek returns the writer-wait window accumulated since the last
-// LockWaitSnapshot without resetting it (the fleet sampler reads its p95 from
-// here, so the two consumers never starve each other).
+// LockWaitPeek returns the gauge window accumulated since the last
+// LockWaitSnapshot without resetting it (tests and ad-hoc inspection).
 func (r *Registry) LockWaitPeek() LockWaitStats {
-	return r.mu.stats(false)
+	return r.mu.gauge.stats(false, r.mu.writersWaiting.Load())
+}
+
+// LockWaitSample returns the sample window — the writer waits since the
+// previous call — and resets it. The fleet sampler is its one owner
+// (fleet_snapshots.reserve_lock_wait_p95_us, every 60 s), so the row covers
+// exactly the sampler's own interval whatever the gauge loop's phase.
+func (r *Registry) LockWaitSample() LockWaitStats {
+	return r.mu.sample.stats(true, r.mu.writersWaiting.Load())
 }
 
 // scanCounters are the cumulative fleet-walk frequency counters. One atomic

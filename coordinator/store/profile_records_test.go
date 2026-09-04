@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-func i64p(v int64) *int64 { return &v }
-func intp(v int) *int     { return &v }
-func boolp(v bool) *bool  { return &v }
+func i64p(v int64) *int64   { return &v }
+func intp(v int) *int       { return &v }
+func boolp(v bool) *bool    { return &v }
+func int64p(v int64) *int64 { return &v }
 
 // canonicalJSON re-encodes raw with sorted keys and no whitespace so a JSONB
 // round trip (which normalises both) compares equal. Empty stays nil.
@@ -128,7 +129,7 @@ func coordinatorSnapshot(at time.Time) FleetSnapshotRow {
 	return FleetSnapshotRow{
 		SampledAt: at, ProviderID: "coordinator", EligibilityReason: "", SlotState: "",
 		QueueDepthTotal: 5, QueueDepthByModel: json.RawMessage(`{"qwen3-30b": 3, "gemma4-26b": 2}`),
-		InflightRequests: 17, ReserveLockWaitP95US: 850, ProfileSinkDepth: 12, ProfileSinkDroppedTotal: 0,
+		InflightRequests: 17, ReserveLockWaitP95US: int64p(850), ProfileSinkDepth: 12, ProfileSinkDroppedTotal: 0,
 		RouteSinkDroppedTotal: 4, UnknownRequestFramesTotal: 1, Goroutines: 412,
 	}
 }

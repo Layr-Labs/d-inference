@@ -1202,6 +1202,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS provider_version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		// free_for_load_gb became nullable (nil = provider did not report it); idempotent.
 		`ALTER TABLE fleet_snapshots ALTER COLUMN free_for_load_gb DROP NOT NULL`,
+		// reserve_lock_wait_p95_us became nullable (nil = no exclusive
+		// acquisition in the sampler's window, distinct from a 0 µs wait); idempotent.
+		`ALTER TABLE fleet_snapshots ALTER COLUMN reserve_lock_wait_p95_us DROP NOT NULL`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS model_vision BOOL NOT NULL DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE fleet_snapshots ADD COLUMN IF NOT EXISTS template_render_ok BOOL; EXCEPTION WHEN duplicate_column THEN NULL; END $$`,
 		fleetSnapshotsProviderIndexDDL,
@@ -6272,7 +6275,7 @@ const (
 			queue_depth_total INT NOT NULL DEFAULT 0,
 			queue_depth_by_model JSONB,
 			inflight_requests INT NOT NULL DEFAULT 0,
-			reserve_lock_wait_p95_us BIGINT NOT NULL DEFAULT 0,
+			reserve_lock_wait_p95_us BIGINT,
 			profile_sink_depth INT NOT NULL DEFAULT 0,
 			profile_sink_dropped_total BIGINT NOT NULL DEFAULT 0,
 			route_sink_dropped_total BIGINT NOT NULL DEFAULT 0,

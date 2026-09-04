@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // withTestDD attaches a UDP DogStatsD collector to the server and returns it.
@@ -176,37 +177,55 @@ func TestHedgeGovernorSnapshotCounter(t *testing.T) {
 	}
 }
 
-// TestFleetSampleCarriesReserveLockWaitP95 pins the previously-dead
+// TestFleetSampleCarriesReserveLockWaitP95 pins the
 // fleet_snapshots.reserve_lock_wait_p95_us column: the coordinator row
-// carries the writer-wait p95 of the current window.
+// carries the writer-wait p95 over the sampler's OWN window (LockWaitSample,
+// reset only by the sampler), so a gauge-loop tick in between — which resets
+// the gauge window — leaves the row's value intact, and a window with no
+// exclusive acquisition writes NULL rather than a 0 µs wait. Fails before
+// the fix (the sampler peeked the gauge window: 0 after the tick, and 0 for
+// "no sample").
 func TestFleetSampleCarriesReserveLockWaitP95(t *testing.T) {
 	srv, st := testServer(t)
 	reg := srv.registry
-	reg.LockWaitSnapshot()
-	// A few exclusive acquisitions so the window is non-empty; the row must
-	// carry exactly the instrument's current-window p95 (peek, not reset).
+	reg.LockWaitSnapshot() // discard fixture acquisitions in both windows
+	reg.LockWaitSample()
 	for range 5 {
 		reg.RecordCapacityReject("fp1", "fleet-p95-model")
 	}
+	// The same five acquisitions landed in the gauge window: read the
+	// expected p95 from there, then let the gauge loop's tick reset it.
 	want := reg.LockWaitPeek()
 	if want.Count != 5 {
-		t.Fatalf("peek Count = %d, want 5", want.Count)
+		t.Fatalf("gauge window Count = %d, want 5", want.Count)
 	}
-	srv.sampleFleetOnce(time.Now())
-	rows := st.FleetSnapshotsSince(time.Time{})
-	found := false
-	for _, row := range rows {
-		if row.ProviderID == "coordinator" {
-			found = true
-			if row.ReserveLockWaitP95US != want.P95US {
-				t.Fatalf("reserve_lock_wait_p95_us = %d, want the window p95 %d", row.ReserveLockWaitP95US, want.P95US)
-			}
+	reg.LockWaitSnapshot()
+
+	first := time.Now()
+	srv.sampleFleetOnce(first)
+	row := coordinatorRowAt(t, st, first)
+	if row.ReserveLockWaitP95US == nil {
+		t.Fatal("reserve_lock_wait_p95_us = NULL, want the sampler window's p95 (the gauge tick must not reset it)")
+	}
+	if *row.ReserveLockWaitP95US != want.P95US {
+		t.Fatalf("reserve_lock_wait_p95_us = %d, want the window p95 %d", *row.ReserveLockWaitP95US, want.P95US)
+	}
+
+	// No exclusive acquisition since: the next row says "no sample", not 0.
+	second := first.Add(time.Minute)
+	srv.sampleFleetOnce(second)
+	if row := coordinatorRowAt(t, st, second); row.ReserveLockWaitP95US != nil {
+		t.Fatalf("reserve_lock_wait_p95_us = %d for an empty window, want NULL", *row.ReserveLockWaitP95US)
+	}
+}
+
+func coordinatorRowAt(t *testing.T, st *store.MemoryStore, sampledAt time.Time) store.FleetSnapshotRow {
+	t.Helper()
+	for _, row := range st.FleetSnapshotsSince(time.Time{}) {
+		if row.ProviderID == "coordinator" && row.SampledAt.Equal(sampledAt) {
+			return row
 		}
 	}
-	if !found {
-		t.Fatal("no coordinator row sampled")
-	}
-	if after := reg.LockWaitPeek(); after.Count != 5 {
-		t.Fatalf("sampler must not reset the window: Count = %d, want 5", after.Count)
-	}
+	t.Fatalf("no coordinator row sampled at %v", sampledAt)
+	return store.FleetSnapshotRow{}
 }

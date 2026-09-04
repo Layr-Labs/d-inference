@@ -239,15 +239,17 @@ type FleetSnapshotRow struct {
 	CancelAbortNSSum             int64 `json:"cancel_abort_ns_sum"`
 
 	// Coordinator row only.
-	QueueDepthTotal           int             `json:"queue_depth_total"`
-	QueueDepthByModel         json.RawMessage `json:"queue_depth_by_model,omitempty"`
-	InflightRequests          int             `json:"inflight_requests"`
-	ReserveLockWaitP95US      int64           `json:"reserve_lock_wait_p95_us"`
-	ProfileSinkDepth          int             `json:"profile_sink_depth"`
-	ProfileSinkDroppedTotal   int64           `json:"profile_sink_dropped_total"`
-	RouteSinkDroppedTotal     int64           `json:"route_sink_dropped_total"`
-	UnknownRequestFramesTotal int64           `json:"unknown_request_frames_total"`
-	Goroutines                int             `json:"goroutines"`
+	QueueDepthTotal   int             `json:"queue_depth_total"`
+	QueueDepthByModel json.RawMessage `json:"queue_depth_by_model,omitempty"`
+	InflightRequests  int             `json:"inflight_requests"`
+	// ReserveLockWaitP95US is the Registry.mu writer-wait p95 over the
+	// sampler's interval; nil when no exclusive acquisition happened in it.
+	ReserveLockWaitP95US      *int64 `json:"reserve_lock_wait_p95_us"`
+	ProfileSinkDepth          int    `json:"profile_sink_depth"`
+	ProfileSinkDroppedTotal   int64  `json:"profile_sink_dropped_total"`
+	RouteSinkDroppedTotal     int64  `json:"route_sink_dropped_total"`
+	UnknownRequestFramesTotal int64  `json:"unknown_request_frames_total"`
+	Goroutines                int    `json:"goroutines"`
 
 	// Capability gating, so a routing replay (registry/routingsim) can
 	// reconstruct the tools version floor and the vision gate. Provider rows

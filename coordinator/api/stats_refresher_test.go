@@ -377,6 +377,10 @@ type stubGeoResolver struct{ loc *store.ProviderLocation }
 
 func (s stubGeoResolver) Lookup(*http.Request) *store.ProviderLocation { return s.loc }
 
+// LookupAsync mirrors Lookup for the stub: the refresher tests only care that
+// location resolution no longer evicts the stats entry.
+func (s stubGeoResolver) LookupAsync(*http.Request) *store.ProviderLocation { return s.loc }
+
 // Provider location resolution and catalog cache invalidation no longer evict
 // the stats entry: the next request is still a cache hit and runs no pipeline.
 func TestStatsEntrySurvivesProviderLocationAndCatalogInvalidation(t *testing.T) {

@@ -818,8 +818,7 @@ function ProviderGeography({ stats }: { stats: PlatformStats }) {
   const certificateProviders = stats.providers.filter(
     (provider) => provider.certificate_available || provider.mda_verified,
   ).length;
-  const networkDecodeTPS = stats.providers.reduce((sum, provider) => sum + provider.decode_tps, 0);
-  const networkTPS = stats.network_capacity_tps || networkDecodeTPS;
+  const networkTPS = stats.network_capacity_tps;
   const unknownProviderLabel = unknown === 1 ? "provider" : "providers";
   const emptyLocationMessage = unknown > 0
     ? `${unknown} ${unknownProviderLabel} online without a resolved location`

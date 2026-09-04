@@ -114,7 +114,7 @@ export function ProviderNodeDetail({ provider }: { provider: ProviderStats | nul
             <p className="mt-1 font-mono text-sm font-semibold text-text-primary">{formatCompact(provider.tokens_generated)}</p>
           </div>
           <div>
-            <p className="text-[9px] font-mono uppercase text-text-tertiary">Reported speed</p>
+            <p className="text-[9px] font-mono uppercase text-text-tertiary">Measured decode</p>
             <p className="mt-1 font-mono text-sm font-semibold text-text-primary">{provider.decode_tps > 0 ? `${Math.round(provider.decode_tps)} tok/s` : "—"}</p>
           </div>
         </div>

@@ -346,20 +346,34 @@ func TestPostgresUsageAnalyticsWindowPredicate(t *testing.T) {
 }
 
 // A failing database is reported as an error from both analytics entry
-// points — never as an empty/zero result the caller could cache.
+// points — never as an empty/zero result the caller could cache. A
+// cancelled or expired context on a live pool surfaces as that context
+// error (the timeout shape the refresher sees), not as a swallowed
+// success and not as a tuning rejection.
 func TestPostgresAnalyticsReportFailure(t *testing.T) {
 	s := testPostgresStore(t)
+	analyticsFixture(t, s)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.UsageAnalyticsSince(ctx, time.Now().Add(-time.Hour), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled analytics context: err = %v, want context.Canceled", err)
+	}
+	expired, cancelExpired := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelExpired()
+	<-expired.Done()
+	if _, err := s.UsageAnalyticsSince(expired, time.Now().Add(-time.Hour), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired analytics context: err = %v, want context.DeadlineExceeded", err)
+	}
+	if s.analyticsTuningRejected.Load() {
+		t.Fatal("a context failure was mistaken for a tuning rejection")
+	}
+
 	s.pool.Close()
 	if _, err := s.UsageAnalyticsSince(context.Background(), time.Now().Add(-time.Hour), nil); err == nil {
 		t.Fatal("UsageAnalyticsSince on a closed pool returned no error")
 	}
 	if _, err := s.NetworkTotals(time.Time{}); err == nil {
 		t.Fatal("NetworkTotals on a closed pool returned no error")
-	}
-	// A cancelled context is the timeout shape the refresher sees.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := s.UsageAnalyticsSince(ctx, time.Now().Add(-time.Hour), nil); !errors.Is(err, context.Canceled) && err == nil {
-		t.Fatal("cancelled analytics context returned no error")
 	}
 }

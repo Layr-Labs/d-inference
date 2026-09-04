@@ -410,13 +410,21 @@ public actor EngineV2Bridge {
     /// happened to heal it).
     var isolatedPrefillSampleCount = 0
     static let isolatedPrefillSampleFloor = 3
-    /// Consecutive `deadline_unreachable` refusals since the last admitted or
-    /// ordinary submission. At `deadlineRefusalProbeThreshold` the next
-    /// request that arrives at an ISOLATED submit boundary is admitted as an
-    /// ordinary submission (a refusal-driven probe): being isolated by
-    /// construction, its finish re-samples the isolated rate (if cold) and
-    /// moves it toward truth, so a slot can never refuse forever. The absolute
-    /// expiry still applies to the probe.
+    /// Consecutive `deadline_unreachable` refusals since the last admitted
+    /// projection, the last ordinary submission at an ISOLATED boundary, or
+    /// the last landed isolated prefill sample. At
+    /// `deadlineRefusalProbeThreshold` the next request that arrives at an
+    /// ISOLATED submit boundary is admitted as an ordinary submission (a
+    /// refusal-driven probe): being isolated by construction, its finish
+    /// re-samples the isolated rate (if cold) and moves it toward truth, so a
+    /// slot can never refuse forever. The probe's own submission resets the
+    /// counter — ONE probe per threshold refusals, so a probe the coordinator
+    /// cancels before its first token (an honest-slow slot) cannot cascade
+    /// into probing every isolated arrival (each an admit-then-expire). A
+    /// NON-isolated ordinary submission (a fail-open behind running rows, a
+    /// local request while rows run) records no isolated sample, proves
+    /// nothing about the rate, and does not reset it — it cannot starve the
+    /// threshold. The absolute expiry still applies to the probe.
     var consecutiveDeadlineRefusals = 0
     static let deadlineRefusalProbeThreshold = 3
     /// Observed rates are point estimates, not hard lower bounds. Deadline
@@ -937,8 +945,12 @@ public actor EngineV2Bridge {
 
         // Snapshot queue isolation at the exact engine-submit boundary. The
         // current provider request is already in `pendingSubmissionIDs`; every
-        // other active or pending row disqualifies this sample.
-        disqualifyOverlappedPrefillSamples()
+        // other active or pending row disqualifies this sample. The rows
+        // flipped here and the active set at this instant are remembered so
+        // a REFUSAL (which never enters the engine) can hand the isolation
+        // back — see `restoreOverlappedPrefillSamplesAfterRefusal`.
+        let overlappedPrefillIDs = disqualifyOverlappedPrefillSamples()
+        let activeKeysAtSubmitBoundary = Set(active.keys)
         let isolatedPrefillSampleEligible =
             isIsolatedPrefillSubmitBoundary(currentProviderRequestID: id)
 
@@ -1099,6 +1111,17 @@ public actor EngineV2Bridge {
                     // no `active` row, no sample and no other trace, so this
                     // counter is the only thing that can break a wedge.
                     consecutiveDeadlineRefusals += 1
+                    // A refused request never shared a prefill step: give
+                    // the rows it disqualified their isolation back, or the
+                    // refusals defeat the very probe that is meant to break
+                    // them (a refused newcomer during the probe's prefill
+                    // would turn the probe's finish into a non-isolated
+                    // sample, and the rate would never heal).
+                    restoreOverlappedPrefillSamplesAfterRefusal(
+                        overlappedPrefillIDs,
+                        activeKeysAtSubmitBoundary: activeKeysAtSubmitBoundary,
+                        requestID: id,
+                        engineID: cbv2Id)
                     // The engine's verdict is the one fact a refusal has.
                     // Stamp it on the profile that rides the 503 terminal —
                     // projected_* for a bounded projection, only the
@@ -1135,7 +1158,13 @@ public actor EngineV2Bridge {
                 // was checked immediately above. A full batch is refused, not
                 // parked (see `firstTokenDeadlineAdmission`).
                 events = try engine.submit(engineRequest)
-                consecutiveDeadlineRefusals = 0
+                // Only an ISOLATED ordinary submission (the probe, or any
+                // idle-slot request whose finish can land an isolated sample)
+                // resets the refusal counter; a non-isolated one proves
+                // nothing about the rate (see the counter's doc).
+                if isolatedPrefillSampleEligible {
+                    consecutiveDeadlineRefusals = 0
+                }
                 if let profile {
                     // Evaluated AFTER the submit returned: the deadline may
                     // have expired meanwhile, hence the zero clamp.
@@ -1406,12 +1435,48 @@ public actor EngineV2Bridge {
     /// that older sample non-isolated before submitting the newcomer; rows
     /// that already emitted their first token keep their completed prefill
     /// observation.
-    private func disqualifyOverlappedPrefillSamples() {
+    ///
+    /// Returns the ids whose eligibility this call flipped (true → false),
+    /// so a refusal can undo exactly its own effect.
+    @discardableResult
+    private func disqualifyOverlappedPrefillSamples() -> [String] {
+        var flipped: [String] = []
         for id in Array(active.keys) {
-            guard var state = active[id], state.firstTokenAt == nil else {
+            guard var state = active[id], state.firstTokenAt == nil,
+                state.isolatedPrefillSampleEligible
+            else {
                 continue
             }
             state.isolatedPrefillSampleEligible = false
+            active[id] = state
+            flipped.append(id)
+        }
+        return flipped
+    }
+
+    /// Undo `disqualifyOverlappedPrefillSamples` for a request the engine
+    /// REFUSED: it never entered the engine, so it cannot have shared a
+    /// prefill step with the rows it flipped. Restored ONLY when nothing
+    /// else reached the engine across the atomic verdict's suspension — no
+    /// other provider or engine submission is pending, and no row joined
+    /// `active` since the flip (a submission that started AND landed during
+    /// the await is in `active` but no longer pending; a row that LEFT is
+    /// fine, it was accounted for at its own boundary). Any later arrival
+    /// re-runs its own disqualification, so the restore is safe.
+    private func restoreOverlappedPrefillSamplesAfterRefusal(
+        _ flipped: [String],
+        activeKeysAtSubmitBoundary: Set<String>,
+        requestID: String,
+        engineID: CBv2RequestID
+    ) {
+        guard !flipped.isEmpty,
+            pendingSubmissionIDs.allSatisfy({ $0 == requestID }),
+            pendingEngineIDs.allSatisfy({ $0 == engineID }),
+            Set(active.keys).isSubset(of: activeKeysAtSubmitBoundary)
+        else { return }
+        for id in flipped {
+            guard var state = active[id] else { continue }
+            state.isolatedPrefillSampleEligible = true
             active[id] = state
         }
     }
@@ -2508,6 +2573,11 @@ public actor EngineV2Bridge {
         isolatedPrefillTpsEwma = isolatedPrefillTokensSum / isolatedPrefillSecondsSum
         isolatedPrefillEwmaInitialized = true
         isolatedPrefillSampleCount += 1
+        // The rate the refusals were based on just moved: the probe (or any
+        // isolated cold request) did its job. Refusals that landed while it
+        // ran were judged against the stale rate. See
+        // `consecutiveDeadlineRefusals`.
+        consecutiveDeadlineRefusals = 0
     }
 
     /// The prefill window a sample is measured over. ENGINE-STAMPED when the

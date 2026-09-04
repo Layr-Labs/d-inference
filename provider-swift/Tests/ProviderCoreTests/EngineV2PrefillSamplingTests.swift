@@ -1134,7 +1134,10 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         let ordinaryBeforeProbe = engine.ordinarySubmissionCount
 
         // Request K+1 arrives while idle: ordinary submission (the probe),
-        // NOT another atomic refusal, and the counter resets.
+        // NOT another atomic refusal, and the counter resets — one probe per
+        // threshold refusals, so a probe that observes nothing (cancelled
+        // before its first token on an honest-slow slot) cannot cascade
+        // into probing every isolated arrival.
         let probe = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
@@ -1166,6 +1169,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(healedRate > seededRate)
         #expect(healedRate <= 200 * 2.533 / (1_000 * 1.533) * 1.05)
         #expect(await bridge._testIsolatedPrefillSampleCount() == sampleFloor + 1)
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
 
         // A probe is still a hard-expiry subject: an expired request never
         // fails open through the probe branch.
@@ -1199,9 +1203,7 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         try await recordDecodeRate(bridge: bridge, engine: engine)
         engine.setDeadlineBehavior(.reject)
 
-        // A row is running for the whole refusal run (held open BEFORE the
-        // refusals: any submission — including this ordinary one — resets
-        // the counter by design, so it must precede them).
+        // A row is running for the whole refusal run.
         let row = await holdOpenRow(bridge: bridge, engine: engine, requestId: "running-row")
         #expect(await bridge._testCounters().active == 1)
         let threshold = EngineV2Bridge.deadlineRefusalProbeThreshold
@@ -1214,6 +1216,14 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
                     firstContentDeadline: deadline())
             }
         }
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
+
+        // A NON-isolated ordinary submission (no deadline, behind the running
+        // row) records no isolated sample and must not reset the counter —
+        // otherwise local traffic between refusals could starve the probe.
+        let local = await holdOpenRow(bridge: bridge, engine: engine, requestId: "local-behind-row")
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
+        await finishHeldRow(local)
         #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
 
         // The K+1th arrival is NOT isolated (the row is still running), so it
@@ -1232,7 +1242,8 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold + 1)
         await finishHeldRow(row)
 
-        // Idle again: the probe fires now.
+        // Idle again: the probe fires now (an ISOLATED ordinary submission
+        // resets the counter; the non-isolated held row above did not).
         let probe = try await bridge.submitTokenized(
             promptTokens: promptTokens,
             request: request,
@@ -1241,6 +1252,85 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
         #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
         #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
         try await finishLatestSubmission(probe, engine: engine)
+    }
+
+    @Test("a refused newcomer during the probe's prefill does not disqualify the probe's isolated sample")
+    func refusedNewcomerKeepsProbeSampleIsolated() async throws {
+        // Review fix (S1 P2): `disqualifyOverlappedPrefillSamples` runs for
+        // EVERY submission before the verdict, so a newcomer that is then
+        // REFUSED (never entered the engine, cannot have shared a step)
+        // used to flip the running probe non-isolated; the probe's finish
+        // then recorded nothing isolated, the rate never healed, and the
+        // next three refusals bought another probe with the same fate —
+        // under one arrival per probe window the slot served only probes.
+        let engine = PrefillScriptEngine()
+        let bridge = makeBridge(engine: engine, mode: .enforce)
+        for index in 0 ..< sampleFloor {
+            try await recordIsolatedColdSample(
+                bridge: bridge,
+                engine: engine,
+                requestId: "slow-seed-\(index)",
+                prefillMilliseconds: 1_000_000)
+        }
+        // A decode rate exists, so the newcomer is PROJECTED (refused) rather
+        // than failed open on the decode-nil branch.
+        try await recordDecodeRate(bridge: bridge, engine: engine)
+        let seededRate = await bridge._testIsolatedPrefillTps()
+        let countBefore = await bridge._testIsolatedPrefillSampleCount()
+        engine.setDeadlineBehavior(.reject)
+        let threshold = EngineV2Bridge.deadlineRefusalProbeThreshold
+        for index in 0 ..< threshold {
+            await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+                _ = try await bridge.submitTokenized(
+                    promptTokens: promptTokens,
+                    request: request,
+                    requestId: "refused-\(index)",
+                    firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+            }
+        }
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == threshold)
+
+        // The probe: ordinary submission at an isolated boundary.
+        let ordinaryBefore = engine.ordinarySubmissionCount
+        let probe = try await bridge.submitTokenized(
+            promptTokens: promptTokens,
+            request: request,
+            requestId: "probe",
+            firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        let consumer = Task { for await _ in probe {} }
+
+        // A newcomer arrives DURING the probe's prefill and is refused.
+        await #expect(throws: PreContentDeadlineFailure.deadlineUnreachable) {
+            _ = try await bridge.submitTokenized(
+                promptTokens: promptTokens,
+                request: request,
+                requestId: "newcomer-during-probe",
+                firstContentDeadline: deadline(budgetMilliseconds: 9_000))
+        }
+        #expect(engine.deadlineAdmissions.count == threshold + 1)
+        #expect(await bridge._testActiveRequestIds() == ["probe"])
+        // The probe's submission reset the counter; the refused newcomer
+        // bumped it once.
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 1)
+
+        // The probe finishes over a realistic engine window: its sample is
+        // still ISOLATED — the refused newcomer never shared a step.
+        var usage = CBv2Usage(promptTokens: promptTokens.count, completionTokens: 1)
+        var timing = CBv2RequestTiming()
+        timing.prefillFirstLaunchNanos = 1
+        timing.firstTokenNanos = 1 + 100 * 1_000_000
+        usage.timing = timing
+        let continuation = try #require(engine.continuations.last)
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(reason: .stop, usage: usage))
+        continuation.finish()
+        _ = await consumer.value
+        #expect(await bridge._testIsolatedPrefillSampleCount() == countBefore + 1)
+        #expect(await bridge._testIsolatedPrefillTps() > seededRate)
+        // …and the landed sample clears the refusal that was judged against
+        // the stale rate.
+        #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
     }
 
     @Test("an admitted projection resets the refusal counter")
@@ -1305,6 +1395,10 @@ struct EngineV2FirstTokenDeadlineAdmissionTests {
             firstContentDeadline: deadline())
         #expect(engine.deadlineAdmissions.count == 1)
         #expect(engine.ordinarySubmissionCount == ordinaryBefore + 1)
+        // The held row was itself an ISOLATED ordinary submission (idle
+        // slot) and reset the counter; the non-isolated fail-open arrival
+        // proves nothing about the rate and leaves it there
+        // (`probeRequiresIsolatedBoundary` pins the no-reset half).
         #expect(await bridge._testConsecutiveDeadlineRefusals() == 0)
 
         try await finishLatestSubmission(arrival, engine: engine)

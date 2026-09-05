@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `120ecc9c2`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -150,11 +150,12 @@ renames atomically. It never touches secrets. It fails if `/etc/d-inference` is
 tmpfs.
 
 ```bash
-# First time on a host only: install the reviewed inputs and the boot-time unit.
+# Every deploy: install the reviewed candidate's refresh script and manifests.
 sudo install -d -m 0755 /usr/local/lib/darkbloom-env
 sudo install -m 0755 deploy/gcp/prod/refresh-env.sh /usr/local/sbin/darkbloom-refresh-env
 sudo install -m 0644 deploy/gcp/prod/required-env-keys.txt /usr/local/lib/darkbloom-env/required-env-keys.txt
 sudo install -m 0644 deploy/gcp/prod/release-env-defaults  /usr/local/lib/darkbloom-env/release-env-defaults
+# First time on a host only: install the boot-time unit.
 sudo install -m 0644 deploy/gcp/prod/darkbloom-env-refresh.service /etc/systemd/system/darkbloom-env-refresh.service
 sudo systemctl daemon-reload && sudo systemctl enable darkbloom-env-refresh.service
 
@@ -342,8 +343,14 @@ to `MICROMDM_API_KEY`), `MIN_DECODE_TPS`, `MIN_PROVIDER_VERSION`,
 `EIGENINFERENCE_CACHE_ROUTING_{MODE,PERCENT,MAX_PLAN_QPS,TTL,MAX_HOLDERS,MAX_DISCOUNT_MS,MAX_COST_FRACTION}`,
 the `EIGENINFERENCE_PROMPT_SIDECAR_*` set (`ENABLED`, `BINARY`, `SOCKET`,
 `ARTIFACT_ROOT`, `ARTIFACT_BASE_URL`, timeouts, restart policy, resource
-bounds), `EIGENINFERENCE_MEDIA_FETCH_ENABLED`, and
-`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`.
+bounds), `EIGENINFERENCE_MEDIA_FETCH_ENABLED`,
+`EIGENINFERENCE_MODEL_SOLO_TPS_SEED`, and
+`EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true`.
+
+Global Payouts activation additionally requires the financial-account ID and
+separate webhook secret. The refresh validates them before replacing the env
+file; an explicit false flag is preserved. See [Global Payouts](global-payouts.md)
+for the required Stripe setup.
 
 **Operator-owned, never changed by a deploy:** every
 `EIGENINFERENCE_CACHE_ROUTING_*` value and `EIGENINFERENCE_CACHE_MASTER_KEY`

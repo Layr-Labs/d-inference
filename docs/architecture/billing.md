@@ -1,11 +1,11 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-05 · commit `301d757f3`
+> Last updated: 2026-09-05 · commit `120ecc9c2`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
 settles the provider-reported cost after the terminal message, and credits the
-provider a withdrawable share that it withdraws through Stripe. Connect and the opt-in Global Payouts adapter share the earned-balance ledger. This
+provider a withdrawable share that it withdraws through Stripe. Connect and the Global Payouts adapter share the earned-balance ledger. This
 page explains the money path and what it guarantees. Constants, formulas,
 routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer

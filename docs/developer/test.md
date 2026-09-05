@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `efc4e301b`
+> Last updated: 2026-09-05 · commit `120ecc9c2`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -139,7 +139,9 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 ./scripts/test-publish-model.sh         # scripts/publish-model.sh dry-run contract
 ```
 
-The first three are CI job "Release Integrity".
+The first three are CI job "Release Integrity". The production env refresh test
+checks automatic payout activation, preservation of an explicit off switch,
+and rejection of missing payout prerequisites before the live env is changed.
 
 For GPT-OSS profiling, first build a release benchmark binary and identify its
 loaded Metal library and the exact downloaded model snapshot. Run on an idle

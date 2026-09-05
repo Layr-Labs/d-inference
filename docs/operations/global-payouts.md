@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-05 · commit `301d757f3`
+> Last updated: 2026-09-05 · commit `120ecc9c2`
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
@@ -18,9 +18,9 @@ Enable bank withdrawals for supported destinations outside the current Connect r
 
 ## Steps
 
-1. Deploy the code with `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` unset or false. This preserves legacy onboarding and withdrawals. The migration creates or extends the Global Payouts tables/indexes; it does not modify earned balances or existing Connect withdrawal rows.
-2. Configure the restricted key (or use the existing restricted Stripe key), financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
-3. Set `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true` and recreate the coordinator using the deployment runbook. Enabled configurations require the financial account, restricted API key and base Connect key; funding and account permissions must be checked before this step.
+1. Configure the restricted key (or use the existing restricted Stripe key), base Connect key, financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
+2. Install the candidate's production refresh script and manifests as described in the [deployment runbook](coordinator-deploy.md), then run the env refresh check. The release defaults enable Global Payouts when the flag is absent. An explicit `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=false` remains off for a staged rollout or pause. The check refuses activation with a missing funding-account ID or webhook secret before changing the live env file.
+3. Deploy the reviewed coordinator and console. The migration creates or extends the Global Payouts tables/indexes; it does not modify earned balances or existing Connect withdrawal rows. If the flag was explicitly set to false during staging, set it to true and recreate the coordinator to activate withdrawals. Funding and Stripe account permissions must be checked before activation.
 4. In the billing or provider earnings page, choose India and complete Stripe-hosted recipient onboarding. This collects the bank details directly with Stripe. The Pay via Email shortcut is domestic-only and is not used by this implementation.
 5. Verify `GET /v1/billing/stripe/status?refresh=1` returns `payout_rail=global`, country `IN`, a bank destination, `status=ready`, and local currency `inr`. Readiness includes active recipient capability and an eligible bank payout method, not merely a submitted form.
 6. Review an explicitly authorized withdrawal. Confirm that the quoted local amount, USD debit, withdrawal fee and destination match. Quotes do not debit the ledger. Confirm once and retain the internal withdrawal ID for reconciliation.

@@ -144,6 +144,17 @@ done < "$DEFAULTS_FILE"
 validate_env_file "$tmp"
 require_existing_values "$tmp"
 
+# Activate payouts only after their production prerequisites are present. Check
+# the merged candidate before replacing the live env or stopping any container.
+global_payouts_enabled=$(awk -F= '$1=="EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED" { print $2 }' "$tmp")
+if [ "$global_payouts_enabled" = "true" ]; then
+    for key in EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET; do
+        if ! awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' "$tmp"; then
+            fail "Global Payouts is enabled but $key is missing or empty"
+        fi
+    done
+fi
+
 old_keys=$(mktemp "${TMPDIR:-/tmp}/darkbloom-env-old.XXXXXX")
 new_keys=$(mktemp "${TMPDIR:-/tmp}/darkbloom-env-new.XXXXXX")
 trap 'rm -f "$tmp" "$old_keys" "$new_keys"' EXIT

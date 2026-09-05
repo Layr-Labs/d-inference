@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-05 · commit `301d757f3`
+> Last updated: 2026-09-05 · commit `120ecc9c2`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -251,7 +251,7 @@ Prices, the platform fee and the referral share live in [`../architecture/billin
 | `EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET` | secret | unset | `coordinator/billing/config.go` (`ReadConfig`) | Verifies Connect account webhooks (provider payouts). |
 | `EIGENINFERENCE_STRIPE_CONNECT_COUNTRY` | ISO 3166-1 alpha-2 | `US` | `coordinator/billing/config.go` (`ReadConfig`) | Country for new Connect express accounts. |
 | `EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL`, `EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL` | URLs | unset | `coordinator/billing/config.go` (`ReadConfig`); `coordinator/api/stripe_payouts.go` | Connect onboarding redirect targets; caller-supplied URLs are validated against the configured return URL. |
-| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `false` | `coordinator/billing/config.go` (`ReadConfig`, `Check`) | Enables new international onboarding, quotes and withdrawals; requires the base `EIGENINFERENCE_STRIPE_SECRET_KEY` used for Connect. Reconciliation continues with configured credentials even when disabled. |
+| `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` | bool | `true` in production release defaults; `false` otherwise | `coordinator/billing/config.go` (`ReadConfig`, `Check`); `deploy/gcp/prod/release-env-defaults` | Enables new international onboarding, quotes and withdrawals. Production refresh preserves an explicit `false` and requires the funding account and webhook secret before activation; runtime validation also requires the base `EIGENINFERENCE_STRIPE_SECRET_KEY` used for Connect. Reconciliation continues with configured credentials even when disabled. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT` | ID | unset | `coordinator/billing/config.go` (`Check`) | Funding financial account; required when enabled. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY` | secret | falls back to `EIGENINFERENCE_STRIPE_SECRET_KEY` | `coordinator/billing/config.go` (`ReadConfig`) | Restricted API key override for Global Payouts; does not replace the required base Connect key. |
 | `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET` | secret | unset | `coordinator/api/global_payouts_reconcile.go` (`handleGlobalPayoutWebhook`) | Verifies the separate Global Payouts event destination; missing secret rejects all events. |

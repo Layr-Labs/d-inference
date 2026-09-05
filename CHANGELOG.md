@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — Hugging Face model downloads
+
+- Add an optional, commit-pinned Hugging Face artifact to each registry version. Foreground model downloads and background prefetch prefer HF, verify the existing per-file SHA-256 and aggregate hashes, and fall back to R2 on download or integrity failure. Existing registry entries keep using R2.
+
 ## Unreleased — Qwen non-thinking streaming
 
 - Stream Qwen answers as they are generated when the rendered prompt already closes its thinking block, including image and video requests that default thinking off. Preserve incremental reasoning, explicit parser overrides, and token usage.

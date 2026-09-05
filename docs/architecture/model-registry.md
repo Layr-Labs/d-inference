@@ -1,11 +1,12 @@
 # Model registry
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 How Darkbloom decides which model builds exist, which bytes are trusted, which
 providers may serve them, and what public name a consumer uses for them. The
 registry is a set of Postgres tables owned by the coordinator; model bytes live
-in Cloudflare R2 and are fetched by providers directly, never proxied by the
+in Cloudflare R2 and optionally a pinned Hugging Face repository. Providers fetch
+them directly, never proxied by the
 coordinator. Public model names are **aliases** that resolve to concrete builds,
 which is what makes zero-downtime quantisation swaps possible. Exact field
 tables are in [`../reference/model-registry-format.md`](../reference/model-registry-format.md);
@@ -127,7 +128,7 @@ carries a hash per advertised model, and any mismatch against
 (`coordinator/api/provider.go`, log line
 `provider model weight hash mismatch — possible model swap`).
 
-### 5. Providers download from R2, verify, then announce
+### 5. Providers select a source, verify, then announce
 
 `provider-swift/Sources/ProviderCore/Models/ModelCatalogClient.swift` reads
 `GET /v1/models/catalog` (optionally `?type=text&include_aliases=1`) and
@@ -142,6 +143,16 @@ SHA-256 before it leaves staging, and the aggregate is recomputed with
 |---|---|---|---|
 | Foreground download | `ModelDownloader.download` (`ModelDownloader.swift`) | `darkbloom models download` (`provider-swift/Sources/darkbloom/ModelsCommand.swift`) and the `darkbloom start` model picker | 4 concurrent file fetches; resumes into `.local-staging-<r2Prefix>` |
 | Background prefetch | `ModelDownloader.prefetch` (`ModelDownloader+Prefetch.swift`) | `desired_models` reconciliation | sequential, resume-aware, reports verified bytes against the manifest total; refuses models whose `required_provider_capabilities` the machine lacks (`ModelRuntimeRequirements.evaluate`) |
+
+Both flows call `downloadManifestFileWithResume` in
+`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Sources.swift`.
+When the catalog version has `hugging_face_artifact`, it tries the pinned HF
+file first and falls back to R2 on failure, including SHA mismatch. A failed
+HF attempt discards its partial file before switching sources; cancellation
+preserves the partial and propagates without fallback. Without an artifact,
+R2 remains the source. Both sources use the same registered hashes; source
+selection never changes model identity. See the
+[artifact field contract](../reference/model-registry-format.md#hugging-face-download-artifact).
 
 On an aggregate mismatch over individually valid files (a poisoned manifest)
 `finalizeStagedManifest` deletes the staging directory so a corrected manifest

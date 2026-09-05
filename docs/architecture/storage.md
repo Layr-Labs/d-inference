@@ -1,6 +1,6 @@
 # Storage
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 What the coordinator persists, through which interface, in which backend, and
 how the schema reaches a fresh database; then what a provider keeps on its own
@@ -9,6 +9,10 @@ does not, and which files an operator may touch. Configuration values are
 listed once in [`../reference/configuration.md`](../reference/configuration.md);
 the SSD cache file format is in
 [`../reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md).
+
+Model versions also store the optional `hugging_face_artifact` as nullable JSONB
+(`coordinator/store/postgres.go`). `SetModelVersion` replaces it and invalidates
+the existing model read-through cache; [artifact schema](../reference/model-registry-format.md#hugging-face-download-artifact).
 
 ## Context
 

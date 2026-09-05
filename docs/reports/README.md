@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-04 · commit `fd2f0be2c`
+> Last updated: 2026-09-04 · commit `0be2aa074`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -63,6 +63,8 @@ Plans and decision memos live in [`../design/`](../design/README.md).
 | 2026-09-02 | [coordinator-performance-pr-body](2026-09-02-coordinator-performance-pr-body.md) | Original PR body of the 75-commit program branch, kept as the record |
 | 2026-09-03 | [perf-pr-a-body](2026-09-03-perf-pr-a-body.md) | Landing the store/api half of the program on master (read-through cache, batched route sink, parse-once bodies, relay coalescing) |
 | 2026-09-03 | [perf-pr-b-body](2026-09-03-perf-pr-b-body.md) | PR description for the routing-scan landing (PR B): per-model provider index, in-place snapshots, TPS median caches, version memos, heartbeat swap-plan coalescing; before/after benchmarks and the `scanned` semantics change |
+| 2026-09-03 | [perf-pr-c-tier3-body](2026-09-03-perf-pr-c-tier3-body.md) | PR description for the Tier 3 lock restructure (PR C, stacked on PR B): per-identity `gateState` fault trackers off the global write lock, the reservation commit under `r.mu.RLock` + `p.mu`, the `EIGENINFERENCE_RESERVE_COMMIT_MODE` kill switch; invariants, benchmarks and the review follow-ups |
+| 2026-09-03 | [perf-pr-cd-body](2026-09-03-perf-pr-cd-body.md) | Wave fixes following the A+B base: WebSocket fragmentation, bounded queue drains, restart/drain/cancel lifecycle and telemetry |
 
 ## Raw benchmark outputs
 

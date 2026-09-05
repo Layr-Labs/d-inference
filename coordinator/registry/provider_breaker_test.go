@@ -11,29 +11,42 @@ import (
 // error_cooldown_test.go) ---
 
 func providerBreakerOpenAt(r *Registry, id string, now time.Time) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providerBreakerOpenLocked(id, now)
+	return r.breakerOpen(id, now)
 }
 
-func providerBreakerTripsOf(r *Registry, id string) int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providerBreakerTrips[id]
+func providerBreakerTripsOf(r *Registry, id string) (trips int) {
+	readGateForSession(r, id, func(g *gateState) {
+		if g != nil {
+			trips = g.breakerTrips
+		}
+	})
+	return trips
 }
 
-func providerBreakerOpenUntilOf(r *Registry, id string) time.Time {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.providerBreakerOpenUntil[id]
+func providerBreakerOpenUntilOf(r *Registry, id string) (until time.Time) {
+	readGateForSession(r, id, func(g *gateState) {
+		if g != nil {
+			until = g.breakerUntil
+		}
+	})
+	return until
 }
 
 // expireProviderBreaker rewinds a provider's open expiry into the past,
 // simulating the cooldown elapsing (open -> half-open) without sleeping.
 func expireProviderBreaker(r *Registry, id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providerBreakerOpenUntil[id] = time.Now().Add(-time.Second)
+	withGateForSession(r, id, func(g *gateState) { g.breakerUntil = time.Now().Add(-time.Second) })
+}
+
+// providerHealthWindowOf returns the provider's node-health ring (nil when no
+// fault or success was ever recorded).
+func providerHealthWindowOf(r *Registry, id string) (w *providerHealthWindow) {
+	readGateForSession(r, id, func(g *gateState) {
+		if g != nil {
+			w = g.outcomes
+		}
+	})
+	return w
 }
 
 // seedProviderHealthWindow records a fixed sequence of outcomes (true=success,
@@ -42,12 +55,12 @@ func expireProviderBreaker(r *Registry, id string) {
 // a low consecutive-fault counter) that monotonic RecordProviderOutcome calls
 // could not reach before the consecutive-fault path fires.
 func seedProviderHealthWindow(r *Registry, id string, pattern []bool, now time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	w := r.providerHealthWindowLocked(id)
-	for _, ok := range pattern {
-		w.record(ok, now)
-	}
+	withGateForSession(r, id, func(g *gateState) {
+		w := g.healthWindowLocked()
+		for _, ok := range pattern {
+			w.record(ok, now)
+		}
+	})
 }
 
 // --- classifier unit tests ---
@@ -368,10 +381,7 @@ func TestProviderBreakerIgnoresHealthySheds(t *testing.T) {
 		t.Fatal("100 healthy sheds must not quarantine a provider")
 	}
 	// Healthy sheds are ignored entirely — no health window is even created.
-	r.mu.RLock()
-	w := r.providerOutcomes[id]
-	r.mu.RUnlock()
-	if w != nil {
+	if w := providerHealthWindowOf(r, id); w != nil {
 		t.Fatalf("healthy sheds must not record into the health ring, got %+v", w)
 	}
 }
@@ -550,8 +560,8 @@ func TestQuickCapacityCheckFailsOpenOnProviderBreaker(t *testing.T) {
 	}
 }
 
-// Disconnect must drop every per-provider breaker map entry so a per-session
-// UUID leaves no residue.
+// Disconnect must drop an identity-less session's breaker state (its gate was
+// keyed by the session UUID, which never recurs) so it leaves no residue.
 func TestDisconnectClearsProviderBreaker(t *testing.T) {
 	reg := New(testLogger())
 	model := "disconnect-breaker-model"
@@ -559,29 +569,30 @@ func TestDisconnectClearsProviderBreaker(t *testing.T) {
 	for i := 0; i < providerBreakerConsecTrip; i++ {
 		reg.RecordProviderOutcome(p.ID, false, 500, "")
 	}
-	reg.mu.RLock()
-	_, hasWin := reg.providerOutcomes[p.ID]
-	_, hasOpen := reg.providerBreakerOpenUntil[p.ID]
-	_, hasTrips := reg.providerBreakerTrips[p.ID]
-	reg.mu.RUnlock()
+	var hasWin, hasOpen, hasTrips bool
+	readGateForKey(reg, p.ID, func(g *gateState) {
+		if g == nil {
+			return
+		}
+		hasWin, hasOpen, hasTrips = g.outcomes != nil, !g.breakerUntil.IsZero(), g.breakerTrips > 0
+	})
 	if !hasWin || !hasOpen || !hasTrips {
 		t.Fatalf("expected breaker state before disconnect: win=%v open=%v trips=%v", hasWin, hasOpen, hasTrips)
 	}
 
 	reg.Disconnect(p.ID)
 
-	reg.mu.RLock()
-	_, hasWin = reg.providerOutcomes[p.ID]
-	_, hasOpen = reg.providerBreakerOpenUntil[p.ID]
-	_, hasTrips = reg.providerBreakerTrips[p.ID]
-	reg.mu.RUnlock()
-	if hasWin || hasOpen || hasTrips {
-		t.Fatalf("Disconnect must drop all breaker state: win=%v open=%v trips=%v", hasWin, hasOpen, hasTrips)
+	if g := rawGateForKey(reg, p.ID); g != nil {
+		t.Fatalf("Disconnect must drop the session-keyed gate, got %+v", g)
+	}
+	if reg.ProviderBreakerOpen(p.ID) {
+		t.Fatal("Disconnect must drop all breaker state")
 	}
 }
 
-// The opportunistic >1024 sweep (mirroring error_cooldown.go) must bound the
-// breaker maps by dropping expired/idle entries.
+// The periodic gate sweep (gate_state.go) must bound the index by dropping
+// identities whose breaker has expired and whose ring has aged out, once no
+// live session references them.
 func TestProviderBreakerMapsBounded(t *testing.T) {
 	r := New(testLogger())
 	for i := 0; i < 1100; i++ {
@@ -590,37 +601,22 @@ func TestProviderBreakerMapsBounded(t *testing.T) {
 			r.RecordProviderOutcome(id, false, 500, "")
 		}
 	}
-	r.mu.Lock()
-	for id := range r.providerBreakerOpenUntil {
-		r.providerBreakerOpenUntil[id] = time.Now().Add(-time.Second)
-	}
-	for _, w := range r.providerOutcomes {
-		for i := range w.outcomes {
-			if !w.outcomes[i].ts.IsZero() {
-				w.outcomes[i].ts = w.outcomes[i].ts.Add(-(providerBreakerWindow + time.Second))
-			}
-		}
-	}
-	openCount := len(r.providerBreakerOpenUntil)
-	winCount := len(r.providerOutcomes)
-	r.mu.Unlock()
-	if openCount < 1000 || winCount < 1000 {
-		t.Fatalf("setup produced too few distinct entries: open=%d win=%d", openCount, winCount)
+	if n := r.gateCount(); n < 1000 {
+		t.Fatalf("setup produced too few distinct gates: %d", n)
 	}
 
-	// A live record triggers the >1024 sweep before recording.
-	r.RecordProviderOutcome("live", false, 500, "")
+	// Past the breaker cooldown, the ring window and the idle grace, every
+	// dead identity is idle. A connected provider's gate stays regardless.
+	live := makeSchedulerProvider(t, r, "live", "m", 50)
+	r.RecordProviderOutcome(live.ID, false, 500, "")
+	r.sweepGates(time.Now().Add(gateIdleGrace + providerBreakerMaxCooldown + time.Second))
 
-	r.mu.RLock()
-	openAfter := len(r.providerBreakerOpenUntil)
-	tripsAfter := len(r.providerBreakerTrips)
-	winAfter := len(r.providerOutcomes)
-	r.mu.RUnlock()
-	if openAfter != 0 {
-		t.Fatalf("expired-breaker sweep should drop every entry (live pair has no open breaker yet), got %d", openAfter)
+	if after := r.gateCount(); after != 1 {
+		t.Fatalf("sweep should leave only the live provider's gate, got %d", after)
 	}
-	if tripsAfter != 0 {
-		t.Fatalf("trip counts must be swept alongside expired breakers, got %d", tripsAfter)
+	winAfter := 0
+	if providerHealthWindowOf(r, live.ID) != nil {
+		winAfter = 1
 	}
 	if winAfter != 1 {
 		t.Fatalf("stale-window sweep should leave only the live entry, got %d", winAfter)
@@ -641,7 +637,7 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 	}
 
 	t.Run("empty source is a no-op", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(1), ok: false})
 		dst.merge(&providerHealthWindow{})
 		dst.merge(nil)
 		if dst.size != 2 || dst.consecFail != 2 {
@@ -651,15 +647,15 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 
 	t.Run("empty destination adopts the source", func(t *testing.T) {
 		dst := &providerHealthWindow{}
-		dst.merge(fill(providerHealthOutcome{at(0), true}, providerHealthOutcome{at(1), false}))
+		dst.merge(fill(providerHealthOutcome{ts: at(0), ok: true}, providerHealthOutcome{ts: at(1), ok: false}))
 		if dst.size != 2 || dst.consecFail != 1 {
 			t.Fatalf("size=%d consecFail=%d, want 2/1", dst.size, dst.consecFail)
 		}
 	})
 
 	t.Run("interleaved timestamps merge chronologically", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(2), true}, providerHealthOutcome{at(4), false})
-		src := fill(providerHealthOutcome{at(1), false}, providerHealthOutcome{at(3), false}, providerHealthOutcome{at(5), false})
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(2), ok: true}, providerHealthOutcome{ts: at(4), ok: false})
+		src := fill(providerHealthOutcome{ts: at(1), ok: false}, providerHealthOutcome{ts: at(3), ok: false}, providerHealthOutcome{ts: at(5), ok: false})
 		dst.merge(src)
 		if dst.size != 6 {
 			t.Fatalf("size=%d, want 6", dst.size)
@@ -680,8 +676,8 @@ func TestProviderHealthWindowMerge(t *testing.T) {
 	})
 
 	t.Run("trailing success resets the merged streak", func(t *testing.T) {
-		dst := fill(providerHealthOutcome{at(0), false}, providerHealthOutcome{at(1), false})
-		dst.merge(fill(providerHealthOutcome{at(2), true}))
+		dst := fill(providerHealthOutcome{ts: at(0), ok: false}, providerHealthOutcome{ts: at(1), ok: false})
+		dst.merge(fill(providerHealthOutcome{ts: at(2), ok: true}))
 		if dst.consecFail != 0 {
 			t.Fatalf("consecFail=%d, want 0 — the newest merged outcome is a success", dst.consecFail)
 		}

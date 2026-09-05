@@ -439,7 +439,8 @@ type Server struct {
 
 	// dd is the Datadog integration client for DogStatsD metrics and
 	// Logs API event forwarding. Nil when DD is not configured.
-	dd *datadog.Client
+	dd          *datadog.Client
+	queueGauges queueGaugeState
 
 	// apiKeyCache memoizes ValidateKeyFull results so repeated requests
 	// with the same API key skip the DB round trip. Entries expire after
@@ -869,6 +870,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		s.trustReplayInFlight = make(map[string]struct{})
 	}
 	reg.SetRuntimeCapabilitiesPromotedHook(s.handleRuntimeCapabilitiesPromoted)
+	// The per-identity gate locks that replaced the request-path registry
+	// write lock (registry/gate_state.go) report any acquisition wait above
+	// 1 ms here, tagged by recorder site, so the new locks stay observable.
+	reg.SetGateWaitObserver(func(site string, wait time.Duration) {
+		s.ddHistogram("registry.gate.wait_ms", float64(wait.Microseconds())/1000, []string{"site:" + site})
+	})
 	s.profiler = newProfilerFromEnv(s)
 	s.registerDefaultGauges()
 	s.routes()
@@ -3043,9 +3050,12 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 				enforced = 1.0
 			}
 			s.ddGauge("attestation.code_enforced", enforced, nil)
-			for model, count := range s.registry.ModelProviderSnapshot() {
+			perModel := s.registry.ModelProviderSnapshot()
+			for model, count := range perModel {
 				s.ddGauge("providers.per_model", float64(count), []string{"model:" + model})
 			}
+			// Per-model queue depth/age (fleet_gauges.go).
+			s.emitPerModelQueueGauges(perModel)
 			for ver, count := range s.registry.ProviderCountByVersion() {
 				s.ddGauge("providers.per_version", float64(count), []string{"version:" + ver})
 			}

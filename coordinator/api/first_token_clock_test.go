@@ -276,7 +276,7 @@ func TestAbandonInflightDefersToPublishedIngress(t *testing.T) {
 	}
 
 	pr.FinishProviderChunkIngress(receivedAt, true)
-	d.s.cancelDispatch(provider, pr)
+	d.s.cancelDispatch(provider, pr, cancelCauseFirstChunkTimeout)
 }
 
 func TestWriteFirstTokenTimeoutUsesOpenRouter429Contract(t *testing.T) {

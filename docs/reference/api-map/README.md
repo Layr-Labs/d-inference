@@ -14,7 +14,7 @@ coordinator change costs no diff.
 
 | File | Content | In git |
 |---|---|---|
-| `system-map.html` | Self-contained explorer: full-screen clustered knowledge graph, routes, dependency nodes, associations, derived Postgres table definitions. Open it in a browser; no server needed. | generated |
+| `system-map.html` | Self-contained explorer: full-screen clustered knowledge graph, routes, dependency nodes, associations with their wiring order and indirection, derived Postgres table definitions and the foreign keys between them. Open it in a browser; no server needed. | generated |
 | `inventory.json` | The same graph as data — the contract for any other consumer. | generated |
 | `report.md` | Drift report. Empty means source and overlay agree. | generated |
 | [overlay.json](overlay.json) | The curated half of the map (see below). This is the only file to hand-edit. | **committed** |
@@ -52,9 +52,16 @@ never hand-edited:
   including values held in package constants — for external surfaces
 - the access mode (`R`, `W`, `RW`) per association, from SQL verbs, `sync` and
   `sync/atomic` primitives, method-name verbs, and assignment shape
+- the **wiring** of each route: the order the request meets its constructions, the
+  call path to each one, the indirection that path goes through, how many source
+  sites touch it and whether any of them is inside a loop (see *What order, and
+  through what*)
 - every `pg.*` table's definition — its columns, their types, the table-level
   constraints and the DDL statements — read out of the `CREATE TABLE` the service
   issues plus every `ALTER TABLE ... ADD COLUMN` migration that grew it afterwards
+- every declared **foreign key** between those tables, read out of the same DDL —
+  inline `REFERENCES`, table-level `FOREIGN KEY`, and the ones a later
+  `ALTER TABLE ... ADD CONSTRAINT` added (see *Table relationships*)
 - every citation: `file:line` plus the symbol that evidenced it
 
 **Curated** in `overlay.json`, because source cannot state it:
@@ -189,9 +196,40 @@ collide — the canvas names nodes by their short id and leaves the long curated
 to the panel. Clicking a node **shadows everything off its edges** and pins a wider
 panel carrying that node's full `depDocs` prose (what it represents, how it is
 constructed, how it is accessed, its concurrency, lifecycle and restart behaviour)
-alongside the derived reach list and citations. Clicking a `pg.*` node opens its
-derived definition, which can be widened to full width because some of these tables
-have 79 columns. Esc or a click on empty canvas clears the focus.
+alongside the derived reach list and citations. Clicking an **endpoint** numbers its
+own wires — 1, 2, 3 … in the order the request meets each construction — and pins the
+ordered wiring list beside them: the access mode, the indirection glyph
+(`→ ⇢ ↳ ⇉`, matching the wire's dash and arrowhead), the touch-site count, whether it
+is in a loop, and the call path itself. The endpoint's row in the table below states
+the same list with the `file:line` each touch was read off, because a claim about
+order is only useful if you can check it. Clicking a `pg.*` node opens its derived
+definition, which can be widened to full width because some of these tables have 79
+columns. Esc or a click on empty canvas clears the focus.
+
+Arrowheads are the same vocabulary in the picture: a filled head is a direct call, a
+hollow one an interface, a diamond a `defer`, an open barb a goroutine — and the head's
+colour is the access mode, so one glyph carries both facts. They are sized in screen
+pixels rather than scene units (a marker inside the zoomed scene is scaled with it, which
+drew them three pixels wide at the zoom that fits the whole map), so a head is the same
+size at every zoom. Which wires carry one is a judgement about legibility, not a fact
+about the map: **↦** in the graph toolbar switches between `auto` — every live wire once a
+filter, a focus or a close zoom has narrowed the picture below 140 of them, and otherwise
+only the wire being read — `all`, and `read`. A focused node's own edges are always
+pointed, and a shaded one never is. The unfiltered coordinator map is on the wrong side of
+that budget on purpose: 857 wires end on 97 dots, so a head each turns every dot into a
+rosette that hides it. Zoom past roughly twice the fitted scale — where you have stopped
+looking at the system and started reading a corner of it — and they arrive unasked.
+
+A number sits on the midpoint of the wire it belongs to when it can. On the widest handler
+57 wires leave one square and their midpoints pile up, so a number that cannot fit there
+slides along its own curve, then steps off it, and any number that ended up more than a
+few pixels from its wire is joined back to it by a **dashed tick in its own colour**. The
+tick is what makes the moved numbers readable rather than merely present: in a fan that
+dense, another wire is routinely within a pixel of the space a number moved into, so
+proximity cannot say which wire it belongs to and the picture states it instead. Whatever
+the picture cannot fit, it drops from the end — the numbering reads `1, 2, 3 …` up to
+wherever it runs out, and never with a hole in it, which is checked rather than eyeballed
+(`render/webtest/wiring.test.mjs`).
 
 ## How a line gets drawn
 
@@ -230,19 +268,93 @@ Step 6 is why the picture is extensible: adding state, a route, a table or a hos
 changes steps 1–5 mechanically, and the only thing a person supplies is a name and
 which side of a boundary it is on.
 
+### What order, and through what
+
+An association says a route touches a construction. That leaves three questions a
+reader still has to answer by opening the handler: *when* does it touch it, *how* does
+it get there, and *how much* of the handler is about it. All three fall out of the
+same walk, so they are derived rather than described:
+
+- **Order.** Every access is numbered as the walk meets it, and a callee's numbers
+  are shifted to sit where its caller had got to — so the sequence reads as a
+  pre-order walk of the call graph, which is the order a person reading the source
+  meets these constructions. A route's middleware is a separate frame from its
+  handler and is shifted the same way, so the state a gate reads is numbered before
+  the state it gates. A `defer` postpones the call and not its operands, so an
+  argument that reads state is numbered where the statement is. The coordinator's
+  widest handler reaches **57** constructions this way; the whole map derives **857**
+  steps over 100 routes.
+- **Indirection.** Each step carries how it is reached, from a four-word vocabulary
+  the artifact publishes with its own explanations (`stepKindLegend`): `direct`
+  (every hop is a statically resolved call), `interface` (some hop dispatches
+  through an interface, and the walk followed the implementation `deps.preferImpl`
+  names — so the running program may reach a different one), `deferred` (some hop
+  runs in a `defer`, so the touch happens as that frame unwinds) and `async` (some
+  hop runs in a goroutine, so the touch is concurrent with the rest of the request
+  and unordered against it). A step takes the *strongest* kind on any path that
+  reaches it, because the weaker claim would be the false one. Today: 410
+  `interface`, 220 `direct`, 202 `deferred`, 25 `async`.
+- **Which touch that was.** `kind` is the strongest touch's and everything printed
+  beside it — the depth, the leading call path — is the *earliest* touch's, so the
+  two can be two different touches. When they are, the earliest one's own kind is
+  published as `leadKind` (188 steps) and the page says "first touch …" under a
+  glyph its path does not justify: without it the artifact prints a sentence about
+  unwinding beside a wire that does not unwind. Dispatch is tracked off that ladder
+  as `iface`, because "which implementation runs" is a different question from
+  "when does this happen" and a later `defer` must not answer it; the page states it
+  only where the glyph does not already (32 steps).
+- **Weight.** `touches` counts the distinct source sites that touch the node, and
+  `repeats` says at least one of them is inside a loop. `wireCount` is a **floor**,
+  not a census — evidence is collapsed per (node, mode, site, innermost function)
+  and the earliest path kept, so two routes reaching one construction through one
+  frame are one path here, and the page prints it as "at least *n* paths". Up to
+  three of those paths are published per step, from the entry point to the function
+  that does the touching, with the frames interned so 105 routes cost one symbol
+  table, alongside up to four citations.
+
+Two things this deliberately does **not** claim. It is a count of *sites*, not of
+*executions*: nothing here runs the program, so a construction touched from one line
+inside a loop is one touch that repeats, and a route's order is where a reader meets
+each construction rather than a measured frequency. And a step's order is the walk's,
+so two touches that a goroutine makes concurrent are ordered in the list and marked
+`async` rather than reordered — the badge is the caveat.
+
+### Table relationships
+
+Foreign keys are read out of the same DDL the column definitions come from, in all
+three forms the schema uses them in: a column-level `REFERENCES`, a table-level
+`FOREIGN KEY`, and one a later `ALTER TABLE ... ADD CONSTRAINT` adds. Each carries
+its columns, the table and columns it points at, its `ON DELETE`/`ON UPDATE` action
+where the DDL states one (and nothing where it does not — `NO ACTION` is the
+database's default, not a clause the map may invent) and its own `file:line`.
+
+A key between two tables the graph draws becomes a **dotted arc** with the head on
+the referenced table, bowed the other way from the associations so it is never
+mistaken for something an endpoint does. It takes no part in the layout, in a node's
+degree or in the drawn-topology fingerprint: adding a `REFERENCES` to the schema must
+not move a single dot. A key the graph cannot draw — one whose child or parent is a
+table nothing reachable reads, or a self-reference, which is one node rather than an
+edge between two — is still listed in the *Table relationships* table and in both
+tables' definitions, and a key naming a table no `CREATE TABLE` declares is drift.
+
+Only declared keys are drawn. A `JOIN` between two tables is *not* a relationship
+the schema has — most of them target `pg_catalog` relations or CTEs — so joins are
+read for which tables a statement touches and never for edges between them.
+
 ## How much of it is opinion
 
-Everything countable is derived: **101 routes, 92 nodes, 20 groups, 259
-associations, 39 table definitions (441 columns), 1,053 citations**. The opinions are a bounded, greppable set of
+Everything countable is derived: **105 routes, 97 nodes, 20 groups, 265
+associations, 857 wiring steps, 41 table definitions (651 columns, 7 foreign keys),
+1,078 citations**. The opinions are a bounded, greppable set of
 overlay tables:
 
 | Kind of opinion | Where | Size today |
 |---|---|---|
-| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 145 (21 wildcards, 37 sentinels), 56, 1 |
+| what a field/type/call *is* | `deps.fields`, `deps.types`, `deps.functions` | 150 (21 wildcards, 36 sentinels), 58, 1 |
 | what a literal points at | `deps.hosts`, `deps.endpoints`, `deps.messages` | 21, 7, 25 |
-| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 21, 1, 1, 1 (+2 assembled statements), 1 |
-| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 56 |
-| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 101, 92, 6, 4 |
+| how far to look | `deps.traverse`, `deps.inherit`, `deps.packageDefault`, `deps.strict`, `deps.preferImpl`, `deps.sqlDriver`, `gateDepth` | 21, 3, 21, 1, 1, 1 (+4 assembled statements), 1 |
+| how to name things | `namespaces`, `authRules`, `clusters`, `categories`, `labels` | 38, 15, 6, 6, 59 |
+| prose | `routes`, `depDocs`, `categoryDocs`, `cacheSemantics` | 105, 97, 6, 4 |
 
 A handful of opinions are structural — changing them means changing
 `tools/systemmap`, not the overlay: that an entry point is an HTTP route
@@ -326,9 +438,10 @@ Columns an `ALTER TABLE ... ADD COLUMN` introduced are marked `migration`, becau
 a definition read from the `CREATE` alone describes a database that only exists on
 a machine which has never been migrated — the coordinator's `users` table is six
 columns wider in production than its `CREATE` says. The `CREATE`, `ALTER` and
-`CREATE INDEX` statements are shown as written, each with its citation. **441
-columns across 39 tables** are derived this way; nothing about a table's shape is
-curated.
+`CREATE INDEX` statements are shown as written, each with its citation. The drawer
+also lists the table's foreign keys in both directions — the ones it declares and
+the ones pointing at it — each followable to the other table. **651 columns across
+41 tables** are derived this way; nothing about a table's shape is curated.
 
 ## Drift is a build failure
 

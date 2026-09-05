@@ -211,9 +211,38 @@ function clickEvent(win) {
 // setting `display:none` inline, so a label is shown exactly when it is not.
 export const visible = node => node.style.display !== 'none';
 
+// The two ends of an arc, read back out of the `M x y Q cx cy ex ey` the page writes.
+// The target end stops short of the circle so its arrowhead lands on the rim instead
+// of under the dot, so a test that wants "this wire still reaches that node" has to
+// measure the distance rather than match the coordinates.
+export function arcEnds(d) {
+  const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+  return [{ x: n[0], y: n[1] }, { x: n[n.length - 2], y: n[n.length - 1] }];
+}
+export const touches = (d, n) =>
+  arcEnds(d).some(pt => Math.hypot(pt.x - n.x, pt.y - n.y) <= n.r + 2);
+
 // frame waits for one animation frame, which is how the page defers a refit after
 // entering or leaving full screen.
 export const frame = p => new Promise(resolve => p.win.requestAnimationFrame(() => resolve()));
+
+// drawnTable is a derived table definition the graph has a dot for. Not every table
+// does: a table nothing reachable reads has no dependency node, so it is in the
+// inventory and in the foreign-key list and yet cannot be selected in the graph. A
+// test that wants to open a table's definition has to ask for one that is drawn.
+//
+// The optional predicate is for a test that needs more than "drawn" — a table with
+// foreign keys, say. Taking the first drawn table and then skipping the assertions it
+// happens not to satisfy is how a test passes without testing anything.
+export function drawnTable(D, want) {
+  const drawn = Object.keys(D.tables || {})
+    .filter(name => D.tables[name].node && D.nodes[D.tables[name].node]);
+  const pick = want ? drawn.find(want) : drawn[0];
+  assert.ok(pick, want
+    ? 'no drawn table in this map matches what the test needs'
+    : 'no derived table in this map has a dependency node to select it by');
+  return pick;
+}
 
 // searchTerm is a term the map is guaranteed to contain, taken from the data rather
 // than invented, so a search test cannot be satisfied by a page that filters

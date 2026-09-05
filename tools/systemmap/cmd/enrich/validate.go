@@ -31,10 +31,15 @@ const (
 )
 
 var (
-	// A node id as the map writes it: a category, a dot, a lower-case name.
-	idToken = regexp.MustCompile(`[a-z][a-z0-9]+\.[a-z_][a-z0-9_]+`)
-	// Markdown the renderer would print literally.
-	markdown = regexp.MustCompile("```|\\]\\(|^\\s*[-*]\\s|^#{1,6}\\s")
+	// A dotted token, whatever it turns out to name. Which of these are node ids is
+	// decided by the categories the map actually uses, not by this shape: a single
+	// letter is a legal category and a node name can be camelCase, and requiring two
+	// leading letters and lower case let both through unchecked.
+	idToken = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*\.[A-Za-z_][A-Za-z0-9_]*`)
+	// Markdown the renderer would print literally. `(?m)` because `details` is
+	// several lines: anchored to the whole text, a bullet list starting on line two
+	// went straight into the page.
+	markdown = regexp.MustCompile("(?m)```|\\]\\(|^\\s*[-*]\\s|^#{1,6}\\s")
 	banned   = []string{
 		"robust", "seamless", "seamlessly", "powerful", "simply", "leverage",
 		"appears to", "presumably", "likely", "should be", "we ", "our ",
@@ -158,74 +163,87 @@ func allowedFields(kind string) map[string]bool {
 //
 // A model writing about a control plane will occasionally produce a fluent
 // sentence about `pg.payouts` for an endpoint that never touches it, and a claim
-// shaped like a node id is the claim a reader trusts most. So any such token in a
-// completion must appear in the facts that request was given.
+// shaped like a node id is the claim a reader trusts most. So a token that names a
+// node must appear in the facts that request was given.
 //
-// The narrowing is done by shape rather than by an allowlist of categories,
-// because a manifest for a single route would not contain enough categories to
-// learn from and a guard that quietly switches itself off is worse than none.
-// What is excluded is everything else prose legitimately writes with a dot: a file
-// name (`server.go`), a hostname (`api.darkbloom.dev`), a path or a qualified
-// symbol — all recognised by the characters around the token rather than by a
-// list of words.
-type idGuard struct{}
+// What counts as naming a node is decided by the map, not by the token's shape.
+// The manifest carries the map's whole vocabulary of state — every node-id category
+// it draws and every table it derived — and a dotted token is only held to the facts
+// when its category is one of them. Guessing from the shape instead was wrong in
+// both directions at once, which is the worst way to be wrong about a guard: it
+// fired on prose that names no state at all (`response.created`, `usage.total_tokens`,
+// an SSE event or a JSON field) and it let through everything the shape did not
+// cover (a single-letter category, a camelCase field), so the sentences it rejected
+// were correct and the sentences it was built to catch got through.
+//
+// The vocabulary comes from the map rather than from the plan's own requests for the
+// same reason: a plan is usually one or two entries, and a guard that only knows the
+// state those entries touch cannot tell that `pg.payouts` is state at all — the
+// invented-table sentence would be accepted precisely when the plan was small.
+//
+// Bare table names are held to the facts too, but only where the prose says the
+// word "table" beside them: `pg.payouts` is unmistakable, "the payouts table" is
+// the same claim, and "the models a provider serves" is ordinary English about a
+// table that happens to be called `models`. Requiring the word is what separates
+// them.
+type idGuard struct {
+	categories map[string]bool // node-id categories this map uses: pg, mem, ext, …
+	tables     map[string]bool // pg.* names, for the bare-name rule
+}
 
-func (idGuard) check(field, text string, req prose.Request) error {
-	facts := mustJSON(req.Facts) + " " + req.Key
-	for _, id := range suspectIDs(text) {
-		if !strings.Contains(facts, id) {
-			return fmt.Errorf("%q names %s, which is not in the derived facts for this entry; describe only the state listed there", field, id)
+// newIDGuard takes what a node id looks like in this map from the manifest.
+func newIDGuard(plan manifest) idGuard {
+	g := idGuard{categories: map[string]bool{}, tables: map[string]bool{}}
+	for _, c := range plan.Categories {
+		if c != "" {
+			g.categories[strings.ToLower(c)] = true
 		}
+	}
+	for _, t := range plan.Tables {
+		if t != "" {
+			g.tables[strings.ToLower(t)] = true
+		}
+	}
+	return g
+}
+
+func (g idGuard) check(field, text string, req prose.Request) error {
+	facts := mustJSON(req.Facts) + " " + req.Key
+	for _, id := range idToken.FindAllString(text, -1) {
+		category, _, _ := strings.Cut(id, ".")
+		if !g.categories[strings.ToLower(category)] {
+			continue // not a node id in this map: a file, a host, a JSON field, a symbol
+		}
+		if strings.Contains(facts, id) || strings.Contains(strings.ToLower(facts), strings.ToLower(id)) {
+			continue
+		}
+		return fmt.Errorf("%q names %s, which is not in the derived facts for this entry; describe only the state listed there", field, id)
+	}
+	for _, table := range g.namedTables(text) {
+		if strings.Contains(strings.ToLower(facts), "pg."+table) {
+			continue
+		}
+		return fmt.Errorf("%q calls %s a table, but this entry's derived facts do not touch pg.%s; describe only the state listed there", field, table, table)
 	}
 	return nil
 }
 
-// suspectIDs returns the tokens in a completion that claim to be map nodes.
-//
-// A node id stands alone: two dotted lower-case segments with ordinary prose on
-// either side. A third segment (`api.darkbloom.dev`), a path separator
-// (`coordinator/api/server.go`) or a qualifier (`api:Server.cache`) all mean the
-// token is naming something else, so the characters bounding the match are what
-// decides, and a file extension is excluded outright.
-func suspectIDs(text string) []string {
+// namedTables returns the table names the text calls tables.
+func (g idGuard) namedTables(text string) []string {
+	lower := strings.ToLower(text)
 	var out []string
-	for _, span := range idToken.FindAllStringIndex(text, -1) {
-		start, end := span[0], span[1]
-		// Anything joined to the left means the match is a tail of something else:
-		// `Server.cache` matches from "erver", `api/consumer` from "consumer".
-		if start > 0 && (isWordish(text[start-1]) || strings.ContainsRune("./:-@", rune(text[start-1]))) {
-			continue
-		}
-		if end < len(text) {
-			next := text[end]
-			// A third segment makes it a host or a path, not a node id. A bare
-			// sentence-ending period does not, which is where most node ids sit.
-			if next == '.' && end+1 < len(text) && isWordish(text[end+1]) {
-				continue
-			}
-			if isWordish(next) || strings.ContainsRune("/-@", rune(next)) {
-				continue
+	for _, m := range tablePhrase.FindAllStringSubmatch(lower, -1) {
+		for _, word := range m[1:] {
+			if word != "" && g.tables[word] {
+				out = append(out, word)
 			}
 		}
-		if _, name, _ := strings.Cut(text[start:end], "."); fileSuffixes[name] {
-			continue
-		}
-		out = append(out, text[start:end])
 	}
 	return out
 }
 
-func isWordish(c byte) bool {
-	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-// fileSuffixes are the tails that make a dotted token a file rather than a node.
-// A node's name is a Go field or a table, and none of these are.
-var fileSuffixes = map[string]bool{
-	"go": true, "json": true, "md": true, "sql": true, "sh": true, "yml": true,
-	"yaml": true, "ts": true, "tsx": true, "js": true, "swift": true, "html": true,
-	"plist": true, "toml": true, "txt": true, "mobileconfig": true, "metallib": true,
-}
+// tablePhrase matches a table named as one: "the payouts table", "table payouts".
+var tablePhrase = regexp.MustCompile(`\b([a-z][a-z0-9_]*)\s+table\b|\btable\s+([a-z][a-z0-9_]*)\b`)
 
 func sortedSet(in map[string]bool) []string {
 	out := make([]string, 0, len(in))

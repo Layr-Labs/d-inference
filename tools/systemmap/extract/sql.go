@@ -244,7 +244,10 @@ func cleanIdent(name string) string {
 	if i := strings.LastIndex(name, "."); i >= 0 {
 		name = name[i+1:]
 	}
-	return name
+	// Trimmed after the cut, not before it: `public . users` reaches here from a
+	// schema-qualified reference with space around the dot, and returning " users"
+	// would report a table nothing declares.
+	return strings.TrimSpace(name)
 }
 
 // StringLiterals collects every string literal a package declares, so an overlay

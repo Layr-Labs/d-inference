@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load, frame, drag, visible, searchTerm } from './harness.mjs';
+import { load, frame, drag, visible, searchTerm, drawnTable, touches } from './harness.mjs';
 import { assertLabels, frameSize } from './labels.mjs';
 
 // The zoom range the page allows, walked from the fit scale out to the floor and
@@ -240,8 +240,8 @@ test('the drawn topology survives everything the reader can do to the view', t =
   p.key('Escape');
   still('clearing the focus');
 
-  const table = Object.keys(D.tables || {})[0];
-  if (table) { p.choose('#dep', 'pg.' + table); still('opening a table definition'); }
+  p.choose('#dep', D.tables[drawnTable(D)].node);
+  still('opening a table definition');
 });
 
 test('dragging a node moves it, keeps it inside its boundary, and says nothing new', t => {
@@ -262,9 +262,8 @@ test('dragging a node moves it, keeps it inside its boundary, and says nothing n
   assert.equal(node.shape.getAttribute('cx'), node.x.toFixed(1), 'the drawn node did not follow the drag');
   assert.equal(node.shape.getAttribute('cy'), node.y.toFixed(1), 'the drawn node did not follow the drag');
   const edge = node.links[0];
-  assert.ok(edge.node.getAttribute('d').endsWith(node.x.toFixed(1) + ' ' + node.y.toFixed(1)) ||
-    edge.node.getAttribute('d').startsWith('M' + node.x.toFixed(1) + ' ' + node.y.toFixed(1)),
-    'an association still ends where the node used to be');
+  assert.ok(touches(edge.node.getAttribute('d'), node),
+    `an association still ends where ${node.id} used to be: ${edge.node.getAttribute('d')}`);
   assertLabels(p, 'after a node drag');
 
   // A drag is not a click: it must not focus anything.

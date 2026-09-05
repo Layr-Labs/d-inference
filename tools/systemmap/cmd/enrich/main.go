@@ -50,6 +50,11 @@ type manifest struct {
 	Requests []prose.Request `json:"requests"`
 	Prune    []string        `json:"prune"`
 	Fresh    int             `json:"fresh"`
+	// The map's whole vocabulary of state, which is what lets the validator tell a
+	// claim about `pg.payouts` from a mention of `server.go` without guessing from
+	// the token's shape.
+	Categories []string `json:"categories"`
+	Tables     []string `json:"tables"`
 }
 
 type settings struct {
@@ -78,7 +83,10 @@ func main() {
 	flag.StringVar(&s.model, "model", "claude-sonnet-5", "model to write with")
 	flag.StringVar(&s.endpoint, "endpoint", "https://api.anthropic.com", "Messages API base URL")
 	flag.StringVar(&s.keyEnv, "key-env", "ANTHROPIC_API_KEY", "environment variable holding the API key")
-	flag.IntVar(&s.maxTokens, "max-tokens", 2048, "completion budget per entry")
+	// Generous, because the budget covers whatever the model spends before the answer
+	// as well as the answer: the entry itself is a few hundred tokens, and a limit sized
+	// for it alone ended every call at `stop_reason: max_tokens` with nothing parseable.
+	flag.IntVar(&s.maxTokens, "max-tokens", 16000, "completion budget per entry, reasoning included")
 	flag.IntVar(&s.workers, "workers", 4, "entries to write concurrently")
 	flag.IntVar(&s.limit, "limit", 0, "stop after this many entries (0: no limit)")
 	flag.IntVar(&s.attempts, "attempts", 3, "attempts per entry, including retries after a rejected answer")
@@ -151,6 +159,14 @@ func run(s settings) error {
 
 	key := os.Getenv(s.keyEnv)
 	if key == "" {
+		// A prune needs no model, so it is kept even on the run that cannot write:
+		// the entries it removed describe routes that no longer exist, and leaving
+		// them in the file to preserve a clean failure would keep publishing them.
+		if pruned > 0 {
+			if err := file.Save(filepath.Join(root, s.prosePath)); err != nil {
+				return err
+			}
+		}
 		return fmt.Errorf("%s is not set, and %d entries need writing; on a pull request from a fork "+
 			"the secret is unavailable by design — publish the manifest as an artifact and let a "+
 			"maintainer run `make -C tools/systemmap enrich`", s.keyEnv, len(requests))
@@ -170,7 +186,7 @@ func run(s settings) error {
 		model:    s.model,
 		maxTok:   s.maxTokens,
 	}
-	written, failures := writeAll(ctx, cl, s, requests, pctx)
+	written, failures := writeAll(ctx, cl, s, requests, pctx, newIDGuard(plan))
 
 	for key, entry := range written {
 		file.Entries[key] = entry
@@ -193,9 +209,8 @@ func run(s settings) error {
 // writeAll fills every request, concurrently but with a deterministic result: the
 // entries are keyed, not ordered, and the file is saved with sorted keys, so two
 // runs over the same manifest produce the same diff shape.
-func writeAll(ctx context.Context, cl *client, s settings, requests []prose.Request, pctx contextSource) (map[string]prose.Entry, []string) {
+func writeAll(ctx context.Context, cl *client, s settings, requests []prose.Request, pctx contextSource, guard idGuard) (map[string]prose.Entry, []string) {
 	var (
-		guard    idGuard
 		mu       sync.Mutex
 		written  = map[string]prose.Entry{}
 		failures []string
@@ -225,14 +240,28 @@ func writeAll(ctx context.Context, cl *client, s settings, requests []prose.Requ
 			}
 		}()
 	}
+	// A request the run had no time to hand out is a failure, not a silence. Without
+	// this the dispatch loop drained the rest of the queue into a `ctx.Done` case that
+	// did nothing, and a run that timed out half way reported only the entries it had
+	// already started — every remaining route looked like it needed no prose.
+	dispatched := 0
 	for _, req := range requests {
 		select {
 		case work <- req:
+			dispatched++
 		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
 	close(work)
 	wg.Wait()
+	if dispatched < len(requests) {
+		for _, req := range requests[dispatched:] {
+			failures = append(failures, fmt.Sprintf("%s:%s — not attempted: %v", req.Kind, req.Key, ctx.Err()))
+		}
+	}
 	return written, failures
 }
 
@@ -299,6 +328,39 @@ func loadManifest(path string) (manifest, error) {
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return m, fmt.Errorf("manifest %s: %w", path, err)
+	}
+	// Every field of a request ends up in the file this program writes, and an entry
+	// with no hash is unloadable — `prose.Load` refuses it, so the next run of the gate
+	// fails on the file rather than on the map, and no amount of regeneration clears it.
+	// A manifest is machine-written, so anything missing here means it was truncated,
+	// hand-edited or produced by a different version: say so instead of writing it.
+	seen := map[string]bool{}
+	for i, req := range m.Requests {
+		switch {
+		case req.Kind == "":
+			return m, fmt.Errorf("manifest %s: request %d has no kind", path, i)
+		case req.Key == "":
+			return m, fmt.Errorf("manifest %s: request %d (%s) has no key", path, i, req.Kind)
+		case req.Hash == "":
+			return m, fmt.Errorf("manifest %s: request %s:%s has no facts hash; regenerate it with `make -C tools/systemmap plan`", path, req.Kind, req.Key)
+		}
+		id := req.Kind + ":" + req.Key
+		if seen[id] {
+			return m, fmt.Errorf("manifest %s: %s appears twice", path, id)
+		}
+		seen[id] = true
+	}
+	for i, key := range m.Prune {
+		if key == "" {
+			return m, fmt.Errorf("manifest %s: prune entry %d is empty", path, i)
+		}
+	}
+	// A map with no node categories is not a map. An empty list here would not fail
+	// anything — it would just make the validator stop recognising node ids, so every
+	// invented table would be accepted — which is the silent failure this whole gate
+	// exists to avoid.
+	if len(m.Requests) > 0 && len(m.Categories) == 0 {
+		return m, fmt.Errorf("manifest %s: no node categories; the validator would accept prose about any table (regenerate it with `make -C tools/systemmap plan`)", path)
 	}
 	return m, nil
 }

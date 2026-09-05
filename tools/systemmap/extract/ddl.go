@@ -11,9 +11,115 @@ import (
 	"github.com/eigeninference/d-inference/tools/systemmap/ir"
 )
 
+// maskSQLComments blanks every SQL comment in a literal, keeping the text the same
+// length so every index derived from it still cites the same line.
+//
+// A comment is not a declaration, and the DDL here is read by regex rather than
+// parsed, so `-- references users(id)` beside a column would otherwise mint a
+// foreign key — and an edge between two tables — out of a sentence. Masking is done
+// for the *scan* only: statements are still quoted from the original text, so what
+// the drawer shows is what source says, comments included.
+//
+// Quoted text is skipped, because `DEFAULT '--'` is a value and not a comment. Block
+// comments nest, as they do in Postgres. This covers the DDL path alone; a comment
+// inside a query is read by the statement scanner, which has its own gate.
+func maskSQLComments(text string) string {
+	out := []byte(text)
+	blank := func(from, to int) {
+		for i := from; i < to && i < len(out); i++ {
+			if out[i] != '\n' {
+				out[i] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\'', '"':
+			q := text[i]
+			for i++; i < len(text) && text[i] != q; i++ {
+			}
+		case '-':
+			if i+1 >= len(text) || text[i+1] != '-' {
+				continue
+			}
+			end := len(text)
+			if j := strings.IndexByte(text[i:], '\n'); j >= 0 {
+				end = i + j
+			}
+			blank(i, end)
+			i = end
+		case '/':
+			if i+1 >= len(text) || text[i+1] != '*' {
+				continue
+			}
+			depth, j := 1, i+2
+			for j+1 < len(text) && depth > 0 {
+				switch {
+				case text[j] == '/' && text[j+1] == '*':
+					depth++
+					j += 2
+				case text[j] == '*' && text[j+1] == '/':
+					depth--
+					j += 2
+				default:
+					j++
+				}
+			}
+			if depth > 0 {
+				j = len(text)
+			}
+			blank(i, j)
+			i = j - 1
+		}
+	}
+	return string(out)
+}
+
+// maskSQLStrings blanks the contents of every single-quoted string, keeping the text
+// the same length — and every newline where it was — so an index into the result still
+// cites the same line.
+//
+// It is the same argument as maskSQLComments and the other half of it: a value is not
+// a declaration, so `DEFAULT 'see REFERENCES models(id)'` must not mint a foreign key.
+// Comments are masked for the whole DDL scan, but string *contents* are not, because a
+// column's `DEFAULT` is part of what the drawer shows — so this one is applied by the
+// scans that read keywords, and only by them.
+//
+// Double quotes are left alone: in SQL they quote an identifier, and `REFERENCES
+// "models"` is a real reference to a real table. A doubled quote — SQL's escape for a
+// quote inside a literal — closes the string and reopens it, which blanks the same
+// bytes either way; an unterminated quote takes the
+// rest of the text, which is the safe direction — a keyword inside an unterminated
+// literal is not a declaration either. Dollar-quoted `$$ ... $$` bodies are *not*
+// masked, because a `DO $$ ... ALTER TABLE ... $$` block really does declare what it
+// contains.
+func maskSQLStrings(text string) string {
+	out := []byte(text)
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\'' {
+			continue
+		}
+		j := i + 1
+		for ; j < len(text) && text[j] != '\''; j++ {
+			if out[j] != '\n' {
+				out[j] = ' '
+			}
+		}
+		i = j
+	}
+	return string(out)
+}
+
 // statementAt returns the single SQL statement beginning at idx: everything up to
 // the first semicolon at paren depth zero, or the end of the literal.
 func statementAt(text string, idx int) string {
+	start, end := statementSpan(text, idx)
+	return dedent(strings.TrimSpace(text[start:end]))
+}
+
+// statementSpan is statementAt's extent, so a caller that scanned masked text can
+// quote the same statement out of the original.
+func statementSpan(text string, idx int) (int, int) {
 	depth := 0
 	for i := idx; i < len(text); i++ {
 		switch text[i] {
@@ -29,11 +135,11 @@ func statementAt(text string, idx int) string {
 			depth--
 		case ';':
 			if depth == 0 {
-				return dedent(strings.TrimSpace(text[idx : i+1]))
+				return idx, i + 1
 			}
 		}
 	}
-	return dedent(strings.TrimSpace(text[idx:]))
+	return idx, len(text)
 }
 
 // balanced returns the text between a '(' and its matching ')', plus the index
@@ -61,12 +167,18 @@ func balanced(text string, open int) (string, int) {
 	return text[min(open+1, len(text)):], len(text)
 }
 
-// parseColumns splits a CREATE TABLE body into columns and table-level
-// constraints. Splitting is depth-aware, so `NUMERIC(10, 2)` and a multi-column
-// `PRIMARY KEY (a, b)` stay in one piece.
-func parseColumns(body string, site func(int) string) ([]ir.Column, []ir.Constraint) {
+// parseColumns splits a CREATE TABLE body into columns, table-level constraints
+// and the foreign keys either of them declares. Splitting is depth-aware, so
+// `NUMERIC(10, 2)` and a multi-column `PRIMARY KEY (a, b)` stay in one piece.
+//
+// A foreign key is reported *as well as*, not instead of, whatever declared it: a
+// table-level `FOREIGN KEY` is still a constraint of that table and an inline
+// `REFERENCES` is still part of its column's definition. The key is the same fact
+// read for a different question — which other table this one points at.
+func parseColumns(body string, site func(int) string) ([]ir.Column, []ir.Constraint, []ir.ForeignKey) {
 	var cols []ir.Column
 	var cons []ir.Constraint
+	var fks []ir.ForeignKey
 	for _, part := range splitTopLevel(body) {
 		text := strings.TrimSpace(part.text)
 		if text == "" {
@@ -78,6 +190,7 @@ func parseColumns(body string, site func(int) string) ([]ir.Column, []ir.Constra
 		head, _, _ := strings.Cut(strings.ToLower(firstWord(text)), "(")
 		if ddlConstraintHeads[head] {
 			cons = append(cons, ir.Constraint{Text: collapse(text), Site: site(part.idx)})
+			fks = append(fks, foreignKeys(text, nil, site(part.idx))...)
 			continue
 		}
 		fields := tokenize(text)
@@ -87,8 +200,9 @@ func parseColumns(body string, site func(int) string) ([]ir.Column, []ir.Constra
 		col := ir.Column{Name: cleanIdent(strings.ToLower(fields[0])), Site: site(part.idx)}
 		col.Type, col.Extra = splitType(strings.Join(fields[1:], " "))
 		cols = append(cols, col)
+		fks = append(fks, foreignKeys(text, []string{col.Name}, site(part.idx))...)
 	}
-	return cols, cons
+	return cols, cons, fks
 }
 
 // splitType separates a column's type from the rest of its definition

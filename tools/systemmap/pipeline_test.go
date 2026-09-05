@@ -88,7 +88,8 @@ func TestFixtureRoutes(t *testing.T) {
 			gates:      []string{},
 			namespace:  "Public",
 			auth:       "Bearer",
-			deps:       []string{"ext.icons", "mem.aliases", "mem.cache", "pg.models"},
+			deps: []string{"ext.icons", "mem.aliases", "mem.cache", "mem.inflight",
+				"mem.revoked", "pg.models"},
 		},
 		"GET /v1/aliases": {
 			handler:    "handleAliases",
@@ -96,7 +97,7 @@ func TestFixtureRoutes(t *testing.T) {
 			gates:      []string{},
 			namespace:  "Public",
 			auth:       "Bearer",
-			deps:       []string{"mem.aliases", "mem.cache", "mem.flight"},
+			deps:       []string{"mem.aliases", "mem.cache", "mem.flight", "mem.revoked"},
 		},
 		"POST /v1/usage": {
 			handler:    "handleUsage",
@@ -104,7 +105,7 @@ func TestFixtureRoutes(t *testing.T) {
 			gates:      []string{},
 			namespace:  "Public",
 			auth:       "Public",
-			deps:       []string{"ext.opaque", "mem.inflight", "pg.models", "pg.usage"},
+			deps:       []string{"ext.opaque", "mem.cache", "mem.inflight", "pg.models", "pg.usage"},
 		},
 		"GET /v1/admin/stats": {
 			handler:    "handleAdminStats",
@@ -112,7 +113,7 @@ func TestFixtureRoutes(t *testing.T) {
 			gates:      []string{"isAdmin"},
 			namespace:  "Admin",
 			auth:       "Admin",
-			deps:       []string{"mem.admins", "pg.usage"},
+			deps:       []string{"mem.admins", "mem.revoked", "pg.usage"},
 		},
 		"ANY /legacy/": {
 			handler:    "inline",
@@ -150,6 +151,226 @@ func TestFixtureRoutes(t *testing.T) {
 		}
 		if !reflect.DeepEqual(ep.Dependencies, exp.deps) {
 			t.Errorf("%s dependencies = %v, want %v", key, ep.Dependencies, exp.deps)
+		}
+	}
+}
+
+// TestFixtureWiring pins the ordering half of the derivation: not only which
+// constructions a route reaches but in what order, through what indirection, how many
+// places touch each one, and along which call path.
+//
+// The route table alone answers none of that — it is a sorted set — and every fact
+// here was already in the walk and being discarded. The fixture is written so that all
+// four indirection kinds appear: `mem.cache` is touched directly in the handler,
+// `pg.models` through the store interface, `mem.inflight` from a `defer`, and
+// `ext.icons` from a goroutine. What each of them means is the weakest claim the
+// reader can make about *when* the touch happens, so the kind is the strongest
+// indirection anywhere on the wire rather than the first hop's.
+func TestFixtureWiring(t *testing.T) {
+	g, _ := buildFixture(t)
+	sym := func(i int) string { return g.Symbols[i] }
+	path := func(w []int) string {
+		out := make([]string, 0, len(w))
+		for _, i := range w {
+			out = append(out, sym(i))
+		}
+		return strings.Join(out, " → ")
+	}
+
+	type step struct {
+		node    string
+		mode    string
+		kind    string
+		lead    string // the earliest touch's own kind, published only when it is weaker
+		iface   bool
+		depth   int
+		touches int
+		repeats bool
+		wires   int
+		path    string // the first call path, which is the one shown beside the number
+	}
+	want := map[string][]step{
+		// The middleware's denylist probe comes first — it is a different frame from the
+		// handler, and the whole point of sequencing them together is that the reader sees
+		// the gate before what it gates. Then the handler's own cache probe, the store read
+		// through the interface, the alias map inside the recursive helper, and the icon
+		// fetch that runs in a goroutine. `mem.cache` is reached two ways and touched three
+		// times, one of them in a loop, which is the whole reason a count and a repeat flag
+		// are published instead of a single number.
+		//
+		// `mem.inflight` here is the dedupe case: the counter is bumped twice through the
+		// same symbol at the same lines, once directly and once from a goroutine, so the
+		// two collapse into one entry whose kind is async and whose only wire has no `go`
+		// on it. A single published path and a LeadKind is the honest way to say that; a
+		// derivation that took the kind from the surviving path would print `direct` and
+		// lose the concurrency, and one that let the promotion repaint the path would
+		// print `async` with nothing saying the path is not the goroutine's.
+		"GET /v1/models": {
+			{"mem.revoked", "R", ir.StepDirect, "", false, 0, 1, false, 1, "api.Server.withAuth"},
+			{"mem.cache", "RW", ir.StepDirect, "", false, 0, 3, true, 2, "api.Server.handleModels"},
+			{"pg.models", "R", ir.StepInterface, "", true, 1, 1, false, 1,
+				"api.Server.handleModels → store.Postgres.ListModels"},
+			{"mem.aliases", "R", ir.StepDirect, "", false, 1, 1, true, 1,
+				"api.Server.handleModels → api.Server.expandAliases"},
+			{"mem.inflight", "W", ir.StepAsync, ir.StepDirect, false, 2, 3, false, 1,
+				"api.Server.handleModels → fetch.Client.FetchIcons → fetch.Client.note"},
+			{"ext.icons", "RW", ir.StepAsync, "", false, 1, 1, false, 1,
+				"api.Server.handleModels → fetch.Client.FetchIcons"},
+		},
+		// The route that enters the recursive cycle at its other end, so the same two
+		// constructions appear one hop deeper and in the opposite order. It is the
+		// memoized-result hazard in flow form: a cached callee that kept the first
+		// caller's orders would number this route's steps as the other route's.
+		"GET /v1/aliases": {
+			{"mem.revoked", "R", ir.StepDirect, "", false, 0, 1, false, 1, "api.Server.withAuth"},
+			{"mem.flight", "RW", ir.StepDirect, "", false, 0, 3, false, 2, "api.Server.handleAliases"},
+			{"mem.cache", "W", ir.StepDirect, "", false, 1, 1, false, 1,
+				"api.Server.handleAliases → api.Server.resolveAlias"},
+			{"mem.aliases", "R", ir.StepDirect, "", false, 2, 1, false, 1,
+				"api.Server.handleAliases → api.Server.resolveAlias → api.Server.expandAliases"},
+		},
+		// The unauthenticated route, so no middleware touch heads its flow. Its first step
+		// is the operand of a `defer`: postponing a call does not postpone reading its
+		// arguments, so the cache read is direct and at the top, and only the call it was
+		// an argument to happens on the way out. Then one statement writing one table while
+		// reading another — both step 2 and 3 of the same call, with the endpoint's own
+		// modes differing per table — and last the counter the callee decrements as it
+		// unwinds, whose earliest touch is a plain increment (LeadKind) even though the
+		// step as a whole is deferred.
+		"POST /v1/usage": {
+			{"mem.cache", "R", ir.StepDirect, "", false, 0, 1, false, 1, "api.Server.handleUsage"},
+			{"pg.models", "R", ir.StepInterface, "", true, 1, 1, false, 1,
+				"api.Server.handleUsage → store.Postgres.RecordUsage"},
+			{"pg.usage", "W", ir.StepInterface, "", true, 1, 1, false, 1,
+				"api.Server.handleUsage → store.Postgres.RecordUsage"},
+			{"ext.opaque", "R", ir.StepDirect, "", false, 0, 1, false, 1, "api.Server.handleUsage"},
+			{"mem.inflight", "W", ir.StepDeferred, ir.StepDirect, false, 1, 6, false, 1,
+				"api.Server.handleUsage → fetch.Client.FetchOpaque"},
+		},
+		// Both gates in order: the middleware's, then the in-handler one, then the state
+		// they guard. An endpoint whose flow said otherwise would be describing a
+		// different program.
+		"GET /v1/admin/stats": {
+			{"mem.revoked", "R", ir.StepDirect, "", false, 0, 1, false, 1, "api.Server.withAuth"},
+			{"mem.admins", "R", ir.StepDirect, "", false, 1, 1, false, 1,
+				"api.Server.handleAdminStats → api.Server.isAdmin"},
+			{"pg.usage", "R", ir.StepInterface, "", true, 1, 1, false, 1,
+				"api.Server.handleAdminStats → store.Postgres.UsageAge"},
+		},
+	}
+	got := endpoints(g)
+	for key, exp := range want {
+		ep, ok := got[key]
+		if !ok {
+			t.Errorf("route %q not extracted", key)
+			continue
+		}
+		if len(ep.Flow) != len(exp) {
+			t.Errorf("%s flow has %d steps, want %d: %+v", key, len(ep.Flow), len(exp), ep.Flow)
+			continue
+		}
+		for i, s := range ep.Flow {
+			if s.Seq != i+1 {
+				t.Errorf("%s step %d is numbered %d", key, i+1, s.Seq)
+			}
+			first := ""
+			if len(s.Wires) > 0 {
+				first = path(s.Wires[0])
+			}
+			have := step{s.Node, s.Mode, s.Kind, s.LeadKind, s.Iface,
+				s.Depth, s.Touches, s.Repeats, s.WireCount, first}
+			if have != exp[i] {
+				t.Errorf("%s step %d = %+v, want %+v", key, i+1, have, exp[i])
+			}
+		}
+	}
+
+	// The invariants, over every route: the flow is the dependency list reordered and
+	// nothing else, its numbering is dense, every step's claims agree with the evidence
+	// they were folded from, every wire and citation resolves through the interning
+	// tables, and the published caps hold.
+	for _, ep := range g.Routes {
+		key := ep.Method + " " + ep.Path
+		// What the evidence says, per node, independently of what the flow says: the
+		// union of the modes and the strongest indirection anywhere. Reading it back off
+		// the endpoint's own DepModes would only assert that one assignment copied one
+		// map entry.
+		evMode, evKind := map[string]string{}, map[string]string{}
+		for _, a := range ep.Evidence {
+			if have, ok := evMode[a.Node]; ok && have != a.Mode {
+				evMode[a.Node] = ir.ModeBoth
+			} else {
+				evMode[a.Node] = a.Mode
+			}
+			evKind[a.Node] = ir.StrongerKind(evKind[a.Node], a.Kind)
+		}
+		var nodes []string
+		for i, s := range ep.Flow {
+			nodes = append(nodes, s.Node)
+			if s.Seq != i+1 {
+				t.Errorf("%s flow is not densely numbered: step %d has seq %d", key, i+1, s.Seq)
+			}
+			if _, ok := g.StepKindLegend[s.Kind]; !ok {
+				t.Errorf("%s step %d has kind %q, which the published legend does not explain", key, s.Seq, s.Kind)
+			}
+			if s.Mode != evMode[s.Node] {
+				t.Errorf("%s step %d says %s is %q; its evidence says %q", key, s.Seq, s.Node, s.Mode, evMode[s.Node])
+			}
+			// The strongest indirection over the whole step, which is the weakest claim
+			// the arrow can make about when the touch happens. A step publishing the
+			// first touch's kind instead would promise a cache is only read on the
+			// straight line of the request when a goroutine also writes it.
+			if s.Kind != evKind[s.Node] {
+				t.Errorf("%s step %d says %s is reached %q; its strongest evidence is %q",
+					key, s.Seq, s.Node, s.Kind, evKind[s.Node])
+			}
+			if s.LeadKind != "" && s.LeadKind == s.Kind {
+				t.Errorf("%s step %d publishes leadKind %q beside an identical kind", key, s.Seq, s.LeadKind)
+			}
+			if len(s.Wires) > s.WireCount || len(s.Wires) > 3 {
+				t.Errorf("%s step %d publishes %d of %d wires, past the cap", key, s.Seq, len(s.Wires), s.WireCount)
+			}
+			if len(s.Sites) > s.Touches || len(s.Sites) > 4 {
+				t.Errorf("%s step %d publishes %d of %d citations, past the cap", key, s.Seq, len(s.Sites), s.Touches)
+			}
+			for _, w := range s.Wires {
+				if len(w) == 0 {
+					t.Errorf("%s step %d has an empty call path", key, s.Seq)
+					continue
+				}
+				for _, i := range w {
+					if i < 0 || i >= len(g.Symbols) {
+						t.Fatalf("%s step %d references symbol %d of %d", key, s.Seq, i, len(g.Symbols))
+					}
+				}
+			}
+			// The leading wire is the earliest touch's path and Depth is that same
+			// touch's call depth, so the two have to describe one frame: a path of
+			// Depth+1 functions, from the entry point the touch was reached through
+			// down to the function that performs it. They are printed beside each
+			// other, and a step whose depth came from one touch while its path came
+			// from another would read as a call chain with a hop missing.
+			//
+			// The root is deliberately *not* asserted to be the same across steps: a
+			// route with middleware has more than one entry point, and its first steps
+			// legitimately start in the middleware rather than in the handler.
+			if len(s.Wires) > 0 && len(s.Wires[0]) != s.Depth+1 {
+				t.Errorf("%s step %d is at depth %d but its leading wire is %d deep: %s",
+					key, s.Seq, s.Depth, len(s.Wires[0])-1, path(s.Wires[0]))
+			}
+			for _, i := range s.Sites {
+				if i < 0 || i >= len(g.Sites) {
+					t.Fatalf("%s step %d references site %d of %d", key, s.Seq, i, len(g.Sites))
+				}
+				if !strings.Contains(g.Sites[i], ".go:") {
+					t.Errorf("%s step %d cites %q, which is not a source line", key, s.Seq, g.Sites[i])
+				}
+			}
+		}
+		sorted := append([]string(nil), nodes...)
+		sort.Strings(sorted)
+		if !reflect.DeepEqual(sorted, ep.Dependencies) {
+			t.Errorf("%s flow covers %v, dependencies are %v", key, sorted, ep.Dependencies)
 		}
 	}
 }
@@ -1020,15 +1241,106 @@ func TestFixtureSchemaDefinitions(t *testing.T) {
 	if !reflect.DeepEqual(cons, []string{"UNIQUE (id, created_at)", "CHECK(tokens >= 0)"}) {
 		t.Errorf("usage constraints = %v, want both table-level constraints", cons)
 	}
-	if names := columnNames(usage); !reflect.DeepEqual(names, []string{"id", "tokens", "created_at"}) {
+	if names := columnNames(usage); !reflect.DeepEqual(names,
+		[]string{"id", "tokens", "created_at", "model_id", "parent_id"}) {
 		t.Errorf("usage columns = %v; a table-level constraint must not be read as a column", names)
+	}
+	// A column-level REFERENCES is part of the column, so the reference clause stays
+	// in the definition a reader is shown — the key is lifted out of it as well, not
+	// instead of it.
+	if got := byName(t, usage, "model_id").Extra; got != "REFERENCES models (id) ON DELETE CASCADE" {
+		t.Errorf("usage.model_id extra = %q, want its REFERENCES clause as written", got)
 	}
 	var kinds []string
 	for _, stmt := range usage.DDL {
 		kinds = append(kinds, stmt.Kind)
 	}
-	if !reflect.DeepEqual(kinds, []string{"create", "index"}) {
-		t.Errorf("usage ddl kinds = %v, want [create index]", kinds)
+	if !reflect.DeepEqual(kinds, []string{"create", "index", "alter", "alter"}) {
+		t.Errorf("usage ddl kinds = %v, want [create index alter alter]", kinds)
+	}
+}
+
+// TestFixtureForeignKeys pins the referential half of the schema: the three forms a
+// key can be written in, and the three answers the graph gives for them.
+//
+// The forms matter because they are how a key hides. An inline `REFERENCES` is read
+// by anyone looking at the CREATE; a table-level `FOREIGN KEY (...)` is one line
+// further down; an `ALTER TABLE ... ADD CONSTRAINT` is in a migration nobody reads the
+// CREATE next to — and that last one is exactly the relationship a hand-drawn diagram
+// is missing. All three are derived here, with the columns, the referenced columns,
+// the referential actions and a citation each.
+func TestFixtureForeignKeys(t *testing.T) {
+	g, rep := buildFixture(t)
+	if !rep.Clean() {
+		t.Fatalf("fixture is not clean:\n%s", rep.Markdown())
+	}
+	type key struct {
+		name             string
+		columns, refCols []string
+		table            string
+		onDelete         string
+		onUpdate         string
+	}
+	want := map[string][]key{
+		// Inline, then the ALTER that adds one later. Both belong to `usage`, because a
+		// key belongs to the table that references, which is what makes the arrow's
+		// direction derived rather than chosen.
+		"usage": {
+			{columns: []string{"model_id"}, table: "models", refCols: []string{"id"}, onDelete: "CASCADE"},
+			{name: "usage_parent_fk", columns: []string{"parent_id"}, table: "usage",
+				refCols: []string{"id"}, onDelete: "SET NULL"},
+		},
+		// Table-level, with both actions spelled out.
+		"model_tags": {
+			{columns: []string{"model_id"}, table: "models", refCols: []string{"id"},
+				onDelete: "CASCADE", onUpdate: "RESTRICT"},
+		},
+		"models": nil,
+	}
+	for name, exp := range want {
+		table := g.Tables[name]
+		if table == nil {
+			t.Errorf("no definition derived for %s; tables = %v", name, sortedTableNames(g))
+			continue
+		}
+		if len(table.ForeignKeys) != len(exp) {
+			t.Errorf("%s has %d foreign keys, want %d: %+v", name, len(table.ForeignKeys), len(exp), table.ForeignKeys)
+			continue
+		}
+		for i, fk := range table.ForeignKeys {
+			got := key{fk.Name, fk.Columns, fk.RefColumns, fk.Table, fk.OnDelete, fk.OnUpdate}
+			if !reflect.DeepEqual(got, exp[i]) {
+				t.Errorf("%s foreign key %d = %+v, want %+v", name, i, got, exp[i])
+			}
+			if !strings.HasPrefix(fk.Site, "store/store.go:") {
+				t.Errorf("%s foreign key %d site = %q, want a store/store.go line", name, i, fk.Site)
+			}
+			if !strings.HasSuffix(fk.URL, "#L"+lineOf(fk.Site)) {
+				t.Errorf("%s foreign key %d url = %q, does not link its own line", name, i, fk.URL)
+			}
+		}
+	}
+
+	// And what the graph draws. Only one of the three keys is an edge between two
+	// dots: the self-reference is one node, and `model_tags` has no node at all
+	// because no endpoint reaches it — both still show in their table's own
+	// definition, which is where a reader asked about that table.
+	if len(g.TableLinks) != 1 {
+		t.Fatalf("tableLinks = %+v, want exactly the usage → models key", g.TableLinks)
+	}
+	link := g.TableLinks[0]
+	if link.From != "pg.usage" || link.To != "pg.models" {
+		t.Errorf("tableLink = %s → %s, want pg.usage → pg.models", link.From, link.To)
+	}
+	if !reflect.DeepEqual(link.Columns, []string{"model_id"}) ||
+		!reflect.DeepEqual(link.RefColumns, []string{"id"}) || link.OnDelete != "CASCADE" {
+		t.Errorf("tableLink = %+v, want (model_id) → (id) ON DELETE CASCADE", *link)
+	}
+	if link.Site != "store/store.go:34" || !strings.HasSuffix(link.URL, "#L34") {
+		t.Errorf("tableLink cites %q / %q, want the line the REFERENCES is written on", link.Site, link.URL)
+	}
+	if _, ok := g.Nodes["pg.model_tags"]; ok {
+		t.Error("pg.model_tags has a node, so the no-node case is no longer covered by this fixture")
 	}
 }
 

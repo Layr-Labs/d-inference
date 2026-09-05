@@ -124,10 +124,30 @@ body.v-code .prose-section { display: none; }
 svg.prov .hull-label, svg.prov .hull-glabel {
   text-decoration: underline 1px dotted; text-underline-offset: 3px; }
 svg.prov .hull-sub { fill: var(--pp); }
+/* An association's colour is what the endpoint does to the state; its dash is how it
+   reaches it (the dash pattern itself is set per wire in JS, from the same vocabulary
+   the legend prints), and the arrowhead states that again where a line is being read.
+   A wire off the request's own line is drawn a touch fainter, because that is what
+   "this happens in a goroutine" looks like at a glance. */
 .glink { stroke-width: 1; opacity: .22; }
+.glink.k-async { opacity: .17; }
 .glink.hi { stroke-width: 2.2; opacity: .95; }
 .glink.mute { opacity: .04; }
 .glink.shade { opacity: .015; }
+/* Declared foreign keys: a relationship among the tables themselves, so they carry no
+   access-mode colour and are drawn under everything an endpoint does. */
+.fklink { stroke: var(--dim); stroke-width: 1.1; stroke-dasharray: 1 3; opacity: .5; }
+.fklink.hi { stroke-width: 1.8; opacity: .95; }
+.fklink.mute { opacity: .05; }
+.fklink.shade { opacity: .03; }
+/* A focused endpoint's wire numbers, on the curve's own midpoint. Outlined like every
+   other label so a number stays readable over a line or a hull. */
+.gseq { font-size: 9.5px; font-weight: 700; pointer-events: none; paint-order: stroke;
+  stroke: #0b0d10; stroke-width: 3px; stroke-linejoin: round; }
+/* The tick that joins a moved number back to the point on its wire it is numbering.
+   Dashed and thin so it cannot be mistaken for a wire, and stroked in the number's own
+   mode colour so the pair reads as one label. */
+.gseqlead { stroke-width: 1; stroke-dasharray: 2 2; opacity: .75; pointer-events: none; }
 .gnode { cursor: pointer; }
 .gnode circle { stroke: #0b0d10; stroke-width: 1.5; }
 .gnode.unreached { opacity: .6; }
@@ -161,7 +181,39 @@ svg.prov .hull-sub { fill: var(--pp); }
 .ginfo .row { display: flex; align-items: baseline; gap: 6px; }
 .ginfo .row h4 { flex: 1; }
 .ginfo .x { padding: 0 6px; background: transparent; line-height: 1.4; }
-.ginfo .lk { cursor: pointer; text-decoration: underline dotted; }
+/* A click-through to another subject: the same affordance in the panel, in the table
+   drawer and in the inventory tables below. */
+.lk { cursor: pointer; text-decoration: underline dotted; }
+.lk:hover { color: var(--accent); }
+/* The wiring list: one ordered account of an endpoint's state, shown in the graph
+   panel and again in the endpoint table. The sequence number is the picture's badge
+   restated in text and hung into the list's own indent — which is why the browser's
+   marker is turned off; leaving it on numbers the rows a second time, in a numbering
+   that counts the `+N more` line and disagrees with the derived order the moment a
+   step is capped — and the arrow glyph is its arrowhead, so the two read as one
+   answer. */
+ol.wiring { list-style: none; margin: 6px 0 0; padding-left: 22px; }
+ol.wiring li { margin-bottom: 4px; }
+.wiring .seqn { display: inline-block; min-width: 15px; margin-left: -19px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.wiring .wire { color: var(--dim); font-size: 11px; overflow-wrap: anywhere; }
+.wiring .desc { font-size: 11.5px; }
+/* The indirection glyph, wherever it is printed: the graph panel, the wiring lists and
+   the legend that names the four kinds. Scoped rather than bare, because `.kind` is
+   also an actor's kind and a credential's class in the legends below, which are prose
+   and not glyphs. */
+.ginfo .kind, .wiring .kind, #kinds .kind { font-family: var(--mono); font-weight: 600; }
+.kind.k-direct { color: var(--dim); }
+.kind.k-interface { color: var(--accent); }
+.kind.k-deferred { color: var(--pp); }
+.kind.k-async { color: var(--rw); }
+/* Text for assistive tech only: the indirection arrow is a glyph, and its `title` is a
+   hover affordance rather than something a screen reader is guaranteed to read out. */
+.sronly { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.kwire { display: block; margin: 4px 0 2px; }
+.fklist { margin: 6px 0 0; padding-left: 18px; }
+.fklist li { margin-bottom: 3px; }
 .ident { font-size: 10.5px; border-radius: 4px; padding: 1px 5px; border: 1px solid var(--line);
   color: var(--dim); }
 .ident.i-sql { border-color: #2f5d3f; color: var(--r); }
@@ -229,6 +281,13 @@ tr.ep.sel td { background: #16202c; }
   font-size: 12px; }
 .legend dt { color: var(--dim); }
 .legend dd { margin: 0; }
-.legend .kind { color: var(--dim); font-size: 11.5px; }
+/* Three legends share the class name `kind` for two different things, so each is
+   scoped to its own panel rather than styled through `.legend`. In #roles and #creds
+   it is prose — an actor's kind, a credential's class — and dim; in #kinds it is the
+   indirection glyph, which must keep the colour `.kind.k-*` gives it, or the key
+   teaches a vocabulary the picture does not use. A single `.legend .kind` carrying a
+   colour outranks nothing but wins by order, and painted all four arrows grey. */
+#roles .kind, #creds .kind { color: var(--dim); font-size: 11.5px; }
+#kinds .kind { font-size: 11.5px; }
 .empty { color: var(--dim); padding: 14px 8px; }
 footer { color: var(--dim); font-size: 12px; padding: 20px 24px 40px; border-top: 1px solid var(--line); }

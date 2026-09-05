@@ -206,7 +206,11 @@ func writeManifest(path, revision string, plan prose.Plan) error {
 		Requests []prose.Request `json:"requests"`
 		Prune    []string        `json:"prune"`
 		Fresh    int             `json:"fresh"`
-	}{revision, plan.Requests, plan.Prune, plan.Fresh}
+		// The map's vocabulary of state, so the enricher's validator knows what a node
+		// id looks like here without having to guess it from a token's shape.
+		Categories []string `json:"categories"`
+		Tables     []string `json:"tables"`
+	}{revision, plan.Requests, plan.Prune, plan.Fresh, plan.Categories, plan.Tables}
 	if payload.Requests == nil {
 		payload.Requests = []prose.Request{}
 	}

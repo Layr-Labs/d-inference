@@ -20,6 +20,7 @@ type Server struct {
 	cache   map[string]string
 	aliases map[string]string
 	admins  map[string]bool
+	revoked map[string]bool
 	flights *flight.Cache
 }
 
@@ -33,9 +34,14 @@ func (s *Server) routes() {
 	})
 }
 
+// withAuth touches state of its own, which every wrapped route therefore touches
+// *before* anything in its handler. Middleware is walked as a separate frame from
+// the handler it wraps, so this is the only shape that proves the two frames are
+// sequenced against each other rather than each numbered from one.
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
+		token := r.Header.Get("Authorization")
+		if token == "" || s.revoked[token] {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -70,6 +76,12 @@ func (s *Server) handleAliases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	// A `defer` postpones the *call*, not its operands: the cache is read here, on the
+	// way in, and only settle runs on the way out. So this touch is a plain direct
+	// read at the top of the handler, and a walk that let the statement's timing leak
+	// into its arguments would report the whole fleet's `defer`red operands as
+	// happening after everything else.
+	defer s.settle(s.cache[r.URL.Query().Get("id")])
 	if err := s.store.RecordUsage(r.Context(), r.URL.Query().Get("id"), 1); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -90,6 +102,12 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(age)
+}
+
+// settle is the deferred callee, and it touches no mapped state on purpose: the
+// only fact its call site carries is where its argument was read.
+func (s *Server) settle(previous string) {
+	_ = previous
 }
 
 // isAdmin is the in-handler authorization gate: middleware alone cannot tell

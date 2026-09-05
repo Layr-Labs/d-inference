@@ -12,6 +12,14 @@ import (
 // Schema is the DDL the fixture declares. SchemaTables reads its table names, so
 // a query naming anything else is drift, and SchemaDefinitions derives the
 // published column list from it.
+//
+// The referential half is written in all three forms a foreign key can take, and
+// each is a different answer for the graph: `usage.model_id` is an inline
+// column-level REFERENCES between two tables the map draws, so it is an edge;
+// `usage.parent_id` is added by a later ALTER and points at `usage` itself, so it
+// is one node and not an edge between two; and `model_tags` declares a table-level
+// FOREIGN KEY but no query reaches it, so it has no dot to draw an edge to. All
+// three still appear in the table's own definition.
 const Schema = `
 CREATE TABLE models (
 	id text PRIMARY KEY,
@@ -23,10 +31,20 @@ CREATE TABLE usage (
 	id text PRIMARY KEY,
 	tokens bigint NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT now(),
+	model_id text REFERENCES models (id) ON DELETE CASCADE,
 	UNIQUE (id, created_at),
 	CHECK(tokens >= 0)
 );
 CREATE INDEX usage_created_at_idx ON usage (created_at);
+CREATE TABLE model_tags (
+	model_id text NOT NULL,
+	tag text NOT NULL,
+	PRIMARY KEY (model_id, tag),
+	FOREIGN KEY (model_id) REFERENCES models (id) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+ALTER TABLE usage ADD COLUMN IF NOT EXISTS parent_id text;
+ALTER TABLE usage ADD CONSTRAINT usage_parent_fk
+	FOREIGN KEY (parent_id) REFERENCES usage (id) ON DELETE SET NULL;
 `
 
 type Store interface {

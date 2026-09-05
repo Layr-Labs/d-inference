@@ -25,10 +25,20 @@ type Request struct {
 }
 
 // Plan is everything enrichment should do to the generated file for one map.
+//
+// Categories and Tables are the map's whole vocabulary of state, not just the part
+// this plan touches. An enricher validating a sentence has to know what a node id
+// looks like *in this map* — that `pg.` and `mem.` name state while `server.` names
+// a file — and deriving that from the requests alone made the guard weaker exactly
+// when the plan was small: a plan with one route request would not recognise
+// `pg.payouts` as state at all, and the invented-table sentence the guard exists to
+// catch would go straight into the page.
 type Plan struct {
-	Requests []Request // prose that is missing, or whose source has moved
-	Prune    []string  // entries for a key the map no longer has, or a person now covers
-	Fresh    int       // entries whose hash still matches, and which cost nothing
+	Requests   []Request // prose that is missing, or whose source has moved
+	Prune      []string  // entries for a key the map no longer has, or a person now covers
+	Fresh      int       // entries whose hash still matches, and which cost nothing
+	Categories []string  // every node-id category the map draws: pg, mem, ext, …
+	Tables     []string  // every table the map derived a definition for
 }
 
 // Existing is the prose a person has written by hand, which enrichment must
@@ -94,7 +104,24 @@ func Build(g *ir.Graph, human Existing, symbols map[string][]string, have *File)
 			plan.Prune = append(plan.Prune, key)
 		}
 	}
+	plan.Categories, plan.Tables = vocabulary(g)
 	return plan
+}
+
+// vocabulary is the map's own answer to "what does a piece of state look like
+// here". Both lists cover the whole graph, including nodes whose prose is current
+// and nodes no endpoint reaches, because they describe the namespace of state and
+// not the work to be done in it.
+func vocabulary(g *ir.Graph) (categories, tables []string) {
+	cats := map[string]bool{}
+	for id, node := range g.Nodes {
+		if node.Category != "" {
+			cats[node.Category] = true
+		} else if prefix, _, ok := strings.Cut(id, "."); ok {
+			cats[prefix] = true
+		}
+	}
+	return sortedSet(cats), sortedKeys(g.Tables)
 }
 
 // filled reports whether an entry actually carries the prose its kind promises.

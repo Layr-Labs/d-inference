@@ -38,8 +38,11 @@ const plural = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'))
 const mark = cls => (node, inline) => { node.classList.add(cls); if (inline) node.classList.add('pin'); return node; };
 const pc = mark('p-c'), pp = mark('p-p'), px = mark('p-x');
 
+// `arrows` is 'auto' — heads wherever the picture is narrow enough to read them, which
+// is syncArrows' judgement — or 'all' and 'read', the reader overruling it in either
+// direction: on every wire, or only on the wire being read.
 const state = { q: '', ns: '', auth: '', dep: '', mode: '', ont: '',
-  view: 'all', open: null, table: null, wide: false, focus: null };
+  view: 'all', open: null, table: null, wide: false, focus: null, arrows: 'auto' };
 
 // showProse is the single gate every curated string passes through, so adding a
 // prose field to the page cannot accidentally survive the code view.
@@ -132,6 +135,75 @@ const nodeDoc = id => {
   return d && typeof d === 'object' ? d : null;
 };
 
+// ---------------------------------------------------------------------------
+// Wiring. The dependency list answers "what state does this endpoint touch"; the
+// flow answers the question a reader actually arrives with — in what order, through
+// what, and how often. It is derived, all of it: the generator walks the
+// type-checked call graph in source order and records where each touch sat, how deep
+// in the call stack it was, whether the hop was a direct call, an interface
+// dispatch, a `defer` or a `go`, and whether it was inside a loop.
+//
+// It is a static order, not a trace: nothing runs the program, so `touches` counts
+// distinct source sites rather than executions and `repeats` is the only claim made
+// about a site running more than once.
+//
+// The call paths and citations are interned by the generator, so a step names its
+// symbols and sites by index into the graph's own tables.
+// ---------------------------------------------------------------------------
+const flowIndex = {};
+for (const ep of DATA.routes) {
+  for (const s of ep.flow || []) flowIndex[ep.id + '\0' + s.node] = s;
+}
+const stepOf = (ep, dep) => flowIndex[ep.id + '\0' + dep] || null;
+const symbolName = i => (DATA.symbols || [])[i] || '?';
+const siteName = i => (DATA.sites || [])[i] || '';
+// A wire's frames are shown by the name a reader recognises — `Server.handleProviderWS`
+// rather than `api.Server.handleProviderWS`; the package is one hover away in the title.
+const shortSym = s => s.split('.').slice(-2).join('.');
+const wirePath = w => (w || []).map(symbolName);
+// The indirection vocabulary is the generator's (`stepKindLegend` carries the
+// sentences); this is only how each kind is drawn. Order is weakest to strongest,
+// which is the order the generator resolves a step's kind in.
+const KINDS = ['direct', 'interface', 'deferred', 'async'];
+const KIND_LABEL = { direct: 'direct call', interface: 'interface dispatch',
+  deferred: 'deferred call', async: 'goroutine' };
+// The glyph each kind carries in text, so a wiring list reads without colour, and the
+// dash the wire itself is drawn with. Both match the arrowheads in the graph.
+const KIND_ARROW = { direct: '→', interface: '⇢', deferred: '↳', async: '⇉' };
+const KIND_DASH = { direct: '', interface: '6 3', deferred: '2 3', async: '1 4' };
+// A step with no kind is a direct call: the generator only names the indirection it
+// found, and "nothing in the way" is what direct means.
+const stepKind = s => (s && s.kind) || 'direct';
+const kindWhy = k => (DATA.stepKindLegend || {})[k] || KIND_LABEL[k] || k;
+
+// Foreign keys, indexed by the table they point at. The outgoing direction is on the
+// table itself; this is what makes "and who points at me" answerable in the drawer.
+// It is built from every declared table rather than from the drawn links, so a key
+// whose child or parent has no dependency node still shows up in the definition.
+// A self-reference — a parent column pointing at the same table's key — is one
+// constraint, and it is already the table's own declaration. Counting it as inbound
+// too would print it twice in the one drawer where both directions are shown, which
+// reads as two constraints where the schema has one.
+const fkInbound = {};
+for (const name of Object.keys(DATA.tables || {})) {
+  for (const fk of DATA.tables[name].foreignKeys || []) {
+    if (fk.table === name) continue;
+    (fkInbound[fk.table] = fkInbound[fk.table] || []).push({ from: name, fk });
+  }
+}
+const colList = c => (c && c.length) ? '(' + c.join(', ') + ')' : '';
+// A referential action is worth stating and only when the DDL states it: the default
+// is NO ACTION, and printing that where the source says nothing would be the page
+// inventing a clause.
+const fkActions = fk => [fk.onDelete ? 'ON DELETE ' + fk.onDelete : '',
+  fk.onUpdate ? 'ON UPDATE ' + fk.onUpdate : ''].filter(Boolean).join(' · ');
+// One drawn key as a sentence, for the tooltip on its arc.
+function fkSentence(fk) {
+  const acts = fkActions(fk);
+  return shortName(fk.from) + colList(fk.columns) + ' references ' +
+    shortName(fk.to) + colList(fk.refColumns) + (acts ? ' · ' + acts : '');
+}
+
 // The ontological axis: not "is this node reached" (that is Reached, and it is
 // derived) but "who named it". `sql` means source itself declares the identity in
 // a CREATE TABLE; `hosts`/`endpoints`/`messages` mean a curated name bound to a
@@ -196,6 +268,23 @@ function fillDeps() {
   sel.value = state.dep;
 }
 
+// The wiring is searchable, because a reader who knows a function name should be able
+// to ask which endpoints reach state through it. Every frame and citation is derived,
+// so it is searchable in the code view too. Computed once per route and cached: the
+// search runs on every keystroke over every route, and the widest flow in the
+// coordinator map names 57 constructions.
+function wiringHay(ep) {
+  if (ep.wiringHay == null) {
+    const parts = [];
+    for (const s of ep.flow || []) {
+      for (const w of s.wires || []) for (const i of w) parts.push(symbolName(i));
+      for (const i of s.sites || []) parts.push(siteName(i));
+    }
+    ep.wiringHay = uniq(parts).join(' ').toLowerCase();
+  }
+  return ep.wiringHay;
+}
+
 function matches(ep) {
   if (state.ns && ep.namespace !== state.ns) return false;
   if (state.auth && ep.auth !== state.auth) return false;
@@ -211,7 +300,7 @@ function matches(ep) {
     const hay = [ep.method, ep.path, ep.handler, ep.namespace, ep.auth,
       say(ep.authDetail), say(ep.description), say(ep.details),
       showProse() ? (ep.callers || []).join(' ') : '', ep.middleware.join(' '),
-      ep.gates.join(' '), ep.dependencies.join(' '),
+      ep.gates.join(' '), ep.dependencies.join(' '), wiringHay(ep),
       showProse() ? ep.dependencies.map(label).join(' ') : '']
       .join(' ').toLowerCase();
     if (!state.q.split(/\s+/).every(t => hay.includes(t))) return false;
@@ -335,17 +424,43 @@ for (const dep of Object.keys(DATA.nodes).sort()) {
     group: node.group, links: [] });
 }
 // One link per (endpoint, dependency) pair, carrying that endpoint's own derived
-// access mode rather than its namespace's aggregate.
+// access mode rather than its namespace's aggregate — and its own wiring step, which
+// is what lets the line say *how* the handler gets there and *when*, not only that it
+// does. `mode` is what the wire does to the state, `kind` is how it reaches it, `seq`
+// is where it falls in the order the request meets its constructions.
 for (const ep of DATA.routes) {
   const s = gById['ep:' + ep.id];
   for (const dep of ep.dependencies) {
     const t = gById['dep:' + dep];
     if (!t) continue;
-    const link = { s, t, dep, ep, mode: epMode(ep, dep) };
+    const step = stepOf(ep, dep);
+    const link = { s, t, dep, ep, mode: epMode(ep, dep), step,
+      kind: stepKind(step), seq: step ? step.seq : 0 };
     GLINKS.push(link);
     s.links.push(link);
     t.links.push(link);
   }
+}
+// Foreign keys between two drawn tables. They are relationships among the
+// dependencies themselves rather than anything an endpoint does, so they are drawn
+// but deliberately take no part in the layout, in a node's degree, in its label
+// priority or in the drawn-topology fingerprint: adding a REFERENCES to the schema
+// must not move a single dot. A key whose child or parent has no node is not a line —
+// there is nothing to draw it between — and still appears in the table's definition.
+// Nor is a self-reference: the generator declines to publish one, and an arc from a dot
+// to itself would be drawn as a degenerate curve if one ever arrived.
+// A self-reference is one node rather than an edge between two, so it is not drawn —
+// the drawer states it instead. Two *different* keys between the same pair of tables
+// are two edges, and drawArc bows from the endpoints alone, so they would land on top
+// of each other with the second one's tooltip unreachable; `spread` fans them apart.
+const FKLINKS = [];
+const fkPairs = {};
+for (const fk of DATA.tableLinks || []) {
+  const s = gById['dep:' + fk.from], t = gById['dep:' + fk.to];
+  if (!s || !t || s === t) continue;
+  const pair = [fk.from, fk.to].sort().join('\u0000');
+  fkPairs[pair] = (fkPairs[pair] || 0) + 1;
+  FKLINKS.push({ s, t, fk, spread: fkPairs[pair] });
 }
 if (GNODES.some(n => n.cluster === UNPLACED)) {
   CLUSTERS[UNPLACED] = { title: 'Unplaced', kind: 'external', color: '#8b98a5',
@@ -593,6 +708,142 @@ function hullPath(nodes, pad) {
 const gsvg = document.getElementById('gsvg');
 const scene = document.getElementById('scene');
 const modeColor = { R: 'var(--r)', W: 'var(--w)', RW: 'var(--rw)' };
+
+// Arrowheads. Four shapes — one per indirection kind — in every access-mode colour,
+// so one head states both facts a wire carries: its colour is what the endpoint does
+// to the state, its shape is how it reaches it. They are generated from the same two
+// vocabularies the rest of the page reads, rather than written out, so a kind or a
+// mode the generator adds arrives as a marker instead of as a silent fallback.
+const MARKER_PATH = {
+  direct: 'M0 0 L8 3 L0 6 Z',               // a filled head: nothing in the way
+  interface: 'M0.7 0.7 L7.3 3 L0.7 5.3 Z',  // hollow: the callee is chosen at runtime
+  deferred: 'M0 3 L4 0.5 L8 3 L4 5.5 Z',    // a diamond: it happens on the way out
+  async: 'M0 0 L8 3 L0 6',                  // an open barb: it is off the request's line
+};
+const MODE_KEYS = { R: 'R', W: 'W', RW: 'RW', '?': 'x' };
+// The head's own box, with a unit of slack around it. Every path above is drawn inside
+// `0 0 8 6` with a 1px outline, and an outline straddles its path — so a viewBox tight
+// to the ink clips the async barb's tips and the deferred diamond's vertices by half a
+// stroke. One unit of margin on each side costs nothing but has to be paid for in the
+// box, or `meet` scaling shrinks the ink instead: the sizes below are the padded box, so
+// the ink inside them is 9 × 6.75 screen pixels.
+const ARROW_VIEW = '-1 -1 10 8';
+// How big a head is on screen, and how big the foreign-key head is — a relationship
+// among the tables is a quieter fact than something an endpoint does, so it is drawn
+// slightly smaller.
+const ARROW_PX = { w: 11.25, h: 9 };
+const FK_ARROW_PX = { w: 9.4, h: 7.5 };
+// A head comes in two families, because it is printed in two coordinate systems. The
+// `-fx` family is for the legend below the graph, whose sample wires are ordinary
+// unscaled SVG; the unsuffixed family is for the wires themselves, which live inside
+// the scaled scene — so its boxes are resized per zoom by sizeMarkers and the legend's
+// are not. Sharing one family is what a reader would expect and is exactly wrong: the
+// zoom would resize the key.
+const markerID = (kind, mode, fixed) =>
+  'a-' + kind + '-' + (MODE_KEYS[mode] || 'x') + (fixed ? '-fx' : '');
+// The colour the indirection key draws its sample heads in. The key is about shape, so
+// it needs one colour rather than all of them, and read+write is the one that names both.
+const LEGEND_MODE = 'RW';
+// The scene's heads, so sizeMarkers can find them without a selector.
+const SCENE_MARKERS = [];
+function buildMarkers() {
+  const defs = document.getElementById('gdefs');
+  const head = (id, kind, color, box) => {
+    // Two of the four heads are hollow. An interface head is filled with the page
+    // background rather than left transparent, or the wire under it shows through
+    // and reads as a solid head; a goroutine's chevron has no interior to fill.
+    const fill = kind === 'interface' ? 'var(--bg)' : kind === 'async' ? 'none' : color;
+    const m = svg('marker', { id: id, viewBox: ARROW_VIEW, refX: 7.4, refY: 3,
+      markerWidth: box.w, markerHeight: box.h,
+      orient: 'auto-start-reverse', markerUnits: 'userSpaceOnUse' });
+    m.append(svg('path', { d: MARKER_PATH[kind], fill: fill, stroke: color, 'stroke-width': 1 }));
+    defs.append(m);
+    return m;
+  };
+  for (const kind of KINDS) {
+    for (const mode of Object.keys(MODE_KEYS)) {
+      const color = modeColor[mode] || 'var(--dim)';
+      SCENE_MARKERS.push({ node: head(markerID(kind, mode), kind, color, ARROW_PX), px: ARROW_PX });
+    }
+    // One fixed-size twin per kind, and only in the key's own colour: the legend draws a
+    // sample wire per indirection kind to say what the shape means, and says nothing
+    // about access mode there. A full mode × kind fixed family would be twelve
+    // definitions nothing references.
+    head(markerID(kind, LEGEND_MODE, true), kind, modeColor[LEGEND_MODE], ARROW_PX);
+  }
+  // The foreign-key head belongs to the relationship, not to an access mode: a key is
+  // not something anybody read or wrote. It is only ever drawn in the scene, so it has
+  // no fixed-size twin.
+  const fk = head('a-fk', 'deferred', 'var(--dim)', FK_ARROW_PX);
+  SCENE_MARKERS.push({ node: fk, px: FK_ARROW_PX });
+  sizeMarkers();
+}
+
+// sizeMarkers keeps a head one size on screen at every zoom.
+//
+// A marker on a path inside the scaled scene is measured in that path's own user space,
+// so `markerWidth: 8` is eight *scene* units — three screen pixels at the zoom that
+// fits the whole coordinator map, with a half-pixel outline. The heads were being drawn
+// and could not be seen. Dividing the box by the scale is the same decision the label
+// layer makes by living outside the scene: an annotation is read at the reader's scale,
+// not the picture's.
+let markerK = 0;
+function sizeMarkers() {
+  // Writing a marker attribute invalidates every instance of it, which at 34 definitions
+  // is real work on a path that runs on every wheel tick. A scale change under a percent
+  // moves a head by a tenth of a pixel, so it is not worth a relayout: the guard is a
+  // ratio rather than an equality so a smooth zoom coalesces into a few writes.
+  if (markerK && Math.abs(view.k / markerK - 1) < 0.01) return;
+  markerK = view.k;
+  for (const m of SCENE_MARKERS) {
+    m.node.setAttribute('markerWidth', (m.px.w / view.k).toFixed(2));
+    m.node.setAttribute('markerHeight', (m.px.h / view.k).toFixed(2));
+  }
+}
+
+// How many live wires the picture can carry a head on each and still be a picture, and
+// the zoom past which the count stops mattering because most of them are off-screen.
+//
+// The whole coordinator map fits at k ≈ 0.43 and has 857 wires, so the unfiltered view is
+// deliberately on the wrong side of both numbers: every one of those wires ends on one of
+// 97 dots, and a head each turns every dot into a rosette of overlapping heads that hides
+// the dot. The zoom threshold is set just over twice the fit scale — the point where a
+// reader has stopped looking at the system and started reading a corner of it — so heads
+// arrive without being asked for, well before anybody traces an individual line.
+const ARROW_ALL_MAX = 140;
+const ARROW_ALL_ZOOM = 0.9;
+
+// syncArrows decides which wires carry an arrowhead.
+//
+// Every wire has a direction and a kind of indirection, and both are worth stating — but
+// 857 heads over the whole coordinator map is a smear rather than an answer, so the
+// picture earns them by being narrow enough to read: a filter, a focus, or a zoom close
+// enough that most wires are off the frame. Below that, a head is drawn where a line is
+// actually being read — lit by a hover, or on the focused node's own edges.
+//
+// `state.arrows` is the reader overriding that judgement from the toolbar, in either
+// direction, which is why the rule is here and not spread through styleGraph: one place
+// decides, and the zoom, the filters and the button all arrive at it.
+function syncArrows() {
+  let live = 0;
+  for (const l of GLINKS) if (l.live) live++;
+  const all = state.arrows === 'all' ||
+    (state.arrows === 'auto' && (live <= ARROW_ALL_MAX || view.k >= ARROW_ALL_ZOOM));
+  for (const l of GLINKS) {
+    // A shaded wire never carries a head, whatever the rule says: a focus is a claim
+    // that everything off this node's edges is not the answer, and eight hundred heads
+    // over the shadow is the noise the focus was asked to remove. Which is also why a
+    // focused node's own edges are pointed whether or not the budget would allow it —
+    // the picture has already been narrowed to them.
+    // The attribute is only touched when the answer changes: this runs on every hover.
+    const on = !!l.live && !l.shaded && (all || l.lit || L.focused);
+    if (on === l.arrow) continue;
+    l.arrow = on;
+    if (on) l.node.setAttribute('marker-end', 'url(#' + markerID(l.kind, l.mode) + ')');
+    else l.node.removeAttribute('marker-end');
+  }
+}
+
 let hover = null;
 const view = { k: 1, x: 0, y: 0 };
 const hullPaths = {};
@@ -637,9 +888,24 @@ function buildGraph() {
     labels.append(t);
     groupLabels[gid] = t;
   }
+  // A foreign key is drawn under the associations, dotted and in no mode's colour,
+  // with the head on the referenced table: the arrow points the way the reference
+  // does, from the row that carries the column to the row it must exist in.
+  const fks = document.getElementById('gfks');
+  for (const l of FKLINKS) {
+    l.node = svg('path', { class: 'fklink', 'marker-end': 'url(#a-fk)' });
+    const tip = svg('title');
+    tip.textContent = fkSentence(l.fk);
+    l.node.append(tip);
+    fks.append(l.node);
+  }
   for (const l of GLINKS) {
-    l.node = svg('path', { class: 'glink', stroke: modeColor[l.mode] || 'var(--dim)',
+    // The dash is the indirection kind and it is drawn always, not only under a
+    // hover: that a touch happens in a goroutine is a property of the wire, and a
+    // reader should not have to click to find it out.
+    l.node = svg('path', { class: 'glink k-' + l.kind, stroke: modeColor[l.mode] || 'var(--dim)',
       'data-topo': linkTopo(l) });
+    if (KIND_DASH[l.kind]) l.node.setAttribute('stroke-dasharray', KIND_DASH[l.kind]);
     links.append(l.node);
   }
   for (const n of GNODES) {
@@ -681,20 +947,43 @@ function buildGraph() {
   }
 }
 
+// drawArc draws one line between two nodes and records where its own midpoint fell.
+//
+// Bowing each line away from the straight one is what keeps parallel edges between
+// the same two discs distinguishable. Two things then follow from the curve rather
+// than from the straight line between the dots: the arrowhead's direction, which is
+// the tangent at the end and is why a head can be trusted to point along the wire it
+// belongs to; and the sequence badge's position, which is the quadratic's own
+// midpoint — a badge on the chord would sit off its wire and, on a crowded map, on
+// somebody else's.
+//
+// The line also stops short of the target so the head lands on the dot's edge rather
+// than under it, but only when there is room: on two nodes drawn almost on top of
+// each other, pulling the end back further than the gap would reverse the line and
+// point the arrow the wrong way.
+function drawArc(l, bend, maxBow, gap) {
+  const mx = (l.s.x + l.t.x) / 2, my = (l.s.y + l.t.y) / 2;
+  const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const bow = Math.max(-maxBow, Math.min(maxBow, d * bend));
+  const cx = mx - (dy / d) * bow, cy = my + (dx / d) * bow;
+  let ex = l.t.x, ey = l.t.y;
+  const back = l.t.r + gap;
+  const tx = ex - cx, ty = ey - cy, td = Math.hypot(tx, ty);
+  if (td > back + 4) { ex -= (tx / td) * back; ey -= (ty / td) * back; }
+  l.node.setAttribute('d', 'M' + l.s.x.toFixed(1) + ' ' + l.s.y.toFixed(1) +
+    'Q' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ' ' + ex.toFixed(1) + ' ' + ey.toFixed(1));
+  l.cx = 0.25 * l.s.x + 0.5 * cx + 0.25 * ex;
+  l.cy = 0.25 * l.s.y + 0.5 * cy + 0.25 * ey;
+}
+
 function positionGraph() {
   for (const id of clusterIds) hullPaths[id].setAttribute('d', hullPath(members[id], 26));
   for (const gid in groupPaths) groupPaths[gid].setAttribute('d', hullPath(GROUPS[gid].nodes, 13));
-  for (const l of GLINKS) {
-    const mx = (l.s.x + l.t.x) / 2, my = (l.s.y + l.t.y) / 2;
-    // Bow each association away from the straight line so parallel edges between
-    // the same two discs stay distinguishable.
-    const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
-    const d = Math.hypot(dx, dy) || 1;
-    const bow = Math.min(60, d * 0.12);
-    l.node.setAttribute('d', 'M' + l.s.x.toFixed(1) + ' ' + l.s.y.toFixed(1) +
-      'Q' + (mx - (dy / d) * bow).toFixed(1) + ' ' + (my + (dx / d) * bow).toFixed(1) +
-      ' ' + l.t.x.toFixed(1) + ' ' + l.t.y.toFixed(1));
-  }
+  for (const l of GLINKS) drawArc(l, 0.12, 60, 1);
+  // Foreign keys bow the other way, so a key between two tables an endpoint also
+  // reaches is never mistaken for one of that endpoint's own wires.
+  for (const l of FKLINKS) drawArc(l, -0.16 * l.spread, 40 * l.spread, 1);
   for (const n of GNODES) {
     if (n.kind === 'ep') {
       n.shape.setAttribute('x', (n.x - n.r).toFixed(1));
@@ -756,6 +1045,103 @@ const sy = y => y * view.k + view.y;
 // L is what styleGraph decided; placeLabels only lays it out, so a node drag can
 // reposition labels without recomputing the filter.
 const L = { shown: new Set(), near: new Set(), sel: new Set(), focus: new Set(), focused: false };
+
+// Sequence badges: a focused endpoint numbers its own wires, which is the whole
+// answer to "in what order does this endpoint meet its constructions". The texts are
+// pooled and reused between focuses — the widest flow in the coordinator map reaches
+// 57 constructions — so focusing a node changes what is positioned and what is
+// hidden, never the page's DOM structure. They are laid out by the same collision
+// pass as every other label, and scored by the DOM suite against the wire midpoint
+// they belong to.
+const SEQ_PX = 9.5;
+const SEQ_POOL = [];
+// One leader per badge, in a layer of its own under the numbers: a badge the collision
+// pass had to move off its own wire is joined back to it by a tick, which is what makes
+// the ladder honest. The line is created with the badge and shares its lifetime, so a
+// slot is never a number without its tick or a tick without its number.
+const SEQ_LEADS = [];
+function seqPool(want) {
+  const labels = document.getElementById('glabels');
+  const leads = document.getElementById('gseqleads');
+  while (SEQ_POOL.length < want) {
+    const t = svg('text', { class: 'gseq', 'text-anchor': 'middle' });
+    t.style.display = 'none';
+    labels.append(t);
+    SEQ_POOL.push(t);
+    const lead = svg('line', { class: 'gseqlead' });
+    lead.style.display = 'none';
+    leads.append(lead);
+    SEQ_LEADS.push(lead);
+  }
+  return SEQ_POOL;
+}
+// Which wires carry a number right now: the focused endpoint's own, to state it is
+// shown, in the order the request meets them. A hover is not enough — it changes as
+// fast as the pointer moves, and a number is something a reader stops to read.
+function seqLinks() {
+  const n = state.focus ? gById[state.focus] : null;
+  if (!n || n.kind !== 'ep') return [];
+  return n.links.filter(l => l.seq && L.shown.has(l.t.id) && L.shown.has(l.s.id))
+    .sort((a, b) => a.seq - b.seq);
+}
+
+// Where a badge may sit: on its wire's own midpoint, then slid along the wire, then
+// stepped off it along the normal — in screen pixels, like every other label position, so
+// a number keeps its distance from its wire at every zoom.
+//
+// One position per badge is what an endpoint with 57 wires cannot afford. The wires
+// leaving one endpoint for one cluster put their midpoints on top of each other, the
+// collision pass dropped the losers, and the numbering that survived on the widest
+// handler in the coordinator read `3, 5, 7, 9, 10, 32, 36, 56` — an order with holes in
+// it, which is worse than no numbering at all, because a reader cannot tell a gap from a
+// step. With the ladder the same focus keeps 33 of its 57 numbers and reads 1..12 without
+// a gap.
+//
+// The slides come before the normals because a slide keeps the badge *on* its own curve
+// while a step leaves it between two wires, and in a fan that dense some other wire is
+// always within a pixel of the vacated space. Measured over the widest handler: slides
+// first shows more numbers (33 against 26) and puts fewer of them nearer a neighbour's
+// curve than their own. What settles the remainder is the leader tick, not the ordering —
+// the fan is dense enough that proximity alone cannot say which wire a moved number
+// belongs to, so `placeLabels` draws the answer instead of implying it.
+//
+// The direction comes from the two dots rather than from the control point because the
+// tangent at the midpoint of a quadratic is parallel to its chord, so the chord *is* the
+// direction the badge slides along.
+const SEQ_RUNGS = [[0, 0], [-14, 0], [14, 0], [-26, 0], [26, 0], [0, -8], [0, 8],
+  [-38, 0], [38, 0], [-14, -8], [14, 8]];
+function seqSpots(l) {
+  const bx = sx(l.cx), by = sy(l.cy) + SEQ_PX / 2;
+  const dx = sx(l.t.x) - sx(l.s.x), dy = sy(l.t.y) - sy(l.s.y);
+  const d = Math.hypot(dx, dy) || 1;
+  const ux = dx / d, uy = dy / d;
+  return SEQ_RUNGS.map(([a, n]) => [bx + ux * a - uy * n, by + uy * a + ux * n]);
+}
+// Below this the badge is close enough to its wire's midpoint that a tick would be
+// shorter than the gap it is meant to bridge, and it is drawn without one.
+const SEQ_LEAD_MIN = 7;
+// How much of the tick is given up at each end: the wire keeps a little clear space so
+// the tick does not read as part of it, and the digits keep enough that the tick stops at
+// the number rather than under it.
+const SEQ_LEAD_TRIM = 2.5;
+const SEQ_LEAD_GAP = 6;
+// drawLead joins a moved badge to the point on its own wire that it is numbering. `from`
+// is the wire's midpoint — rung zero, which is where the badge would be if it had fit —
+// and `to` is where it actually went; both are baseline positions, so the tick is drawn
+// between the points those baselines hang off.
+function drawLead(lead, from, to, color) {
+  const x0 = from[0], y0 = from[1] - SEQ_PX / 2;
+  const x1 = to[0], y1 = to[1] - SEQ_PX / 2;
+  const d = Math.hypot(x1 - x0, y1 - y0);
+  if (d < SEQ_LEAD_MIN) { lead.style.display = 'none'; return; }
+  const ux = (x1 - x0) / d, uy = (y1 - y0) / d;
+  lead.setAttribute('x1', (x0 + ux * SEQ_LEAD_TRIM).toFixed(1));
+  lead.setAttribute('y1', (y0 + uy * SEQ_LEAD_TRIM).toFixed(1));
+  lead.setAttribute('x2', (x1 - ux * SEQ_LEAD_GAP).toFixed(1));
+  lead.setAttribute('y2', (y1 - uy * SEQ_LEAD_GAP).toFixed(1));
+  lead.setAttribute('stroke', color);
+  lead.style.display = '';
+}
 
 function placeLabels() {
   const box = gsvg.getBoundingClientRect();
@@ -834,6 +1220,29 @@ function placeLabels() {
     return place(n.text, cx, sy(n.y) + n.r * view.k + size + 4, w, h);
   };
   for (const n of pick) if (!draw1(n, true)) hide(n.text);
+
+  // The numbers come after the names the reader asked for and before the ones the
+  // picture offers: a focused endpoint's own dependency labels are what the badges
+  // are numbering, so they win the space, and the busiest-dependency names in `rest`
+  // do not outrank an answer to the question the click asked. Exempt from the budget
+  // for the same reason `pick` is.
+  const seq = seqLinks();
+  const pool = seqPool(seq.length);
+  for (let i = seq.length; i < SEQ_POOL.length; i++) { hide(SEQ_POOL[i]); hide(SEQ_LEADS[i]); }
+  seq.forEach((l, i) => {
+    const t = pool[i];
+    const color = modeColor[l.mode] || 'var(--dim)';
+    t.textContent = String(l.seq);
+    t.setAttribute('fill', color);
+    const w = textW(t.textContent, SEQ_PX), h = SEQ_PX + 2;
+    const spots = seqSpots(l);
+    // The first rung that fits wins, and `place` is what reports it — so the index is
+    // also how far the badge had to travel, which is what the leader draws.
+    const at = spots.findIndex(([x, y]) => place(t, x, y, w, h));
+    if (at < 0) { hide(t); hide(SEQ_LEADS[i]); return; }
+    drawLead(SEQ_LEADS[i], spots[0], spots[at], color);
+  });
+
   let budget = LABEL_BUDGET;
   for (const n of rest) {
     if (budget <= 0 || !draw1(n, false)) hide(n.text);
@@ -893,6 +1302,23 @@ function styleGraph() {
       (!state.mode || l.mode === state.mode) &&
       (!state.dep || l.t.dep === state.dep) &&
       (!state.ns || l.s.ns === state.ns);
+    const lit = hover && (l.s === hover || l.t === hover);
+    const shaded = !!fnode && l.s !== fnode && l.t !== fnode;
+    l.node.classList.toggle('mute', !live);
+    l.node.classList.toggle('hi', !!lit && live);
+    l.node.classList.toggle('shade', shaded);
+    // What syncArrows needs, recorded here rather than recomputed there: the zoom can
+    // change which wires carry a head without changing any of this.
+    l.live = live;
+    l.lit = !!lit;
+    l.shaded = shaded;
+  }
+  syncArrows();
+  // A foreign key is visible whenever both of its tables are: it is a fact about the
+  // schema, so no access-mode or namespace filter has an opinion about it, and the
+  // node filters already decide whether the tables themselves are on the picture.
+  for (const l of FKLINKS) {
+    const live = shown(l.s) && shown(l.t);
     const lit = hover && (l.s === hover || l.t === hover);
     l.node.classList.toggle('mute', !live);
     l.node.classList.toggle('hi', !!lit && live);
@@ -971,7 +1397,8 @@ function drawInfo(n, pinned) {
     host.append(el('div', 'k', 'Every endpoint sits inside its namespace, every dependency inside ' +
       'its category, and both inside the process that owns them. Hover for what reaches what; ' +
       'click a node to shadow everything it does not touch and pin its detail here. Edge colour ' +
-      'is the derived access mode.'));
+      'is the derived access mode; its dash is the indirection the handler reaches through, and a ' +
+      'focused endpoint numbers its wires in the order the request meets them.'));
     const ul = el('ul');
     for (const [k, v] of Object.entries(modeColor)) {
       const li = el('li');
@@ -982,6 +1409,20 @@ function drawInfo(n, pinned) {
       ul.append(li);
     }
     host.append(ul);
+    const kinds = el('ul');
+    for (const k of KINDS) {
+      const li = el('li');
+      const arrow = el('span', 'kind k-' + k, KIND_ARROW[k]);
+      arrow.style.marginRight = '6px';
+      li.append(arrow, el('span', null, KIND_LABEL[k] || k));
+      li.title = kindWhy(k);
+      kinds.append(li);
+    }
+    host.append(kinds);
+    if (FKLINKS.length) {
+      host.append(el('div', 'k', 'The dotted arcs between tables are declared foreign keys: ' +
+        FKLINKS.length + ' of them, read out of the REFERENCES the service itself issues.'));
+    }
     return;
   }
   const head = el('div', 'row');
@@ -1025,21 +1466,100 @@ function drawEpInfo(host, n, meta, pinned) {
       host.append(pp(defList([['Callers', ep.callers.join(', ')]])));
     }
   }
-  section(host, plural(ep.dependencies.length, 'dependency', 'dependencies') + ' reached');
-  const ul = el('ul');
-  const cap = pinned ? PANEL_CAP : 8;
-  for (const d of ep.dependencies.slice(0, cap)) {
-    const li = el('li', null, epMode(ep, d) + ' · ');
-    const link = el('span', 'lk', showProse() ? label(d) : d);
-    link.onclick = () => { state.focus = 'dep:' + d; selectDep(d); };
-    li.append(showProse() ? pp(link, true) : link);
-    ul.append(li);
+  // Ordered, not alphabetical: the flow names exactly the dependencies the list used
+  // to, so nothing is lost by numbering them, and the order is the answer to the
+  // question a reader opens an endpoint with.
+  const flow = ep.flow || [];
+  section(host, flow.length
+    ? plural(flow.length, 'construction') + ' reached, in wiring order'
+    : plural(ep.dependencies.length, 'dependency', 'dependencies') + ' reached');
+  host.append(wiringList(ep, pinned ? PANEL_CAP : 8, { paths: pinned }));
+}
+
+// wiringList is the ordered account of one endpoint's state: the sequence the request
+// meets each construction in, what it does to it, the indirection it is reached
+// through, how many places touch it, and — where there is room — the call path itself
+// and the lines it was read off. It is one builder because the graph panel and the
+// endpoint table are asking the same question, and a reader who compares them must
+// not find two different answers.
+//
+// Every fact in it is derived, so none of it is prose-marked and none of it is
+// withheld in the code view. Only the node's *label* is prose, and it falls back to
+// the id there like every other label.
+function wiringList(ep, cap, opts) {
+  const o = opts || {};
+  // `role="list"` because the CSS removes the markers — the sequence number is drawn
+  // as text instead — and a list with `list-style: none` loses its list semantics in
+  // WebKit, which would drop the one announcement that says how many steps there are.
+  const ol = el('ol', 'wiring');
+  ol.setAttribute('role', 'list');
+  const flow = ep.flow || [];
+  // A route with dependencies but no flow cannot happen from this generator; the IR
+  // permits it, so the unordered list stays as the fallback rather than the endpoint
+  // silently losing its state.
+  const steps = flow.length ? flow : ep.dependencies.map(d => ({ node: d, mode: epMode(ep, d) }));
+  if (!steps.length) {
+    ol.append(el('li', null, 'no state reached'));
+    return ol;
   }
-  if (!ep.dependencies.length) ul.append(el('li', null, 'no state reached'));
-  if (ep.dependencies.length > cap) {
-    ul.append(el('li', null, '+' + (ep.dependencies.length - cap) + ' more'));
+  for (const s of steps.slice(0, cap)) {
+    const li = el('li');
+    const kind = stepKind(s);
+    // The row's subject, stated rather than left to be parsed out of its text: the
+    // label beside it is prose and disappears in the code view, so this is what a
+    // reader's tooling — and the DOM suite — addresses the row by.
+    li.dataset.node = s.node;
+    li.append(el('span', 'seqn', s.seq ? String(s.seq) : '·'));
+    li.append(el('span', 'badge m-' + (s.mode || '?'), s.mode || '?'));
+    const link = el('span', 'lk', showProse() ? label(s.node) : s.node);
+    link.onclick = () => { state.focus = 'dep:' + s.node; selectDep(s.node); };
+    li.append(el('span', null, ' '), showProse() ? pp(link, true) : link, el('span', null, ' '));
+    const arrow = el('span', 'kind k-' + kind, KIND_ARROW[kind] || '→');
+    arrow.title = kindWhy(kind);
+    const lead = s.leadKind ? (KIND_LABEL[s.leadKind] || s.leadKind) : '';
+    // The arrow is the strongest indirection over the whole step, and the path printed
+    // under it belongs to the *earliest* touch. When those are two different touches the
+    // two disagree on purpose, and saying which is which is the difference between a
+    // second fact and an apparent contradiction.
+    if (lead) arrow.title += '\nThe earliest touch — the one the path below is — is a ' + lead + '.';
+    li.append(arrow);
+    // The glyph is a picture, and `title` is a hover affordance rather than a reliable
+    // announcement — so the indirection is also stated in text that only assistive tech
+    // reads. Without it the row's one statement of how the endpoint reaches this
+    // construction is a bare arrow character.
+    li.append(el('span', 'sronly', ' ' + (KIND_LABEL[kind] || kind) + ' '));
+    // Touches counts source sites, not executions — nothing here runs the program —
+    // and a loop is the one place where one site is known to run more than once. The
+    // path count is a floor for the same reason the map is static: evidence is
+    // collapsed per site and frame, so two routes reaching one construction through
+    // one frame are one path here.
+    const notes = [];
+    if (s.touches > 1) notes.push(plural(s.touches, 'site'));
+    if (s.repeats) notes.push('in a loop');
+    if (s.wireCount > 1) notes.push('at least ' + plural(s.wireCount, 'path'));
+    if (lead) notes.push('first touch ' + lead);
+    // Dispatch, not timing: which implementation runs is unknown at compile time, and
+    // that is a different question from when the touch happens. It travels beside the
+    // ladder rather than on it, so it is only worth a note where the arrow does not
+    // already say it.
+    if (s.iface && kind !== 'interface') notes.push('through an interface');
+    if (s.depth) notes.push('depth ' + s.depth);
+    if (notes.length) li.append(el('span', 'desc', ' ' + notes.join(' · ')));
+    if (o.paths && (s.wires || []).length) {
+      const full = wirePath(s.wires[0]);
+      const wire = el('div', 'wire mono', full.map(shortSym).join(' → '));
+      wire.title = full.join('\n');
+      li.append(wire);
+    }
+    if (o.cites && (s.sites || []).length) {
+      const box = el('div', 'desc');
+      for (const i of s.sites) box.append(srcLink(siteName(i)), el('span', null, ' '));
+      li.append(box);
+    }
+    ol.append(li);
   }
-  host.append(ul);
+  if (steps.length > cap) ol.append(el('li', null, '+' + (steps.length - cap) + ' more'));
+  return ol;
 }
 
 function drawDepInfo(host, n, meta, pinned) {
@@ -1149,6 +1669,50 @@ function drawDepInfo(host, n, meta, pinned) {
 // The widest table in the coordinator has 79 columns, so the drawer opens wide
 // enough to read and can take the whole graph when that is not enough.
 // ---------------------------------------------------------------------------
+// openTable follows a reference. When the other table has a dependency node the whole
+// selection moves — the graph focuses it and the drawer follows, which is what a click
+// means everywhere else on this page. A table nothing reaches has no node to focus, so
+// the drawer opens on its own.
+// Following a relationship into the other table. It opens, and only opens: selectDep
+// toggles, so calling it on the table already selected would close the drawer this was
+// asked to show — and leave the focus pinned to it — which is what a reader clicking
+// from `usage` to `models` and back again does in two clicks.
+function openTable(name) {
+  const id = 'pg.' + name;
+  if (DATA.nodes[id] && state.dep !== id) {
+    state.focus = 'dep:' + id;
+    selectDep(id);
+    return;
+  }
+  state.table = id;
+  // Nothing in the graph stands for this table, so there is nothing to focus on its
+  // behalf — and a focus left pinned to whichever node the reader came from would go on
+  // shading the picture around a node that is not what the drawer now shows. The
+  // dependency *filter* is left alone: that one is the reader's own narrowing, and this
+  // is a click on a reference, not a request to change what the graph contains.
+  clearFocus();
+}
+// One key as a line of the drawer: which columns carry the reference, which table they
+// point at, and what the database does when the parent row goes away. The table being
+// looked at is plain text; the other one is the link.
+function fkItem(from, to, fk) {
+  const open = tableFor(state.table);
+  const here = open ? open.name : '';
+  const name = t => {
+    if (t === here) return el('span', 'mono', t);
+    const a = el('span', 'lk mono', t);
+    a.onclick = () => openTable(t);
+    return a;
+  };
+  const li = el('li');
+  li.append(name(from), el('span', 'mono', colList(fk.columns) + ' → '),
+    name(to), el('span', 'mono', colList(fk.refColumns)));
+  const acts = fkActions(fk);
+  if (acts) li.append(el('span', 'desc', ' ' + acts));
+  li.append(el('span', null, ' '), srcLink(fk.site, fk.url));
+  return li;
+}
+
 function drawSchema() {
   const host = document.getElementById('gschema');
   host.textContent = '';
@@ -1226,6 +1790,30 @@ function drawSchema() {
   t.append(tbody);
   host.append(t);
 
+  // Foreign keys in both directions. Outgoing is the table's own declaration;
+  // incoming is every other table that points at it, which is the half a CREATE TABLE
+  // cannot tell you and the half that says what a delete here costs. Both are read
+  // out of the DDL the service issues, so each line carries its own file:line, and the
+  // other table is a link because a key is only useful if you can follow it.
+  const outgoing = table.foreignKeys || [];
+  const incoming = fkInbound[table.name] || [];
+  if (outgoing.length || incoming.length) {
+    const box = el('details');
+    box.open = true;
+    box.append(el('summary', null, 'Foreign keys · ' + outgoing.length + ' declared here, ' +
+      incoming.length + ' pointing here'));
+    const ul = el('ul', 'fklist');
+    for (const fk of outgoing) ul.append(fkItem(table.name, fk.table, fk));
+    for (const inb of incoming) ul.append(fkItem(inb.from, table.name, inb.fk));
+    box.append(ul);
+    host.append(box);
+  } else {
+    // Said rather than left blank: a table with no keys in either direction and a
+    // table whose keys the derivation missed look identical when the section is
+    // simply absent, and the two are opposite claims.
+    host.append(el('div', 'desc', 'Foreign keys · none declared in either direction.'));
+  }
+
   if ((table.constraints || []).length) {
     const box = el('details');
     box.open = true;
@@ -1258,6 +1846,9 @@ function drawSchema() {
 // ---------------------------------------------------------------------------
 function applyView() {
   scene.setAttribute('transform', 'translate(' + view.x + ' ' + view.y + ') scale(' + view.k + ')');
+  // The heads are annotations on the scene rather than parts of it, so they are resized
+  // against the new scale here, beside the transform that made them wrong.
+  sizeMarkers();
   placeLabels();
 }
 function bbox(nodes) {
@@ -1338,10 +1929,21 @@ for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 // Resizing preserves the view: only the viewBox changes, not where the reader was.
 new ResizeObserver(resizeView).observe(graphBox);
-for (const b of document.querySelectorAll('.gbar button')) {
+// The zoom controls are the buttons that name a zoom action; the arrow toggle sits in
+// the same bar and has its own handler, so the lookup is guarded rather than assuming
+// every button in the bar is a zoom.
+for (const b of document.querySelectorAll('.gbar button[data-z]')) {
   b.onclick = () => ({ in: () => zoomBy(1.35), out: () => zoomBy(1 / 1.35), fit,
     full: toggleFull }[b.dataset.z]());
 }
+// auto → all → read → auto: the judgement, then both ways of overruling it.
+const ARROW_MODES = ['auto', 'all', 'read'];
+const arrowsBtn = document.getElementById('garrows');
+arrowsBtn.onclick = () => {
+  state.arrows = ARROW_MODES[(ARROW_MODES.indexOf(state.arrows) + 1) % ARROW_MODES.length];
+  arrowsBtn.textContent = '↦ ' + state.arrows;
+  styleGraph();
+};
 gsvg.addEventListener('pointerdown', ev => {
   if (ev.target.closest('.gnode')) return;
   const start = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y };
@@ -1439,6 +2041,11 @@ function detailRow(ep) {
   for (const d of ep.dependencies) deps.append(chip(d, { mode: epMode(ep, d), cls: 'on' }));
   if (!ep.dependencies.length) deps.append(el('span', 'desc', 'no state reached'));
   add('Dependencies', deps);
+  // The chips above are the set; this is the sequence, with the call path each
+  // construction is reached along and the lines it was read off. Both are derived from
+  // the same walk, so the row is the same claim stated twice — once as "what", once as
+  // "in what order, through what".
+  if ((ep.flow || []).length) add('Wiring', wiringList(ep, 12, { paths: true, cites: true }));
   const src = el('div');
   const link = (text, href, ref) => {
     if (href) { const a = el('a', 'mono', text); a.href = href; a.target = '_blank'; a.rel = 'noopener'; src.append(a); }
@@ -1539,6 +2146,55 @@ function drawEdges() {
   }
 }
 
+// The declared relationships between tables. Every row is derived: the generator reads
+// each REFERENCES out of the DDL the service issues, and the drift gate fails when one
+// names a table no CREATE TABLE declares — so this table cannot claim a relationship
+// to something that does not exist. It lists every key, including the ones between
+// tables the graph draws no line for because no endpoint reaches them.
+function drawFks() {
+  const body = document.querySelector('#fks tbody');
+  body.textContent = '';
+  const rows = [];
+  for (const name of Object.keys(DATA.tables || {}).sort()) {
+    for (const fk of DATA.tables[name].foreignKeys || []) rows.push({ from: name, fk });
+  }
+  let shown = 0;
+  for (const r of rows) {
+    const ids = ['pg.' + r.from, 'pg.' + r.fk.table];
+    if (state.dep && !ids.includes(state.dep)) continue;
+    // The ids, not only the bare names: every other surface on the page calls this
+    // table `pg.usage`, so searching for what the reader was just shown has to work
+    // here too. A bare name is a substring of its id, so both still match.
+    if (state.q && !(ids.join(' ') + ' ' + (r.fk.columns || []).join(' ') + ' ' +
+      (r.fk.refColumns || []).join(' ')).toLowerCase().includes(state.q)) continue;
+    shown++;
+    const tr = el('tr');
+    const cell = (name) => {
+      const td = el('td');
+      const a = el('span', 'lk mono', name);
+      a.onclick = () => openTable(name);
+      td.append(a);
+      return td;
+    };
+    tr.append(cell(r.from));
+    tr.append(el('td', 'mono desc', (r.fk.columns || []).join(', ')));
+    const to = cell(r.fk.table);
+    to.append(el('span', 'mono desc', ' ' + colList(r.fk.refColumns)));
+    tr.append(to);
+    tr.append(el('td', 'desc', r.fk.onDelete || 'NO ACTION (default)'));
+    const at = el('td');
+    at.append(srcLink(r.fk.site, r.fk.url));
+    if (r.fk.onUpdate) at.append(el('span', 'desc', ' · ON UPDATE ' + r.fk.onUpdate));
+    tr.append(at);
+    body.append(tr);
+  }
+  const none = document.getElementById('nofks');
+  none.hidden = shown > 0;
+  none.textContent = rows.length
+    ? 'No declared foreign key matches these filters.'
+    : 'No foreign key is declared in the analyzed source.';
+}
+
 // Actors and credentials are passed through from the overlay untouched: no
 // extractor produces them and no gate contradicts them, which makes them the only
 // sections of the page a stale sentence can survive in indefinitely. They are read
@@ -1553,6 +2209,33 @@ function drawLegend() {
     d.append(el('span', null, ' ' + v));
     modes.append(d);
   }
+  // The indirection legend is the picture's own key: each entry draws the wire exactly
+  // as the graph draws it, with the same dash and the same arrowhead, so a reader
+  // matches a line to a sentence rather than to a second vocabulary. The sentences are
+  // the generator's — a kind it adds appears here without this file changing.
+  const kinds = document.getElementById('kinds');
+  kinds.textContent = '';
+  for (const k of KINDS) {
+    const why = (DATA.stepKindLegend || {})[k];
+    if (!why) continue;
+    const d = el('div');
+    const head = el('b');
+    head.append(el('span', 'kind k-' + k, KIND_ARROW[k]), el('span', null, ' ' + (KIND_LABEL[k] || k)));
+    d.append(head);
+    // The sample wire restates the glyph and the sentence beside it, so a reader using
+    // a screen reader has already been told what it says. It carries the fixed-size head:
+    // this SVG has no zoom, and a key that resized with the graph's would be a lie about
+    // the size of the thing it is a key to.
+    const wire = svg('svg', { class: 'kwire', width: 110, height: 12, viewBox: '0 0 110 12',
+      'aria-hidden': 'true', focusable: 'false' });
+    wire.append(svg('path', { d: 'M2 6 H96', fill: 'none', stroke: 'var(--rw)',
+      'stroke-width': 1.6, 'stroke-dasharray': KIND_DASH[k] || 'none',
+      'marker-end': 'url(#' + markerID(k, LEGEND_MODE, true) + ')' }));
+    d.append(wire);
+    d.append(el('div', 'desc', why));
+    kinds.append(d);
+  }
+
   const roles = document.getElementById('roles');
   roles.textContent = '';
   for (const r of DATA.roles || []) {
@@ -1641,6 +2324,7 @@ function draw() {
   drawBoundaries();
   drawRoutes();
   drawEdges();
+  drawFks();
   document.getElementById('topo').textContent = topoFingerprint();
 }
 
@@ -1678,6 +2362,8 @@ document.getElementById('withheld').textContent =
   ' credentials';
 
 if (location.hash.length > 1) state.open = decodeURIComponent(location.hash.slice(1));
+// Markers first: the legend below and the wires above both reference them by id.
+buildMarkers();
 drawLegend();
 buildGraph();
 setView('all');

@@ -78,6 +78,12 @@ func (p *Program) SchemaDefinitions() map[string]*ir.Table {
 	}
 	for _, t := range out {
 		sort.SliceStable(t.DDL, func(i, j int) bool { return siteLess(t.DDL[i].Site, t.DDL[j].Site) })
+		sort.SliceStable(t.ForeignKeys, func(i, j int) bool {
+			if t.ForeignKeys[i].Site != t.ForeignKeys[j].Site {
+				return siteLess(t.ForeignKeys[i].Site, t.ForeignKeys[j].Site)
+			}
+			return t.ForeignKeys[i].Table < t.ForeignKeys[j].Table
+		})
 		t.Columns = dedupeColumns(t.Columns)
 	}
 	return out
@@ -135,6 +141,11 @@ func (p *Program) SchemaTables() map[string]bool {
 // more than one statement (the `DO $$ ... $$` migration blocks wrap an ALTER), so
 // every form is searched independently rather than switching on the leading verb.
 func (p *Program) readDDL(text string, pos token.Pos, table func(string) *ir.Table) {
+	// Scanned with comments blanked and quoted from the original, at the same
+	// indices: a sentence must not declare a column, a constraint or a foreign key,
+	// and a reader still sees the statement as it is written. See maskSQLComments.
+	raw := text
+	text = maskSQLComments(text)
 	site := func(idx int) string { return p.siteIn(pos, text, idx) }
 	add := func(t *ir.Table, stmt ir.Statement) {
 		for _, have := range t.DDL {
@@ -152,13 +163,16 @@ func (p *Program) readDDL(text string, pos token.Pos, table func(string) *ir.Tab
 		}
 		open := m[1] - 1 // the '(' the match ends on
 		body, end := balanced(text, open)
-		stmt := dedent(strings.TrimSpace(text[m[0]:end]))
+		stmt := dedent(strings.TrimSpace(raw[m[0]:end]))
 		add(t, ir.Statement{Kind: "create", SQL: stmt, Site: site(m[0])})
 		// Prepended, not assigned: an ALTER for this table may have been found
 		// first, and the declared columns still belong at the top.
-		cols, cons := parseColumns(body, func(idx int) string { return site(open + 1 + idx) })
+		cols, cons, fks := parseColumns(body, func(idx int) string { return site(open + 1 + idx) })
 		t.Columns = append(cols, t.Columns...)
 		t.Constraints = append(cons, t.Constraints...)
+		for _, fk := range fks {
+			addForeignKey(t, fk)
+		}
 	}
 	for _, m := range reDDLAddCol.FindAllStringSubmatchIndex(text, -1) {
 		t := table(text[m[2]:m[3]])
@@ -170,20 +184,31 @@ func (p *Program) readDDL(text string, pos token.Pos, table func(string) *ir.Tab
 			Migration: true,
 			Site:      site(m[4]),
 		}
-		col.Type, col.Extra = splitType(strings.TrimSpace(text[m[6]:m[7]]))
+		def := strings.TrimSpace(text[m[6]:m[7]])
+		col.Type, col.Extra = splitType(def)
 		t.Columns = append(t.Columns, col)
+		for _, fk := range foreignKeys(def, []string{col.Name}, site(m[4])) {
+			addForeignKey(t, fk)
+		}
 	}
 	for _, m := range reDDLAlter.FindAllStringSubmatchIndex(text, -1) {
 		if t := table(text[m[2]:m[3]]); t != nil {
 			// The statement, not the literal: one `DO $$ ... $$` block can hold
 			// several ALTERs, and quoting the whole block once per match would
 			// publish the same 700 characters repeatedly.
-			add(t, ir.Statement{Kind: "alter", SQL: statementAt(text, m[0]), Site: site(m[0])})
+			start, stop := statementSpan(text, m[0])
+			add(t, ir.Statement{Kind: "alter", SQL: dedent(strings.TrimSpace(raw[start:stop])), Site: site(m[0])})
+			// Read from the masked statement, quoted from the raw one: the key is a
+			// declaration and a comment beside it is not.
+			for _, fk := range foreignKeys(text[start:stop], nil, site(m[0])) {
+				addForeignKey(t, fk)
+			}
 		}
 	}
 	for _, m := range reDDLIndex.FindAllStringSubmatchIndex(text, -1) {
 		if t := table(text[m[2]:m[3]]); t != nil {
-			add(t, ir.Statement{Kind: "index", SQL: statementAt(text, m[0]), Site: site(m[0])})
+			start, stop := statementSpan(text, m[0])
+			add(t, ir.Statement{Kind: "index", SQL: dedent(strings.TrimSpace(raw[start:stop])), Site: site(m[0])})
 		}
 	}
 }

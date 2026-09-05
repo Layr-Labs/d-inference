@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load, frame, visible, searchTerm } from './harness.mjs';
+import { load, frame, visible, searchTerm, drawnTable } from './harness.mjs';
 import { labelUnits } from './labels.mjs';
 
 const rows = p => p.$$('#routes tbody tr.ep');
@@ -63,12 +63,18 @@ function tierOf(namedBy) {
 // `within` bounds how far down an endpoint's dependency list to look, for the caller
 // that can only see the first few — the pinned panel lists PANEL_CAP of them and
 // summarises the rest, so a divergence past the cap is real but not on screen.
+// What the panel lists for one endpoint, in the order it lists it: the derived wiring
+// order where the generator produced a flow, and the alphabetical dependency list as
+// the page's own fallback where it did not. Written out here so no test hard-codes an
+// order, and so "the row at position i" means the same thing to the test as to the page.
+const panelOrder = r => ((r.flow || []).length ? r.flow.map(s => s.node) : r.dependencies);
+
 function divergent(D, within = Infinity) {
   const mode = modeOf(D);
   const agg = nsModes(D);
   const aggregate = (r, d) => agg[r.namespace + '\0' + d];
   for (const r of D.routes) {
-    for (const d of r.dependencies.slice(0, within)) {
+    for (const d of panelOrder(r).slice(0, within)) {
       if (aggregate(r, d) && mode(r, d) !== aggregate(r, d)) {
         return { route: r, dep: d, own: mode(r, d), aggregate: aggregate(r, d) };
       }
@@ -231,24 +237,29 @@ test('the pinned panel reports the focused endpoint’s own modes', t => {
   p.clickNode(node.g);
   assert.ok(p.$('#ginfo').classList.contains('pinned'), 'the click did not pin the panel');
 
-  const listed = p.$$('#ginfo ul li').map(li => li.textContent);
-  // The panel caps the list at PANEL_CAP and, past the cap, appends a "+N more"
-  // line that is not a dependency. So the rows are scored against the first
-  // PANEL_CAP dependencies, and never against that summary line.
-  const scored = Math.min(listed.length, PANEL_CAP);
-  assert.ok(scored > 0, 'the pinned panel listed no dependencies');
-  for (let i = 0; i < scored; i++) {
-    const dep = d.route.dependencies[i];
-    assert.ok(listed[i].startsWith(mode(d.route, dep) + ' · '),
-      `the panel says ${JSON.stringify(listed[i])} for ${dep}, not ${mode(d.route, dep)}`);
+  // Each row states its own subject, so the mode is scored against the state that
+  // row is about rather than against the position it happens to hold. The "+N more"
+  // summary line past the cap names no node and is therefore not a row.
+  const listed = p.$$('#ginfo ol.wiring li[data-node]');
+  assert.ok(listed.length > 0, 'the pinned panel listed no dependencies');
+  assert.ok(listed.length <= PANEL_CAP,
+    `the pinned panel listed ${listed.length} rows, past its own cap of ${PANEL_CAP}`);
+  const order = panelOrder(d.route);
+  for (let i = 0; i < listed.length; i++) {
+    const dep = listed[i].dataset.node;
+    assert.equal(dep, order[i], `panel row ${i + 1} is about ${dep}, not ${order[i]}`);
+    const badge = listed[i].querySelector('.badge');
+    assert.ok(badge, `panel row ${i + 1} (${dep}) carries no access mode`);
+    assert.equal(badge.textContent, mode(d.route, dep),
+      `the panel says ${JSON.stringify(badge.textContent)} for ${dep}, not ${mode(d.route, dep)}`);
   }
-  // And the divergent dependency itself, addressed by position rather than by a
-  // substring search, so a line naming a different dependency cannot satisfy it.
-  const at = d.route.dependencies.indexOf(d.dep);
-  assert.ok(at >= 0 && at < scored,
-    `${d.dep} is dependency ${at} of ${d.route.method} ${d.route.path}, past the panel's cap of ${PANEL_CAP}`);
-  assert.ok(listed[at].startsWith(d.own + ' · '),
-    `the panel reports ${d.dep} as ${JSON.stringify(listed[at])} — its namespace's ${d.aggregate} rather than this endpoint's ${d.own}`);
+  // And the divergent dependency itself, addressed by the row that names it, so a
+  // row about a different dependency cannot satisfy it.
+  const at = order.indexOf(d.dep);
+  assert.ok(at >= 0 && at < listed.length,
+    `${d.dep} is construction ${at} of ${d.route.method} ${d.route.path}, past the panel's cap of ${PANEL_CAP}`);
+  assert.equal(listed[at].querySelector('.badge').textContent, d.own,
+    `the panel reports ${d.dep} as its namespace's ${d.aggregate} rather than this endpoint's ${d.own}`);
 });
 
 test('the identity filter selects nodes by where their name comes from', t => {
@@ -294,8 +305,7 @@ test('the identity filter selects nodes by where their name comes from', t => {
 test('choosing a Postgres table opens its derived definition', t => {
   const p = load({ t });
   const D = p.peek('DATA');
-  const table = Object.keys(D.tables || {})[0];
-  assert.ok(table, 'the map derived no table definition to open');
+  const table = drawnTable(D);
 
   const drawer = p.$('#gschema');
   assert.equal(drawer.hidden, true, 'the drawer is open before anything was selected');

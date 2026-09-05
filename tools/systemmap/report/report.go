@@ -205,10 +205,14 @@ func (r *Report) Markdown() string {
 
 	var tables []string
 	for _, name := range keys(r.UnknownTables) {
-		tables = append(tables, fmt.Sprintf("`%s` — named in SQL but no matching `CREATE TABLE`; %s",
+		tables = append(tables, fmt.Sprintf("`%s` — named by a statement or a foreign key but no matching `CREATE TABLE`; %s",
 			name, strings.Join(r.UnknownTables[name], ", ")))
 	}
-	section("SQL table references with no schema match", "None — every table in a query exists in the schema.", tables)
+	// A statement is not the only thing that names a table: a `REFERENCES` in a
+	// migration does too, and it lands in the same list. Saying "a query" here sends
+	// whoever trips the gate looking in the wrong half of the schema.
+	section("SQL table references with no schema match",
+		"None — every table a statement or a foreign key names exists in the schema.", tables)
 
 	var hosts []string
 	for _, name := range keys(r.UnknownHosts) {

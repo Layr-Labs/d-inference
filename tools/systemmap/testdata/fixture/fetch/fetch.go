@@ -28,6 +28,15 @@ type Client struct {
 // FetchIcons issues its request from an immediately-invoked goroutine closure,
 // the shape a walk that only followed named callees would stop at.
 func (c *Client) FetchIcons(ctx context.Context) {
+	// Two calls to one helper, one of them concurrent, and both reach the same lines
+	// of note through the same symbol — so the two are one piece of evidence with two
+	// timings. Collapsing them must keep the earliest one's call path and the strongest
+	// one's kind *separately*: a walk that let the promotion repaint the path would
+	// draw a goroutine over a wire with no `go` on it and, worse, suppress the field
+	// that exists to say the arrow and the path are two different touches.
+	c.note()
+	go c.note()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -44,6 +53,15 @@ func (c *Client) FetchIcons(ctx context.Context) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
 	wg.Wait()
+}
+
+// note is the helper both of FetchIcons' calls land in. It is a named function on
+// purpose: an inline closure would be two symbols and so two pieces of evidence,
+// which is the case that needs no dedupe at all.
+func (c *Client) note() {
+	c.mu.Lock()
+	c.inflight++
+	c.mu.Unlock()
 }
 
 // FetchOpaque requests whatever URL it is handed, so there is no literal and no

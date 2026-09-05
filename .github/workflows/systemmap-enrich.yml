@@ -54,6 +54,13 @@ concurrency:
   group: systemmap-prose-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# Whether this run can reach the secret at all. A `workflow_dispatch` run has no
+# pull request, so `head.repo.full_name` is empty — comparing it to the repository
+# name directly sent every manual run down the fork path and failed it. A fork is
+# a head repository that exists and is a different one.
+env:
+  IS_FORK: ${{ github.event.pull_request.head.repo.full_name != '' && github.event.pull_request.head.repo.full_name != github.repository }}
+
 jobs:
   prose:
     name: Generate map prose
@@ -80,17 +87,23 @@ jobs:
         id: plan
         run: |
           set -uo pipefail
+          # A manifest left behind by anything else would be read as this commit's
+          # plan, so the file this step reports on is only ever one it just wrote.
+          rm -f tmp/systemmap-enrich.json
           make -C tools/systemmap plan MANIFEST=tmp/systemmap-enrich.json
           if [ ! -f tmp/systemmap-enrich.json ]; then
             echo "::error::the generator produced no manifest; it failed before it could plan"
             exit 1
           fi
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
+          # Workflow-command lines go to the log, and only `key=value` to the output
+          # file — a `::notice::` written there is not a valid output and fails the step.
+          python3 - <<'PY'
+          import json, os
           plan = json.load(open('tmp/systemmap-enrich.json'))
           n = len(plan['requests']) + len(plan['prune'])
-          print(f"work={n}")
-          print(f"requests={len(plan['requests'])}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write(f"work={n}\n")
+              out.write(f"requests={len(plan['requests'])}\n")
           for req in plan['requests']:
               print(f"::notice::needs prose: {req['kind']}:{req['key']}")
           PY
@@ -101,7 +114,7 @@ jobs:
 
       - name: Explain the fork fallback
         # A fork PR cannot be enriched and must not silently look enriched.
-        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name != github.repository
+        if: steps.plan.outputs.work != '0' && env.IS_FORK == 'true'
         run: |
           echo "::error::This pull request adds ${{ steps.plan.outputs.requests }} route(s) or node(s) that need map prose."
           echo "Fork pull requests receive no secrets, so prose cannot be generated here."
@@ -110,33 +123,37 @@ jobs:
           exit 1
 
       - name: Write the prose
-        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.plan.outputs.work != '0' && env.IS_FORK != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           go -C tools/systemmap run ./cmd/enrich -manifest tmp/systemmap-enrich.json
 
       - name: Verify the map is complete
-        if: steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.plan.outputs.work != '0' && env.IS_FORK != 'true'
         # The gate again, now with the generated prose in place. If it still
         # fails, what is missing is the half a person owns — a cluster, a
         # namespace, an auth class, a declared table — and the report says which.
         run: make -C tools/systemmap check
 
       - name: Commit to the pull request branch
-        if: always() && steps.plan.outputs.work != '0' && github.event.pull_request.head.repo.full_name == github.repository
-        # `always()` so prose that was written survives a later failure: the
-        # entries are correct, they cost a model call, and committing them means
-        # the next run only writes what is still missing.
+        if: ${{ !cancelled() && steps.plan.outputs.work != '0' && env.IS_FORK != 'true' }}
+        # `!cancelled()` so prose that was written survives a *later failure*: the
+        # entries are correct, they cost a model call, and committing them means the
+        # next run only writes what is still missing. Not `always()` — a cancelled run
+        # is a superseded one, and pushing from it would race the run that replaced it.
         run: |
           set -euo pipefail
-          if git diff --quiet -- docs/reference/api-map/prose.json; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # `git add` first, then ask the index: `git diff` says nothing about a file
+          # git does not track yet, so the very first run — the one that creates
+          # prose.json — reported "no prose changed" and threw the file away.
+          git add docs/reference/api-map/prose.json
+          if git diff --cached --quiet -- docs/reference/api-map/prose.json; then
             echo "No prose changed."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/reference/api-map/prose.json
           git commit -F - <<'MSG'
           docs(systemmap): generate map prose
 
@@ -146,10 +163,24 @@ jobs:
 
           Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
           MSG
-          git push origin HEAD:"${{ github.event.pull_request.head.ref || github.ref_name }}"
+          # The branch may have moved while the model was writing. Rebase onto it and
+          # retry once rather than force-pushing over whatever arrived: this commit
+          # touches one generated file, so a rebase either applies cleanly or the
+          # branch already has newer prose and the next run recomputes what is missing.
+          branch="${{ github.event.pull_request.head.ref || github.ref_name }}"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:$branch"; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt); rebasing onto origin/$branch"
+            git fetch origin "$branch"
+            git rebase "origin/$branch" || { git rebase --abort; exit 1; }
+          done
+          echo "::error::could not push the generated prose after 3 attempts"
+          exit 1
 
       - name: Upload the manifest
-        if: always() && steps.plan.outputs.work != '0'
+        if: ${{ !cancelled() && steps.plan.outputs.work != '0' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: systemmap-prose-manifest

@@ -56,37 +56,6 @@ func buildGroups(g *ir.Graph, cfg *config.Config) {
 	}
 }
 
-// buildTables publishes the derived table definitions and links each one to its
-// dependency node, so clicking a `pg.*` node can show the columns source actually
-// declares. A `pg.*` node with no CREATE TABLE anywhere in source is drift: the
-// map would be claiming a table the service never creates.
-func buildTables(g *ir.Graph, svc *extract.Service, cfg *config.Config, rep *report.Report, revision string) {
-	for name, table := range svc.Schema {
-		for i := range table.Columns {
-			table.Columns[i].URL = blobURL(cfg, revision, table.Columns[i].Site)
-		}
-		for i := range table.Constraints {
-			table.Constraints[i].URL = blobURL(cfg, revision, table.Constraints[i].Site)
-		}
-		for i := range table.DDL {
-			table.DDL[i].URL = blobURL(cfg, revision, table.DDL[i].Site)
-		}
-		if _, ok := g.Nodes["pg."+name]; ok {
-			table.Node = "pg." + name
-		}
-		g.Tables[name] = table
-	}
-	for _, id := range sortedKeys(g.Nodes) {
-		name, ok := strings.CutPrefix(id, "pg.")
-		if !ok {
-			continue
-		}
-		if _, ok := g.Tables[name]; !ok {
-			rep.AddUndefinedTable(fmt.Sprintf("`%s` — no `CREATE TABLE %s` exists in analyzed source", id, name))
-		}
-	}
-}
-
 // Options carry everything not derived from source.
 type Options struct {
 	Revision    string
@@ -113,6 +82,7 @@ func Build(svc *extract.Service, prog *extract.Program, cfg *config.Config, rep 
 		Credentials:     cfg.Credentials,
 		CacheSemantics:  cfg.Cache,
 		StateModeLegend: ir.ModeLegend,
+		StepKindLegend:  ir.StepKindLegend,
 		DepDocs:         cfg.DepDocs,
 		CategoryDocs:    cfg.CategoryDocs,
 	}
@@ -127,9 +97,11 @@ func Build(svc *extract.Service, prog *extract.Program, cfg *config.Config, rep 
 	}}
 
 	g.StateAccess = buildEdges(endpoints)
+	buildFlows(g)
 	buildNodes(g, cfg, rep, svc.Schema)
 	buildGroups(g, cfg)
 	buildTables(g, svc, cfg, rep, opt.Revision)
+	buildTableLinks(g, rep)
 	g.StateCoverage = coverage(g.StateAccess)
 	checkClusters(g, cfg, rep)
 	checkProse(g, cfg, rep)

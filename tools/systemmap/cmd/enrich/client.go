@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -91,6 +94,12 @@ func (c *client) complete(ctx context.Context, system string, turns []message) (
 			text.WriteString(block.Text)
 		}
 	}
+	// A reply cut off at the budget is its own failure, and worth naming: the text is
+	// truncated JSON, so every attempt fails the parser and the run ends reporting a
+	// malformed answer when what it needed was a larger `-max-tokens`.
+	if parsed.StopReason == "max_tokens" {
+		return "", fmt.Errorf("completion hit the %d-token budget before finishing; raise -max-tokens", c.maxTok)
+	}
 	if strings.TrimSpace(text.String()) == "" {
 		return "", fmt.Errorf("empty completion (stop_reason %q)", parsed.StopReason)
 	}
@@ -100,12 +109,33 @@ func (c *client) complete(ctx context.Context, system string, turns []message) (
 // retryable reports whether a failure is worth another attempt: transport
 // failures and the statuses the API documents as transient. A rejected prompt or
 // a bad key is not retried, because the next attempt fails identically.
+//
+// Transport failures are recognised by type rather than by text. `net.Error`
+// answers the timeout question directly, and matching the word instead missed the
+// error `net/http` actually returns — `context deadline exceeded (Client.Timeout
+// exceeded while awaiting headers)`, which contains no "timeout" at all — so the one
+// failure most worth retrying was the one that never was. What is left to match by
+// text is the API's own vocabulary, which arrives as a message and not as a type;
+// the comparison is lower-cased because that message is not ours to spell.
 func retryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	for _, sign := range []string{"http 429", "http 500", "http 502", "http 503", "http 529", "overloaded", "rate_limit", "timeout", "connection reset", "EOF"} {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// The run's own budget, not the endpoint's problem: retrying spends the
+		// remaining attempts on a context that is already done.
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, sign := range []string{"http 429", "http 500", "http 502", "http 503", "http 504", "http 529",
+		"overloaded", "rate_limit", "timeout", "connection reset", "unexpected eof", "eof"} {
 		if strings.Contains(msg, sign) {
 			return true
 		}

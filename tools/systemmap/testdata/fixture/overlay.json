@@ -31,6 +31,7 @@
     "mem.cache": "Rendered model/alias response cache",
     "mem.aliases": "Model alias table",
     "mem.admins": "Admin allowlist",
+    "mem.revoked": "Revoked token denylist",
     "mem.inflight": "Outbound request in-flight counter",
     "mem.flight": "Coalescing alias-answer cache",
     "ext.icons": "Icon CDN",
@@ -40,6 +41,7 @@
     "mem.cache": { "summary": "Filled on miss, keyed by request path." },
     "mem.aliases": { "summary": "Alias to canonical model name." },
     "mem.admins": { "summary": "Emails allowed through the admin gate." },
+    "mem.revoked": { "summary": "Tokens the auth middleware refuses." },
     "mem.inflight": { "summary": "Mutex-guarded count of outbound fetches." },
     "mem.flight": { "summary": "One answer per alias, filled by the first caller." },
     "ext.icons": { "summary": "Icon CDN named by a package constant." },
@@ -100,6 +102,7 @@
       "api:Server.cache": "mem.cache",
       "api:Server.aliases": "mem.aliases",
       "api:Server.admins": "mem.admins",
+      "api:Server.revoked": "mem.revoked",
       "api:Server.flights": "mem.flight",
       "fetch:Client.mu": "mem.inflight",
       "fetch:Client.inflight": "mem.inflight"

@@ -172,18 +172,120 @@ type fnWalk struct {
 	loopID       int                        // the innermost loop being walked, 0 outside any
 	loopDispatch int                        // enclosing loops whose body calls the driver
 
+	// The ordering half. seq numbers this frame's own accesses as it meets them;
+	// async and deferred count the `go`/`defer` statements being walked inside, which
+	// is what makes a touch's indirection a property of where it was written rather
+	// than of the function it ended up in. timed is the one call whose operands are
+	// *not* under that timing, because a `go`/`defer` evaluates them at the statement;
+	// see timedCall.
+	seq      int
+	async    int
+	deferred int
+	timed    *ast.CallExpr
+
 	out []ir.Access
 }
 
+// hop reports the indirection this frame is currently walking under: a touch
+// written inside a `go` statement is concurrent with the request whatever the
+// function it sits in looks like.
+func (f *fnWalk) hop() string {
+	switch {
+	case f.async > 0:
+		return ir.StepAsync
+	case f.deferred > 0:
+		return ir.StepDeferred
+	}
+	return ir.StepDirect
+}
+
+// timedCall walks the call of a `go` or `defer` statement, which makes two claims
+// about time rather than one. The callee runs later — or concurrently — but the
+// call's own operands do not: Go evaluates the receiver expression and every
+// argument where the statement is written, so `defer w.dead.Store(true)` reads
+// `w.dead` now and only the Store happens on the way out, and
+// `defer d.close(queued.Profile)` reads that field on the request's own line.
+// Marking the call is what lets `call` walk those operands with the timing lowered
+// while the callee itself stays inside it; calling them a deferred touch would
+// publish a weaker claim than source supports for a fifth of all steps.
+func (f *fnWalk) timedCall(call *ast.CallExpr) {
+	prev := f.timed
+	f.timed = call
+	f.visit(call, ModeRead)
+	f.timed = prev
+}
+
+// eagerly runs fn with the `go`/`defer` timing lowered — used for the operands of
+// the call a `go`/`defer` statement applies to, and for nothing else. An inner call
+// among those operands runs eagerly too, along with everything it reaches, which is
+// why the whole sub-walk is wrapped rather than one record suppressed.
+func (f *fnWalk) eagerly(fn func()) {
+	async, deferred, timed := f.async, f.deferred, f.timed
+	f.async, f.deferred, f.timed = 0, 0, nil
+	fn()
+	f.async, f.deferred, f.timed = async, deferred, timed
+}
+
+// operandWalk is how `call` runs the parts of a call that are evaluated at the call
+// site: straight through for an ordinary call, and with the timing lowered when this
+// is the call a `go` or `defer` is deferring.
+func (f *fnWalk) operandWalk(x *ast.CallExpr) func(func()) {
+	if x != f.timed {
+		return func(fn func()) { fn() }
+	}
+	return f.eagerly
+}
+
 func (f *fnWalk) record(node, mode string, pos token.Pos) {
+	f.recordVia(node, mode, pos, ir.StepDirect)
+}
+
+// recordVia records one access, ordered within this frame. through is the
+// indirection of the call that produced it, over and above whatever `go`/`defer`
+// context the frame is already inside.
+func (f *fnWalk) recordVia(node, mode string, pos token.Pos, through string) {
 	if node == "" || mode == "" {
 		return
 	}
-	f.out = append(f.out, ir.Access{Node: node, Mode: mode, Site: f.w.P.PosRef(pos), Via: f.sym.Label()})
+	f.seq++
+	kind := ir.StrongerKind(f.hop(), through)
+	f.out = append(f.out, ir.Access{
+		Node: node, Mode: mode, Site: f.w.P.PosRef(pos), Via: f.sym.Label(),
+		Order: f.seq, Kind: kind, Lead: kind,
+		Iface: through == ir.StepInterface, Loop: f.loopID != 0,
+	})
 }
 
-func (f *fnWalk) merge(res *Result) {
-	f.out = append(f.out, res.Accesses...)
+func (f *fnWalk) merge(res *Result) { f.mergeVia(res, ir.StepDirect) }
+
+// mergeVia folds a callee's evidence into this frame, one call deeper.
+//
+// The callee numbered its own accesses from 1, so they are shifted to sit where
+// this frame's walk currently is: the resulting sequence reads as a pre-order walk
+// of the call graph, which is the order a person reading the source would meet
+// these constructions. A memoized result must never be mutated, so every access is
+// copied and its path rebuilt rather than appended to in place.
+func (f *fnWalk) mergeVia(res *Result, through string) {
+	base, top := f.seq, 0
+	via, ctx, loop := f.sym.Label(), f.hop(), f.loopID != 0
+	for _, a := range res.Accesses {
+		if a.Order > top {
+			top = a.Order
+		}
+		c := a
+		c.Order = base + a.Order
+		c.Depth = a.Depth + 1
+		c.Kind = ir.StrongerKind(ir.StrongerKind(a.Kind, ctx), through)
+		// This frame's context is on every wire below it, so the path's own kind is
+		// promoted with the step's. Only dedupe can make the two diverge, because only
+		// dedupe promotes from a path the survivor does not have.
+		c.Lead = ir.StrongerKind(ir.StrongerKind(a.Lead, ctx), through)
+		c.Iface = a.Iface || through == ir.StepInterface
+		c.Loop = a.Loop || loop
+		c.Path = append(append(make([]string, 0, len(a.Path)+1), via), a.Path...)
+		f.out = append(f.out, c)
+	}
+	f.seq = base + top
 	for key := range res.pending {
 		if f.pending == nil {
 			f.pending = map[string]bool{}
@@ -513,9 +615,17 @@ func (f *fnWalk) walkStmt(s ast.Stmt) {
 			f.stmt(st)
 		}
 	case *ast.GoStmt:
-		f.visit(x.Call, ModeRead)
+		// Everything under here is concurrent with the rest of the request, and
+		// everything under a `defer` runs as this frame unwinds. Both are the same
+		// evidence about *what* is touched and a different claim about *when*, so the
+		// walk is unchanged and the accesses it produces carry the kind.
+		f.async++
+		f.timedCall(x.Call)
+		f.async--
 	case *ast.DeferStmt:
-		f.visit(x.Call, ModeRead)
+		f.deferred++
+		f.timedCall(x.Call)
+		f.deferred--
 	case *ast.SendStmt:
 		f.visit(x.Chan, ModeWrite)
 		f.visit(x.Value, ModeRead)
@@ -817,6 +927,10 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 	f.calls = append(f.calls, x)
 	defer func() { f.calls = f.calls[:len(f.calls)-1] }()
 
+	// The operands — receiver expression and arguments — are evaluated at the call
+	// site even when the call itself is deferred or spawned. See timedCall.
+	operands := f.operandWalk(x)
+
 	// Builtins that mutate their argument.
 	if ident, ok := x.Fun.(*ast.Ident); ok {
 		if _, isBuiltin := f.info.Uses[ident].(*types.Builtin); isBuiltin {
@@ -826,10 +940,13 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 			}
 			for i, arg := range x.Args {
 				if i == 0 {
+					// The one operand whose visit carries the mutation rather than
+					// merely evaluating it, so it keeps the statement's timing:
+					// `defer clear(cache)` really does empty the map on unwind.
 					f.visit(arg, mode)
 					continue
 				}
-				f.visit(arg, ModeRead)
+				operands(func() { f.visit(arg, ModeRead) })
 			}
 			return
 		}
@@ -861,15 +978,17 @@ func (f *fnWalk) call(x *ast.CallExpr, suppressRecv bool) {
 			if node := f.nodeOf(sel.X); node != "" && !suppressRecv {
 				f.record(node, mode, x.Pos())
 			}
-			f.chain(sel.X)
+			operands(func() { f.chain(sel.X) })
 		} else {
-			f.chain(sel.X)
+			operands(func() { f.chain(sel.X) })
 		}
 	}
 
-	for _, arg := range x.Args {
-		f.textElem(arg, ModeRead)
-	}
+	operands(func() {
+		for _, arg := range x.Args {
+			f.textElem(arg, ModeRead)
+		}
+	})
 	f.traverse(x, fn)
 }
 
@@ -880,41 +999,57 @@ func (f *fnWalk) traverse(x *ast.CallExpr, fn *types.Func) {
 	if fn == nil {
 		return
 	}
-	for _, target := range f.targets(x, fn) {
+	targets, iface := f.targets(x, fn)
+	// Dispatch through an interface is the one hop where the walk chooses which body
+	// to read — it follows the implementation the overlay prefers, so the SQL behind
+	// a store method is recovered. That choice is exactly what the reader needs told
+	// about, so it travels with the evidence as the hop's kind.
+	through := ir.StepDirect
+	if iface {
+		through = ir.StepInterface
+	}
+	// Several targets are folded in one after another, so alternatives that cannot both
+	// run are numbered as though they did. That is what `interface` on the step warns
+	// about — the walk chose which bodies to read — and it stays out of sight while
+	// deps.preferImpl narrows dispatch to one implementation, which is how the
+	// coordinator's store is configured. An interface with several unpreferred impls
+	// would publish a sequence no single request takes.
+	for _, target := range targets {
 		if target == nil || target.Pkg == nil {
 			continue
 		}
 		// A function that *is* a boundary is evidence at the call site, whether or
 		// not its package is in traversal scope.
 		if node, ok := f.w.Cfg.FuncNode(target.Pkg.PkgPath, target.Recv, target.Name); ok {
-			f.record(node, verbMode(target.Name), x.Pos())
+			f.recordVia(node, verbMode(target.Name), x.Pos(), through)
 		}
 		if !f.w.Cfg.Traverse(target.Pkg.PkgPath) {
 			continue
 		}
-		f.merge(f.w.Func(target))
+		f.mergeVia(f.w.Func(target), through)
 	}
 }
 
-// targets resolves a call to the declarations it can reach.
-func (f *fnWalk) targets(x *ast.CallExpr, fn *types.Func) []*FuncSym {
+// targets resolves a call to the declarations it can reach, and reports whether it
+// got there through an interface.
+func (f *fnWalk) targets(x *ast.CallExpr, fn *types.Func) ([]*FuncSym, bool) {
 	sel, _ := unparen(x.Fun).(*ast.SelectorExpr)
 	if sel != nil {
 		if selection := f.info.Selections[sel]; selection != nil && selection.Kind() != types.FieldVal {
 			if iface, ok := types.Unalias(selection.Recv()).Underlying().(*types.Interface); ok {
-				return f.implTargets(iface, fn.Name())
+				return f.implTargets(iface, fn.Name()), true
 			}
 			if named := namedOf(selection.Recv()); named != nil {
 				if iface, ok := named.Underlying().(*types.Interface); ok {
-					return f.implTargets(iface, fn.Name())
+					return f.implTargets(iface, fn.Name()), true
 				}
 			}
 		}
 	}
 	if sym := f.w.P.DeclOf(fn); sym != nil {
-		return []*FuncSym{sym}
+		return []*FuncSym{sym}, false
 	}
-	return nil
+	return nil, false
 }
 
 func (f *fnWalk) implTargets(iface *types.Interface, method string) []*FuncSym {
@@ -1188,16 +1323,39 @@ func shortType(t types.Type) string {
 
 // dedupeAccesses collapses identical evidence while keeping every distinct site,
 // so citations stay specific and aggregation can still merge modes.
+//
+// Two entries with the same key are the same source line reached twice through
+// different call paths. They keep the *earliest* order — that is where a reader
+// meets the line — along with the depth and path of that same entry, because those
+// three describe one wire and mixing them would print a path of a different length
+// than the depth beside it. They keep the *strongest* indirection and repetition (a
+// line reached once directly and once from a goroutine can run concurrently, and
+// saying otherwise would be the stronger claim), so the surviving Kind can outrank
+// the surviving Path's own.
+//
+// Which is why Lead travels beside Kind and is taken from the same entry as the
+// path: a promotion here comes from a path the survivor does not have, and without
+// Lead the promoted Kind would look like the path's own — publishing a goroutine
+// arrow over a wire with no `go` on it, and suppressing Step.LeadKind, the one field
+// whose whole job is to say the two are different touches.
 func dedupeAccesses(in []ir.Access) []ir.Access {
-	seen := map[string]bool{}
+	at := map[string]int{}
 	out := make([]ir.Access, 0, len(in))
 	for _, a := range in {
 		key := a.Node + "|" + a.Mode + "|" + a.Site + "|" + a.Via
-		if seen[key] {
+		i, ok := at[key]
+		if !ok {
+			at[key] = len(out)
+			out = append(out, a)
 			continue
 		}
-		seen[key] = true
-		out = append(out, a)
+		have := &out[i]
+		if a.Order > 0 && (have.Order == 0 || a.Order < have.Order) {
+			have.Order, have.Depth, have.Path, have.Lead = a.Order, a.Depth, a.Path, a.Lead
+		}
+		have.Kind = ir.StrongerKind(have.Kind, a.Kind)
+		have.Iface = have.Iface || a.Iface
+		have.Loop = have.Loop || a.Loop
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Node != out[j].Node {
@@ -1209,6 +1367,28 @@ func dedupeAccesses(in []ir.Access) []ir.Access {
 		return out[i].Mode < out[j].Mode
 	})
 	return out
+}
+
+// chainAccesses concatenates the evidence of several entry points into one route's,
+// shifting each block past the last so one global sequence runs through all of
+// them. Each block numbered itself from 1; without the shift the handler's first
+// access would claim to happen before the middleware's last.
+func chainAccesses(blocks [][]ir.Access) []ir.Access {
+	var out []ir.Access
+	base := 0
+	for _, block := range blocks {
+		top := 0
+		for _, a := range block {
+			if a.Order > top {
+				top = a.Order
+			}
+			c := a
+			c.Order = base + a.Order
+			out = append(out, c)
+		}
+		base += top
+	}
+	return dedupeAccesses(out)
 }
 
 func sortUnique(in []string) []string {

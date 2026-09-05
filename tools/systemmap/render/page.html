@@ -81,8 +81,15 @@
 
   <div class="graph" id="graph">
     <svg id="gsvg" role="img" aria-label="Darkbloom system knowledge graph">
+      <!-- Arrowheads, one per indirection kind × access mode, generated on load from
+           the same vocabulary the generator publishes. -->
+      <defs id="gdefs"></defs>
       <g id="scene">
         <g id="hulls"></g>
+        <!-- Declared foreign keys between tables. Under the association layer on
+             purpose: they are relationships among the dependencies themselves, not
+             something an endpoint does, and they take no part in the layout. -->
+        <g id="gfks" fill="none"></g>
         <g id="glinks" fill="none"></g>
         <g id="gnodes"></g>
       </g>
@@ -90,6 +97,9 @@
            same way at every zoom, which is what buried the picture under its own
            names. Everything in here is positioned per frame in screen space and
            dropped when it would overlap. -->
+      <!-- Leader ticks first, so a number is never drawn under the line that points at
+           it. Same layer, same screen-space coordinates: a tick is part of the label. -->
+      <g id="gseqleads"></g>
       <g id="glabels"></g>
     </svg>
     <div class="ginfo" id="ginfo"></div>
@@ -98,6 +108,11 @@
       <button data-z="in" title="Zoom in">+</button>
       <button data-z="out" title="Zoom out">−</button>
       <button data-z="fit" title="Fit the whole graph">Fit</button>
+      <!-- Arrowheads are on every wire once the picture is narrow enough to read them;
+           this is how a reader asks for them anyway, or asks for fewer. Its label states
+           which rule is in force, so the button is also the answer to "why do I see no
+           heads": auto, all, or only the wire being read. -->
+      <button id="garrows" title="Arrowheads: auto, on every wire, or only where a line is being read">↦ auto</button>
       <button data-z="full" id="gfull" title="Expand the graph to the whole screen">Full screen</button>
     </div>
     <div class="gfocus">
@@ -110,7 +125,12 @@
   <div class="sub gnote">
     Squares are endpoints, circles are dependencies · inner boundaries are namespaces and
     dependency categories, outer boundaries are processes and stores · drag to move · scroll to
-    zoom · <b>click a node to shadow everything it does not touch</b> and pin its detail ·
+    zoom · <b>click a node to shadow everything it does not touch</b> and pin its detail —
+    a focused endpoint numbers its wires in the order the request meets them and points each
+    arrow by how it gets there; where a number had to move aside to fit, a dashed tick joins it
+    back to the wire it belongs to · <b>↦</b> switches arrowheads between auto (every wire the
+    picture is narrow enough to carry), all, and only the wire being read ·
+    dotted arcs between tables are declared foreign keys ·
     click a Postgres table for its derived definition · Esc or the canvas clears the focus ·
     drawn topology <code id="topo"></code> (nodes, edges, modes and boundaries, no prose — it
     does not move when the provenance view does).
@@ -173,6 +193,26 @@
   <section>
     <h2>Access modes</h2>
     <div class="legend" id="modes"></div>
+  </section>
+
+  <section>
+    <h2>Indirection <span class="hint">how a wire gets from the handler to the construction —
+      derived from the call graph, and drawn as the wire's dash and arrowhead</span></h2>
+    <div class="legend" id="kinds"></div>
+  </section>
+
+  <section>
+    <h2>Table relationships <span class="hint">declared foreign keys, read out of the
+      <code>REFERENCES</code> the service itself issues</span></h2>
+    <table id="fks">
+      <thead><tr>
+        <th style="width:230px">Table</th><th style="width:170px">Column</th>
+        <th style="width:230px">References</th><th style="width:130px">On delete</th>
+        <th>Declared at</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="nofks" hidden>No foreign key is declared in the analyzed source.</div>
   </section>
 
   <section class="prose-section">

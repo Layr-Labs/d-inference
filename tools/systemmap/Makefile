@@ -23,6 +23,7 @@ WEBTEST_OUT ?= tmp/systemmap-webtest
 # resolved against the repository root and not the working directory, so a rule
 # that wants to look at one has to say where it landed.
 ROOT := $(shell git rev-parse --show-toplevel)
+MANIFEST_PATH := $(ROOT)/$(MANIFEST)
 
 all:
 	go run . $(ARGS)
@@ -57,8 +58,19 @@ webtest: webdeps
 # entry must be written from — without needing a key or a network. It fails on
 # drift like `check` does, and writes the manifest anyway, because a pull request
 # that added a route is *expected* to fail here.
+#
+# So a non-zero exit is tolerated, but not on its own: the manifest is written
+# before the gate's verdict and after everything that can fail, so its presence is
+# what separates "drift, as expected" from a crash. Ignoring the status alone let a
+# generator that never ran hand `enrich` a manifest from some earlier commit — which
+# is why the stale one is deleted first.
 plan:
-	-go run . -check -enrich-manifest $(MANIFEST)
+	@rm -f $(MANIFEST_PATH)
+	@go run . -check -enrich-manifest $(MANIFEST) || true
+	@test -f $(MANIFEST_PATH) || { \
+		echo "systemmap: no manifest written — the generator failed before it could plan; run 'make -C tools/systemmap check' to see why" >&2; \
+		exit 1; \
+	}
 
 # enrich fills the missing prose and prunes what the map no longer has, then
 # re-runs the gate so the target only succeeds if the result is actually complete.

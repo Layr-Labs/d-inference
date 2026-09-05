@@ -163,11 +163,14 @@
     "mem.model_state": "Model catalog + alias + pending-load state",
     "mem.pending": "Per-request accepted/chunk/terminal channels",
     "mem.price_cache": "Per-model price lookup cache (30s)",
+    "mem.profiler": "Per-attempt profile records + batched sink",
     "mem.provider_writer": "Two-lane provider WebSocket write queues",
     "mem.queue": "RequestQueue + admission/backlog",
     "mem.read_cache": "Read-heavy response TTL cache",
     "mem.registry": "Live provider registry + WS connections",
+    "mem.route_latency": "Attempt-0 route latency EWMA (distress signal)",
     "mem.route_sink": "Bounded routing telemetry worker queue",
+    "mem.routing_scan": "Provider-selection scan concurrency semaphore",
     "mem.rpm": "Consumer/service/financial/key RPM buckets",
     "mem.service_reservations": "Service-account reservation manager",
     "mem.settlements": "Late-terminal settlement holder",
@@ -563,6 +566,22 @@
         "coordinator/store/postgres.go:3247"
       ]
     },
+    "mem.profiler": {
+      "overview": "The system profiler: one prompt-free timing record per dispatched attempt, plus the dedicated bounded sink that batches those records to PostgreSQL off the request path.",
+      "represents": "A profiler (kill switch, sample rate, sink) on Server; a RequestProfile per logical inference request and an AttemptProfile per dispatch attempt of it, each carrying microsecond offsets from the coordinator's monotonic t0, bounded counters and the routing decision copied by value; the profileSink's job channel with its dropped/written counters; and unknownRequestFrames, the coordinator-row counter of provider frames the coordinator cannot attribute — a request it no longer tracks, or a duplicate terminal for one still in flight.",
+      "construction": "newProfilerFromEnv wires the profiler in NewServer from EIGENINFERENCE_PROFILER and EIGENINFERENCE_PROFILE_SAMPLE_RATE, and creates the sink only when a store exists. A RequestProfile is created at handler entry from the logging middleware's requestMeta; each AttemptProfile is created by the dispatch loop.",
+      "access": "The request path stamps offsets (parse, reserve, encrypt, write, first chunk, flush, finalize); the provider WebSocket read loop stamps ingress and terminal facts, and increments unknownRequestFrames both for frames whose request is gone and for a duplicate terminal that loses the ClaimTerminal race on one still in flight; the fleet sampler reads sink depth, drop totals and that counter into the coordinator snapshot row; the admin profile/snapshot endpoints read the persisted rows back.",
+      "concurrency": "Every offset and counter is an atomic.Int64. Stamps are first-write-wins — a compare-and-swap against zero — so a retry or a racing late terminal cannot overwrite an earlier observation and no stamp needs a lock; accumulators (decrypt time, chunk and byte counts) add instead. Fields written by the read loop are guarded by the record's mutex. Each attempt finalizes exactly once, when both the handler half and the terminal half are done, with a fallback timer for terminals that never arrive. The sink is a bounded channel drained by one worker that builds and flushes the rows, so a full buffer drops a profile rather than blocking inference — and profile pressure can never evict a routing-telemetry row.",
+      "lifecycle": "A record lives for one request; sampling is all-or-nothing per logical request (default 10%) and is bypassed for every non-success, slow, retried or timing-anomalous request. Batches flush at 64 records or 250ms. A retention loop prunes profiles after 14 days and fleet snapshots after 30 days in bounded sweeps.",
+      "restart": "In-memory records and anything still queued in the sink are lost on restart; already-written rows live in request_profiles and fleet_snapshots. The unknown-frame counter resets.",
+      "sources": [
+        "coordinator/api/profiler.go:94",
+        "coordinator/api/profiler_sink.go:35",
+        "coordinator/api/server.go:493",
+        "coordinator/registry/request_profile.go:42",
+        "coordinator/registry/attempt_profile.go:16"
+      ]
+    },
     "mem.provider_writer": {
       "overview": "The two-lane serializer in front of each provider WebSocket: one goroutine owns the socket, and every frame the coordinator sends passes through it.",
       "represents": "A providerWriter per connection holding the socket, a control channel, a data queue, liveness/deadline atomics and the writer's stop/done channels; plus one providerWriteRequest per frame with its payload, completion channel, handoff channels and an ownership state machine.",
@@ -619,6 +638,22 @@
         "coordinator/api/provider.go:1"
       ]
     },
+    "mem.route_latency": {
+      "overview": "One number that tells the coordinator whether routing itself is the bottleneck: an exponentially weighted average of attempt-0 route latency.",
+      "represents": "A float64 EWMA of the attempt-0 route segment in milliseconds, with the mutex that guards it. The sample is anchored exactly where applyTimingDecomposition anchors route_ms — MediaFetchedAt when a remote-media fetch happened, else ReservedAt — so a multi-second media download or a slow body parse can never masquerade as routing distress. Healthy routing is around 40ms; anything over a second means provider selection, not the fleet, is the constraint.",
+      "construction": "Two plain fields on Server, zero-valued until the first sample; the first sample seeds the average directly rather than decaying from zero.",
+      "access": "noteAttempt0RouteLatency folds in one sample per attempt-0 selection, dropping negative samples from clock skew. Both outcomes feed it: the successful reservation at the RoutedAt stamp, and every failed attempt-0 selection — a scan-slot acquisition timeout, or a scan that yields no provider — because under total overload no selection ever succeeds and a success-only average would sit at zero precisely when distress scaling matters most. A caller that vanished while parked for a slot records nothing (it proves nothing about selection latency), and a request that never stamped a reservation has no anchor to measure from. estimateRetryAfter reads the average when composing a 429/503 Retry-After: above the 1s threshold the answer switches from the queue-depth heuristic to distress scaling — max(base, ceil(EWMA seconds) × 5), capped at 60s.",
+      "concurrency": "A sync.Mutex held for one read or one arithmetic update, with no allocation inside the critical section, so every inference request can touch it. Alpha is 0.2, so roughly ten healthy requests pull a degraded average back under the threshold.",
+      "lifecycle": "Process lifetime; it is a running average with no entries to expire.",
+      "restart": "Resets to zero and re-seeds from the first request after restart, which briefly restores queue-depth-only Retry-After behavior.",
+      "sources": [
+        "coordinator/api/server.go:526",
+        "coordinator/api/consumer.go:629",
+        "coordinator/api/consumer.go:1074",
+        "coordinator/api/consumer.go:1581",
+        "coordinator/api/consumer.go:1615"
+      ]
+    },
     "mem.route_sink": {
       "overview": "A best-effort asynchronous write queue that keeps routing telemetry and rejection persistence off inference latency paths.",
       "represents": "A bounded channel of functions consumed by a fixed worker pool.",
@@ -631,6 +666,22 @@
         "coordinator/api/telemetry_sink.go:42",
         "coordinator/api/server.go:427",
         "coordinator/api/server.go:734"
+      ]
+    },
+    "mem.routing_scan": {
+      "overview": "A counting semaphore that bounds how many provider-selection scans run at once, so retry-amplified inbound cannot saturate every coordinator CPU.",
+      "represents": "A buffered channel of empty structs; one slot per in-flight O(fleet) walk — the full reservation scan, the plan refresh (itself a full re-scan), the speculative-backup scan, and every fleet walk the admission preflight runs (self-route/prefer summaries, the QuickCapacityCheck family, alias-fallback probes, the servability walk).",
+      "construction": "Created in NewServer with capacity runtime.NumCPU() (minimum 2); EIGENINFERENCE_ROUTING_CONCURRENCY replaces it via SetRoutingConcurrency, which must be called before serving starts because swapping the channel with scans in flight would strand slots. A Server built directly in tests leaves it nil, and a nil semaphore admits immediately.",
+      "access": "Both gates go through acquireRoutingScanSlot / releaseRoutingScanSlot, and each tries once without blocking before waiting. The dispatch reservation takes a slot only on a full scan and waits up to the attempt's remaining first-content budget; a retained-plan step revalidates at most the plan's bounded entries and bypasses the semaphore entirely, so a held slot can never starve the cheap retry path that exists to avoid rescans. The admission preflight takes the same slot around its fleet walks but on a much shorter budget — a quarter of the first-content deadline, floored at 250ms and capped at 1s — because admission must shed fast rather than park, and it releases before dispatch takes its own slot. A timeout on either path sheds as capacity-shaped (errRoutingScanSaturated: a retryable 429 with the distress-scaled Retry-After, plus a rejection-ledger row, and zero walks); a caller that vanished during the wait takes the ordinary client-gone path instead — refund, no 429, no rejection row.",
+      "concurrency": "The channel is the concurrency control: excess requests park cheaply on it rather than piling scans onto the scheduler. This exists because of the 2026-09-01 congestion collapse, where ~100 req/s of retryable traffic times a fresh full scan per attempt drove attempt-0 route p50 from 40ms to 4.6s and delivered 429s after 11 seconds.",
+      "lifecycle": "Process lifetime; a slot is held for the duration of one scan.",
+      "restart": "Recreated empty at startup with capacity re-derived from CPU count or the environment override.",
+      "sources": [
+        "coordinator/api/server.go:516",
+        "coordinator/api/server.go:1378",
+        "coordinator/api/server.go:1417",
+        "coordinator/api/consumer.go:1094",
+        "coordinator/api/inference_admission.go:308"
       ]
     },
     "mem.rpm": {
@@ -877,6 +928,19 @@
       "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
       "sources": [
         "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.fleet_snapshots": {
+      "overview": "The fleet_snapshots PostgreSQL table.",
+      "represents": "Durable periodic samples of fleet state used by the coordinator — one row per (provider, model slot) plus one coordinator row per sample, carrying slot state, token-budget and KV occupancy, observed decode/prefill throughput, host pressure and engine step counters. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods. Rows are written by the profiler's fleet sampler every 60s, not from a request path.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; the profiler's retention sweep deletes samples older than 30 days in bounded batches.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:6090",
+        "coordinator/api/profiler_fleet.go:51"
       ]
     },
     "pg.inference_routes": {
@@ -1165,6 +1229,19 @@
       "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
       "sources": [
         "coordinator/store/postgres.go:1"
+      ]
+    },
+    "pg.request_profiles": {
+      "overview": "The request_profiles PostgreSQL table.",
+      "represents": "Durable per-attempt inference profile records used by the coordinator — the prompt-free request waterfall: microsecond offsets from auth through parse, reserve, encrypt, provider write, first content and finalize, plus the routing decision context, provider/engine profile and terminal outcome. Metadata only; no prompt or completion content is ever stored. This node represents SQL rows and indexes—not a Go object or cache.",
+      "construction": "Declared and migrated by PostgresStore; handlers reach it through typed coordinator/store methods. Rows are written by the profiler's batched sink after an attempt finalizes, never on the request path.",
+      "access": "R/W/RW badges show whether each API namespace selects, mutates, or does both. “Used by” lists the exact endpoint handlers associated with this table.",
+      "concurrency": "Concurrency is owned by the typed client/store or by the coordinator object named here; request handlers do not mutate an unguarded global value.",
+      "lifecycle": "Rows survive process restarts; the profiler's retention sweep deletes records older than 14 days in bounded batches.",
+      "restart": "See the category durability rule; durable truth is reloaded, external/protocol state is re-established.",
+      "sources": [
+        "coordinator/store/postgres.go:5940",
+        "coordinator/api/profiler_sink.go:35"
       ]
     },
     "pg.request_rejections": {
@@ -2243,6 +2320,9 @@
         "Queue"
       ],
       "assembled": {
+        "coordinator/store:PostgresStore.FleetSnapshotsSince": {
+          "fleet_snapshots": "R"
+        },
         "coordinator/store:PostgresStore.Leaderboard": {
           "provider_earnings": "R",
           "ledger_entries": "R"
@@ -2250,6 +2330,9 @@
         "coordinator/store:PostgresStore.NetworkTotals": {
           "provider_earnings": "R",
           "ledger_entries": "R"
+        },
+        "coordinator/store:PostgresStore.RequestProfilesSinceFiltered": {
+          "request_profiles": "R"
         }
       }
     },
@@ -2317,6 +2400,7 @@
       "coordinator/api:Server.pendingHardUntrustKeyHashes": "mem.trust_reuse",
       "coordinator/api:Server.privyAuth": "ext.privy",
       "coordinator/api:Server.profileSigner": "@through",
+      "coordinator/api:Server.profiler": "mem.profiler",
       "coordinator/api:Server.promptArtifacts": "prompt.artifacts",
       "coordinator/api:Server.promptContract": "@through",
       "coordinator/api:Server.promptPreloader": "prompt.preload",
@@ -2333,7 +2417,10 @@
       "coordinator/api:Server.releasePolicySyncMu": "mem.hash_policy",
       "coordinator/api:Server.releaseTrustPolicy": "mem.hash_policy",
       "coordinator/api:Server.releaseTrustPolicyGeneration": "mem.hash_policy",
+      "coordinator/api:Server.routeLatencyEWMAMs": "mem.route_latency",
+      "coordinator/api:Server.routeLatencyMu": "mem.route_latency",
       "coordinator/api:Server.routeTelemetry": "mem.route_sink",
+      "coordinator/api:Server.routingScanSem": "mem.routing_scan",
       "coordinator/api:Server.servabilityGate": "@skip",
       "coordinator/api:Server.serviceRateLimiter": "mem.rpm",
       "coordinator/api:Server.serviceReservations": "mem.service_reservations",
@@ -2361,6 +2448,7 @@
       "coordinator/api:Server.trustSafetyReplayBlocked": "mem.trust_reuse",
       "coordinator/api:Server.trustSafetySticky": "mem.trust_reuse",
       "coordinator/api:Server.ttftHardReject": "@skip",
+      "coordinator/api:Server.unknownRequestFrames": "mem.profiler",
       "coordinator/api:Server.zombieCanceller": "mem.zombie_cancel",
       "coordinator/api:challengeTracker.*": "mem.challenges",
       "coordinator/api:codeAttestReservationLock.*": "mem.code_attest",
@@ -2461,6 +2549,8 @@
       "coordinator/registry:warmPoolController": "mem.warm_pool",
       "coordinator/registry:warmPoolState": "mem.warm_pool",
       "coordinator/registry:ttftCalibrator": "mem.ttft",
+      "coordinator/registry:RequestProfile": "mem.profiler",
+      "coordinator/registry:AttemptProfile": "mem.profiler",
       "coordinator/payments:Ledger": "mem.usage_log",
       "coordinator/mediafetch:byteBudget": "mem.media_resolver",
       "coordinator/apns:APNsPushAttestor": "ext.apple",
@@ -2700,6 +2790,20 @@
         "Administrator"
       ]
     },
+    "GET /v1/admin/profiles": {
+      "description": "Browses metadata-only per-attempt request profiles — the timing waterfall from auth to finalize, with the routing decision that produced it.",
+      "details": "Query: provider, model, final_status, coord_request_id, since, limit. Predicates are pushed into the store so the read cap applies after filtering; since accepts a Go duration or RFC3339 (default 24h), limit defaults to 1000.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/profiles/export": {
+      "description": "Streams the same request-profile records as NDJSON, unpaged, for the routingsim loaders.",
+      "details": "Same profile filters; NDJSON only (the rows carry nested JSON columns that do not flatten to CSV) and limit defaults to unpaged. Store reads remain hard-capped.",
+      "callers": [
+        "Administrator"
+      ]
+    },
     "GET /v1/admin/rejections": {
       "description": "Browses rejected-request metadata with reason, model, and counterfactual-capacity filters.",
       "details": "Query: reason, model, could_have_served=true|false, since, limit.",
@@ -2742,6 +2846,20 @@
     "GET /v1/admin/routes/export": {
       "description": "Streams routing-decision metadata as CSV or NDJSON for calibration and offline analysis.",
       "details": "Same route filters plus format=csv|ndjson; default CSV. Store reads remain hard-capped.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/snapshots": {
+      "description": "Browses fleet snapshot rows — the periodic sample of every provider slot's capacity, throughput and host pressure, plus the coordinator's own row.",
+      "details": "Query: provider, model, since, limit. Provider/model filtering is applied in memory after the store read; since accepts a Go duration or RFC3339 (default 24h), limit defaults to 1000.",
+      "callers": [
+        "Administrator"
+      ]
+    },
+    "GET /v1/admin/snapshots/export": {
+      "description": "Streams the same fleet snapshot rows as NDJSON, unpaged.",
+      "details": "Same snapshot filters; NDJSON only (nested JSON columns do not flatten to CSV) and limit defaults to unpaged. Store reads remain hard-capped.",
       "callers": [
         "Administrator"
       ]

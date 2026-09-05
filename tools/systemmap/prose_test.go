@@ -161,7 +161,7 @@ func TestProseEnrichmentLoop(t *testing.T) {
 		t.Errorf("route facts handler = %v, want handleAliases", got)
 	}
 	deps, _ := json.Marshal(req.Facts["dependencies"])
-	if want := `["mem.aliases R","mem.cache W","mem.flight RW"]`; string(deps) != want {
+	if want := `["mem.aliases R","mem.cache W","mem.flight RW","mem.revoked R"]`; string(deps) != want {
 		t.Errorf("route facts dependencies = %s, want %s", deps, want)
 	}
 	if req.Cite == "" {

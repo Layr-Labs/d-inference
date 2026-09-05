@@ -126,6 +126,16 @@ func (s *Server) handleAliases(w http.ResponseWriter, r *http.Request) {
 	s.cache.fill(r.Context())
 }
 `))
+	// The vocabulary a real manifest always carries: what a piece of state looks
+	// like in this map. A test that says nothing about it gets the harness overlay's
+	// own vocabulary, because a plan without one is not a plan the enricher accepts —
+	// the validator would stop recognising node ids altogether.
+	if len(plan.Categories) == 0 {
+		plan.Categories = []string{"mem", "pg"}
+	}
+	if len(plan.Tables) == 0 {
+		plan.Tables = []string{"api_keys", "payouts"}
+	}
 	raw, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -429,34 +439,112 @@ func TestEnrichDryRunCallsNothing(t *testing.T) {
 	}
 }
 
+// A manifest with entries to write but no vocabulary of state is refused before a
+// single call is made. It would not fail anything on its own — the validator would
+// simply stop recognising node ids, so every invented table would be accepted —
+// which is the one failure this whole gate exists to prevent, and the one a passing
+// run would never reveal.
+func TestEnrichRefusesAManifestWithNoVocabulary(t *testing.T) {
+	t.Setenv("ENRICH_TEST_KEY", "test-key")
+	h := newEnrichHarness(t, manifest{Requests: []prose.Request{routeReq()}})
+	raw, err := json.Marshal(manifest{Requests: []prose.Request{routeReq()}, Categories: nil, Tables: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.dir, h.s.manifest), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	api := newFakeAPI(t, func(_ int, _ apiRequest) (int, string) {
+		t.Error("called the model with a manifest that carries no node categories")
+		return http.StatusOK, "{}"
+	})
+	h.s.endpoint = api.URL
+
+	err = run(h.s)
+	if err == nil {
+		t.Fatal("ran against a manifest with no node categories")
+	}
+	if !strings.Contains(err.Error(), "node categories") {
+		t.Errorf("error does not say what the manifest is missing: %v", err)
+	}
+}
+
 // The guard has to catch a claim about state without firing on the file names,
 // hosts and qualified symbols that correct prose is full of — a guard that rejects
 // accurate sentences gets its retries burned and fails the run.
-func TestSuspectIDsBoundaries(t *testing.T) {
+//
+// Both directions are pinned here because the shape-based predicate this replaced
+// was wrong in both at once: it fired on `response.created` and `api.server`, which
+// name no state at all, and it missed a camelCase field, a bare table name, and a
+// single-letter category. What decides now is the manifest — `mem` and `pg` are node
+// categories in this plan, `server`, `overlay` and `i` are not — so the same
+// sentence is checked in one map and ignored in another.
+func TestIDGuardBoundaries(t *testing.T) {
+	pgReq := prose.Request{
+		Key: "GET /v1/payouts", Kind: "route", Hash: "ddddeeeeffff000011112222",
+		Facts: map[string]any{
+			"method": "GET", "path": "/v1/payouts", "handler": "handlePayouts",
+			"dependencies": []string{"pg.payouts RW"},
+		},
+	}
+	guard := newIDGuard(manifest{
+		Requests:   []prose.Request{routeReq(), labelReq(), pgReq},
+		Categories: []string{"mem", "pg"},
+		Tables:     []string{"api_keys", "payouts"},
+	})
+
 	for _, tc := range []struct {
+		name string
+		req  prose.Request
 		text string
-		want []string
+		want string // substring of the rejection, or "" for an accepted sentence
 	}{
-		{"Reads the alias map and writes mem.cache.", []string{"mem.cache"}},
-		{"Settles pg.payouts, then pg.api_keys for the account.", []string{"pg.payouts", "pg.api_keys"}},
-		{"Defined in coordinator/api/server.go and api/consumer.go.", nil},
-		{"Fetches manifests from models.darkbloom.ai over TLS.", nil},
-		{"The field is api:Server.cache, held per process.", nil},
-		{"Providers below v0.6.3 are not routed tool calls.", nil},
-		{"Two forms, i.e. one per lane.", nil},
-		{"See docs/reference/api-map/overlay.json for the curated half.", nil},
+		// State the request's own facts contain.
+		{"own node", routeReq(), "Reads the alias map and writes mem.cache.", ""},
+		{"own table", pgReq, "Settles pg.payouts for the account.", ""},
+		// State they do not.
+		{"foreign table", routeReq(), "Settles pg.payouts for the account.", "pg.payouts"},
+		{"foreign camelCase field", routeReq(), "Forgets mem.chunkKeys on the terminal chunk.", "mem.chunkKeys"},
+		// A table named as one, with and without the facts to back it.
+		{"bare table name", routeReq(), "Every row lands in the payouts table.", "pg.payouts"},
+		{"bare table name, owned", pgReq, "Every row lands in the payouts table.", ""},
+		{"table word absent", routeReq(), "Splits the payouts a provider has earned.", ""},
+		// Dotted tokens that name no node in this map.
+		{"file paths", routeReq(), "Defined in coordinator/api/server.go and api/consumer.go.", ""},
+		{"host", routeReq(), "Fetches manifests from models.darkbloom.ai over TLS.", ""},
+		{"qualified symbol", routeReq(), "The field is api:Server.cache, held per process.", ""},
+		{"version", routeReq(), "Providers below v0.6.3 are not routed tool calls.", ""},
+		{"abbreviation", routeReq(), "Two forms, i.e. one per lane.", ""},
+		{"overlay path", routeReq(), "See docs/reference/api-map/overlay.json for the curated half.", ""},
+		{"sse event", routeReq(), "The first frame is response.created, which carries no content.", ""},
 	} {
-		got := suspectIDs(tc.text)
-		if len(got) != len(tc.want) {
-			t.Errorf("suspectIDs(%q) = %v, want %v", tc.text, got, tc.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != tc.want[i] {
-				t.Errorf("suspectIDs(%q) = %v, want %v", tc.text, got, tc.want)
-				break
+		t.Run(tc.name, func(t *testing.T) {
+			err := guard.check("details", tc.text, tc.req)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Errorf("rejected a correct sentence %q: %v", tc.text, err)
+			case tc.want != "" && err == nil:
+				t.Errorf("accepted %q, which names state the facts do not contain", tc.text)
+			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("rejection of %q does not name %s: %v", tc.text, tc.want, err)
 			}
-		}
+		})
+	}
+}
+
+// Markdown is rejected wherever it appears, not only on the first line: `details`
+// is several lines, and a pattern anchored to the whole text let a bullet list that
+// started on line two straight into the page.
+func TestValidateRejectsMarkdownAfterTheFirstLine(t *testing.T) {
+	fields := map[string]string{
+		"description": "Returns the alias table for the calling account.",
+		"details":     "Reads the alias map.\n- then fills the request cache\n- and answers",
+	}
+	guard := newIDGuard(manifest{Categories: []string{"mem"}})
+	if _, err := validate(routeReq(), fields, guard, "test-model"); err == nil {
+		t.Fatal("accepted a bullet list starting on the second line of details")
+	} else if !strings.Contains(err.Error(), "markdown") {
+		t.Errorf("rejection does not name markdown: %v", err)
 	}
 }
 

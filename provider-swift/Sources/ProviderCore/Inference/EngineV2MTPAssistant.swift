@@ -30,14 +30,40 @@ protocol ProviderMTPAssistantLoading: Sendable {
     ) async throws -> ProviderMTPAssistantHandle
 }
 
-/// The sole production assistant loader. Qwen targets accept either a
+/// The sole production assistant loader. Qwen 3.5 targets accept either a
 /// combined inline assistant or a separately published `qwen3_5_mtp`
-/// artifact; Gemma targets retain their dedicated drafter path.
+/// artifact; Qwen 3.8 Flash-Next drives the target checkpoint's own `mtp.*`
+/// head; Gemma targets retain their dedicated assistant-checkpoint path.
+///
+/// This is the container path's form of the contract's decoder selection
+/// (§5, §9): a drafter that binds here is the `mtp` decoder being resident,
+/// and a target with no head stays serial. On the runner path the same
+/// question is answered by `runner.loadedDecoders` and carried on
+/// `EngineBuild.decoder` — see
+/// `EngineV2Factory.runnerDecoder(runner:speculationRequested:)`, which
+/// refuses rather than downgrading, for exactly the reason the fallback
+/// reasons below are recorded: `mtp_active` must never claim a head that is
+/// not running.
 struct ProductionProviderMTPAssistantLoader: ProviderMTPAssistantLoading {
     func loadAndBind(
         artifact: SpecDecArtifact,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
+        // Qwen 3.8 Flash-Next: the head is a block of the TARGET checkpoint
+        // (`mtp.*`), not a separate artifact, so there is nothing to load
+        // from a directory — the same shape `Qwen4ExpRunner` gives the
+        // benchmark worker, where the drafter is built straight off the
+        // loaded model and a drafter directory pointing anywhere else is
+        // refused. A checkpoint published without the head simply has no
+        // `mtp` decoder and serves serial.
+        if let qwen4Exp = target as? Qwen4ExpModel {
+            guard let assistant = Qwen4ExpInlineMTPAssistant(target: qwen4Exp) else {
+                throw ProviderMTPAssistantLoadError.targetIncompatible(
+                    "the qwen4_exp checkpoint carries no mtp.* head")
+            }
+            return ProviderMTPAssistantHandle(owner: assistant, drafter: assistant)
+        }
+
         if target is Qwen35TextModel || target is Qwen35Model {
             do {
                 let assistant = try Qwen35InlineMTPAssistant.load(

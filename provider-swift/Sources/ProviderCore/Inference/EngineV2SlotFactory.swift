@@ -600,7 +600,8 @@ enum EngineV2SlotFactory {
                 pagedPoolDType: preparedBackend.pagedPoolDType,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
-                servingModelIsGPTOSS: servingModel is GPTOSSModel)
+                fullRowsUseFP32: EngineV2ModelAdaptation
+                    .usesFP32FullAttentionRows(model: servingModel))
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
         }
@@ -659,22 +660,12 @@ enum EngineV2SlotFactory {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
         await bridge.configureMTPStatus(mtpStatus)
-        if let gemmaModel = servingModel as? Gemma4TextModel {
-            // One load-time snapshot only. Never arm the benchmark counters in
-            // production: the QMM hot path remains free of counter atomics.
-            let r1 = GPU.gemma4ExpertQMMDiagnostics()
-            let layerInterval = gemmaModel.cbv2PrefillChunkEvalInterval
-            let report = GemmaOptimizationReport(
-                layer18Requested: layerInterval > 0,
-                layer18Effective:
-                    layerInterval > 0
-                    && gemmaModel.cbv2LayerKinds.count >= layerInterval,
-                weightedUnsortRequested: gemmaModel.weightedExpertUnsortRequested,
-                weightedUnsortEffective: gemmaModel.weightedExpertUnsortEffective,
-                safeR1Requested: r1.requested,
-                safeR1GeometryEligible: gemmaModel.expertQMMGeometryEligible,
-                safeR1AOTAvailable: r1.aotAvailable,
-                safeR1NAXAvailable: r1.naxAvailable)
+        // One load-time snapshot only, and nil for every family that has no
+        // such controls. Never arm the benchmark counters in production: the
+        // QMM hot path remains free of counter atomics.
+        if let report = EngineV2ModelAdaptation.gemmaOptimizationReport(
+            model: servingModel)
+        {
             logInfo(report.logLine(modelId: modelId))
             for event in report.telemetryEvents(modelId: modelId) {
                 if let emitTelemetry {
@@ -709,8 +700,9 @@ enum EngineV2SlotFactory {
     /// `EngineV2Bridge+Capacity`), derived from the backend the slot was
     /// ACTUALLY built with:
     ///
-    ///   * contiguous + GPT-OSS ⇒ the native-width rate (fp32 owning
-    ///     full-attention rows on top of the fp16 sizing snapshot),
+    ///   * contiguous + a family whose owning full-attention rows are fp32
+    ///     (`EngineV2ModelAdaptation.usesFP32FullAttentionRows`) ⇒ the
+    ///     native-width rate on top of the fp16 sizing snapshot,
     ///   * paged with fp32 pages (`DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32`)
     ///     ⇒ a flat 2x — every page doubles, windowed layers included —
     ///     so the advertised token budget HALVES to match the pool's real
@@ -730,7 +722,7 @@ enum EngineV2SlotFactory {
         pagedPoolDType: String?,
         layerKinds: [CBv2LayerKind],
         nominalFP16BytesPerToken: Int,
-        servingModelIsGPTOSS: Bool
+        fullRowsUseFP32: Bool
     ) -> Int {
         let capability = CBv2PrefixReuseCapability.derive(
             layerKinds: layerKinds,
@@ -739,7 +731,7 @@ enum EngineV2SlotFactory {
             nominalFP16BytesPerToken: nominalFP16BytesPerToken,
             fp16FullKVBytesPerToken: capability.fullKVBytesPerToken,
             fullRowsUseFP32:
-                resolvedKind == .contiguous && servingModelIsGPTOSS,
+                resolvedKind == .contiguous && fullRowsUseFP32,
             // Only a resolved PAGED backend has pages whose dtype can
             // widen the rate; a contiguous build ignores the knob.
             pagedPoolDType: resolvedKind == .paged ? pagedPoolDType : nil)

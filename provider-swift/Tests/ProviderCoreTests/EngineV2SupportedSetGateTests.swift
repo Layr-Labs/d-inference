@@ -1,7 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Scan/advertise-time supported-set gate (v0.7.5): a model whose family has
-// no CBv2 adapter is NEVER advertised — dropped at ProviderLoop init (the
+// Scan/advertise-time supported-set gate (v0.7.5): a model no runner claims,
+// or that the provider's slot cannot build yet, is NEVER advertised — dropped at ProviderLoop init (the
 // single chokepoint: coordinator registration filters through the advertised
 // set, and the local /v1/models reads it) — and a load request for a
 // dropped/stale id fails the advertised-set guard with a 404-mapped error,
@@ -57,13 +57,17 @@ struct EngineV2SupportedSetGateTests {
         #expect(await loop.isModelAdvertised("gpt-oss-20b"))
         #expect(await loop.isModelAdvertised("gemma-4-26b-qat-4bit"))
         #expect(await loop.isModelAdvertised("qwen3-vl-moe"))
-        #expect(await loop.isModelAdvertised("qwen3-vl-dense") == false)
+        // The Qwen3-VL runner claims BOTH `qwen3_vl` and `qwen3_vl_moe`, and
+        // the registry is the gate now (Darkbloom runner contract §6.2 rule
+        // 4), so the dense config is advertised too. `qwen3_vl_moe_text` is
+        // claimed by no runner and still fails closed.
+        #expect(await loop.isModelAdvertised("qwen3-vl-dense"))
         #expect(await loop.isModelAdvertised("qwen3-vl-moe-text") == false)
         #expect(await loop.isModelAdvertised("qwen3-8b") == false)
         #expect(await loop.isModelAdvertised("qwen3-moe") == false)
         #expect(await loop.isModelAdvertised("gemma-3-legacy") == false)
         #expect(await loop.isModelAdvertised("mystery-build") == false)
-        #expect(await loop.advertisedModelCount() == 3)
+        #expect(await loop.advertisedModelCount() == 4)
     }
 
     @Test("partition splits supported/unsupported order-preserving")
@@ -76,8 +80,8 @@ struct EngineV2SupportedSetGateTests {
             modelInfo(id: "e", modelType: "qwen3_moe"),
         ]
         let split = EngineV2SupportedModels.partition(models)
-        #expect(split.supported.map(\.id) == ["a", "c", "d"])
-        #expect(split.unsupported.map(\.id) == ["b", "e"])
+        #expect(split.supported.map(\.id) == ["a", "b", "c", "d"])
+        #expect(split.unsupported.map(\.id) == ["e"])
     }
 
     @Test("load request for an unadvertised (unsupported/stale) id → 404-mapped error")

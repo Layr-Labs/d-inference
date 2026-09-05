@@ -12,9 +12,9 @@
 //     is unconditionally v2. Rollback is release-level (re-point latest
 //     to the previous release), not a per-box switch.
 //   * Which MODELS can serve is architecture-derived at scan/advertise
-//     time (`EngineV2SupportedModels`, the mirror of the
-//     `makeProductionEngine` switch) — unsupported families are never
-//     advertised, so construction here only sees CBv2-adapted models.
+//     time (`EngineV2SupportedModels`, which asks `RunnerRegistry`) —
+//     a family no runner claims is never advertised, so construction
+//     here only sees CBv2-adapted models.
 //   * Engine construction failure is a REFUSAL, not a fallback:
 //     `makeBridge` throws, an ERROR `engine_health` telemetry event
 //     (`operation=engine_v2_refusal`, with a machine-classifiable
@@ -24,6 +24,7 @@
 
 import Foundation
 import MLXLMCommon
+import MLXRunners
 
 // MARK: - Retired selection surface
 
@@ -107,6 +108,15 @@ public enum EngineV2RefusalReason: String, Sendable {
     /// and folding the two together would make a mistyped env var look
     /// like paged infrastructure failing.
     case pagedKVDTypeInvalid = "paged_kv_dtype_invalid"
+    /// A runner refused to load because a resource it cannot build itself
+    /// was not injected (`RunnerError.resourceMissing`) — today, the Qwen
+    /// 3.8 Flash-Next n-gram shard directory. Kept SEPARATE from
+    /// `engineInitFailed`, which is the catch-all: this one names a staging
+    /// mistake an operator can fix (the table is not where the load
+    /// options said), and folding it into the catch-all would make it
+    /// indistinguishable from a bad checkpoint. The runner names the
+    /// missing resource in the error text.
+    case runnerResourceMissing = "runner_resource_missing"
     /// Any other engine-construction failure.
     case engineInitFailed = "engine_init_failed"
 
@@ -123,6 +133,21 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .pagedBackendUnavailable
         case EngineV2ProductionError.invalidPagedPoolDType:
             return .pagedKVDTypeInvalid
+        // Runner-path refusals (Darkbloom runner contract §5). They map onto
+        // the reasons that already exist, so the fleet's refusal buckets do
+        // not change shape when a family moves onto a runner: a checkpoint
+        // no runner can serve is `unsupported_model`, and a paged build the
+        // manifest does not declare is the same paged-rollout signal an
+        // explicit paged request already produces. `resourceMissing` is the
+        // one addition — see the case for why it is not the catch-all.
+        case RunnerError.invalidCheckpoint, RunnerError.unexpectedModel,
+            RunnerRegistry.RegistryError.unknownModelType:
+            return .unsupportedModel
+        case RunnerError.kvBackendRefused(let requested, _)
+        where requested == KVBackendKind.paged.rawValue:
+            return .pagedBackendUnavailable
+        case RunnerError.resourceMissing:
+            return .runnerResourceMissing
         default:
             return .engineInitFailed
         }

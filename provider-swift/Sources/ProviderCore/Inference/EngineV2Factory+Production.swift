@@ -11,8 +11,8 @@
 // pieces:
 //
 //   * layer kinds, capabilities, and per-layer caches from the model's own
-//     CBv2 hooks (Gemma 4 text, GPT-OSS, Qwen3.5 MoE target, and direct
-//     Qwen3-VL wrapper; GPT-OSS also primes its sinks probe at build time),
+//     CBv2 hooks, read through the one typed seam
+//     (`EngineV2ModelAdaptation`) so no family is named here,
 //   * a KV backend sized from the unified-memory KV budget —
 //     `PagedKVBackend` for an explicit "paged", slabs capped by
 //     `PagedKVPhysicalCapacityPolicy` and committed lazily
@@ -44,8 +44,8 @@ import MLXVLM
 /// factory's REFUSAL path (ERROR `engine_v2_refusal` telemetry + throw).
 enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// The loaded module is not a CBv2-adapted family (an unexpected
-    /// architecture). Gemma 4 resolves to its owned text tower; Qwen3-VL
-    /// remains the direct loaded wrapper.
+    /// architecture): no runner claims it and
+    /// `EngineV2ModelAdaptation.adapt` refused it.
     case unsupportedModel(String)
     /// No KV byte budget is left under the unified-memory cap — an engine
     /// admitted with a zero ceiling would reject every request, so the
@@ -89,21 +89,13 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
 }
 
 extension EngineV2Factory {
-    /// Resolve the exact module instance served by CBv2. Gemma 4 VLM owns
-    /// its `Gemma4TextModel`; direct VLM forwards and CBv2 therefore share
-    /// one language tower, one parameter tree, and one residency footprint.
-    /// Qwen3-VL exposes its CBv2 language hooks on the wrapper itself, so the
-    /// wrapper is the direct serving model and retains vision/DeepStack state.
+    /// Resolve the exact module instance served by CBv2 — the container
+    /// path's answer to `runner.servingModel`. The wrapper-to-tower rule is
+    /// a family fact and lives in `EngineV2ModelAdaptation`.
     static func directServingModel(
         model: any LanguageModel, isVLM: Bool
     ) throws -> any LanguageModel {
-        guard isVLM else { return model }
-        if model is MLXVLM.Qwen3VL { return model }
-        guard let gemma4 = model as? MLXVLM.Gemma4 else {
-            throw EngineV2ProductionError.unsupportedModel(
-                String(describing: type(of: model)))
-        }
-        return gemma4.textModel
+        try EngineV2ModelAdaptation.directServingModel(model: model, isVLM: isVLM)
     }
 
     /// Environment key arming the CBv2 solo-prefill stripe (tokens). See
@@ -182,16 +174,15 @@ extension EngineV2Factory {
     }
 
     /// Select the conservative default stripe without changing the operator
-    /// override contract. The dense target is the base Qwen35 class; the MoE
-    /// target subclasses it, so test the subclass first.
+    /// override contract. Which families want the longer dense stripe is a
+    /// family fact (`EngineV2ModelAdaptation`); the two VALUES above are
+    /// provider policy and stay here.
     static func defaultSoloPrefillStripeTokens(
         for model: (any LanguageModel)?
     ) -> Int {
-        guard let model else { return defaultSoloPrefillStripeTokens }
-        if model is Qwen35Model, !(model is Qwen35MoEModel) {
-            return defaultDenseQwenSoloPrefillStripeTokens
-        }
-        return defaultSoloPrefillStripeTokens
+        EngineV2ModelAdaptation.prefersDenseQwenSoloPrefillStripe(model: model)
+            ? defaultDenseQwenSoloPrefillStripeTokens
+            : defaultSoloPrefillStripeTokens
     }
 
     /// Construct the scheduler configuration used by every production backend.
@@ -311,47 +302,20 @@ extension EngineV2Factory {
         }
     }
 
-    /// The model's prefix-cache adoption bound (`PrefixCachePolicy
-    /// .adoptionBoundTokens` over the model's own `cbv2LayerKinds`), kept
-    /// NEXT TO the authoritative family switch in `makeProductionEngine` so
-    /// the two can never drift. Unknown families return 0 — treated as
-    /// "fund" by the gate (pure-full-attention semantics; such a model
-    /// throws `unsupportedModel` before any cache matters anyway).
+    /// The model's prefix-cache adoption bound, from the loaded model's own
+    /// layer kinds. The derivation lives beside the other family facts
+    /// (`EngineV2ModelAdaptation.adoptionBoundTokens`); the SSD tier's use
+    /// of it is policy and stays in the slot factory.
     static func adoptionBoundTokens(model: any LanguageModel) -> Int {
-        switch model {
-        case let gemma as Gemma4TextModel:
-            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma.cbv2LayerKinds)
-        case let gptoss as GPTOSSModel:
-            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gptoss.cbv2LayerKinds)
-        case let qwen as Qwen35Model:
-            guard qwen.cbv2Capabilities.supportsPrefixReuse else { return 0 }
-            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: qwen.cbv2LayerKinds)
-        case let qwen as MLXVLM.Qwen3VL:
-            guard qwen.cbv2Capabilities.supportsPrefixReuse else { return 0 }
-            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: qwen.cbv2LayerKinds)
-        default:
-            return 0
-        }
+        EngineV2ModelAdaptation.adoptionBoundTokens(model: model)
     }
 
-    /// The model's CBv2 layer kinds, or nil for a non-adapted family
-    /// (which throws `unsupportedModel` at engine construction anyway).
-    /// Needed by the SSD prefix cache's construction (layout-epoch
-    /// binding + adoption bound) — kept NEXT TO the authoritative family
-    /// switch, like `adoptionBoundTokens`, so the two can never drift.
+    /// The model's CBv2 layer kinds, or nil for a non-adapted family (which
+    /// throws `unsupportedModel` at engine construction anyway). Needed by
+    /// the SSD prefix cache's construction (layout-epoch binding + adoption
+    /// bound) before any engine exists.
     static func cbv2LayerKinds(model: any LanguageModel) -> [CBv2LayerKind]? {
-        switch model {
-        case let gemma as Gemma4TextModel:
-            return gemma.cbv2LayerKinds
-        case let gptoss as GPTOSSModel:
-            return gptoss.cbv2LayerKinds
-        case let qwen as Qwen35Model:
-            return qwen.cbv2LayerKinds
-        case let qwen as MLXVLM.Qwen3VL:
-            return qwen.cbv2LayerKinds
-        default:
-            return nil
-        }
+        EngineV2ModelAdaptation.layerKinds(model: model)
     }
 
     /// Process-wide per-request reservation rate for the contiguous backend.
@@ -667,41 +631,15 @@ extension EngineV2Factory {
         // budgets (cap − weights − activations) are always well under this.
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
 
-        // Model adaptation: layer kinds + per-layer caches come from the
-        // model's own CBv2 hooks so the derivation can never drift from the
-        // constructors (see LayerKindDerivation.swift in mlx-swift-lm).
-        // Neither family uses attention softcapping (Gemma 4's final-logit
-        // softcap lives inside the model's logits path), so the caches take
-        // the default nil softcap. `newCacheV2` stays the single cache
-        // construction funnel on BOTH backends — GPT-OSS primes its
-        // sinks-activation probe inside it (one host readback per layer,
-        // at build time — never on the step path).
-        let layerKinds: [CBv2LayerKind]
-        let modelCapabilities: CBv2ModelCapabilities
-        let newCaches:
-            ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
-                throws -> [any CBv2AttendingLayerCache]
-        switch model {
-        case let gemma as Gemma4TextModel:
-            layerKinds = gemma.cbv2LayerKinds
-            modelCapabilities = .attentionOnly
-            newCaches = { make in try gemma.newCacheV2(makeLayerCache: make) }
-        case let gptoss as GPTOSSModel:
-            layerKinds = gptoss.cbv2LayerKinds
-            modelCapabilities = .attentionOnly
-            newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
-        case let qwen as Qwen35Model:
-            layerKinds = qwen.cbv2LayerKinds
-            modelCapabilities = qwen.cbv2Capabilities
-            newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
-        case let qwen as MLXVLM.Qwen3VL:
-            layerKinds = qwen.cbv2LayerKinds
-            modelCapabilities = qwen.cbv2Capabilities
-            newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
-        default:
-            throw EngineV2ProductionError.unsupportedModel(
-                String(describing: type(of: model)))
-        }
+        // Model adaptation: layer kinds, capabilities, and per-layer caches
+        // come from the model's own CBv2 hooks through the ONE typed seam
+        // (`EngineV2ModelAdaptation`), so this file names no family and the
+        // derivation can never drift from the constructors. `newCacheV2`
+        // stays the single cache-construction funnel on BOTH backends.
+        let adaptation = try EngineV2ModelAdaptation.adapt(model: model)
+        let layerKinds = adaptation.layerKinds
+        let modelCapabilities = adaptation.capabilities
+        let newCaches = adaptation.newCaches
 
         var resolvedKind: EngineV2KVBackendKind
         switch kvBackend {

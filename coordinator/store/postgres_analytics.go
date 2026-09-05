@@ -51,26 +51,13 @@ func (s *PostgresStore) UsageLocationBuckets(since time.Time) ([]UsageLocationBu
 
 	var buckets []UsageLocationBucket
 	err := s.withAnalyticsTx(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx,
-			`SELECT
-				COALESCE(request_location->>'city', '') AS city,
-				COALESCE(request_location->>'region', '') AS region,
-				COALESCE(request_location->>'region_code', '') AS region_code,
-				COALESCE(request_location->>'country', '') AS country,
-				COALESCE(request_location->>'country_code', '') AS country_code,
-				COALESCE(AVG(NULLIF(request_location->>'latitude', '')::double precision), 0),
-				COALESCE(AVG(NULLIF(request_location->>'longitude', '')::double precision), 0),
-				COUNT(*),
-				COALESCE(SUM(prompt_tokens), 0),
-				COALESCE(SUM(completion_tokens), 0),
-				COUNT(DISTINCT provider_id)
-			 FROM usage
-			 WHERE request_location IS NOT NULL
-			   AND created_at >= $1
-			 GROUP BY city, region, region_code, country, country_code
-			 ORDER BY COUNT(*) DESC`,
-			since,
-		)
+		// The rolling cutoff is selective, while a generic parameter plan can
+		// estimate tens of millions of groups and choose another full sort.
+		// Keep this choice local to this read-only transaction.
+		if _, err := tx.Exec(ctx, "SET LOCAL plan_cache_mode = force_custom_plan"); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, usageLocationBucketsSQL, since)
 		if err != nil {
 			return err
 		}

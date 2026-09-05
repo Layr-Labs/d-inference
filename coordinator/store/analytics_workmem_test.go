@@ -48,7 +48,7 @@ func (t *statementTracer) snapshot() []tracedStatement {
 
 // testPostgresStoreWithTracer is testPostgresStore with a statement tracer on
 // every pooled connection. Only the tables this file touches are truncated.
-func testPostgresStoreWithTracer(t *testing.T) (*PostgresStore, *statementTracer) {
+func testPostgresStoreWithTracer(t *testing.T, configure ...func(*pgxpool.Config)) (*PostgresStore, *statementTracer) {
 	t.Helper()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -59,6 +59,9 @@ func testPostgresStoreWithTracer(t *testing.T) (*PostgresStore, *statementTracer
 	tracer := &statementTracer{}
 	s, err := newPostgresWithPoolConfig(ctx, Config{DatabaseURL: dbURL}, func(cfg *pgxpool.Config) {
 		cfg.ConnConfig.Tracer = tracer
+		for _, configurePool := range configure {
+			configurePool(cfg)
+		}
 	})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
@@ -185,7 +188,7 @@ func TestUsageAnalyticsRunInWorkMemTransaction(t *testing.T) {
 	if len(locations) != 1 || locations[0].Requests != 3 || locations[0].Providers != 1 {
 		t.Fatalf("location buckets = %+v, want one NY bucket with 3 requests from 1 provider", locations)
 	}
-	assertAnalyticsTx(t, tracer.snapshot(), "COUNT(DISTINCT provider_id)")
+	assertAnalyticsTx(t, tracer.snapshot(), "FROM usage")
 
 	tracer.reset()
 	flows, err := s.UsageFlowBuckets(since, nil)

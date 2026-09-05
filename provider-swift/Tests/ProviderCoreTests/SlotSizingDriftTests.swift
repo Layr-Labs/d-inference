@@ -76,7 +76,7 @@ private func writeConfigDir(_ config: [String: Any], wrapInTextConfig: Bool = fa
 // MARK: - Kinds derivation from the fixture fields (the model wrappers' inputs)
 
 private func gptossKinds(from config: [String: Any]) -> [CBv2LayerKind] {
-    CBv2LayerKindDerivation.gptossLayerKinds(
+    GPTOSSCBv2LayerKindDerivation.layerKinds(
         layerTypes: config["layer_types"] as? [String],
         numHiddenLayers: config["num_hidden_layers"] as! Int,
         slidingWindow: config["sliding_window"] as! Int,
@@ -86,7 +86,7 @@ private func gptossKinds(from config: [String: Any]) -> [CBv2LayerKind] {
 }
 
 private func gemma4Kinds(from config: [String: Any]) -> [CBv2LayerKind] {
-    CBv2LayerKindDerivation.gemma4LayerKinds(
+    Gemma4CBv2LayerKindDerivation.layerKinds(
         layerTypes: config["layer_types"] as! [String],
         slidingWindow: config["sliding_window"] as! Int,
         numKvSharedLayers: config["num_kv_shared_layers"] as! Int,

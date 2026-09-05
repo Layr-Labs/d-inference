@@ -31,6 +31,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXVLM
 import ProviderCoreFoundation
 import Testing
@@ -118,8 +119,10 @@ struct EngineV2SSDPrefixCacheLiveTests {
         }
         let wrapper = try #require(snapshot.model as? MLXVLM.Gemma4)
         let textModel = wrapper.textModel
-        let direct = try EngineV2Factory.directServingModel(
-            model: wrapper, isVLM: true)
+        let direct = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper,
+            tokenizer: tokenizer.inner,
+            modelDirectory: directory)
         #expect(ObjectIdentifier(direct) == ObjectIdentifier(textModel))
         return LiveModel(
             modelID: "gemma-4-26b-qat-4bit",
@@ -183,6 +186,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: live.model,
             tokenizer: live.tokenizer.inner,
+            modelDirectory: live.modelDirectory,
             kvBytesCapacity: 24 * Self.gib,
             maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
             prefixCache: ssdCache)

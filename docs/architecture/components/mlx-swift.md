@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `7b6afb181`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -28,11 +28,15 @@ package's path dependency of the same identity.
 `.gitmodules` declares three submodules, all Layr-Labs forks. The pin is the
 gitlink in the superproject tree; read it with `git ls-tree HEAD libs/`:
 
-| Submodule | Fork | Pinned commit (`5d400cf75`) | What the provider gets from it |
+| Submodule | Fork | Pinned commit (`2df9d5c1b`) | What the provider gets from it |
 |---|---|---|---|
 | `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `6b0505cc790f512ae49d740b21e13f80802946bd` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`734241bb`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`9ff12fab`) — the tree the metallib is built from |
-| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `c4089870a24b082a9d70f31dc853380e9cff92ca` | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
+| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `394ffdbb` — a **DEV pin** on the fork branch `feat/qwen38-flash-next-runner`, not a commit on the fork's `main`. It is fork PR #140, the one consolidated runner PR: the `MLXRunners` package with `Runner.adopt` (a runner takes over a module the caller already holds, so nothing is loaded twice, multimodal wrappers included), the Qwen VLM text extraction and its parity gate, `EngineBuild.pagedPool` verified against the constructed pool, the Qwen 3.8 Flash-Next runner, the n-gram table reader, the loader's tensor-name exclusion seam, and the per-request timing stamps. Dev pin; it moves to fork `main` after #140 merges | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXRunners` (the runner boundary: one runner and one manifest per model family), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
 | `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`CLAUDE.md`) |
+
+The `libs/mlx-swift-lm` row is the only pin that is not a fork `main`
+commit. A dev pin is allowed while the fork PR it depends on (#140) is open;
+it is re-pinned to `main` before the release that ships it.
 
 A bump is a superproject commit that moves a gitlink (check out the new commit
 inside the submodule, `git add libs/<name>`); the checkout procedure is step 1
@@ -45,6 +49,7 @@ architecture pages are read at the pinned `libs/mlx-swift-lm` commit.
 |---|---|---|
 | `MLX`, `MLXNN` | `mlx-swift` (path) | Arrays, Metal backend, layers |
 | `MLXLLM`, `MLXVLM`, `MLXLMCommon`, `MLXLMServer` | `mlx-swift-lm` (path) | Models, CBv2 engine, request types and parsers |
+| `MLXRunners` | `mlx-swift-lm` (path) | The runner boundary: `RunnerRegistry` is the provider's advertise gate, and `Runner.makeEngine(EngineBuild)` is how a slot's policy reaches a family without the provider naming one |
 | `Transformers` | `swift-transformers` `from: "1.3.0"` | First release whose `TokenizerModel.knownTokenizers` includes `TokenizersBackend`, the tokenizer class of Qwen 3.5 / Qwen3-VL checkpoints |
 | `Jinja` | `swift-jinja` `from: "2.3.5"` (also linked by `ProviderCoreFoundation`) | `TemplateRenderCheck` compiles chat templates with the exact engine the runtime tokenizer uses |
 | `Hummingbird` | `hummingbird` `exact: "2.23.0"` | Matches the `from: "2.23.0"` that `MLXLMServer` declares |

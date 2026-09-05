@@ -1,40 +1,35 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Benchmark-facing seam: perf harnesses must measure the exact module served
-// in production. Gemma 4 VLM checkpoints expose their directly owned
-// `Gemma4TextModel`; Qwen3-VL is served directly as its loaded wrapper.
+// in production, and they need the module OBJECT (MTP binding, per-layer
+// profiling) before any engine exists.
+//
+// It is the runner's answer, not a second opinion: adopting reads no tensors
+// and each family returns the module it serves — a wrapper's own tower, the
+// re-keyed and parity-gated target, or the loaded module unchanged.
 
 import Foundation
 import MLXLMCommon
-import MLXVLM
+import MLXRunners
 
 extension EngineV2Factory {
 
-    /// Resolve the CBv2-serving model for a loaded checkpoint: the model
-    /// itself for text and direct Qwen3-VL checkpoints, the exact VLM-owned
-    /// text tower for Gemma 4, or the extracted Qwen3.5 dense/MoE language target.
+    /// The module CBv2 will serve for this checkpoint.
     public static func benchmarkServingModel(
         model: any LanguageModel,
-        isVLM: Bool,
-        modelDirectory: URL?,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        modelDirectory: URL,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any LanguageModel {
-        guard isVLM else { return model }
-        if model is MLXVLM.Gemma4 {
-            return try directServingModel(model: model, isVLM: true)
-        }
-        if model is MLXVLM.Qwen3VL {
-            return try directServingModel(model: model, isVLM: true)
-        }
-        guard model is MLXVLM.Qwen35 else {
-            throw EngineV2VLMTextExtractionError.unsupportedWrapper(
-                String(describing: type(of: model)))
-        }
-        guard let modelDirectory else {
-            throw EngineV2VLMTextExtractionError.missingModelDirectory
-        }
-        return try EngineV2VLMTextExtraction.extractTextModel(
-            from: model, modelDirectory: modelDirectory, environment: environment
+        try adoptRunner(
+            model: model,
+            tokenizer: tokenizer,
+            modelDirectory: modelDirectory,
+            options: runnerLoadOptions(
+                modelDirectory: modelDirectory,
+                kvBytesCapacity: 0,
+                maxSequenceLength: RunnerLoadOptions().maxSequenceLength,
+                environment: environment)
         ).servingModel
     }
 }

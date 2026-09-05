@@ -106,7 +106,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             convertTokenToID: { snapshot.tokenizer.convertTokenToId($0) })
         let servingModel = try EngineV2Factory.benchmarkServingModel(
             model: snapshot.model,
-            isVLM: isVLM,
+            tokenizer: snapshot.tokenizer,
             modelDirectory: targetDirectory)
         guard let target = servingModel as? any Gemma4MTPTarget else {
             throw MTPBenchmarkError.mtpRequestedButInactive(
@@ -203,6 +203,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: servingModel,
             tokenizer: tokenizer,
+            modelDirectory: targetDirectory,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: batchSize,
             mtpDrafter: mtpDrafter,

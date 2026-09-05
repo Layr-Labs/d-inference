@@ -21,6 +21,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXNN
 import MLXVLM
 import Testing
@@ -47,6 +48,10 @@ struct GemmaVLMSharedTowerMemoryLiveTests {
         /// and `makeEngineV2BridgeForSlot` (the legacy `BatchScheduler`
         /// surfaces this test used to read are deleted).
         let sizing: SlotSizingSnapshot
+        let tokenizer: TokenizerHandle
+        /// The checkpoint the wrapper was loaded from — the runner is
+        /// resolved from it.
+        let modelDirectory: URL
     }
 
     private func loadFirstCachedVLMSlot() async throws -> LoadedVLMSlot {
@@ -82,11 +87,16 @@ struct GemmaVLMSharedTowerMemoryLiveTests {
                 eosTokenIds: ctx.configuration.eosTokenIds,
                 extraEOSTokens: [])
         }
+        let tokenizer: TokenizerHandle = await container.perform { ctx in
+            TokenizerHandle(ctx.tokenizer)
+        }
         return LoadedVLMSlot(
             modelID: modelID,
             container: container,
             model: snapshot.model,
-            sizing: sizing
+            sizing: sizing,
+            tokenizer: tokenizer,
+            modelDirectory: directory
         )
     }
 
@@ -121,8 +131,10 @@ struct GemmaVLMSharedTowerMemoryLiveTests {
             slot.model as? MLXVLM.Gemma4,
             "production Gemma 4 slot must load the MLXVLM.Gemma4 wrapper")
         let owned = wrapper.textModel
-        let serving = try EngineV2Factory.directServingModel(
-            model: wrapper, isVLM: true)
+        let serving = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper,
+            tokenizer: slot.tokenizer.inner,
+            modelDirectory: slot.modelDirectory)
         let textModel = try #require(serving as? MLXLLM.Gemma4TextModel)
         #expect(ObjectIdentifier(owned) == ObjectIdentifier(textModel))
 

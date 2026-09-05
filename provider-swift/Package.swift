@@ -120,6 +120,12 @@ let package = Package(
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLMServer", package: "mlx-swift-lm"),
+                // The runner boundary (Darkbloom runner contract §3/§4):
+                // one runner per model family, with a static manifest, in
+                // the fork. Darkbloom resolves a family through
+                // `RunnerRegistry` and never carries family construction
+                // code of its own.
+                .product(name: "MLXRunners", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Sodium", package: "swift-sodium"),

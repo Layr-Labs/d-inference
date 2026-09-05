@@ -118,13 +118,10 @@ public enum SchedulerPrefillBenchmark {
         // production run cannot be reported as the generic 2,048-token arm.
         let effectiveSoloPrefillStripeTokens = try await container.perform {
             context -> Int? in
-            let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: context.model,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory)
+            _ = context
             return EngineV2Factory.soloPrefillStripeTokens(
                 abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize,
-                model: servingModel)
+                modelType: EngineV2Factory.checkpointModelType(at: modelDirectory))
         }
 
         log("kv backend selection \(kvBackend.rawValue)")
@@ -212,10 +209,12 @@ public enum SchedulerPrefillBenchmark {
         // to have been honoured.
         let parts = try await container.perform { ctx -> EngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                model: ctx.model, tokenizer: ctx.tokenizer,
+                modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: ctx.tokenizer,
+                modelDirectory: modelDirectory,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: 1,
                 kvBackend: kvBackend)

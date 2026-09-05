@@ -5,6 +5,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXNN
+import MLXRunners
 import MLXVLM
 import Testing
 
@@ -120,6 +121,38 @@ private final class QwenPrefixCacheConstructionProbe: @unchecked Sendable {
     var calls: Int { lock.withLock { _calls } }
 }
 
+
+/// Adopt a fixture module through the registry, the way the serving path
+/// does: a directory holding only `config.json`, and no tensors read.
+private func adoptFixture(
+    _ model: any LanguageModel, modelType: String
+) throws -> any Runner {
+    let directory = try makeCheckpointDirectory(modelType: modelType)
+    return try EngineV2Factory.adoptRunner(
+        model: model,
+        tokenizer: StubBridgeTokenizer(),
+        modelDirectory: directory,
+        options: EngineV2Factory.runnerLoadOptions(
+            modelDirectory: directory,
+            kvBytesCapacity: 0,
+            maxSequenceLength: 2048))
+}
+
+
+/// Decode the fixture's TEXT configuration the way MLXLLM does. The
+/// extraction that used to live in the provider now belongs to the fork, and
+/// its decoder is internal there; these provider-side tests only need a
+/// configuration object to build a fixture module from.
+private func decodeQwenTargetConfiguration(
+    _ configData: Data
+) throws -> MLXLLM.Qwen35Configuration {
+    let object = try JSONSerialization.jsonObject(with: configData) as? [String: Any] ?? [:]
+    let text = (object["text_config"] as? [String: Any]) ?? object
+    return try JSONDecoder.json5().decode(
+        MLXLLM.Qwen35Configuration.self,
+        from: try JSONSerialization.data(withJSONObject: text))
+}
+
 @Suite("Qwen VLM target-only extraction", .serialized)
 struct QwenVLMTargetExtractionTests {
     init() {
@@ -129,177 +162,17 @@ struct QwenVLMTargetExtractionTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("Qwen config decodes through MLXLLM and target skeleton omits inline MTP")
-    func qwenConfigBuildsTargetOnlySkeleton() throws {
-        let previousMTPState = _qwen35MTPEnabled
-        _qwen35MTPEnabled = true
-        defer { _qwen35MTPEnabled = previousMTPState }
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(mtpLayers: 1))
-        let target = Qwen35MoEModel(config)
-
-        #expect(target.parameters().flattened().contains { $0.0.contains("mtp.") } == false)
-        #expect(target.vocabularySize == 64)
-    }
-
-    @Test("Qwen wrapper dispatches to a strict, weight-sharing MLXLLM target")
-    func qwenWrapperDispatchAndStrictUpdate() throws {
-        let configData = qwenTargetFixtureJSON(mtpLayers: 1)
-        let wrapperConfig = try JSONDecoder.json5().decode(
-            MLXVLM.Qwen35Configuration.self, from: configData)
-        let wrapper = MLXVLM.Qwen35MoE(wrapperConfig)
-        let directory = try qwenTargetFixtureDirectory(configData: configData)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: wrapper,
-            modelDirectory: directory,
-            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
-
-        #expect(extraction.family == .qwen35MoE)
-        #expect(extraction.servingModel is Qwen35MoEModel)
-        #expect(extraction.parityMaxAbsLogitDiff == nil)
-        #expect(
-            extraction.servingModel.parameters().flattened().contains {
-                $0.0.hasPrefix("vision_tower.") || $0.0.hasPrefix("mtp.")
-            } == false)
-        let sourceParameters = Dictionary(
-            uniqueKeysWithValues: wrapper.parameters().flattened().filter {
-                $0.0.hasPrefix("language_model.")
-            })
-        for (key, targetArray) in extraction.servingModel.parameters().flattened() {
-            let sourceArray = try #require(sourceParameters[key], "missing source array for \(key)")
-            // Module.update keeps the target's Swift MLXArray wrapper stable and
-            // repoints its core array context via _updateInternal. Object identity
-            // is therefore intentionally different even though no tensor payload
-            // is copied. The mapping test below pins source-handle identity before
-            // update; this loop pins the strict installed parameter set.
-            #expect(targetArray.shape == sourceArray.shape, "shape drift for \(key)")
-            #expect(targetArray.dtype == sourceArray.dtype, "dtype drift for \(key)")
-            #expect(
-                MLX.all(targetArray .== sourceArray).item(Bool.self),
-                "installed value drift for \(key)")
-        }
-    }
-
-    @Test("Qwen key mapping retains only live language target arrays")
-    func qwenTargetKeyMapping() throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON())
-        let target = Qwen35MoEModel(config)
-        let language = MLXArray([Float(1), Float(2)])
-        let mapped = EngineV2VLMTextExtraction.reKeyedQwenTargetWeights(
-            flattenedWeights: [
-                ("language_model.model.norm.weight", language),
-                ("mtp.norm.weight", MLXArray([Float(3)])),
-                ("vision_tower.blocks.0.weight", MLXArray([Float(4)])),
-            ],
-            sanitizer: target)
-
-        #expect(mapped.keys.sorted() == ["language_model.model.norm.weight"])
-        #expect(mapped["language_model.model.norm.weight"] === language)
-        #expect(mapped["language_model.model.norm.weight"]?.asArray(Float.self) == [1, 2])
-    }
-
-    @Test("Qwen mixed quantization lookup uses the undoubled wrapper path")
-    func qwenMixedQuantizationSelection() throws {
-        let defaultQuantization = BaseConfiguration.Quantization(groupSize: 64, bits: 4)
-        let override = BaseConfiguration.Quantization(groupSize: 32, bits: 8)
-        let table = BaseConfiguration.PerLayerQuantization(
-            quantization: defaultQuantization,
-            perLayerQuantization: [
-                "language_model.model.layers.1.self_attn.q_proj": .quantize(override),
-                "language_model.model.layers.0.linear_attn.in_proj_qkv": .skip,
-            ])
-
-        let qwenOverride = EngineV2VLMTextExtraction.quantization(
-            targetPath: "language_model.model.layers.1.self_attn.q_proj",
-            family: .qwen35MoE,
-            perLayerQuantization: table)
-        #expect(qwenOverride?.groupSize == 32)
-        #expect(qwenOverride?.bits == 8)
-        #expect(
-            EngineV2VLMTextExtraction.quantization(
-                targetPath: "language_model.model.layers.0.linear_attn.in_proj_qkv",
-                family: .qwen35MoE,
-                perLayerQuantization: table) == nil)
-        #expect(
-            EngineV2VLMTextExtraction.quantization(
-                targetPath: "language_model.lm_head",
-                family: .qwen35MoE,
-                perLayerQuantization: table)?.bits == 4)
-
-    }
-
-    @Test("Qwen skeleton reproduces default, override, and skipped quantized modules")
-    func qwenMixedQuantizationStructure() throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(fullAttentionInterval: 1))
-        let target = Qwen35MoEModel(config)
-        let overridePath = "language_model.model.layers.0.self_attn.q_proj"
-        let skippedPath = "language_model.model.layers.1.self_attn.q_proj"
-        let defaultPath = "language_model.lm_head"
-        let table = BaseConfiguration.PerLayerQuantization(
-            quantization: .init(groupSize: 64, bits: 4),
-            perLayerQuantization: [
-                overridePath: .quantize(.init(groupSize: 32, bits: 8)),
-                skippedPath: .skip,
-            ])
-
-        try EngineV2VLMTextExtraction.applyQuantizationStructure(
-            skeleton: target,
-            weights: [
-                "\(overridePath).scales": MLXArray.ones([1]),
-                "\(skippedPath).scales": MLXArray.ones([1]),
-                "\(defaultPath).scales": MLXArray.ones([1]),
-            ],
-            family: .qwen35MoE,
-            perLayerQuantization: table)
-
-        let override = try #require(
-            target.namedModules().first { $0.0 == overridePath }?.1 as? QuantizedLinear)
-        #expect(override.groupSize == 32)
-        #expect(override.bits == 8)
-        #expect(
-            (target.namedModules().first { $0.0 == skippedPath }?.1 is QuantizedLinear)
-                == false)
-        let defaultModule = try #require(
-            target.namedModules().first { $0.0 == defaultPath }?.1 as? QuantizedLinear)
-        #expect(defaultModule.groupSize == 64)
-        #expect(defaultModule.bits == 4)
-    }
-
-    @Test("dense Qwen wrapper extracts to the wired dense target")
-    func denseQwenWrapperExtracts() throws {
-        let configData = qwenTargetFixtureJSON()
-        let wrapperConfig = try JSONDecoder.json5().decode(
-            MLXVLM.Qwen35Configuration.self, from: configData)
-        let directory = try qwenTargetFixtureDirectory(configData: configData)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: MLXVLM.Qwen35(wrapperConfig),
-            modelDirectory: directory,
-            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
-
-        #expect(extraction.family == .qwen35Dense)
-        #expect(extraction.servingModel is Qwen35Model)
-    }
-
     @Test("dense Qwen uses the long-context solo prefill stripe")
     func denseQwenUsesLongContextSoloStripe() throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
-        let dense = Qwen35Model(config)
-        let moe = Qwen35MoEModel(config)
-
+        // Keyed on the checkpoint's declared `model_type` now, not on a
+        // module class: same two answers, from data the engine path has.
         let denseScheduler = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 2,
-            model: dense,
+            modelType: "qwen3_5",
             environment: [:])
         let moeScheduler = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 2,
-            model: moe,
+            modelType: "qwen3_5_moe",
             environment: [:])
 
         #expect(
@@ -320,20 +193,24 @@ struct QwenVLMTargetExtractionTests {
 
         let serving = try EngineV2Factory.benchmarkServingModel(
             model: MLXVLM.Qwen35MoE(wrapperConfig),
-            isVLM: true,
+            tokenizer: StubBridgeTokenizer(),
             modelDirectory: directory,
-            environment: [EngineV2VLMTextExtraction.parityCheckFlag: "0"])
+            environment: [QwenVLMTextExtraction.parityCheckFlag: "0"])
+        // The runner answers with the extracted MLXLLM target — the fork
+        // owns the re-key and the parity gate now.
         #expect(serving is Qwen35MoEModel)
     }
 
     @Test("Qwen3-VL MoE stays the direct serving model in production and benchmarks")
     func qwen3VLDirectServingResolution() throws {
         let wrapper = try qwen3VLMoEFixture()
-        let direct = try EngineV2Factory.directServingModel(model: wrapper, isVLM: true)
+        let directory = try makeCheckpointDirectory(modelType: "qwen3_vl_moe")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // Qwen3-VL's runner serves the wrapper itself: the same object comes
+        // back, so vision state and the language tower stay one identity.
         let benchmark = try EngineV2Factory.benchmarkServingModel(
-            model: wrapper, isVLM: true, modelDirectory: nil)
-
-        #expect(ObjectIdentifier(direct) == ObjectIdentifier(wrapper))
+            model: wrapper, tokenizer: StubBridgeTokenizer(),
+            modelDirectory: directory)
         #expect(ObjectIdentifier(benchmark) == ObjectIdentifier(wrapper))
     }
 
@@ -346,17 +223,22 @@ struct QwenVLMTargetExtractionTests {
                 model: wrapper,
                 processor: QwenExtractionProcessor(),
                 tokenizer: StubBridgeTokenizer()))
+        let checkpoint = try makeCheckpointDirectory(modelType: "qwen3_vl_moe")
+        defer { try? FileManager.default.removeItem(at: checkpoint) }
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "tiny/qwen3-vl-moe",
             isVLM: true,
+            modelDirectory: checkpoint,
             container: container,
             specDecPreparation: .init(
                 artifact: nil,
                 status: .disabled(.targetUnsupported, configured: false)))
 
+        // Sizing reads the layer kinds off the same runner the engine will
+        // use, so it needs the checkpoint path production always passes.
         let sizing = await SlotSizingSnapshot.build(
             container: container,
-            modelPath: nil,
+            modelPath: checkpoint,
             fallbackDefaultMaxTokens: 64)
         let expectedKVRate = SlotSizingSnapshot.fp16KVBytesPerToken(
             layerKinds: wrapper.cbv2LayerKinds)
@@ -372,19 +254,25 @@ struct QwenVLMTargetExtractionTests {
     @Test("Qwen3-VL MoE constructs the contiguous production backend and vetoes paged KV")
     func qwen3VLProductionBackend() throws {
         let wrapper = try qwen3VLMoEFixture()
+        let runner = try adoptFixture(wrapper, modelType: "qwen3_vl_moe")
         let build = try EngineV2Factory.makeProductionBuild(
             model: wrapper,
             tokenizer: StubBridgeTokenizer(),
+            modelDirectory: try makeCheckpointDirectory(modelType: "qwen3_vl_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: .contiguous)
         #expect(build.kvBackendKind == .contiguous)
-        #expect(EngineV2Factory.cbv2LayerKinds(model: wrapper)?.count == 1)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: wrapper) == 0)
+        #expect(runner.layerKinds.count == 1)
+        #expect(
+            EngineV2Factory.adoptionBoundTokens(
+                layerKinds: runner.layerKinds,
+                capabilities: runner.manifest.engine) == 0)
 
         var preflightCalled = false
         let paged = try EngineV2Factory.prepareProductionBackend(
-            model: try qwen3VLMoEFixture(),
+            runner: try adoptFixture(
+                try qwen3VLMoEFixture(), modelType: "qwen3_vl_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: .paged,
@@ -402,11 +290,12 @@ struct QwenVLMTargetExtractionTests {
 
     @Test("production factory accepts wired Qwen dense and MoE target families")
     func factoryAcceptanceAndRefusal() throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let config = try decodeQwenTargetConfiguration(
+            qwenTargetFixtureJSON(fullAttentionInterval: 2))
         let target = Qwen35MoEModel(config)
+        let targetRunner = try adoptFixture(target, modelType: "qwen3_5_moe")
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: target,
+            runner: targetRunner,
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.contiguous)
@@ -415,10 +304,13 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.layerKinds.count == 1)
         #expect(prepared.layerKinds.first?.modelLayerIndex == 1)
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
+        #expect(
+            EngineV2Factory.adoptionBoundTokens(
+                layerKinds: targetRunner.layerKinds,
+                capabilities: targetRunner.manifest.engine) == 0)
 
         let dense = try EngineV2Factory.prepareProductionBackend(
-            model: Qwen35Model(config),
+            runner: try adoptFixture(Qwen35Model(config), modelType: "qwen3_5"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.contiguous)
@@ -430,11 +322,11 @@ struct QwenVLMTargetExtractionTests {
 
     @Test("Qwen core capability veto forces paged selection to contiguous before preflight")
     func pagedCapabilityVeto() throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let config = try decodeQwenTargetConfiguration(
+            qwenTargetFixtureJSON(fullAttentionInterval: 2))
         var preflightCalled = false
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: Qwen35MoEModel(config),
+            runner: try adoptFixture(Qwen35MoEModel(config), modelType: "qwen3_5_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.paged,
@@ -447,8 +339,8 @@ struct QwenVLMTargetExtractionTests {
 
     @Test("Qwen recurrent target never constructs or retains an SSD prefix cache")
     func recurrentTargetSkipsPrefixCacheConstruction() async throws {
-        let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
-            configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
+        let config = try decodeQwenTargetConfiguration(
+            qwenTargetFixtureJSON(fullAttentionInterval: 2))
         let target = Qwen35MoEModel(config)
         let tokenizer = StubBridgeTokenizer()
         let container = ModelContainer(
@@ -460,6 +352,7 @@ struct QwenVLMTargetExtractionTests {
         let prepared = EngineV2PreparedModel(
             snapshot: EngineV2ModelSnapshot(
                 model: target, eosTokenIds: [1], extraEOSTokens: []),
+            runner: try adoptFixture(target, modelType: "qwen3_5_moe"),
             servingModel: target,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),
@@ -505,11 +398,14 @@ struct QwenVLMTargetExtractionTests {
     @Test("Qwen VLM sizing counts only full-attention KV rows")
     func qwenSizingUsesCompactAttentionLayout() throws {
         let configData = qwenTargetFixtureJSON(fullAttentionInterval: 2)
-        let directory = try qwenTargetFixtureDirectory(configData: configData)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = try decodeQwenTargetConfiguration(configData)
 
         // One of two layers owns attention KV: 2(K+V) * 1 head * 64 dim * 2-byte fp16.
-        #expect(SlotSizingSnapshot.qwenVLMTextKVRate(modelDirectory: directory) == 256)
+        // Sizing reads the layer kinds the RUNNER reports, and those are the
+        // model's own — the same array this fixture's configuration derives.
+        #expect(
+            SlotSizingSnapshot.fp16KVBytesPerToken(layerKinds: config.cbv2LayerKinds)
+                == 256)
     }
 
     @Test("production Qwen config sizes attention KV and fixed recurrent residency separately")
@@ -535,8 +431,7 @@ struct QwenVLMTargetExtractionTests {
             "model_type": "qwen3_5_moe",
             "text_config": text,
         ])
-        let config = try EngineV2VLMTextExtraction.decodeQwenTextConfiguration(
-            configData: data)
+        let config = try decodeQwenTargetConfiguration(data)
 
         #expect(config.cbv2LayerKinds.count == 10)
         #expect(

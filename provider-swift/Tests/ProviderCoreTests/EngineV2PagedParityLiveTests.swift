@@ -67,6 +67,9 @@ struct EngineV2PagedParityLiveTests {
         let model: any LanguageModel
         let tokenizer: TokenizerHandle
         let eosTokenIds: Set<Int>
+        /// The checkpoint the module was loaded from — the engine factory
+        /// resolves the family's runner from it.
+        let directory: URL
     }
 
     private func loadGptOss() async throws -> LiveModel {
@@ -100,7 +103,8 @@ struct EngineV2PagedParityLiveTests {
             modelID: "gpt-oss-20b",
             model: gptoss,
             tokenizer: tokenizer,
-            eosTokenIds: eos)
+            eosTokenIds: eos,
+            directory: directory)
     }
 
     /// Production engine + bridge over the loaded weights with an explicit
@@ -111,6 +115,7 @@ struct EngineV2PagedParityLiveTests {
         let build = try EngineV2Factory.makeProductionBuild(
             model: live.model,
             tokenizer: live.tokenizer.inner,
+            modelDirectory: live.directory,
             kvBytesCapacity: 8 * Self.gib,
             // The fleet's cap, not a test-local number: a parity arm sized
             // differently from production measures a different engine.

@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `7b6afb181`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -11,10 +11,20 @@ legacy engine and no subprocess. For the memory model see
 
 ## Context
 
-Every advertised model is served through CBv2; a `model_type` without a CBv2
-adapter is dropped from the advertised set at scan time and never loads
+Every advertised model is served through CBv2. A model family is one
+*runner* in the fork (`libs/mlx-swift-lm/Libraries/MLXRunners`), with a static
+manifest that declares the `model_type`s it claims, and
+`RunnerRegistry.contains(modelType:)` is the advertise gate: a `model_type`
+no runner claims is dropped from the advertised set at scan time and never
+loads
 (`provider-swift/Sources/ProviderCore/Inference/EngineV2SupportedModels.swift`,
-`isSupported`). The path is HTTP/WebSocket → `ProviderLoop` /
+`isSupported`).
+
+Every slot is built the same way, for every family: resolve the runner from
+the checkpoint's `model_type`, hand it the module the slot already has
+resident (`Runner.adopt` — it reads no tensors, so nothing is loaded twice),
+then build the engine with `runner.makeEngine(EngineBuild(...))`. The
+provider names no model family on that path. The path is HTTP/WebSocket → `ProviderLoop` /
 `StandaloneServer` → `MultiModelBatchSchedulerEngine` → `EngineV2Bridge` →
 `EngineV2` → Metal.
 
@@ -25,6 +35,9 @@ adapter is dropped from the advertised set at scan time and never loads
 | `EngineV2Bridge` (one per model) | Provider↔CBv2 boundary: request-id normalisation, `CBv2Request` translation, SSD staging, shared-KV reservation, deadline projection, `engine.submit`, event pump, telemetry | `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift` (+ `+Translation`, `+Profile`, `+Liveness`, `+MTP`, `+PrefixCache`) |
 | `EngineV2SlotFactory` | Builds one slot: model prep, MTP assistant, KV-backend selection and vetoes, paged preflight, SSD prefix-cache construction gate | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` |
 | `EngineV2Factory` (production) | `prepareProductionBackend`, `productionSchedulerConfig`, engine assembly | `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift` |
+| Runner boundary (provider side) | Resolves a checkpoint through `RunnerRegistry`, adopts the resident module with `Runner.adopt`, injects load-time resources, selects the decoder from `loadedDecoders`, and hands the slot's policy to `runner.makeEngine` on `EngineBuild` | `provider-swift/Sources/ProviderCore/Inference/EngineV2RunnerBuild.swift` |
+| Runner package | One runner per family: manifest, serving model, layer kinds, per-layer caches, drafter, engine and one-row stepper. The provider's only family-aware dependency | `libs/mlx-swift-lm/Libraries/MLXRunners/Runner.swift`, `RunnerRegistry.swift` |
+| `EngineV2SlotFactory+MTP` | Adopts the runner over the resident container, and loads the family's drafter through `Runner.loadDrafter` | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory+MTP.swift` |
 | `EngineV2Runtime` | Process-wide registry of bridges; capacity summary for heartbeats; cancellation fan-out | `provider-swift/Sources/ProviderCore/Inference/EngineV2Runtime.swift` |
 | CBv2 engine loop | Admission, KV allocation, chunked prefill, batched decode, detokenisation, leases | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/EngineLoopV2.swift`, `SchedulerV2.swift` |
 | promptsidecar boundary | Coordinator-side Rust process that computes the same `prompt_contract_id` and block chain ([`prefix-cache.md#block-hashing`](prefix-cache.md#block-hashing)) the provider derives with `PromptContractIdentity.compute(modelDirectory:)`; the provider never calls it | `coordinator/promptsidecar/`, `provider-swift/Sources/ProviderCoreFoundation/PromptContractIdentity.swift` — see [`prompt-contract-sidecar.md`](prompt-contract-sidecar.md) |
@@ -126,6 +139,7 @@ by `deadlineProjectionRateHaircut = 0.5`. `WedgeMonitor.suspectStallSeconds =
 | Target | Drafter | Activation |
 |---|---|---|
 | Qwen3.5 family (`qwen3_5`, `qwen3_5_moe`) | Embedded head (`Qwen35InlineMTPAssistant`, request-stateful) | `mtp_mode = "auto"` (default) when the checkpoint declares the embedded artifact |
+| Qwen 3.8 Flash-Next (`qwen4_exp`, `qwen4_exp_text`) | Embedded head (`Qwen4ExpInlineMTPAssistant`, request-stateful, depth 1…3) | The head is a block of the target checkpoint (`mtp.*`); a checkpoint without it serves serial. On the runner path the mode is `EngineBuild.decoder` and is selected only when `runner.loadedDecoders` reports it |
 | Gemma 4 | Separate assistant checkpoint (`Gemma4AssistantDraftModel`, stateless) | `mtp_mode = "on"` or a catalog-declared `spec_dec` artifact resolved by `SpecDecArtifactFunnel`; `mtp_drafter_path` overrides the directory |
 
 `MTPAutomaticVerificationPolicy`: `initialDraftTokens = 1`;
@@ -234,7 +248,8 @@ and the coordinator can refuse to route
   slots are vetoed to the contiguous KV backend ([`prefix-cache.md`](prefix-cache.md)).
   `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` gates the load-time parity prefill
   between MLXVLM's inline text model and the extracted MLXLLM target
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift`).
+  (`libs/mlx-swift-lm/Libraries/MLXRunners/QwenVLMTextExtraction.swift`, which
+  the family's runner applies while adopting the wrapper).
 
 ### Supported `model_type`s and quantization
 
@@ -245,7 +260,13 @@ and the coordinator can refuse to route
 | `gemma4_text` | Gemma 4 text target | Assistant checkpoints share the prefix; never advertised |
 | `qwen3_5` | Dense Qwen 3.5/3.8, recurrent state | Embedded MTP head; no prefix reuse |
 | `qwen3_5_moe` | Qwen 3.5/3.6 MoE, recurrent state | Embedded MTP head; no prefix reuse |
-| `qwen3_vl_moe` | Qwen3-VL MoE wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen3_vl`, `qwen3_vl_moe` | Qwen3-VL wrapper | Served via CBv2 adapter + vision prefill; `cbv2Capabilities` all `false` (no prefix reuse, paged, compiled decode, packed prefill or MTP) |
+| `qwen3_5_text` | Qwen 3.5 text target | Claimed by the Qwen 3.5 runner |
+| `qwen4_exp`, `qwen4_exp_text` | Qwen 3.8 Flash-Next 125B-A6B | Hybrid trunk, QSA keep mask, recurrent state. Contiguous KV only; MTP is the one engine capability the manifest sets. The n-gram PLE table is never model parameters: it is read from the checkpoint's shard directory through a load-time resource (`Qwen4ExpRunner.ngramRowSourceResource`) |
+
+This table restates no capability. The authority is each runner's manifest
+(`libs/mlx-swift-lm/Libraries/MLXRunners/*Runner.swift`), which the registry
+and the engine both read.
 
 Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 `8bit`|`q8`|`int8` → `8bit`; `3bit`|`q3` → `3bit`; `bf16`; `fp16`|`f16`; else
@@ -257,9 +278,10 @@ Quantization is detected by name, in order: `4bit`|`q4`|`int4` → `4bit`;
 
 ## Invariants
 
-1. Only `model_type`s accepted by `EngineV2SupportedModels.isSupported` are
-   advertised or loaded; an unsupported load request fails the advertised-set
-   guard (404) — `EngineV2SupportedModels.swift`.
+1. A `model_type` is advertised if and only if a runner claims it. The gate
+   is `RunnerRegistry.contains(modelType:)` behind
+   `EngineV2SupportedModels.isSupported`; an unsupported load request fails
+   the advertised-set guard (404) — `EngineV2SupportedModels.swift`.
 2. A request is admitted to a contiguous slot only after
    `prompt + maxTokens` bytes are reserved in `GlobalKVCacheBudget`; a second
    reservation failure rejects with `token_budget_exhausted` —

@@ -128,7 +128,7 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}-pathdep
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
@@ -201,10 +201,24 @@ jobs:
         # the SwiftPM cache and finish in ~1 min.
         timeout-minutes: 35
         run: |
-          # This standalone package otherwise resolves its remote mlx-swift
-          # branch while loading the root helper's local-source metallib.
+          # The fork's own manifest resolves the sibling checkout: when
+          # `libs/mlx-swift/Package.swift` exists it path-depends on it, and
+          # only falls back to the remote branch when it does not. Editing a
+          # path dependency is refused outright ("local dependency
+          # 'mlx-swift' can't be edited"), so there is nothing to edit here.
+          #
+          # The restored cache is the other half. A `.build` saved by a run
+          # under the OLD manifest recorded `mlx-swift` as a SOURCE-CONTROL
+          # dependency (often an edited one), and SwiftPM cannot reconcile
+          # that recorded kind with the fileSystem dependency the manifest
+          # now declares — it gives up with "exhausted attempts to resolve
+          # the dependencies graph". Drop the recorded state and that
+          # dependency's checkout, keep every compiled artifact, and let
+          # `resolve` write the state the current manifest implies.
           swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-          swift package edit --path ../mlx-swift mlx-swift
+          rm -f .build/workspace-state.json
+          rm -rf .build/checkouts/mlx-swift .build/repositories/mlx-swift-*
+          swift package resolve
           swift build --build-tests
       - name: Place metallib for nested test bundles
         id: place-nested-metallib
@@ -312,7 +326,7 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}-pathdep
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
@@ -332,10 +346,16 @@ jobs:
         # .build; saving it here keeps that lane warm across PRs.
         timeout-minutes: 35
         run: |
-          # Keep the warmed nested workspace on the same local MLX source used
-          # by provider builds and scripts/fetch-metallib.sh.
+          # Same reconciliation as the test-provider job's nested build: the
+          # fork's manifest path-depends on the sibling `../mlx-swift`
+          # checkout, a restored `.build` may still record that dependency
+          # as source-control from a run under the old manifest, and the two
+          # cannot be reconciled. Drop the recorded state and that
+          # dependency's checkout only; compiled artifacts stay.
           swift package unedit --force mlx-swift >/dev/null 2>&1 || true
-          swift package edit --path ../mlx-swift mlx-swift
+          rm -f .build/workspace-state.json
+          rm -rf .build/checkouts/mlx-swift .build/repositories/mlx-swift-*
+          swift package resolve
           swift build --build-tests
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -345,7 +365,7 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}-pathdep
 
   lint-console:
     name: Console UI Lint & Build

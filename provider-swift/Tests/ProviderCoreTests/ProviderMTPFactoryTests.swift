@@ -3,6 +3,7 @@ import Crypto
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXNN
 import MLXVLM
 import Testing
@@ -189,7 +190,10 @@ private struct MTPFactoryRecordingLoader: ProviderMTPAssistantLoading {
     let failure: ProviderMTPAssistantLoadError?
 
     func loadAndBind(
-        artifact: SpecDecArtifact, target: any LanguageModel
+        artifact: SpecDecArtifact,
+        runner: (any Runner.Type)?,
+        modelDirectory: URL?,
+        target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
         recorder.record(target)
         if let failure { throw failure }
@@ -292,9 +296,16 @@ struct ProviderMTPFactoryTests {
         let artifact = try mtpFactoryArtifact()
         defer { try? FileManager.default.removeItem(at: artifact.directory) }
 
+        // A checkpoint directory so the registry can resolve the family:
+        // the Gemma 4 runner does not adopt the multimodal WRAPPER, so the
+        // provider offers the tower the wrapper owns and the runner adopts
+        // that — the identity this test is about.
+        let checkpoint = try makeCheckpointDirectory(modelType: "gemma4")
+        defer { try? FileManager.default.removeItem(at: checkpoint) }
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-vlm-test",
             isVLM: true,
+            modelDirectory: checkpoint,
             container: container,
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -310,6 +321,7 @@ struct ProviderMTPFactoryTests {
         let recovered = try await EngineV2SlotFactory.prepareRecoveryModel(
             modelId: "gemma-4-vlm-test",
             isVLM: true,
+            modelDirectory: checkpoint,
             container: container,
             previousArtifact: prepared.mtpArtifact,
             previousStatus: prepared.mtpStatus,
@@ -322,10 +334,19 @@ struct ProviderMTPFactoryTests {
     }
 
     @Test("VLM resolution fails loud for an unsupported wrapper")
-    func unsupportedVLMWrapperRefuses() {
-        #expect(throws: EngineV2ProductionError.self) {
-            _ = try EngineV2Factory.directServingModel(
-                model: MTPFactoryTarget(), isVLM: true)
+    func unsupportedVLMWrapperRefuses() throws {
+        // A module no family claims is refused BY THE RUNNER now, and the
+        // refusal reason the provider reports is unchanged.
+        let checkpoint = try makeCheckpointDirectory(modelType: "gemma4")
+        defer { try? FileManager.default.removeItem(at: checkpoint) }
+        do {
+            _ = try EngineV2Factory.benchmarkServingModel(
+                model: MTPFactoryTarget(),
+                tokenizer: MTPFactoryTokenizer(),
+                modelDirectory: checkpoint)
+            Issue.record("expected the unsupported wrapper to be refused")
+        } catch {
+            #expect(EngineV2RefusalReason.classify(error) == .unsupportedModel)
         }
     }
 

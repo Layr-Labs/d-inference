@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import MLX
 import MLXLMCommon
+import MLXRunners
 import MLXNN
 import Testing
 
@@ -210,6 +211,8 @@ private struct MTPFloorAssistantLoader: ProviderMTPAssistantLoading {
 
     func loadAndBind(
         artifact: SpecDecArtifact,
+        runner: (any Runner.Type)?,
+        modelDirectory: URL?,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
         counter?.increment()
@@ -246,6 +249,8 @@ private struct MTPFloorFailingAssistantLoader: ProviderMTPAssistantLoading {
 
     func loadAndBind(
         artifact: SpecDecArtifact,
+        runner: (any Runner.Type)?,
+        modelDirectory: URL?,
         target: any LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
         throw Failure()

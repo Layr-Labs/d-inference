@@ -79,11 +79,12 @@ enum SchedulerPrefillDecisionLiveRunner {
             context -> SchedulerPrefillDecisionEngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
                 model: context.model,
-                isVLM: isVLM,
+                tokenizer: context.tokenizer,
                 modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: context.tokenizer,
+                modelDirectory: modelDirectory,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: configuration.maxConcurrentRequests,
                 kvBackend: kvBackend,

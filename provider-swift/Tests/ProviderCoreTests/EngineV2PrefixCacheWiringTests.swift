@@ -328,7 +328,7 @@ struct EngineV2FP32PagedRateTests {
             pagedPoolDType: "float32",
             layerKinds: layerKinds,
             nominalFP16BytesPerToken: nominal,
-            servingModelIsGPTOSS: false
+            fullRowsUseFP32: false
         ) == 200_000)
 
         // Paged with default fp16 pages: nominal, unchanged.
@@ -337,7 +337,7 @@ struct EngineV2FP32PagedRateTests {
             pagedPoolDType: "float16",
             layerKinds: layerKinds,
             nominalFP16BytesPerToken: nominal,
-            servingModelIsGPTOSS: false
+            fullRowsUseFP32: false
         ) == nominal)
 
         // An fp32 REQUEST that degraded to contiguous has no pages to
@@ -348,7 +348,7 @@ struct EngineV2FP32PagedRateTests {
             pagedPoolDType: "float32",
             layerKinds: layerKinds,
             nominalFP16BytesPerToken: nominal,
-            servingModelIsGPTOSS: false
+            fullRowsUseFP32: false
         ) == nominal)
 
         // Contiguous GPT-OSS keeps the fp32 owning-full-row delta
@@ -358,7 +358,7 @@ struct EngineV2FP32PagedRateTests {
             pagedPoolDType: nil,
             layerKinds: layerKinds,
             nominalFP16BytesPerToken: nominal,
-            servingModelIsGPTOSS: true
+            fullRowsUseFP32: true
         ) == nominal + 2048)
 
         // Paged GPT-OSS never takes the native-width path (fp32 full rows
@@ -368,7 +368,7 @@ struct EngineV2FP32PagedRateTests {
             pagedPoolDType: "float16",
             layerKinds: layerKinds,
             nominalFP16BytesPerToken: nominal,
-            servingModelIsGPTOSS: true
+            fullRowsUseFP32: true
         ) == nominal)
     }
 

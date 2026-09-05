@@ -21,6 +21,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXLMServer
 import MLXVLM
 import Testing
@@ -43,6 +44,9 @@ struct GemmaVLMEngineV2LiveTests {
         let tokenizer: TokenizerHandle
         let model: any LanguageModel
         let eosTokenIds: Set<Int>
+        /// The checkpoint the wrapper was loaded from — the engine factory
+        /// resolves the family's runner from it.
+        let modelDirectory: URL
     }
 
     /// Load a checkpoint exactly as the provider does for a VLM slot:
@@ -75,7 +79,8 @@ struct GemmaVLMEngineV2LiveTests {
             container: container,
             tokenizer: tokenizer,
             model: snapshot.model,
-            eosTokenIds: snapshot.eosTokenIds
+            eosTokenIds: snapshot.eosTokenIds,
+            modelDirectory: directory
         )
     }
 
@@ -111,8 +116,10 @@ struct GemmaVLMEngineV2LiveTests {
         MLX.Memory.clearCache()
         let activeBefore = MLX.GPU.activeMemory
         let owned = wrapper.textModel
-        let serving = try EngineV2Factory.directServingModel(
-            model: wrapper, isVLM: true)
+        let serving = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper,
+            tokenizer: slot.tokenizer.inner,
+            modelDirectory: slot.modelDirectory)
         let textModel = try #require(serving as? Gemma4TextModel)
 
         #expect(ObjectIdentifier(owned) == ObjectIdentifier(textModel))
@@ -180,6 +187,7 @@ struct GemmaVLMEngineV2LiveTests {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: textModel,
             tokenizer: slot.tokenizer.inner,
+            modelDirectory: slot.modelDirectory,
             kvBytesCapacity: 4 * 1024 * 1024 * 1024,
             maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
         )

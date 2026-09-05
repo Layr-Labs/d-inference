@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — Qwen non-thinking streaming
+
+- Stream Qwen answers as they are generated when the rendered prompt already closes its thinking block, including image and video requests that default thinking off. Preserve incremental reasoning, explicit parser overrides, and token usage.
+
 ## Unreleased — stats location refresh
 
 - Restore public stats refreshes on large usage tables by aggregating locations per provider before combining location totals. Preserve distinct-provider and token counts and request-weighted coordinates without sorting every usage row. Keep the selective cutoff's query plan local to the analytics transaction.

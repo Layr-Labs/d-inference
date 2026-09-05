@@ -15,6 +15,7 @@ func calibrationTestProvider(t *testing.T, reg *Registry, id, model string, deco
 	p := makeSchedulerProvider(t, reg, id, model, decodeTPS)
 	p.mu.Lock()
 	p.PrefillTPS = prefillTPS
+	p.capacitySnapshotAt = time.Now()
 	p.mu.Unlock()
 	return p
 }

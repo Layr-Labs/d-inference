@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased: pending prompt admission estimates
+
+- Price newly reserved prefill work using each request's own prompt length. Keep applied capacity freshness separate from heartbeat liveness, so reordered heartbeats cannot erase that work. Preserve provider resource gates, retry deadlines, and billing reservations.
+
 ## Unreleased — provider console entry
 
 - Open the provider workspace directly from the console home page, removing the Consumer/Provider selection page. Keep chat and API access in workspace navigation.

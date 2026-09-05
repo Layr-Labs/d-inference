@@ -114,6 +114,11 @@ type routingSnapshot struct {
 	totalPending     int
 	pendingForModel  int
 	pendingMaxTokens int
+	// Prefill work known to have arrived after the current heartbeat. Older
+	// pending attempts still use the count reconciliation in queuedPrefillTokensAhead.
+	pendingAfterHeartbeat int
+	pendingPrefillTokens  float64
+	pendingPrefillUnknown int
 	// pendingMaxTokensAllModels is pendingMaxTokens WITHOUT the model filter:
 	// the token budgets of every coordinator-pending request on this provider,
 	// any model. Feeds the pooled-budget admission check (pooledBudgetAdmits)
@@ -2126,6 +2131,7 @@ func fillSnapshotPendingAndPool(snap *routingSnapshot, p *Provider, model string
 		}
 		snap.pendingForModel++
 		snap.pendingMaxTokens += tokens
+		addPendingPrefillToSnapshot(snap, pr, p.capacitySnapshotAt)
 	}
 	snap.pendingBytesKnown = bytesKnown
 }
@@ -3138,21 +3144,6 @@ func ttftOccupancyMs(snap *routingSnapshot) float64 {
 		perReqDecodeTPS = 1.0
 	}
 	return alpha * float64(occ) * 1000.0 / perReqDecodeTPS
-}
-
-func queuedPrefillTokensAhead(snap *routingSnapshot, reqPromptTokens int) float64 {
-	if reqPromptTokens <= 0 {
-		return 0
-	}
-	waiting := snap.backendWaiting
-	reflected := snap.backendRunning + snap.backendWaiting
-	if extraPending := snap.pendingForModel - reflected; extraPending > 0 {
-		waiting += extraPending
-	}
-	if waiting <= 0 {
-		return 0
-	}
-	return float64(waiting * reqPromptTokens)
 }
 
 // DrainQueuedRequestsForModel attempts to assign queued requests for a

@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-04 · commit `4a08f2a44`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -211,7 +211,7 @@ JSON-encoded on the sink worker.
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `lowestCostOther` |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
 | `near_tie_pool_size`, `selection_path` | candidates within `nearTieCostWindowMs` of the minimum; branch of `selectRoutingCandidate`: `none`, `unique_min`, `tie_queue`, `tie_pending`, `cache_tiebreak`, `random` (`selectionPathNames`) | `selectRoutingCandidate` |
-| `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; observability only | `heartbeatAgeMs` |
+| `snapshot_age_ms`, per-candidate `hb_age_ms` | `now − LastHeartbeat` when the routing snapshot was taken; liveness age, which can refresh on a discarded `capacity_seq` frame. The applied capacity timestamp used for pending-prefill accounting is separate and is not emitted here. | `heartbeatAgeMs`, `capacitySnapshotAt` |
 | `predicted_ttft_ms`, `raw_ttft_ms`, `ttft_calibration_ratio`, `prefill_decode_ratio`, `predicted_decode_tps` | calibrated vs raw estimate, the (model, chip) ratio applied, the decode→prefill fallback multiplier, `projectedPerRequestDecodeTPS` | `scheduler.go` |
 | `pending_for_model`, `total_pending` | winner's coordinator-side pending counts before this reservation | `scheduler.go` |
 | `capacity_rate_ms`, `cache_discount_ms` | gray-box capacity-503 penalty; exact-cache discount | `scheduler.go` |

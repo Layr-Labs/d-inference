@@ -1,6 +1,6 @@
 # GPT-OSS optimization evidence
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `0df59f51a`
 
 Evidence for the [implementation report](../../2026-09-05-gptoss20b-optimization-results.md).
 
@@ -11,3 +11,5 @@ Evidence for the [implementation report](../../2026-09-05-gptoss20b-optimization
 [Dequantization screen](phase3-dequant-512.json) records the rejected temporary-weight experiment. [Fusion screen](phase3-fusion-load-512.json) records the runtime result after incremental load materialization. Load peak itself is printed separately by the benchmark and retained in the implementation report.
 
 [Evidence index](evidence-index.json) records hashes of the portable files and their source artifacts. Full executable/metallib banks, complete raw stdout/stderr, source patches, process and host snapshots remain in the local worktree under `artifacts/gptoss20b-profile`; binaries and large traces are deliberately not committed. Benchmark prompts are synthetic; no consumer traffic or private user prompts were used.
+
+The `final-*.json` files retain all initial final-default comparisons, including the excluded B=2 cell and unfavorable cells. The `ordered-decode-8192-*.json` files contain the corrected schema-7 controls. `stress-*.json` and the three `*-receipt.json` files identify final stress coverage and the measured executables. No unfavorable result has been removed.

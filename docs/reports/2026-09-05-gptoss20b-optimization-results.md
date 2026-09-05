@@ -1,6 +1,6 @@
 # GPT-OSS 20B prefill and decode improvements
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `0df59f51a`
 
 Local implementation and measurements on Apple M4 Max (40 GPU cores, 128 GB), AC High Power mode, using `mlx-community/gpt-oss-20b-MXFP4-Q8` snapshot `773a7da77e569019bb0fd17a554b263738d669a3`. All workloads use the production CBv2 engine with contiguous KV, synthetic fixed prompts, greedy output, and no prefix reuse or MTP. No remote benchmark or production deployment is part of this work.
 
@@ -15,7 +15,31 @@ The optional `last-layer` policy also narrows the final full-attention layer's q
 
 ## Final default comparison
 
-Final validation is running. The final results table will replace this paragraph after every scheduled cell is validated; candidate measurements below are not substituted for final-default evidence.
+The following comparison uses the original saved executable versus the selected defaults, with four measured runs per arm in two ABBA cycles. Prefill columns are **seconds**; decode columns are **aggregate tokens/second**. B/A below 1 favors prefill latency; B/A above 1 favors decode throughput. Cycle ratios use means, while the two value columns show medians.
+
+| Cell | Original median | Optimized median | B/A by cycle | Output check |
+|---|---:|---:|---|---|
+| prefill-512 | 0.46 | 0.39 | 0.864 / 0.855 | separate model tests |
+| prefill-8192 | 12.96 | 10.66 | 0.737 / 0.841 | separate model tests |
+| prefill-32768 | 48.67 | 45.50 | 0.882 / 1.030 | separate model tests |
+| decode-512-b1 | 98.41 | 108.90 | 1.040 / 1.102 | exact |
+| decode-512-b2 | 140.59 | 154.30 | 1.066 / 1.073 | exact |
+| decode-512-b4 | 145.66 | 163.12 | 1.141 / 1.075 | exact |
+| decode-8192-b1 | 76.78 | 92.65 | 1.142 / 1.249 | exact |
+| decode-8192-b2 | 115.58 | 122.63 | 1.070 / 1.155 | **excluded: admission order changed** |
+| decode-8192-b4 | 124.79 | 113.40 | 0.976 / 0.955 | exact |
+
+Workstation variation is material: the original 8K prefill arm had about 30% coefficient of variation. There is no repeatable 32K prefill win in this run, and the initial 8K B=4 decode comparison regressed by 2–4.5%. Do not turn the more favorable cycle into a universal speedup claim.
+
+The corrected schema-7 rerun below holds submission order and warmup constant in **the same executable**. Control A disables the new head/fusion/cast/kernel paths; B uses the defaults. Both ordered cells preserved every generated token. The B=4 performance result remains mixed, so it is not a confident long-context win.
+
+| Cell | Rollback median tok/s | Default median tok/s | B/A by cycle | Output check |
+|---|---:|---:|---|---|
+| 8K B=2, ordered | 95.33 | 101.10 | 1.158 / 1.021 | exact |
+| 8K B=4, ordered | 120.45 | 128.04 | 0.947 / 1.178 | exact |
+
+The final stress executable completed 8K B=8 with all eight rows emitting 513 tokens and about **15.70 GiB** peak MLX memory. A separate 32K B=1 check matched all **129** baseline tokens. These one-repetition stress checks establish bounded completion/parity evidence, not a paired throughput claim. The current 3.5 GiB GPT-OSS activation reserve was not retuned.
+
 
 ## Candidate comparisons
 
@@ -42,7 +66,7 @@ Early GPU submission between model layers was investigated but is not included: 
 
 The real checkpoint suite compared 42 output-policy/fusion/batch/prompt arms across B=1/2/4 and 512/2065-token prompts. All generated continuations and prefill KV receipts matched. Across 1,568 equal-prefix positions, top-1 choices agreed and the maximum logit difference was 0.0000515. Same-shape intermediate pruning and fused full-head arms were bit-exact in that test. Shape-changing reductions are not generally guaranteed bit-exact.
 
-Focused release tests cover full/sliding cache offsets, sinks, chunk boundaries, embeddings, rollback policy, quantization aliases, checkpoint loading, native expert boundaries and tails, mutation and parameter-tree invariants. The final focused run passed 58 Swift Testing cases and 8 XCTest cases; the optional real-checkpoint test was run separately. The Python benchmark/control suite passed 25 tests. The C++ doctest additions are source coverage; this run executed the equivalent Swift GPU tests rather than a separate native CMake test build.
+Focused release tests cover full/sliding cache offsets, sinks, chunk boundaries, embeddings, rollback policy, quantization aliases, checkpoint loading, native expert boundaries and tails, mutation and parameter-tree invariants. The final integration run passed 70 Swift Testing cases and 8 XCTest cases; the optional real-checkpoint test was run separately. The Python benchmark/control suite passed 25 tests. The C++ doctest additions are source coverage; this run executed the equivalent Swift GPU tests rather than a separate native CMake test build.
 
 The benchmark reports aggregate decode only inside the shared interval where every row makes progress, with at least 32 measured tokens per row. Aggregate divided by B is fair-share throughput, not an independently timed row metric. TTFT is time to the first generated token, including reasoning tokens, not necessarily visible answer text. The final benchmark warms the requested generation length; the original executable used an eight-token warmup, which may not form the full long-context batch before early rows finish. Completed paired repetitions and this warmup difference are retained in the evidence.
 

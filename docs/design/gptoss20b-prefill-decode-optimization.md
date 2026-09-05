@@ -1,8 +1,8 @@
 # GPT-OSS 20B prefill and decode optimization
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `0df59f51a`
 
-Status: **In progress** — 2026-09-05. Local implementation and paired measurements; no production rollout.
+Status: **Superseded by [implementation results](../reports/2026-09-05-gptoss20b-optimization-results.md)** — 2026-09-05. Implemented candidates, measured controls and reviewable PRs; no production rollout.
 
 The goal is to reduce fresh-prompt time to first token first, then increase sustained aggregate decode throughput at B=1, B=2, and B=4. Prefix reuse and speculative decoding are excluded. All experiments use the existing `research/gptoss20b-profile` worktree on the local M4 Max in AC High Power mode. The M5 Max is reserved for other work.
 

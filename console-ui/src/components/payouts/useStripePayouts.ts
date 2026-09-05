@@ -1,89 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  fetchStripeStatus,
-  startStripeOnboarding,
-  createStripeDashboardLink,
-  withdrawStripe,
-  fetchBankWithdrawalQuote,
-  type BankWithdrawalQuote,
-  fetchStripeWithdrawals,
-  unlinkStripeAccount,
-  type StripeStatus,
-  type StripeWithdrawal,
-} from "@/lib/api";
-import {
-  classifyDashboardError,
-  classifyOnboardError,
-  classifyWithdrawError,
-  withdrawSuccessMessage,
-} from "./payout-copy";
+import { startStripeOnboarding, createStripeDashboardLink, unlinkStripeAccount } from "@/lib/api";
+import { classifyDashboardError, classifyOnboardError } from "./payout-copy";
+import { useStripeWithdrawal } from "./useStripeWithdrawal";
+import type { StripePayoutsOptions, UseStripePayouts } from "./payouts-types";
+export type { StripePayoutsOptions, UseStripePayouts } from "./payouts-types";
 
-type WithdrawMethod = "standard" | "instant";
-
-export interface UseStripePayouts {
-  status: StripeStatus | null;
-  withdrawals: StripeWithdrawal[];
-  onboardLoading: boolean;
-  selectedCountry: string;
-  setSelectedCountry: (c: string) => void;
-  withdrawOpen: boolean;
-  setWithdrawOpen: (open: boolean) => void;
-  withdrawAmount: string;
-  setWithdrawAmount: (v: string) => void;
-  withdrawMethod: WithdrawMethod;
-  setWithdrawMethod: (m: WithdrawMethod) => void;
-  withdrawLoading: boolean;
-  withdrawQuote: BankWithdrawalQuote | null;
-  withdrawConfirmationPending: boolean;
-  /** Refetch Stripe status + withdrawal history (refresh=1 pulls live). */
-  reload: (refresh?: boolean) => Promise<void>;
-  /** Start (or continue) Stripe Express onboarding for the selected country. */
-  onboard: () => Promise<void>;
-  /** Submit a withdrawal for the current amount + method. */
-  withdraw: () => Promise<void>;
-  /** Open the withdraw modal, seeding the amount + best available method. */
-  openWithdraw: (defaultAmount?: string) => void;
-  /** Open the Stripe Express Dashboard to change the payout bank account. */
-  openDashboard: () => Promise<void>;
-  dashboardLoading: boolean;
-  /** Detach the linked Stripe account so a fresh one can be onboarded. */
-  unlink: () => Promise<void>;
-  unlinkLoading: boolean;
-}
-
-export interface StripePayoutsOptions {
-  addToast: (message: string, kind?: "success" | "error") => void;
-  /** Gates the on-mount status load + stripe_return detection (auth). */
-  enabled?: boolean;
-  /** Page-specific data reload to run after a successful withdrawal. */
-  onAfterWithdraw?: () => Promise<unknown> | void;
-  /** Optional analytics hooks (provider earnings tracks these). */
-  onWithdrawStart?: (method: WithdrawMethod) => void;
-  onWithdrawSuccess?: (method: WithdrawMethod) => void;
-  onWithdrawError?: () => void;
-}
-
-/**
- * Shared Stripe Connect payouts state machine used by both the billing and
- * provider-earnings pages. Owns status/withdrawals/onboarding/withdraw-modal
- * state and the onboard + withdraw flows; the page supplies its own post-
- * withdraw data reload and optional analytics (proposal F3).
- */
+// Bank setup and destination management, shared by billing and earnings.
 export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
-  const { addToast, enabled = true, onAfterWithdraw, onWithdrawStart, onWithdrawSuccess, onWithdrawError } = opts;
-
-  const [status, setStatus] = useState<StripeStatus | null>(null);
-  const [withdrawals, setWithdrawals] = useState<StripeWithdrawal[]>([]);
+  const { addToast, enabled = true } = opts;
+  const withdrawal = useStripeWithdrawal(opts);
+  const { status, reload } = withdrawal;
   const [onboardLoading, setOnboardLoading] = useState(false);
-  const [withdrawOpen, setWithdrawOpen] = useState(false);
-  const [withdrawAmount, setWithdrawAmountState] = useState("10");
-  const [withdrawQuote, setWithdrawQuote] = useState<BankWithdrawalQuote | null>(null);
-  const [withdrawConfirmationPending, setWithdrawConfirmationPending] = useState(false);
-  const setWithdrawAmount = useCallback((value: string) => { if (!withdrawConfirmationPending) { setWithdrawAmountState(value); setWithdrawQuote(null); } }, [withdrawConfirmationPending]);
-  const [withdrawMethod, setWithdrawMethod] = useState<WithdrawMethod>("standard");
-  const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
 
   // Once a Stripe Express account exists its country is locked — pre-select it.
@@ -92,35 +21,6 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       setSelectedCountry(status.stripe_account_country);
     }
   }, [status?.stripe_account_country]);
-
-  const reload = useCallback(async (refresh = false) => {
-    try {
-      const [s, wds] = await Promise.all([
-        fetchStripeStatus(refresh),
-        fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
-      ]);
-      setStatus(s);
-      setWithdrawals(wds);
-    } catch (e) {
-      // Silent — Stripe Payouts is optional infrastructure.
-      console.warn("stripe status fetch failed:", (e as Error).message);
-    }
-  }, []);
-
-  // On mount (when enabled), load status and detect a return from the
-  // Stripe-hosted onboarding flow (?stripe_return=1 → refresh + toast).
-  useEffect(() => {
-    if (!enabled) return;
-    const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
-    const justReturned = params?.get("stripe_return") === "1";
-    reload(justReturned);
-    if (justReturned) {
-      addToast("Stripe onboarding complete — verifying...", "success");
-      const url = new URL(window.location.href);
-      url.searchParams.delete("stripe_return");
-      window.history.replaceState({}, "", url.toString());
-    }
-  }, [enabled, reload, addToast]);
 
   const onboard = useCallback(async () => {
     setOnboardLoading(true);
@@ -137,47 +37,6 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       setOnboardLoading(false);
     }
   }, [selectedCountry, addToast, reload]);
-
-  const withdraw = useCallback(async () => {
-    setWithdrawLoading(true);
-    const global = status?.payout_rail === "global";
-    try {
-      if (global && (!withdrawQuote || Number(withdrawQuote.amount_usd) !== Number(withdrawAmount) || (Date.parse(withdrawQuote.expires_at) <= Date.now() && !withdrawConfirmationPending))) {
-        setWithdrawQuote(await fetchBankWithdrawalQuote(withdrawAmount));
-        return;
-      }
-      onWithdrawStart?.(withdrawMethod);
-      if (global) setWithdrawConfirmationPending(true);
-      const resp = await withdrawStripe(withdrawAmount, global ? "standard" : withdrawMethod, global ? withdrawQuote?.id : undefined);
-      if (resp.refunded) {
-        addToast("The withdrawal could not be completed. The funds are back in your available earnings.", "error");
-      } else {
-        onWithdrawSuccess?.(withdrawMethod);
-        addToast(withdrawSuccessMessage(resp), "success");
-      }
-      setWithdrawOpen(false);
-      setWithdrawConfirmationPending(false);
-      setWithdrawQuote(null);
-      await Promise.all([onAfterWithdraw?.(), reload(false)]);
-    } catch (e) {
-      onWithdrawError?.();
-      const p = classifyWithdrawError(e);
-      addToast(p.message);
-      if (["quote_expired", "payout_changed", "quote_required", "insufficient_withdrawable"].includes(p.code)) { setWithdrawQuote(null); setWithdrawConfirmationPending(false); }
-      if (p.closeModal) setWithdrawOpen(false);
-      if (p.refreshStatus) await reload(status?.payout_rail === "global");
-      // Keep the quote ID after a lost response so retrying confirmation
-      // resolves the same withdrawal instead of creating another debit.
-    } finally {
-      setWithdrawLoading(false);
-    }
-  }, [status?.payout_rail, withdrawQuote, withdrawConfirmationPending, withdrawAmount, withdrawMethod, addToast, onAfterWithdraw, reload, onWithdrawStart, onWithdrawSuccess, onWithdrawError]);
-
-  const openWithdraw = useCallback((defaultAmount = "10") => {
-    if (!withdrawConfirmationPending) { setWithdrawAmount(defaultAmount); setWithdrawQuote(null); }
-    setWithdrawMethod(status?.instant_eligible ? "instant" : "standard");
-    setWithdrawOpen(true);
-  }, [status?.instant_eligible, setWithdrawAmount, withdrawConfirmationPending]);
 
   // Changing the payout bank account happens in Stripe's Express Dashboard,
   // reached through a single-use login link. The tab is opened synchronously
@@ -249,28 +108,5 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setUnlinkLoading(false);
   }, [addToast, reload]);
 
-  return {
-    status,
-    withdrawals,
-    onboardLoading,
-    selectedCountry,
-    setSelectedCountry,
-    withdrawOpen,
-    setWithdrawOpen,
-    withdrawAmount,
-    setWithdrawAmount,
-    withdrawMethod,
-    setWithdrawMethod,
-    withdrawLoading,
-    withdrawQuote,
-    withdrawConfirmationPending,
-    reload,
-    onboard,
-    withdraw,
-    openWithdraw,
-    openDashboard,
-    dashboardLoading,
-    unlink,
-    unlinkLoading,
-  };
+  return { ...withdrawal, onboardLoading, selectedCountry, setSelectedCountry, onboard, openDashboard, dashboardLoading, unlink, unlinkLoading };
 }

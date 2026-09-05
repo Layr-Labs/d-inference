@@ -1,6 +1,6 @@
 # Enable and operate international bank withdrawals
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `301d757f3`
 
 This runbook enables Stripe Global Payouts alongside existing Connect withdrawals. Providers use one bank setup and withdrawal flow. Country selection chooses the payout product; international withdrawals include a local-currency estimate before confirmation.
 
@@ -18,9 +18,9 @@ Enable bank withdrawals for supported destinations outside the current Connect r
 
 ## Steps
 
-1. Deploy the code with `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` unset or false. This preserves legacy onboarding and withdrawals. The migration only creates new tables/indexes; it does not modify earned balances or existing Connect withdrawal rows.
+1. Deploy the code with `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED` unset or false. This preserves legacy onboarding and withdrawals. The migration creates or extends the Global Payouts tables/indexes; it does not modify earned balances or existing Connect withdrawal rows.
 2. Configure the restricted key (or use the existing restricted Stripe key), financial-account ID and event signing secret using the [configuration reference](../reference/configuration.md#billing-stripe-and-base-rewards). Keep keys out of logs, shell command arguments and review artifacts. Key permission expansion and production configuration changes require their applicable approval.
-3. Set `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true` and recreate the coordinator using the deployment runbook. Enabled configurations require the financial account and API key; funding and account permissions must be checked before this step.
+3. Set `EIGENINFERENCE_STRIPE_GLOBAL_PAYOUTS_ENABLED=true` and recreate the coordinator using the deployment runbook. Enabled configurations require the financial account, restricted API key and base Connect key; funding and account permissions must be checked before this step.
 4. In the billing or provider earnings page, choose India and complete Stripe-hosted recipient onboarding. This collects the bank details directly with Stripe. The Pay via Email shortcut is domestic-only and is not used by this implementation.
 5. Verify `GET /v1/billing/stripe/status?refresh=1` returns `payout_rail=global`, country `IN`, a bank destination, `status=ready`, and local currency `inr`. Readiness includes active recipient capability and an eligible bank payout method, not merely a submitted form.
 6. Review an explicitly authorized withdrawal. Confirm that the quoted local amount, USD debit, withdrawal fee and destination match. Quotes do not debit the ledger. Confirm once and retain the internal withdrawal ID for reconciliation.
@@ -31,7 +31,9 @@ Enable bank withdrawals for supported destinations outside the current Connect r
 
 The source-of-truth payout row is `global_payout_withdrawals` and its `data` object. Quote state is `quoted`; a confirmed withdrawal atomically debits both balance columns and moves to `pending`. Stripe then supplies `processing`, `posted`, `failed`, `canceled`, or `returned`. Refunds are atomic with the state update and applied once. State cannot regress from posted to processing or reopen after a refund (`coordinator/store/global_payouts.go`, `applyGlobalResult`).
 
-Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
+Expired unconfirmed quotes are pruned according to the [retention policy](../reference/pricing-model.md#global-payouts-withdrawals); confirmed payout records are preserved.
+
+Each internal quote ID identifies at most one confirmed withdrawal. Retries use its persisted Stripe idempotency key and immutable request. Pending withdrawals with no outbound-payment ID stop resubmitting after 12 hours. A definitive first-send rejection is persisted before the refund transaction and reused if the refund write fails. After an ambiguous first attempt, subsequent API errors do not automatically refund: changed permissions or funding configuration must not cause a refund when money may already have moved (`coordinator/api/global_payouts_reconcile.go`, `syncGlobalPayout`).
 
 Inspect without exposing the stored request or recipient information:
 

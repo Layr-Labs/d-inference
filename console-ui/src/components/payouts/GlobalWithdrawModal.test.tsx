@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { StripePayoutsCard } from "./StripePayoutsCard";
 import { GlobalWithdrawModal } from "./GlobalWithdrawModal";
 import { withdrawalStatusPresentation, withdrawSuccessMessage } from "./payout-copy";
 import type { BankWithdrawalQuote, StripeStatus } from "@/lib/api";
@@ -9,6 +10,12 @@ const quote: BankWithdrawalQuote = { id: "quote-1", amount_usd: "10.00", fee_usd
 function props() { return { status, balanceMicroUsd: 20_000_000, amount: "10", loading: false, onAmountChange: vi.fn(), onConfirm: vi.fn(), onCancel: vi.fn() }; }
 
 describe("international bank withdrawal", () => {
+  it("can reopen a saved confirmation even with no remaining balance and withdrawals paused", () => {
+    const open = vi.fn();
+    render(<StripePayoutsCard status={{...status, status:"pending", payouts_available:false}} confirmationPending withdrawals={[]} balanceMicroUsd={0} onboardLoading={false} selectedCountry="IN" onCountryChange={vi.fn()} onOnboard={vi.fn()} onOpenWithdraw={open} title="Bank withdrawals" icon={null} noun="earnings" className="" />);
+    fireEvent.click(screen.getByRole("button", {name:"Check withdrawal"}));
+    expect(open).toHaveBeenCalledOnce();
+  });
   it("reviews the local deposit before confirming without exposing product choices", () => {
     const p = props(); const { rerender } = render(<GlobalWithdrawModal {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "Review withdrawal" }));

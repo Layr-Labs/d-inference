@@ -21,7 +21,9 @@ type GlobalPayoutStore interface {
 	GetGlobalPayoutByExternalID(id string) (*GlobalPayout, error)
 	BeginGlobalPayout(accountID, id string, now time.Time) (*GlobalPayout, error)
 	ClaimGlobalPayout(id string, now time.Time) (bool, error)
+	RecordGlobalPayoutRejection(id string, attempt int, code string) error
 	ApplyGlobalPayout(id string, result GlobalPayoutResult, now time.Time) error
+	PruneExpiredGlobalPayoutQuotes(now time.Time, limit int) (int64, error)
 	ListGlobalPayouts(accountID string, limit int) ([]GlobalPayout, error)
 	ListGlobalPayoutsToReconcile(now time.Time, limit int) ([]GlobalPayout, error)
 }
@@ -37,27 +39,35 @@ type GlobalRecipient struct {
 }
 
 type GlobalPayout struct {
-	DispatchAttempts    int             `json:"dispatch_attempts"`
-	ID                  string          `json:"id"`
-	AccountID           string          `json:"account_id"`
-	RecipientID         string          `json:"recipient_id"`
-	RecipientGeneration string          `json:"recipient_generation"`
-	PayoutMethodID      string          `json:"payout_method_id"`
-	Country             string          `json:"country"`
-	AmountMicroUSD      int64           `json:"amount_micro_usd"`
-	DestinationAmount   int64           `json:"destination_amount"`
-	Currency            string          `json:"currency"`
-	Request             json.RawMessage `json:"request"` // immutable request, no API credentials
-	Status              string          `json:"status"`  // quoted -> pending -> processing -> posted; or terminal refund
-	ExternalID          string          `json:"external_id"`
-	FailureCode         string          `json:"failure_code"`
-	Refunded            bool            `json:"refunded"`
-	ExpiresAt           time.Time       `json:"expires_at"`
-	CreatedAt           time.Time       `json:"created_at"`
-	SubmittedAt         time.Time       `json:"submitted_at"`
-	CheckedAt           time.Time       `json:"checked_at"`
-	LeaseUntil          time.Time       `json:"lease_until"`
-	Arrival             string          `json:"arrival"`
+	DispatchAttempts    int                    `json:"dispatch_attempts"`
+	Rejection           *GlobalPayoutRejection `json:"rejection,omitempty"`
+	ID                  string                 `json:"id"`
+	AccountID           string                 `json:"account_id"`
+	RecipientID         string                 `json:"recipient_id"`
+	RecipientGeneration string                 `json:"recipient_generation"`
+	PayoutMethodID      string                 `json:"payout_method_id"`
+	Country             string                 `json:"country"`
+	AmountMicroUSD      int64                  `json:"amount_micro_usd"`
+	DestinationAmount   int64                  `json:"destination_amount"`
+	Currency            string                 `json:"currency"`
+	Request             json.RawMessage        `json:"request"` // immutable request, no API credentials
+	Status              string                 `json:"status"`  // quoted -> pending -> processing -> posted; or terminal refund
+	ExternalID          string                 `json:"external_id"`
+	FailureCode         string                 `json:"failure_code"`
+	Refunded            bool                   `json:"refunded"`
+	ExpiresAt           time.Time              `json:"expires_at"`
+	CreatedAt           time.Time              `json:"created_at"`
+	SubmittedAt         time.Time              `json:"submitted_at"`
+	CheckedAt           time.Time              `json:"checked_at"`
+	LeaseUntil          time.Time              `json:"lease_until"`
+	Arrival             string                 `json:"arrival"`
+}
+
+// GlobalPayoutRejection is recorded before the refund transaction, so a failed
+// refund write never causes another send or discards the definitive rejection.
+type GlobalPayoutRejection struct {
+	Attempt int    `json:"attempt"`
+	Code    string `json:"code"`
 }
 type GlobalPayoutResult struct {
 	ExternalID        string
@@ -70,7 +80,29 @@ type GlobalPayoutResult struct {
 
 func cloneGlobalPayout(p GlobalPayout) GlobalPayout {
 	p.Request = append(json.RawMessage(nil), p.Request...)
+	if p.Rejection != nil {
+		r := *p.Rejection
+		p.Rejection = &r
+	}
 	return p
+}
+
+func recordGlobalRejection(p *GlobalPayout, attempt int, code string) error {
+	if attempt != 1 || p.DispatchAttempts != attempt || p.ExternalID != "" || p.Status != "pending" {
+		return ErrPayoutConflict
+	}
+	if p.Rejection != nil && (p.Rejection.Attempt != attempt || p.Rejection.Code != code) {
+		return ErrPayoutConflict
+	}
+	p.Rejection = &GlobalPayoutRejection{Attempt: attempt, Code: code}
+	return nil
+}
+
+func globalQuotePruneLimit(limit int) int {
+	if limit < 1 || limit > 1000 {
+		return 1000
+	}
+	return limit
 }
 func globalPayoutRefund(status string) bool {
 	return status == "failed" || status == "canceled" || status == "returned"

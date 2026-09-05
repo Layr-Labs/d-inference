@@ -228,6 +228,7 @@ export default function BillingContent() {
 
           {/* Withdraw to Bank (Stripe Connect Express) */}
           <StripePayoutsCard
+              confirmationPending={payouts.withdrawConfirmationPending}
             status={payouts.status}
             withdrawals={payouts.withdrawals}
             balanceMicroUsd={balance?.balance_micro_usd ?? 0}

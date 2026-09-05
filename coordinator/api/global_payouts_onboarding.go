@@ -19,16 +19,10 @@ func (s *Server) globalPayoutStore() (store.GlobalPayoutStore, bool) {
 	return store.As[store.GlobalPayoutStore](s.billing.Store())
 }
 func (s *Server) payoutCountries() []globalpayouts.Country {
-	if s.billing == nil || s.billing.GlobalPayouts() == nil {
+	if s.billing == nil || !s.billing.GlobalPayoutsEnabled() {
 		return nil
 	}
-	out := []globalpayouts.Country{}
-	for _, c := range globalpayouts.Countries {
-		if c.Rail == "connect" || (s.billing != nil && s.billing.GlobalPayoutsEnabled()) {
-			out = append(out, c)
-		}
-	}
-	return out
+	return append([]globalpayouts.Country(nil), globalpayouts.Countries...)
 }
 func globalPayoutError(w http.ResponseWriter, err error) {
 	code, message, status := "payout_unavailable", "Bank withdrawals are temporarily unavailable. Please try again shortly.", http.StatusBadGateway
@@ -69,7 +63,7 @@ func (s *Server) maybeGlobalOnboard(w http.ResponseWriter, r *http.Request, user
 		globalPayoutError(w, err)
 		return true
 	}
-	if s.billing.GlobalPayouts() == nil && errors.Is(err, store.ErrNotFound) {
+	if !s.billing.GlobalPayoutsEnabled() && errors.Is(err, store.ErrNotFound) {
 		return false
 	}
 	if country == "" && err == nil {
@@ -137,19 +131,27 @@ func (s *Server) refreshGlobalRecipient(ctx context.Context, local *store.Global
 	if err != nil {
 		return err
 	}
-	local.Ready = false
-	local.PayoutMethodID = ""
-	local.Last4 = ""
+	updated := *local
+	updated.Ready = false
+	updated.PayoutMethodID = ""
+	updated.Last4 = ""
 	if remote.Ready(local.Country, policy.Capability) {
 		method, e := client.BankMethod(ctx, remote, local.Country, policy.Currency, policy.Capability)
+		if e != nil && !errors.Is(e, globalpayouts.ErrNoEligibleBankMethod) {
+			return e
+		}
 		if e == nil {
-			local.Ready = true
-			local.PayoutMethodID = method.ID
-			local.Last4 = method.BankAccount.Last4
+			updated.Ready = true
+			updated.PayoutMethodID = method.ID
+			updated.Last4 = method.BankAccount.Last4
 		}
 	}
 	repo, _ := s.globalPayoutStore()
-	return repo.SaveGlobalRecipient(*local)
+	if err := repo.SaveGlobalRecipient(updated); err != nil {
+		return err
+	}
+	*local = updated
+	return nil
 }
 
 func (s *Server) maybeGlobalStatus(w http.ResponseWriter, r *http.Request, user *store.User) bool {
@@ -169,7 +171,8 @@ func (s *Server) maybeGlobalStatus(w http.ResponseWriter, r *http.Request, user 
 	if configured && local.RecipientID != "" && r.URL.Query().Get("refresh") == "1" {
 		if err = s.refreshGlobalRecipient(r.Context(), local); err != nil {
 			s.logger.Warn("global payout recipient refresh failed", "error", err)
-			local.Ready = false
+			globalPayoutError(w, err)
+			return true
 		}
 	}
 	status := "pending"
@@ -177,6 +180,6 @@ func (s *Server) maybeGlobalStatus(w http.ResponseWriter, r *http.Request, user 
 		status = "ready"
 	}
 	policy, _ := globalpayouts.Lookup(local.Country)
-	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "has_account": true, "stripe_account_id": local.RecipientID, "stripe_account_country": local.Country, "status": status, "destination_type": "bank", "destination_last4": local.Last4, "instant_eligible": false, "min_withdraw_micro_usd": billing.MinWithdrawMicroUSD, "payout_rail": "global", "payout_currency": policy.Currency, "countries": s.payoutCountries(), "payouts_available": configured})
+	writeJSON(w, http.StatusOK, map[string]any{"account_id": user.AccountID, "configured": true, "has_account": true, "stripe_account_id": local.RecipientID, "stripe_account_country": local.Country, "status": status, "destination_type": "bank", "destination_last4": local.Last4, "instant_eligible": false, "min_withdraw_micro_usd": billing.MinWithdrawMicroUSD, "payout_rail": "global", "payout_currency": policy.Currency, "countries": s.payoutCountries(), "payouts_available": configured})
 	return true
 }

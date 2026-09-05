@@ -11,7 +11,7 @@
 ## Unreleased — international bank withdrawals
 
 - Add an opt-in Stripe Global Payouts route for additional bank-payout countries, including India, alongside existing Connect withdrawals. Providers review a local-currency estimate before confirming.
-- Use one earned-balance ledger across both routes, retry confirmations without duplicate debits, and reconcile bank returns exactly once. Display sent transfers separately from bank receipt.
+- Use one earned-balance ledger across both routes, recover confirmations after browser reloads, preserve definitive rejections across refund failures, and reconcile bank returns exactly once. Prune expired unconfirmed quotes. Display sent transfers separately from bank receipt.
 
 ## Unreleased — GPT-OSS prefill and decode
 

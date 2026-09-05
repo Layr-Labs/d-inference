@@ -17,6 +17,8 @@ import (
 
 const APIVersion = "2026-08-26.preview"
 
+var ErrNoEligibleBankMethod = errors.New("select an eligible default bank account in Stripe")
+
 type Client struct {
 	Key              string
 	FinancialAccount string
@@ -159,7 +161,7 @@ func (c *Client) BankMethod(ctx context.Context, r *Recipient, country, currency
 	if len(eligible) == 1 && preferred == "" && page.NextPageURL == "" {
 		return &eligible[0], nil
 	}
-	return nil, fmt.Errorf("select an eligible default bank account in Stripe")
+	return nil, ErrNoEligibleBankMethod
 }
 
 func (c *Client) Quote(ctx context.Context, request PaymentRequest) (*Quote, error) {

@@ -189,6 +189,7 @@ export default function EarningsContent() {
 
       {/* Withdraw Earnings (Stripe Connect) */}
       <StripePayoutsCard
+              confirmationPending={payouts.withdrawConfirmationPending}
         status={payouts.status}
         withdrawals={payouts.withdrawals}
         balanceMicroUsd={withdrawableBalanceMicro}

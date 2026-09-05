@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `301d757f3`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -292,5 +292,6 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and Stripe corridor limits | `coordinator/api/global_payouts_withdraw.go` (`payoutUSDCents`) |
 | Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
 | Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
+| Quote cleanup | Up to 1,000 expired, never-confirmed quotes per minute; confirmed withdrawals are retained | `coordinator/store/global_payouts_maintenance.go` (`PruneExpiredGlobalPayoutQuotes`); `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`) |
 | Retry window without remote ID | Twelve hours, then manual reconciliation without automatic refund | `coordinator/api/global_payouts_reconcile.go` (`syncGlobalPayout`) |
 | Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |

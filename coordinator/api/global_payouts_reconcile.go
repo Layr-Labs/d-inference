@@ -40,6 +40,9 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if p.Rejection != nil {
+		return repo.ApplyGlobalPayout(id, store.GlobalPayoutResult{Status: "failed", FailureCode: p.Rejection.Code}, time.Now())
+	}
 	var request globalpayouts.PaymentRequest
 	if err = json.Unmarshal(p.Request, &request); err != nil {
 		return err
@@ -64,6 +67,9 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 		result := store.GlobalPayoutResult{FailureCode: "confirmation_pending"}
 		var apiErr *globalpayouts.Error
 		if p.ExternalID == "" && p.DispatchAttempts == 1 && errors.As(err, &apiErr) && apiErr.Definitive() {
+			if persistErr := recordGlobalPayoutRejection(ctx, repo, p.ID, p.DispatchAttempts, apiErr.Code); persistErr != nil {
+				return persistErr
+			}
 			result.Status = "failed"
 			result.FailureCode = apiErr.Code
 		}
@@ -80,7 +86,7 @@ func (s *Server) syncGlobalPayout(ctx context.Context, id string) error {
 
 func (s *Server) StartGlobalPayoutReconciler(ctx context.Context) {
 	repo, ok := s.globalPayoutStore()
-	if !ok || s.billing.GlobalPayouts() == nil {
+	if !ok {
 		return
 	}
 	saferun.Go(s.logger, "api.globalPayoutReconciler", func() {
@@ -91,6 +97,12 @@ func (s *Server) StartGlobalPayoutReconciler(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+			}
+			if _, err := repo.PruneExpiredGlobalPayoutQuotes(time.Now(), 1000); err != nil {
+				s.logger.Warn("expired payout quote cleanup failed", "error", err)
+			}
+			if s.billing.GlobalPayouts() == nil {
+				continue
 			}
 			rows, err := repo.ListGlobalPayoutsToReconcile(time.Now(), 200)
 			if err != nil {

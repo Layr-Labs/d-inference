@@ -123,7 +123,7 @@ func (s *MemoryStore) ClaimGlobalPayout(id string, now time.Time) (bool, error) 
 	if p.Status == "quoted" || p.Refunded || p.LeaseUntil.After(now) {
 		return false, nil
 	}
-	if p.ExternalID == "" {
+	if p.ExternalID == "" && p.Rejection == nil {
 		p.DispatchAttempts++
 	}
 	p.LeaseUntil = now.Add(time.Minute)

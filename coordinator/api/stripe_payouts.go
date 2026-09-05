@@ -260,6 +260,7 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
+		"account_id":             user.AccountID,
 		"payout_rail":            "connect",
 		"countries":              s.payoutCountries(),
 		"has_account":            user.StripeAccountID != "",

@@ -81,6 +81,9 @@ func ReadConfig() Config {
 // enablement in a production deployment with live keys would silently skip
 // payment verification.
 func (c Config) Check() error {
+	if c.StripeGlobalPayoutsEnabled && c.StripeSecretKey == "" {
+		return fmt.Errorf("Global Payouts supplements Connect and requires %s_STRIPE_SECRET_KEY; its dedicated key only overrides Global Payouts API authentication", env.EnvPrefix)
+	}
 	if c.StripeGlobalPayoutsEnabled && (c.StripeGlobalPayoutsFinancialAccount == "" || c.StripeGlobalPayoutsSecretKey == "") {
 		return fmt.Errorf("Global Payouts requires a financial account and restricted API key")
 	}

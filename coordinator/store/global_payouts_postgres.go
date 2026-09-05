@@ -18,8 +18,11 @@ CREATE TABLE IF NOT EXISTS global_payout_recipients (
 CREATE TABLE IF NOT EXISTS global_payout_withdrawals (
  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, status TEXT NOT NULL,
  external_id TEXT NOT NULL DEFAULT '', submitted_at TIMESTAMPTZ NOT NULL,
- checked_at TIMESTAMPTZ NOT NULL, lease_until TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
+ checked_at TIMESTAMPTZ NOT NULL, lease_until TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
 );
+ALTER TABLE global_payout_withdrawals ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT 'infinity';
+UPDATE global_payout_withdrawals SET expires_at=(data->>'expires_at')::timestamptz WHERE status='quoted' AND expires_at='infinity';
+CREATE INDEX IF NOT EXISTS global_payout_quote_expiry ON global_payout_withdrawals(expires_at) WHERE status='quoted';
 CREATE UNIQUE INDEX IF NOT EXISTS global_payout_external_id ON global_payout_withdrawals(external_id) WHERE external_id <> '';
 CREATE INDEX IF NOT EXISTS global_payout_account ON global_payout_withdrawals(account_id, submitted_at DESC);
 CREATE INDEX IF NOT EXISTS global_payout_reconcile ON global_payout_withdrawals(checked_at) WHERE status IN ('pending','processing','posted');
@@ -49,7 +52,7 @@ func (s *PostgresStore) CreateGlobalPayoutQuote(p GlobalPayout) error {
 	}
 	ctx, cancel := payoutContext()
 	defer cancel()
-	_, err = s.pool.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,data) VALUES($1,$2,$3,$4,$5,$6,$7)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, data)
+	_, err = s.pool.Exec(ctx, `INSERT INTO global_payout_withdrawals(id,account_id,status,submitted_at,checked_at,lease_until,expires_at,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, p.ID, p.AccountID, p.Status, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
 	return err
 }
 func (s *PostgresStore) GetGlobalPayout(id string) (*GlobalPayout, error) {
@@ -71,7 +74,7 @@ func persistGlobalPayout(ctx context.Context, tx pgx.Tx, p GlobalPayout) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE global_payout_withdrawals SET status=$2,external_id=$3,submitted_at=$4,checked_at=$5,lease_until=$6,data=$7 WHERE id=$1`, p.ID, p.Status, p.ExternalID, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, data)
+	_, err = tx.Exec(ctx, `UPDATE global_payout_withdrawals SET status=$2,external_id=$3,submitted_at=$4,checked_at=$5,lease_until=$6,expires_at=$7,data=$8 WHERE id=$1`, p.ID, p.Status, p.ExternalID, p.SubmittedAt, p.CheckedAt, p.LeaseUntil, p.ExpiresAt, data)
 	return err
 }
 func globalPayoutLedger(ctx context.Context, tx pgx.Tx, p GlobalPayout, amount int64, kind LedgerEntryType, ref string) error {
@@ -137,7 +140,7 @@ func (s *PostgresStore) ClaimGlobalPayout(id string, now time.Time) (bool, error
 	if p.Status == "quoted" || p.Refunded || p.LeaseUntil.After(now) {
 		return false, nil
 	}
-	if p.ExternalID == "" {
+	if p.ExternalID == "" && p.Rejection == nil {
 		p.DispatchAttempts++
 	}
 	p.LeaseUntil = now.Add(time.Minute)

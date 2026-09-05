@@ -21,6 +21,8 @@ type fakeGlobalStripe struct {
 	failFirst      bool
 	state          string
 	rejectRequests bool
+	bankStatus     int
+	emptyBanks     bool
 }
 
 func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +34,15 @@ func (f *fakeGlobalStripe) serve(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/v2/core/account_links":
 		_, _ = w.Write([]byte(`{"url":"https://accounts.stripe.com/test-onboarding"}`))
 	case r.URL.Path == "/v2/money_management/payout_methods":
+		if f.bankStatus != 0 {
+			w.WriteHeader(f.bankStatus)
+			_, _ = w.Write([]byte(`{"error":{"code":"api_error"}}`))
+			return
+		}
+		if f.emptyBanks {
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"data":[{"id":"pm_gp","type":"bank_account","bank_account":{"country":"IN","last4":"1234","supported_currencies":["inr"],"enabled_delivery_options":["local"]},"usage_status":{"payments":"eligible"}}]}`))
 	case r.URL.Path == "/v2/money_management/outbound_payment_quotes":
 		var req globalpayouts.PaymentRequest

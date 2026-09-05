@@ -16,6 +16,7 @@ import { WithdrawalsList } from "./WithdrawalsList";
 export function StripePayoutsCard({
   status,
   withdrawals,
+  confirmationPending = false,
   balanceMicroUsd,
   onboardLoading,
   selectedCountry,
@@ -34,6 +35,7 @@ export function StripePayoutsCard({
 }: {
   status: StripeStatus | null;
   withdrawals: StripeWithdrawal[];
+  confirmationPending?: boolean;
   balanceMicroUsd: number;
   onboardLoading: boolean;
   selectedCountry: string;
@@ -55,13 +57,13 @@ export function StripePayoutsCard({
   // Stripe payouts not configured on this coordinator — hide the card entirely.
   if (status && !status.configured) return null;
 
-  const ready = status?.status === "ready";
+  const ready = status?.status === "ready" || confirmationPending;
   const restricted = status?.status === "restricted";
   const rejected = status?.status === "rejected";
   const pending = status?.status === "pending";
   const balanceUsd = microToUsd(balanceMicroUsd);
   const minWithdrawUsd = microToUsd(status?.min_withdraw_micro_usd ?? 1_000_000);
-  const canWithdraw = ready && status?.payouts_available !== false && balanceUsd >= minWithdrawUsd;
+  const canWithdraw = confirmationPending || (ready && status?.payouts_available !== false && balanceUsd >= minWithdrawUsd);
 
   return (
     <div className={className}>
@@ -125,7 +127,7 @@ export function StripePayoutsCard({
             className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-teal border-2 border-ink text-white text-sm font-bold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             <ArrowDownToLine size={14} />
-            Withdraw
+            {confirmationPending ? "Check withdrawal" : "Withdraw"}
           </button>
           {!canWithdraw && balanceUsd < minWithdrawUsd && (
             <p className="text-xs text-text-tertiary mt-2">

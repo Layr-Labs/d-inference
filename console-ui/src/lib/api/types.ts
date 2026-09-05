@@ -139,6 +139,7 @@ export interface BankWithdrawalQuote {
 }
 
 export interface StripeStatus {
+  account_id?: string;
   payout_rail?: "connect" | "global";
   payout_currency?: string;
   payouts_available?: boolean;

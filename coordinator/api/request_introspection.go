@@ -189,7 +189,21 @@ func routingShape(parsed map[string]any) (routingTokens, mediaParts int) {
 	if v, ok := parsed["prompt"]; ok {
 		routingTokens += approximateTokenCount(v)
 	}
+	if instructions := responsesInstructions(parsed); instructions != "" {
+		routingTokens += 4 + approximateTokenCount(instructions)
+	}
 	return routingTokens, mediaParts
+}
+
+// The Responses instructions become a system message after admission. Count
+// them only when the handler selects the Responses lowering path.
+func responsesInstructions(parsed map[string]any) string {
+	messages, _ := parsed["messages"].([]any)
+	if parsed["input"] == nil || len(messages) > 0 {
+		return ""
+	}
+	instructions, _ := parsed["instructions"].(string)
+	return instructions
 }
 
 // billingBytes is the byte-length reservation bound over the same fields.
@@ -205,6 +219,11 @@ func billingBytes(parsed map[string]any) int {
 		if v, ok := parsed[field]; ok {
 			total += approximateTokenCountUpperBound(v)
 		}
+	}
+	if instructions := responsesInstructions(parsed); instructions != "" {
+		total += approximateTokenCountUpperBound([]any{
+			map[string]any{"role": "system", "content": instructions},
+		})
 	}
 	return total
 }

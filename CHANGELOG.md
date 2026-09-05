@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased - Responses instructions
+
+- Preserve top-level `instructions` on `/v1/responses` as the leading system message for both streaming and non-streaming inference, including them in routing and billing reservation estimates. Reject non-string, non-null instructions instead of silently ignoring them.
+
 ## Unreleased — Qwen non-thinking streaming
 
 - Stream Qwen answers as they are generated when the rendered prompt already closes its thinking block, including image and video requests that default thinking off. Preserve incremental reasoning, explicit parser overrides, and token usage.

@@ -15,9 +15,20 @@ func lowerResponses(input map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if raw := input["instructions"]; raw != nil {
+		instructions, ok := raw.(string)
+		if !ok {
+			return nil, ErrEndpointBodyInvalid
+		}
+		if instructions != "" {
+			messages = append([]any{map[string]any{
+				"role": "system", "content": instructions,
+			}}, messages...)
+		}
+	}
 
 	output := cloneObject(input)
-	for _, key := range []string{"input", "endpoint", "max_output_tokens", "text"} {
+	for _, key := range []string{"input", "instructions", "endpoint", "max_output_tokens", "text"} {
 		delete(output, key)
 	}
 	output["messages"] = messages

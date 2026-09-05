@@ -519,8 +519,11 @@
           },
           "provider_body": {
             "model": "gemma-4-26b",
-            "instructions": "Be concise.",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -531,6 +534,10 @@
             "model": "gemma-4-26b",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -538,11 +545,19 @@
           },
           "plan": {
             "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,
@@ -4142,8 +4157,11 @@
           },
           "provider_body": {
             "model": "gemma-4-26b-8bit",
-            "instructions": "Be concise.",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -4154,6 +4172,10 @@
             "model": "gemma-4-26b-8bit",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -4161,11 +4183,19 @@
           },
           "plan": {
             "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,
@@ -7765,8 +7795,11 @@
           },
           "provider_body": {
             "model": "gemma-4-26b-qat-4bit",
-            "instructions": "Be concise.",
             "messages": [
+              {
+                "role": "system",
+                "content": "Be concise."
+              },
               {
                 "role": "user",
                 "content": "Responses endpoint"
@@ -7777,6 +7810,10 @@
             "model": "gemma-4-26b-qat-4bit",
             "messages": [
               {
+                "role": "system",
+                "content": "Be concise."
+              },
+              {
                 "role": "user",
                 "content": "Responses endpoint"
               }
@@ -7784,11 +7821,19 @@
           },
           "plan": {
             "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
-            "prompt_token_count": 15,
+            "prompt_token_count": 23,
             "block_boundaries": []
           },
           "token_ids": [
             2,
+            105,
+            9731,
+            107,
+            3912,
+            63510,
+            236761,
+            106,
+            107,
             105,
             2364,
             107,

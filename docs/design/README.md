@@ -1,6 +1,6 @@
 # Design records — what was decided, and whether it shipped
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Plans, proposals, and architecture decision records. Each file is frozen at the
 moment it was written except for its **Status** line, which says whether the
@@ -17,6 +17,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [provider-service-quality.md](provider-service-quality.md) | In progress | 2026-09-05 | Recent reliability, authoritative provider status, bounded recovery and routing feedback |
 | [routing-v2.md](routing-v2.md) | Implemented | 2026-06-16 | Admit by measurement, serve all compute, never ship bad streams — the plan behind today's [`../architecture/routing.md`](../architecture/routing.md) |
 | [routing-v2-attestation-churn.md](routing-v2-attestation-churn.md) | Implemented | 2026-06-16 | W5 root cause of code-attestation churn and its fix |
 | [routing-telemetry-and-calibration.md](routing-telemetry-and-calibration.md) | Implemented | 2026-06-16 | Per-route telemetry and calibration of the cost model |

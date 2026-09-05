@@ -1,0 +1,76 @@
+npm warn Unknown user config "min-release-age". This will stop working in the next major version of npm.
+
+> web@0.1.0 build
+> next build
+
+▲ Next.js 16.2.11 (Turbopack)
+- Experiments (use with caution):
+  · optimizePackageImports
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 4.4s
+  Skipping validation of types
+  Finished TypeScript config validation in 3ms ...
+  Collecting page data using 15 workers ...
+  Generating static pages using 15 workers (0/45) ...
+  Generating static pages using 15 workers (11/45)
+  Generating static pages using 15 workers (22/45)
+  Generating static pages using 15 workers (33/45)
+✓ Generating static pages using 15 workers (45/45) in 180ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /api-console
+├ ƒ /api/admin/base-rewards
+├ ƒ /api/attestation
+├ ƒ /api/auth/keys
+├ ƒ /api/chat
+├ ƒ /api/device/approve
+├ ƒ /api/encryption-key
+├ ƒ /api/health
+├ ƒ /api/invite/redeem
+├ ƒ /api/keys
+├ ƒ /api/keys/[id]
+├ ƒ /api/keys/[id]/rotate
+├ ƒ /api/leaderboard
+├ ƒ /api/me/earnings
+├ ƒ /api/me/provider-models
+├ ƒ /api/me/providers
+├ ƒ /api/me/providers/[id]
+├ ƒ /api/me/summary
+├ ƒ /api/models
+├ ƒ /api/models/capacity
+├ ƒ /api/network/series
+├ ƒ /api/network/totals
+├ ƒ /api/payments/balance
+├ ƒ /api/payments/stripe/account
+├ ƒ /api/payments/stripe/checkout
+├ ƒ /api/payments/stripe/dashboard
+├ ƒ /api/payments/stripe/onboard
+├ ƒ /api/payments/stripe/status
+├ ƒ /api/payments/stripe/withdrawals
+├ ƒ /api/payments/usage
+├ ƒ /api/payments/withdraw/stripe
+├ ƒ /api/pricing
+├ ƒ /api/stats
+├ ƒ /api/telemetry
+├ ○ /billing
+├ ○ /chat
+├ ○ /earn
+├ ○ /leaderboard
+├ ○ /link
+├ ○ /login
+├ ○ /models
+├ ○ /providers
+├ ○ /providers/earnings
+├ ○ /providers/setup
+├ ○ /settings
+└ ○ /stats
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand

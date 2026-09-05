@@ -15,6 +15,7 @@ const ICON: Record<RoutingState, LucideIcon> = {
   degraded: AlertTriangle,
   blocked: XCircle,
   offline: CircleSlash,
+  unknown: CircleSlash,
 };
 
 function KPI({
@@ -90,9 +91,9 @@ export function FleetHealthStrip({
               dot={summary?.payout_ready}
             />
             <KPI
-              label="Earning now"
+              label="Ready / limited"
               value={`${verdict.counts.routable + verdict.counts.degraded}/${verdict.counts.total}`}
-              sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} full priority` : "machines routable"}
+              sub={verdict.counts.degraded > 0 ? `${verdict.counts.routable} ready` : "public short-text check"}
             />
           </div>
         </div>

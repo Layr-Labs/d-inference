@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — provider routing status and reputation persistence
+
+- Show current, account-scoped public routing checks by model, with observation expiry and separate requests in progress. Distinguish readiness, partial restrictions, capacity pressure, draining and unavailable observations without promising traffic or earnings.
+- Label historical reputation and prefill-adjusted latency accurately; prefer diagnosis to blanket restart/re-link advice.
+- Select the newest stored provider identity regardless of record order and coalesce per-session reputation writes so delayed writes cannot lower persisted counters.
+
 ## Unreleased — stats location refresh
 
 - Restore public stats refreshes on large usage tables by aggregating locations per provider before combining location totals. Preserve distinct-provider and token counts and request-weighted coordinates without sorting every usage row. Keep the selective cutoff's query plan local to the analytics transaction.

@@ -82,11 +82,22 @@ export interface MyReputation {
   successful_jobs: number;
   failed_jobs: number;
   total_uptime_seconds: number;
-  // EWMA of real time-to-first-token in ms (rendered as "Avg TTFT"); the JSON
-  // key is unchanged for wire stability — only its meaning is now real TTFT.
+  // EWMA of first-content latency after estimated prefill is subtracted.
+  // This is adjusted responsiveness, not raw user-visible TTFT.
   avg_response_time_ms: number;
   challenges_passed: number;
   challenges_failed: number;
+}
+
+export interface ProviderServiceStatus {
+  schema_version: number;
+  observed_at: string;
+  expires_at: string;
+  state: "ready" | "limited" | "busy" | "draining" | "unavailable" | "offline" | "unknown";
+  reason?: string;
+  pending_requests: number;
+  probe: { scope: "public_text"; prompt_tokens: number; max_tokens: number };
+  models: { model: string; eligible: boolean; reason: string; capacity_rate_ms: number }[];
 }
 
 export interface MyProvider {
@@ -95,6 +106,7 @@ export interface MyProvider {
   status: "online" | "serving" | "offline" | "untrusted" | "never_seen" | string;
   online: boolean;
   last_heartbeat?: string;
+  service_status?: ProviderServiceStatus;
 
   hardware: MyHardware;
   models: MyModelInfo[];

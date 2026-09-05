@@ -1,6 +1,6 @@
 # Glossary — the one name for each thing
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Canonical terms used across the docs and the code, one line each, with the page
 that owns the full definition. Use these spellings everywhere (including code
@@ -50,7 +50,7 @@ owner page. Terms are grouped by concern and alphabetical within a group.
 | **Hedged dispatch** | Speculative second dispatch to a backup provider when the first has not produced content by a computed offset | [`architecture/routing.md`](architecture/routing.md) |
 | **Heartbeat** / **eviction** | The provider's periodic state report over the WebSocket, sent every `heartbeat_interval_secs`; a provider whose heartbeats stop is marked stale by the coordinator's sweep and evicted after consecutive stale sweeps | cadence default: [`provider/cli-reference.md#providertoml-keys-read-by-the-cli`](provider/cli-reference.md#providertoml-keys-read-by-the-cli); timeout, sweep and eviction: [`architecture/scheduling.md#heartbeat-cadence-and-eviction`](architecture/scheduling.md#heartbeat-cadence-and-eviction) |
 | **Queue** (per-model) | Bounded wait for capacity (`defaultQueueMaxDepth`, `defaultQueueMaxWait`); overflow is a 429 with `Retry-After` | [`architecture/scheduling.md`](architecture/scheduling.md) |
-| **Reputation** | Weighted, exponentially smoothed provider score shown in stats; not a cost-model term | [`architecture/routing.md`](architecture/routing.md) |
+| **Reputation** | Historical composite provider statistic shown in stats; not a routing-cost term | [`architecture/routing.md`](architecture/routing.md) |
 | **Selection path** | Label for how the winner was chosen among near-ties: `unique_min`, `tie_queue`, `tie_pending`, `cache_tiebreak`, `random` | [`architecture/routing.md`](architecture/routing.md) |
 | **Self-route** | An owner's requests routed only to their own providers (trust floor relaxed to `none`) | [`provider/self-route.md`](provider/self-route.md) |
 | **Servability** (`PredictServable`) | Structural early-429 predictor: can this prompt fit any provider's token budget at all | [`architecture/routing.md`](architecture/routing.md) |

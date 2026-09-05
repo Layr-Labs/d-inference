@@ -46,9 +46,10 @@ type myProvider struct {
 	// currently connected, "never_seen" when it has a stored record but has
 	// not connected since the coordinator started, otherwise mirrors the
 	// registry status (online|serving|untrusted).
-	Status        string     `json:"status"`
-	Online        bool       `json:"online"`
-	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	Status        string                  `json:"status"`
+	Online        bool                    `json:"online"`
+	LastHeartbeat *time.Time              `json:"last_heartbeat,omitempty"`
+	ServiceStatus *registry.ServiceStatus `json:"service_status,omitempty"`
 
 	// Identity / hardware
 	Hardware     protocol.Hardware    `json:"hardware"`
@@ -293,6 +294,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		mp.ServiceStatus = s.registry.ProviderServiceStatus(accountID, mp.ID, time.Now())
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -306,7 +308,9 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		mp.ServiceStatus = s.registry.ProviderServiceStatus(accountID, mp.ID, time.Now())
+		out = append(out, mp)
 	}
 	return out, nil
 }
@@ -596,6 +600,7 @@ func buildMyProvider(rec *store.ProviderRecord, live *registry.Provider) myProvi
 		mp.SystemMetrics = &sm
 		if live.BackendCapacity != nil {
 			cap := *live.BackendCapacity
+			cap.Slots = append([]protocol.BackendSlotCapacity(nil), cap.Slots...)
 			mp.BackendCapacity = &cap
 		}
 		if live.IdleUnloadMins != nil {

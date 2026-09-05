@@ -68,6 +68,7 @@ export interface FleetCounts {
   degraded: number;
   blocked: number;
   offline: number;
+  unknown: number;
   total: number;
 }
 
@@ -89,6 +90,7 @@ export function deriveFleetVerdict(
     degraded: 0,
     blocked: 0,
     offline: 0,
+    unknown: 0,
     total: providers.length,
   };
 
@@ -104,8 +106,8 @@ export function deriveFleetVerdict(
 
   if (counts.blocked > 0) {
     state = "blocked";
-    headline = `${counts.blocked} machine${counts.blocked === 1 ? "" : "s"} not earning`;
-    sub = "Blocked from routing — fix below.";
+    headline = `${counts.blocked} machine${counts.blocked === 1 ? "" : "s"} with public routing restrictions`;
+    sub = "See the scoped routing checks on each machine.";
   } else if (counts.offline > 0 && counts.offline === total) {
     state = "offline";
     headline = "Fleet offline";
@@ -113,15 +115,19 @@ export function deriveFleetVerdict(
   } else if (counts.offline > 0) {
     state = "offline";
     headline = `${counts.offline} machine${counts.offline === 1 ? "" : "s"} offline`;
-    sub = "Not connected — earning $0 while down.";
+    sub = "Not connected. Last-known details remain available.";
+  } else if (counts.unknown > 0) {
+    state = "unknown";
+    headline = `${counts.unknown} machine${counts.unknown === 1 ? "" : "s"} awaiting current status`;
+    sub = "Current routing eligibility is unavailable.";
   } else if (counts.degraded > 0) {
     state = "degraded";
-    headline = `${counts.degraded} machine${counts.degraded === 1 ? "" : "s"} degraded`;
-    sub = "Still earning at reduced priority.";
+    headline = `${counts.degraded} machine${counts.degraded === 1 ? "" : "s"} with limited public work`;
+    sub = "Some workloads are restricted or at capacity.";
   } else {
     state = "routable";
-    headline = "Everything's earning";
-    sub = total === 1 ? "Your machine is routable. No action needed." : `All ${total} machines routable. No action needed.`;
+    headline = "Ready for public work";
+    sub = total === 1 ? "Short-text check passed. Traffic depends on matching requests." : `All ${total} machines passed the short-text check.`;
   }
 
   return { state, counts, headline, sub };
@@ -129,7 +135,7 @@ export function deriveFleetVerdict(
 
 /** Convenience for the capacity bar: ordered segments with counts + colors. */
 export function capacitySegments(counts: FleetCounts) {
-  return (["routable", "degraded", "blocked", "offline"] as RoutingState[])
+  return (["routable", "degraded", "blocked", "offline", "unknown"] as RoutingState[])
     .map((state) => ({
       state,
       count: counts[state],

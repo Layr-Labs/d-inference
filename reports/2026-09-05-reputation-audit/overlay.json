@@ -1,0 +1,6 @@
+{
+  "Replace": {
+    "/Users/gaj/Documents/Builds/d-inference/coordinator/registry/reputation_audit_test.go": "/Users/gaj/Documents/Builds/d-inference/reports/2026-09-05-reputation-audit/registry-probes.go.txt",
+    "/Users/gaj/Documents/Builds/d-inference/coordinator/api/reputation_audit_api_test.go": "/Users/gaj/Documents/Builds/d-inference/reports/2026-09-05-reputation-audit/api-probe.go.txt"
+  }
+}

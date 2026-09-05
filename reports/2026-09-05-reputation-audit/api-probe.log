@@ -1,0 +1,9 @@
+=== RUN   TestAuditAbruptDisconnectShouldCountFailedAttempt
+time=2026-09-05T11:22:40.254-07:00 level=ERROR msg="provider websocket read error" provider_id=a3e25762-c0fd-4a23-8e17-0e65e75d7cf7 error="failed to get reader: failed to read frame header: EOF" reason=read_error
+    reputation_audit_api_test.go:28: A abruptly disconnected after accepting work; B succeeded; A jobs=0 failed=0 stable_identity=serial:AUDIT-ABRUPT
+    reputation_audit_api_test.go:29: A failed jobs=0; want 1 for the abrupt-disconnect attempt
+time=2026-09-05T11:22:40.258-07:00 level=ERROR msg="provider websocket read error" provider_id=0dd9ed3c-3604-4150-ae3c-f89d4970e11d error="failed to get reader: failed to read frame header: EOF" reason=read_error
+--- FAIL: TestAuditAbruptDisconnectShouldCountFailedAttempt (0.45s)
+FAIL
+FAIL	github.com/eigeninference/d-inference/coordinator/api	1.309s
+FAIL

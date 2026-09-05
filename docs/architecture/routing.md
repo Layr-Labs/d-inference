@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -564,8 +564,7 @@ score = 0.4 × jobRate + 0.3 × uptimeRate + 0.2 × challengeRate + 0.1 × respo
 A provider with no history scores `0.5`. The score is exposed on the
 provider-facing `/me` endpoints (`coordinator/api/me_handlers.go`) and
 persisted; **it is not a term in the routing cost** — `buildCandidateInto`
-never reads it. The header comment in `reputation.go` still says the score
-factors into routing; the code does not. Reputation inputs do reach routing
+never reads it. Reputation inputs do reach routing
 indirectly: `RecordChallengeFailure` feeds `challenge_stale`, and the latency
 EWMA is fed only by non-cache, non-hedge first-content samples
 (`coordinator/api/dispatch.go`).
@@ -711,3 +710,9 @@ must not run in parallel with other scheduler tests in the same process.
 - [`../operations/routing-v2-rollout.md`](../operations/routing-v2-rollout.md) — kill switches for the routing flags named on this page.
 - [`../design/routing-v2.md`](../design/routing-v2.md), [`../design/routing-telemetry-and-calibration.md`](../design/routing-telemetry-and-calibration.md) — the design history behind the current constants.
 - [`request-outcome-observability.md`](request-outcome-observability.md) — how routing outcomes surface in telemetry.
+
+### Provider-facing routing observation
+
+`Registry.ProviderServiceStatus` (`coordinator/registry/service_status.go`) reuses the normal public snapshot and candidate-builder gates for each advertised model and an explicit plain-text probe. It never reserves work, claims a recovery probe or clears a fault tracker. The console displays this account-scoped snapshot separately from requests in progress and historical earnings; missing/expired observations remain unknown. The [API contract](../reference/api-contracts.md#provider-service-status) defines the request scope and freshness limits.
+
+`keepNewestStoredProvider` (`coordinator/registry/persistence.go`) selects the newest stored identity record independently of store iteration order. `persistReputation` / `flushReputation` (`coordinator/registry/reputation_persistence.go`) coalesce snapshots through one writer per live session so older writes cannot arrive after newer writes for that session. Store errors retry on a subsequent observation; a process crash can still lose unacknowledged counters. Durable stable-identity history and unified failed-attempt attribution remain in the [service-quality design](../design/provider-service-quality.md).

@@ -1,0 +1,13 @@
+npm warn Unknown user config "min-release-age". This will stop working in the next major version of npm.
+
+> web@0.1.0 test
+> vitest run --run __tests__/provider-dashboard-routing.test.ts __tests__/provider-dashboard-aggregate.test.ts __tests__/provider-dashboard-warnings.test.ts __tests__/provider-dashboard-fixes.test.ts src/app/providers/dashboard
+
+
+ RUN  v4.1.2 /Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui
+
+
+ Test Files  12 passed (12)
+      Tests  99 passed (99)
+   Start at  11:52:09
+   Duration  1.50s (transform 471ms, setup 713ms, import 1.31s, tests 865ms, environment 6.80s)

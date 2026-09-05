@@ -1,19 +1,11 @@
-// Routing eligibility — the single source of truth for "is this machine
-// earning right now?". The fleet strip, the attention feed, and each machine
-// card all derive their verdict from here so the glance, the list, and the
-// detail can never disagree.
-//
-// A machine earns only if the coordinator routes work to it. We map the
-// existing warning severities onto an earning verdict:
-//   offline  -> not connected (status offline/never_seen)
-//   blocked  -> connected but receives ZERO requests (any blocking warning)
-//   degraded -> routable at reduced priority (any degrading warning)
-//   routable -> healthy, full priority, earning
+// Public routing observations are supplied by the coordinator. Warning
+// severity remains diagnostic and must not invent traffic or ranking priority.
 
+import { freshServiceStatus } from "./serviceStatus";
 import type { MyProvider, MyProvidersResponse } from "../types";
 import { computeWarnings, type Warning, type WarningSeverity } from "../warnings";
 
-export type RoutingState = "routable" | "degraded" | "blocked" | "offline";
+export type RoutingState = "routable" | "degraded" | "blocked" | "offline" | "unknown";
 
 /** The slice of the /v1/me/providers response that warning logic needs. */
 export type RoutingCtx = Pick<
@@ -32,12 +24,20 @@ export const DEFAULT_CTX: RoutingCtx = {
   challenge_max_age_seconds: 360,
 };
 
-/** Derive the earning verdict from a machine + its computed warnings. */
-export function deriveRouting(p: MyProvider, warnings: Warning[]): RoutingState {
+/** Read the coordinator verdict; old or expired responses remain unknown. */
+export function deriveRouting(p: MyProvider, _warnings: Warning[]): RoutingState {
   if (p.status === "offline" || p.status === "never_seen") return "offline";
-  if (warnings.some((w) => w.severity === "blocking")) return "blocked";
-  if (warnings.some((w) => w.severity === "degrading")) return "degraded";
-  return "routable";
+  const status = freshServiceStatus(p);
+  if (status) {
+    switch (status.state) {
+      case "ready": return "routable";
+      case "limited": case "busy": case "draining": return "degraded";
+      case "unavailable": return "blocked";
+      case "offline": return "offline";
+      default: return "unknown";
+    }
+  }
+  return "unknown";
 }
 
 /** Convenience: compute warnings and derive routing in one call. */
@@ -67,8 +67,8 @@ const META: Record<RoutingState, RoutingMeta> = {
     color: "text-accent-green",
     tint: "bg-accent-green/8",
     rail: "border-l-accent-green",
-    label: "Earning",
-    verb: "EARNING — receiving traffic",
+    label: "Ready",
+    verb: "Ready for public work",
     segment: "bg-accent-green",
   },
   degraded: {
@@ -76,8 +76,8 @@ const META: Record<RoutingState, RoutingMeta> = {
     color: "text-accent-amber",
     tint: "bg-accent-amber/8",
     rail: "border-l-accent-amber",
-    label: "Degraded",
-    verb: "EARNING (reduced priority)",
+    label: "Limited",
+    verb: "Public work limited",
     segment: "bg-accent-amber",
   },
   blocked: {
@@ -85,9 +85,14 @@ const META: Record<RoutingState, RoutingMeta> = {
     color: "text-accent-red",
     tint: "bg-accent-red/10",
     rail: "border-l-accent-red",
-    label: "Not earning",
-    verb: "NOT EARNING — 0 requests",
+    label: "Unavailable",
+    verb: "Public route restricted",
     segment: "bg-accent-red",
+  },
+  unknown: {
+    state: "unknown", color: "text-text-secondary", tint: "bg-bg-tertiary",
+    rail: "border-l-border-dim", label: "Unknown",
+    verb: "Coordinator status unavailable", segment: "bg-text-tertiary/20",
   },
   offline: {
     state: "offline",

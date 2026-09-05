@@ -6,10 +6,11 @@ import { capacitySegments, type FleetCounts } from "../aggregate";
 import { routingMeta, type RoutingState } from "../routing";
 
 const LABEL: Record<RoutingState, string> = {
-  routable: "Earning",
-  degraded: "Degraded",
-  blocked: "Blocked",
+  routable: "Ready",
+  degraded: "Limited",
+  blocked: "Unavailable",
   offline: "Offline",
+  unknown: "Unknown",
 };
 
 export function CapacityBar({ counts }: { counts: FleetCounts }) {
@@ -29,7 +30,7 @@ export function CapacityBar({ counts }: { counts: FleetCounts }) {
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {(["routable", "degraded", "blocked", "offline"] as RoutingState[])
+        {(["routable", "degraded", "blocked", "offline", "unknown"] as RoutingState[])
           .filter((state) => counts[state] > 0)
           .map((state) => (
             <span key={state} className="inline-flex items-center gap-1.5 text-[11px] text-text-secondary">

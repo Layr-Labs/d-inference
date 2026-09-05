@@ -986,8 +986,12 @@ type Provider struct {
 	// written to the store from the heartbeat path. Used by
 	// persistReputationThrottled so accumulated uptime survives restarts without
 	// a DB write on every 30s heartbeat. Zero value persists on the first
-	// heartbeat. (Challenge/job handlers persist reputation unthrottled.)
+	// heartbeat. Failures/challenges request immediate coalesced writes;
+	// successes and heartbeats use the throttle.
 	lastReputationPersisted time.Time
+	// Reputation writes are coalesced by one worker per session, under p.mu.
+	reputationPersistRunning bool
+	reputationPersistDirty   bool
 
 	// Challenge-response verification state
 	LastChallengeVerified time.Time // last successful challenge verification
@@ -5802,9 +5806,9 @@ func (r *Registry) RecordJobSuccess(providerID string, latency time.Duration) {
 //
 // It updates the in-memory EWMA only and does NOT persist. The updated
 // AvgResponseTime is persisted by the RecordJobSuccess / RecordJobFailure that
-// follows on completion (which snapshots the whole reputation row). Persisting a
-// full row here would race that terminal write — a pre-terminal snapshot carrying
-// stale TotalJobs/SuccessfulJobs could land after it and clobber the counts.
+// follows on completion (which snapshots the whole reputation row). Persisting
+// here would add a write on the first-content path. The coalescing worker
+// snapshots the full state when a terminal or heartbeat requests persistence.
 func (r *Registry) RecordLatency(providerID string, latency time.Duration) {
 	if latency <= 0 {
 		return

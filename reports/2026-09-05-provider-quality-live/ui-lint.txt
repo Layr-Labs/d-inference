@@ -1,0 +1,164 @@
+npm warn Unknown user config "min-release-age". This will stop working in the next major version of npm.
+
+> web@0.1.0 lint
+> eslint src/
+
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/api/models/route.ts
+   95:10   warning  Refactor this function to reduce its Cognitive Complexity from 16 to the 15 allowed  sonarjs/cognitive-complexity
+  149:80   warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  149:105  warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  173:88   warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  173:114  warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  212:11   warning  Define a constant instead of duplicating this literal 3 times                        sonarjs/no-duplicate-string
+  223:16   warning  Refactor this function to reduce its Cognitive Complexity from 18 to the 15 allowed  sonarjs/cognitive-complexity
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/api/payments/stripe/status/route.ts
+  12:77  warning  Refactor this code to not use nested template literals  sonarjs/no-nested-template-literals
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/api/payments/stripe/withdrawals/route.ts
+  12:80  warning  Refactor this code to not use nested template literals  sonarjs/no-nested-template-literals
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/AttentionFeed.tsx
+  33:69  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/CardRoutingVerdict.tsx
+  17:16  warning  Variable Assigned to Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/FleetControls.tsx
+  44:21  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/ModelsStrip.tsx
+  21:7  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/StatusPill.tsx
+   9:21  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+  15:13  warning  Generic Object Injection Sink                                  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/aggregate.ts
+   84:17  warning  Refactor this function to reduce its Cognitive Complexity from 18 to the 15 allowed  sonarjs/cognitive-complexity
+   99:5   warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  141:14  warning  Generic Object Injection Sink                                                        security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/fixes.ts
+  146:10  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/gauges/CapacityBar.tsx
+  34:30  warning  Generic Object Injection Sink  security/detect-object-injection
+  38:62  warning  Generic Object Injection Sink  security/detect-object-injection
+  39:16  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/gauges/MeterBar.tsx
+  74:7   warning  Elements with the ARIA role "meter" must have the following attributes defined: aria-valuenow  jsx-a11y/role-has-required-aria-props
+  82:30  warning  Generic Object Injection Sink                                                                  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/gauges/RatingPips.tsx
+  8:45  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/gauges/ThermalPips.tsx
+  32:27  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/routing.ts
+  109:10  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/dashboard/serviceStatus.ts
+  43:43  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/layout.tsx
+  9:17  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/providers/warnings.ts
+  31:16  warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  32:16  warning  Generic Object Injection Sink                                                        security/detect-object-injection
+  47:17  warning  Refactor this function to reduce its Cognitive Complexity from 45 to the 15 allowed  sonarjs/cognitive-complexity
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/stats/StatsHeader.tsx
+   6:17   warning  Refactor this function to reduce its Cognitive Complexity from 16 to the 15 allowed  sonarjs/cognitive-complexity
+  32:166  warning  Extract this nested ternary operation into an independent statement                  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/stats/model-brand.test.ts
+  71:16  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/stats/model-brand.ts
+  52:64  warning  Refactor this code to not use nested template literals  sonarjs/no-nested-template-literals
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/stats/traffic/TrafficPanel.test.tsx
+  13:44  warning  Define a constant instead of duplicating this literal 5 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/app/stats/useNetworkStats.test.tsx
+   9:32  warning  Define a constant instead of duplicating this literal 3 times   sonarjs/no-duplicate-string
+  16:22  warning  Define a constant instead of duplicating this literal 22 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/TrustBadge.tsx
+  47:13  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/VerificationPanel.tsx
+  23:7  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+  24:9  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/api-keys/KeyForm.tsx
+  12:17  warning  Refactor this function to reduce its Cognitive Complexity from 17 to the 15 allowed  sonarjs/cognitive-complexity
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/console-entry/ConsoleWelcome.test.tsx
+  18:107  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+  26:101  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+  28:94   warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/leaderboard/RankingsTable.tsx
+  38:10  warning  Generic Object Injection Sink               security/detect-object-injection
+  43:17  warning  Variable Assigned to Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/payouts/MethodOption.tsx
+  32:13  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/payouts/StripePayoutsCard.tsx
+   16:17  warning  Refactor this function to reduce its Cognitive Complexity from 24 to the 15 allowed  sonarjs/cognitive-complexity
+  114:11  warning  Extract this nested ternary operation into an independent statement                  sonarjs/no-nested-conditional
+  154:50  warning  Extract this nested ternary operation into an independent statement                  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/payouts/WithdrawalsList.tsx
+  25:21  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+  42:23  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/components/payouts/payout-copy.test.ts
+   21:27  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+  202:28  warning  Define a constant instead of duplicating this literal 3 times  sonarjs/no-duplicate-string
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/hooks/useChatStream.ts
+  24:10  warning  Make sure that using this pseudorandom number generator is safe here  sonarjs/pseudo-random
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/hooks/useToast.ts
+  18:16  warning  Make sure that using this pseudorandom number generator is safe here  sonarjs/pseudo-random
+  21:49  warning  Refactor this code to not nest functions more than 4 levels deep      sonarjs/no-nested-functions
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/api/models.ts
+  10:7  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+  12:9  warning  Extract this nested ternary operation into an independent statement  sonarjs/no-nested-conditional
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/chat/stream.ts
+  132:23  warning  Refactor this function to reduce its Cognitive Complexity from 53 to the 15 allowed  sonarjs/cognitive-complexity
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/chat/think-parser.ts
+  55:38  warning  Define a constant instead of duplicating this literal 3 times                        sonarjs/no-duplicate-string
+  86:3   warning  Refactor this function to reduce its Cognitive Complexity from 31 to the 15 allowed  sonarjs/cognitive-complexity
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/encryption.ts
+   95:19  warning  Variable Assigned to Object Injection Sink  security/detect-object-injection
+  130:3   warning  Generic Object Injection Sink               security/detect-object-injection
+  255:67  warning  Function Call Object Injection Sink         security/detect-object-injection
+  265:38  warning  Generic Object Injection Sink               security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/google-analytics.ts
+  270:5  warning  Generic Object Injection Sink  security/detect-object-injection
+  293:7  warning  Generic Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/network-power.ts
+  42:16  warning  Variable Assigned to Object Injection Sink  security/detect-object-injection
+
+/Users/gaj/Documents/Builds/d-inference/.worktrees/provider-service-quality/console-ui/src/lib/store.ts
+   62:10  warning  Make sure that using this pseudorandom number generator is safe here  sonarjs/pseudo-random
+  121:48  warning  Refactor this code to not nest functions more than 4 levels deep      sonarjs/no-nested-functions
+  135:48  warning  Refactor this code to not nest functions more than 4 levels deep      sonarjs/no-nested-functions
+  149:48  warning  Refactor this code to not nest functions more than 4 levels deep      sonarjs/no-nested-functions
+
+✖ 75 problems (0 errors, 75 warnings)

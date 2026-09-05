@@ -1,5 +1,5 @@
 // Shared test fixtures for the provider dashboard logic tests.
-import type { MyProvider, MyProvidersResponse } from "@/app/providers/types";
+import type { MyProvider, MyProvidersResponse, ProviderServiceStatus } from "@/app/providers/types";
 import type { RoutingCtx } from "@/app/providers/dashboard/routing";
 
 export const ctx: RoutingCtx = {
@@ -9,12 +9,24 @@ export const ctx: RoutingCtx = {
   challenge_max_age_seconds: 360,
 };
 
+export function serviceStatus(overrides: Partial<ProviderServiceStatus> = {}): ProviderServiceStatus {
+  const now = Date.now();
+  return {
+    schema_version: 1, observed_at: new Date(now).toISOString(), expires_at: new Date(now + 30_000).toISOString(),
+    state: "ready", pending_requests: 0,
+    probe: { scope: "public_text", prompt_tokens: 500, max_tokens: 256 },
+    models: [{ model: "mlx-community/Qwen3.5-9B-MLX-4bit", eligible: true, reason: "eligible", capacity_rate_ms: 0 }],
+    ...overrides,
+  };
+}
+
 export function baseProvider(overrides: Partial<MyProvider> = {}): MyProvider {
   return {
     id: "p1",
     account_id: "acct-1",
     status: "online",
     online: true,
+    service_status: serviceStatus(),
     hardware: { chip_name: "Apple M3 Max", memory_gb: 64, gpu_cores: 40 },
     models: [{ id: "mlx-community/Qwen3.5-9B-MLX-4bit" }],
     trust_level: "hardware",

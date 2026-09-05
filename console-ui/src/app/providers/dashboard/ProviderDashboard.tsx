@@ -6,6 +6,7 @@
 // this file just wires data to sections.
 
 import { useMemo } from "react";
+import { useServiceStatusExpiry } from "./useServiceStatusExpiry";
 import { useFleetData } from "./useFleetData";
 import { semverLess } from "../warnings";
 import {
@@ -39,7 +40,8 @@ export function ProviderDashboard() {
 
   const providers = useMemo(() => providersResp?.providers ?? [], [providersResp]);
 
-  const verdict = useMemo(() => deriveFleetVerdict(providers, ctx), [providers, ctx]);
+  useServiceStatusExpiry(providers);
+  const verdict = deriveFleetVerdict(providers, ctx);
   const groups = useMemo(() => buildAttentionGroups(providers, ctx), [providers, ctx]);
   const maxDecode = useMemo(() => fleetMaxDecodeTps(providers), [providers]);
   const hardwareCount = useMemo(

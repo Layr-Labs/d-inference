@@ -4,7 +4,7 @@ CLI provider for Apple Silicon Macs. Builds two executables:
 
 | Binary | Purpose |
 |---|---|
-| `darkbloom` | Provider CLI: `serve`, `start`, `stop`, `status`, `doctor`, `models`, `login`, `logout`, `benchmark`, `update`, `verify` |
+| `darkbloom` | Provider CLI: `start`, `stop`, `restart`, `status`, `doctor`, `models`, `local`, `login`, `logout`, `benchmark`, `update`, `verify`, `enroll`, `unenroll`, `logs`, `report`, `autoupdate`, `beta`, `idle`, `fan` |
 | `darkbloom-enclave` | Stateless Secure Enclave helper: `attest`, `sign`, `info`, `wallet-address`. Installed as both `darkbloom-enclave` (canonical) and `eigeninference-enclave` (legacy symlink). |
 
 This package is **CLI-only**: no SwiftUI app, no `.app` bundle, no DMG.
@@ -44,7 +44,7 @@ Python wheel:
 ./scripts/fetch-metallib.sh debug
 ./scripts/fetch-metallib.sh release
 
-provider-swift/.build/release/darkbloom serve --foreground
+provider-swift/.build/release/darkbloom start --foreground
 ```
 
 The helper also accepts an absolute destination directory and
@@ -83,7 +83,7 @@ Tests/
 ## CLI surface
 
 ```
-darkbloom serve / start / stop      lifecycle
+darkbloom start / stop              lifecycle
 darkbloom status / doctor           read-only diagnostics (with update banner)
 darkbloom models list / catalog / download <id> / remove <id>
 darkbloom enroll / unenroll         MDM device-attestation profile

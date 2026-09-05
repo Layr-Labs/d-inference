@@ -48,7 +48,7 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 	}
 	if initialError != nil {
 		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause, initialError.CoordinatorCause)
 		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, *initialError))
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
@@ -64,7 +64,7 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 	// emitProviderError settles and reports an in-band provider error.
 	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
 		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))

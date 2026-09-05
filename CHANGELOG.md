@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — coordinator performance Tiers 2 and 3
+
+- Cache repeated user and model lookups, batch route telemetry writes, and credit balances in one database statement. Invalidate model caches without allowing older in-flight reads to republish stale entries.
+- Coalesce streaming output within a byte cap and parse request bodies once.
+- Reduce routing scan work with per-model provider indexes, maintained medians, reusable snapshots, bounded version memoization, and coalesced swap and queue-drain planning.
+- Commit reservations under the registry read lock and the selected provider's lock. Keep fault tracking on per-identity gates, with validated rebind and sweep handling; retain `EIGENINFERENCE_RESERVE_COMMIT_MODE=global` as the reservation rollback switch.
+- Preserve newer rejection state when capacity-accept bookkeeping arrives late.
+- Make scheduler, attestation timestamp, and reputation persistence test fixtures deterministic.
+
+## Unreleased — provider lifecycle and bounded coordinator work
+
+- Keep genuine provider 502 faults across version changes; only coordinator-marked disconnect flushes are eligible for reset. Count first-scan TTFT rejections in request outcome telemetry.
+- Evict capped zombie tracker entries in constant time, preserving recent activity without per-insertion full-map scans.
+- Fragment large provider WebSocket messages, bound queue-drain work, and keep control traffic responsive.
+- Fence typed draining refusals at ingress before releasing the request slot; preserve newer recovery heartbeats. Graceful restarts remain health-neutral, and late disconnect errors follow identity enrichment without re-quarantining an upgraded provider.
+- Correlate cancel sends and terminals atomically, bound version history and telemetry tags, and retain MLX metrics on HTTP-only Datadog deployments.
+
 ## Unreleased (2026-09-04) — console redesign
 
 - Provider onboarding specifies macOS 26 or later.

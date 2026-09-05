@@ -137,16 +137,17 @@ func benchLocalStatsd(tb testing.TB) *datadog.Client {
 // providerReadLoop for a baseline heartbeat (no prefix-cache fields, so
 // UpdatePrefixCacheSnapshot is skipped exactly as in production).
 func runHeartbeatBranch(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
-	s.registry.Heartbeat(providerID, hb)
-	runHeartbeatTail(ctx, s, providerID, provider, hb)
+	s.applyProviderHeartbeat(providerID, provider, hb)
+	s.maybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
 // runHeartbeatTail is the API-side tail after registry ingest, exactly as the
-// branch runs it today.
-func runHeartbeatTail(ctx context.Context, s *Server, providerID string, provider *registry.Provider, hb *protocol.HeartbeatMessage) {
+// branch runs it today. prev is the pre-ingest capacity snapshot the MLX
+// telemetry diffs its reclaimer counters against.
+func runHeartbeatTail(ctx context.Context, s *Server, providerID string, provider *registry.Provider, prev *protocol.BackendCapacity, hb *protocol.HeartbeatMessage) {
 	capacity := provider.BackendCapacitySnapshot()
 	s.recordBackendWedgeTelemetry(capacity)
-	s.recordMLXCacheTelemetry(providerID, capacity)
+	s.recordMLXCacheTelemetry(provider, prev, capacity)
 	s.maybeRearmCodeAttest(ctx, providerID, provider, hb)
 }
 
@@ -186,8 +187,11 @@ func BenchmarkHeartbeatBranchTelemetryOnly(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()
+	// Steady state: the previous snapshot equals the current one, so the MLX
+	// reclaimer deltas are zero — the realistic per-heartbeat tail cost.
+	prev := p.BackendCapacitySnapshot()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, prev, hb)
 	}
 }
 
@@ -200,7 +204,10 @@ func BenchmarkHeartbeatBranchTelemetryOnlyStatsd(b *testing.B) {
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()
+	// Steady state: the previous snapshot equals the current one, so the MLX
+	// reclaimer deltas are zero — the realistic per-heartbeat tail cost.
+	prev := p.BackendCapacitySnapshot()
 	for i := 0; i < b.N; i++ {
-		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, hb)
+		runHeartbeatTail(ctx, s, benchHeartbeatProviderID, p, prev, hb)
 	}
 }

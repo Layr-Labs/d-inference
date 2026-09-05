@@ -1,6 +1,6 @@
 # Provider ↔ coordinator protocol messages
 
-> Last updated: 2026-09-04 · commit `ac60c5ada`
+> Last updated: 2026-09-04 · commit `aa87a0ebd`
 
 Every JSON frame on the provider WebSocket (`GET /ws/provider`), with the Go
 type, the Swift type, and the presence rule for each field. Go is the canon
@@ -20,7 +20,7 @@ JSON keys are snake_case and identical in the Go tags and the Swift
 | Rule | Go | Swift |
 |---|---|---|
 | Discriminator | top-level `"type"` string | same |
-| Decode | `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`) reads `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
+| Decode | `DecodeProviderMessage` first tries the single-walk chunk scanner (`coordinator/protocol/chunk_scan.go`, `scanChunkFrame`); unsupported shapes fall back to `ProviderMessage.UnmarshalJSON` (`coordinator/protocol/messages.go`), which reads `type` with `scanTopLevelString` (`coordinator/protocol/type_scan.go`), a byte walk over the top-level keys, then `json.Unmarshal`s the frame **once** into the concrete struct | `ProviderMessage.init(from:)` / `CoordinatorMessage.init(from:)` decode `TypeValue` then switch (`Messages.swift`) |
 | Scanner fallback | escaped string, non-string value, malformed input or missing key → decode a `struct{ Type string }` envelope first (the historic double parse), so error behaviour is unchanged | — |
 | Unknown type | `protocol: unknown message type %q` | `DecodingError` — the decoder **throws**, so the coordinator version-gates `desired_models`, `prefetch_model`, `load_model` and `capacity_probe` sends |
 | Tests | `coordinator/protocol/type_scan_test.go` (`TestProviderMessageUnmarshalScanEquivalence`), `messages_envelope_test.go`, `messages_bench_test.go` | `provider-swift/Tests/ProviderCoreTests/ProtocolTests.swift` |
@@ -154,7 +154,7 @@ the sinks of each field are in [`telemetry-inventory.md`](telemetry-inventory.md
 
 | JSON key | Go | Swift | Presence | Notes |
 |---|---|---|---|---|
-| `status` | `string` | `ProviderStatus` | req | `"idle"` or `"serving"` (`Protocol/Enums.swift`) |
+| `status` | `string` | `ProviderStatus` | req | `"idle"`, `"serving"` or `"draining"` (`Protocol/Enums.swift`, `ProviderStatus`; Go `HeartbeatStatusDraining`). A draining heartbeat excludes the provider from new routing; idle/serving clears the mark (`coordinator/registry/drain_state.go`, `applyHeartbeatDrainStateLocked`). |
 | `active_model` | `*string` (**no** `omitempty`) | `String?` (`encodeIfPresent`) | see note | **Intentional asymmetry.** Go always emits the key and writes `null` when nil; Swift omits the key when nil. Both decode to nil = no model is generating right now, and the coordinator treats `null` and absent identically |
 | `stats` | `HeartbeatStats` | `ProviderStats` | req | [`stats`](#stats) |
 | `warm_models` | `[]string` | `[String]` | opt | resident models; Swift omits when empty |
@@ -294,7 +294,7 @@ these fields: [`../architecture/request-outcome-observability.md`](../architectu
 | `request_id` | `string` | `String` | req | |
 | `error` | `string` | computed `String` (`failureCode.message`) | req | Swift never emits raw error text. The coordinator never reads the provider-authored value: `sanitizeProviderInferenceError` (`coordinator/api/inference_error_sanitize.go`) replaces it with the closed message for `failure_code` before anything downstream sees the frame |
 | `status_code` | `int` | `UInt16` | req | |
-| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `cancelled`, `client_error`, `tool_noncompliance`. The well-known string `"provider draining for update"` (`ProviderDrainingForUpdate`) marks a transient drain and earns a short backoff |
+| `error_reason` | `string` | `InferenceErrorReason?` | opt | closed, privacy-safe reason (`provider-swift/Sources/ProviderCore/Inference/InferenceFailure.swift`): `jinja_channel_tags`, `jinja_null_bridge`, `jinja_template`, `model_load`, `capacity_timeout`, `queue_full`, `token_budget_exhausted`, `request_exceeds_context`, `request_exceeds_node`, `request_exceeds_node_budget`, `request_exceeds_batch_token_budget`, `capacity_busy`, `deadline_unreachable`, `draining`, `cancelled`, `client_error`, `tool_noncompliance`. The typed `draining` reason on a 503 marks a transient update drain: no provider-health or capacity penalty, and no capacity retry charge (`coordinator/api/consumer.go`, `noteInferenceError`; `coordinator/api/dispatch.go`, `dispatchState.noteProviderError`). Swift emits it from `rejectIfDrainingForUpdate` (`provider-swift/Sources/ProviderCore/ProviderLoop+InferenceHandler.swift`). |
 | `failure_code` | `InferenceFailureCode` | `InferenceFailureCode?` | opt | closed enum (`coordinator/protocol/inference_failure.go`): `invalid_request`, `invalid_media`, `media_too_large`, `unsupported_media`, `template_render`, `model_unavailable`, `capacity`, `cancelled`, `encryption_failure`, `generation_failure`, `internal_failure` |
 | `terminal_cause` | `string` | `InferenceTerminalCause?` | opt | closed: `admission_timeout`, `prefill_stall`, `decode_stall`, `safety_deadline`, `backpressure_timeout`, `watchdog`, `cancelled`, `engine_error`. Unknown → treated as absent plus a drift metric (`coordinator/api/terminal_cause.go`); platform-policy terminals never strike health breakers |
 | `attempt_usage` | `*UsageInfo` | `UsageInfo?` | opt | engine-reconciled usage of the failed attempt; observability only, never billing |

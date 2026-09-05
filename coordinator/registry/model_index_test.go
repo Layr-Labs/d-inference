@@ -257,10 +257,7 @@ func TestRoutingWalksIdenticalWithFaultStateWithAndWithoutIndex(t *testing.T) {
 	for i := 0; i < f.reg.capacityCooldownCfg.Threshold+1; i++ {
 		f.reg.RecordCapacityReject(cooledID, model)
 	}
-	f.reg.mu.RLock()
-	cooled := f.reg.capacityCooldownActiveLocked(cooledID, model, benchPendingRequest(model, 0).FirstContentDeadline)
-	f.reg.mu.RUnlock()
-	if !cooled {
+	if !f.reg.capacityCooled(cooledID, model, benchPendingRequest(model, 0).FirstContentDeadline) {
 		t.Fatal("precondition: advertiser capacity-cooled")
 	}
 

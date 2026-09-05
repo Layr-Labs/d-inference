@@ -189,24 +189,34 @@ func (s *Server) shedIfModelRejected(w http.ResponseWriter, r *http.Request, par
 
 // sendProviderCancel sends a Cancel message for the given request to the
 // provider with a bounded timeout so a half-dead WebSocket doesn't hang the
-// caller. Errors are logged at debug level because a disconnect race is the
-// expected case — the provider may already be gone.
-func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) {
+// caller. It reports whether the frame was handed to the writer. Failures are
+// logged at debug level because a disconnect race is the expected case — the
+// provider may already be gone — but every one is metered
+// (inference.cancel_send_failed{reason}) since a dropped cancel is the only
+// silent-loss path on the coordinator side of cancel delivery.
+//
+// This is the raw primitive. Abandon paths that may leave the provider
+// generating go through sendAbandonCancel / cancelDispatch so the cancel is
+// recorded for terminal correlation and zombie re-sends.
+func (s *Server) sendProviderCancel(provider *registry.Provider, requestID string) bool {
 	if provider == nil || provider.Conn == nil {
-		return
+		return false
 	}
 	cancelMsg := protocol.CancelMessage{Type: protocol.TypeCancel, RequestID: requestID}
 	cancelData, err := json.Marshal(cancelMsg)
 	if err != nil {
 		s.logger.Error("failed to marshal cancel message", "request_id", requestID, "error", err)
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cancelWriteTimeout)
 	defer cancel()
 	if err := provider.EnqueueText(ctx, cancelData); err != nil {
+		s.ddIncr(metricCancelSendFailed, []string{"reason:" + cancelSendFailureReason(err)})
 		s.logger.Debug("failed to send cancel (provider may have disconnected)",
 			"request_id", requestID, "error", err)
+		return false
 	}
+	return true
 }
 
 func writeProviderInferenceRequestDeferred(
@@ -221,24 +231,61 @@ func writeProviderInferenceRequestDeferred(
 	return provider.WriteTextDeferred(ctx, builder, onHandoff)
 }
 
-// cancelDispatch cleans up a speculative dispatch participant that lost the
-// race (or a failed/timed-out attempt): removes the pending request, marks the
-// provider idle, sends a cancel over WebSocket so the provider stops generating
-// tokens, and refunds this attempt's provider-specific reservation top-up.
+// cancelDispatch abandons a dispatch attempt that may still be generating
+// (hedge loser, client gone before content): removes the pending request,
+// marks the provider idle, sends a cancel over WebSocket so the provider stops,
+// and refunds this attempt's provider-specific reservation top-up. cause is
+// the bounded cancel cause recorded for terminal correlation.
+//
+// The cancel is sent only when THIS call removed a live pending record and no
+// clean terminal has been ingressed for it. A missing record means a provider
+// terminal already claimed the attempt (handleInferenceError removes pending
+// before publishing on ErrorCh); a completion parked on the speculative
+// empty-completion decision leaves the record but marks completion ingress.
+// In both cases nothing is running provider-side, and cancelling would only
+// cost the provider a no-op frame per request. Attempts whose terminal was
+// observed by the caller use cancelDispatchAfterTerminal instead.
 //
 // The top-up refund only runs if THIS call actually removed the pending request
 // (RemovePending returned non-nil). If settlement (handleComplete) already
 // claimed it via its own RemovePending, we must not also refund — that would
 // double-credit the consumer.
-func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.PendingRequest) {
+func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.PendingRequest, cause string) {
+	if provider == nil || pr == nil {
+		return
+	}
+	pr.ResolveSpeculativeEmptyCompletion(false)
+	now := time.Now()
+	// Record before RemovePending: a terminal racing this cleanup looks the
+	// id up only after its own RemovePending returns nil, and must find the
+	// entry rather than log the terminal as unknown.
+	created, expired := s.zombieCanceller.record(pr.RequestID, pr.Model, cause, now)
+	s.emitExpiredCancelEntries(expired)
+	removed := provider.RemovePending(pr.RequestID)
+	s.registry.SetProviderIdle(provider.ID)
+	if removed != nil && !pr.HasCompletionIngress() {
+		pr.Profile.Mark(registry.StampCancelSent)
+		s.sendRecordedCancel(provider, pr.RequestID, pr.Model, cause)
+	} else if created {
+		s.zombieCanceller.forget(pr.RequestID)
+	}
+	if removed != nil {
+		s.refundProviderExtra(pr)
+	}
+}
+
+// cancelDispatchAfterTerminal is cancelDispatch for an attempt whose provider
+// terminal the caller has already observed (ErrorCh value / ChunkCh closed).
+// The terminal handler removed the pending record before publishing it, so
+// nothing is running provider-side and no cancel frame is sent — only the
+// speculative arbitration, idle transition and top-up refund remain.
+func (s *Server) cancelDispatchAfterTerminal(provider *registry.Provider, pr *registry.PendingRequest) {
 	if provider == nil || pr == nil {
 		return
 	}
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	removed := provider.RemovePending(pr.RequestID)
 	s.registry.SetProviderIdle(provider.ID)
-	pr.Profile.Mark(registry.StampCancelSent)
-	s.sendProviderCancel(provider, pr.RequestID)
 	if removed != nil {
 		s.refundProviderExtra(pr)
 	}
@@ -254,14 +301,20 @@ func (s *Server) cancelDispatchForFirstContentTimeout(
 	if provider == nil || pr == nil {
 		return false
 	}
+	now := time.Now()
+	created, expired := s.zombieCanceller.record(pr.RequestID, pr.Model, cancelCauseFirstChunkTimeout, now)
+	s.emitExpiredCancelEntries(expired)
 	removed, deferred := provider.RemovePendingForFirstContentTimeout(pr.RequestID)
 	if deferred || removed == nil {
+		if created {
+			s.zombieCanceller.forget(pr.RequestID)
+		}
 		return false
 	}
 	pr.ResolveSpeculativeEmptyCompletion(false)
 	s.registry.SetProviderIdle(provider.ID)
 	pr.Profile.Mark(registry.StampCancelSent)
-	s.sendProviderCancel(provider, pr.RequestID)
+	s.sendRecordedCancel(provider, pr.RequestID, pr.Model, cancelCauseFirstChunkTimeout)
 	s.refundProviderExtra(pr)
 	return true
 }
@@ -339,7 +392,7 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 // cause (admission_timeout — healthy but busy) feeds only the black-hole
 // capacity cooldown. Absent/engine_error/unknown causes keep the legacy
 // status/string funnels bit-for-bit (see api/terminal_cause.go).
-func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string) {
+func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, causes ...protocol.CoordinatorInferenceErrorCause) {
 	if providerID == "" || pr == nil {
 		return
 	}
@@ -354,6 +407,16 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// pre-commit provider errors. Capacity-class rejections never carry these
 	// reasons except deadline_unreachable, whose exclusion is intentional.
 	if isProviderHealthNeutralErrorReason(errReason) {
+		return
+	}
+	// Typed drain refusal (R2, registry/drain_state.go): the provider is
+	// restarting, not sick and not dishonest about capacity. It feeds NO
+	// breaker and NO gray-box capacity state (no cooldown strike, no rate
+	// derate, no budget clamp). Ingress marks draining before releasing the
+	// pending slot, so its queue drain already skips this provider. Do not
+	// repeat that mutation here: an idle/serving heartbeat may have cleared
+	// the mark while this consumer was waiting to process its error channel.
+	if isDrainingErrorReason(errReason) {
 		return
 	}
 	// Typed terminal-cause gate (the deadline-incident fix): the provider told
@@ -381,7 +444,17 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 		}
 		return
 	}
-	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
+	// Late disconnect-flush strike (registry/version_reset.go): the session this
+	// 502 was flushed from was dropped at or before its identity's version-
+	// changed reset, so the reset already accounted for it. The flush is
+	// recorded HERE, by the request goroutine, not by Disconnect — and
+	// registration evicts a same-serial predecessor and stores the new version
+	// on one goroutine, ahead of these consumers — so without the check the
+	// new binary would be quarantined for the old one's death.
+	if s.registry.IsSupersededDisconnectFlush(providerID, statusCode, causes...) {
+		return
+	}
+	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape(), causes...) {
 		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
 	}
 	// Feed EVERY provider terminal into the per-provider node-health breaker (not
@@ -389,15 +462,13 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// fault-503ing ~all of its requests gets quarantined fleet-wide. errStr lets
 	// the breaker tell a capacity-503 (ignored) from a fault-503 (counted). Both
 	// breakers coexist.
-	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr); opened {
+	if opened, _ := s.registry.RecordProviderOutcome(providerID, false, statusCode, errStr, causes...); opened {
 		s.ddIncr("routing.provider_breaker_open", []string{"model:" + pr.Model})
 	}
 	// Feed the STABLE-IDENTITY ejection breaker too (survives reconnect churn, so a
 	// zombie that fault-loops while constantly disconnecting still accumulates).
-	if sid := s.registry.GetProviderStableIdentity(providerID); sid != "" {
-		if ejected, _ := s.registry.RecordProviderServeOutcome(sid, false, statusCode, errStr); ejected {
-			s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
-		}
+	if ejected, _ := s.registry.RecordProviderSessionServeOutcome(providerID, false, statusCode, errStr, causes...); ejected {
+		s.ddIncr("routing.provider_ejected", []string{"model:" + pr.Model})
 	}
 	// Feed the capacity-reject cooldown. Capacity-class rejections are
 	// DELIBERATELY invisible to reputation and to ALL the breakers above (a
@@ -560,9 +631,9 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 // so arms where cancelDispatch did refund are safe, and a failed pre-commit
 // attempt never reaches settlement (its channels are closed and it is neither
 // pending nor parked), so this can never double-credit against a settle.
-func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string) (discardedHeld bool) {
+func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string, causes ...protocol.CoordinatorInferenceErrorCause) (discardedHeld bool) {
 	if provider != nil {
-		s.noteInferenceError(provider.ID, pr, statusCode, errStr, errReason, terminalCause)
+		s.noteInferenceError(provider.ID, pr, statusCode, errStr, errReason, terminalCause, causes...)
 	}
 	s.refundProviderExtra(pr)
 	if held == nil || len(*held) == 0 {
@@ -2586,7 +2657,7 @@ func (s *Server) writeChatStreamProviderError(
 	errMsg protocol.InferenceErrorMessage,
 ) {
 	s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 	s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 	s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 	s.writeChatStreamTerminalError(
@@ -2626,7 +2697,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 	}
 	if initialError != nil {
 		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause, initialError.CoordinatorCause)
 		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, *initialError))
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
@@ -2642,7 +2713,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(
 	// emitProviderError settles and reports an in-band provider error.
 	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
 		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
@@ -2757,7 +2828,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 	}
 	if initialError != nil {
 		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause)
+		s.noteInferenceError(pr.ProviderID, pr, initialError.StatusCode, initialError.Error, initialError.ErrorReason, initialError.TerminalCause, initialError.CoordinatorCause)
 		s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, *initialError))
 		s.writeGenericProviderError(w, *initialError)
 		return
@@ -2771,7 +2842,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 						s.writeGenericProviderError(w, errMsg)
 						return
@@ -2931,7 +3002,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause, errMsg.CoordinatorCause)
 			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 			s.writeGenericProviderError(w, errMsg)
 			return

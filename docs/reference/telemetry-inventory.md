@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-04 · commit `fcecc3675`
+> Last updated: 2026-09-04 · commit `6f364e64b`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -34,7 +34,7 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `backend_capacity` (`slots[]`, GPU memory, `free_for_load_gb`, `capacity_seq`, `mlx_cache_reclaimer`) | `heartbeat` | same; the provider recomputes capacity every `max(1, heartbeat_interval_secs / 2)` s, integer division (`capacityRefreshTick`, `provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`) | `canonicalHeartbeatModelState` clones then `clampBackendCapacity` (`coordinator/registry/registry.go`); stale `capacity_seq` frames update only `LastHeartbeat` | memory; sampled into `fleet_snapshots` |
 | `slots[].telemetry`, `backend_capacity.telemetry` | `heartbeat` | same | clamped by `clampBackendCapacity`; sampled into `fleet_snapshots` | `fleet_snapshots` retention ([below](#coordinator-per-request-records-postgres)) |
 | `slots[]` engine-health fields (`steps_executed`, `admits`, `wedge_suspected`, `eval_in_flight_ms`, …) | `heartbeat` | same | `recordBackendWedgeTelemetry` (`coordinator/api/provider_wedge_telemetry.go`) → Datadog counters; measurement only, never a gate | Datadog |
-| GPU memory and `mlx_cache_reclaimer` | `heartbeat` | same | `recordMLXCacheTelemetry` (`coordinator/api/provider_mlx_cache_telemetry.go`) → gauges tagged `provider_id` | Datadog |
+| GPU memory and `mlx_cache_reclaimer` | `heartbeat` | same | `recordMLXCacheTelemetry` (`coordinator/api/provider_mlx_cache_telemetry.go`) → histograms (DogStatsD-only) or latest-value gauges (HTTPS), and counter deltas tagged `chip_family`, `provider_version` | Datadog |
 | `prefix_cache_statuses`, `prefix_cache_donation_outcomes`, `prefix_cache_v2_models` | `register`, `heartbeat` | same | registry exact-cache state; `exact_cache.*` gauges; `routing.cache_telemetry_rejected{source:heartbeat}` on validation failure | memory |
 | `apns_device_token`, `apns_environment` | `register`, `heartbeat` | when changed | code-attestation re-arm (`maybeRearmCodeAttest`) | memory |
 | `usage`, `stop_sequence`, `response_hash`, `se_signature` | `inference_complete` | per attempt | `handleComplete` → `inference_routes` outcome columns, `usage` row, billing; `inference.completions`, `inference.ttft_ms`, `inference.decode_tps` | `inference_routes`/`usage` unbounded |
@@ -42,7 +42,7 @@ Producer: the Swift provider over the `GET /ws/provider` WebSocket. Consumer:
 | `profile` (on both terminals) | `inference_complete`, `inference_error` | per attempt, ≤ `MaxInferenceProfileBytes` ([`protocol-messages.md#inference_complete`](protocol-messages.md#inference_complete)) | raw bytes retained on the attempt, decoded on the profile-sink worker → `request_profiles`; `profiler.provider_profile{valid, reason}` | `request_profiles` retention ([below](#coordinator-per-request-records-postgres)) |
 | `cache_stage_ms` and prefix-cache receipts | `inference_complete.usage`, `prefix_cache_lookup*`, `prefix_cache_ready*` | per attempt | `routing.cache_stage_ms`, `routing.cache_lookup_receipt`, `routing.cache_ready_receipt`, `routing.cache_receipt_rejected`, `exact_cache.*` | Datadog |
 | `capacity_quote` | reply to `capacity_probe` | per probed request, within `capacityProbeWindow` ([`../architecture/routing.md#entry-points`](../architecture/routing.md#entry-points)) | `Registry.HandleCapacityQuote` — ledger drift correction | memory |
-| Disconnect | WebSocket close / read error | per session | `ws.disconnects{reason:peer_close, code}` or `{reason:read_error}`; `provider.oom_suspected` when `ClassifyDisconnectReason` (`coordinator/registry/disconnect_classify.go`) sees `memory_pressure ≥ 0.90`, or `≥ 0.80` with in-flight work; `provider_sessions.disconnect_reason` via `CloseProviderSession` (`oom_suspected`, `ws_close_<code>`, `read_error`, sweep default `disconnect`) | `provider_sessions` unbounded |
+| Disconnect | WebSocket close / read error | per session | `ws.disconnects{reason:peer_close, code}` or `{reason:read_error|read_error_control_frame}`; `provider.oom_suspected` when `ClassifyDisconnectReason` (`coordinator/registry/disconnect_classify.go`) sees `memory_pressure ≥ 0.90`, or `≥ 0.80` with in-flight work; `provider_sessions.disconnect_reason` via `CloseProviderSession` (`oom_suspected`, `ws_close_<code>`, `read_error`, `read_error_control_frame`, sweep default `disconnect`) | `provider_sessions` unbounded |
 | `darkbloom report` log bundle | `POST /v1/provider/log-report` (`handleUploadLogReport`, `coordinator/api/log_report_handlers.go`) | operator-initiated | `provider_log_reports`, ≤ 10 MiB (`maxLogReportBodySize`); `?serial` → `426` | unbounded |
 
 Fields the v0.8.16 provider declares but never populates: `register.prefill_tps`
@@ -65,14 +65,15 @@ lists every name).
 
 | Metric | Type | Tags | Emitted |
 |---|---|---|---|
-| `provider.mlx_memory.active_gb`, `.peak_gb`, `.cache_gb` | gauge | `provider_id` | every accepted heartbeat with `backend_capacity` |
-| `provider.mlx_cache.limit_bytes`, `.sweep_signals_total`, `.reclaims_total`, `.reclaimed_bytes_total`, `.last_reclaimed_bytes`, `.last_reclaim_duration_ms` | gauge (cumulative, resets on provider restart) | `provider_id` | every heartbeat carrying `mlx_cache_reclaimer` |
+| `provider.mlx_memory.active_gb`, `.peak_gb`, `.cache_gb` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | accepted heartbeat snapshot (`coordinator/api/provider_mlx_cache_telemetry.go`, `recordMLXCacheTelemetry`) |
+| `provider.mlx_cache.limit_bytes`, `.last_reclaimed_bytes`, `.last_reclaim_duration_ms` | histogram (DogStatsD-only) / latest-value gauge (HTTPS) | `chip_family`, `provider_version` | limit each accepted heartbeat; last-reclaim samples only when reclaim count increases (`recordMLXCacheTelemetry`) |
+| `provider.mlx_cache.sweep_signals`, `.reclaims`, `.reclaimed_bytes` | count | `chip_family`, `provider_version` | positive deltas from the previous accepted snapshot; first observation/reset contributes no delta (`ddCountDelta`) |
 | `provider.first_token_wedge_suspected` | count | `model` | per slot with `wedge_suspected` true, per heartbeat |
 | `provider.eval_in_flight_long` | count | — | at most once per heartbeat when any slot's `eval_in_flight_ms ≥ evalInFlightLongMs = 2000` |
 | `provider.oom_suspected` | count | — | abrupt disconnect classified as OOM |
 | `provider.enqueue_failed` | count | `msg:runtime_status`, `msg:trust_status` | outbound frame could not be queued |
 | `providers.registrations` | count | `trust_level` | each `register` |
-| `ws.disconnects` | count | `reason:peer_close` + `code:<n>`, or `reason:read_error` | each session end |
+| `ws.disconnects` | count | `reason:peer_close` + `code:<n>`, or `reason:read_error|read_error_control_frame` | each session end (`coordinator/api/provider.go`, `readErrorDisconnectReason`); mirrored by `ws_disconnects_total` |
 | `routing.cache_telemetry_rejected`, `routing.cache_capability_rejected` | count | `source:heartbeat` | heartbeat prefix-cache payload failed validation |
 | `inference.unknown_request_frames` | count | `kind:chunk`, `complete`, `duplicate_complete`, `error`, `duplicate_error` | frame for an unknown or already-closed request |
 | `routing.throughput_anomaly` | count | `model`, `chip_family` | observed vs advertised throughput divergence (`coordinator/api/throughput_anomaly.go`); mirrored to the in-process registry |
@@ -85,6 +86,9 @@ lists every name).
 | Metric | Type | Tags | Emitted |
 |---|---|---|---|
 | `inference.request_outcome` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `rate_limited`, `client_error`; `mid_stream` declared, never produced), `kv_backend`, `kv_backend_fallback` | once per chat/responses request (`coordinator/api/or_uptime.go`); `/v1/completions` and `/v1/messages` dispatches excluded, their pre-dispatch rejections included |
+| `inference.request_outcome_or_view` | count | `model`, `class` (`success`, `provider_5xx`, `timeout`, `mid_stream`, `rate_limited`, `client_error`, `client_gone`) | request-level terminal view: pre-dispatch rejection, dispatch terminal (including attempt-zero TTFT rejection), client departure, or committed route outcome; `client_gone` excludes early/post-commit client aborts while pre-content aborts at the deadline count as `timeout` (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
+| `routing.route_latency_ms` | histogram (DogStatsD only) | `model` | attempt-zero non-queued provider selection: `RoutedAt` minus `MediaFetchedAt` when set, otherwise `ReservedAt`; requires valid timing anchors (`coordinator/api/attempt_outcome_metrics.go`, `emitRouteLatency`). No in-process mirror. |
+| `routing.provider_draining` | count | `model` | transition into draining announced by a validated error terminal, before releasing pending capacity (`coordinator/api/provider_drain.go`, `noteProviderDraining`). No in-process mirror. |
 | `inference.completions` | count | `model` | each `inference_complete` |
 | `inference.dispatches` | count | `status:success`, `failure`, `timeout`, `retry`, `retry_precontent` | each attempt |
 | `inference.ttft_ms`, `inference.decode_tps` | histogram | `model`, `kv_backend`, `kv_backend_fallback` | Measured on the coordinator's clock, not reported by the provider: TTFT is dispatch → first content chunk, the same value `handleComplete` persists as `inference_routes.actual_ttft_ms`; decode TPS is the outcome row's `actual_decode_tps`. Emitted once per completion with a positive finite value (`coordinator/api/kv_backend_metrics.go`) |
@@ -96,9 +100,16 @@ lists every name).
 | `inference.invalid_failure_code`, `inference.in_band_error`, `inference.first_content_after_deadline`, `inference.speculative_dispatch`, `inference.speculative_win`, `inference.zombie_stream_cancel`, `inference.chunk_overflow_abort` | count | various | dispatch edge cases (`coordinator/api/dispatch.go`, `provider.go`) |
 | `inference.prompt_tokens`, `inference.completion_tokens` (histogram); `inference.prompt_tokens_total`, `inference.completion_tokens_total` (count) | — | `model` | each completion |
 | `registry.mu.write_wait_ms` | histogram | `site` | Registry write-lock acquisition wait, emitted after unlock (`coordinator/registry/lock_wait.go`, `lockWrite`); dispatch-load failure and recovery are separate sites. |
+| `registry.gate.wait_ms` | histogram (DogStatsD only) | `site` | per-identity recorder gate waits over `gateWaitReportThreshold`, emitted after release (`coordinator/registry/gate_lock.go`, `SetGateWaitObserver`; `coordinator/api/server.go`). No in-process mirror. |
 | `routing.scans` | count | `model`, `outcome` | Full reservation scans including retries (`coordinator/api/dispatch.go`, `recordRoutingDecisionFor`). |
 | `routing.decisions` | count | `model`, `model_type`, `outcome` (`selected`, `queued`, `model_shed`, `ttft_429`, `model_too_large`, `over_capacity`, `routing_saturated`, `capacity_queue_spill`, `capacity_429`, `cold_dispatch_spill`, `dedicated_capacity_429`, `no_eligible_provider`, `ttft_soft_served`, `unservable_429`) | each admission decision |
-| `routing.client_gone` | count | `model`, `prompt_bucket`, `chip_family`, `phase` (`before_first_token`, `after_commit`) | consumer disconnect |
+| `inference.attempt_outcome`, `inference.queue_outcome` | count | `model`, `class` | dispatched-attempt and queue-only outcomes kept separate (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`) |
+| `inference.unknown_frames` | count | `kind`, `provider_version` | unrecognized chunk/complete/error frames (`coordinator/api/unknown_frame_metrics.go`, `emitUnknownFrame`) |
+| `inference.cancel_sent`, `inference.cancel_unresolved` | count | `cause`, `model` | enqueue accepted / tracker expiry without a terminal or post-send stray chunk (`coordinator/api/cancel_lifecycle.go`) |
+| `inference.cancel_send_failed` | count | `reason` | enqueue rejected (`sendProviderCancel`) |
+| `inference.cancelled_terminal` | count | `outcome`, `cause`, `delivered` | terminal correlation; `delivered` means enqueue accepted (`resolveCancelledTerminal`) |
+| `inference.cancel_to_terminal_ms` | histogram | `terminal`, `model`, `cause` | first successful enqueue to terminal or last later stray chunk; no sample for an unsent cancel (`emitExpiredCancelEntries`) |
+| `routing.client_gone` | count | `model`, `prompt_bucket`, `chip_family`, `phase` (`before_first_token`, `after_commit`), `deadline_bucket` | consumer disconnect (`coordinator/api/prompt_buckets.go`, `emitClientGoneBucketed`) |
 | `routing.provider_breaker_open` / `_closed`, `routing.provider_ejected` / `routing.provider_ejection_recovered`, `routing.cooldown_entered`, `routing.capacity_cooldown_tripped`, `routing.load_failure_cooldowns` | count | `model` (+ `provider_id` for capacity cooldown) | fault-tracker transitions (`coordinator/api/consumer.go`, `provider.go`) |
 | `routing.ttft_calibration_ratio` | gauge | `model` | each TTFT observation (`coordinator/api/settlement.go`) |
 | `routing.unservable_reclassified`, `routing.first_chunk_timeout_reclassified`, `routing.client_error_passthrough`, `routing.oversized_request_rejected`, `routing.deadline_unreachable_rejected`, `routing.invalid_ttft`, `routing.dispatch_client_error_stop`, `routing.first_chunk_timeout_ladder_capped`, `routing.hedge_governor_suppressed`, `routing.pending_load_backoff`, `routing.scan_admission_timeout`, `routing.ttft_admission`, `routing.ttft_spread`, `routing.provider_selected`, `routing.load_model_rejects` | count | mostly `model` | routing edge cases |
@@ -115,6 +126,7 @@ lists every name).
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
 | `providers.online`, `providers.per_model{model}`, `providers.per_version{version}`, `providers.by_trust_status{…}`, `providers.by_mdm_failure{reason}`, `attestation.code_attested`, `attestation.code_enforced`, `coordinator.min_provider_version_set{min_version}`, `request_queue.depth`, `utilization.network`, `utilization.warm`, `utilization.token_budget`, `utilization.bottleneck`, `utilization.model{model}`, `capacity.tps`, `capacity.demand_concurrency`, `capacity.serving_capacity`, `capacity.spill_arrival_rate` | gauge | as listed | every 15 s from `StartDDGaugeLoop` (`coordinator/api/server.go`), which also pushes the `exact_cache.*` gauges (`emitExactCacheDDGauges`, `coordinator/api/exact_cache_metrics.go`); the loop returns immediately when no Datadog client is configured |
+| `request_queue.depth_by_model`, `request_queue.oldest_age_ms` | gauge | `model` | every gauge-loop tick for served or queued models; a disappearing model gets one final zero for both series and is then forgotten (`coordinator/api/fleet_gauges.go`, `emitPerModelQueueGauges`) |
 
 ### In-process registry (not Datadog)
 
@@ -122,6 +134,15 @@ lists every name).
 `telemetry_events_total{source, severity, kind}`, `routing.throughput_anomaly`
 and computed gauges in memory; `GET /v1/admin/metrics` returns them as JSON or
 Prometheus text (`?format=prom`). Reset on restart.
+
+| In-process counter | Labels | Source / Datadog counterpart |
+|---|---|---|
+| `inference_attempt_outcome_total` | `model`, `class` | `inference.attempt_outcome`; terminal dispatched-attempt outcomes (`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`) |
+| `inference_queue_outcome_total` | `model`, `class` | `inference.queue_outcome`; queue exits that dispatched no attempt (`coordinator/api/attempt_outcome_metrics.go`, `emitQueueOutcomeMetric`) |
+| `inference_request_outcome_or_view_total` | `model`, `class` | `inference.request_outcome_or_view`; the same request-terminal classes and counting boundaries (`coordinator/api/attempt_outcome_metrics.go`, `recordRequestOutcomeORView`) |
+| `inference_unknown_frames_total` | `kind`, `provider_version` | `inference.unknown_frames`; unrecognized chunk/complete/error frames (`coordinator/api/unknown_frame_metrics.go`, `emitUnknownFrame`) |
+| `ws_disconnects_total` | `reason`, plus `code` for `peer_close` | `ws.disconnects`; `reason` is `peer_close`, `read_error`, or `read_error_control_frame` (`coordinator/api/provider.go`, `providerReadLoop`) |
+
 
 ## Coordinator-emitted events
 
@@ -134,7 +155,7 @@ Datadog's; nothing is stored locally.
 | Message | Severity · kind | Fields | Site |
 |---|---|---|---|
 | `provider registered` | info · `log` | `provider_id`, `trust_level`, `hardware_chip`, `memory_gb` | `coordinator/api/provider.go` |
-| `provider websocket read error` | warn · `connectivity` | `provider_id`, `ws_state:read_error`, `last_error` | `provider.go` |
+| `provider websocket read error` | warn · `connectivity` | `provider_id`, `ws_state:read_error`, `reason:read_error|read_error_control_frame`, `last_error` | `provider.go` |
 | `provider disconnected under memory pressure (suspected OOM)` | error · `oom` | `provider_id`, `memory_pressure`, `in_flight` | `provider.go` |
 | `attestation challenge failed` | warn or error · `attestation_failure` | `provider_id`, `reason`, `reconnect_count` | `provider.go` |
 | `provider failed, retrying` / `provider failed after accepting request, retrying` | warn · `inference_error` | `provider_id`, `attempt`, `reason:provider_error`, `status_code` (+ `request_id`) | `coordinator/api/dispatch.go` |

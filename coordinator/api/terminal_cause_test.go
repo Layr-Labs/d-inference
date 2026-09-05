@@ -44,7 +44,7 @@ func deliverTypedError(t *testing.T, srv *Server, provider *registry.Provider, m
 	if !ok {
 		t.Fatalf("ErrorCh closed without a terminal for %s", requestID)
 	}
-	srv.noteInferenceError(pr.ProviderID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause)
+	srv.noteInferenceError(pr.ProviderID, pr, em.StatusCode, em.Error, em.ErrorReason, em.TerminalCause, em.CoordinatorCause)
 	return pr
 }
 

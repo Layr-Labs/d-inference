@@ -9,7 +9,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -28,23 +32,63 @@ func TestSessionDisconnectReason(t *testing.T) {
 		name         string
 		closeStatus  websocket.StatusCode
 		oomSuspected bool
+		readReason   string
 		want         string
 	}{
-		{"normal close frame", websocket.StatusNormalClosure, false, "ws_close_1000"},
-		{"going away close frame", websocket.StatusGoingAway, false, "ws_close_1001"},
-		{"policy violation (challenge force-reconnect)", websocket.StatusPolicyViolation, false, "ws_close_1008"},
-		{"abrupt drop", -1, false, "read_error"},
-		{"abrupt drop under memory pressure", -1, true, "oom_suspected"},
+		{"normal close frame", websocket.StatusNormalClosure, false, readErrorReasonGeneric, "ws_close_1000"},
+		{"going away close frame", websocket.StatusGoingAway, false, readErrorReasonGeneric, "ws_close_1001"},
+		{"policy violation (challenge force-reconnect)", websocket.StatusPolicyViolation, false, readErrorReasonGeneric, "ws_close_1008"},
+		{"abrupt drop", -1, false, readErrorReasonGeneric, "read_error"},
+		{"control-frame handling failure", -1, false, readErrorReasonControlFrame, "read_error_control_frame"},
+		{"abrupt drop under memory pressure", -1, true, readErrorReasonGeneric, "oom_suspected"},
 		// A close frame never coexists with the OOM classification in the read
 		// loop (classification only runs on the abrupt branch), but the mapping
 		// must still prioritize the stronger signal if both are ever set.
-		{"oom wins over close frame", websocket.StatusNormalClosure, true, "oom_suspected"},
+		{"oom wins over close frame", websocket.StatusNormalClosure, true, readErrorReasonGeneric, "oom_suspected"},
+		// Likewise the read-error classification only exists on the frame-less
+		// branch; a close code must win if both are ever set.
+		{"close code wins over control-frame reason", websocket.StatusNormalClosure, false, readErrorReasonControlFrame, "ws_close_1000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected); got != tt.want {
-				t.Errorf("sessionDisconnectReason(%d, %v) = %q, want %q",
-					tt.closeStatus, tt.oomSuspected, got, tt.want)
+			if got := sessionDisconnectReason(tt.closeStatus, tt.oomSuspected, tt.readReason); got != tt.want {
+				t.Errorf("sessionDisconnectReason(%d, %v, %q) = %q, want %q",
+					tt.closeStatus, tt.oomSuspected, tt.readReason, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReadErrorDisconnectReason pins the frame-less read-error classification.
+// The first case is the exact chain nhooyr produces when a pong cannot take
+// the write lock while a data frame is in flight (observed live in
+// registry.TestUnfragmentedConnWriteStallsPeerPing); anything not about a
+// control frame stays the generic "read_error".
+func TestReadErrorDisconnectReason(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"pong blocked behind an in-flight data frame",
+			errors.New("failed to get reader: failed to handle control frame opPing: failed to write control frame opPong: failed to acquire lock: context deadline exceeded"),
+			readErrorReasonControlFrame},
+		{"pong write stalled on a full socket",
+			errors.New("failed to get reader: failed to handle control frame opPing: failed to write control frame opPong: failed to write frame: context deadline exceeded"),
+			readErrorReasonControlFrame},
+		{"malformed control frame",
+			errors.New("failed to get reader: failed to handle control frame opPing: received fragmented control frame"),
+			readErrorReasonControlFrame},
+		{"tcp reset",
+			errors.New("failed to get reader: failed to read frame header: read tcp 127.0.0.1:1->127.0.0.1:2: read: connection reset by peer"),
+			readErrorReasonGeneric},
+		{"eof", io.EOF, readErrorReasonGeneric},
+		{"nil", nil, readErrorReasonGeneric},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readErrorDisconnectReason(tt.err); got != tt.want {
+				t.Errorf("readErrorDisconnectReason(%v) = %q, want %q", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -66,6 +110,12 @@ func newSessionReasonHarness(t *testing.T, ctx context.Context) *sessionReasonHa
 // is handed to the server (and, via NewServer, the registry). The harness
 // itself keeps reading session rows from the raw store.
 func newSessionReasonHarnessWith(t *testing.T, ctx context.Context, wrap func(*registry.Registry, *store.MemoryStore) store.Store) *sessionReasonHarness {
+	return newSessionReasonHarnessDial(t, ctx, wrap, nil)
+}
+
+// newSessionReasonHarnessDial additionally lets the test control how the
+// provider WebSocket is dialed (e.g. to capture the underlying net.Conn).
+func newSessionReasonHarnessDial(t *testing.T, ctx context.Context, wrap func(*registry.Registry, *store.MemoryStore) store.Store, dialOpts *websocket.DialOptions) *sessionReasonHarness {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -80,7 +130,7 @@ func newSessionReasonHarnessWith(t *testing.T, ctx context.Context, wrap func(*r
 	t.Cleanup(ts.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
-	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn, _, err := websocket.Dial(ctx, wsURL, dialOpts)
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)
 	}
@@ -187,6 +237,51 @@ func TestProviderSessionReasonAbruptClose(t *testing.T) {
 
 	if reason := h.closedReason(t); reason != "read_error" {
 		t.Errorf("disconnect_reason = %q, want %q", reason, "read_error")
+	}
+}
+
+// A read-loop exit caused by a control-frame handling failure must be stamped
+// "read_error_control_frame" through the real HTTP path, not the generic
+// "read_error". The trigger here is a protocol violation (a FIN=0 ping) rather
+// than the production write stall — that stall is reproduced live in
+// registry.TestUnfragmentedConnWriteStallsPeerPing — because it
+// deterministically yields the same "failed to handle control frame" read
+// error the classifier keys on, without a multi-second socket stall.
+func TestProviderSessionReasonControlFrameReadError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rawConnCh := make(chan net.Conn, 1)
+	h := newSessionReasonHarnessDial(t, ctx, nil, &websocket.DialOptions{
+		HTTPClient: &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				rawConnCh <- c
+				return c, nil
+			},
+		}},
+	})
+	var rawConn net.Conn
+	select {
+	case rawConn = <-rawConnCh:
+	default:
+		t.Fatal("dial did not capture the underlying net.Conn")
+	}
+	defer h.conn.CloseNow()
+
+	// A masked, zero-length ping with FIN clear, written underneath the idle
+	// nhooyr client. nhooyr's handleControl rejects it ("received fragmented
+	// control frame") and readLoop wraps it as "failed to handle control frame
+	// opPing: ..." — a frame-less Read failure on the coordinator side.
+	if _, err := rawConn.Write([]byte{0x09, 0x80, 0x11, 0x22, 0x33, 0x44}); err != nil {
+		t.Fatalf("write fragmented ping: %v", err)
+	}
+
+	if reason := h.closedReason(t); reason != "read_error_control_frame" {
+		t.Errorf("disconnect_reason = %q, want %q", reason, "read_error_control_frame")
 	}
 }
 

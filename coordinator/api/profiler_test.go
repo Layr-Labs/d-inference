@@ -653,7 +653,9 @@ func TestQueuedAttemptExitsCarryRouteOutcome(t *testing.T) {
 	}{
 		{"queue_full", 0, 10 * time.Second, nil, outcomeResponseWritten, "rejected", "queue_full"},
 		{"client_gone", 4, 10 * time.Second, func(_ *testing.T, _ *Server, cancel context.CancelFunc) { cancel() }, outcomeClientGone, "cancelled", "client_gone"},
-		{"first_chunk_timeout", 4, 200 * time.Millisecond, nil, outcomeFailFast, "timeout", "first_chunk_timeout"},
+		// The queue-wait first-content expiry is the queue's own terminal
+		// (queue_deadline), kept distinct from a dispatched provider's silence.
+		{"queue_deadline", 4, 200 * time.Millisecond, nil, outcomeFailFast, "timeout", rejectionReasonQueueDeadline},
 		{"ttft_too_slow", 4, 10 * time.Second, failQueued(registry.ErrQueueTTFTTooSlow), outcomeResponseWritten, "error", "ttft_too_slow"},
 		{"model_capability_unsupported", 4, 10 * time.Second, failQueued(registry.ErrQueueToolConstraintUnavailable), outcomeResponseWritten, "error", "model_capability_unsupported"},
 		{"queue_timeout", 4, 10 * time.Second, failQueued(nil), outcomeResponseWritten, "timeout", "queue_timeout"},

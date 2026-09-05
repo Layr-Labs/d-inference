@@ -1,6 +1,6 @@
 # MLX stack: the three pinned submodules and the metallib
 
-> Last updated: 2026-09-05 · commit `2df9d5c1b`
+> Last updated: 2026-09-05 · commit `8f70ac5c7`
 
 What the provider links from `libs/`, at which commits, what each submodule
 contributes, how the Metal kernel library (`mlx.metallib`) is built from the
@@ -31,7 +31,7 @@ gitlink in the superproject tree; read it with `git ls-tree HEAD libs/`:
 | Submodule | Fork | Pinned commit (`2df9d5c1b`) | What the provider gets from it |
 |---|---|---|---|
 | `libs/mlx-swift` | `Layr-Labs/mlx-swift` | `6b0505cc790f512ae49d740b21e13f80802946bd` | `MLX` (arrays, lazy evaluation, Metal device) and `MLXNN`; its `Cmlx` target compiles the C++ core from the **nested** submodules `libs/mlx-swift/Source/Cmlx/mlx` (`734241bb`) and `libs/mlx-swift/Source/Cmlx/mlx-c` (`9ff12fab`) — the tree the metallib is built from |
-| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `92be949` — a **DEV pin** on the fork branch `feat/qwen4exp-ngram-table`, not a commit on the fork's `main`. It carries the `MLXRunners` package, the Qwen 3.8 Flash-Next runner, the n-gram table reader, and the loader's tensor-name exclusion seam. It also carries `feat/cbv2-request-timing`, which fork PR #136 lands on `main`. It moves to a `main` commit once #136 and the runner stack (#131, #132, #133, #134, #135) merge | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXRunners` (the runner boundary: one runner and one manifest per model family), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
+| `libs/mlx-swift-lm` | `Layr-Labs/mlx-swift-lm` | `cb97206` — a **DEV pin** on the fork branch `feat/qwen4exp-ngram-table`, not a commit on the fork's `main`. It carries the `MLXRunners` package with `Runner.adopt` (a runner takes over a module the caller already holds, so nothing is loaded twice), the Qwen 3.8 Flash-Next runner, the n-gram table reader, and the loader's tensor-name exclusion seam. It also carries `feat/cbv2-request-timing`, which fork PR #136 lands on `main`. It moves to a `main` commit once #136 and the runner stack (#131, #132, #133, #134, #135) merge | `MLXLMCommon` (model loading, tokenizer integration, ContinuousBatchingV2 engine, tool-call formats), `MLXLLM` and `MLXVLM` (model implementations), `MLXRunners` (the runner boundary: one runner and one manifest per model family), `MLXLMServer` (OpenAI request types, tool and reasoning parsers, local HTTP router) |
 | `libs/mlx` | `Layr-Labs/mlx` (`branch = main`) | `0a725e3000edabc4911cde345270ca950bfa152f` | A separate checkout of the C++ core. Neither `provider-swift/Package.swift`, `Makefile`, `scripts/`, nor `.github/` reads it; bumping it alone changes no provider bytes (`CLAUDE.md`) |
 
 The `libs/mlx-swift-lm` row is the only pin that is not a fork `main`

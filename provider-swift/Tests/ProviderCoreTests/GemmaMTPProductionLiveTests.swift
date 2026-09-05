@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXLMServer
 import Testing
 
@@ -285,6 +286,8 @@ struct GemmaMTPProductionLiveTests {
 private struct AlwaysFailMTPAssistantLoader: ProviderMTPAssistantLoading {
     func loadAndBind(
         artifact _: SpecDecArtifact,
+        runner _: (any Runner.Type)?,
+        modelDirectory _: URL?,
         target _: any MLXLMCommon.LanguageModel
     ) async throws -> ProviderMTPAssistantHandle {
         throw ProviderMTPAssistantLoadError.loadFailed("injected live fallback probe")

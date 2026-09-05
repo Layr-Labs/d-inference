@@ -1,8 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Registry-derived supported set for the v2 engine (Darkbloom runner
-// contract §6.2 rule 4), narrowed for one release by what the provider's
-// slot can build — see `isSupported`.
+// contract §6.2 rule 4).
 //
 // v0.7.5 serves EVERYTHING through ContinuousBatchingV2 — there is no
 // legacy fallback — so a model is advertised to the coordinator ONLY when a
@@ -49,15 +48,7 @@ public enum EngineV2SupportedModels {
     /// here, before the lookup.
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
-        guard RunnerRegistry.shared.contains(modelType: raw) else { return false }
-        // TEMPORARY, and it is the narrower half of the same question: a
-        // runner may claim a `model_type` the provider's slot cannot build
-        // yet, because the slot still loads a `ModelContainer` rather than
-        // calling `Runner.load` (see `EngineV2RunnerBuild.swift` for why).
-        // Advertising such a model would replace a clean 404 with a
-        // load-then-503 the coordinator reroutes into a second failure.
-        // Deleted together with `EngineV2ModelAdaptation`.
-        return EngineV2ModelAdaptation.containerServableModelTypes.contains(raw)
+        return RunnerRegistry.shared.contains(modelType: raw)
     }
 
     /// Split an advertised-model list into (supported, unsupported) by the

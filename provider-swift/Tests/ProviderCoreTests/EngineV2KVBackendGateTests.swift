@@ -149,14 +149,19 @@ private func gateEnvironment(_ overrides: [String: String] = [:]) -> [String: St
 
 private func makeBuild(
     model: any LanguageModel,
+    modelType: String,
     kvBackend: EngineV2KVBackendSelection,
     environment: [String: String] = [:],
     pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
 ) throws -> EngineV2Factory.ProductionBuild {
     _ = LiveInferenceFixtures.ensureMetallibColocated()
+    // The runner adopts the module this test built in memory; `adopt` reads
+    // no tensors, so a directory holding only `config.json` is the whole
+    // checkpoint it needs.
     return try EngineV2Factory.makeProductionBuild(
         model: model,
         tokenizer: StubBridgeTokenizer(),
+        modelDirectory: try makeCheckpointDirectory(modelType: modelType),
         kvBytesCapacity: gateTestCapacity,
         // Deliberately 2: these gates assert BACKEND SELECTION, and a small
         // pool keeps construction cheap. Production defaults to B=4 while
@@ -207,7 +212,7 @@ struct EngineV2KVBackendGateTests {
 
     @Test("auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults")
     func autoServesContiguousForGPTOSS() async throws {
-        let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .auto)
+        let build = try makeBuild(model: try tinyGPTOSS(), modelType: "gpt_oss", kvBackend: .auto)
         // `.auto` is CONTIGUOUS as of v0.8.1 — see the rationale at
         // EngineV2Factory+Production.swift's `.auto` case. This assertion
         // guards BOTH directions: it caught the first flip, it caught the
@@ -231,7 +236,7 @@ struct EngineV2KVBackendGateTests {
 
     @Test("auto resolves CONTIGUOUS for Gemma-4")
     func autoServesContiguousForGemma() async throws {
-        let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .auto)
+        let build = try makeBuild(model: try tinyGemma4Text(), modelType: "gemma4_text", kvBackend: .auto)
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == nil)
         #expect(build.pagedPoolDType == nil)
@@ -246,8 +251,12 @@ struct EngineV2KVBackendGateTests {
         // the blocking paged CI lane and every by-model override lose their
         // subject. Driven for both families, because the default and the
         // explicit selection are read in the same `switch`.
-        for model in [try tinyGPTOSS() as any LanguageModel, try tinyGemma4Text()] {
-            let build = try makeBuild(model: model, kvBackend: .paged)
+        for (model, modelType) in [
+            (try tinyGPTOSS() as any LanguageModel, "gpt_oss"),
+            (try tinyGemma4Text() as any LanguageModel, "gemma4_text"),
+        ] {
+            let build = try makeBuild(
+                model: model, modelType: modelType, kvBackend: .paged)
             #expect(build.kvBackendKind == .paged)
             #expect(build.kvBackendFallbackReason == nil)
             #expect(build.pagedPoolDType == "float16")
@@ -257,7 +266,7 @@ struct EngineV2KVBackendGateTests {
 
     @Test("explicit contiguous wins over the GPT-OSS auto default")
     func explicitContiguous() async throws {
-        let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .contiguous)
+        let build = try makeBuild(model: try tinyGPTOSS(), modelType: "gpt_oss", kvBackend: .contiguous)
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == nil)
         await build.engine.shutdown()
@@ -266,7 +275,7 @@ struct EngineV2KVBackendGateTests {
     @Test("explicit paged GPT-OSS preflights packaged resources and physical pool truth")
     func explicitPagedGPTOSS() async throws {
         try PagedAttentionKernel.validateRuntimeResources()
-        let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .paged)
+        let build = try makeBuild(model: try tinyGPTOSS(), modelType: "gpt_oss", kvBackend: .paged)
         #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
         let snapshot = build.engine.capacity()
@@ -278,7 +287,7 @@ struct EngineV2KVBackendGateTests {
 
     @Test("explicit paged serves Gemma-4 TEXT (eligible shapes, opt-in)")
     func explicitPagedGemmaText() async throws {
-        let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .paged)
+        let build = try makeBuild(model: try tinyGemma4Text(), modelType: "gemma4_text", kvBackend: .paged)
         #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
         await build.engine.shutdown()
@@ -295,6 +304,7 @@ struct EngineV2KVBackendGateTests {
     func killSwitchForcesContiguous() async throws {
         let build = try makeBuild(
             model: try tinyGPTOSS(),
+            modelType: "gpt_oss",
             kvBackend: .paged,
             environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"])
         #expect(build.kvBackendKind == .contiguous)
@@ -307,7 +317,8 @@ struct EngineV2KVBackendGateTests {
         // headDim 80 is outside the paged kernel's {64,128,256,512}.
         let reason = await pagedRefusalReason {
             let build = try makeBuild(
-                model: try tinyGPTOSS(headDim: 80), kvBackend: .paged)
+                model: try tinyGPTOSS(headDim: 80), modelType: "gpt_oss",
+                kvBackend: .paged)
             // Reached only on a policy regression; still tear the engine
             // down so the failure is one clean assertion, not a leak too.
             await build.engine.shutdown()
@@ -321,6 +332,7 @@ struct EngineV2KVBackendGateTests {
         let reason = await pagedRefusalReason {
             let build = try makeBuild(
                 model: try tinyGPTOSS(),
+                modelType: "gpt_oss",
                 kvBackend: .paged,
                 pagedPreflightOverride: { _ in throw PreflightFailure() })
             await build.engine.shutdown()
@@ -335,7 +347,9 @@ struct EngineV2KVBackendGateTests {
     func capacityShortfallRefusesExplicitPaged() async throws {
         let reason = await pagedRefusalReason {
             _ = try EngineV2Factory.prepareProductionBackend(
-                model: try tinyGemma4Text(),
+                runner: StubRunner(
+                    layerKinds: try tinyGemma4Text().cbv2LayerKinds,
+                    capabilities: .attentionOnly),
                 kvBytesCapacity: 1_024,
                 maxConcurrentRequests: 2,
                 kvBackend: .paged,
@@ -383,6 +397,7 @@ struct EngineV2KVBackendGateTests {
         let build = try EngineV2Factory.makeProductionBuild(
             model: try tinyGemma4Text(),
             tokenizer: StubBridgeTokenizer(),
+            modelDirectory: try makeCheckpointDirectory(modelType: "gemma4_text"),
             kvBytesCapacity: 1_024,
             maxConcurrentRequests: 2,
             kvBackend: .auto,
@@ -449,7 +464,8 @@ struct EngineV2KVBackendGateTests {
                 "premise: the record is ACTIVE — if this goes false the test below proves nothing")
 
             let build = try makeBuild(
-                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+                model: try tinyGPTOSS(), modelType: "gpt_oss", kvBackend: .auto,
+                environment: env)
             #expect(build.kvBackendKind == .contiguous)
             #expect(
                 build.kvBackendFallbackReason == nil,
@@ -465,7 +481,8 @@ struct EngineV2KVBackendGateTests {
                 trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
         ) { env in
             let build = try makeBuild(
-                model: try tinyGPTOSS(), kvBackend: .paged, environment: env)
+                model: try tinyGPTOSS(), modelType: "gpt_oss", kvBackend: .paged,
+                environment: env)
             #expect(build.kvBackendKind == .paged)
             #expect(build.kvBackendFallbackReason == nil)
             await build.engine.shutdown()
@@ -482,8 +499,10 @@ struct EngineV2KVBackendGateTests {
         // contiguous backend must also produce a frozen-full SSD cache
         // capability, so the cache can never be built for a backend that
         // is not the one serving.
+        let runner = StubRunner(
+            layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly)
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: model,
+            runner: runner,
             kvBytesCapacity: gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBackend: .paged,
@@ -529,63 +548,73 @@ struct EngineV2KVBackendGateTests {
         defer { cache.close() }
 
         let build = try EngineV2Factory.assembleProductionBuild(
-            model: model,
-            tokenizer: StubBridgeTokenizer(),
+            runner: runner,
             prefixCache: cache,
-            maxConcurrentRequests: 2,
-            mtpDrafter: nil,
             mtpConfig: CBv2MTPConfig(),
             preparedBackend: prepared)
         #expect(build.kvBackendKind == .contiguous)
-        let engine = try #require(build.engine as? EngineV2)
-        #expect(engine.prefixReuseCapability.strategy == .frozenFullReplay)
-        #expect(throws: CBv2KVError.self) {
-            _ = try EngineV2Factory.assembleProductionBuild(
-                model: model,
-                tokenizer: StubBridgeTokenizer(),
-                prefixCache: cache,
-                maxConcurrentRequests: 2,
-                mtpDrafter: nil,
-                mtpConfig: CBv2MTPConfig(),
-                preparedBackend: prepared)
-        }
+        // The cache reaches the ENGINE through `EngineBuild`, and the
+        // capability the engine would run with follows the RESOLVED
+        // contiguous backend — the property this test has always pinned.
+        let received = try #require(runner.receivedBuild)
+        #expect(received.kvBackend == .contiguous)
+        #expect(received.prefixCache != nil)
+        // `enablePrefixCache` is set from `EngineBuild.prefixCache` INSIDE
+        // the runner's assembly, so the flag is still false at the boundary
+        // — the cache instance is what crosses.
+        #expect(
+            PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: prepared.layerKinds,
+                backendSelection: .contiguous
+            ).strategy == .frozenFullReplay)
         await build.engine.shutdown()
     }
 
-    @Test("paged pool is sized from the ONE scheduler config the engine runs on")
-    func pagedPoolLocksStepWithSchedulerConfig() async throws {
+    @Test("the paged plan and the ONE scheduler config cross on EngineBuild")
+    func pagedPlanLocksStepWithSchedulerConfig() async throws {
         let model = try tinyGemma4Text()
+        let runner = StubRunner(
+            layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly)
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: model,
+            runner: runner,
             kvBytesCapacity: gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBackend: .paged,
             maxContextLength: 2048,
             environment: [:])
         #expect(prepared.kind == .paged)
-        let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
-        let paged = try #require(backend as? PagedKVBackend)
         // LOCKSTEP. `PagedSequenceKV` PRECONDITIONS that a windowed update
-        // never exceeds the pool's `maxPrefillChunk` — a process kill, not
-        // a throw — so the pool must be sized from the chunk the ENGINE
-        // actually schedules. There is now one `CBv2SchedulerConfig` per
-        // build, carried on the preparation and reused verbatim by
-        // `assembleProductionBuild`; this pins the pool against it so a
-        // re-introduced parallel constant fails here instead of aborting
-        // the daemon under a long windowed prefill.
-        // The solo-prefill stripe (default-on) is a chunk the engine can
-        // actually schedule, so the lockstep covers max(chunk, stripe).
+        // never exceeds the pool's `maxPrefillChunk` — a process kill, not a
+        // throw — so the pool must be sized from the chunk the ENGINE
+        // actually schedules. The pool is built by the runner now
+        // (`RunnerEngineAssembly`, which sizes `maxPrefillChunk` from
+        // `max(prefillChunkSize, soloPrefillStripeTokens)` of the config it
+        // is handed); what this side must guarantee is that the config the
+        // plan was made against is the SAME instance the engine receives,
+        // and that the planned capacity — not the raw grant — is what
+        // crosses.
+        let build = try EngineV2Factory.assembleProductionBuild(
+            runner: runner,
+            prefixCache: nil,
+            mtpConfig: CBv2MTPConfig(),
+            preparedBackend: prepared)
+        let received = try #require(runner.receivedBuild)
+        #expect(received.kvBackend == .paged)
+        #expect(received.kvBytesCapacity == prepared.kvBytesCapacity)
+        #expect(received.kvBytesCapacity <= gateTestCapacity)
         #expect(
-            paged.pool.config.maxPrefillChunk
-                == max(
-                    prepared.schedulerConfig.prefillChunkSize,
-                    prepared.schedulerConfig.soloPrefillStripeTokens ?? 0))
+            received.schedulerConfig.soloPrefillStripeTokens
+                == prepared.schedulerConfig.soloPrefillStripeTokens)
+        #expect(received.schedulerConfig.prefillChunkSize
+            == prepared.schedulerConfig.prefillChunkSize)
         #expect(prepared.schedulerConfig.soloPrefillStripeTokens
             == EngineV2Factory.defaultSoloPrefillStripeTokens)
         #expect(prepared.schedulerConfig.maxConcurrentRequests == 2)
         // Prefix caching is the ONLY field assembly may still decide, and
         // it is off until a cache instance is supplied.
         #expect(!prepared.schedulerConfig.enablePrefixCache)
+        #expect(!received.schedulerConfig.enablePrefixCache)
+        await build.engine.shutdown()
     }
 
     @Test("slot factory hands the cache factory the RESOLVED backend's capability")
@@ -603,6 +632,8 @@ struct EngineV2KVBackendGateTests {
                 model: model,
                 eosTokenIds: [1],
                 extraEOSTokens: []),
+            runner: StubRunner(
+                layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly),
             servingModel: model,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),
@@ -700,6 +731,8 @@ struct EngineV2KVBackendGateTests {
                 model: model,
                 eosTokenIds: [1],
                 extraEOSTokens: []),
+            runner: StubRunner(
+                layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly),
             servingModel: model,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),
@@ -770,6 +803,8 @@ struct EngineV2KVBackendGateTests {
                 model: model,
                 eosTokenIds: [1],
                 extraEOSTokens: []),
+            runner: StubRunner(
+                layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly),
             servingModel: model,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),
@@ -863,6 +898,8 @@ struct EngineV2KVBackendGateTests {
         let preparedModel = EngineV2PreparedModel(
             snapshot: EngineV2ModelSnapshot(
                 model: model, eosTokenIds: [1], extraEOSTokens: []),
+            runner: StubRunner(
+                layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly),
             servingModel: model,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),
@@ -1029,6 +1066,8 @@ struct EngineV2KVBackendGateTests {
         let preparedModel = EngineV2PreparedModel(
             snapshot: EngineV2ModelSnapshot(
                 model: model, eosTokenIds: [1], extraEOSTokens: []),
+            runner: StubRunner(
+                layerKinds: model.cbv2LayerKinds, capabilities: .attentionOnly),
             servingModel: model,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),

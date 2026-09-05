@@ -455,6 +455,7 @@ public enum ThroughputSweep {
                 let build = try EngineV2Factory.makeProductionBuild(
                     model: servingModel,
                     tokenizer: ctx.tokenizer,
+                    modelDirectory: modelDirectory,
                     kvBytesCapacity: kvCapacity,
                     maxConcurrentRequests: max(batchSize, 1),
                     kvBackend: kvBackend)

@@ -537,6 +537,7 @@ public enum ArrivalInvarianceBenchmark {
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: context.tokenizer,
+                modelDirectory: modelDirectory,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBackend: kvBackend

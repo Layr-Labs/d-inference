@@ -449,22 +449,33 @@ struct EngineV2SlotBuildTests {
         // A module that is neither Gemma4TextModel nor GPTOSSModel must throw
         // BEFORE any engine machinery is built — the factory catch turns this
         // into the ERROR refusal.
-        #expect(throws: EngineV2ProductionError.self) {
+        // The family's runner refuses the module by name now; the REFUSAL
+        // REASON is the property that matters and it is unchanged.
+        do {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
+                modelDirectory: try makeCheckpointDirectory(modelType: "gpt_oss"),
                 kvBytesCapacity: 1 << 20,
                 maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
+            Issue.record("expected the unsupported module to be refused")
+        } catch {
+            #expect(EngineV2RefusalReason.classify(error) == .unsupportedModel)
         }
     }
 
     @Test("production factory: zero KV headroom throws (→ refusal)")
     func productionFactoryRejectsZeroKVHeadroom() {
-        #expect(throws: EngineV2ProductionError.self) {
+        // Adoption happens before the KV gate, and a stub module is refused
+        // by the family first — either way the load is refused, never
+        // degraded. Both reasons are pinned: unsupported here, and
+        // `no_kv_headroom` by `EngineV2KVSizingTests` over the pure gate.
+        #expect(throws: (any Error).self) {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
+                modelDirectory: try makeCheckpointDirectory(modelType: "gpt_oss"),
                 kvBytesCapacity: 0,
                 maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )

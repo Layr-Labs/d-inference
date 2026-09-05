@@ -20,123 +20,9 @@
 // are limited to `makeEngineOverride` (scripted engines, no weights).
 
 import Foundation
-import MLX
-import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import ProviderCoreFoundation
-
-enum GemmaOptimizationReason: String, Sendable, Equatable {
-    case disabled
-    case modelIneligible = "model_ineligible"
-    case aotUnavailable = "aot_unavailable"
-    case naxPrecedence = "nax_precedence"
-    case effective
-}
-
-struct GemmaOptimizationState: Sendable, Equatable {
-    let name: String
-    let requested: Bool
-    let effective: Bool
-    let reason: GemmaOptimizationReason
-
-    var compactDescription: String {
-        "\(name)(requested=\(requested),effective=\(effective),reason=\(reason.rawValue))"
-    }
-}
-
-/// Pure requested/effective resolution for the three retained Gemma controls.
-/// Safe R1 is inferred from one unarmed device snapshot; this type never
-/// resets, arms, or samples route counters.
-struct GemmaOptimizationReport: Sendable, Equatable {
-    let layer18: GemmaOptimizationState
-    let weightedUnsort: GemmaOptimizationState
-    let safeR1: GemmaOptimizationState
-
-    init(
-        layer18Requested: Bool,
-        layer18Effective: Bool,
-        weightedUnsortRequested: Bool,
-        weightedUnsortEffective: Bool,
-        safeR1Requested: Bool,
-        safeR1GeometryEligible: Bool,
-        safeR1AOTAvailable: Bool,
-        safeR1NAXAvailable: Bool
-    ) {
-        layer18 = Self.resolve(
-            name: "layer18",
-            requested: layer18Requested,
-            modelEligible: layer18Effective)
-        weightedUnsort = Self.resolve(
-            name: "weighted_unsort",
-            requested: weightedUnsortRequested,
-            modelEligible: weightedUnsortEffective)
-        safeR1 = Self.resolve(
-            name: "safe_r1",
-            requested: safeR1Requested,
-            modelEligible: safeR1GeometryEligible,
-            aotAvailable: safeR1AOTAvailable,
-            naxAvailable: safeR1NAXAvailable)
-    }
-
-    var states: [GemmaOptimizationState] {
-        [layer18, weightedUnsort, safeR1]
-    }
-
-    func logLine(modelId: String) -> String {
-        "engine_v2: \(modelId) gemma optimizations "
-            + states.map(\.compactDescription).joined(separator: " ")
-    }
-
-    func telemetryEvents(modelId: String) -> [TelemetryEvent] {
-        states.map { state in
-            var event = TelemetryEvent(
-                source: .provider,
-                severity: .info,
-                kind: .engineHealth,
-                message: "engine_v2: gemma optimization "
-                    + state.compactDescription)
-            event.fields = TelemetryFieldFilter.filter([
-                "component": .string("engine"),
-                "operation": .string("gemma_optimization_\(state.name)"),
-                "backend": .string("engine_v2"),
-                "model": .string(modelId),
-                // Existing allowlisted field, carrying the bounded 2-bit
-                // requested/effective state without a telemetry schema change.
-                "target": .string(
-                    "requested_\(state.requested ? 1 : 0)_effective_"
-                        + "\(state.effective ? 1 : 0)"),
-                "reason": .string(state.reason.rawValue),
-            ])
-            return event
-        }
-    }
-
-    private static func resolve(
-        name: String,
-        requested: Bool,
-        modelEligible: Bool,
-        aotAvailable: Bool? = nil,
-        naxAvailable: Bool = false
-    ) -> GemmaOptimizationState {
-        let reason: GemmaOptimizationReason
-        if !requested {
-            reason = .disabled
-        } else if !modelEligible {
-            reason = .modelIneligible
-        } else if aotAvailable == false {
-            reason = .aotUnavailable
-        } else if naxAvailable {
-            reason = .naxPrecedence
-        } else {
-            reason = .effective
-        }
-        return GemmaOptimizationState(
-            name: name,
-            requested: requested,
-            effective: reason == .effective,
-            reason: reason)
-    }
-}
 
 enum EngineV2SlotFactory {
 
@@ -328,7 +214,8 @@ enum EngineV2SlotFactory {
         if let preparedModel {
             prepared = preparedModel
         } else if makeEngineOverride != nil {
-            // Scripted engines intentionally do not construct real assistants.
+            // Scripted engines intentionally do not construct real assistants
+            // and adopt no runner: there is no engine for one to build.
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
@@ -337,6 +224,8 @@ enum EngineV2SlotFactory {
                 specDecPreparation: SpecDecPreparation(
                     artifact: nil, status: specDecPreparation.status),
                 assistantLoader: assistantLoader,
+                tokenizer: tokenizer.inner,
+                adoptRunner: false,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
                 logWarning: logWarning)
@@ -348,6 +237,7 @@ enum EngineV2SlotFactory {
                 container: container,
                 specDecPreparation: specDecPreparation,
                 assistantLoader: assistantLoader,
+                tokenizer: tokenizer.inner,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo,
                 logWarning: logWarning)
@@ -389,8 +279,13 @@ enum EngineV2SlotFactory {
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
+                guard let runner = prepared.runner else {
+                    throw EngineV2ProductionError.unsupportedModel(
+                        "no runner adopted for \(modelId)")
+                }
                 preparedBackend = try EngineV2Factory.prepareProductionBackend(
-                    model: servingModel,
+                    runner: runner,
+                    modelType: modelType,
                     kvBytesCapacity: engineKVBytesCapacity,
                     maxConcurrentRequests: maxConcurrentRequests,
                     activationReserveBytes: activationReserveBytes,
@@ -578,18 +473,18 @@ enum EngineV2SlotFactory {
                     kvBackendFallbackReason: nil)
             }
         } else {
-            guard let preparedBackend else {
+            guard let preparedBackend, let runner = prepared.runner else {
                 preconditionFailure("production backend preparation missing")
             }
             makeEngine = {
+                // ONE call, every family: the runner builds the engine over
+                // the module it adopted, with the policy this slot resolved.
                 try EngineV2Factory.assembleProductionBuild(
-                    model: servingModel,
-                    tokenizer: tokenizer.inner,
+                    runner: runner,
                     prefixCache: enginePrefixCache,
-                    maxConcurrentRequests: maxConcurrentRequests,
-                    mtpDrafter: assistantHandle?.drafter,
                     mtpConfig: mtpConfig,
-                    preparedBackend: preparedBackend)
+                    preparedBackend: preparedBackend,
+                    environment: environment)
             }
         }
 
@@ -600,8 +495,8 @@ enum EngineV2SlotFactory {
                 pagedPoolDType: preparedBackend.pagedPoolDType,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
-                fullRowsUseFP32: EngineV2ModelAdaptation
-                    .usesFP32FullAttentionRows(model: servingModel))
+                fullRowsUseFP32: EngineV2Factory.usesFP32FullAttentionRows(
+                    layerKinds: preparedBackend.layerKinds))
         } else {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
         }
@@ -660,12 +555,11 @@ enum EngineV2SlotFactory {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
         await bridge.configureMTPStatus(mtpStatus)
-        // One load-time snapshot only, and nil for every family that has no
-        // such controls. Never arm the benchmark counters in production: the
-        // QMM hot path remains free of counter atomics.
-        if let report = EngineV2ModelAdaptation.gemmaOptimizationReport(
-            model: servingModel)
-        {
+        // One load-time snapshot of the family's own optimization controls,
+        // and nil for every family that declares none. Never arm the
+        // benchmark counters in production: the QMM hot path remains free of
+        // counter atomics.
+        if let report = GemmaOptimizationReport.forServingModel(servingModel) {
             logInfo(report.logLine(modelId: modelId))
             for event in report.telemetryEvents(modelId: modelId) {
                 if let emitTelemetry {
@@ -701,8 +595,9 @@ enum EngineV2SlotFactory {
     /// ACTUALLY built with:
     ///
     ///   * contiguous + a family whose owning full-attention rows are fp32
-    ///     (`EngineV2ModelAdaptation.usesFP32FullAttentionRows`) ⇒ the
-    ///     native-width rate on top of the fp16 sizing snapshot,
+    ///     (`EngineV2Factory.usesFP32FullAttentionRows`, read off the
+    ///     runner's layer kinds) ⇒ the native-width rate on top of the fp16
+    ///     sizing snapshot,
     ///   * paged with fp32 pages (`DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32`)
     ///     ⇒ a flat 2x — every page doubles, windowed layers included —
     ///     so the advertised token budget HALVES to match the pool's real

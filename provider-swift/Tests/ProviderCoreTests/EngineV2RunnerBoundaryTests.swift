@@ -66,7 +66,7 @@ private final class ScriptedRunner: Runner, @unchecked Sendable {
         recurrentLayers: false,
         requiresKeepMask: false)
 
-    let servingModel: any LanguageModel = ScriptedRunnerModel()
+    let servingModel: any LanguageModel
     let tokenizer: any MLXLMCommon.Tokenizer = StubBridgeTokenizer()
     let eosTokenIDs: Set<Int> = []
     let layerKinds: [CBv2LayerKind] = []
@@ -82,32 +82,77 @@ private final class ScriptedRunner: Runner, @unchecked Sendable {
 
     var receivedBuild: EngineBuild? { lock.withLock { _receivedBuild } }
 
-    init(loadedDecoders: [DecoderID] = [.serial, .mtp], failure: Error? = nil) {
+    /// What THIS instance was adopted with.
+    let adoptedDirectory: URL?
+    let adoptedOptions: RunnerLoadOptions?
+
+    init(
+        adoptedModel: any LanguageModel = ScriptedRunnerModel(),
+        loadedDecoders: [DecoderID] = [.serial, .mtp],
+        failure: Error? = nil,
+        adoptedDirectory: URL? = nil,
+        adoptedOptions: RunnerLoadOptions? = nil
+    ) {
+        self.servingModel = adoptedModel
         self.loadedDecoders = loadedDecoders
         self.failure = failure
+        self.adoptedDirectory = adoptedDirectory
+        self.adoptedOptions = adoptedOptions
     }
 
-    /// What the last `load` was handed. The registry resolves a TYPE, so the
-    /// only place a load-path test can observe the caller's options is here.
-    static let lastLoad = LoadRecord()
+    /// What the last `adopt` was handed. The registry resolves a TYPE, so
+    /// this is the only place a test can observe what crossed the boundary.
+    static let lastAdoption = AdoptionRecord()
 
-    final class LoadRecord: @unchecked Sendable {
+    final class AdoptionRecord: @unchecked Sendable {
         private let lock = NSLock()
+        private var _model: (any LanguageModel)?
         private var _directory: URL?
         private var _options: RunnerLoadOptions?
+        var model: (any LanguageModel)? { lock.withLock { _model } }
         var directory: URL? { lock.withLock { _directory } }
         var options: RunnerLoadOptions? { lock.withLock { _options } }
-        func record(_ directory: URL, _ options: RunnerLoadOptions) {
+        func record(_ model: any LanguageModel, _ directory: URL, _ options: RunnerLoadOptions) {
             lock.withLock {
+                _model = model
                 _directory = directory
                 _options = options
             }
         }
     }
 
-    static func load(_ directory: URL, options: RunnerLoadOptions) -> ScriptedRunner {
-        lastLoad.record(directory, options)
-        return ScriptedRunner()
+    static func adopt(
+        model: any LanguageModel,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        configuration: ModelConfiguration,
+        directory: URL,
+        options: RunnerLoadOptions
+    ) throws -> ScriptedRunner {
+        lastAdoption.record(model, directory, options)
+        // Also on the INSTANCE: suites run in parallel, so a static box is
+        // whatever ran last, and an adoption assertion must read the
+        // adoption it made.
+        // The one resource rule a scripted family can hold: a checkpoint that
+        // needs an injected resource refuses by name when it is absent.
+        if options.environment["SCRIPTED_RUNNER_NEEDS_RESOURCE"] == "1",
+            options.resources["scripted.requiredResource"] == nil
+        {
+            throw RunnerError.resourceMissing(
+                "scripted.requiredResource: absent from the load options")
+        }
+        return ScriptedRunner(
+            adoptedModel: model,
+            loadedDecoders: options.preloadedDrafter == nil ? [.serial] : [.serial, .mtp],
+            adoptedDirectory: directory,
+            adoptedOptions: options)
+    }
+
+    static func loadDrafter(
+        options: RunnerLoadOptions,
+        directory: URL,
+        target: any LanguageModel
+    ) async throws -> (any CBv2MTPDrafter)? {
+        options.preloadedDrafter
     }
 
     func makeEngine(_ build: EngineBuild) throws -> any CBv2Engine {
@@ -134,7 +179,7 @@ private func makePolicy(
         kvBytesCapacity: capacity,
         schedulerConfig: EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 6,
-            model: nil,
+            modelType: nil,
             environment: ["DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE": "3072"]),
         loopConfig: CBv2EngineLoopConfig(useLegacyRequestTimeout: true),
         prefixCache: prefixCache,
@@ -162,29 +207,15 @@ struct EngineV2RunnerRegistryGateTests {
         }
     }
 
-    @Test("the four container-loaded families are advertised")
-    func containerServableFamiliesAreAdvertised() {
+    @Test("every family a runner claims is advertised")
+    func everyClaimedFamilyIsAdvertised() {
         for modelType in [
             "gemma4", "gemma4_text", "gpt_oss", "qwen3_5", "qwen3_5_moe",
-            "qwen3_vl", "qwen3_vl_moe",
+            "qwen3_5_text", "qwen3_vl", "qwen3_vl_moe",
+            "qwen4_exp", "qwen4_exp_text",
         ] {
             #expect(
                 EngineV2SupportedModels.isSupported(modelType: modelType),
-                "type=\(modelType)")
-        }
-    }
-
-    @Test("a claimed family the slot cannot build yet is withheld, not advertised")
-    func claimedButUnservableIsWithheld() {
-        // Qwen 3.8 Flash-Next is claimed by its runner and cannot be built
-        // over an already-resident ModelContainer: its forward pass needs the
-        // n-gram row source, which only `Runner.load` can be given. Withheld
-        // until the slot lifecycle loads through the registry — a clean 404
-        // rather than a load-then-503.
-        for modelType in ["qwen4_exp", "qwen4_exp_text", "qwen3_5_text"] {
-            #expect(RunnerRegistry.shared.contains(modelType: modelType))
-            #expect(
-                !EngineV2SupportedModels.isSupported(modelType: modelType),
                 "type=\(modelType)")
         }
     }
@@ -209,12 +240,14 @@ struct EngineV2RunnerRegistryGateTests {
         #expect(!EngineV2SupportedModels.isSupported(modelType: " GEMMA3 "))
     }
 
-    @Test("nothing is advertised that no runner claims")
-    func gateNeverExceedsTheRegistry() {
-        for modelType in EngineV2ModelAdaptation.containerServableModelTypes {
-            #expect(
-                RunnerRegistry.shared.contains(modelType: modelType),
-                "the provider would advertise \(modelType) with no runner behind it")
+    @Test("the gate is the registry, model type for model type")
+    func gateEqualsTheRegistry() {
+        for manifest in RunnerRegistry.shared.manifests() {
+            for modelType in manifest.modelTypes {
+                #expect(
+                    EngineV2SupportedModels.isSupported(modelType: modelType),
+                    "\(manifest.runnerID) claims \(modelType)")
+            }
         }
     }
 }
@@ -361,31 +394,86 @@ struct EngineV2Qwen38RunnerWiringTests {
         #expect(options.drafterDirectory == nil)
     }
 
-    @Test("the registry resolves a checkpoint and the load options reach the runner")
-    func registryResolutionCarriesTheResources() async throws {
+    @Test("the registry resolves a checkpoint and the module and options reach the runner")
+    func registryAdoptionCarriesModelAndResources() throws {
         RunnerRegistry.shared.register(ScriptedRunner.self)
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("runner-boundary-\(UUID().uuidString.prefix(8))",
-                isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
+        let directory = try makeCheckpointDirectory(modelType: "scripted_test")
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data(#"{"model_type":"scripted_test"}"#.utf8)
-            .write(to: directory.appendingPathComponent("config.json"))
+        let module = ScriptedRunnerModel()
 
-        let runner = try await EngineV2Factory.loadRunner(
+        let runner = try EngineV2Factory.adoptRunner(
+            model: module,
+            tokenizer: StubBridgeTokenizer(),
             modelDirectory: directory,
             options: EngineV2Factory.runnerLoadOptions(
                 modelDirectory: directory,
                 kvBytesCapacity: 123_456,
-                maxSequenceLength: 4096,
-                environment: [:]))
-        #expect(runner is ScriptedRunner)
-        let recorded = try #require(ScriptedRunner.lastLoad.options)
-        #expect(ScriptedRunner.lastLoad.directory?.path == directory.path)
+                maxSequenceLength: 4096))
+        let scripted = try #require(runner as? ScriptedRunner)
+        // The module the container already holds crosses the boundary — no
+        // second load, and the runner serves the very instance handed in.
+        #expect(runner.servingModel === module)
+        #expect(scripted.adoptedDirectory?.path == directory.path)
+        let recorded = try #require(scripted.adoptedOptions)
         #expect(recorded.kvBytesCapacity == 123_456)
+        #expect(recorded.maxSequenceLength == 4096)
         #expect(
             recorded.resources[Qwen4ExpRunner.ngramRowSourceResource] != nil,
             "the caller's resources cross the boundary untouched")
+    }
+
+    @Test("every registered model type builds through the same one function")
+    func everyRegisteredFamilyBuildsThroughOneFunction() throws {
+        // Table-driven over the REGISTRY, not a list kept here: a family
+        // added to the fork is covered the day it lands, and the provider
+        // has no per-family construction path to add it to.
+        for manifest in RunnerRegistry.shared.manifests() {
+            for modelType in manifest.modelTypes {
+                let runner = StubRunner(loadedModelType: modelType)
+                let prepared = try EngineV2Factory.prepareProductionBackend(
+                    runner: runner,
+                    modelType: modelType,
+                    kvBytesCapacity: 1 << 20,
+                    maxConcurrentRequests: 2,
+                    kvBackend: .contiguous,
+                    environment: [:])
+                let build = try EngineV2Factory.assembleProductionBuild(
+                    runner: runner,
+                    prefixCache: nil,
+                    mtpConfig: CBv2MTPConfig(),
+                    preparedBackend: prepared,
+                    environment: [:])
+                #expect(build.kvBackendKind == .contiguous, "type=\(modelType)")
+                let received = try #require(runner.receivedBuild, "type=\(modelType)")
+                #expect(received.kvBytesCapacity == prepared.kvBytesCapacity)
+                #expect(received.decoder == .serial)
+            }
+        }
+    }
+
+    @Test("a missing load-time resource refuses as runner_resource_missing")
+    func missingResourceRefusesByName() throws {
+        RunnerRegistry.shared.register(ScriptedRunner.self)
+        let directory = try makeCheckpointDirectory(modelType: "scripted_test")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // The scripted family declares it needs a resource this call does
+        // not inject — the shape of a Qwen 3.8 Flash-Next checkpoint whose
+        // n-gram shard directory was not staged.
+        let options = RunnerLoadOptions(
+            environment: ["SCRIPTED_RUNNER_NEEDS_RESOURCE": "1"],
+            resources: RunnerResources())
+        do {
+            _ = try EngineV2Factory.adoptRunner(
+                model: ScriptedRunnerModel(),
+                tokenizer: StubBridgeTokenizer(),
+                modelDirectory: directory,
+                options: options)
+            Issue.record("expected the runner to refuse")
+        } catch {
+            #expect("\(error)".contains("scripted.requiredResource"))
+            #expect(
+                EngineV2RefusalReason.classify(error) == .runnerResourceMissing,
+                "the refusal must name a staging mistake, not the catch-all")
+        }
     }
 }

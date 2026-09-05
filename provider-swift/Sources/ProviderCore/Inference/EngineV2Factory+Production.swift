@@ -10,19 +10,17 @@
 // module instance retained by the loaded model container) plus the runtime
 // pieces:
 //
-//   * layer kinds, capabilities, and per-layer caches from the model's own
-//     CBv2 hooks, read through the one typed seam
-//     (`EngineV2ModelAdaptation`) so no family is named here,
-//   * a KV backend sized from the unified-memory KV budget —
-//     `PagedKVBackend` for an explicit "paged", slabs capped by
-//     `PagedKVPhysicalCapacityPolicy` and committed lazily
-//     (`.atFirstAdmission`); `CBv2ContiguousKVBackend` for "auto" (v0.8.1
+//   * layer kinds, capabilities, per-layer caches, the drafter and the
+//     engine itself from the RUNNER (`MLXRunners`), which adopted the
+//     resident module — this file names no model family,
+//   * the KV-backend DECISION, sized from the unified-memory KV budget:
+//     paged for an explicit "paged", capacity capped by
+//     `PagedKVPhysicalCapacityPolicy`; contiguous for "auto" (v0.8.1
 //     reverts the default to contiguous; the argument is at
 //     `case .auto: resolvedKind` below), an explicit "contiguous", a slot
 //     veto, or the kill switch,
-//   * `CBv2LayerCacheBank` over the model-built caches,
-//   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
-//     detokenization with stop-string holdback).
+//   * the scheduler and loop configuration, and the SSD prefix cache the
+//     construction gate allowed.
 //
 // Any throw here lands in `makeBridge`'s catch (v0.7.5 fail-loud): ERROR
 // `engine_health` telemetry (`operation=engine_v2_refusal`) + rethrow —
@@ -36,9 +34,8 @@
 
 import Foundation
 import MLX
-import MLXLLM
 import MLXLMCommon
-import MLXVLM
+import MLXRunners
 
 /// Failure modes of production v2-engine construction. Each maps to the
 /// factory's REFUSAL path (ERROR `engine_v2_refusal` telemetry + throw).
@@ -89,15 +86,6 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
 }
 
 extension EngineV2Factory {
-    /// Resolve the exact module instance served by CBv2 — the container
-    /// path's answer to `runner.servingModel`. The wrapper-to-tower rule is
-    /// a family fact and lives in `EngineV2ModelAdaptation`.
-    static func directServingModel(
-        model: any LanguageModel, isVLM: Bool
-    ) throws -> any LanguageModel {
-        try EngineV2ModelAdaptation.directServingModel(model: model, isVLM: isVLM)
-    }
-
     /// Environment key arming the CBv2 solo-prefill stripe (tokens). See
     /// `CBv2SchedulerConfig.soloPrefillStripeTokens` for semantics. 2,048 is
     /// the largest expert-tile-qualified stripe for the E=256 top-8 MoE
@@ -162,27 +150,38 @@ extension EngineV2Factory {
     /// hatch mirrors the `=1` drain-restore convention.
     public static func soloPrefillStripeTokens(
         abovePlainChunk plainChunk: Int,
-        model: (any LanguageModel)? = nil,
+        modelType: String? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int? {
         guard let raw = environment[soloPrefillStripeKey] else {
-            let defaultStripe = defaultSoloPrefillStripeTokens(for: model)
+            let defaultStripe = defaultSoloPrefillStripeTokens(forModelType: modelType)
             return defaultStripe > plainChunk ? defaultStripe : nil
         }
         guard let value = Int(raw), value > plainChunk else { return nil }
         return value
     }
 
+    /// The `model_type`s whose prefill geometry takes the longer stripe: the
+    /// DENSE Qwen 3.5/3.8 targets, which have no routed-expert tile geometry
+    /// to preserve. Keyed on the checkpoint's declared `model_type` rather
+    /// than on a module class, because this is provider tuning policy about a
+    /// checkpoint, and because the engine path no longer names any family
+    /// type. Same answer as the module test it replaces: the dense targets
+    /// declare `qwen3_5` / `qwen3_5_text` and the MoE target declares
+    /// `qwen3_5_moe`.
+    static let denseSoloPrefillStripeModelTypes: Set<String> = [
+        "qwen3_5", "qwen3_5_text",
+    ]
+
     /// Select the conservative default stripe without changing the operator
-    /// override contract. Which families want the longer dense stripe is a
-    /// family fact (`EngineV2ModelAdaptation`); the two VALUES above are
-    /// provider policy and stay here.
+    /// override contract.
     static func defaultSoloPrefillStripeTokens(
-        for model: (any LanguageModel)?
+        forModelType modelType: String?
     ) -> Int {
-        EngineV2ModelAdaptation.prefersDenseQwenSoloPrefillStripe(model: model)
-            ? defaultDenseQwenSoloPrefillStripeTokens
-            : defaultSoloPrefillStripeTokens
+        guard let raw = modelType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), denseSoloPrefillStripeModelTypes.contains(raw)
+        else { return defaultSoloPrefillStripeTokens }
+        return defaultDenseQwenSoloPrefillStripeTokens
     }
 
     /// Construct the scheduler configuration used by every production backend.
@@ -190,14 +189,14 @@ extension EngineV2Factory {
     /// `EngineV2`, not only the individual environment parsers.
     static func productionSchedulerConfig(
         maxConcurrentRequests: Int,
-        model: (any LanguageModel)? = nil,
+        modelType: String? = nil,
         environment: [String: String]
     ) -> CBv2SchedulerConfig {
         var config = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
         config.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
             abovePlainChunk: config.prefillChunkSize,
-            model: model,
+            modelType: modelType,
             environment: environment)
         config.maxConcurrentPartialPrefills =
             Self.maxConcurrentPartialPrefills(environment: environment)
@@ -302,20 +301,33 @@ extension EngineV2Factory {
         }
     }
 
-    /// The model's prefix-cache adoption bound, from the loaded model's own
-    /// layer kinds. The derivation lives beside the other family facts
-    /// (`EngineV2ModelAdaptation.adoptionBoundTokens`); the SSD tier's use
-    /// of it is policy and stays in the slot factory.
-    static func adoptionBoundTokens(model: any LanguageModel) -> Int {
-        EngineV2ModelAdaptation.adoptionBoundTokens(model: model)
+    /// The prefix-cache adoption bound over a runner's own layer kinds.
+    /// A family that does not declare prefix reuse returns 0 — treated as
+    /// "fund" by the gate (pure-full-attention semantics), and such a slot
+    /// never gets a cache anyway.
+    static func adoptionBoundTokens(
+        layerKinds: [CBv2LayerKind],
+        capabilities: CBv2ModelCapabilities
+    ) -> Int {
+        guard capabilities.supportsPrefixReuse else { return 0 }
+        return PrefixCachePolicy.adoptionBoundTokens(layerKinds: layerKinds)
     }
 
-    /// The model's CBv2 layer kinds, or nil for a non-adapted family (which
-    /// throws `unsupportedModel` at engine construction anyway). Needed by
-    /// the SSD prefix cache's construction (layout-epoch binding + adoption
-    /// bound) before any engine exists.
-    static func cbv2LayerKinds(model: any LanguageModel) -> [CBv2LayerKind]? {
-        EngineV2ModelAdaptation.layerKinds(model: model)
+    /// Whether this family's OWNING full-attention rows are stored fp32 on
+    /// the contiguous backend, on top of the all-fp16 sizing snapshot. The
+    /// slot's advertised `kv_bytes_per_token` has to charge what a token
+    /// actually costs.
+    ///
+    /// Derived from the model's own layer kinds instead of a module class:
+    /// the family whose full rows are fp32 is the one whose layers carry
+    /// learned attention sinks, and `hasSinks` is exactly the flag its
+    /// derivation sets. For every runner registered today this returns the
+    /// same answer as the module-class test it replaces, and it keeps
+    /// returning a per-model answer for a family the provider has never
+    /// seen. Over-counting here under-advertises, which is the safe
+    /// direction.
+    static func usesFP32FullAttentionRows(layerKinds: [CBv2LayerKind]) -> Bool {
+        layerKinds.contains { $0.hasSinks }
     }
 
     /// Process-wide per-request reservation rate for the contiguous backend.
@@ -407,6 +419,7 @@ extension EngineV2Factory {
     public static func makeProductionEngine(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
+        modelDirectory: URL,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
@@ -420,6 +433,7 @@ extension EngineV2Factory {
         try makeProductionBuild(
             model: model,
             tokenizer: tokenizer,
+            modelDirectory: modelDirectory,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             activationReserveBytes: activationReserveBytes,
@@ -486,76 +500,30 @@ extension EngineV2Factory {
         }
     }
 
-    /// Fully resolved backend resources, created before SSD cache construction
-    /// so provider capability follows the backend that will actually serve.
-    final class ProductionBackendPreparation {
+    /// The RESOLVED backend decision, taken before SSD cache construction so
+    /// provider capability follows the backend that will actually serve.
+    ///
+    /// A decision, not a set of resources: the backend and the per-layer
+    /// caches are built by the runner inside `makeEngine`, from the
+    /// `EngineBuild` this decision fills in. What stays here is everything
+    /// the provider decides — the resolved kind, any degrade reason, the KV
+    /// bytes the slot may actually grant (the paged physical-capacity plan
+    /// has already been applied), the one scheduler config of this build,
+    /// and the family facts the SSD tier needs before an engine exists.
+    struct ProductionBackendPreparation {
         let layerKinds: [CBv2LayerKind]
         let modelCapabilities: CBv2ModelCapabilities
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
-        /// The ONE scheduler config of this build. Constructed in
-        /// `prepareProductionBackend`, where it sizes the paged pool's
-        /// `maxPrefillChunk`, and carried here so `assembleProductionBuild`
-        /// hands the ENGINE that same instance instead of an unrelated
-        /// twin that happened to agree on the memberwise defaults.
+        /// Bytes the engine may hold. Equals the clamped slot grant on a
+        /// contiguous build and `PagedKVPhysicalCapacityPolicy`'s planned
+        /// capacity on a paged one.
+        let kvBytesCapacity: Int
+        /// The ONE scheduler config of this build: the same instance the
+        /// paged plan was sized against and the engine runs on.
         let schedulerConfig: CBv2SchedulerConfig
-        /// Resolved page dtype of the constructed paged pool; nil on
-        /// contiguous. Carried so `assembleProductionBuild` can put it on
-        /// `ProductionBuild` without re-deriving it from the environment.
+        /// Page dtype the paged pool will be built with; nil on contiguous.
         let pagedPoolDType: String?
-
-        private let lock = NSLock()
-        private let modelIdentity: ObjectIdentifier
-        private let maxConcurrentRequests: Int
-        private var backend: CBv2KVBackend?
-        private var caches: [any CBv2AttendingLayerCache]?
-
-        init(
-            model: any LanguageModel,
-            maxConcurrentRequests: Int,
-            layerKinds: [CBv2LayerKind],
-            modelCapabilities: CBv2ModelCapabilities,
-            backend: CBv2KVBackend,
-            caches: [any CBv2AttendingLayerCache],
-            kind: EngineV2KVBackendKind,
-            fallbackReason: String?,
-            schedulerConfig: CBv2SchedulerConfig,
-            pagedPoolDType: String?
-        ) {
-            self.modelIdentity = ObjectIdentifier(model)
-            self.maxConcurrentRequests = max(1, maxConcurrentRequests)
-            self.layerKinds = layerKinds
-            self.modelCapabilities = modelCapabilities
-            self.backend = backend
-            self.caches = caches
-            self.kind = kind
-            self.fallbackReason = fallbackReason
-            self.schedulerConfig = schedulerConfig
-            self.pagedPoolDType = pagedPoolDType
-        }
-
-        func consume(
-            model: any LanguageModel,
-            maxConcurrentRequests: Int
-        ) throws -> (CBv2KVBackend, [any CBv2AttendingLayerCache]) {
-            try lock.withLock {
-                guard modelIdentity == ObjectIdentifier(model) else {
-                    throw CBv2KVError.backendIneligible(
-                        reason: "prepared backend model identity changed before assembly")
-                }
-                guard self.maxConcurrentRequests == max(1, maxConcurrentRequests) else {
-                    throw CBv2KVError.backendIneligible(
-                        reason: "prepared backend concurrency changed before assembly")
-                }
-                guard let backend, let caches else {
-                    throw CBv2KVError.backendIneligible(
-                        reason: "prepared backend was already consumed")
-                }
-                self.backend = nil
-                self.caches = nil
-                return (backend, caches)
-            }
-        }
     }
 
     /// Build the real `EngineV2` over a loaded model, returning the engine
@@ -577,6 +545,7 @@ extension EngineV2Factory {
     public static func makeProductionBuild(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
+        modelDirectory: URL,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
@@ -588,8 +557,22 @@ extension EngineV2Factory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBuild {
-        let preparedBackend = try prepareProductionBackend(
+        // ONE construction path: adopt the resident module through the
+        // registry, decide policy over the runner's own layer kinds and
+        // capabilities, then let the runner build the engine.
+        let runner = try adoptRunner(
             model: model,
+            tokenizer: tokenizer,
+            modelDirectory: modelDirectory,
+            options: runnerLoadOptions(
+                modelDirectory: modelDirectory,
+                kvBytesCapacity: kvBytesCapacity,
+                maxSequenceLength: maxContextLength ?? RunnerLoadOptions().maxSequenceLength,
+                preloadedDrafter: mtpDrafter,
+                environment: environment))
+        let preparedBackend = try prepareProductionBackend(
+            runner: runner,
+            modelType: runner.loadedModelType,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             activationReserveBytes: activationReserveBytes,
@@ -598,20 +581,19 @@ extension EngineV2Factory {
             environment: environment,
             pagedPreflightOverride: pagedPreflightOverride)
         return try assembleProductionBuild(
-            model: model,
-            tokenizer: tokenizer,
+            runner: runner,
             prefixCache: prefixCache,
-            maxConcurrentRequests: maxConcurrentRequests,
-            mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
-            preparedBackend: preparedBackend)
+            preparedBackend: preparedBackend,
+            environment: environment)
     }
 
-    /// Resolve and materialize the exact production backend without creating
-    /// EngineV2. Slot assembly uses this phase before SSD construction, then
+    /// Resolve the exact production backend DECISION without creating an
+    /// engine. Slot assembly uses this phase before SSD construction, then
     /// injects the cache only when the resolved backend capability supports it.
     static func prepareProductionBackend(
-        model: any LanguageModel,
+        runner: any Runner,
+        modelType: String? = nil,
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         activationReserveBytes: UInt64? = nil,
@@ -631,15 +613,13 @@ extension EngineV2Factory {
         // budgets (cap − weights − activations) are always well under this.
         let cappedCapacity = clampKVBytesCapacity(kvBytesCapacity)
 
-        // Model adaptation: layer kinds, capabilities, and per-layer caches
-        // come from the model's own CBv2 hooks through the ONE typed seam
-        // (`EngineV2ModelAdaptation`), so this file names no family and the
-        // derivation can never drift from the constructors. `newCacheV2`
-        // stays the single cache-construction funnel on BOTH backends.
-        let adaptation = try EngineV2ModelAdaptation.adapt(model: model)
-        let layerKinds = adaptation.layerKinds
-        let modelCapabilities = adaptation.capabilities
-        let newCaches = adaptation.newCaches
+        // Family facts come from the RUNNER, which read them off the module
+        // it adopted. The provider derives nothing about the model here, so
+        // this file names no family and cannot drift from the model's own
+        // constructors. Per-layer caches are the runner's too — it builds
+        // them inside `makeEngine`, through the model's `newCacheV2` funnel.
+        let layerKinds = runner.layerKinds
+        let modelCapabilities = runner.manifest.engine
 
         var resolvedKind: EngineV2KVBackendKind
         switch kvBackend {
@@ -816,7 +796,6 @@ extension EngineV2Factory {
                 fallbackReason = "invalid_dtype: \(raw)"
             }
         }
-
         // Paged FAILED: we CANNOT do what was asked (kernel preflight,
         // physical-capacity planning, or pool construction) — the other
         // half of the distinction drawn at the kill switch above. The
@@ -842,30 +821,41 @@ extension EngineV2Factory {
             return reason
         }
 
+        // fp32 PAGES ARE NOT REACHABLE on the runner path, and this refuses
+        // rather than serving fp16 under an fp32 label.
+        //
+        // The pool is built by the runner from `EngineBuild`, which carries
+        // a byte capacity and no page dtype, so `RunnerEngineAssembly` always
+        // builds fp16 pages. Reporting "float32" for such a build would be
+        // the exact defect the rest of this file is written against: a
+        // control arm that is secretly a second copy of the baseline looks
+        // exactly like agreement. Until `EngineBuild` carries a page dtype,
+        // an explicit fp32 request REFUSES and an `.auto` one degrades with
+        // its reason named.
+        if resolvedKind == .paged, pagedDType == .float32 {
+            resolvedKind = .contiguous
+            fallbackReason = try degradeOrRefuse(
+                "paged_dtype_unsupported: float32 pages cannot be requested "
+                    + "through EngineBuild, which carries no page dtype")
+            pagedDType = .float16
+        }
+
         // ONE scheduler config for the whole build: this instance sizes the
         // paged pool's `maxPrefillChunk` below AND is the instance the
         // engine runs on — `assembleProductionBuild` reads it back off the
         // preparation and sets only `enablePrefixCache`.
         let schedulerConfig = productionSchedulerConfig(
             maxConcurrentRequests: maxConcurrentRequests,
-            model: model,
+            modelType: modelType ?? runner.loadedModelType,
             environment: environment)
 
-        func contiguousPreparation() throws -> ProductionBackendPreparation {
-            let backend = CBv2ContiguousKVBackend(
-                config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
-            let caches = try newCaches { index, kind in
-                CBv2LayerCache(layerIndex: index, kind: kind)
-            }
-            return ProductionBackendPreparation(
-                model: model,
-                maxConcurrentRequests: maxConcurrentRequests,
+        func contiguousDecision() -> ProductionBackendPreparation {
+            ProductionBackendPreparation(
                 layerKinds: layerKinds,
                 modelCapabilities: modelCapabilities,
-                backend: backend,
-                caches: caches,
                 kind: .contiguous,
                 fallbackReason: fallbackReason,
+                kvBytesCapacity: cappedCapacity,
                 schedulerConfig: schedulerConfig,
                 // Contiguous has no pages: report NO dtype rather than the
                 // requested one, so a parity arm cannot read a knob it set
@@ -913,110 +903,24 @@ extension EngineV2Factory {
             case .contiguous(let reason):
                 fallbackReason = try degradeOrRefuse(reason)
             case .paged(let plan):
-                do {
-                    let paged = try PagedKVBackend(
-                        layerKinds: layerKinds,
-                        config: PagedKVPoolConfig(
-                            capacityBytes: plan.capacityBytes,
-                            dtype: pagedDType,
-                            // LOCKSTEP: a windowed-layer update larger than
-                            // the ring's provision traps the PROCESS
-                            // (`PagedSequenceKV` precondition), so the pool
-                            // must be sized from the chunk the engine
-                            // actually schedules. `schedulerConfig` IS that
-                            // instance: it is carried on the preparation and
-                            // `assembleProductionBuild` hands the very same
-                            // value to `EngineV2`, copying it only to set
-                            // `enablePrefixCache`. There is no second config
-                            // left to drift from.
-                            maxPrefillChunk: max(
-                                schedulerConfig.prefillChunkSize,
-                                // A solo stripe is a chunk the engine can
-                                // actually schedule, so the lockstep above
-                                // must cover it or a striped windowed-layer
-                                // update would trap the process.
-                                schedulerConfig.soloPrefillStripeTokens ?? 0),
-                            nominalMaxSequenceLength: max(
-                                1, maxContextLength ?? 8192),
-                            maxBufferLength: maxBufferLength),
-                        // D1: the slabs are NOT wired here. Under
-                        // `.atFirstAdmission` (the plan's production
-                        // posture) `PagedKVBackend` commits them at the
-                        // pool's first admission instead, so a slot that has
-                        // served nothing does not occupy unified memory that
-                        // the NEXT model's post-load headroom guard
-                        // measures. Everything the old eager commit
-                        // protected against still holds: resource and size
-                        // eligibility threw catchably in `PagedKVPool.init`
-                        // above, and the commitment happens before any row
-                        // exists, so no admitted page is ever unbacked.
-                        slabCommitment: plan.commitment)
-                    let pagedCaches = paged.makeLayerCaches()
-                    // `newCacheV2` hands the closure the MODEL layer index
-                    // (`kind.modelLayerIndex ?? storagePosition`), while
-                    // `makeLayerCaches()` is dense per STORAGE slot. For
-                    // Gemma/GPT-OSS the two coincide (modelLayerIndex nil);
-                    // on a hybrid trunk (Qwen3.5/3.6: 40 model layers, 10
-                    // attending at indices 3, 7, …, 39) the dense subscript
-                    // is out of range by the third attending layer — and
-                    // even in-range values hand layer 3 the cache built for
-                    // layer 15. Unreachable TODAY only because
-                    // `supportsPagedKV == false` vetoes paged for recurrent
-                    // models upstream; the day that flag flips, this is a
-                    // crash at engine build. Map model index → storage slot.
-                    var storageForModelIndex: [Int: Int] = [:]
-                    for (storage, kind) in layerKinds.enumerated() {
-                        storageForModelIndex[kind.modelLayerIndex ?? storage] = storage
-                    }
-                    let caches = try newCaches { index, _ in
-                        // A miss is impossible by construction: `layerKinds`
-                        // is the same `cbv2LayerKinds` array `newCacheV2`
-                        // enumerates, and `pagedCaches` is one cache per
-                        // entry of it — precondition rather than throw (the
-                        // maker closure is non-throwing).
-                        guard let storage = storageForModelIndex[index],
-                            storage < pagedCaches.count
-                        else {
-                            preconditionFailure(
-                                "paged cache storage mapping missing model layer \(index) "
-                                    + "(\(pagedCaches.count) storage slots)")
-                        }
-                        return pagedCaches[storage]
-                    }
-                    return ProductionBackendPreparation(
-                        model: model,
-                        maxConcurrentRequests: maxConcurrentRequests,
-                        layerKinds: layerKinds,
-                        modelCapabilities: modelCapabilities,
-                        backend: paged,
-                        caches: caches,
-                        kind: .paged,
-                        fallbackReason: nil,
-                        schedulerConfig: schedulerConfig,
-                        // From the CONSTRUCTED pool, not from `pagedDType`:
-                        // `PagedKVPool.init` is what validated the dtype and
-                        // stamped every group's slabs with it, so this is
-                        // the built artifact reporting itself.
-                        pagedPoolDType: Self.pagedPoolDTypeName(
-                            paged.pool.config.dtype))
-                } catch let error as CBv2KVError {
-                    // Paged ineligibility/capacity under `.auto` is a
-                    // supported degradation: fall back to the contiguous
-                    // backend (INFO telemetry at the bridge — never the
-                    // engine_v2_refusal path). Under an explicit `.paged`,
-                    // `degradeOrRefuse` rethrows it as `pagedUnavailable`.
-                    switch error {
-                    case .backendIneligible(let reason):
-                        fallbackReason = try degradeOrRefuse("ineligible: \(reason)")
-                    case .capacityExhausted(let needed, let available):
-                        fallbackReason = try degradeOrRefuse(
-                            "pool_construction_capacity: needed \(needed), "
-                                + "available \(available)")
-                    }
-                }
+                // PLAN only. The pool itself is built by the runner inside
+                // `makeEngine`, from `EngineBuild.kvBackend` and this planned
+                // capacity — the same `PagedKVBackend` construction, one
+                // layer down, over the caches the model vends. What the
+                // provider owns is the DECISION above: preflight, the
+                // physical-capacity plan, the kill switch, the guard, and
+                // the degrade-or-refuse ladder.
+                return ProductionBackendPreparation(
+                    layerKinds: layerKinds,
+                    modelCapabilities: modelCapabilities,
+                    kind: .paged,
+                    fallbackReason: nil,
+                    kvBytesCapacity: plan.capacityBytes,
+                    schedulerConfig: schedulerConfig,
+                    pagedPoolDType: Self.pagedPoolDTypeName(pagedDType))
             }
         }
-        return try contiguousPreparation()
+        return contiguousDecision()
     }
 
     /// Emergency rollback kill-switch for the monotonic deadline leases. Set
@@ -1040,86 +944,51 @@ extension EngineV2Factory {
         }
     }
 
-    /// Final engine assembly over an already resolved backend. This method has
-    /// no backend fallback path, so its cache capability cannot drift, and it
-    /// builds no scheduler config of its own — it runs the engine on the very
-    /// instance `prepareProductionBackend` sized the paged pool against.
+    /// Final engine assembly over an already resolved backend DECISION.
+    ///
+    /// One call: the runner builds the engine from `EngineBuild`. This phase
+    /// has no backend fallback path, so its cache capability cannot drift,
+    /// and it builds no scheduler config of its own — the engine runs on the
+    /// very instance `prepareProductionBackend` sized the paged plan
+    /// against, with only `enablePrefixCache` decided here (SSD cache
+    /// construction runs AFTER backend preparation, because the cache's
+    /// replay capability follows the backend that will actually serve).
     static func assembleProductionBuild(
-        model: any LanguageModel,
-        tokenizer: any MLXLMCommon.Tokenizer,
+        runner: any Runner,
         prefixCache: (any CBv2PrefixCache)?,
-        maxConcurrentRequests: Int,
-        mtpDrafter: (any CBv2MTPDrafter)?,
         mtpConfig: CBv2MTPConfig,
-        preparedBackend: ProductionBackendPreparation
+        preparedBackend: ProductionBackendPreparation,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> ProductionBuild {
-        let (backend, caches) = try preparedBackend.consume(
-            model: model,
-            maxConcurrentRequests: maxConcurrentRequests)
         let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
             ? prefixCache : nil
-        // The ONE config, read back off the preparation. `consume` has
-        // already refused a `maxConcurrentRequests` that differs from the
-        // prepared one, so the only field this phase may decide is
-        // `enablePrefixCache` — SSD cache construction deliberately runs
-        // AFTER backend preparation, because the cache's replay capability
-        // follows the backend that will actually serve. Everything else,
-        // `prefillChunkSize` above all, reaches the engine byte-identical
-        // to what the paged pool's `maxPrefillChunk` was sized from.
-        var schedulerConfig = preparedBackend.schedulerConfig
-        schedulerConfig.enablePrefixCache = effectivePrefixCache != nil
-        let engine = makeEngineV2(
-            model: model,
-            tokenizer: tokenizer,
-            layerKinds: preparedBackend.layerKinds,
-            backend: backend,
-            caches: caches,
-            schedulerConfig: schedulerConfig,
-            prefixCache: effectivePrefixCache,
-            // New monotonic phase leases are on by default
-            // (`useLegacyRequestTimeout` defaults false). The ONLY override
-            // is the emergency rollback kill-switch below — production never
-            // otherwise touches the lease config.
-            loopConfig: CBv2EngineLoopConfig(
-                useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
-            mtpDrafter: mtpDrafter,
-            mtpConfig: mtpConfig)
-        return ProductionBuild(
-            engine: engine,
-            fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
+        let policy = EngineV2RunnerPolicy(
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
+            kvBytesCapacity: preparedBackend.kvBytesCapacity,
+            schedulerConfig: preparedBackend.schedulerConfig,
+            // New monotonic phase leases are on by default
+            // (`useLegacyRequestTimeout` defaults false). The ONLY override
+            // is the emergency rollback kill-switch — production never
+            // otherwise touches the lease config.
+            loopConfig: CBv2EngineLoopConfig(
+                useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled(
+                    environment: environment)),
+            prefixCache: effectivePrefixCache,
+            mtpConfig: mtpConfig,
+            environment: environment)
+        // Speculation is on when the slot asked for it AND the runner holds
+        // the head; the runner refuses a decoder it does not hold rather
+        // than serving serial under an `mtp` label.
+        let decoder = try runnerDecoder(
+            runner: runner,
+            speculationRequested: mtpConfig.enabled
+                && runner.loadedDecoders.contains(.mtp))
+        return try makeRunnerBuild(
+            runner: runner,
+            decoder: decoder,
+            policy: policy,
             pagedPoolDType: preparedBackend.pagedPoolDType)
-    }
-
-    /// Shared final assembly for both backends.
-    private static func makeEngineV2(
-        model: any LanguageModel,
-        tokenizer: any MLXLMCommon.Tokenizer,
-        layerKinds: [CBv2LayerKind],
-        backend: CBv2KVBackend,
-        caches: [any CBv2AttendingLayerCache],
-        schedulerConfig: CBv2SchedulerConfig,
-        prefixCache: (any CBv2PrefixCache)?,
-        loopConfig: CBv2EngineLoopConfig,
-        mtpDrafter: (any CBv2MTPDrafter)?,
-        mtpConfig: CBv2MTPConfig
-    ) -> EngineV2 {
-        EngineV2(
-            model: CBv2SteppableLanguageModelAdapter(model),
-            layerKinds: layerKinds,
-            backend: backend,
-            cacheProvider: CBv2LayerCacheBank(caches: caches),
-            sampler: CBv2DefaultSampler(),
-            detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
-            schedulerConfig: schedulerConfig,
-            loopConfig: loopConfig,
-            // Production reusable prefixes use only the encrypted SSD tier.
-            // The coordinator-authored cache scope isolates accounts.
-            prefixCache: prefixCache,
-            mtpDrafter: mtpDrafter,
-            mtpConfig: mtpConfig
-        )
     }
 
 }

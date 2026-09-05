@@ -183,6 +183,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: live.model,
             tokenizer: live.tokenizer.inner,
+            modelDirectory: live.modelDirectory,
             kvBytesCapacity: 24 * Self.gib,
             maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
             prefixCache: ssdCache)

@@ -5,6 +5,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXNN
+import MLXRunners
 import MLXVLM
 import Testing
 
@@ -118,6 +119,23 @@ private final class QwenPrefixCacheConstructionProbe: @unchecked Sendable {
 
     func record() { lock.withLock { _calls += 1 } }
     var calls: Int { lock.withLock { _calls } }
+}
+
+
+/// Adopt a fixture module through the registry, the way the serving path
+/// does: a directory holding only `config.json`, and no tensors read.
+private func adoptFixture(
+    _ model: any LanguageModel, modelType: String
+) throws -> any Runner {
+    let directory = try makeCheckpointDirectory(modelType: modelType)
+    return try EngineV2Factory.adoptRunner(
+        model: model,
+        tokenizer: StubBridgeTokenizer(),
+        modelDirectory: directory,
+        options: EngineV2Factory.runnerLoadOptions(
+            modelDirectory: directory,
+            kvBytesCapacity: 0,
+            maxSequenceLength: 2048))
 }
 
 @Suite("Qwen VLM target-only extraction", .serialized)
@@ -293,13 +311,17 @@ struct QwenVLMTargetExtractionTests {
         let dense = Qwen35Model(config)
         let moe = Qwen35MoEModel(config)
 
+        // Keyed on the checkpoint's declared `model_type` now, not on the
+        // module class: same two answers, from data the engine path has.
+        _ = dense
+        _ = moe
         let denseScheduler = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 2,
-            model: dense,
+            modelType: "qwen3_5",
             environment: [:])
         let moeScheduler = EngineV2Factory.productionSchedulerConfig(
             maxConcurrentRequests: 2,
-            model: moe,
+            modelType: "qwen3_5_moe",
             environment: [:])
 
         #expect(
@@ -372,19 +394,25 @@ struct QwenVLMTargetExtractionTests {
     @Test("Qwen3-VL MoE constructs the contiguous production backend and vetoes paged KV")
     func qwen3VLProductionBackend() throws {
         let wrapper = try qwen3VLMoEFixture()
+        let runner = try adoptFixture(wrapper, modelType: "qwen3_vl_moe")
         let build = try EngineV2Factory.makeProductionBuild(
             model: wrapper,
             tokenizer: StubBridgeTokenizer(),
+            modelDirectory: try makeCheckpointDirectory(modelType: "qwen3_vl_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: .contiguous)
         #expect(build.kvBackendKind == .contiguous)
-        #expect(EngineV2Factory.cbv2LayerKinds(model: wrapper)?.count == 1)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: wrapper) == 0)
+        #expect(runner.layerKinds.count == 1)
+        #expect(
+            EngineV2Factory.adoptionBoundTokens(
+                layerKinds: runner.layerKinds,
+                capabilities: runner.manifest.engine) == 0)
 
         var preflightCalled = false
         let paged = try EngineV2Factory.prepareProductionBackend(
-            model: try qwen3VLMoEFixture(),
+            runner: try adoptFixture(
+                try qwen3VLMoEFixture(), modelType: "qwen3_vl_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: .paged,
@@ -405,8 +433,9 @@ struct QwenVLMTargetExtractionTests {
         let config = try EngineV2VLMTextExtraction.decodeQwenConfiguration(
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
         let target = Qwen35MoEModel(config)
+        let targetRunner = try adoptFixture(target, modelType: "qwen3_5_moe")
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: target,
+            runner: targetRunner,
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.contiguous)
@@ -415,10 +444,13 @@ struct QwenVLMTargetExtractionTests {
         #expect(prepared.layerKinds.count == 1)
         #expect(prepared.layerKinds.first?.modelLayerIndex == 1)
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
-        #expect(EngineV2Factory.adoptionBoundTokens(model: target) == 0)
+        #expect(
+            EngineV2Factory.adoptionBoundTokens(
+                layerKinds: targetRunner.layerKinds,
+                capabilities: targetRunner.manifest.engine) == 0)
 
         let dense = try EngineV2Factory.prepareProductionBackend(
-            model: Qwen35Model(config),
+            runner: try adoptFixture(Qwen35Model(config), modelType: "qwen3_5"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.contiguous)
@@ -434,7 +466,7 @@ struct QwenVLMTargetExtractionTests {
             configData: qwenTargetFixtureJSON(fullAttentionInterval: 2))
         var preflightCalled = false
         let prepared = try EngineV2Factory.prepareProductionBackend(
-            model: Qwen35MoEModel(config),
+            runner: try adoptFixture(Qwen35MoEModel(config), modelType: "qwen3_5_moe"),
             kvBytesCapacity: 1 << 20,
             maxConcurrentRequests: 2,
             kvBackend: EngineV2KVBackendSelection.paged,
@@ -460,6 +492,7 @@ struct QwenVLMTargetExtractionTests {
         let prepared = EngineV2PreparedModel(
             snapshot: EngineV2ModelSnapshot(
                 model: target, eosTokenIds: [1], extraEOSTokens: []),
+            runner: try adoptFixture(target, modelType: "qwen3_5_moe"),
             servingModel: target,
             assistant: nil,
             mtpStatus: .disabled(.configDisabled, configured: false),

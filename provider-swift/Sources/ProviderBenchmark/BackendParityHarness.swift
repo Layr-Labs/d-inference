@@ -159,6 +159,7 @@ public enum BackendParityHarness {
                 serving: ServingModel(
                     model: servingModel,
                     tokenizer: ctx.tokenizer,
+                    modelDirectory: modelDirectory,
                     claimsPackedPrefill: packedClaim,
                     claimsVisionSpans: visionClaim,
                     typeName: "\(type(of: servingModel))",
@@ -245,6 +246,10 @@ public enum BackendParityHarness {
     private struct ServingModel: @unchecked Sendable {
         let model: any LanguageModel
         let tokenizer: any MLXLMCommon.Tokenizer
+        /// The checkpoint this module was loaded from. The engine factory
+        /// resolves the family's runner from it, so it travels with the
+        /// serving model rather than through four probe signatures.
+        let modelDirectory: URL
         /// `CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill`.
         let claimsPackedPrefill: Bool
         /// `CBv2EmbeddingForwardable.supportsVisionSpanPrefill`.
@@ -405,6 +410,7 @@ public enum BackendParityHarness {
             let build = try EngineV2Factory.makeProductionBuild(
                 model: serving.model,
                 tokenizer: serving.tokenizer,
+                modelDirectory: serving.modelDirectory,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: maxConcurrentRequests,
                 prefixCache: prefixCache,

@@ -1,9 +1,9 @@
 // Copyright © 2026 Eigen Labs.
 //
 // The runner boundary, provider side (Darkbloom runner contract §3, §5, §9,
-// §12c).
+// §12c). ONE construction path for every family.
 //
-// One runner is one model family behind the CBv2 engine, with a static
+// A runner is one model family behind the CBv2 engine, with a static
 // manifest, and it lives in the fork (`MLXRunners`). Darkbloom is one of its
 // two consumers; `bench-worker` is the other. The split the contract draws
 // is:
@@ -16,25 +16,23 @@
 //     scheduler config, the loop config, the SSD prefix cache, the decoder,
 //     the MTP config, and the environment.
 //
+// `Runner.adopt` is what lets the provider take that path without loading
+// anything twice: the slot lifecycle owns a resident `ModelContainer`, and
+// `adopt` derives the serving model, the layer kinds, the decoders and the
+// head provenance from the module the container already holds plus
+// `config.json`. A runner that could only `load` would read a checkpoint the
+// process is already holding — on a 113 GB model, a second copy in unified
+// memory.
+//
 // Nothing here decides policy. `EngineV2SlotFactory` and
 // `EngineV2Factory.prepareProductionBackend` still own the KV-backend
 // selection, the slot vetoes, the kill switch, the crash-loop guard, the
 // paged physical-capacity plan, the prefix-cache construction gate, and the
 // degrade-or-refuse ladder; this file is where their verdict is handed to a
-// runner. The result keeps the shape the rest of the provider already reads
+// runner. The result keeps the shape the rest of the provider reads
 // (`EngineV2Factory.ProductionBuild`), so the bridge, the shared KV ledger,
 // the heartbeat clamp, and the `engine_v2_refusal` telemetry path are
 // unchanged.
-//
-// STATE: this is the whole runner path and it is exercised by
-// `EngineV2RunnerBuildTests` with a scripted runner. The SERVING slot does
-// not take it yet — the provider's model lifecycle owns an already-resident
-// `ModelContainer` and `Runner.load` loads the checkpoint itself, so routing
-// the slot through here today would load the weights twice. The families
-// that still load through `ModelContainerLoading` keep the typed adaptation
-// in `EngineV2ModelAdaptation`. Qwen 3.8 Flash-Next has no such adaptation
-// on purpose: its forward pass needs the n-gram row source, which only
-// `Runner.load` can be given.
 
 import Foundation
 import MLXLMCommon
@@ -49,10 +47,11 @@ struct EngineV2RunnerPolicy {
     var kvBackendKind: EngineV2KVBackendKind
     /// Non-nil only when a paged selection degraded to contiguous; carried
     /// through to `ProductionBuild` for the INFO `engine_v2_kv_backend`
-    /// telemetry, exactly as the container path reports it.
+    /// telemetry.
     var kvBackendFallbackReason: String?
-    /// The slot's live-KV grant, already re-sliced against co-resident slots
-    /// and clamped to physical memory.
+    /// The slot's live-KV grant, already re-sliced against co-resident slots,
+    /// clamped to physical memory, and — on a resolved paged build — reduced
+    /// to what `PagedKVPhysicalCapacityPolicy` planned.
     var kvBytesCapacity: Int
     var schedulerConfig: CBv2SchedulerConfig
     var loopConfig: CBv2EngineLoopConfig
@@ -94,9 +93,11 @@ extension EngineV2Factory {
     /// n-gram PLE table is 29.8 GiB, is never held as model parameters, and
     /// its rows are read from the shard DIRECTORY the offline transform
     /// writes — which for a provider checkpoint is the model directory
-    /// itself (the fork's loader drops the `ngram_embedding` shards before
-    /// the model materializes them, so they stay on disk for this reader).
-    /// A path to a single file is refused by the reader, by name.
+    /// itself. The fork's loader drops the `ngram_embedding` shard tensors
+    /// before the model materializes them (`WeightNameFiltering`), so they
+    /// stay on disk for this reader. A path to a single file is refused by
+    /// the reader, by name; a family that does not use the resource ignores
+    /// it.
     static func runnerResources(modelDirectory: URL) -> RunnerResources {
         var resources = RunnerResources()
         // `isDirectory: true` explicitly: the reader refuses a file by name,
@@ -107,13 +108,18 @@ extension EngineV2Factory {
         return resources
     }
 
-    /// What the caller wants honored at load time. The runner never
-    /// downloads and never reads the network.
+    /// What the caller wants honored. The runner never downloads and never
+    /// reads the network.
+    ///
+    /// `preloadedDrafter` is the slot's already-resident assistant: Darkbloom
+    /// keeps it across engine rebuilds, so handing it in is the difference
+    /// between binding a module and reading its tensors a second time.
     static func runnerLoadOptions(
         modelDirectory: URL,
         drafterDirectory: URL? = nil,
         kvBytesCapacity: Int,
         maxSequenceLength: Int,
+        preloadedDrafter: (any CBv2MTPDrafter)? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> RunnerLoadOptions {
         RunnerLoadOptions(
@@ -121,40 +127,87 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             maxSequenceLength: maxSequenceLength,
             environment: environment,
-            resources: runnerResources(modelDirectory: modelDirectory))
+            resources: runnerResources(modelDirectory: modelDirectory),
+            preloadedDrafter: preloadedDrafter)
     }
 
-    /// Resolve the family through the registry and load it. This is the one
-    /// place a checkpoint becomes a runner: `model_type` from the
-    /// checkpoint's own `config.json`, then the registry, then the runner's
-    /// own loader. Darkbloom names no family on this path.
-    static func loadRunner(
-        modelDirectory: URL,
-        options: RunnerLoadOptions
-    ) async throws -> any Runner {
-        let runnerType = try RunnerRegistry.shared.resolve(checkpoint: modelDirectory)
-        return try await runnerType.load(modelDirectory, options: options)
-    }
-
-    /// Decoder selection, from what the runner ACTUALLY loaded.
+    /// Resolve the family through the registry and adopt the module the
+    /// provider already has resident. This is THE construction entry point:
+    /// no family is named here, and no weights are read.
     ///
-    /// This is the runner-path form of the provider's MTP assistant
-    /// resolution: a decoder is present only when its drafter is resident,
-    /// so `mtp` is selected when the caller wants speculation AND the runner
-    /// reports it loaded, and `serial` otherwise. Asking for a decoder the
-    /// runner did not load is a refusal, never a silent downgrade to serial
-    /// — the caller's `mtp_active` telemetry would otherwise claim a head
-    /// that is not running.
+    /// Multimodal checkpoints get RETRIES, and none of them is a family
+    /// test here: a wrapper the family's runner does not serve is offered
+    /// again as the text tower the caller can produce. Each candidate is
+    /// tried in order and only `unexpectedModel` moves on to the next, so a
+    /// real failure inside a candidate surfaces as itself.
+    ///
+    /// This exists because two fork runners accept the LLM-side module but
+    /// not the multimodal wrapper the provider actually loads for those
+    /// checkpoints — see the note in the PR body. A runner that serves its
+    /// own wrapper accepts on the first call and never reaches a retry.
+    static func adoptRunner(
+        model: any LanguageModel,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        modelDirectory: URL,
+        configuration: ModelConfiguration? = nil,
+        options: RunnerLoadOptions,
+        textTowerCandidates: [() throws -> any LanguageModel] = []
+    ) throws -> any Runner {
+        let runnerType = try RunnerRegistry.shared.resolve(
+            modelType: RunnerCheckpoint.modelType(at: modelDirectory))
+        let resolvedConfiguration =
+            configuration ?? ModelConfiguration(directory: modelDirectory)
+        func adopt(_ module: any LanguageModel) throws -> any Runner {
+            try runnerType.adopt(
+                model: module,
+                tokenizer: tokenizer,
+                configuration: resolvedConfiguration,
+                directory: modelDirectory,
+                options: options)
+        }
+        do {
+            return try adopt(model)
+        } catch RunnerError.unexpectedModel(let type) {
+            for candidate in textTowerCandidates {
+                do {
+                    return try adopt(try candidate())
+                } catch RunnerError.unexpectedModel {
+                    continue
+                }
+            }
+            throw RunnerError.unexpectedModel(type)
+        }
+    }
+
+    /// The `model_type` a checkpoint declares. Public so the benchmark
+    /// harnesses can key the same policy the serving path keys — they link
+    /// `ProviderCore`, not `MLXRunners`.
+    public static func checkpointModelType(at modelDirectory: URL) -> String? {
+        try? RunnerCheckpoint.modelType(at: modelDirectory)
+    }
+
+    /// The runner type claiming a checkpoint, without adopting anything.
+    /// Used by the assistant path, which needs the family's own drafter
+    /// loader before any engine exists.
+    static func runnerType(forCheckpointAt modelDirectory: URL) throws -> any Runner.Type {
+        try RunnerRegistry.shared.resolve(
+            modelType: RunnerCheckpoint.modelType(at: modelDirectory))
+    }
+
+    /// Decoder selection, from what the runner ACTUALLY holds.
+    ///
+    /// A decoder is present only when its drafter is resident, so `mtp` is
+    /// selected when the caller wants speculation AND the runner reports it
+    /// loaded. Asking for a decoder the runner does not have is a refusal,
+    /// never a silent downgrade to serial — `mtp_active` must not claim a
+    /// head that is not running. The refusal is the runner's own error type,
+    /// not a provider copy of it.
     static func runnerDecoder(
         runner: any Runner,
         speculationRequested: Bool
     ) throws -> DecoderID {
         guard speculationRequested else { return .serial }
         guard runner.loadedDecoders.contains(.mtp) else {
-            // The runner's own refusal, not a provider copy of it: the same
-            // condition is checked again inside `makeEngine`, and one error
-            // type keeps the two answers indistinguishable to whoever reads
-            // the refusal.
             throw RunnerError.decoderNotLoaded(
                 requested: DecoderID.mtp.rawValue,
                 loaded: runner.loadedDecoders.map(\.rawValue))
@@ -165,13 +218,14 @@ extension EngineV2Factory {
     /// Hand the slot's policy to the runner and take back the engine.
     ///
     /// The runner refuses a KV backend its manifest does not declare and a
-    /// decoder it did not load; both surface as `RunnerError` and are
+    /// decoder it does not hold; both surface as `RunnerError` and are
     /// classified by `EngineV2RefusalReason.classify` onto the existing
     /// refusal path (ERROR `engine_v2_refusal` + throw → 503 → reroute).
     static func makeRunnerBuild(
         runner: any Runner,
         decoder: DecoderID,
-        policy: EngineV2RunnerPolicy
+        policy: EngineV2RunnerPolicy,
+        pagedPoolDType: String? = nil
     ) throws -> ProductionBuild {
         let build = EngineBuild(
             kvBackend: policy.kvBackendKind == .paged ? .paged : .contiguous,
@@ -191,12 +245,6 @@ extension EngineV2Factory {
             fixedRequestBytes: (engine as? EngineV2)?.resolvedFixedBytesPerRequest ?? 0,
             kvBackendKind: policy.kvBackendKind,
             kvBackendFallbackReason: policy.kvBackendFallbackReason,
-            // Page dtype is a PAGED pool's own property. No runner in the
-            // fork declares paged today, and the runner's assembly builds
-            // its pool from `EngineBuild` alone, so there is no constructed
-            // pool to report here. Reporting nil keeps the rule the
-            // container path states: only a pool that exists names its
-            // dtype.
-            pagedPoolDType: nil)
+            pagedPoolDType: policy.kvBackendKind == .paged ? pagedPoolDType : nil)
     }
 }

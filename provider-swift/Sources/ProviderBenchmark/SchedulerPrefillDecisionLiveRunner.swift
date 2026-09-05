@@ -84,6 +84,7 @@ enum SchedulerPrefillDecisionLiveRunner {
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: context.tokenizer,
+                modelDirectory: modelDirectory,
                 kvBytesCapacity: kvCapacity,
                 maxConcurrentRequests: configuration.maxConcurrentRequests,
                 kvBackend: kvBackend,

@@ -24,6 +24,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXVLM
 import Testing
 
@@ -294,7 +295,12 @@ struct PagedDivergenceProbeTests {
         let box = try await container.perform { ctx -> Box in
             let serving = try EngineV2Factory.benchmarkServingModel(
                 model: ctx.model, isVLM: isVLM, modelDirectory: directory)
-            guard let kinds = EngineV2Factory.cbv2LayerKinds(model: serving) else {
+            let adopted = try? EngineV2Factory.adoptRunner(
+                model: serving,
+                tokenizer: ctx.tokenizer,
+                modelDirectory: directory,
+                options: RunnerLoadOptions())
+            guard let kinds = adopted?.layerKinds else {
                 throw LiveFixtureSkip.modelNotInCache("no cbv2 layer kinds for \(modelID)")
             }
             // GPT-OSS primes its sinks-activation probe inside newCacheV2;

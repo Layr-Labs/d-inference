@@ -203,6 +203,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: servingModel,
             tokenizer: tokenizer,
+            modelDirectory: targetDirectory,
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: batchSize,
             mtpDrafter: mtpDrafter,

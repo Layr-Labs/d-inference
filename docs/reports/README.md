@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -10,6 +10,12 @@ what was decided and whether it shipped read [`../design/README.md`](../design/R
 
 File names start with the date of the work (`YYYY-MM-DD-slug.md`). Each file's
 freshness stamp carries its own date, not the current one.
+
+## Routing measurements and audits
+
+| Date | Report | One line |
+|---|---|---|
+| 2026-09-05 | [admission-calibration-audit](2026-09-05-admission-calibration-audit.md) | Coordinator/provider timing contract, pending-prompt correction, synthetic baseline, and evaluation limits |
 
 ## Incidents and root causes
 

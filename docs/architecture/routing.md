@@ -1,6 +1,6 @@
 # Routing: how a request becomes a provider choice
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 Routing is the part of the coordinator that, given one inference request and
 the live fleet, picks the provider that should run it. It filters the fleet
@@ -232,12 +232,28 @@ fast prefill is dwarfed by the load. The setters are
 **TTFT estimate.** Separately from cost, each candidate carries an estimated
 time-to-first-token (`ttftMsFromSnapshot`): slot state penalty + prefill of
 tokens queued ahead + this request's prefill + one decode step
-(`1000 / effectiveTPS`), then multiplied by the per-(model, chip family)
-calibration ratio learned from settled requests
-(`ttftCalibration.appliedRatio`, `coordinator/registry/ttft_calibration.go`).
-`ttftOccupancyAlpha` (default `0.0`, `SetTTFTOccupancyAlpha`) optionally
-blends in occupancy. This estimate drives the `ttft_ceiling` gate, hedge
-timing and the `Retry-After` header; it is not a cost term.
+(`1000 / effectiveTPS`). The per-(model, chip family) calibration ratio scales
+the prefill/decode portion and leaves the cold-load state penalty unchanged
+(`calibratedTTFTMsWithRatio`, `coordinator/registry/ttft_calibration.go`). It
+learns from committed first content, which does not establish full delivery.
+`ttftOccupancyAlpha` affects only the separate diagnostic shadow estimate.
+The live estimate drives the `ttft_ceiling` gate, hedge timing and the
+`Retry-After` header; it is not a cost term.
+
+For reservations made after the current capacity snapshot was applied,
+`queuedPrefillTokensAhead` uses each pending request's own estimated prompt
+length. Per-attempt first-content ingress removes that request's prefill work
+while preserving its KV/output reservation. The provider's anonymous waiting
+count and unmatched older requests retain the incoming-prompt proxy. New
+reservations are reconciled separately so older running/waiting counts cannot
+hide them or count them twice (`coordinator/registry/ttft_prefill_backlog.go`).
+Both preflight and reservation use this calculation. `capacitySnapshotAt`
+advances only when `Heartbeat` applies capacity; discarded `capacity_seq`
+frames update liveness alone. Nil capacity clears the timestamp and reconnect
+starts fresh (`coordinator/registry/registry.go`). This boundary identifies
+known arrivals, not the provider's complete current prefill queue. The
+[calibration audit](../reports/2026-09-05-admission-calibration-audit.md)
+records the remaining measurement limits and the synthetic comparison.
 
 **Cache discount.** After pricing, `applyCacheRoutingDiscount` subtracts a
 bounded discount for providers holding a confirmed prefix cache for the

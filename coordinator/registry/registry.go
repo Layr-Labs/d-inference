@@ -78,6 +78,10 @@ type ProviderChunk struct {
 // PendingRequest is a channel-based handle for an in-flight inference request.
 type PendingRequest struct {
 	RequestID string
+	// reservedAt is the coordinator-local reservation instant, guarded by the
+	// owning provider's mu. A reservation after capacitySnapshotAt cannot be part
+	// of that snapshot's queue counts. This is not a provider admission timestamp.
+	reservedAt time.Time
 	// Attempt is the zero-based dispatch attempt number that produced this
 	// pending request. It lets outcome telemetry correlate the final result
 	// with the routing decision record for the same attempt.
@@ -930,6 +934,11 @@ type Provider struct {
 
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
+	// capacitySnapshotAt is the local receipt/application instant of the current
+	// BackendCapacity. Stale capacity_seq frames advance LastHeartbeat for
+	// liveness but do not refresh this timestamp. Guarded by p.mu; nil capacity
+	// clears it and reconnect creates a fresh Provider with no snapshot.
+	capacitySnapshotAt time.Time
 
 	// capacitySeq is the highest BackendCapacity.CapacitySeq applied on THIS
 	// connection; capacityQuoteCapable latches true the first time a heartbeat
@@ -1142,6 +1151,7 @@ func (p *Provider) AddPending(pr *PendingRequest) {
 
 // addPendingLocked registers a pending request. Caller must hold p.mu.
 func (p *Provider) addPendingLocked(pr *PendingRequest) {
+	pr.reservedAt = time.Now()
 	p.pendingReqs[pr.RequestID] = pr
 }
 
@@ -4016,6 +4026,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
 	p.BackendCapacity = backendCapacity
+	p.capacitySnapshotAt = time.Time{}
+	if backendCapacity != nil {
+		p.capacitySnapshotAt = now
+	}
 	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
 	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is

@@ -202,7 +202,18 @@ func newRelayStamps(rp *registry.RequestProfile) *relayStamps {
 
 // flushed records one chunk written + flushed to the client.
 func (r *relayStamps) flushed(bytes int) {
-	if r == nil || r.rp == nil || bytes <= 0 {
+	r.flushedFrames(1, bytes)
+}
+
+// flushedFrames records one client flush that carried frames SSE frames:
+// chunks_out advances by the frame count (the relays coalesce already-queued
+// chunks into one write, and the field keeps meaning "frames delivered"),
+// bytes_out by the bytes accepted, and first_flush_us / max_chunk_gap_us are
+// stamped per call: per flush in the chat relay (when the bytes reach the
+// wire), per event write in the emitter relays (just ahead of their deferred
+// Flush).
+func (r *relayStamps) flushedFrames(frames, bytes int) {
+	if r == nil || r.rp == nil || bytes <= 0 || frames <= 0 {
 		return
 	}
 	now := time.Now()
@@ -215,7 +226,7 @@ func (r *relayStamps) flushed(bytes int) {
 		}
 	}
 	r.lastFlush = now
-	rp.ChunksOut.Add(1)
+	rp.ChunksOut.Add(int64(frames))
 	rp.BytesOut.Add(int64(bytes))
 }
 
@@ -245,6 +256,21 @@ func (r *relayStamps) wrote(n int, err error) {
 	}
 	if n > 0 {
 		r.flushed(n)
+	}
+}
+
+// wroteFrames records the outcome of one coalesced client write carrying
+// frames SSE frames (the chat relay's flush): the same contract as wrote,
+// with chunks_out advancing by the number of frames folded into the write.
+func (r *relayStamps) wroteFrames(frames, n int, err error) {
+	if r == nil || r.rp == nil {
+		return
+	}
+	if err != nil {
+		r.writeErr()
+	}
+	if n > 0 {
+		r.flushedFrames(frames, n)
 	}
 }
 

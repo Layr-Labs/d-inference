@@ -143,6 +143,17 @@ func (s *Server) handleProviderWS(w http.ResponseWriter, r *http.Request) {
 	s.providerReadLoop(r.Context(), conn, providerID, r)
 }
 
+// maxProviderVersionLength bounds the provider-reported binary version accepted
+// at registration. The Swift provider sends the compile-time constant
+// ProviderCore.version ("0.8.15"; release tags must equal it, dev builds are
+// published with the same exact-version contract), and the longest shape the
+// coordinator has ever handled is "0.8.15-rc.1+build" (17 bytes). 128 leaves
+// an order of magnitude of margin while keeping provider-controlled bytes out
+// of the registry's parse memos, metric tags and logs. Raising this must be
+// paired with the registry's memo bound (maxMemoizedVersionLen), which stops
+// caching above 64 bytes.
+const maxProviderVersionLength = 128
+
 // sessionDisconnectReason maps a provider read-loop exit to the disconnect
 // reason recorded on its provider_sessions row. Kept to a small, fixed
 // vocabulary so the column stays aggregatable:
@@ -332,6 +343,17 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				return
 			}
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			// The version string is provider-controlled and flows into semver
+			// parsing memos, metric tags and logs; a legitimate build id is a
+			// few dozen bytes. Reject anything larger before it reaches the
+			// registry so a hostile client cannot retain multi-MiB keys.
+			if len(regMsg.Version) > maxProviderVersionLength {
+				s.logger.Warn("rejecting provider registration with oversized version",
+					"provider_id", providerID, "version_len", len(regMsg.Version))
+				s.ddIncr("providers.registration_rejected", []string{"reason:oversized_version"})
+				_ = conn.Close(websocket.StatusPolicyViolation, "version string too long")
+				return
+			}
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				// Validation errors can quote provider-controlled model IDs.
 				s.logger.Warn("rejecting malformed provider cache capabilities",
@@ -3553,10 +3575,22 @@ func (s *Server) verifyAppleDeviceAttestation(ctx context.Context, providerID st
 	)
 }
 
+// providerAttestationCacheTTL bounds staleness of the public trust listing. It
+// reflects live connection state (trust level, status, models), so it uses the
+// same 2s window as GET /v1/models/capacity. The response is the same for every
+// caller (unauthenticated, no query parameters).
+const providerAttestationCacheTTL = 2 * time.Second
+
+const providerAttestationCacheKey = "providers:attestation:v1"
+
 // handleProviderAttestation returns privacy-redacted trust status for all providers.
 // Device identity and raw MDA certificates stay coordinator-private because
 // Apple's leaf certificate embeds the hardware serial number and UDID.
 func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Request) {
+	if body, ok := s.readCacheGet(providerAttestationCacheKey); ok {
+		writeCachedJSON(w, body)
+		return
+	}
 	type providerAttestation struct {
 		ProviderID    string `json:"provider_id"`
 		ChipName      string `json:"chip_name"`
@@ -3647,7 +3681,13 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 	})
 
 	resp := map[string]any{"providers": providers}
-	writeJSON(w, http.StatusOK, resp)
+	body, err := encodeCachedJSON(resp)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode attestation"))
+		return
+	}
+	s.readCacheSet(providerAttestationCacheKey, body, providerAttestationCacheTTL)
+	writeCachedJSON(w, body)
 }
 
 // sendTrustStatus sends the provider its current trust level and status over

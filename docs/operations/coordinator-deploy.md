@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `bda995368`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -358,6 +358,7 @@ reference copy; editing it changes nothing on the host.
 | `refresh-env: missing required key` | a `required-env-keys.txt` key is absent on this host | add the value by hand (secrets are never fetched by the script), re-run `--check` |
 | New flag "not working" | value read once at start; or a kill switch left from an incident (`EIGENINFERENCE_HEALTH_EJECTION=off`, `EIGENINFERENCE_QUEUE_BEFORE_SHED=false`) | `grep` the env file; recreate the container |
 | Release registration `503 not_configured` | `EIGENINFERENCE_R2_CDN_URL` unset | set it, recreate the container |
+| A manual SQL edit to `users` (role, platform fee, Stripe fields) or the model-registry tables "did not apply" | those lookups are served from an in-process read-through cache (`store.NewCached`: users 30 s, model records 10 s, misses 5 s); only writes made through the coordinator invalidate at once | wait out the TTL, or make the change through the admin API (`PUT /v1/admin/users/role`, `POST /v1/admin/models/...`) |
 
 ## Related
 

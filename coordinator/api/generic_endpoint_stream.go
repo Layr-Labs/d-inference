@@ -32,7 +32,14 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 		return
 	}
 	writeSSEResponseHeader(w, pr.RequestID)
-	emitter := newGenericEndpointStreamEmitter(w, flusher, pr)
+
+	// The emitter flushes after every event; defer those flushes so a burst of
+	// already-queued provider chunks reaches the wire in one Flush. Every
+	// return path performs the owed flush.
+	deferred := newDeferredFlusher(flusher)
+	defer deferred.flushNow()
+
+	emitter := newGenericEndpointStreamEmitter(w, deferred, pr)
 	emitter.start()
 	for _, chunk := range firstChunks {
 		if chunk != "" {
@@ -47,54 +54,92 @@ func (s *Server) handleGenericEndpointStreamingResponseWithError(
 		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(*initialError))
 		return
 	}
+	// The preamble (start event + dispatch-time chunks) goes on the wire
+	// before blocking on the provider.
+	deferred.flushNow()
 
 	timer := time.NewTimer(inferenceTimeout)
 	defer timer.Stop()
+
+	// emitProviderError settles and reports an in-band provider error.
+	emitProviderError := func(errMsg protocol.InferenceErrorMessage) {
+		s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+		s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
+		s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
+		s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
+		emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+	}
+
+	// finishStream runs once ChunkCh is observed closed — on the blocking
+	// receive or while draining already-queued chunks (after those were
+	// flushed). A provider error is delivered on ErrorCh just before the
+	// channels close, so it is checked first: a close must never turn a real
+	// provider error into "incomplete".
+	finishStream := func() {
+		select {
+		case errMsg, ok := <-pr.ErrorCh:
+			if ok && errMsg.Error != "" {
+				emitProviderError(errMsg)
+				return
+			}
+		default:
+		}
+		var usage protocol.UsageInfo
+		select {
+		case complete, completeOK := <-pr.CompleteCh:
+			if !completeOK {
+				s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+				s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+				emitter.emitError("provider_error", "provider ended without completion")
+				return
+			}
+			usage = complete
+		case <-time.After(2 * time.Second):
+			s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
+			emitter.emitError("provider_error", "provider ended without completion")
+			return
+		case <-r.Context().Done():
+			profileClientGone(pr, phaseAfterCommit)
+			return
+		}
+		s.noteInferenceSuccess(pr)
+		emitter.finish(usage)
+	}
+
+	relayChunk := func(chunk registry.ProviderChunk) {
+		emitter.handleChunk(sanitizeStreamCacheDetails(chunk.Data))
+		resetIdleTimer(timer, inferenceTimeout)
+	}
+
 	for {
 		select {
 		case providerChunk, ok := <-pr.ChunkCh:
 			if !ok {
-				var usage protocol.UsageInfo
-				select {
-				case complete, completeOK := <-pr.CompleteCh:
-					if !completeOK {
-						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-						emitter.emitError("provider_error", "provider ended without completion")
-						return
-					}
-					usage = complete
-				case <-time.After(2 * time.Second):
-					s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
-					emitter.emitError("provider_error", "provider ended without completion")
-					return
-				case <-r.Context().Done():
-					profileClientGone(pr, phaseAfterCommit)
-					return
-				}
-				s.noteInferenceSuccess(pr)
-				emitter.finish(usage)
+				finishStream()
 				return
 			}
-			emitter.handleChunk(sanitizeStreamCacheDetails(providerChunk.Data))
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			relayChunk(providerChunk)
+			// Fold in whatever the provider already queued behind this chunk
+			// (never waiting for more), then flush the batch once. A close
+			// observed mid-drain is handled exactly like the blocking-receive
+			// close — after the drained chunks are on the wire.
+			closed := drainQueuedChunks(pr.ChunkCh, maxCoalescedChunks-1, relayChunk)
+			deferred.flushNow()
+			if closed {
+				finishStream()
+				return
 			}
-			timer.Reset(inferenceTimeout)
 
 		case errMsg, ok := <-pr.ErrorCh:
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
-			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
-			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
+			// Forward chunks queued ahead of the error before the terminal
+			// event (see the chat relay for the rationale).
+			drainQueuedChunks(pr.ChunkCh, cap(pr.ChunkCh), relayChunk)
+			deferred.flushNow()
+			emitProviderError(errMsg)
 			return
 
 		case <-timer.C:

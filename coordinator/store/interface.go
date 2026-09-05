@@ -236,6 +236,15 @@ type InferenceRouteOutcome struct {
 	InvalidTTFT bool `json:"-"`
 }
 
+// InferenceRouteOutcomeUpdate is one outcome update addressed to a route row,
+// used by the batched UpdateInferenceRouteOutcomes path. It carries exactly the
+// arguments of UpdateInferenceRouteOutcome; Outcome nil is skipped.
+type InferenceRouteOutcomeUpdate struct {
+	RequestID string
+	Attempt   int
+	Outcome   *InferenceRouteOutcome
+}
+
 // RejectionRecord captures a single rejected inbound inference request (4xx/5xx)
 // at any stage of the pipeline, with the request's parameters and a
 // counterfactual servability snapshot ("could the fleet have served it?"). It

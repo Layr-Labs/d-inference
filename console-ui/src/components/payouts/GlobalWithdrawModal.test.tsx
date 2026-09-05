@@ -25,14 +25,17 @@ describe("international bank withdrawal", () => {
     expect(screen.queryByRole("button", { name: "Confirm withdrawal" })).not.toBeInTheDocument();
   });
   it("keeps an uncertain submitted withdrawal distinct from a new quote", () => {
-    render(<GlobalWithdrawModal {...props()} confirmationPending quote={{ ...quote, expires_at: "2020-01-01T00:00:00Z" }} />);
+    render(<GlobalWithdrawModal {...props()} balanceMicroUsd={0} confirmationPending quote={{ ...quote, expires_at: "2020-01-01T00:00:00Z" }} />);
     expect(screen.getByLabelText("Amount (USD)")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Check withdrawal" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Refresh estimate" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
   });
   it("does not describe a posted transfer as bank receipt", () => {
     expect(withdrawalStatusPresentation("posted").label).toBe("Sent to bank");
     expect(withdrawSuccessMessage({ status: "posted", method: "standard", payout_rail: "global" })).toContain("bank may take");
     expect(withdrawalStatusPresentation("returned", true).label).toBe("Returned to balance");
+    expect(withdrawalStatusPresentation("processing", false, "under_review").label).toBe("Under review");
   });
 });

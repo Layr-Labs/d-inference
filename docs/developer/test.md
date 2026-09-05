@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `efc4e301b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -140,6 +140,67 @@ make benchmark-wrapper-test        # python3 -m unittest discover -s gemma_contb
 ```
 
 The first three are CI job "Release Integrity".
+
+For GPT-OSS profiling, first build a release benchmark binary and identify its
+loaded Metal library and the exact downloaded model snapshot. Run on an idle
+Apple Silicon host; the runner executes one cell process at a time and records
+host state before and after each cell. The runner does not build or stop other
+processes. Set the paths below to those artifacts, then run:
+
+```bash
+PYTHONPATH=scripts python3 -m unittest discover -s scripts/gptoss_profile/tests -v
+python3 scripts/profile-gptoss.py run \
+  --binary "$GPTOSS_BENCHMARK_BINARY" --metallib "$GPTOSS_METALLIB" \
+  --model-dir "$GPTOSS_MODEL_SNAPSHOT" --output artifacts/gptoss-profile/baseline \
+  --phase decode --cells decode-512-b1,decode-512-b2,decode-512-b4
+python3 scripts/profile-gptoss.py summarize artifacts/gptoss-profile/baseline
+```
+
+Omit `--phase` and `--cells` for the full prefill/decode/arrival matrix; defaults
+are five measured repetitions and 256 decode tokens. Prefix caching and MTP
+are absent from the benchmark factory. The wrapper also disables their process
+flags, clears inherited experimental controls, and uses an empty default TOML
+unless `--config` is supplied. `--build-receipt` records the supplied build
+receipt hash; the current source fingerprint alone does not establish how a
+binary was built. The matrix manifest pins the iteration count, decode budget,
+and KV backend; changing any of these requires a new output directory, even
+when adding different cell names. The binary, metallibs, config, build receipt,
+and full model inventory/content hashes are rechecked before and after each
+new cell, outside its timing interval. Source: `scripts/gptoss_profile/runner.py` (`execute`),
+`scripts/gptoss_profile/config.py` (`cells`, `environment`).
+
+Verify `summary.json` has no failed cells and inspect `summary.csv`,
+`summary.md`, and the raw per-cell output. Decode headlines use the common
+host-observed interval in which every row is decoding, require at least 32
+tokens from each row, and report aggregate/B separately from actual row rates.
+This timing does not prove scheduler batch occupancy. Failed or changed
+artifacts are not silently reused; use a new output directory for different
+provenance or `--rerun` to archive and repeat an identical cell. Instrumented
+runs require `--mode diagnostic` and a separate output directory. Source:
+`scripts/gptoss_profile/validation.py` (`validate`),
+`scripts/gptoss_profile/summary.py` (`summarize`).
+
+For paired prefill or decode comparisons, create a schema-1 design with two
+arms (`A`, `B`), explicit binary/metallib/build receipt paths, identical context
+length and phase, and explicit environment overrides. Run
+`PYTHONPATH=scripts python3 -m gptoss_profile.controls <design.json> --output <directory> --cycles 2`.
+Prefill uses `cell: {"phase":"prefill","context":8192,"batch":1}` and compares
+TTFT; decode compares aggregate common-window throughput and output hashes.
+Prefill token parity is explicitly unavailable in this report schema. Keep
+numerical/KV tests separate from uninstrumented timing. The decode warmup now
+uses the requested generation length so long prompts can establish the full
+batch before measured work. Failed construction, submission, terminals or token
+counts in any warmup abort the sweep before decode measurements. Schema 7 submits requests in row-index order before
+concurrently consuming their streams; validation checks the recorded order and
+timestamps. Batched decode requires schema 7; historical schema-6 raw data remains
+available but is rejected for new performance comparisons, including when
+re-summarizing saved ABBA runs. Legacy single-row schema 6 remains accepted.
+Scaling ratios also require matching backend, decode budget and iteration count
+when reading older manifests without the matrix workload field.
+This prevents task scheduling from silently changing admission order. Sources: `scripts/gptoss_profile/controls.py`
+(`execute_controls`), `scripts/gptoss_profile/control_report.py`
+(`summarize_controls`), `provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`
+(`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).
 
 ### 7. Docs lint
 

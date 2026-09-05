@@ -110,13 +110,39 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
     def test_stale_raw_schema_is_refused(self):
         outputs = raw_outputs()
         outputs["throughputSweep"]["schemaVersion"] = 4
-        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 4, expected 5"):
+        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 4, expected one of"):
             validate_raw_outputs(
                 make_args(),
                 outputs["throughputSweep"],
                 outputs["schedulerPrefill"],
                 outputs["arrivalInvariance"],
             )
+
+    def test_additive_raw_schema_versions_preserve_legacy_metrics(self):
+        outputs = raw_outputs()
+        outputs["throughputSweep"]["schemaVersion"] = 7
+        outputs["schedulerPrefill"]["schemaVersion"] = 4
+        outputs["arrivalInvariance"]["schemaVersion"] = 5
+        outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [
+            make_args().arrival_prompt_tokens
+        ] * 4
+        for version in (5, 6, 7):
+            with self.subTest(version=version):
+                outputs["throughputSweep"]["schemaVersion"] = version
+                validate_raw_outputs(make_args(), *outputs.values())
+
+    def test_new_arrival_schema_cannot_hide_mixed_prompt_lengths(self):
+        outputs = raw_outputs()
+        outputs["arrivalInvariance"]["schemaVersion"] = 5
+        outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [8192, 512, 512, 512]
+        with self.assertRaisesRegex(RuntimeError, "wrong per-row prompt lengths"):
+            validate_raw_outputs(make_args(), *outputs.values())
+
+    def test_unknown_future_raw_schema_is_refused(self):
+        outputs = raw_outputs()
+        outputs["throughputSweep"]["schemaVersion"] = 8
+        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 8"):
+            validate_raw_outputs(make_args(), *outputs.values())
 
     def test_explicit_config_is_forwarded_to_every_phase_prefix(self):
         args = make_args(config="/tmp/gemma-off.toml")

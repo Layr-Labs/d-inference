@@ -92,3 +92,6 @@ docs/RUNBOOK.md
 
 # also match a .build symlink (not just the dir)
 .build
+
+# Local performance binaries and raw diagnostic captures
+/artifacts/

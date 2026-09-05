@@ -179,16 +179,38 @@ extension Benchmark {
             throw ExitCode.failure
         }
 
+        let lengths: [Int]?
+        if let raw = arrivalPromptLengths {
+            guard let parsed = Self.parseArrivalPromptLengths(raw) else {
+                printError("--arrival-prompt-lengths must contain exactly four integers >= 2")
+                throw ExitCode.failure
+            }
+            lengths = parsed
+        } else {
+            lengths = nil
+        }
+
         let report = try await ArrivalInvarianceBenchmark.run(
             modelID: modelID,
             modelDirectory: modelDirectory,
             promptTokens: arrivalPromptTokens,
+            promptLengths: lengths,
             decodeTokens: arrivalDecodeTokens,
             iterations: arrivalIterations,
             kvBackend: try resolvedKVBackendSelection(),
             gemmaOptimizations: gemmaOptimizations
         )
         print(try report.jsonString())
+    }
+
+    /// Arrival positions identify rows, so invalid/empty fields must never
+    /// be filtered out and silently shift the requested topology.
+    static func parseArrivalPromptLengths(_ raw: String) -> [Int]? {
+        let fields = raw.split(separator: ",", omittingEmptySubsequences: false)
+        guard fields.count == 4 else { return nil }
+        let values = fields.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard values.count == 4, values.allSatisfy({ $0 >= 2 }) else { return nil }
+        return values
     }
 
     /// Parse a comma-separated list of positive integers, ignoring blanks and

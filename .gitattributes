@@ -1,0 +1,4 @@
+# Generated benchmark evidence; keep source and report prose prominent in PRs.
+docs/reports/data/gptoss20b-profile/*.json linguist-generated=true
+docs/reports/data/gptoss20b-profile/*.svg linguist-generated=true
+docs/reports/data/gptoss20b-optimization/*.json linguist-generated=true

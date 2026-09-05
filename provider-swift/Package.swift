@@ -212,6 +212,18 @@ let package = Package(
         // Phase 6 release-payload shape.
         // ----------------------------------------------------------------
         .testTarget(
+            name: "GPTOSSOptimizationTests",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            ],
+            path: "Tests/GPTOSSOptimizationTests"
+        ),
+
+        .testTarget(
             name: "ProviderCoreTests",
             dependencies: [
                 "ProviderCore",

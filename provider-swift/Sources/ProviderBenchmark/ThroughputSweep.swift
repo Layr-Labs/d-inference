@@ -74,6 +74,7 @@ public enum ThroughputSweep {
         hardware: HardwareInfo,
         efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
     ) async throws -> ThroughputSweepReport {
+        Memory.peakMemory = 0
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
@@ -94,12 +95,14 @@ public enum ThroughputSweep {
         }
 
         let facts = try await container.perform { ctx -> ModelFacts in
+            eval(ctx.model.parameters().flattened().map { $0.1 })
             let params = ctx.model.parameters().flattened()
             let bytes = params.reduce(0) { $0 + $1.1.nbytes }
             let count = params.reduce(0) { $0 + $1.1.size }
             let base = ctx.tokenizer.encode(text: Self.seedText, addSpecialTokens: false)
             return ModelFacts(weightBytes: bytes, totalParams: count, baseTokens: base)
         }
+        log("load memory: active_bytes=\(Memory.activeMemory) peak_bytes=\(Memory.peakMemory)")
         let baseTokens = facts.baseTokens.isEmpty ? [0] : facts.baseTokens
         log("  weights: \(String(format: "%.2f", Double(facts.weightBytes) / 1e9)) GB across \(facts.totalParams) params")
 
@@ -107,7 +110,7 @@ public enum ThroughputSweep {
 
         let prefill = await measurePrefill(
             container: container, baseTokens: baseTokens, lengths: promptLengths)
-        let decodeOutcome = await measureDecode(
+        let decodeOutcome = try await measureDecode(
             container: container,
             modelID: modelID,
             baseTokens: baseTokens,
@@ -226,9 +229,10 @@ public enum ThroughputSweep {
     struct RowMeasure: Sendable {
         let produced: Int
         let elapsed: Duration
-        /// Non-nil when `engine.submit` threw for this row: the row decoded
-        /// NOTHING and its zeros are an absence, not a measurement.
+        /// Non-nil when submission, terminal status, or exact output-count
+        /// validation failed. The row is invalid, not a performance sample.
         var submitFailure: String? = nil
+        var timing: ThroughputSweepReport.DecodeRowTiming? = nil
     }
 
     /// Aggregate a batch's row measurements into one cell. Any row whose
@@ -308,8 +312,8 @@ public enum ThroughputSweep {
 
     /// For each batch size B, build a fresh `BatchedEngine`, submit B greedy
     /// requests (each with a distinct rotated prompt so MoE routing differs
-    /// per row), drop the first emitted token per row to exclude prefill, and
-    /// report the aggregate + per-sequence steady-state decode tok/s.
+    /// per row), drop the first emitted token per row, and report legacy row
+    /// throughput plus raw shared-clock timing for the all-row decode overlap.
     ///
     /// The whole curve is repeated `iterations` times, batch-size-inner /
     /// repetition-outer, so slow thermal drift is shared across batch sizes
@@ -331,7 +335,7 @@ public enum ThroughputSweep {
         isVLM: Bool,
         modelDirectory: URL,
         kvBackend: EngineV2KVBackendSelection
-    ) async -> DecodeOutcome {
+    ) async throws -> DecodeOutcome {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
         guard !sizes.isEmpty else { return DecodeOutcome() }
         let promptLen = max(1, decodePromptTokens)
@@ -342,21 +346,23 @@ public enum ThroughputSweep {
         var outcome = DecodeOutcome()
         outcome.requestedBatchSizes = sizes
 
-        // Warm-up at B=1 with a short generation to compile decode kernels
-        // (CBv2 compiled decode pays its cold start here, not in a sample).
-        let warmUp = await runDecodeBatch(
-            container: container, modelID: modelID, baseTokens: baseTokens,
-            batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
-            isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
-        // The warm-up is the FIRST cell to hit a refused paged selection, so
-        // it carries the reason even when the sized cells below fail
-        // identically. Keep it: an operator should not have to infer the
-        // cause from a curve of zeros.
-        outcome.constructionFailure = warmUp.constructionFailure
+        // Warm every requested shape before recording samples. A B=1 warmup
+        // alone does not compile the B=2/B=4/B=8 kernels being compared.
+        // Use the measured generation length: with long prompts, eight
+        // warmup tokens can finish early rows before the full batch exists.
+        try await warmDecodeShapes(batchSizes: sizes) { batchSize in
+            log("warming decode shape: B=\(batchSize), prompt=\(promptLen), decode=\(genTokens) (unmeasured)")
+            let warmUp = await runDecodeBatch(
+                container: container, modelID: modelID, baseTokens: baseTokens,
+                batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
+                weightBytes: weightBytes, isVLM: isVLM,
+                modelDirectory: modelDirectory, kvBackend: kvBackend)
+            return (warmUp.constructionFailure, warmUp.submitFailure)
+        }
 
         for iteration in 1 ... repetitions {
             for batchSize in sizes {
-                let (totalTokens, maxElapsed, resolved, failure, submitFailure) = await runDecodeBatch(
+                let (totalTokens, maxElapsed, resolved, failure, submitFailure, timing) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM,
@@ -372,15 +378,14 @@ public enum ThroughputSweep {
                 }
                 if let submitFailure {
                     // The engine BUILT (resolved backend recorded above) but
-                    // a row's submission threw — e.g. an admission or
-                    // runtime-capacity failure at a larger batch. The cell
+                    // a row's submission, terminal, or emitted-token count failed. The cell
                     // decoded fewer live rows than its label claims, so it is
                     // UNMEASURED (which fails an explicit-backend sweep via
                     // decodeCoverage), never a zero-deflated sample.
                     if outcome.recordUnmeasured(
-                        batchSize: batchSize, reason: "submit failed: \(submitFailure)")
+                        batchSize: batchSize, reason: "row failed: \(submitFailure)")
                     {
-                        log("  B=\(batchSize): NO measurement — submit failed: \(submitFailure)")
+                        log("  B=\(batchSize): NO measurement — row failed: \(submitFailure)")
                     }
                     continue
                 }
@@ -394,7 +399,8 @@ public enum ThroughputSweep {
                     aggregateTokensPerSecond: aggregate,
                     perSequenceTokensPerSecond: perSeq,
                     elapsedMs: secs * 1000,
-                    resolvedKVBackend: resolved
+                    resolvedKVBackend: resolved,
+                    decodeTiming: timing
                 ))
             }
         }
@@ -425,7 +431,8 @@ public enum ThroughputSweep {
         kvBackend: EngineV2KVBackendSelection
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
-        constructionFailure: String?, submitFailure: String?
+        constructionFailure: String?, submitFailure: String?,
+        timing: ThroughputSweepReport.DecodeTiming?
     ) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
@@ -468,62 +475,83 @@ public enum ThroughputSweep {
             // Return the reason so the report and the process exit status can
             // both name it instead of showing a bare curve of zeros.
             log("  engine construction failed: \(error)")
-            return (0, .zero, nil, "\(error)", nil)
+            return (0, .zero, nil, "\(error)", nil, nil)
         }
         let engine = parts.engine
 
-        let result = await withTaskGroup(of: RowMeasure.self) {
-            group -> (Int, Duration, String?) in
+        // Each row timestamps against one epoch; independent row durations
+        // cannot establish the interval when all B rows are decoding.
+        Memory.peakMemory = 0
+        let epoch = ContinuousClock.now
+        let rows = await withTaskGroup(of: RowMeasure.self) { group -> [RowMeasure] in
             for i in 0 ..< batchSize {
-                // Distinct rotated prompt per row so each sequence routes to a
-                // different mix of experts (otherwise identical prompts would
-                // all hit the same top-K experts and understate expert traffic).
                 let prompt = Self.tile(baseTokens, to: promptLen, offset: i * 7 + 1)
-                group.addTask { [engine] in
-                    let stream: AsyncStream<CBv2Event>
-                    do {
-                        stream = try engine.submit(CBv2Request(
-                            id: CBv2RequestID(UInt64(i + 1)),
-                            promptTokens: prompt,
-                            sampling: CBv2SamplingParams(temperature: 0.0),
-                            maxTokens: decodeTokens + 1,
-                            stopTokens: Self.fixedBudgetStopTokens
-                        ))
-                    } catch {
-                        Self.log("  submit failed: \(error)")
-                        return RowMeasure(
-                            produced: 0, elapsed: .zero, submitFailure: "\(error)")
+                // Submit in row order on this task. Scheduling submissions
+                // inside child tasks can reverse admission and change prompt
+                // chunk/batch geometry between otherwise identical runs.
+                let submittedMs = Self.seconds(ContinuousClock.now - epoch) * 1000
+                let stream: AsyncStream<CBv2Event>
+                do {
+                    stream = try engine.submit(CBv2Request(
+                        id: CBv2RequestID(UInt64(i + 1)),
+                        promptTokens: prompt,
+                        sampling: CBv2SamplingParams(temperature: 0.0),
+                        maxTokens: decodeTokens + 1,
+                        stopTokens: Self.fixedBudgetStopTokens
+                    ))
+                } catch {
+                    let failure = String(describing: error)
+                    group.addTask {
+                        RowMeasure(produced: 0, elapsed: .zero, submitFailure: failure)
                     }
-                    var sawFirst = false
-                    var start = ContinuousClock.now
-                    var produced = 0
+                    continue
+                }
+                group.addTask {
+                    var tokenIDs: [Int] = []
+                    var timestamps: [Double] = []
+                    var finishReason: CBv2FinishReason?
+                    var finishedMs = submittedMs
                     loop: for await event in stream {
+                        let nowMs = Self.seconds(ContinuousClock.now - epoch) * 1000
                         switch event {
                         case .delta(_, let tokens, _):
-                            if !sawFirst {
-                                sawFirst = true
-                                start = ContinuousClock.now
-                            } else {
-                                produced += tokens.count
-                            }
-                        case .finished:
+                            tokenIDs.append(contentsOf: tokens)
+                            timestamps.append(contentsOf: repeatElement(nowMs, count: tokens.count))
+                        case .finished(let reason, _):
+                            finishReason = reason
+                            finishedMs = nowMs
                             break loop
                         }
                     }
-                    return RowMeasure(produced: produced, elapsed: ContinuousClock.now - start)
+                    let timing = ThroughputSweepReport.DecodeRowTiming(
+                        row: i, submittedAtMs: submittedMs,
+                        tokenIDs: tokenIDs, tokenArrivalMs: timestamps,
+                        finishedAtMs: finishedMs,
+                        finishReason: finishReason.map { String(describing: $0) } ?? "missing")
+                    let failure = Self.decodeRowFailure(
+                        expectedTokens: decodeTokens + 1,
+                        tokenCount: tokenIDs.count, finishReason: finishReason)
+                    let elapsedMs = max(0, finishedMs - (timestamps.first ?? finishedMs))
+                    return RowMeasure(
+                        produced: max(0, tokenIDs.count - 1),
+                        elapsed: .seconds(elapsedMs / 1000),
+                        submitFailure: failure, timing: timing)
                 }
             }
             var rows: [RowMeasure] = []
             for await row in group { rows.append(row) }
-            let cell = Self.aggregateRows(rows)
-            return (cell.totalTokens, cell.maxElapsed, cell.submitFailure)
+            return rows
         }
-
+        let peakMemoryBytes = Memory.peakMemory
+        let cell = Self.aggregateRows(rows)
+        let timing = ThroughputSweepReport.DecodeTiming.make(
+            rows: rows.compactMap(\.timing).sorted { $0.row < $1.row },
+            peakMemoryBytes: peakMemoryBytes, decodePromptTokens: promptLen)
         await engine.shutdown()
         return (
-            totalTokens: result.0, maxElapsed: result.1,
+            totalTokens: cell.totalTokens, maxElapsed: cell.maxElapsed,
             resolvedBackend: parts.resolvedBackend, constructionFailure: nil,
-            submitFailure: result.2)
+            submitFailure: cell.submitFailure, timing: timing)
     }
 
     // MARK: - Helpers

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — GPT-OSS prefill and decode
+
+- Skip unused GPT-OSS prefill vocabulary projections, fuse compatible 20B expert gate/up weights with bounded load materialization, reuse unchanged quantized constants, and enable the measured width-2880 MXFP4 decode path on M4 Max. Keep rollback controls and unsupported-shape fallbacks.
+
+- Add sequential, provenance-pinned GPT-OSS profiling with full-shape warmups, raw decode token timing, memory measurements, common-window aggregate B=2/B=4 decode rates, and mixed-length arrival workloads. Preserve failed and diagnostic runs separately from valid baseline measurements; raw evidence and paired comparisons distinguish measurement from optimization.
+
 ## Unreleased — Hugging Face model downloads
 
 - Add an optional, commit-pinned Hugging Face artifact to each registry version. Foreground model downloads and background prefetch prefer HF, verify the existing per-file SHA-256 and aggregate hashes, and fall back to R2 on download or integrity failure. Existing registry entries keep using R2.

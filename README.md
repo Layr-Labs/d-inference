@@ -247,11 +247,17 @@ darkbloom doctor             # local diagnostics + coordinator's trust view
 | `status` | Hardware, config, schedule, and live daemon/trust state |
 | `doctor` / `verify` | Diagnostics (`verify` = strict, non-zero on any warning) |
 | `models` | `catalog`, `list`, `download`, `remove` cached models |
+| `local` | Show the local (direct-mode) OpenAI endpoint and API key |
 | `login` / `logout` | Link / unlink the provider to a Darkbloom account |
 | `enroll` / `unenroll` | MDM enrollment for hardware-trust attestation |
 | `benchmark` | Local tokens/sec benchmark |
 | `update` | Check for and apply provider updates |
 | `logs` | Tail provider logs |
+| `report` | Upload recent unified logs to the coordinator |
+| `autoupdate` | `enable` / `disable` / `status` automatic provider updates |
+| `beta` | `list` / `status` / `enable` / `disable` beta features |
+| `idle` | Idle-memory policy: `status`, `keep-loaded`, `unload-after <mins>` |
+| `fan` | Experimental temperature-based fan control |
 
 There is **no** `serve` or `earnings` command — use `start`, and view earnings in the [console](https://console.darkbloom.dev). Full flags: [`docs/provider/cli-reference.md`](docs/provider/cli-reference.md).
 

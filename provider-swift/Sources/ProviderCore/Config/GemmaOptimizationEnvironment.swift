@@ -67,12 +67,22 @@ public enum GemmaOptimizationEnvironment {
         } else {
             safeR1 = "0"
         }
-        return [
+        var projection = [
             prefillLayer18Key: settings.prefillLayer18 ? "18" : "0",
             weightedUnsortKey: weightedR1,
             safeR1Key: safeR1,
-            maxMBPerBufferKey: measuredMaxMBPerBuffer,
         ]
+        // The buffer cap is a live-serving / benchmark runtime refinement, not
+        // a config-backed Gemma control: MLX C++ reads it once at first Metal
+        // device construction, so only a process that will actually serve or
+        // benchmark needs it. `.retainedValidation` (artifact verification, the
+        // packaged runtime-smoke gate, paged-kernel preflight, SelfUpdater)
+        // must stay the exact coupled control set — `validateRetainedProjection`
+        // rejects any extra key — so the cap is added only for `.serving`.
+        if context == .serving {
+            projection[maxMBPerBufferKey] = measuredMaxMBPerBuffer
+        }
+        return projection
     }
 
     /// The `EnvironmentVariables` entries the launchd service plist must carry

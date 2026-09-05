@@ -1,5 +1,5 @@
-import { ConsoleWelcome } from "@/components/console-entry/ConsoleWelcome";
+import { redirect } from "next/navigation";
 
 export default function ConsoleHomePage() {
-  return <ConsoleWelcome />;
+  redirect("/providers");
 }

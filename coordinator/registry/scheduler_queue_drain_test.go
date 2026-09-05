@@ -345,6 +345,7 @@ func TestDrainQueuedRequestsRespectsPerSlotCapsAcrossModels(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "multi-slot", modelA, 100)
 	p.mu.Lock()
 	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.syncModelIndexLocked()
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
 		{Model: modelA, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
 		{Model: modelB, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
@@ -401,6 +402,7 @@ func TestSetProviderIdleDrainsOnlyFreedModelCapacity(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "idle-multi", modelA, 100)
 	p.mu.Lock()
 	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.syncModelIndexLocked()
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
 		{Model: modelA, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},
 		{Model: modelB, State: "running", NumRunning: 0, NumWaiting: 0, MaxConcurrency: 1},

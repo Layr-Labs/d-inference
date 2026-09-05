@@ -64,9 +64,7 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 		PrefixCacheProtocol: 2,
 		PrefixCacheV2Models: map[string]protocol.PrefixCacheV2Capability{"model": capability},
 	}
-	r.mu.Lock()
-	r.providers[provider.ID] = provider
-	r.mu.Unlock()
+	insertTestProvider(r, provider)
 	return r, provider, capability
 }
 
@@ -76,6 +74,7 @@ func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
 	provider.Models = []protocol.ModelInfo{{
 		ID: "model", WeightHash: capability.ModelAggregateHash,
 	}}
+	r.modelIndex.sync(provider)
 	revision := provider.prefixCacheRevision
 	provider.mu.Unlock()
 	hint := cacheRoutingHint{
@@ -296,9 +295,7 @@ func TestExactV2SpeculativeAttemptsKeepWinnerAndLoserProofsIsolated(t *testing.T
 			"model": capabilityB,
 		},
 	}
-	r.mu.Lock()
-	r.providers[providerB.ID] = providerB
-	r.mu.Unlock()
+	insertTestProvider(r, providerB)
 
 	prompt := exactTestAnchor(2, "c")
 	final := exactTestAnchor(3, "d")
@@ -459,9 +456,7 @@ func TestExactRoutingV1ProviderRemainsColdBaseline(t *testing.T) {
 
 func TestExactRoutingMixedV1V2FleetFallsBackToV1Inference(t *testing.T) {
 	r, original, capability := exactTestRegistry(t)
-	r.mu.Lock()
-	delete(r.providers, original.ID)
-	r.mu.Unlock()
+	removeTestProvider(r, original.ID)
 	v1 := makeSchedulerProvider(t, r, "mixed-v1", "model", 100)
 	v2 := makeSchedulerProvider(t, r, "mixed-v2", "model", 100)
 	v1.mu.Lock()
@@ -565,9 +560,7 @@ func TestLegacyCacheBustKeyLengthMatchesSizingContract(t *testing.T) {
 
 func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 	r, _, capability := exactTestRegistry(t)
-	r.mu.Lock()
-	delete(r.providers, "provider-a")
-	r.mu.Unlock()
+	removeTestProvider(r, "provider-a")
 	cached := makeSchedulerProvider(t, r, "cached", "model", 100)
 	cold := makeSchedulerProvider(t, r, "cold", "model", 100)
 	for _, provider := range []*Provider{cached, cold} {

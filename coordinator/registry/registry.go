@@ -900,6 +900,14 @@ type Provider struct {
 	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
 	prefixCacheRevision uint64
 
+	// modelIndexIDs is the advertised model-id list the registry's per-model
+	// provider index currently holds for this session (model_index.go) — the
+	// diff baseline for syncModelIndexLocked. modelIndexDetached is set by
+	// Disconnect so a models_update racing the disconnect can only ever remove
+	// entries, never re-insert the dead session. Both guarded by p.mu.
+	modelIndexIDs      []string
+	modelIndexDetached bool
+
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
 	CurrentModel string   // model currently being served
@@ -1041,7 +1049,16 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
-	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+	return r.providerSupportsPrivateTextAtLocked(p, time.Now())
+}
+
+// providerSupportsPrivateTextAtLocked is providerSupportsPrivateTextLocked
+// evaluated at an explicit instant. The fleet walks capture one clock per
+// walk and pass it here (via providerLivenessGateLocked) so the two rollout
+// deadlines (release-policy enforce-after, APNs code-attestation) are not
+// re-read from the wall clock once per eligible provider. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextAtLocked(p *Provider, now time.Time) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, r.releasePolicyEnforcedAtLocked(now), now)
 }
 
 // providerSupportsPrivateTextModeLocked is the chokepoint body with the
@@ -1050,6 +1067,12 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 // the per-model flip criterion); enforceEvidence=true additionally requires
 // generation-current application evidence. Caller holds r.mu.
 func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, enforceEvidence, time.Now())
+}
+
+// providerSupportsPrivateTextModeAtLocked is the chokepoint body at an explicit
+// instant (see providerSupportsPrivateTextAtLocked). Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceEvidence bool, now time.Time) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -1073,7 +1096,7 @@ func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvi
 		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
+	if r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -1709,15 +1732,21 @@ func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
 // releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
 // now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
 func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforcedAtLocked(time.Now())
+}
+
+// releasePolicyEnforcedAtLocked is releasePolicyEnforcedLocked at an explicit
+// instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedAtLocked(now time.Time) bool {
 	return r.releasePolicyEnforced &&
-		!time.Now().Before(r.releasePolicyEnforceAfter)
+		!now.Before(r.releasePolicyEnforceAfter)
 }
 
 // ReleasePolicyEnforced reports whether missing application evidence currently
 // blocks routing. Thread-safe.
 func (r *Registry) ReleasePolicyEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.releasePolicyEnforcedLocked()
 }
 
@@ -1795,16 +1824,16 @@ func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
 // connection handler should issue code-identity challenges). Thread-safe.
 func (r *Registry) CodeAttestationConfigured() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationConfigured
 }
 
 // CodeAttestationEnforced reports whether code-identity attestation is currently
 // mandatory for routing (configured AND past the deadline). Thread-safe.
 func (r *Registry) CodeAttestationEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationEnforcedLocked()
 }
 
@@ -1814,10 +1843,16 @@ func (r *Registry) CodeAttestationEnforced() bool {
 // then the fleet routes un-attested providers (grace window) while still being
 // challenged.
 func (r *Registry) codeAttestationEnforcedLocked() bool {
+	return r.codeAttestationEnforcedAtLocked(time.Now())
+}
+
+// codeAttestationEnforcedAtLocked is codeAttestationEnforcedLocked at an
+// explicit instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) codeAttestationEnforcedAtLocked(now time.Time) bool {
 	if !r.codeAttestationConfigured || r.codeAttestationDeadline.IsZero() {
 		return false
 	}
-	return !time.Now().Before(r.codeAttestationDeadline)
+	return !now.Before(r.codeAttestationDeadline)
 }
 
 // Mu returns the provider's mutex for external callers that need to read
@@ -2172,6 +2207,18 @@ type Registry struct {
 	// Production leaves it nil; tests set it before starting concurrent scans.
 	reservationAfterScan func(model string)
 
+	// modelIndex maps advertised model id → providers advertising it, so the
+	// per-request fleet walks visit only providers that can pass the first
+	// gate (model_index.go). Leaf lock — see that file for the contract.
+	modelIndex providerModelIndex
+	// modelIndexDisabled (tests only) makes providersForModelLocked return the
+	// whole fleet so a walk can be proven identical with and without the index.
+	modelIndexDisabled bool
+
+	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
+	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
+	swapPlanGate modelSwapPlanGate
+
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
 	modelProvidersMu sync.Mutex
@@ -2190,15 +2237,15 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
-	pendingModelLoadStarted map[string]time.Time
+	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
+	pendingModelLoadStarted map[modelLoadKey]time.Time
 
 	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
 	// load failure ("insufficient memory"). Routing skips the pair until expiry —
 	// it would instant-503 again, and without this the scheduler re-picks it
 	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
 	// on re-registration and on a served request for the pair.
-	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
+	dispatchLoadCooldowns map[dispatchLoadKey]time.Time // value: expiry (see pair_keys.go)
 
 	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
 	// circuit breaker for provider-side inference failures: a (provider, model,
@@ -2398,9 +2445,9 @@ func New(logger *slog.Logger) *Registry {
 		MinTrustLevel:                  TrustHardware,
 		tpsRegistry:                    NewTPSRegistry(),
 		modelProviders:                 make(map[string]*atomic.Int64),
-		pendingModelLoads:              make(map[string]time.Time),
-		pendingModelLoadStarted:        make(map[string]time.Time),
-		dispatchLoadCooldowns:          make(map[string]time.Time),
+		pendingModelLoads:              make(map[modelLoadKey]time.Time),
+		pendingModelLoadStarted:        make(map[modelLoadKey]time.Time),
+		dispatchLoadCooldowns:          make(map[dispatchLoadKey]time.Time),
 		inferenceErrorStrikes:          make(map[inferenceErrorKey][]time.Time),
 		inferenceErrorCooldowns:        make(map[inferenceErrorKey]time.Time),
 		providerOutcomes:               make(map[string]*providerHealthWindow),
@@ -2500,9 +2547,9 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 			}
 		}
 	}
-	key := r.faultKeyLocked(providerID) + ":" + modelID
-	_, active := r.dispatchLoadCooldowns[key]
-	active = active && now.Before(r.dispatchLoadCooldowns[key])
+	key := dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}
+	expiry, active := r.dispatchLoadCooldowns[key]
+	active = active && now.Before(expiry)
 	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
 	return !active
 }
@@ -2512,14 +2559,14 @@ func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
 	hold := r.lockWrite("dispatch_load_cooldown")
 	defer hold.unlock()
-	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
+	delete(r.dispatchLoadCooldowns, dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID})
 }
 
 // dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
 // READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
 // r.mu in either mode.
 func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	expiry, ok := r.dispatchLoadCooldowns[r.faultKeyLocked(providerID)+":"+modelID]
+	expiry, ok := r.dispatchLoadCooldowns[dispatchLoadKey{FaultKey: r.faultKeyLocked(providerID), ModelID: modelID}]
 	return ok && now.Before(expiry)
 }
 
@@ -2786,7 +2833,7 @@ func (r *Registry) ResolveModelConstrainedWithTraits(
 // structural=true ignores transient slot/cooldown state so alias resolution can
 // queue against a capable build instead of falling back to an incapable one.
 // Self-route to an owned machine relaxes trust and allows private-only
-// providers, mirroring snapshotProviderLocked. Caller holds r.mu.
+// providers, mirroring snapshotProviderIntoLockedEx. Caller holds r.mu.
 func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	buildID string,
 	allowedSerials map[string]struct{},
@@ -2796,7 +2843,9 @@ func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	traits RequestTraits,
 	structural bool,
 ) bool {
-	for _, p := range r.providers {
+	// Only providers advertising the build can route it; the per-model index
+	// prunes the rest (gates unchanged). Copied before any p.mu is taken.
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := func() bool {
 			if len(allowedSerials) > 0 {
@@ -2867,7 +2916,7 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
 	// migrating to a larger build than the source). totalMemory prefers the
-	// backend-reported figure, matching snapshotProviderLocked. A resident
+	// backend-reported figure, matching snapshotProviderIntoLockedEx. A resident
 	// running/idle slot has already demonstrated fit and must bypass the
 	// heuristic. Owner-only off-catalog models use their advertised size.
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
@@ -2924,7 +2973,8 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 	now := time.Now()
 	minTrust := r.MinTrustLevel
-	for _, p := range r.providers {
+	// Per-model index: only advertisers can route the build (model_index.go).
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
 		p.mu.Unlock()
@@ -3121,6 +3171,7 @@ func (r *Registry) mergeProviderModels(
 			p.PrefixCacheStatuses,
 			p.PrefixCacheStatusReported,
 		)
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 	if len(cacheStateInvalidated) > 0 {
 		r.mu.RLock()
@@ -3138,7 +3189,7 @@ func (r *Registry) mergeProviderModels(
 
 // RoutableProviderIDsForBuild returns the ids of providers that would actually
 // pass the routing gate for the build right now — the SAME checks
-// snapshotProviderLocked applies (advertises the build, not offline/untrusted,
+// snapshotProviderIntoLockedEx applies (advertises the build, not offline/untrusted,
 // public, trust ≥ floor, runtime verified, private-text capable, fresh
 // challenge), minus per-request capacity/headroom. Cold-but-healthy providers
 // count (no warm slot required — they load on first demand). Used to measure how
@@ -3226,6 +3277,7 @@ func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]
 	}
 	if changed {
 		p.Models = models
+		p.syncModelIndexLocked() // ids unchanged; keeps the invariant explicit
 	}
 }
 
@@ -3796,6 +3848,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		return existing
 	}
 	r.providers[id] = p
+	p.mu.Lock()
+	r.modelIndex.sync(p)
+	p.mu.Unlock()
 	r.onlineCount.Add(1)
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
@@ -4091,6 +4146,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			p.Status = StatusServing
 		}
 	}
+	// Backstop for the per-model provider index: allocation-free when p.Models
+	// is already in step, and self-healing within one heartbeat otherwise.
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 
 	// This heartbeat may be the release proof for a budget clamp
@@ -4113,8 +4171,13 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
-	// check if a cold provider should swap models to serve queued demand.
-	r.TriggerModelSwaps()
+	// check if a cold provider should swap models to serve queued demand —
+	// coalesced fleet-wide to one plan per modelSwapPlanInterval, since N
+	// heartbeats inside that window would each re-derive the same plan; a
+	// heartbeat the window refuses arms one trailing plan for its end
+	// (model_swap_coalesce.go). Drain work can outlast the planning window,
+	// so claim against the current time rather than the heartbeat timestamp.
+	r.triggerModelSwapsFromHeartbeat(time.Now())
 }
 
 // SendLoadModel instructs a provider to eagerly load a model so it becomes
@@ -4466,7 +4529,11 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 // hasWarmProviderLocked reports whether a connected provider already has the
 // model warm. Caller must hold r.mu (read or write).
 func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
-	for _, p := range r.providers {
+	// Only advertisers can hold the model warm (warm/slot reports are
+	// canonicalized against p.Models; providerHasWarmModelLocked also requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
 		p.mu.Lock()
 		warm := r.providerHasWarmModelLocked(p, model, now)
 		p.mu.Unlock()
@@ -4523,7 +4590,11 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 // pending requests. Caller must hold r.mu (read or write).
 func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
 	bestProviderID := ""
-	for id, p := range r.providers {
+	// Only advertisers qualify (modelLoadCandidatePendingLocked requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
+		id := p.ID
 		if _, selected := selectedProviders[id]; selected {
 			continue
 		}
@@ -4600,7 +4671,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 
 	reserved := actions[:0]
@@ -4619,7 +4690,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		key := modelLoadKey(action.providerID, action.modelID)
+		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
 		reserved = append(reserved, action)
@@ -4640,16 +4711,11 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 	}
 }
 
-func modelLoadKey(providerID, modelID string) string {
-	return providerID + ":" + modelID
-}
-
 // providerHasPendingLoad reports whether the provider has any pending
 // load_model command. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasPendingLoad(providerID string) bool {
-	prefix := providerID + ":"
 	for key := range r.pendingModelLoads {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+		if key.ProviderID == providerID && key.ModelID != "" {
 			return true
 		}
 	}
@@ -4670,14 +4736,12 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	prefix := providerID + ":"
 	cleared := 0
 	for key := range r.pendingModelLoads {
-		if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
+		if key.ProviderID != providerID || key.ModelID == "" {
 			continue
 		}
-		modelID := key[len(prefix):]
-		if r.providerCanAcquireCatalogModelLocked(p, modelID) {
+		if r.providerCanAcquireCatalogModelLocked(p, key.ModelID) {
 			continue
 		}
 		delete(r.pendingModelLoads, key)
@@ -4747,7 +4811,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 // load_model_status response.
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	started := r.pendingModelLoadStarted[key]
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
@@ -4760,7 +4824,7 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 
 func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
 	r.mu.RLock()
-	started := r.pendingModelLoadStarted[modelLoadKey(providerID, modelID)]
+	started := r.pendingModelLoadStarted[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	if started.IsZero() {
 		return 0
@@ -4774,7 +4838,7 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 // allowing them to mutate warm-model state.
 func (r *Registry) HasPendingModelLoad(providerID, modelID string) bool {
 	r.mu.RLock()
-	expiresAt, ok := r.pendingModelLoads[modelLoadKey(providerID, modelID)]
+	expiresAt, ok := r.pendingModelLoads[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	return ok && time.Now().Before(expiresAt)
 }
@@ -4790,12 +4854,12 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[string]time.Time)
+		r.pendingModelLoadStarted = make(map[modelLoadKey]time.Time)
 	}
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	now := time.Now()
 	r.pendingModelLoads[key] = now.Add(backoff)
 	if r.pendingModelLoadStarted[key].IsZero() {
@@ -4953,19 +5017,37 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	r.disconnectProvider(id, nil, 0)
+}
+
+// disconnectProvider applies an optional eviction guard atomically with removal.
+// expected is the exact session observed by the stale scan; nil is an ordinary
+// unconditional disconnect. Both its identity and latest heartbeat are checked
+// while r.mu and p.mu exclude replacement and heartbeat updates.
+func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration) bool {
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
 	if ok {
+		if expected != nil && p != expected {
+			r.mu.Unlock()
+			return false
+		}
+		p.mu.Lock()
+		if expected != nil && time.Since(p.LastHeartbeat) <= timeout {
+			p.mu.Unlock()
+			r.mu.Unlock()
+			return false
+		}
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {
-			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
+			if key.ProviderID == id {
 				delete(r.pendingModelLoads, key)
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
-		p.mu.Lock()
+		p.detachModelIndexLocked(r)
 		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
 		// (node-health breaker, inference-error cooldowns, dispatch-load
 		// cooldowns, health ejection) keys by the STABLE identity when one is
@@ -4995,9 +5077,8 @@ func (r *Registry) Disconnect(id string) {
 					delete(r.inferenceErrorCooldowns, key)
 				}
 			}
-			prefix := id + ":"
 			for key := range r.dispatchLoadCooldowns {
-				if strings.HasPrefix(key, prefix) {
+				if key.FaultKey == id {
 					delete(r.dispatchLoadCooldowns, key)
 				}
 			}
@@ -5018,7 +5099,7 @@ func (r *Registry) Disconnect(id string) {
 	r.mu.Unlock()
 
 	if !ok {
-		return
+		return false
 	}
 	// Removing the last capable provider can turn a queued constrained request
 	// from temporarily capacity-blocked into permanently unservable. Re-run
@@ -5107,6 +5188,7 @@ func (r *Registry) Disconnect(id string) {
 	}
 
 	r.logger.Info("provider disconnected", "provider_id", id)
+	return true
 }
 
 // GetProvider returns a provider by ID, or nil if not found.
@@ -5507,46 +5589,44 @@ func (r *Registry) ListModels() []AggregateModel {
 	// Aggregate by model ID only — consumers request by ID, so providers
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
-	agg := make(map[string]*modelAgg)
+	//
+	// The whole per-provider step runs under p.mu: it reads only strings and
+	// booleans, retains nothing from the provider, and costs a few map lookups.
+	// There is deliberately NO per-provider snapshot slice — at fleet scale
+	// (~1,260 providers) that was one heap allocation per provider per call,
+	// and /v1/models (uncached, two ListModels calls per request) paid for it
+	// mostly as GC pressure rather than as the walk itself.
+	agg := make(map[string]*modelAgg, len(r.modelCatalog))
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		attested := p.Attested
-		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
-		privateOnly := p.PrivateOnly
-		// Snapshot only provider-model pairs that satisfy the live catalog and
-		// connection-scoped capability requirements.
-		models := make([]protocol.ModelInfo, 0, len(p.Models))
-		for _, model := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, model) {
-				models = append(models, model)
-			}
-		}
-		p.mu.Unlock()
-
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
+		// Provider-level gates first, so an ineligible provider costs one lock
+		// and a handful of field reads — never a walk of its inventory.
 		// Private-only providers serve only their owner's self-route traffic, so
 		// they must not appear in or inflate the public /v1/models aggregation.
-		if privateOnly {
+		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
+			p.PrivateOnly ||
+			!r.trustMeetsMinimum(p.TrustLevel) ||
+			!r.providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
-			continue
-		}
-		for _, m := range models {
-			k := m.ID
-			a, ok := agg[k]
+		trust := p.TrustLevel
+		attestResult := p.AttestationResult
+		attested := p.Attested && attestResult != nil
+		for _, m := range p.Models {
+			// Count only provider-model pairs that satisfy the live catalog and
+			// connection-scoped capability requirements.
+			if !r.providerModelAllowedByCatalogLocked(p, m) {
+				continue
+			}
+			a, ok := agg[m.ID]
 			if !ok {
 				a = &modelAgg{
 					modelType:    m.ModelType,
 					quantization: m.Quantization,
 					highestTrust: TrustNone,
 				}
-				agg[k] = a
+				agg[m.ID] = a
 			}
 			a.count++
 
@@ -5555,13 +5635,14 @@ func (r *Registry) ListModels() []AggregateModel {
 				a.highestTrust = trust
 			}
 
-			if attested && attestResult != nil {
+			if attested {
 				a.attestedCount++
 				a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
 				a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
 				a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
 			}
 		}
+		p.mu.Unlock()
 	}
 
 	models := make([]AggregateModel, 0, len(agg))
@@ -6101,7 +6182,7 @@ func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
 
 // ModelCapacitySnapshot returns a capacity snapshot for every model served
 // by at least one provider. Providers must pass the same routing gates as
-// snapshotProviderLocked (status, trust, runtime, privacy, challenge
+// snapshotProviderIntoLockedEx (status, trust, runtime, privacy, challenge
 // freshness, concurrency headroom) to be counted as routable.
 func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	now := time.Now()
@@ -6113,7 +6194,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	for _, p := range r.providers {
 		p.mu.Lock()
 
-		// Apply the same gates as snapshotProviderLocked. Private-only machines
+		// Apply the same gates as snapshotProviderIntoLockedEx. Private-only machines
 		// never serve the public fleet, so they do not count toward public
 		// model capacity.
 		if !r.publiclyRoutableLocked(p, now) {
@@ -6171,7 +6252,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 				poolSnap.pendingMaxTokensAllModels,
 				poolSnap.pendingMaxBytesAllModels,
 				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.kvBytesPerToken[m.ID],
+				poolSnap.pooledTokenBudget.kvRateFor(m.ID),
 			)
 
 			snap := providerCapSnap{
@@ -6387,17 +6468,21 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 func (r *Registry) evictStale(timeout time.Duration) {
 	now := time.Now()
 
-	// Scan under the write lock: we both READ LastHeartbeat and REBUILD
-	// evictStrikes. Collect every provider's heartbeat age for the summary, and
-	// decide who to evict: a provider is reaped only after it is stale on TWO
-	// consecutive sweeps (strike >= 2), so a single transient stall that ages
-	// many timestamps at once gives the fleet a sweep to recover instead of a
-	// mass reap.
-	r.mu.Lock()
+	// Scan under the READ lock: the walk only reads LastHeartbeat (under p.mu)
+	// and the previous sweep's strikes. evictStrikes is written solely by this
+	// function on the single eviction goroutine, so a read-scan followed by a
+	// short write-locked install is race-free — and the routing scans that
+	// share r.mu are no longer blocked for a whole fleet walk every timeout/3.
+	// Collect every provider's heartbeat age for the summary, and decide who to
+	// evict: a provider is reaped only after it is stale on TWO consecutive
+	// sweeps (strike >= 2), so a single transient stall that ages many
+	// timestamps at once gives the fleet a sweep to recover instead of a mass
+	// reap.
+	r.mu.RLock()
 	fleet := len(r.providers)
 	ages := make([]time.Duration, 0, fleet)
-	nextStrikes := make(map[string]int, len(r.evictStrikes))
-	var toEvict []string
+	var nextStrikes map[string]int // allocated lazily: steady state carries nothing
+	var toEvict []*Provider
 	var evictAges []time.Duration
 	for id, p := range r.providers {
 		p.mu.Lock()
@@ -6408,15 +6493,30 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		if age > timeout {
 			strikes := r.evictStrikes[id] + 1
 			if strikes >= evictStrikeThreshold {
-				toEvict = append(toEvict, id)
+				toEvict = append(toEvict, p)
 				evictAges = append(evictAges, age)
 			} else {
+				if nextStrikes == nil {
+					nextStrikes = make(map[string]int)
+				}
 				nextStrikes[id] = strikes // carry the strike to next sweep
 			}
 		}
 	}
-	r.evictStrikes = nextStrikes
-	r.mu.Unlock()
+	hadStrikes := len(r.evictStrikes) > 0
+	r.mu.RUnlock()
+
+	// Install the rebuilt strike map under the write lock only when it changes
+	// anything (a strike carried or cleared). The steady state — nobody stale,
+	// nothing carried — never takes the write lock at all.
+	if hadStrikes || len(nextStrikes) > 0 {
+		if nextStrikes == nil {
+			nextStrikes = make(map[string]int)
+		}
+		r.mu.Lock()
+		r.evictStrikes = nextStrikes
+		r.mu.Unlock()
+	}
 
 	if len(ages) > 0 {
 		amin, amed, ap90, amax := durationStats(ages)
@@ -6436,9 +6536,12 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		)
 	}
 
-	for _, id := range toEvict {
-		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
-		r.Disconnect(id)
+	for _, p := range toEvict {
+		// A heartbeat may recover this session after the read scan, or the
+		// same id may name a replacement. Revalidate inside the removal lock.
+		if r.disconnectProvider(p.ID, p, timeout) {
+			r.logger.Warn("evicted stale provider", "provider_id", p.ID, "timeout", timeout)
+		}
 	}
 }
 

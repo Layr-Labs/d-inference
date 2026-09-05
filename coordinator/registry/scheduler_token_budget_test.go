@@ -372,6 +372,7 @@ func TestManyPerSlotCapsRespectProviderWideAggregateCap(t *testing.T) {
 			ActiveTokenBudgetMax: 32_768,
 		})
 	}
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 
 	for i := range 24 {
@@ -407,6 +408,7 @@ func TestModelCapacitySnapshotRespectsPerSlotMaxConcurrency(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "snapshot-provider", modelA, 100)
 	p.mu.Lock()
 	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.syncModelIndexLocked()
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{
 		{Model: modelA, State: "running", NumRunning: 1, MaxConcurrency: 1},
 		{Model: modelB, State: "running", NumRunning: 0, MaxConcurrency: 2},

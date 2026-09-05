@@ -23,8 +23,8 @@ import (
 //  3. Per provider, phase B takes r.mu.RLock briefly for the registry-side
 //     state that lives in maps under r.mu (breaker, ejection, cooldowns, clamp,
 //     effective cap, catalog membership) and for the eligibility verdict, which
-//     deliberately reuses the routing gate itself (snapshotProviderReasonLockedEx
-//     + buildCandidateGateLocked — the single source of routing eligibility).
+//     deliberately reuses the routing gate itself (snapshotProviderIntoLockedEx
+//     + buildCandidateInto — the single source of routing eligibility).
 //     p.mu is taken inside that RLock where needed (r.mu → p.mu is the
 //     established order). A provider that disconnected between 1 and 3 is
 //     dropped rather than sampled from stale registry state.
@@ -266,7 +266,7 @@ func (r *Registry) appendProviderSample(rows []store.FleetSnapshotRow, p *Provid
 	for i := range scratch {
 		row := &rows[start+i]
 		raw := scratch[i].rawModel
-		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe)
+		row.EligibilityReason = r.slotEligibilityReasonLocked(p, raw, probe, now)
 		row.Model = r.fleetSnapshotModelLocked(raw)
 	}
 	return rows
@@ -288,16 +288,19 @@ func (r *Registry) fleetSnapshotModelLocked(raw string) string {
 }
 
 // slotEligibilityReasonLocked evaluates the FULL routing eligibility of
-// (p, model) for a plain text probe — the same providerRoutingGateReasonLockedEx
-// + buildCandidateGateLocked pipeline the dispatch scan runs — and returns the
+// (p, model) for a plain text probe — the same snapshotProviderIntoLockedEx
+// + buildCandidateInto pipeline the dispatch scan runs — and returns the
 // first failing GateReason name or "eligible". Caller holds r.mu (read) and
 // must NOT hold p.mu (the snapshot helper takes it).
-func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest) string {
-	snap, ok, reason := r.snapshotProviderReasonLockedEx(p, model, probe.Traits, false, false)
+func (r *Registry) slotEligibilityReasonLocked(p *Provider, model string, probe *PendingRequest, now time.Time) string {
+	// One stack-resident candidate: the arena variants fill the snapshot in
+	// place and return the closed GateReason the dispatch scan would tally.
+	var c routingCandidate
+	ok, reason := r.snapshotProviderIntoLockedEx(&c.snapshot, p, model, probe.Traits, false, false, now)
 	if !ok {
 		return reason.String()
 	}
-	if _, _, gateReason, built := r.buildCandidateGateLocked(snap, probe); !built {
+	if _, gateReason, built := r.buildCandidateInto(&c, probe, now); !built {
 		return gateReason.String()
 	}
 	return EligibilityReasonEligible

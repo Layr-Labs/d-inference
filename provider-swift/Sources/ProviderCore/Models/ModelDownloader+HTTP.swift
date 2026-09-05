@@ -43,6 +43,8 @@ extension ModelDownloader {
         required: Bool,
         expectedSHA256: String? = nil,
         maximumBytes: Int64? = nil,
+        attempts: Int = 3,
+        requestTimeout: TimeInterval = 6 * 60 * 60,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
@@ -55,7 +57,8 @@ extension ModelDownloader {
         let partial = destination.appendingPathExtension("part")
 
         var lastError: Error?
-        for attempt in 1...3 {
+        for attempt in 1...attempts {
+            try Task.checkCancellation()
             do {
                 // True byte-level resume: stream the HTTP body straight to the
                 // `.part` file as bytes arrive (appending when a `.part` prefix
@@ -68,6 +71,7 @@ extension ModelDownloader {
                     label: label,
                     required: required,
                     maximumBytes: maximumBytes,
+                    requestTimeout: requestTimeout,
                     onChunk: onChunk
                 )
                 guard ok else {
@@ -99,8 +103,10 @@ extension ModelDownloader {
                 // intact so a later run can resume it. Never retry.
                 throw CancellationError()
             } catch {
+                try Task.checkCancellation()
+                if (error as? URLError)?.code == .cancelled { throw error }
                 lastError = error
-                if attempt < 3 {
+                if attempt < attempts {
                     try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
                     continue
                 }
@@ -130,6 +136,7 @@ extension ModelDownloader {
         label: String,
         required: Bool,
         maximumBytes: Int64?,
+        requestTimeout: TimeInterval,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         let existingBytes = fileSize(partial)
@@ -139,7 +146,7 @@ extension ModelDownloader {
         // Model shards are multi-GB files. A short request timeout causes
         // legitimate downloads to fail; the streamed transfer keeps the
         // connection alive across the whole download.
-        request.timeoutInterval = 6 * 60 * 60
+        request.timeoutInterval = requestTimeout
         if existingBytes > 0 {
             request.setValue("bytes=\(existingBytes)-", forHTTPHeaderField: "Range")
         }

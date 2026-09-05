@@ -34,6 +34,12 @@ export interface Model {
   // OpenRouter provider schema fields (from the enriched /v1/models endpoint).
   name?: string;
   hugging_face_id?: string;
+  // Exact download artifact on the public catalog; independent of upstream metadata.
+  hugging_face_artifact?: {
+    repo_id: string;
+    revision: string;
+    path_prefix?: string;
+  };
   created?: number;
   description?: string;
   context_length?: number;

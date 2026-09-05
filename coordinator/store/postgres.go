@@ -448,6 +448,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			metadata JSONB NOT NULL DEFAULT '{}',
 			UNIQUE(model_id, version)
 		)`,
+		`ALTER TABLE model_versions ADD COLUMN IF NOT EXISTS hugging_face_artifact JSONB`,
 		`DO $$ BEGIN
 			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
 		EXCEPTION WHEN others THEN NULL;

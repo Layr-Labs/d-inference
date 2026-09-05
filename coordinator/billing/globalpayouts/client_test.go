@@ -86,3 +86,41 @@ func TestLiveBankShapeAndRecipientIncludes(t *testing.T) {
 		t.Fatal("restricted bank accepted")
 	}
 }
+
+func TestOnboardedRecipientCanUpdateBank(t *testing.T) {
+	attempts := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var body struct {
+			Account string                     `json:"account"`
+			UseCase map[string]json.RawMessage `json:"use_case"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		var useCase string
+		_ = json.Unmarshal(body.UseCase["type"], &useCase)
+		if body.Account != "acct_ready" {
+			t.Error("recipient changed")
+		}
+		if attempts == 1 {
+			if useCase != "account_onboarding" {
+				t.Error("wrong initial link")
+			}
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_fields"}}`))
+			return
+		}
+		if useCase != "account_update" || body.UseCase["account_update"] == nil {
+			t.Error("missing account update configuration")
+		}
+		_, _ = w.Write([]byte(`{"url":"https://accounts.stripe.com/update-bank"}`))
+	}))
+	defer remote.Close()
+	client := New("rk_test", "fa_test")
+	client.BaseURL = remote.URL
+	link, err := client.OnboardingLink(context.Background(), "acct_ready", "https://app.test/billing", "https://app.test/billing")
+	if err != nil || link == "" || attempts != 2 {
+		t.Fatalf("bank update link: %q, %v, attempts=%d", link, err, attempts)
+	}
+}

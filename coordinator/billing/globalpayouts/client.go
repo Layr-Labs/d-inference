@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -107,7 +108,19 @@ func (c *Client) Recipient(ctx context.Context, id string) (*Recipient, error) {
 }
 
 func (c *Client) OnboardingLink(ctx context.Context, id, returnURL, refreshURL string) (string, error) {
-	body := map[string]any{"account": id, "use_case": map[string]any{"type": "account_onboarding", "account_onboarding": map[string]any{"configurations": []string{"recipient"}, "return_url": returnURL, "refresh_url": refreshURL}}}
+	link, err := c.recipientLink(ctx, id, returnURL, refreshURL, "account_onboarding")
+	// Stripe rejects onboarding links after a recipient has completed onboarding,
+	// including when the bank later needs attention. The same authenticated user
+	// must receive an account_update link to repair or change that destination.
+	var apiErr *Error
+	if errors.As(err, &apiErr) && apiErr.Status == 400 && apiErr.Code == "invalid_fields" {
+		return c.recipientLink(ctx, id, returnURL, refreshURL, "account_update")
+	}
+	return link, err
+}
+
+func (c *Client) recipientLink(ctx context.Context, id, returnURL, refreshURL, useCase string) (string, error) {
+	body := map[string]any{"account": id, "use_case": map[string]any{"type": useCase, useCase: map[string]any{"configurations": []string{"recipient"}, "return_url": returnURL, "refresh_url": refreshURL}}}
 	var result struct {
 		URL string `json:"url"`
 	}

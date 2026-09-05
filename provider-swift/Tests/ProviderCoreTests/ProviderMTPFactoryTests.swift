@@ -334,10 +334,19 @@ struct ProviderMTPFactoryTests {
     }
 
     @Test("VLM resolution fails loud for an unsupported wrapper")
-    func unsupportedVLMWrapperRefuses() {
-        #expect(throws: EngineV2ProductionError.self) {
-            _ = try EngineV2Factory.directServingModel(
-                model: MTPFactoryTarget(), isVLM: true)
+    func unsupportedVLMWrapperRefuses() throws {
+        // A module no family claims is refused BY THE RUNNER now, and the
+        // refusal reason the provider reports is unchanged.
+        let checkpoint = try makeCheckpointDirectory(modelType: "gemma4")
+        defer { try? FileManager.default.removeItem(at: checkpoint) }
+        do {
+            _ = try EngineV2Factory.benchmarkServingModel(
+                model: MTPFactoryTarget(),
+                tokenizer: MTPFactoryTokenizer(),
+                modelDirectory: checkpoint)
+            Issue.record("expected the unsupported wrapper to be refused")
+        } catch {
+            #expect(EngineV2RefusalReason.classify(error) == .unsupportedModel)
         }
     }
 

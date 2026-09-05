@@ -21,6 +21,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXLMServer
 import MLXVLM
 import Testing
@@ -115,8 +116,10 @@ struct GemmaVLMEngineV2LiveTests {
         MLX.Memory.clearCache()
         let activeBefore = MLX.GPU.activeMemory
         let owned = wrapper.textModel
-        let serving = try EngineV2Factory.directServingModel(
-            model: wrapper, isVLM: true)
+        let serving = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper,
+            tokenizer: slot.tokenizer.inner,
+            modelDirectory: slot.modelDirectory)
         let textModel = try #require(serving as? Gemma4TextModel)
 
         #expect(ObjectIdentifier(owned) == ObjectIdentifier(textModel))

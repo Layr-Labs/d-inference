@@ -294,7 +294,7 @@ struct PagedDivergenceProbeTests {
         }
         let box = try await container.perform { ctx -> Box in
             let serving = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: directory)
+                model: ctx.model, tokenizer: ctx.tokenizer, modelDirectory: directory)
             let adopted = try? EngineV2Factory.adoptRunner(
                 model: serving,
                 tokenizer: ctx.tokenizer,

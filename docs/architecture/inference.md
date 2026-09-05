@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-05 · commit `8f70ac5c7`
+> Last updated: 2026-09-05 · commit `7b6afb181`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -248,7 +248,8 @@ and the coordinator can refuse to route
   slots are vetoed to the contiguous KV backend ([`prefix-cache.md`](prefix-cache.md)).
   `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` gates the load-time parity prefill
   between MLXVLM's inline text model and the extracted MLXLLM target
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift`).
+  (`libs/mlx-swift-lm/Libraries/MLXRunners/QwenVLMTextExtraction.swift`, which
+  the family's runner applies while adopting the wrapper).
 
 ### Supported `model_type`s and quantization
 

@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-05 · commit `7b6afb181`
 
 Every environment variable read by the coordinator, the provider CLI
 (`darkbloom`), console-ui and admin-ui: accepted values, the compiled default,
@@ -346,7 +346,7 @@ Parsing convention: affirmative values are `1`/`true`/`yes`/`on`, negative value
 | `DARKBLOOM_MTP_VERIFICATION_MODE` | `rectangular`, `serial`, `serial_target`, `automatic` | `automatic` | `provider-swift/Sources/ProviderBenchmark/MTPProductionSession.swift` | MTP verification strategy (benchmark session). |
 | `DARKBLOOM_PREFILL_DEADLINE_MODE` | `off`, `enforce` | `off` | `provider-swift/Sources/ProviderCore/Inference/PrefillDeadlineMode.swift` | Prefill-deadline admission on the provider. |
 | `DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL` | integer layers | projected from `provider.toml` (`18`) | `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift` | Gemma-4 prefill chunk-eval layers; the provider sets it for the engine, `scripts/install.sh` sets `18` for the smoke test. |
-| `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `provider-swift/Sources/ProviderCore/Inference/EngineV2VLMTextExtraction.swift` | VLM text-extraction parity check. |
+| `DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK` | `0` skips | on | `libs/mlx-swift-lm/Libraries/MLXRunners/QwenVLMTextExtraction.swift` | VLM text-extraction parity check, applied by the family's runner while adopting the wrapper. |
 
 ### Memory and media budgets
 

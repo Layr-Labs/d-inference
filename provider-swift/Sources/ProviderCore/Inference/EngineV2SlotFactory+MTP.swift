@@ -53,19 +53,18 @@ extension EngineV2SlotFactory {
     /// Adopt the resident module through the registry, twice.
     ///
     /// The first adoption answers ONE question the provider cannot answer
-    /// itself: which module this family serves (a VLM wrapper's own tower,
-    /// or the wrapper). The drafter then binds to exactly that instance, and
-    /// the second adoption carries it in as `preloadedDrafter`. Both
-    /// adoptions read no tensors — two `config.json` reads — so the pair
-    /// costs nothing next to binding a drafter to the wrong object.
+    /// itself: which module this family serves (a multimodal wrapper's own
+    /// tower, or the wrapper). The drafter then binds to exactly that
+    /// instance, and the second adoption carries it in as
+    /// `preloadedDrafter`. Both adoptions read no tensors — two
+    /// `config.json` reads — so the pair costs nothing next to binding a
+    /// drafter to the wrong object.
     ///
-    /// The multimodal retry inside `adoptRunner` is the extraction path for
-    /// a wrapper the family does not serve
-    /// (`EngineV2VLMTextExtraction`, which re-keys and parity-gates the
-    /// tower it builds).
+    /// Multimodal checkpoints need nothing special here: the family's runner
+    /// takes the wrapper and answers with the tower it serves, including the
+    /// re-keyed, parity-gated Qwen target the fork now owns.
     private static func adopt(
         modelId: String,
-        isVLM: Bool,
         modelDirectory: URL,
         snapshot: EngineV2ModelSnapshot,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -82,27 +81,7 @@ extension EngineV2SlotFactory {
                     modelDirectory: modelDirectory,
                     kvBytesCapacity: 0,
                     maxSequenceLength: RunnerLoadOptions().maxSequenceLength,
-                    preloadedDrafter: drafter),
-                textTowerCandidates: isVLM
-                    ? [
-                        // The tower a wrapper OWNS, when it owns one: the
-                        // wrapper and the engine then share one parameter
-                        // tree and one residency footprint.
-                        { try EngineV2Factory.directServingModel(
-                            model: snapshot.model, isVLM: true) },
-                        // Otherwise the tower this provider BUILDS from the
-                        // checkpoint, re-keyed and parity-gated at load.
-                        {
-                            let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-                                from: snapshot.model, modelDirectory: modelDirectory)
-                            if let parityDiff = extraction.parityMaxAbsLogitDiff {
-                                logInfo(
-                                    "engine_v2: \(modelId) VLM text extraction passed the "
-                                        + "load-time parity gate (max |Δlogit| \(parityDiff))")
-                            }
-                            return extraction.servingModel
-                        },
-                    ] : [])
+                    preloadedDrafter: drafter))
         } catch {
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId,
@@ -140,7 +119,6 @@ extension EngineV2SlotFactory {
         if adoptRunner, let modelDirectory {
             targetRunner = try adopt(
                 modelId: modelId,
-                isVLM: isVLM,
                 modelDirectory: modelDirectory,
                 snapshot: snapshot,
                 tokenizer: slotTokenizer,
@@ -201,7 +179,6 @@ extension EngineV2SlotFactory {
         if let drafter = assistant?.drafter, let modelDirectory, adoptRunner {
             runner = try adopt(
                 modelId: modelId,
-                isVLM: isVLM,
                 modelDirectory: modelDirectory,
                 snapshot: snapshot,
                 tokenizer: slotTokenizer,
@@ -250,7 +227,6 @@ extension EngineV2SlotFactory {
             guard adoptRunner, let modelDirectory else { return nil }
             return try adopt(
                 modelId: modelId,
-                isVLM: isVLM,
                 modelDirectory: modelDirectory,
                 snapshot: snapshot,
                 tokenizer: slotTokenizer,

@@ -127,8 +127,6 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .noKVHeadroom
         case EngineV2ProductionError.unsupportedModel:
             return .unsupportedModel
-        case is EngineV2VLMTextExtractionError:
-            return .vlmExtractionFailed
         case EngineV2ProductionError.pagedUnavailable:
             return .pagedBackendUnavailable
         case EngineV2ProductionError.invalidPagedPoolDType:
@@ -148,6 +146,17 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .pagedBackendUnavailable
         case RunnerError.resourceMissing:
             return .runnerResourceMissing
+        // The pool the runner built is not the one that was asked for. Same
+        // bucket as any other paged request that could not be served: the
+        // fleet signal is "an explicit paged run did not get paged", and the
+        // reason text names the dtype mismatch.
+        case RunnerError.pagedPoolDTypeUnsupported:
+            return .pagedBackendUnavailable
+        // The fork's Qwen VLM text extraction — re-key, quantization
+        // structure, and the load-time forward parity gate — refuses with
+        // its own error type now that it lives beside the runner.
+        case is QwenVLMTextExtractionError:
+            return .vlmExtractionFailed
         default:
             return .engineInitFailed
         }

@@ -209,7 +209,8 @@ public enum SchedulerPrefillBenchmark {
         // to have been honoured.
         let parts = try await container.perform { ctx -> EngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                model: ctx.model, tokenizer: ctx.tokenizer,
+                modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: ctx.tokenizer,

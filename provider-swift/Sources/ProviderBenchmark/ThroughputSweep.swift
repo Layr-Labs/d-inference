@@ -447,7 +447,8 @@ public enum ThroughputSweep {
                 // Serving-model resolution matches production: VLM checkpoints
                 // use the exact text tower owned by the loaded wrapper.
                 let servingModel = try EngineV2Factory.benchmarkServingModel(
-                    model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                    model: ctx.model, tokenizer: ctx.tokenizer,
+                    modelDirectory: modelDirectory)
                 // `makeProductionBuild` is the construction
                 // `makeProductionEngine` wraps, and additionally hands back the
                 // backend kind the engine actually resolved to — the fact a

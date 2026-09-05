@@ -2,6 +2,7 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXRunners
 import MLXVLM
 import Testing
 
@@ -71,8 +72,11 @@ struct FrozenReplayRealModelTests {
         }
         let wrapper = try #require(snapshot.model as? MLXVLM.Gemma4)
         let textModel = wrapper.textModel
-        let direct = try EngineV2Factory.directServingModel(
-            model: wrapper, isVLM: true)
+        let loadedTokenizer = await container.perform { context in context.tokenizer }
+        let direct = try EngineV2Factory.benchmarkServingModel(
+            model: wrapper,
+            tokenizer: loadedTokenizer,
+            modelDirectory: directory)
         #expect(ObjectIdentifier(direct) == ObjectIdentifier(textModel))
         return Loaded(
             container: container,

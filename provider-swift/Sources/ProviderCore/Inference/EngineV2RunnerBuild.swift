@@ -59,6 +59,11 @@ struct EngineV2RunnerPolicy {
     /// it. Non-nil ⇒ the engine runs with `enablePrefixCache: true`.
     var prefixCache: (any CBv2PrefixCache)?
     var mtpConfig: CBv2MTPConfig
+    /// The pool a paged build asks for: page dtype, slab commitment, the
+    /// physical capacity the policy allowed, the device buffer ceiling, and
+    /// the context the groups are sized against. Ignored by a contiguous
+    /// build, which has no pages.
+    var pagedPool: PagedPoolPlan?
     var environment: [String: String]
 
     init(
@@ -69,6 +74,7 @@ struct EngineV2RunnerPolicy {
         loopConfig: CBv2EngineLoopConfig,
         prefixCache: (any CBv2PrefixCache)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
+        pagedPool: PagedPoolPlan? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.kvBackendKind = kvBackendKind
@@ -78,6 +84,7 @@ struct EngineV2RunnerPolicy {
         self.loopConfig = loopConfig
         self.prefixCache = prefixCache
         self.mtpConfig = mtpConfig
+        self.pagedPool = pagedPool
         self.environment = environment
     }
 }
@@ -135,48 +142,26 @@ extension EngineV2Factory {
     /// provider already has resident. This is THE construction entry point:
     /// no family is named here, and no weights are read.
     ///
-    /// Multimodal checkpoints get RETRIES, and none of them is a family
-    /// test here: a wrapper the family's runner does not serve is offered
-    /// again as the text tower the caller can produce. Each candidate is
-    /// tried in order and only `unexpectedModel` moves on to the next, so a
-    /// real failure inside a candidate surfaces as itself.
-    ///
-    /// This exists because two fork runners accept the LLM-side module but
-    /// not the multimodal wrapper the provider actually loads for those
-    /// checkpoints — see the note in the PR body. A runner that serves its
-    /// own wrapper accepts on the first call and never reaches a retry.
+    /// Resolve the family through the registry and adopt the module the
+    /// provider already has resident. This is THE construction entry point:
+    /// no family is named here, no weights are read, and there is no retry —
+    /// a runner takes its own checkpoint's module, multimodal wrapper
+    /// included, and answers with the tower it serves.
     static func adoptRunner(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         modelDirectory: URL,
         configuration: ModelConfiguration? = nil,
-        options: RunnerLoadOptions,
-        textTowerCandidates: [() throws -> any LanguageModel] = []
+        options: RunnerLoadOptions
     ) throws -> any Runner {
         let runnerType = try RunnerRegistry.shared.resolve(
             modelType: RunnerCheckpoint.modelType(at: modelDirectory))
-        let resolvedConfiguration =
-            configuration ?? ModelConfiguration(directory: modelDirectory)
-        func adopt(_ module: any LanguageModel) throws -> any Runner {
-            try runnerType.adopt(
-                model: module,
-                tokenizer: tokenizer,
-                configuration: resolvedConfiguration,
-                directory: modelDirectory,
-                options: options)
-        }
-        do {
-            return try adopt(model)
-        } catch RunnerError.unexpectedModel(let type) {
-            for candidate in textTowerCandidates {
-                do {
-                    return try adopt(try candidate())
-                } catch RunnerError.unexpectedModel {
-                    continue
-                }
-            }
-            throw RunnerError.unexpectedModel(type)
-        }
+        return try runnerType.adopt(
+            model: model,
+            tokenizer: tokenizer,
+            configuration: configuration ?? ModelConfiguration(directory: modelDirectory),
+            directory: modelDirectory,
+            options: options)
     }
 
     /// The `model_type` a checkpoint declares. Public so the benchmark
@@ -235,6 +220,7 @@ extension EngineV2Factory {
             prefixCache: policy.prefixCache,
             decoder: decoder,
             mtpConfig: policy.mtpConfig,
+            pagedPool: policy.pagedPool ?? PagedPoolPlan(),
             environment: policy.environment)
         let engine = try runner.makeEngine(build)
         return ProductionBuild(
@@ -245,6 +231,11 @@ extension EngineV2Factory {
             fixedRequestBytes: (engine as? EngineV2)?.resolvedFixedBytesPerRequest ?? 0,
             kvBackendKind: policy.kvBackendKind,
             kvBackendFallbackReason: policy.kvBackendFallbackReason,
-            pagedPoolDType: policy.kvBackendKind == .paged ? pagedPoolDType : nil)
+            // The dtype the pool was actually BUILT with. The runner compares
+            // the constructed pool against the plan and throws
+            // `pagedPoolDTypeUnsupported` when they differ, so reaching here
+            // means the pages are the ones that were asked for.
+            pagedPoolDType: policy.kvBackendKind == .paged
+                ? policy.pagedPool?.dtype.rawValue ?? pagedPoolDType : nil)
     }
 }

@@ -524,6 +524,9 @@ extension EngineV2Factory {
         let schedulerConfig: CBv2SchedulerConfig
         /// Page dtype the paged pool will be built with; nil on contiguous.
         let pagedPoolDType: String?
+        /// The pool the runner is asked to build. nil on contiguous, where
+        /// there are no pages to describe.
+        let pagedPool: PagedPoolPlan?
     }
 
     /// Build the real `EngineV2` over a loaded model, returning the engine
@@ -821,25 +824,6 @@ extension EngineV2Factory {
             return reason
         }
 
-        // fp32 PAGES ARE NOT REACHABLE on the runner path, and this refuses
-        // rather than serving fp16 under an fp32 label.
-        //
-        // The pool is built by the runner from `EngineBuild`, which carries
-        // a byte capacity and no page dtype, so `RunnerEngineAssembly` always
-        // builds fp16 pages. Reporting "float32" for such a build would be
-        // the exact defect the rest of this file is written against: a
-        // control arm that is secretly a second copy of the baseline looks
-        // exactly like agreement. Until `EngineBuild` carries a page dtype,
-        // an explicit fp32 request REFUSES and an `.auto` one degrades with
-        // its reason named.
-        if resolvedKind == .paged, pagedDType == .float32 {
-            resolvedKind = .contiguous
-            fallbackReason = try degradeOrRefuse(
-                "paged_dtype_unsupported: float32 pages cannot be requested "
-                    + "through EngineBuild, which carries no page dtype")
-            pagedDType = .float16
-        }
-
         // ONE scheduler config for the whole build: this instance sizes the
         // paged pool's `maxPrefillChunk` below AND is the instance the
         // engine runs on — `assembleProductionBuild` reads it back off the
@@ -860,7 +844,8 @@ extension EngineV2Factory {
                 // Contiguous has no pages: report NO dtype rather than the
                 // requested one, so a parity arm cannot read a knob it set
                 // as evidence the fp32 pool exists.
-                pagedPoolDType: nil)
+                pagedPoolDType: nil,
+                pagedPool: nil)
         }
 
         if resolvedKind == .paged {
@@ -903,13 +888,15 @@ extension EngineV2Factory {
             case .contiguous(let reason):
                 fallbackReason = try degradeOrRefuse(reason)
             case .paged(let plan):
-                // PLAN only. The pool itself is built by the runner inside
-                // `makeEngine`, from `EngineBuild.kvBackend` and this planned
-                // capacity — the same `PagedKVBackend` construction, one
-                // layer down, over the caches the model vends. What the
-                // provider owns is the DECISION above: preflight, the
-                // physical-capacity plan, the kill switch, the guard, and
-                // the degrade-or-refuse ladder.
+                // The pool itself is built by the runner inside `makeEngine`
+                // — the same `PagedKVBackend` construction, one layer down,
+                // over the caches the model vends. Every input stays the
+                // provider's: the page dtype this box asked for, the lazy
+                // slab commitment the plan chose, the physical capacity the
+                // policy allowed, the device's buffer ceiling, and the
+                // context the pool sizes its groups against. The runner
+                // reads the CONSTRUCTED pool back and refuses by name if it
+                // differs, so an fp32 arm cannot quietly measure fp16.
                 return ProductionBackendPreparation(
                     layerKinds: layerKinds,
                     modelCapabilities: modelCapabilities,
@@ -917,7 +904,13 @@ extension EngineV2Factory {
                     fallbackReason: nil,
                     kvBytesCapacity: plan.capacityBytes,
                     schedulerConfig: schedulerConfig,
-                    pagedPoolDType: Self.pagedPoolDTypeName(pagedDType))
+                    pagedPoolDType: Self.pagedPoolDTypeName(pagedDType),
+                    pagedPool: PagedPoolPlan(
+                        dtype: pagedDType == .float32 ? .float32 : .float16,
+                        slabCommitment: plan.commitment,
+                        nominalMaxSequenceLength: max(1, maxContextLength ?? 8192),
+                        capacityBytes: plan.capacityBytes,
+                        maxBufferLength: maxBufferLength))
             }
         }
         return contiguousDecision()
@@ -976,6 +969,7 @@ extension EngineV2Factory {
                     environment: environment)),
             prefixCache: effectivePrefixCache,
             mtpConfig: mtpConfig,
+            pagedPool: preparedBackend.pagedPool,
             environment: environment)
         // Speculation is on when the slot asked for it AND the runner holds
         // the head; the runner refuses a decoder it does not hold rather

@@ -3,16 +3,13 @@
 // `DARKBLOOM_CBV2_PAGED_KV_DTYPE` — the paged pool's page dtype, parsed from
 // the environment dictionary threaded into `EngineV2Factory`.
 //
-// WHAT CHANGED, and why these tests now pin a refusal rather than a pool:
-// the paged pool is built by the family's RUNNER inside `makeEngine`, from
-// an `EngineBuild` that carries a byte capacity and no page dtype. fp32
-// pages are therefore unreachable from here. The knob's whole reason to
-// exist is a parity harness's fp32 CONTROL ARM, and a control arm that
-// silently ran fp16 under an fp32 label looks exactly like agreement — so
-// an explicit paged fp32 request REFUSES, and an `.auto` one degrades with
-// its reason named. Restoring the capability is a fork change:
-// `EngineBuild` must carry the page dtype so `RunnerEngineAssembly` can
-// build the pool with it.
+// The knob REACHES the pool. `EngineBuild.pagedPool` carries the page dtype,
+// the slab commitment, the physical capacity the policy allowed, the device
+// buffer ceiling and the context the groups are sized against; the runner
+// builds the pool from exactly that and then reads the CONSTRUCTED pool back,
+// refusing `pagedPoolDTypeUnsupported` if the two disagree. So an fp32
+// control arm either measures fp32 or fails loudly — never fp16 wearing an
+// fp32 label.
 //
 // The parse itself is unchanged and still pinned here: a typo REFUSES an
 // explicit paged selection rather than defaulting, recognized values
@@ -127,32 +124,99 @@ struct EngineV2PagedPoolDTypeEnvTests {
         }
     }
 
-    @Test("an explicit float32 request REFUSES rather than serving float16 pages")
-    func float32RefusesOnTheRunnerPath() throws {
-        do {
-            _ = try pagedDecision(
-                environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"])
-            Issue.record("expected the fp32 page request to refuse")
-        } catch let error as EngineV2ProductionError {
-            guard case .pagedUnavailable(let reason) = error else {
-                Issue.record("expected pagedUnavailable, got \(error)")
-                return
-            }
-            // The reason NAMES the missing seam, so whoever reads the 503
-            // knows this is not paged infrastructure failing.
-            #expect(reason.hasPrefix("paged_dtype_unsupported:"))
-            #expect(reason.contains("EngineBuild"))
-            #expect(
-                EngineV2RefusalReason.classify(error) == .pagedBackendUnavailable)
-        }
+    @Test("the pool plan the caller states is the one that crosses on EngineBuild")
+    func poolPlanCrossesOnEngineBuild() throws {
+        // Hermetic: no live-memory input. `PagedKVPhysicalCapacityPolicy`
+        // measures the box, so the end-to-end decision below can legitimately
+        // refuse on a machine with no headroom; the plan-to-`EngineBuild`
+        // wiring must be provable regardless.
+        let plan = PagedPoolPlan(
+            dtype: .float32,
+            slabCommitment: .atFirstAdmission,
+            nominalMaxSequenceLength: dtypeTestContext,
+            capacityBytes: 4 << 20,
+            maxBufferLength: 1 << 30)
+        let runner = StubRunner(
+            layerKinds: try dtypeFixtureModel().cbv2LayerKinds,
+            capabilities: .attentionOnly)
+        let build = try EngineV2Factory.makeRunnerBuild(
+            runner: runner,
+            decoder: .serial,
+            policy: EngineV2RunnerPolicy(
+                kvBackendKind: .paged,
+                kvBytesCapacity: 4 << 20,
+                schedulerConfig: CBv2SchedulerConfig(),
+                loopConfig: CBv2EngineLoopConfig(),
+                pagedPool: plan,
+                environment: [:]))
+        let received = try #require(runner.receivedBuild)
+        #expect(received.kvBackend == .paged)
+        #expect(received.pagedPool == plan)
+        // What the build REPORTS is the dtype the pool was built with; the
+        // runner refuses by name when its constructed pool disagrees.
+        #expect(build.pagedPoolDType == "float32")
     }
 
-    @Test("a resolved paged build reports float16 — the pages it will actually have")
-    func resolvedPagedReportsFloat16() throws {
-        let prepared = try pagedDecision(environment: [:])
+    @Test("an explicit float32 request reaches the pool plan the runner builds from")
+    func float32ReachesThePoolPlan() throws {
+        let prepared: EngineV2Factory.ProductionBackendPreparation
+        do {
+            prepared = try pagedDecision(
+                environment: [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"])
+        } catch let error as EngineV2ProductionError {
+            // A box with no live KV headroom cannot plan ANY pool — the
+            // physical-capacity policy refuses before the dtype matters.
+            // That is the policy working, not this property failing, and
+            // `poolPlanCrossesOnEngineBuild` covers the wiring hermetically.
+            guard case .pagedUnavailable(let reason) = error,
+                reason.hasPrefix("physical_capacity:")
+            else { throw error }
+            withKnownIssue("no live KV headroom on this box to plan a pool") {
+                Issue.record("physical-capacity policy refused: \(reason)")
+            }
+            return
+        }
         #expect(prepared.kind == .paged)
-        #expect(prepared.pagedPoolDType == "float16")
-        #expect(prepared.kvBytesCapacity <= dtypeTestCapacity)
+        #expect(prepared.pagedPoolDType == "float32")
+        let plan = try #require(prepared.pagedPool)
+        #expect(plan.dtype == .float32)
+        // The production posture, unchanged by the move: slabs are wired at
+        // the pool's FIRST ADMISSION, so a slot that has served nothing does
+        // not hold unified memory the next model's headroom guard measures.
+        #expect(plan.slabCommitment == .atFirstAdmission)
+        // Physical capacity is the policy's, not the raw grant, and the
+        // device's own buffer ceiling is passed rather than assumed.
+        #expect(plan.capacityBytes == prepared.kvBytesCapacity)
+        #expect(plan.capacityBytes ?? 0 <= dtypeTestCapacity)
+        #expect(plan.maxBufferLength != nil)
+        #expect(plan.nominalMaxSequenceLength == dtypeTestContext)
+
+        // And it crosses to the runner on `EngineBuild`.
+        let runner = StubRunner(
+            layerKinds: try dtypeFixtureModel().cbv2LayerKinds,
+            capabilities: .attentionOnly)
+        let build = try EngineV2Factory.assembleProductionBuild(
+            runner: runner,
+            prefixCache: nil,
+            mtpConfig: CBv2MTPConfig(),
+            preparedBackend: prepared,
+            environment: [:])
+        let received = try #require(runner.receivedBuild)
+        #expect(received.kvBackend == .paged)
+        #expect(received.pagedPool == plan)
+        #expect(build.pagedPoolDType == "float32")
+    }
+
+    @Test("a pool built with other arithmetic is refused BY NAME, not reported")
+    func mismatchedPoolRefuses() {
+        // The runner's own guard, and the reason the provider reports for it:
+        // an explicit paged run that could not be served. A control arm that
+        // silently ran the baseline looks exactly like agreement.
+        let error = RunnerError.pagedPoolDTypeUnsupported(
+            requested: "float32", served: "float16")
+        #expect("\(error)".contains("float32"))
+        #expect("\(error)".contains("float16"))
+        #expect(EngineV2RefusalReason.classify(error) == .pagedBackendUnavailable)
     }
 
     @Test("`.auto` IGNORES the page dtype entirely — malformed or not (v0.8.1)")
@@ -164,6 +228,7 @@ struct EngineV2PagedPoolDTypeEnvTests {
             #expect(prepared.kind == .contiguous, "value=\(value)")
             #expect(prepared.fallbackReason == nil, "value=\(value)")
             #expect(prepared.pagedPoolDType == nil, "value=\(value)")
+            #expect(prepared.pagedPool == nil, "value=\(value)")
         }
     }
 
@@ -174,6 +239,7 @@ struct EngineV2PagedPoolDTypeEnvTests {
             kvBackend: .contiguous)
         #expect(prepared.kind == .contiguous)
         #expect(prepared.pagedPoolDType == nil)
+        #expect(prepared.pagedPool == nil)
     }
 
     @Test("a float32 request that DEGRADES reports no dtype, not float32")

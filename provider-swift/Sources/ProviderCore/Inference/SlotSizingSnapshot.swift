@@ -26,9 +26,8 @@
 // against each other for both production families (gpt_oss, gemma4).
 
 import Foundation
-import MLXLLM
 import MLXLMCommon
-import MLXVLM
+import MLXRunners
 
 /// Immutable sizing facts for one loaded model slot.
 public struct SlotSizingSnapshot: Sendable, Equatable {
@@ -116,48 +115,33 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         struct ModuleFacts: @unchecked Sendable {
             let bytes: Int
             let moduleKVRate: Int?
-            let isQwenVLMWrapper: Bool
         }
         let facts = await container.perform { ctx -> ModuleFacts in
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
-            // Engine truth first: the CBv2-adapted families expose their own
-            // layer kinds (GPT-OSS derives them from the LOADED trunk, so
-            // they are congruent with the actual layers even when config.json
-            // omits `layer_types`).
-            let rate: Int?
-            switch ctx.model {
-            case let gemma as Gemma4TextModel:
-                rate = fp16KVBytesPerToken(layerKinds: gemma.cbv2LayerKinds)
-            case let gptoss as GPTOSSModel:
-                rate = fp16KVBytesPerToken(layerKinds: gptoss.cbv2LayerKinds)
-            case let gemma as MLXVLM.Gemma4:
-                // Direct ownership makes the loaded tower engine truth with
-                // no config re-decode or second topology that can drift.
-                rate = fp16KVBytesPerToken(layerKinds: gemma.textModel.cbv2LayerKinds)
-            case let qwen as Qwen35MoEModel:
-                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
-            case let qwen as Qwen35Model:
-                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
-            case let qwen as MLXVLM.Qwen3VL:
-                // The wrapper is itself the production CBv2 serving model.
-                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
-            case is MLXVLM.Qwen35MoE:
-                return ModuleFacts(
-                    bytes: bytes,
-                    moduleKVRate: nil,
-                    isQwenVLMWrapper: true)
-            case is MLXVLM.Qwen35:
-                return ModuleFacts(
-                    bytes: bytes,
-                    moduleKVRate: nil,
-                    isQwenVLMWrapper: true)
-            default:
-                rate = nil
+            // Engine truth first, and from the same place the engine gets
+            // it: the family's runner, adopting the module this container
+            // already holds. Adoption reads no tensors, each family answers
+            // with the layer kinds of the module it will actually serve —
+            // a wrapper's own tower included — and the result is cached per
+            // wrapper instance, so the slot build reuses this one rather
+            // than resolving a second target.
+            //
+            // A module no runner claims, or a slot with no checkpoint path,
+            // falls through to the config-parse figure below. Such a model
+            // cannot build a v2 engine and is refused at load anyway.
+            var rate: Int?
+            if let modelPath,
+                let runner = try? EngineV2Factory.adoptRunner(
+                    model: ctx.model,
+                    tokenizer: ctx.tokenizer,
+                    modelDirectory: modelPath,
+                    options: RunnerLoadOptions(
+                        resources: EngineV2Factory.runnerResources(
+                            modelDirectory: modelPath)))
+            {
+                rate = fp16KVBytesPerToken(layerKinds: runner.layerKinds)
             }
-            return ModuleFacts(
-                bytes: bytes,
-                moduleKVRate: rate,
-                isQwenVLMWrapper: false)
+            return ModuleFacts(bytes: bytes, moduleKVRate: rate)
         }
 
         // Architecture metadata (context window + non-CBv2 fallback rate)
@@ -171,9 +155,6 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         var kvRate = facts.moduleKVRate ?? 0
-        if kvRate <= 0, facts.isQwenVLMWrapper, let modelPath {
-            kvRate = qwenVLMTextKVRate(modelDirectory: modelPath) ?? 0
-        }
         if kvRate <= 0 {
             // Non-CBv2 module: fall back to the config-parse figure so
             // callers that only need a rough rate still get one. Such a
@@ -231,14 +212,4 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         return total
     }
 
-    static func qwenVLMTextKVRate(modelDirectory: URL) -> Int? {
-        let configURL = modelDirectory.appendingPathComponent("config.json")
-        guard let configData = try? Data(contentsOf: configURL) else { return nil }
-        guard let textConfig = try? EngineV2VLMTextExtraction.decodeQwenTextConfiguration(
-            configData: configData)
-        else { return nil }
-        // Config-only sizing must not instantiate a target module: that would
-        // allocate a second skeleton before extraction.
-        return fp16KVBytesPerToken(layerKinds: textConfig.cbv2LayerKinds)
-    }
 }

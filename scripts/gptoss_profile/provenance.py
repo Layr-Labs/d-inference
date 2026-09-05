@@ -91,8 +91,10 @@ def checkout_edits(repo):
 
 
 def file_pin(path):
-    path = Path(path).resolve()
-    return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest(path)}
+    requested = Path(path).absolute()
+    path = requested.resolve()
+    return {"path": str(path), "requestedPath": str(requested),
+            "bytes": path.stat().st_size, "sha256": digest(path)}
 
 
 def model_pin(directory):
@@ -103,6 +105,15 @@ def model_pin(directory):
     if not files or not any(p["name"].endswith(".safetensors") for p in files):
         raise ValueError("--model-dir must contain the resolved model snapshot and safetensors weights")
     return {"path": str(directory), "files": files, "inventorySHA256": fingerprint(files)}
+
+
+def assert_artifacts_unchanged(pins):
+    """Recheck content, including snapshot additions/removals, outside timing."""
+    for artifact in [pins["binary"], *pins["metallibs"], pins.get("config"), pins.get("buildRecord")]:
+        if artifact is not None and file_pin(artifact["requestedPath"]) != artifact:
+            raise ValueError(f"Pinned artifact changed: {artifact['path']}")
+    if model_pin(pins["model"]["path"]) != pins["model"]:
+        raise ValueError("Pinned model snapshot changed during matrix")
 
 
 def host_snapshot():

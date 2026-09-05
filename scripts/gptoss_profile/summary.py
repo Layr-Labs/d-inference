@@ -29,7 +29,8 @@ def dispersion(values):
 
 def summarize_cell(report, spec):
     cell = spec["cell"]
-    result = {**cell, "iterations": spec["iterations"]}
+    result = {**cell, "iterations": spec["iterations"],
+              "decodeTokens": spec["decodeTokens"], "backend": spec["backend"]}
     if cell["phase"] == "decode":
         timings = [s["decodeTiming"] for s in report["decode"]]
         aggregates = [t["overlapAggregateTokensPerSecond"] for t in timings]
@@ -110,7 +111,8 @@ def summarize(directory):
     for row in rows:
         if row["phase"] == "decode":
             base = next((r for r in rows if r["phase"] == "decode" and r["context"] == row["context"]
-                         and r["batch"] == 1), None)
+                         and r["batch"] == 1
+                         and all(r[key] == row[key] for key in ("iterations", "decodeTokens", "backend"))), None)
             row["scalingVsB1"] = row["aggregateDecodeTPS"] / base["aggregateDecodeTPS"] if base else None
             row["batchScalingEfficiency"] = row["scalingVsB1"] / row["batch"] if base else None
     result = {"schemaVersion": 1, "mode": manifest["mode"], "provenanceID": manifest["provenanceID"],
@@ -122,7 +124,7 @@ def summarize(directory):
               "prefillDefinition": "Prompt tokens divided by production request TTFT, including first token and scheduler overhead; not an isolated GPU prefill timer.",
               "arrivalDefinition": "Mixed arrivals have unequal prompt lengths. Their aggregate is separate from the common-window steady decode headline."}
     write_json(directory / "summary.json", result)
-    columns = ["name", "phase", "context", "batch", "iterations", "aggregateDecodeTPS", "fairShareDecodeTPS",
+    columns = ["name", "phase", "context", "batch", "iterations", "decodeTokens", "backend", "aggregateDecodeTPS", "fairShareDecodeTPS",
                "scalingVsB1", "batchScalingEfficiency", "ttftMedianMs", "promptTokensPerSecond", "interTokenP50Ms",
                "interTokenP95Ms", "commonWindowInterTokenP50Ms", "commonWindowInterTokenP95Ms", "peakMemoryBytes", "commonWindowMinimumRowTokens"]
     with (directory / "summary.csv").open("w", newline="") as stream:

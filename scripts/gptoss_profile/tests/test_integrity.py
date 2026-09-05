@@ -26,7 +26,7 @@ def fixture(batch=2):
               "overlapAggregateTokensPerSecond": 1000 * batch, "overlapDurationMs": 64,
               "overlapDecodedTokensPerRow": [64] * batch, "overlapDecodedTokens": 64 * batch,
               "overlapMeetsMinimumSupport": True}
-    report = {"schemaVersion": 6, "modelID": "test-model", "modelPath": "/tmp/model",
+    report = {"schemaVersion": 7, "decodeSubmissionOrder": "row_index", "modelID": "test-model", "modelPath": "/tmp/model",
               "kvBackend": {"selection": "contiguous", "resolved": ["contiguous"]},
               "decodeCoverage": {"requestedBatchSizes": [batch], "unmeasured": []},
               "decode": [{"batchSize": batch, "decodeTokensPerSequence": 64,
@@ -36,9 +36,30 @@ def fixture(batch=2):
 
 
 class IntegrityTests(unittest.TestCase):
+    def test_batched_schema6_is_rejected_but_single_row_is_compatible(self):
+        for batch in (1, 2, 4):
+            spec, manifest, report = fixture(batch)
+            report["schemaVersion"] = 6
+            report.pop("decodeSubmissionOrder")
+            if batch == 1:
+                validate(report, spec, manifest)
+            else:
+                with self.assertRaisesRegex(ValueError, "requires schema 7"):
+                    validate(report, spec, manifest)
+
+    def test_manifest_workload_must_match_cell(self):
+        spec, manifest, report = fixture()
+        manifest["workload"] = {key: spec[key] for key in ("iterations", "decodeTokens", "backend")}
+        validate(report, spec, manifest)
+        for key, value in (("iterations", 2), ("decodeTokens", 128), ("backend", "paged")):
+            invalid = copy.deepcopy(spec)
+            invalid[key] = value
+            with self.assertRaisesRegex(ValueError, "workload differs"):
+                validate(report, invalid, manifest)
+
     def test_ordered_submission_metadata_and_timestamps(self):
         spec, manifest, report = fixture()
-        report["schemaVersion"] = 7
+        del report["decodeSubmissionOrder"]
         with self.assertRaisesRegex(ValueError, "submission order"):
             validate(report, spec, manifest)
         report["decodeSubmissionOrder"] = "row_index"

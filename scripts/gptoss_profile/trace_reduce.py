@@ -15,6 +15,8 @@ from pathlib import Path
 from .trace_schema import (OPS, TIMING_NOTE, events, interval_metrics,
                            load_object, validate_metadata)
 
+TABLE_NAMES = ("phases", "regions", "operators", "kernels", "primitives", "descriptors")
+
 
 def index_trace(path):
     regions, pipeline_names, run_info = {}, {}, {}
@@ -182,6 +184,10 @@ def reduce_trace(root):
 
 def write_results(output, result, tables):
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Empty tables and failed reductions must not inherit data from a previous run.
+    # Remove only this reducer's outputs, preserving other files in the directory.
+    for name in TABLE_NAMES:
+        (output / f"trace-{name}.csv").unlink(missing_ok=True)
     (output / "trace-reduction.json").write_text(json.dumps(result, indent=2) + "\n")
     for name, rows in tables.items():
         if not rows:

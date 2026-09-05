@@ -12,7 +12,7 @@ from .checks import assert_finite, require_positive
 RAW_SCHEMA_VERSIONS = {
     # New versions add raw event/memory evidence; the legacy metrics this
     # runner compares retain their definitions. Accept only reviewed versions.
-    "throughput sweep": (5, 6),
+    "throughput sweep": (5, 6, 7),
     "scheduler prefill": (3, 4),
     "arrival invariance": (4, 5),
 }

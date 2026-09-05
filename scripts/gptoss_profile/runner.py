@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import cells, command, environment
 from .process import run
 from .power import power_failure
-from .provenance import digest, file_pin, fingerprint, host_snapshot, model_pin, now, source_pin, write_json
+from .provenance import assert_artifacts_unchanged, digest, file_pin, fingerprint, host_snapshot, model_pin, now, source_pin, write_json
 from .summary import summarize
 from .validation import validate
 
@@ -75,6 +75,8 @@ def execute(args):
             "buildRecord": file_pin(args.build_record) if args.build_record else None,
             "controls": controls, "source": source_pin(repo), "mode": args.mode,
             "requiredACPowerMode": args.require_ac_power_mode,
+            "workload": {"iterations": args.iterations, "decodeTokens": args.decode_tokens,
+                         "backend": args.kv_backend},
             "environmentPolicy": "Inherited DARKBLOOM_, MLX_, DYLD_, MTL_, METAL_ keys removed; only explicit controls re-added.",
             "benchmarkConstruction": "Prefix cache and MTP drafter omitted by production benchmark factory; explicit env disables both as an additional guard."}
     provenance_id = fingerprint(pins)
@@ -83,7 +85,7 @@ def execute(args):
     if (output / "manifest.json").exists():
         previous = json.loads((output / "manifest.json").read_text())
         if previous.get("provenanceID") != provenance_id:
-            raise ValueError("Existing output has different binary/model/source/environment provenance; use a new --output")
+            raise ValueError("Existing output has different binary/model/source/environment/workload provenance; use a new --output")
         manifest = previous
     else:
         write_json(output / "manifest.json", manifest)
@@ -116,15 +118,14 @@ def execute(args):
             archive = output / "archive" / now().replace(":", "-")
             archive.mkdir(parents=True)
             destination.rename(archive / cell.name)
-        # Detect accidental binary replacement between cells before launching.
-        if digest(binary) != pins["binary"]["sha256"]:
-            raise ValueError("Benchmark binary changed during matrix; refusing mixed-binary results")
+        assert_artifacts_unchanged(pins)
         destination.mkdir()
         write_json(destination / "spec.json", spec)
         invocation = command(binary, args.model, config, cell, args.iterations, args.decode_tokens, args.kv_backend)
         print(f"Running {cell.name} ({args.iterations} repetitions)…", flush=True)
         state = run(invocation, repo, child_env, destination, args.timeout, args.require_ac_power_mode)
         try:
+            assert_artifacts_unchanged(pins)
             if state.get("powerRequirementFailed"):
                 raise ValueError(state["powerRequirementFailed"])
             if state.get("returncode") != 0 or state.get("timedOut"):
@@ -132,7 +133,7 @@ def execute(args):
             report = json.loads((destination / "stdout.raw").read_text())
             validate(report, spec, manifest)
             write_json(destination / "validation.json", {"valid": True, "rawSHA256": digest(destination / "stdout.raw")})
-        except (ValueError, KeyError, TypeError, IndexError) as error:
+        except (ValueError, OSError, KeyError, TypeError, IndexError) as error:
             failed = True
             write_json(destination / "validation.json", {"valid": False, "error": str(error)})
             print(f"{cell.name}: INVALID: {error}", file=sys.stderr, flush=True)

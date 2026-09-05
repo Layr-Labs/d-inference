@@ -120,13 +120,16 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
 
     def test_additive_raw_schema_versions_preserve_legacy_metrics(self):
         outputs = raw_outputs()
-        outputs["throughputSweep"]["schemaVersion"] = 6
+        outputs["throughputSweep"]["schemaVersion"] = 7
         outputs["schedulerPrefill"]["schemaVersion"] = 4
         outputs["arrivalInvariance"]["schemaVersion"] = 5
         outputs["arrivalInvariance"]["promptLengthsPerRequest"] = [
             make_args().arrival_prompt_tokens
         ] * 4
-        validate_raw_outputs(make_args(), *outputs.values())
+        for version in (5, 6, 7):
+            with self.subTest(version=version):
+                outputs["throughputSweep"]["schemaVersion"] = version
+                validate_raw_outputs(make_args(), *outputs.values())
 
     def test_new_arrival_schema_cannot_hide_mixed_prompt_lengths(self):
         outputs = raw_outputs()
@@ -137,8 +140,8 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
 
     def test_unknown_future_raw_schema_is_refused(self):
         outputs = raw_outputs()
-        outputs["throughputSweep"]["schemaVersion"] = 7
-        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 7"):
+        outputs["throughputSweep"]["schemaVersion"] = 8
+        with self.assertRaisesRegex(RuntimeError, "schemaVersion is 8"):
             validate_raw_outputs(make_args(), *outputs.values())
 
     def test_explicit_config_is_forwarded_to_every_phase_prefix(self):

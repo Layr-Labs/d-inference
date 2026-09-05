@@ -48,6 +48,25 @@ def fake_run(command, cwd, environment, directory, timeout, required_ac_power_mo
 
 
 class ControlTests(unittest.TestCase):
+    def test_batched_schema6_cannot_be_certified_by_resummarizing(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(tmp)
+            design = make_design(root)
+            output = root / "result"
+            with patch("gptoss_profile.controls.source_pin", return_value={}), \
+                    patch("gptoss_profile.controls.host_snapshot", return_value=HIGH), \
+                    patch("gptoss_profile.controls.run", side_effect=fake_run):
+                self.assertEqual(execute_controls(design, output, cycles=1), 0)
+            run = output / "runs" / "cycle-01-2-B"
+            raw = json.loads((run / "stdout.raw").read_text())
+            raw["schemaVersion"] = 6
+            raw.pop("decodeSubmissionOrder")
+            write_json(run / "stdout.raw", raw)
+            write_json(run / "validation.json", {"valid": True, "rawSHA256": digest(run / "stdout.raw")})
+            result = summarize_controls(output)
+            self.assertFalse(result["validForPerformanceComparison"])
+            self.assertIn("requires schema 7", result["failures"][0]["error"])
+
     def test_prefill_design_requires_matched_single_request_phase(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = make_design(Path(tmp))

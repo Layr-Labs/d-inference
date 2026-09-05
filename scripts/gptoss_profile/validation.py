@@ -18,6 +18,9 @@ def validate(report, spec, manifest):
     cell = spec["cell"]
     iterations = spec["iterations"]
     backend = spec["backend"]
+    if "workload" in manifest:
+        require(manifest["workload"] == {key: spec[key] for key in ("iterations", "decodeTokens", "backend")},
+                "Cell workload differs from run manifest")
     require(report.get("modelID") == manifest["modelID"], "Model ID differs from pinned model")
     require(Path(report.get("modelPath", "")).resolve() == Path(manifest["model"]["path"]).resolve(),
             "Resolved model path differs from pinned snapshot")
@@ -28,6 +31,8 @@ def validate(report, spec, manifest):
     if cell["phase"] == "decode":
         require(report.get("schemaVersion", 0) >= 6, "Decode schema predates raw common-overlap timing")
         ordered = report.get("schemaVersion", 0) >= 7
+        require(cell["batch"] == 1 or ordered,
+                "Batched decode requires schema 7 ordered submissions for performance comparison")
         if ordered:
             require(report.get("decodeSubmissionOrder") == "row_index", "Decode submission order is unspecified")
         coverage = report.get("decodeCoverage", {})

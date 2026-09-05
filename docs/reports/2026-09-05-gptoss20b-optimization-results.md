@@ -1,6 +1,6 @@
 # GPT-OSS 20B prefill and decode improvements
 
-> Last updated: 2026-09-05 · commit `0df59f51a`
+> Last updated: 2026-09-05 · commit `efc4e301b`
 
 Local implementation and measurements on Apple M4 Max (40 GPU cores, 128 GB), AC High Power mode, using `mlx-community/gpt-oss-20b-MXFP4-Q8` snapshot `773a7da77e569019bb0fd17a554b263738d669a3`. All workloads use the production CBv2 engine with contiguous KV, synthetic fixed prompts, greedy output, and no prefix reuse or MTP. No remote benchmark or production deployment is part of this work.
 
@@ -44,6 +44,13 @@ The final stress executable completed 8K B=8 with all eight rows emitting 513 to
 ## Candidate comparisons
 
 Every completed pair uses two A–B–B–A cycles, one measured run per fresh process after warmup. These descriptive paired ratios are not confidence intervals. They are preferable to comparing the earlier busy-desktop baseline directly with an idle machine.
+
+Review follow-up: the historical schema-6 batched screening summaries below
+predate mandatory submission-order validation. Their recorded measurements are
+preserved, but the current validator rejects those B>1 runs for performance
+certification rather than assuming identical admission order. The ordered
+schema-7 8K comparisons above satisfy the stricter requirement; single-row
+screening does not have this ordering ambiguity.
 
 | Candidate | Paired outcome | Selection |
 |---|---|---|

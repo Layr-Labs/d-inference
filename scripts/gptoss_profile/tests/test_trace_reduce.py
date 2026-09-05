@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,6 +103,38 @@ class TraceReductionTests(unittest.TestCase):
         result, _ = reduce_trace(self.root)
         self.assertFalse(result["valid"])
         self.assertEqual(result["unknown_pipeline_dispatches"], 1)
+
+    def test_reused_output_removes_stale_csvs_after_failed_reduction(self):
+        output = self.root / "reduced"
+        output.mkdir()
+        unrelated = output / "trace-user-notes.csv"
+        unrelated.write_text("keep this file\n")
+        command = [sys.executable, "-m", "scripts.gptoss_profile.trace_reduce",
+                   str(self.root), "--output", str(output)]
+        owned_names = {f"trace-{name}.csv" for name in
+                       ("phases", "regions", "operators", "kernels", "primitives", "descriptors")}
+        for failure in ("empty", "missing", "malformed"):
+            with self.subTest(failure=failure):
+                self.fixture(extra=[{"kind": "logical_descriptor", "object_id": 88,
+                                     "name": "test_shape", "context": {},
+                                     "timestamp_ns": 80, "values": [2, 32]}])
+                first = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertTrue(json.loads((output / "trace-reduction.json").read_text())["valid"])
+                self.assertTrue(all((output / name).is_file() for name in owned_names))
+
+                events_path = self.root / "events.ndjson"
+                if failure == "missing":
+                    events_path.unlink()
+                else:
+                    events_path.write_text("" if failure == "empty" else "{invalid json\n")
+                second = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(second.returncode, 2, second.stderr)
+                result = json.loads((output / "trace-reduction.json").read_text())
+                self.assertFalse(result["valid"])
+                self.assertTrue(result["errors"])
+                self.assertFalse(any((output / name).exists() for name in owned_names))
+                self.assertEqual(unrelated.read_text(), "keep this file\n")
 
 
 if __name__ == "__main__":

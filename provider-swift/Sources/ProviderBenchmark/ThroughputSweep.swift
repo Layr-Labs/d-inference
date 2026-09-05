@@ -350,16 +350,14 @@ public enum ThroughputSweep {
         // alone does not compile the B=2/B=4/B=8 kernels being compared.
         // Use the measured generation length: with long prompts, eight
         // warmup tokens can finish early rows before the full batch exists.
-        for batchSize in sizes {
+        try await warmDecodeShapes(batchSizes: sizes) { batchSize in
             log("warming decode shape: B=\(batchSize), prompt=\(promptLen), decode=\(genTokens) (unmeasured)")
             let warmUp = await runDecodeBatch(
                 container: container, modelID: modelID, baseTokens: baseTokens,
                 batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                 weightBytes: weightBytes, isVLM: isVLM,
                 modelDirectory: modelDirectory, kvBackend: kvBackend)
-            if let failure = warmUp.constructionFailure {
-                outcome.constructionFailure = failure
-            }
+            return (warmUp.constructionFailure, warmUp.submitFailure)
         }
 
         for iteration in 1 ... repetitions {

@@ -1,6 +1,6 @@
 # Test
 
-> Last updated: 2026-09-05 · commit `94c7c31eb`
+> Last updated: 2026-09-05 · commit `efc4e301b`
 
 How to run the unit tests for each component, the end-to-end suite that boots a
 real coordinator + Swift provider against ephemeral Postgres, and the docs
@@ -162,7 +162,11 @@ are absent from the benchmark factory. The wrapper also disables their process
 flags, clears inherited experimental controls, and uses an empty default TOML
 unless `--config` is supplied. `--build-receipt` records the supplied build
 receipt hash; the current source fingerprint alone does not establish how a
-binary was built. Source: `scripts/gptoss_profile/runner.py` (`execute`),
+binary was built. The matrix manifest pins the iteration count, decode budget,
+and KV backend; changing any of these requires a new output directory, even
+when adding different cell names. The binary, metallibs, config, build receipt,
+and full model inventory/content hashes are rechecked before and after each
+new cell, outside its timing interval. Source: `scripts/gptoss_profile/runner.py` (`execute`),
 `scripts/gptoss_profile/config.py` (`cells`, `environment`).
 
 Verify `summary.json` has no failed cells and inspect `summary.csv`,
@@ -185,9 +189,15 @@ TTFT; decode compares aggregate common-window throughput and output hashes.
 Prefill token parity is explicitly unavailable in this report schema. Keep
 numerical/KV tests separate from uninstrumented timing. The decode warmup now
 uses the requested generation length so long prompts can establish the full
-batch before measured work. Schema 7 submits requests in row-index order before
+batch before measured work. Failed construction, submission, terminals or token
+counts in any warmup abort the sweep before decode measurements. Schema 7 submits requests in row-index order before
 concurrently consuming their streams; validation checks the recorded order and
-timestamps. This prevents task scheduling from silently changing admission order. Sources: `scripts/gptoss_profile/controls.py`
+timestamps. Batched decode requires schema 7; historical schema-6 raw data remains
+available but is rejected for new performance comparisons, including when
+re-summarizing saved ABBA runs. Legacy single-row schema 6 remains accepted.
+Scaling ratios also require matching backend, decode budget and iteration count
+when reading older manifests without the matrix workload field.
+This prevents task scheduling from silently changing admission order. Sources: `scripts/gptoss_profile/controls.py`
 (`execute_controls`), `scripts/gptoss_profile/control_report.py`
 (`summarize_controls`), `provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).

@@ -1,0 +1,15 @@
+[
+  {
+    "query_file": "baseline.sql",
+    "statement": "session_history",
+    "error": "canceling statement due to statement timeout",
+    "statement_timeout_ms": 15000,
+    "prior_statements_succeeded": true
+  },
+  {
+    "query_file": "history-sample.sql",
+    "error": "canceling statement due to statement timeout",
+    "statement_timeout_ms": 15000,
+    "rows_returned": 0
+  }
+]

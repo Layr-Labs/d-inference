@@ -40,18 +40,25 @@ func (r *Registry) LoadStoredProviders() map[string]*store.ProviderRecord {
 	lookup := make(map[string]*store.ProviderRecord, len(records))
 	for i := range records {
 		rec := records[i]
-		// Index by serial number for matching reconnecting providers
 		if rec.SerialNumber != "" {
-			lookup[rec.SerialNumber] = &rec
+			keepNewestStoredProvider(lookup, rec.SerialNumber, &rec)
 		}
-		// Also index by SE public key
 		if rec.SEPublicKey != "" {
-			lookup["sekey:"+rec.SEPublicKey] = &rec
+			keepNewestStoredProvider(lookup, "sekey:"+rec.SEPublicKey, &rec)
 		}
 	}
 
 	r.logger.Info("loaded stored provider records", "count", len(records))
 	return lookup
+}
+
+// Store backends need not return the same order. Postgres returns newest
+// first, so unconditional assignment used to select the oldest session.
+func keepNewestStoredProvider(lookup map[string]*store.ProviderRecord, key string, rec *store.ProviderRecord) {
+	prev := lookup[key]
+	if prev == nil || rec.LastSeen.After(prev.LastSeen) || (rec.LastSeen.Equal(prev.LastSeen) && rec.ID > prev.ID) {
+		lookup[key] = rec
+	}
 }
 
 // RestoreProviderState restores trust level and reputation from a stored record
@@ -309,34 +316,6 @@ func (r *Registry) persistProviderNow(p *Provider) {
 		// serial/account/provider_key once attestation/linking has populated them.
 		if err := r.store.TouchProviderSession(ctx, rec.ID, rec.SerialNumber, rec.AccountID, providerKey, rec.LastSeen); err != nil {
 			r.logger.Warn("failed to touch provider session", "provider_id", rec.ID, "error", err)
-		}
-	})
-}
-
-// persistReputation saves a provider's current reputation to the store.
-// Called asynchronously to avoid blocking the hot path.
-func (r *Registry) persistReputation(p *Provider) {
-	if r.store == nil {
-		return
-	}
-	saferun.Go(r.logger, "registry.persistReputation", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		p.mu.Lock()
-		rep := store.ReputationRecord{
-			TotalJobs:          p.Reputation.TotalJobs,
-			SuccessfulJobs:     p.Reputation.SuccessfulJobs,
-			FailedJobs:         p.Reputation.FailedJobs,
-			TotalUptimeSeconds: int64(p.Reputation.TotalUptime / time.Second),
-			AvgResponseTimeMs:  int64(p.Reputation.AvgResponseTime / time.Millisecond),
-			ChallengesPassed:   p.Reputation.ChallengesPassed,
-			ChallengesFailed:   p.Reputation.ChallengesFailed,
-		}
-		p.mu.Unlock()
-
-		if err := r.store.UpsertReputation(ctx, p.ID, rep); err != nil {
-			r.logger.Warn("failed to persist reputation", "provider_id", p.ID, "error", err)
 		}
 	})
 }

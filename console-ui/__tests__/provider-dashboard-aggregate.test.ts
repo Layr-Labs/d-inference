@@ -7,7 +7,7 @@ import {
   fleetDecodeTps,
   onlineCount,
 } from "@/app/providers/dashboard/aggregate";
-import { baseProvider, ctx } from "./provider-dashboard-fixtures";
+import { baseProvider, ctx, serviceStatus } from "./provider-dashboard-fixtures";
 
 describe("buildAttentionGroups", () => {
   it("dedupes the same warning across machines into one group", () => {
@@ -49,16 +49,16 @@ describe("buildAttentionGroups", () => {
 });
 
 describe("deriveFleetVerdict", () => {
-  it("is routable + 'Everything's earning' when all machines are healthy", () => {
+  it("reports readiness without promising earnings", () => {
     const v = deriveFleetVerdict([baseProvider(), baseProvider({ id: "x" })], ctx);
     expect(v.state).toBe("routable");
     expect(v.counts.routable).toBe(2);
-    expect(v.headline).toMatch(/earning/i);
+    expect(v.headline).toMatch(/ready/i);
   });
 
   it("escalates to blocked when any machine is blocked", () => {
     const v = deriveFleetVerdict(
-      [baseProvider(), baseProvider({ id: "x", trust_level: "self_signed" })],
+      [baseProvider(), baseProvider({ id: "x", trust_level: "self_signed", service_status: serviceStatus({state: "unavailable", reason: "trust_floor"}) })],
       ctx
     );
     expect(v.state).toBe("blocked");
@@ -67,7 +67,7 @@ describe("deriveFleetVerdict", () => {
   });
 
   it("never shows a false all-clear for a degraded fleet", () => {
-    const providers = [baseProvider({ system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" } })];
+    const providers = [baseProvider({ service_status: serviceStatus({state: "limited"}), system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" } })];
     const v = deriveFleetVerdict(providers, ctx);
     expect(v.state).toBe("degraded");
     expect(v.state).not.toBe("routable");

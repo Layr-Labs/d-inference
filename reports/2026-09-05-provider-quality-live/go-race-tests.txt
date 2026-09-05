@@ -1,0 +1,4 @@
+ok  	github.com/eigeninference/d-inference/coordinator/registry	2.601s
+# github.com/eigeninference/d-inference/coordinator/api.test
+ld: warning: '/private/var/folders/hv/5779vnmn5c564l3tdknlf4x80000gp/T/go-link-2946902272/000012.o' has malformed LC_DYSYMTAB, expected 98 undefined symbols to start at index 1626, found 95 undefined symbols starting at index 1626
+ok  	github.com/eigeninference/d-inference/coordinator/api	2.229s

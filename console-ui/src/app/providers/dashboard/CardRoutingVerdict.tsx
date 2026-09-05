@@ -1,68 +1,52 @@
-// The hero of every machine card: a full-width banner that states, in the
-// load-bearing verb EARNING / NOT EARNING, whether this machine is making
-// money right now — plus the single most important WHY and the FIX, so the
-// next action is always one click away without expanding anything.
-
 import { AlertTriangle, CheckCircle2, CircleSlash, XCircle, type LucideIcon } from "lucide-react";
 import type { MyProvider } from "../types";
 import type { Warning } from "../warnings";
 import { routingMeta, type RoutingState } from "./routing";
-import { resolveFix } from "./fixes";
-import { FixAffordance } from "./FixAffordance";
-import { formatRelative } from "./format";
+import { freshServiceStatus, serviceReason } from "./serviceStatus";
+import { formatRelative, shortModelName } from "./format";
 
 const ICON: Record<RoutingState, LucideIcon> = {
-  routable: CheckCircle2,
-  degraded: AlertTriangle,
-  blocked: XCircle,
-  offline: CircleSlash,
+  routable: CheckCircle2, degraded: AlertTriangle, blocked: XCircle,
+  offline: CircleSlash, unknown: CircleSlash,
 };
 
-export function CardRoutingVerdict({
-  provider,
-  state,
-  topWarning,
-}: {
-  provider: MyProvider;
-  state: RoutingState;
-  topWarning: Warning | null;
+export function CardRoutingVerdict({ provider, state }: {
+  provider: MyProvider; state: RoutingState; topWarning: Warning | null;
 }) {
   const meta = routingMeta(state);
   const Icon = ICON[state];
-
-  // Offline machines describe themselves by last-seen; everyone else by the
-  // top warning. Routable machines have nothing to fix.
-  const verb =
-    state === "offline"
-      ? `OFFLINE — last seen ${formatRelative(provider.last_heartbeat || provider.last_seen)}`
-      : meta.verb;
-
-  const why = state === "routable" ? null : topWarning?.title ?? null;
-  const fix = topWarning ? resolveFix(topWarning.id) : null;
-
+  const status = freshServiceStatus(provider);
+  const pending = status?.pending_requests ?? 0;
+  let title = meta.verb;
+  if (state === "offline") title = `Offline — last seen ${formatRelative(provider.last_heartbeat || provider.last_seen)}`;
+  else if (status?.state === "draining") title = "Finishing existing work";
+  else if (status?.state === "busy") title = "At capacity for this workload";
+  const requestLabel = pending === 1 ? "request" : "requests";
+  const progress = pending > 0 ? `${pending} ${requestLabel} in progress.` : "No requests currently in progress.";
   return (
     <div className={`px-4 py-3 border-t border-border-dim/40 ${meta.tint}`}>
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <div className={`flex items-center gap-2 text-sm font-semibold ${meta.color}`}>
-            <Icon size={16} className="shrink-0" />
-            <span className="tracking-tight">{verb}</span>
-          </div>
-          {why ? (
-            <p className="text-xs text-text-secondary mt-1 leading-snug">{why}</p>
-          ) : state === "routable" ? (
-            <p className="text-xs text-text-tertiary mt-1">Full routing priority — no action needed.</p>
-          ) : null}
-        </div>
-
-        {state === "routable" ? (
-          <span className="text-[11px] font-mono text-text-tertiary shrink-0 mt-0.5">priority: normal</span>
-        ) : fix ? (
-          <div className="shrink-0">
-            <FixAffordance fix={fix} compact showNote={false} />
-          </div>
-        ) : null}
+      <div className={`flex items-center gap-2 text-sm font-semibold ${meta.color}`}>
+        <Icon size={16} className="shrink-0" /><span>{title}</span>
       </div>
+      {status ? <>
+        {status.reason && <p className="text-xs text-text-secondary mt-1">{serviceReason(status.reason)}</p>}
+        <p className="text-xs text-text-secondary mt-1">
+          {progress}
+          {" "}Checked {formatRelative(status.observed_at)}.
+        </p>
+        <details className="mt-2 text-xs text-text-secondary">
+          <summary className="cursor-pointer">Public routing checks by model</summary>
+          <p className="mt-2">Plain text · {status.probe.prompt_tokens} input / {status.probe.max_tokens} output tokens. Other request sizes, capabilities and deadlines may differ. These are normal routing checks; emergency fallback can differ. This check does not reserve capacity or guarantee traffic.</p>
+          <ul className="mt-2 space-y-1">
+            {status.models.map((model) => <li key={model.model}>
+              <span className="font-medium">{shortModelName(model.model)}</span>{": "}
+              {serviceReason(model.reason)}{model.eligible && model.capacity_rate_ms > 0 ? " · recent capacity refusals affect preference" : ""}
+            </li>)}
+          </ul>
+        </details>
+      </> : state !== "offline" && <p className="text-xs text-text-secondary mt-1">
+        A fresh coordinator routing check is unavailable. Connection status and diagnostics are shown separately.
+      </p>}
     </div>
   );
 }

@@ -1,0 +1,126 @@
+package registry
+
+import (
+ "context"
+ "math"
+ "sync/atomic"
+ "testing"
+ "time"
+ "github.com/eigeninference/d-inference/coordinator/store"
+)
+
+type auditOrderedStore struct {
+ store.Store
+ records []store.ProviderRecord
+}
+func (s *auditOrderedStore) ListProviderRecords(context.Context) ([]store.ProviderRecord, error) { return s.records, nil }
+
+func TestAuditStartupShouldSelectNewestSession(t *testing.T) {
+ now := time.Now()
+ // The real Postgres query returns this order: ORDER BY last_seen DESC.
+ st := &auditOrderedStore{Store: store.NewMemory(store.Config{}), records: []store.ProviderRecord{
+  {ID: "newest", SerialNumber: "same-device", SEPublicKey: "same-key", LastSeen: now},
+  {ID: "oldest", SerialNumber: "same-device", SEPublicKey: "same-key", LastSeen: now.Add(-24*time.Hour)},
+ }}
+ r := New(testLogger()); r.SetStore(st)
+ lookup := r.LoadStoredProviders()
+ for _, key := range []string{"same-device", "sekey:same-key"} {
+  if got := lookup[key].ID; got != "newest" { t.Errorf("%s restores %q; want newest session", key, got) }
+ }
+}
+
+func TestAuditReconnectShouldRestoreLatestReputation(t *testing.T) {
+ mem := store.NewMemory(store.Config{})
+ old := store.ProviderRecord{ID: "startup-session", SerialNumber: "same-device"}
+ st := &auditOrderedStore{Store: mem, records: []store.ProviderRecord{old}}
+ r := New(testLogger()); r.SetStore(st)
+ lookup := r.LoadStoredProviders()
+ if err := mem.UpsertReputation(context.Background(), old.ID, store.ReputationRecord{TotalJobs: 10, SuccessfulJobs: 10}); err != nil { t.Fatal(err) }
+ // Session connected after coordinator startup and accumulated another 90 jobs.
+ if err := mem.UpsertProvider(context.Background(), store.ProviderRecord{ID: "latest-session", SerialNumber: "same-device"}); err != nil { t.Fatal(err) }
+ if err := mem.UpsertReputation(context.Background(), "latest-session", store.ReputationRecord{TotalJobs: 100, SuccessfulJobs: 100}); err != nil { t.Fatal(err) }
+ p := &Provider{ID: "reconnect", Reputation: NewReputation()}
+ // Mirrors provider.go's only reputation restore path: its startup identity map.
+ r.RestoreProviderState(p, lookup["same-device"])
+ if got := p.Reputation.TotalJobs; got != 100 { t.Fatalf("reconnect restored %d jobs; latest persisted session has 100", got) }
+}
+
+type auditReorderedStore struct {
+ store.Store
+ calls atomic.Int64
+ firstStarted chan struct{}
+ releaseFirst chan struct{}
+ firstDone chan struct{}
+ secondDone chan struct{}
+}
+func (s *auditReorderedStore) UpsertReputation(ctx context.Context, id string, rep store.ReputationRecord) error {
+ n := s.calls.Add(1)
+ if n == 1 { close(s.firstStarted); select { case <-s.releaseFirst: case <-ctx.Done(): return ctx.Err() } }
+ err := s.Store.UpsertReputation(ctx, id, rep)
+ if n == 1 { close(s.firstDone) } else { close(s.secondDone) }
+ return err
+}
+func auditAwait(t *testing.T, ch <-chan struct{}) { t.Helper(); select {case <-ch: case <-time.After(3*time.Second): t.Fatal("timed out waiting for store operation")} }
+func TestAuditPersistMustNotRegressCounters(t *testing.T) {
+ st := &auditReorderedStore{Store: store.NewMemory(store.Config{}), firstStarted: make(chan struct{}), releaseFirst: make(chan struct{}), firstDone: make(chan struct{}), secondDone: make(chan struct{})}
+ r := New(testLogger()); r.SetStore(st)
+ p := &Provider{ID: "device", Reputation: NewReputation()}
+ p.Reputation.RecordJobSuccess()
+ r.persistReputation(p)
+ auditAwait(t, st.firstStarted)
+ p.mu.Lock(); p.Reputation.RecordJobSuccess(); p.mu.Unlock()
+ r.persistReputation(p)
+ auditAwait(t, st.secondDone)
+ close(st.releaseFirst)
+ auditAwait(t, st.firstDone)
+ rep, err := st.GetReputation(context.Background(), p.ID); if err != nil { t.Fatal(err) }
+ if rep.TotalJobs != 2 { t.Fatalf("late older write reduced durable jobs to %d; live jobs=2", rep.TotalJobs) }
+}
+
+func TestAuditScoreExamples(t *testing.T) {
+ score := func(successes, failures int) float64 {
+  r := NewReputation(); r.TotalJobs = successes+failures; r.SuccessfulJobs=successes; r.FailedJobs=failures
+  r.RecordUptime(24*time.Hour); r.RecordChallengePass(); r.RecordLatency(500*time.Millisecond)
+  return r.Score()
+ }
+ for _, c := range []struct{name string; s,f int; want float64}{
+  {"one success",1,0,1}, {"100k successes",100000,0,1}, {"half fail",50,50,.8},
+  {"100k good then 100 failures",100000,100,0.9996003996003996},
+ } { got:=score(c.s,c.f); t.Logf("%s -> %.6f",c.name,got); if math.Abs(got-c.want)>1e-9 {t.Errorf("got %f want %f",got,c.want)} }
+}
+
+func TestAuditIntermittentFault503RemainsPreferred(t *testing.T) {
+ r:=New(testLogger()); const model="audit-model"
+ bad:=makeSchedulerProvider(t,r,"fast-unreliable",model,200)
+ makeSchedulerProvider(t,r,"slow-reliable",model,50)
+ // 50 fault-503s and 50 successes; 503 does not enter the shape breaker.
+ for i:=0;i<50;i++ {
+  r.RecordProviderOutcome(bad.ID,false,503,"internal error")
+  r.RecordProviderServeOutcome("serial:audit-device",false,503,"internal error")
+  r.RecordInferenceError(bad.ID,model,503,"base")
+  r.RecordJobFailure(bad.ID)
+  r.RecordProviderOutcome(bad.ID,true,200,"")
+  r.RecordProviderServeOutcome("serial:audit-device",true,200,"")
+  r.RecordInferenceSuccess(bad.ID,model,"base")
+  r.RecordJobSuccess(bad.ID,0)
+ }
+ chosen,decision:=r.ReserveProviderEx(model,&PendingRequest{RequestID:"audit-request",Model:model,RequestedMaxTokens:2048})
+ if chosen==nil {t.Fatal("no candidate")}
+ t.Logf("selected=%s, candidate_count=%d, breaker_open=%v, ejected=%v, capacity_penalty=%.0f",chosen.ID,decision.CandidateCount,r.ProviderBreakerOpen(bad.ID),r.HealthEjectionOpen("serial:audit-device"),decision.CapacityRateMs)
+ if chosen.ID!=bad.ID {t.Fatalf("unexpected current behavior: selected %s",chosen.ID)}
+}
+
+func TestAuditNodeHalfOpenAllowsMultipleRequests(t *testing.T) {
+ r:=New(testLogger()); const model="half-open-audit"
+ bad:=makeSchedulerProvider(t,r,"recovering",model,200)
+ makeSchedulerProvider(t,r,"healthy",model,1)
+ for i:=0;i<5;i++ {r.RecordProviderOutcome(bad.ID,false,503,"internal error")}
+ expireProviderBreaker(r,bad.ID)
+ count:=0
+ for _,id:=range []string{"probe1","probe2"} {
+  p,_:=r.ReserveProviderEx(model,&PendingRequest{RequestID:id,Model:model,RequestedMaxTokens:128})
+  if p!=nil && p.ID==bad.ID {count++}
+ }
+ t.Logf("simultaneous reservations to half-open provider before any outcome=%d",count)
+ if count!=2 {t.Fatalf("unexpected current behavior: got %d recovering reservations",count)}
+}

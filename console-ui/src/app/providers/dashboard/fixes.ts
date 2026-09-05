@@ -27,9 +27,9 @@ const FIX_TABLE: Record<string, FixAction> = {
   // ── Blocking ───────────────────────────────────────────────────────────
   untrusted: {
     kind: "command",
-    label: "Restart & re-link",
-    command: "darkbloom restart && darkbloom login",
-    note: "Clears failed challenges, then re-attests this device.",
+    label: "Check verification",
+    command: "darkbloom doctor",
+    note: "Diagnoses the verification requirement without resetting the provider.",
   },
   offline: {
     kind: "command",
@@ -55,9 +55,9 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
   challenge_stale: {
     kind: "command",
-    label: "Force a fresh handshake",
-    command: "darkbloom restart",
-    note: "Re-runs the attestation challenge so routing can resume.",
+    label: "Check connection",
+    command: "darkbloom doctor",
+    note: "Checks connectivity and verification; periodic challenges retry automatically.",
   },
   trust_self_signed: {
     kind: "link",
@@ -113,7 +113,7 @@ const FIX_TABLE: Record<string, FixAction> = {
     kind: "link",
     label: "Inspect failed jobs",
     href: "/providers/earnings",
-    note: "Then check the provider logs to recover routing priority.",
+    note: "Check recent failures and the coordinator routing status; the legacy score does not set priority.",
   },
 
   // ── Info ───────────────────────────────────────────────────────────────

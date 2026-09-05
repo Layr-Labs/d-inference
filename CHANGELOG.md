@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — provider routing status and reputation persistence
+
+- Show current, account-scoped public routing checks by model, with observation expiry and separate requests in progress. Distinguish readiness, partial restrictions, capacity pressure, draining and unavailable observations without promising traffic or earnings.
+- Label historical reputation and prefill-adjusted latency accurately; prefer diagnosis to blanket restart/re-link advice.
+- Select the newest stored provider identity regardless of record order and coalesce per-session reputation writes so delayed writes cannot lower persisted counters.
+
 ## Unreleased — Hugging Face model downloads
 
 - Add an optional, commit-pinned Hugging Face artifact to each registry version. Foreground model downloads and background prefetch prefer HF, verify the existing per-file SHA-256 and aggregate hashes, and fall back to R2 on download or integrity failure. Existing registry entries keep using R2.

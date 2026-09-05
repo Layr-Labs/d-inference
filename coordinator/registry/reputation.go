@@ -2,8 +2,8 @@
 //
 // Each provider accumulates a reputation score based on their operational
 // history: job success rate, uptime, attestation challenge pass rate, and
-// response time. The composite score is used as a factor in the routing
-// score to prefer reliable providers.
+// response time. The composite score is a historical dashboard statistic;
+// routing uses separate admission, fault and capacity controls.
 //
 // Score composition:
 //   - 40% job success rate (successful / total jobs)
@@ -124,14 +124,9 @@ func (r *Reputation) Score() float64 {
 		jobRate = 0.5 // neutral if no jobs yet
 	}
 
-	// Uptime ratio (30%) — 24-hour expected-uptime baseline, FLOORED at the
-	// neutral 0.5 during ramp-up. Uptime only ever *adds* above the legacy
-	// baseline: it never pulls a provider below the score it had when uptime
-	// was untracked (== 0.5). Without this floor a freshly-connected or
-	// recently-restarted provider (small TotalUptime → tiny ratio) would score
-	// BELOW the old 0.85 cap for ~12h and be derouted — and because prod uses
-	// the in-memory store, TotalUptime resets on every coordinator restart /
-	// provider reconnect, so that penalty would re-apply fleet-wide.
+	// Lifetime connected time earns up to 30% after 24 cumulative hours,
+	// floored at a neutral 0.5 during ramp-up. This is not availability over
+	// an advertised schedule; offline time does not lower this component.
 	uptimeRate := 0.5
 	expectedUptime := 24 * time.Hour
 	if r.TotalUptime > 0 {

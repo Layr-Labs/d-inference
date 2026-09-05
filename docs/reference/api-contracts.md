@@ -102,7 +102,7 @@ Constants: `DeviceCodeExpiry` = 15 min (`expires_in: 900`), `DeviceCodePollInter
 | GET | `/v1/provider/earnings` | `handleProviderEarnings` (`coordinator/api/consumer.go`) | `—` | — | Legacy lookup by `?wallet=` query or `X-Provider-Wallet` header; `ProviderEarningsResponse` |
 | GET | `/v1/provider/account-earnings` | `handleAccountEarnings` (`coordinator/api/billing_handlers.go`) | `key` | — | Earnings across the account's providers |
 | GET | `/v1/me/summary` | `handleMySummary` (`coordinator/api/me_handlers.go`) | `user` | — | Console account summary; includes `latest_provider_version` |
-| GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account |
+| GET | `/v1/me/providers` | `handleMyProviders` (`coordinator/api/me_handlers.go`) | `user` | — | Machines linked to the account, including scoped live `service_status` |
 | GET | `/v1/me/self-route-models` | `handleMySelfRouteModels` (`coordinator/api/me_handlers.go`) | `user` | — | Models the account's own machines can serve |
 | DELETE | `/v1/me/providers/{id}` | `handleDeleteMyProvider` (`coordinator/api/me_handlers.go`) | `user` | `fin` | Unlink a machine |
 | GET | `/v1/pricing` | `handleGetPricing` (`coordinator/api/billing_handlers.go`) | `—` | — | Public price table; see [`pricing-model.md`](pricing-model.md) |
@@ -466,3 +466,19 @@ See the [Device-code flow](#device-code-flow-3) table for the three bodies. `ver
 | Release, enrollment, provider WS, log reports | `coordinator/api/release_handlers.go`, `coordinator/api/enroll.go`, `coordinator/api/provider.go`, `coordinator/api/log_report_handlers.go` |
 | Drain, admin telemetry, profiler, state export, telemetry stub | `coordinator/api/drain.go`, `coordinator/api/admin_telemetry.go`, `coordinator/api/admin_utilization.go`, `coordinator/api/profiler_admin.go`, `coordinator/api/admin_state_export.go`, `coordinator/api/telemetry_handlers.go` |
 | Shared types and helpers | `coordinator/api/types/types.go`, `coordinator/api/httputil.go`, `coordinator/ratelimit/ratelimit.go`, `coordinator/modelpolicy/first_content_deadline.go` |
+
+## Provider service status
+
+`GET /v1/me/providers` adds an optional `service_status` for an account-owned live session. `ProviderServiceStatus` in `coordinator/registry/service_status.go` evaluates the ordinary public routing snapshot and candidate builder without reserving work or changing cooldowns. `mergeFleet` in `coordinator/api/me_handlers.go` attaches it after rechecking current ownership.
+
+| Field | Meaning and source |
+|---|---|
+| `schema_version` | Version 1; clients treat unsupported versions as unknown (`registry.ServiceStatus`) |
+| `observed_at`, `expires_at` | UTC observation and expiry; at most 30 seconds of display freshness, capped by the API's 90-second heartbeat freshness boundary (`ProviderServiceStatus`) |
+| `state` | `ready`, `limited`, `busy`, `draining`, `unavailable`, `offline`, or `unknown`; a stale heartbeat yields `unknown` (`ProviderServiceStatus`) |
+| `reason` | First relevant routing gate, or `heartbeat_stale`, `no_models`, `draining`, `capacity_rate`; omitted when ready (`ProviderServiceStatus`) |
+| `pending_requests` | Coordinator requests in progress, separate from readiness or booked earnings (`Provider.pendingCount`) |
+| `probe` | `scope: public_text`, `prompt_tokens: 500`, `max_tokens: 256`, using `fleetSampleProbePromptTokens` and `fleetSampleProbeMaxTokens` |
+| `models` | Advertised model ID, ordinary-probe eligibility/reason and current `capacity_rate_ms` cost penalty (`ModelServiceStatus`) |
+
+This is a diagnostic snapshot, not a reservation. It excludes request-specific deadlines, allowlists and owner self-routing, and does not invoke the emergency breaker-bypass scan. Passing it does not guarantee traffic, payment, or eligibility for a different request shape. Omitting it for an offline/missing live session is intentional. Older coordinators omit it entirely; clients must not infer a fresh routing verdict from warning severity or the legacy reputation score.

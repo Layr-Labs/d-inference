@@ -1,0 +1,167 @@
+{
+  "start": 1788631651,
+  "end": 1788633451,
+  "status": "ok",
+  "rows": [
+    {
+      "scope": "class:provider_5xx,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 2.0,
+      "points": 1
+    },
+    {
+      "scope": "class:success,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 3089.0,
+      "points": 178
+    },
+    {
+      "scope": "class:success,env:production,model:qwen3.6-35b-a3b-vl-mtp-mxfp8,service:d-inference-coordinator",
+      "count": 2635.0,
+      "points": 179
+    },
+    {
+      "scope": "class:client_gone,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 144.0,
+      "points": 94
+    },
+    {
+      "scope": "class:mid_stream,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 47.0,
+      "points": 37
+    },
+    {
+      "scope": "class:client_error,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 22.0,
+      "points": 17
+    },
+    {
+      "scope": "class:client_gone,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 3.0,
+      "points": 3
+    },
+    {
+      "scope": "class:success,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 25958.0,
+      "points": 179
+    },
+    {
+      "scope": "class:timeout,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 5.0,
+      "points": 4
+    },
+    {
+      "scope": "class:mid_stream,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 1.0,
+      "points": 1
+    },
+    {
+      "scope": "class:mid_stream,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 8.0,
+      "points": 5
+    },
+    {
+      "scope": "class:client_error,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 2.0,
+      "points": 2
+    },
+    {
+      "scope": "class:client_gone,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 670.0,
+      "points": 76
+    },
+    {
+      "scope": "class:provider_5xx,env:production,model:qwen3.6-35b-a3b-vl-mtp-mxfp8,service:d-inference-coordinator",
+      "count": 1.0,
+      "points": 1
+    },
+    {
+      "scope": "class:rate_limited,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 3479.0,
+      "points": 177
+    },
+    {
+      "scope": "class:success,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 72807.0,
+      "points": 179
+    },
+    {
+      "scope": "class:timeout,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 7.0,
+      "points": 7
+    },
+    {
+      "scope": "class:timeout,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 2.0,
+      "points": 2
+    },
+    {
+      "scope": "class:timeout,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 2.0,
+      "points": 2
+    },
+    {
+      "scope": "class:client_error,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 1.0,
+      "points": 1
+    },
+    {
+      "scope": "class:client_error,env:production,model:qwen3.6-35b-a3b-vl-mtp-mxfp8,service:d-inference-coordinator",
+      "count": 1.0,
+      "points": 1
+    },
+    {
+      "scope": "class:rate_limited,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 10714.0,
+      "points": 158
+    },
+    {
+      "scope": "class:mid_stream,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 4.0,
+      "points": 3
+    },
+    {
+      "scope": "class:provider_5xx,env:production,model:qwen3.5-35b-a3b,service:d-inference-coordinator",
+      "count": 4.0,
+      "points": 2
+    },
+    {
+      "scope": "class:provider_5xx,env:production,model:unknown,service:d-inference-coordinator",
+      "count": 3.0,
+      "points": 1
+    },
+    {
+      "scope": "class:rate_limited,env:production,model:qwen3.6-35b-a3b-vl-mtp-mxfp8,service:d-inference-coordinator",
+      "count": 71.0,
+      "points": 51
+    },
+    {
+      "scope": "class:provider_5xx,env:production,model:gemma-4-26b-qat-4bit,service:d-inference-coordinator",
+      "count": 15.0,
+      "points": 12
+    },
+    {
+      "scope": "class:provider_5xx,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 4.0,
+      "points": 4
+    },
+    {
+      "scope": "class:rate_limited,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 104.0,
+      "points": 75
+    },
+    {
+      "scope": "class:rate_limited,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 4805.0,
+      "points": 179
+    },
+    {
+      "scope": "class:success,env:production,model:eigenlabs/qwen3.8-27b-4bit-mtp,service:d-inference-coordinator",
+      "count": 342.0,
+      "points": 133
+    },
+    {
+      "scope": "class:client_gone,env:production,model:gpt-oss-20b,service:d-inference-coordinator",
+      "count": 73.0,
+      "points": 58
+    }
+  ]
+}

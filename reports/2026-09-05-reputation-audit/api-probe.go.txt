@@ -1,0 +1,30 @@
+package api
+
+import (
+ "context"
+ "testing"
+ "time"
+)
+
+func TestAuditAbruptDisconnectShouldCountFailedAttempt(t *testing.T) {
+ reg,_,srv:=setupFailoverServer(t)
+ ctx,cancel:=context.WithTimeout(context.Background(),15*time.Second); defer cancel()
+ const model="audit-disconnect-model"
+ a:=startFailoverProvider(t,ctx,srv,reg,failoverProviderConfig{
+  Name:"provider-a",Version:"0.9.0",DecodeTPS:200,
+  Models:[]failoverModelSpec{{ID:model}},Script:holdThenCloseScript(model,1,false),
+ })
+ startFailoverProvider(t,ctx,srv,reg,failoverProviderConfig{
+  Name:"provider-b",Version:"0.9.0",DecodeTPS:1,
+  Models:[]failoverModelSpec{{ID:model}},Script:fullServeScript(model),
+ })
+ p:=reg.GetProvider(a.registryID)
+ if p==nil {t.Fatal("missing A")}
+ stableID:=bindRestartTestIdentity(t,reg,a,"AUDIT-ABRUPT")
+ status,body,err:=postChat(ctx,srv.URL,"test-key",buildChatBody(t,model,true,nil))
+ if err!=nil {t.Fatal(err)}
+ assertCleanFailoverStream(t,status,body,markerFor("provider-b"))
+ p.Mu().Lock(); jobs,failed:=p.Reputation.TotalJobs,p.Reputation.FailedJobs; p.Mu().Unlock()
+ t.Logf("A abruptly disconnected after accepting work; B succeeded; A jobs=%d failed=%d stable_identity=%s",jobs,failed,stableID)
+ if failed!=1 {t.Fatalf("A failed jobs=%d; want 1 for the abrupt-disconnect attempt",failed)}
+}

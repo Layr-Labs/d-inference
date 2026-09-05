@@ -360,6 +360,7 @@ func TestFleetCapacitySnapshotDedupsTokenBudget(t *testing.T) {
 	p := makeSchedulerProvider(t, reg, "fleet-budget-provider", modelA, 100)
 	p.mu.Lock()
 	p.Models = append(p.Models, protocol.ModelInfo{ID: modelB, ModelType: "chat", Quantization: "4bit"})
+	p.syncModelIndexLocked()
 	// Two co-resident models sharing a single 3000-token live headroom: each
 	// slot reports max = its own committed (7000) + shared headroom (3000).
 	p.BackendCapacity.Slots = []protocol.BackendSlotCapacity{

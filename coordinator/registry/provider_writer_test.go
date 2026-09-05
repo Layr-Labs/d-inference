@@ -627,9 +627,7 @@ func TestSendModelLoadActionsClearsPendingWhenWriterQueueFull(t *testing.T) {
 		pendingReqs: make(map[string]*PendingRequest),
 	}
 	p.writer.queue <- &providerWriteRequest{done: make(chan error, 1)}
-	r.mu.Lock()
-	r.providers[p.ID] = p
-	r.mu.Unlock()
+	insertTestProvider(r, p)
 
 	actions := r.reservePendingModelLoads([]modelLoadAction{{providerID: p.ID, modelID: "m"}}, time.Now())
 	if len(actions) != 1 {

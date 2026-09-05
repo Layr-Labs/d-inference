@@ -1,6 +1,6 @@
 # System profiler
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-04 · commit `4a08f2a44`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
@@ -204,9 +204,9 @@ JSON-encoded on the sink worker.
 
 | Column(s) | Definition | Where |
 |---|---|---|
-| `scanned` | providers the candidate loop visited | `ReserveProviderEx` |
-| `candidate_set_size` | `scanned − gate_rejections.not_serving_model`; exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
-| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateGateLocked` |
+| `scanned` | providers the candidate loop visited. Since the per-model provider index (`coordinator/registry/model_index.go`) the loop visits only providers **advertising** the requested model, so `scanned` is the advertising count, not the fleet size, and `gate_rejections.not_serving_model` is 0 unless an advertiser still fails the catalog rule (off-catalog model on a public route); the `allowlist` / `excluded` tallies likewise count only advertisers. Records written before the index landed have `scanned == fleet size`; fleet size is available from `fleet_snapshots` | `ReserveProviderEx` |
+| `candidate_set_size` | `scanned − gate_rejections.not_serving_model` (unchanged in meaning by the index); exclude/allowlist drops happen before the catalog check and count as advertising | `scheduler.go` |
+| `gate_rejections` JSONB `{reason: count}` | per-`GateReason` tally, uint16-saturating; keys are `gateReasonNames` (`coordinator/registry/gate_reason.go`): `offline`, `untrusted`, `trust_floor`, `private_only`, `runtime_unverified`, `private_text`, `challenge_stale`, `trait_floor`, `dedicated`, `dispatch_load_cooldown`, `error_cooldown`, `capacity_cooldown`, `breaker`, `ejection`, `slot_crashed`, `slot_reloading`, `thermal_critical`, `no_headroom`, `model_too_large`, `free_memory`, `vision`, `ttft_ceiling`, `excluded`, `allowlist`, `not_serving_model`. `allowlist` absorbs exclusive self-route-not-owned and serial allowlist misses; `excluded` is the caller's exclude list. Meaning of each gate: [`routing.md`](routing.md) | `buildCandidateInto` |
 | `candidates` JSONB (≤ 4 rows) | `Top[0]` is the winner, then the lowest-cost other candidates ascending; each row is a `CandidateSummary` (cost + terms, `ttft_ms`, `effective_tps`, `effective_queue`, `total_pending`, `backend_running/waiting`, `active_token_budget_used/max`, `queued_prefill_tokens`, folded `slot_state`, `hb_age_ms`) | `CandidateSummary` (`gate_reason.go`) |
 | `runner_up_provider_id`, `runner_up_cost_ms` | lowest-cost candidate of the narrowed pool other than the winner; absent with one candidate | `lowestCostOther` |
 | `best_idle_provider_id`, `best_idle_ttft_ms` | lowest-TTFT candidate with the model resident and `backend_running + backend_waiting == 0`, computed over every gate-passing candidate before pool narrowing | `scheduler.go` |
@@ -260,7 +260,7 @@ saturated to int32 by `ClampFleetRowInts`. The sampler's lock discipline: one
 short `r.mu.RLock` copies the provider list; phase A reads each provider under
 `p.mu` only; phase B takes a brief `r.mu.RLock` per provider for breaker,
 ejection, cooldown, clamp and eligibility through the real routing gates
-(`snapshotProviderReasonLockedEx`, `buildCandidateGateLocked`); a provider
+(`snapshotProviderIntoLockedEx`, `buildCandidateInto`); a provider
 replaced between phases is dropped. `registry/routingsim`
 (`coordinator/registry/routingsim/fleet_ndjson.go`, `LoadFleetNDJSON`) rebuilds
 a fleet from these rows, capability columns included.
@@ -437,6 +437,8 @@ ring or `DaemonState` mirror.
 | Engine side | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2RequestTiming+Stamps.swift` |
 
 ## Related
+
+- [`../reports/2026-09-03-perf-pr-b-body.md`](../reports/2026-09-03-perf-pr-b-body.md) — the routing-scan landing (per-model provider index) that changed the meaning of `scanned` above.
 
 - [`../reference/protocol-messages.md`](../reference/protocol-messages.md) — `profile` row, heartbeat `telemetry` sub-objects
 - [`request-outcome-observability.md`](request-outcome-observability.md) — `final_status`, `error_class`, `terminal_cause` vocabularies

@@ -1848,7 +1848,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// left to stop"). Stop the real work here, like the deadline and
 		// overflow branches do.
 		s.sendProviderCancel(provider, msg.RequestID)
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleSyntheticInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
 			Error:       "encrypted inference transport failed",
@@ -1861,6 +1861,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		ap.ChunksIn.Add(1)
 		ap.DecryptUSTotal.Add(time.Since(decryptStart).Microseconds())
 		ap.MarkAt(registry.StampFirstChunkIngress, receivedAt)
+	}
+	if pr.Accounting.NeedsContent() && accountingChunkHasContent(chunkData) {
+		pr.Accounting.Observe("content", "", 0)
 	}
 	contentBearing := !isBoilerplateChunk(chunkData)
 	firstContent := pr.FinishProviderChunkIngress(receivedAt, contentBearing)
@@ -1879,7 +1882,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// classification as boilerplate only after the deadline.
 		s.ddIncr("inference.first_content_after_deadline", []string{})
 		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseLateContent)
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleSyntheticInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   pr.RequestID,
 			Error:       "first content was unavailable at the request deadline",
@@ -1912,7 +1915,7 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		s.sendAbandonCancel(provider, pr.RequestID, pr.Model, cancelCauseOverflow)
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
-		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
+		s.handleSyntheticInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
 			Type:        protocol.TypeInferenceError,
 			RequestID:   msg.RequestID,
 			Error:       "request cancelled",
@@ -2009,6 +2012,7 @@ func (s *Server) handleInferenceAccepted(provider *registry.Provider, msg *proto
 		return
 	}
 	pr.Profile.Mark(registry.StampAccepted)
+	pr.Accounting.Observe("acknowledged", "", 0)
 	// Non-blocking signal — the dispatch loop may have already committed.
 	select {
 	case pr.AcceptedCh <- struct{}{}:
@@ -2053,6 +2057,7 @@ func (s *Server) handleCompleteAt(
 	// otherwise never finalize.
 	var claimed *registry.AttemptProfile
 	if pending := provider.GetPending(msg.RequestID); pending != nil {
+		pending.Accounting.Observe("provider_complete", "", 0)
 		pending.MarkCompletionIngress(receivedAt)
 		pending.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
 		// The claim is the single ownership token: only the frame that owns
@@ -2095,7 +2100,7 @@ func (s *Server) handleCompleteAt(
 				StatusCode:  http.StatusServiceUnavailable,
 				ErrorReason: errorReasonDeadlineUnreachable,
 				FailureCode: protocol.FailureCodeCapacity,
-			}, true)
+			}, true, false)
 			// handleInferenceError completes the terminal only when it still
 			// found the pending request; if a consumer-side cleanup removed it
 			// first, the provider still completed, so record that and close
@@ -2169,6 +2174,7 @@ func (s *Server) handleCompleteAt(
 		claimed.CompleteTerminal()
 		return
 	}
+	pr.Accounting.Observe("provider_complete", "", 0)
 	pr.Profile.MarkAt(registry.StampCompleteIngress, receivedAt)
 	if !terminalClaimed { // parked record (mutex single-winner): no pending entry above
 		terminalOwner = pr.Profile == nil || pr.Profile.ClaimTerminal()
@@ -2739,7 +2745,11 @@ func (s *Server) handleCompleteAt(
 // loop (and the coordinator-synthesized errors handleChunk raises there). The
 // frame holds no terminal claim; ownership is decided at the peek inside.
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
-	s.handleInferenceErrorOwned(providerID, provider, msg, false)
+	s.handleInferenceErrorOwned(providerID, provider, msg, false, true)
+}
+
+func (s *Server) handleSyntheticInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
+	s.handleInferenceErrorOwned(providerID, provider, msg, false, false)
 }
 
 // handleInferenceErrorOwned is handleInferenceError with terminal ownership
@@ -2747,7 +2757,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 // terminal claim (handleCompleteAt converting a deadline-late empty
 // completion), so this path must neither re-claim nor drop that frame as a
 // duplicate.
-func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned bool) {
+func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage, owned, providerObserved bool) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
@@ -2779,6 +2789,9 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 	// completes a claimed terminal).
 	var claimedHere *registry.AttemptProfile
 	pending := provider.GetPending(msg.RequestID)
+	if pending != nil && providerObserved {
+		pending.Accounting.Observe("provider_error", normalizeInferenceErrorReason(msg.ErrorReason), msg.StatusCode)
+	}
 	if pending != nil && pending.Profile != nil && !owned {
 		if !pending.Profile.ClaimTerminal() {
 			s.logger.Warn("duplicate error for in-flight request", "provider_id", providerID)
@@ -2834,6 +2847,9 @@ func (s *Server) handleInferenceErrorOwned(providerID string, provider *registry
 		claimedHere.SetOutcome("", "", "", "error", "")
 		claimedHere.CompleteTerminal()
 		return
+	}
+	if pending == nil && providerObserved {
+		pr.Accounting.Observe("provider_error", normalizeInferenceErrorReason(msg.ErrorReason), msg.StatusCode)
 	}
 	// From this point onward use only the coordinator-owned identifier.
 	msg.RequestID = pr.RequestID

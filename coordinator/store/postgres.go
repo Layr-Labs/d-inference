@@ -1156,6 +1156,8 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		// index on these tables must be built CONCURRENTLY outside this loop
 		// (see ensureProviderEarningsJobIndex). The request_waterfall view is NOT
 		// here — it is applied by hand from store/migrations/request_waterfall.sql.
+		requestOutcomesTableDDL,
+		`CREATE INDEX IF NOT EXISTS idx_request_outcomes_received ON request_outcomes (received_at, coord_request_id)`,
 		requestProfilesTableDDL,
 		requestProfilesCreatedIndexDDL,
 		requestProfilesCoordIndexDDL,

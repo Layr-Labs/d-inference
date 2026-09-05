@@ -173,6 +173,7 @@ type UsageStore interface {
 // TelemetryStore persists routing-decision snapshots and rejection records
 // (privacy-safe, no prompt/response content). Forwarded to Datadog elsewhere.
 type TelemetryStore interface {
+	RequestOutcomeStore
 	// RecordInferenceRoute writes or refreshes the routing decision snapshot for a
 	// request attempt. Best-effort; failures must not block inference.
 	RecordInferenceRoute(record *InferenceRouteRecord) error

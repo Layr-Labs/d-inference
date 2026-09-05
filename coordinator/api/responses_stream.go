@@ -166,7 +166,7 @@ func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *
 		w:               w,
 		flusher:         flusher,
 		pr:              pr,
-		stamps:          newRelayStamps(pr.Profile.Parent()),
+		stamps:          newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent()),
 		responseID:      responseID,
 		createdAt:       createdAt,
 		model:           consumerModel(pr),
@@ -184,6 +184,9 @@ func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, data)
+	if !e.stamps.contentWritten && werr == nil && n == len(eventType)+len(data)+16 && accountingValueHasContent(fields, 0) {
+		e.stamps.content()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
 }
@@ -493,7 +496,7 @@ func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 		snap["response_hash"] = e.pr.ResponseHash
 	}
 	e.emit(eventType, map[string]any{"response": snap})
-	e.stamps.done()
+	e.stamps.done(status)
 }
 
 // emitError emits a Responses-API error event.

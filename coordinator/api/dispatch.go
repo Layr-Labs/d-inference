@@ -1445,6 +1445,8 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			ResponseCh: make(chan *registry.Provider, 1),
 		}
 		queuePR.Timing.QueuedAt = time.Now()
+		queuePR.Accounting = requestOutcomeFromContext(r.Context()).NewAttempt(d.requestID, d.attempt, "")
+		defer func() { queuePR.Accounting.Observe("not_dispatched", dispatchErrorClass(d.lastErr), d.lastErrCode) }()
 		queuePR.Profile = d.profile.NewAttempt(d.requestID, d.attempt, "")
 		queuePR.Profile.Mark(registry.StampAttemptStart)
 		queuePR.Profile.Mark(registry.StampQueued)
@@ -1726,11 +1728,13 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				d.timing.DispatchedAt = metadata.DequeuedAt
 				d.noteProviderDispatched()
 				d.pr.Profile.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
+				d.pr.Accounting.Observe("write_started", "", 0)
 			},
 		)
 		cancelWrite()
 		if writeErr == nil {
 			d.pr.Profile.Mark(registry.StampWriteDone)
+			d.pr.Accounting.Observe("write_completed", "", 0)
 		}
 		if writeErr != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
@@ -3454,6 +3458,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 func (d *dispatchState) run() {
 	s := d.s
 	defer d.finalizeProfile()
+	requestOutcomeFromContext(d.r.Context()).Shape(d.model, d.stream)
 	w, r := d.w, d.r
 	d.preflightLegacyCacheBust()
 
@@ -3628,6 +3633,10 @@ exhausted:
 				s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 			}
 		}
+		accountingExhausted := dominance == exhaustedDeadline ||
+			(dominance == exhaustedUndecided && reason == "dispatch_exhausted" &&
+				failure.terminalCause == "" && failure.statusCode == 0)
+		requestOutcomeFromContext(r.Context()).Rejection(reason, accountingExhausted)
 		// Resolved once: the telemetry event and the OR-uptime counter must agree
 		// on which slot's backend this failure belongs to, and on whether that
 		// backend was chosen or degraded into (v0.8.0 paged rollout).
@@ -3813,6 +3822,7 @@ func (d *dispatchState) writeCommittedResponse() {
 	writeCommittedProviderHeaders(w, info)
 	d.writeTimingHeaderWithProfile(w, pr)
 	d.stampCommitted(pr)
+	pr.Accounting.Observe("committed", "", 0)
 	writeInferenceJobIDHeader(w, pr.RequestID)
 	snapshotChatCompletionMetadata(pr, info)
 

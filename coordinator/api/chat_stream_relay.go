@@ -44,8 +44,11 @@ type chatStreamRelay struct {
 	// them so the relay stamps can keep chunks_out in SSE frames, not flushes.
 	// The batch is bounded by maxCoalescedBatchBytes (see writeFrame), and
 	// flush releases a backing array that grew past that bound.
-	buf    bytes.Buffer
-	frames int
+	buf            bytes.Buffer
+	frames         int
+	contentWritten bool
+	batchContent   bool
+	batchTerminal  string
 }
 
 func newChatStreamRelay(pr *registry.PendingRequest, w http.ResponseWriter, flusher http.Flusher, stamps *relayStamps) *chatStreamRelay {
@@ -107,6 +110,14 @@ func (rl *chatStreamRelay) writeFrame(frame string) {
 	if rl.buf.Len() > 0 && rl.buf.Len()+len(frame)+len("\n\n") > maxCoalescedBatchBytes {
 		rl.flush()
 	}
+	if !rl.contentWritten && rl.stamps != nil && rl.stamps.accounting != nil && accountingChunkHasContent(frame) {
+		rl.batchContent = true
+	}
+	if rl.sawResponsesAPI && rl.stamps != nil && rl.stamps.accounting != nil {
+		if terminal := accountingStreamTerminal(frame); terminal != "" {
+			rl.batchTerminal = terminal
+		}
+	}
 	rl.buf.WriteString(frame)
 	rl.buf.WriteString("\n\n")
 	rl.frames++
@@ -128,7 +139,20 @@ func (rl *chatStreamRelay) flush() {
 		return
 	}
 	frames := rl.frames
+	wanted := rl.buf.Len()
 	n, err := rl.w.Write(rl.buf.Bytes())
+	if rl.batchContent && err == nil && n == wanted {
+		rl.stamps.content()
+		rl.contentWritten = true
+	}
+	rl.batchContent = false
+	if rl.batchTerminal != "" && err == nil && n == wanted {
+		rl.stamps.accounting.Egress(true, false, rl.batchTerminal)
+	}
+	rl.batchTerminal = ""
+	if n != wanted {
+		rl.stamps.writeErr()
+	}
 	if rl.buf.Cap() > maxCoalescedBatchBytes {
 		rl.buf = bytes.Buffer{}
 	} else {

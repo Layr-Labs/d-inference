@@ -164,7 +164,7 @@ func newGenericEndpointStreamEmitter(
 	if pr.ConsumerEndpoint == messagesEndpoint {
 		return newMessagesStreamEmitter(w, flusher, pr)
 	}
-	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr, stamps: newRelayStamps(pr.Profile.Parent())}
+	return &completionsStreamEmitter{w: w, flusher: flusher, pr: pr, stamps: newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent())}
 }
 
 type completionsStreamEmitter struct {
@@ -198,7 +198,7 @@ func (e *completionsStreamEmitter) handleChunk(chunk string) {
 				"logprobs":      nil,
 				"finish_reason": nil,
 			}},
-		})
+		}, true)
 	}
 }
 
@@ -227,12 +227,15 @@ func (e *completionsStreamEmitter) emitError(kind, message string) {
 	e.emit(map[string]any{"error": map[string]any{"type": kind, "message": message}})
 }
 
-func (e *completionsStreamEmitter) emit(value any) {
+func (e *completionsStreamEmitter) emit(value any, content ...bool) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "data: %s\n\n", encoded)
+	if len(content) > 0 && content[0] && werr == nil && n == len(encoded)+8 {
+		e.stamps.content()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
 }
@@ -257,7 +260,7 @@ func newMessagesStreamEmitter(
 	pr *registry.PendingRequest,
 ) *messagesStreamEmitter {
 	return &messagesStreamEmitter{
-		stamps:    newRelayStamps(pr.Profile.Parent()),
+		stamps:    newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent()),
 		w:         w,
 		flusher:   flusher,
 		pr:        pr,
@@ -389,6 +392,9 @@ func (e *messagesStreamEmitter) emit(eventType string, fields map[string]any) {
 		return
 	}
 	n, werr := fmt.Fprintf(e.w, "event: %s\ndata: %s\n\n", eventType, encoded)
+	if !e.stamps.contentWritten && werr == nil && n == len(eventType)+len(encoded)+16 && accountingValueHasContent(fields, 0) {
+		e.stamps.content()
+	}
 	e.flusher.Flush()
 	e.stamps.wrote(n, werr)
 }

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/outcomes"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -49,6 +50,7 @@ const (
 // middleware chain (same goroutine, before the handler runs, so plain fields).
 type requestMeta struct {
 	coordID string
+	outcome *outcomes.Tracker
 	start   time.Time
 
 	authDoneUS      int64

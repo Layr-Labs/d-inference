@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/outcomes"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -160,7 +161,7 @@ func (d *dispatchState) stampClientGone(phase string) {
 // writeNonStreamBody writes a non-streaming 200 response body and stamps the
 // egress offsets (first/last flush, bytes out) so non-stream rows carry the
 // same egress waterfall as SSE relays. Output is byte-identical to writeJSON.
-func writeNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v any) {
+func writeNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v any, accounting ...*outcomes.Tracker) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		writeJSON(w, http.StatusOK, v)
@@ -173,6 +174,13 @@ func writeNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v an
 		rp.Stamp(&rp.HeadersWrittenUS)
 	}
 	n, err := w.Write(body)
+	if len(accounting) > 0 {
+		terminal := responseAccountingTerminal(v)
+		accounting[0].Egress(err == nil && n == len(body), err != nil || n != len(body), terminal)
+		if err == nil && n == len(body) && accounting[0] != nil && responseAccountingHasContent(v) {
+			accounting[0].ContentWritten()
+		}
+	}
 	if rp == nil {
 		return
 	}
@@ -192,12 +200,18 @@ func writeNonStreamBody(w http.ResponseWriter, rp *registry.RequestProfile, v an
 
 // relayStamps is the per-stream bookkeeping the SSE relay loops feed.
 type relayStamps struct {
-	rp        *registry.RequestProfile
-	lastFlush time.Time
+	rp             *registry.RequestProfile
+	accounting     *outcomes.Tracker
+	contentWritten bool
+	lastFlush      time.Time
 }
 
-func newRelayStamps(rp *registry.RequestProfile) *relayStamps {
-	return &relayStamps{rp: rp}
+func newRelayStamps(rp *registry.RequestProfile, accounting ...*outcomes.Tracker) *relayStamps {
+	r := &relayStamps{rp: rp}
+	if len(accounting) > 0 {
+		r.accounting = accounting[0]
+	}
+	return r
 }
 
 // flushed records one chunk written + flushed to the client.
@@ -231,7 +245,14 @@ func (r *relayStamps) flushedFrames(frames, bytes int) {
 }
 
 // done records the terminal [DONE] flush.
-func (r *relayStamps) done() {
+func (r *relayStamps) done(terminal ...string) {
+	if r != nil {
+		status := "completed"
+		if len(terminal) > 0 {
+			status = terminal[0]
+		}
+		r.accounting.Egress(true, false, status)
+	}
 	if r == nil || r.rp == nil {
 		return
 	}
@@ -248,6 +269,9 @@ func (r *relayStamps) done() {
 // accepted count as flushed, and a failed or short write marks client_write_err
 // so the record never claims output the client did not receive.
 func (r *relayStamps) wrote(n int, err error) {
+	if err != nil && r != nil {
+		r.accounting.Egress(false, true)
+	}
 	if r == nil || r.rp == nil {
 		return
 	}
@@ -263,6 +287,9 @@ func (r *relayStamps) wrote(n int, err error) {
 // frames SSE frames (the chat relay's flush): the same contract as wrote,
 // with chunks_out advancing by the number of frames folded into the write.
 func (r *relayStamps) wroteFrames(frames, n int, err error) {
+	if err != nil && r != nil {
+		r.accounting.Egress(false, true)
+	}
 	if r == nil || r.rp == nil {
 		return
 	}
@@ -276,6 +303,9 @@ func (r *relayStamps) wroteFrames(frames, n int, err error) {
 
 // writeErr records a failed client write.
 func (r *relayStamps) writeErr() {
+	if r != nil {
+		r.accounting.Egress(false, true)
+	}
 	if r == nil || r.rp == nil {
 		return
 	}
@@ -294,4 +324,14 @@ func profileClientGone(pr *registry.PendingRequest, phase string) {
 	}
 	rp.Stamp(&rp.ClientGoneUS)
 	rp.SetClientGonePhase(phase)
+}
+
+// content records only the first successful generated-content write. Subsequent
+// tokens add no accounting locks, clocks, allocations or persistence work.
+func (r *relayStamps) content() {
+	if r == nil || r.contentWritten {
+		return
+	}
+	r.contentWritten = true
+	r.accounting.ContentWritten()
 }

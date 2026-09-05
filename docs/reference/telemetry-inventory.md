@@ -1,6 +1,6 @@
 # Telemetry inventory
 
-> Last updated: 2026-09-04 · commit `6f364e64b`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 Every datum the system collects today, with its producer, sink, cadence and
 retention. Anything not on this page is not emitted by the code at this commit.
@@ -122,6 +122,8 @@ lists every name).
 | `telemetry.sink_depth` | gauge | `sink:profile`, `sink:route` | each 60 s fleet sample |
 | `telemetry.sink_dropped` | count | `sink:profile` | non-blocking submit found the 4096-slot profile channel full (warned at powers of ten). The route sink counts drops in an atomic exposed as `fleet_snapshots.route_sink_dropped_total` and in its slog line, not as a Datadog counter |
 | `profiler.records` | count | `status:written`, `write_failed`, `sampled_out` | each profile batch |
+| `request_outcomes.records` | count | `status:written`, `write_failed`, `dropped`, `shutdown_dropped` | Dedicated accounting sink (`coordinator/api/request_outcome_sink.go`); counts snapshots, including revisions, not requests. Failed writes can have uncertain persistence. |
+| `request_outcomes.shutdown_unconfirmed` | count | none | The accounting worker did not confirm shutdown within `telemetrySinkShutdownFlush`; an in-flight write remains uncertain (`requestOutcomeSink.close`). |
 | `profiler.provider_profile` | count | `valid`, `reason` (`none`, `size`, `decode`, `schema`, `range`, `order`, `enum`, `duplicate`, `late`) | each provider `profile` |
 | `profiler.fleet_snapshot` | count | `status:written`, `write_failed` | each fleet sample |
 | `profiler.pruned_rows` | count | — | each hourly retention sweep |
@@ -169,6 +171,7 @@ Datadog's; nothing is stored locally.
 |---|---|---|---|
 | `inference_routes` | one row per `(request_id, attempt)` | `recordRoutingDecisionFor` (`coordinator/api/dispatch.go`) → `RecordInferenceRoute` (upsert), outcome patched by `UpdateInferenceRouteOutcome` with `COALESCE` | none |
 | `request_rejections` | one row per pre-dispatch or exhausted rejection | `recordRejection` (`coordinator/api/rejection_telemetry.go`); insert errors swallowed | none |
+| `request_outcomes` | one row per coordinator-minted incoming request; revision-ordered snapshots | `loggingMiddleware`, `outcomes.Tracker`, dedicated unsampled sink (`coordinator/api/request_outcome_sink.go`); observed coverage, not a verified full-traffic denominator | [Accounting retention and bounds](../architecture/request-accounting.md#persistence-and-coverage) |
 | `usage` (+ `usage_totals`) | one row per billed completion | `RecordUsageFullWithPublicModel` | none |
 | `providers`, `provider_reputation` | one row per provider | `UpsertProvider`, `UpsertReputation`, throttled to 30 s | none |
 | `provider_sessions` | one row per WebSocket session | `OpenProviderSession`, `TouchProviderSession`, `CloseProviderSession` | none |
@@ -176,8 +179,9 @@ Datadog's; nothing is stored locally.
 | `request_profiles` | one row per `(request_id, attempt)`, sampled | profile sink (`coordinator/api/profiler_sink.go`), batches of 64 or 250 ms | 14 d, hourly sweep, 5000-id windows |
 | `fleet_snapshots` | one row per provider slot plus one `provider_id = "coordinator"` row | fleet sampler (`coordinator/api/profiler_fleet.go`) every 60 s | 30 d, same sweep |
 
-The retention sweep (`PruneTelemetry`, `coordinator/store/postgres_profiles.go`)
-runs even when the profiler is off. Every other table grows without bound;
+The profiler retention sweep (`PruneTelemetry`, `coordinator/store/postgres_profiles.go`)
+runs even when the profiler is off. Request accounting has its own retention
+worker. The other telemetry/usage tables listed here grow without bound;
 `DeleteExpiredDeviceCodes` exists but has no production caller. Details of the
 two profiler tables: [`../architecture/system-profiler.md`](../architecture/system-profiler.md).
 

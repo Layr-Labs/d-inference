@@ -490,6 +490,11 @@ func TestDeadlineUnreachableAllProvidersReturnSingle429(t *testing.T) {
 			"deadline route rows = %d, want %d; routes=%+v",
 			deadlineRoutes, providerCount, routes)
 	}
+	r := waitRequestOutcome(t, st, 1)[0]
+	if r.Termination != "rejected" || r.NormalizedCode != "ext_coordinator_exhausted" || r.DeadlineRefusalCount != providerCount || r.DispatchedAttemptCount != providerCount || r.HTTPStatus == nil || *r.HTTPStatus != 429 {
+		t.Fatalf("request exhaustion accounting: %+v", r)
+	}
+
 }
 
 func postGenericInference(
@@ -513,9 +518,10 @@ func postGenericInference(
 }
 
 func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
-	reg, _, _, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
+	reg, st, srv, ts := setupTTFTFailoverServerWithConfig(t, ServerConfig{
 		FirstContentDeadlineBase: 400 * time.Millisecond,
 	})
+	t.Cleanup(srv.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -556,6 +562,27 @@ func TestAcceptedDoesNotStopSpeculativeFirstContentRace(t *testing.T) {
 		t.Fatalf("dispatches = %+v, want accepted primary plus speculative backup", got)
 	}
 	assertCleanFailoverStream(t, status, body, markerFor(got[1].provider))
+	r := waitRequestOutcome(t, st, 1)[0]
+	if r.Termination != "completed" || !r.ResponseEgressCompleted || !r.ContentEgressObserved || r.DispatchedAttemptCount != 2 || r.DeadlineRefusalCount != 0 || r.NormalizedCode != "" {
+		t.Fatalf("speculative winner request accounting: %+v", r)
+	}
+	winners, losers := 0, 0
+	for _, a := range r.Attempts {
+		if a.Winning {
+			winners++
+			if a.BackupOf == "" || a.ProviderOutcome != "completed" {
+				t.Fatalf("winning backup lost its parent or terminal: %+v", a)
+			}
+		} else if a.WriteCompleted {
+			losers++
+			if !a.ProviderAcknowledged || a.ContentObserved {
+				t.Fatalf("acknowledged speculative loser confused with content: %+v", a)
+			}
+		}
+	}
+	if winners != 1 || losers != 1 {
+		t.Fatalf("want one winner and one internal loser: %+v", r.Attempts)
+	}
 }
 
 func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
@@ -605,6 +632,11 @@ func TestDeadlineRefusalDoesNotMaskLaterProvider500(t *testing.T) {
 		rejections[0].ReasonCode == rejectionReasonDeadlineUnreachable {
 		t.Fatalf("terminal rejection = %+v, want genuine provider fault", rejections)
 	}
+	r := waitRequestOutcome(t, st, 1)[0]
+	if r.Termination != "rejected" || r.NormalizedCode != "" || r.DeadlineRefusalCount != 1 || r.HTTPStatus == nil || *r.HTTPStatus != 500 {
+		t.Fatalf("genuine fault precedence accounting: %+v", r)
+	}
+
 }
 
 func TestNinthBoilerplateNeverCommitsFailedProvider(t *testing.T) {

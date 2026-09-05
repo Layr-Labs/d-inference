@@ -1051,6 +1051,7 @@ func (s *Server) dispatchWithReserver(
 	}
 
 	requestID := uuid.New().String()
+	accounting := requestOutcomeFromContext(r.Context()).NewAttempt(requestID, attempt, backupOf)
 	ap := rp.NewAttempt(requestID, attempt, backupOf)
 	ap.Mark(registry.StampAttemptStart)
 	// Any failure return closes the attempt as not dispatched (terminal half; the handler half lands in finalizeProfile);
@@ -1058,11 +1059,13 @@ func (s *Server) dispatchWithReserver(
 	defer func() {
 		if provider == nil {
 			closeUndispatchedAttempt(ap, lastErr, lastErrCode)
+			accounting.Observe("not_dispatched", dispatchErrorClass(lastErr), lastErrCode)
 		}
 	}()
 	pr = &registry.PendingRequest{
-		RequestID: requestID,
-		Profile:   ap,
+		RequestID:  requestID,
+		Profile:    ap,
+		Accounting: accounting,
 		// Attempt is stamped at construction — BEFORE the request is encrypted
 		// and sent to the provider — so a fast provider that returns
 		// inference_complete immediately is correlated to the right route row.
@@ -1347,11 +1350,13 @@ func (s *Server) dispatchWithReserver(
 				onDispatched()
 			}
 			ap.MarkAt(registry.StampWriteDequeued, metadata.DequeuedAt)
+			accounting.Observe("write_started", "", 0)
 		},
 	)
 	cancelWrite()
 	if writeErr == nil {
 		ap.Mark(registry.StampWriteDone)
+		accounting.Observe("write_completed", "", 0)
 	}
 	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
@@ -2480,7 +2485,7 @@ func (s *Server) handleStreamingResponseWithFirstChunkAndError(
 
 	writeSSEResponseHeader(w, pr.RequestID)
 	flusher.Flush()
-	rs := newRelayStamps(pr.Profile.Parent())
+	rs := newRelayStamps(pr.Profile.Parent(), pr.Accounting.Parent())
 
 	// Per-request relay state: the Responses-format latch, the held terminal
 	// usage/finish frames, and the batch buffer. Every chunk — the ones already
@@ -2905,7 +2910,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 									msg := extractMessage([]string{"data: " + string(encoded)})
 									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
 									s.noteInferenceSuccess(pr)
-									writeNonStreamBody(w, pr.Profile.Parent(), resp)
+									writeNonStreamBody(w, pr.Profile.Parent(), resp, pr.Accounting.Parent())
 									return
 								}
 								if pr.IsResponsesAPI {
@@ -2925,7 +2930,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 										chatResp, consumerModel(pr), pr.SESignature,
 										pr.ResponseHash, pr.Traits)
 									s.noteInferenceSuccess(pr)
-									writeNonStreamBody(w, pr.Profile.Parent(), respObj)
+									writeNonStreamBody(w, pr.Profile.Parent(), respObj, pr.Accounting.Parent())
 									return
 								}
 							} else {
@@ -2945,7 +2950,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 								attachChatCompletionMetadata(obj, pr)
 							}
 							s.noteInferenceSuccess(pr)
-							writeNonStreamBody(w, pr.Profile.Parent(), obj)
+							writeNonStreamBody(w, pr.Profile.Parent(), obj, pr.Accounting.Parent())
 							return
 						}
 					}
@@ -2981,7 +2986,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunkAndError(
 						resp = chatResp
 					}
 					s.noteInferenceSuccess(pr)
-					writeNonStreamBody(w, pr.Profile.Parent(), resp)
+					writeNonStreamBody(w, pr.Profile.Parent(), resp, pr.Accounting.Parent())
 				case <-ctx.Done():
 					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)

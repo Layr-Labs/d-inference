@@ -1,10 +1,10 @@
 # System profiler
 
-> Last updated: 2026-09-04 · commit `4a08f2a44`
+> Last updated: 2026-09-05 · commit `bbf6f83d4`
 
 The profiler answers "where did the time go, and what did the router know when
 it chose?" for one request, without carrying a single prompt-derived byte. It
-writes one prompt-free row per dispatched attempt (`request_profiles`), one
+writes sampled prompt-free attempt rows (`request_profiles`), one
 fleet row per provider slot per minute plus one coordinator row
 (`fleet_snapshots`), and reads the provider's own per-attempt `profile` object
 off the existing terminal frames. Postgres is the system of record; Datadog
@@ -12,6 +12,12 @@ gets only pipeline-health counters. Wire shapes of the heartbeat sub-objects:
 [`../reference/protocol-messages.md`](../reference/protocol-messages.md); the
 outcome vocabularies the rows carry:
 [`request-outcome-observability.md`](request-outcome-observability.md).
+
+The profiler can be disabled or sampled, includes some selection-only attempts,
+and does not cover every early middleware exit. Its rows never supply a full
+incoming-request denominator. Use the separate [request accounting
+ledger](request-accounting.md) for receipt cohorts and response completion
+evidence; profile stamps remain optional diagnostic links.
 
 ## Context
 
@@ -26,7 +32,7 @@ per-token cost, or a free-form provider string to storage.
 
 | Artefact | Grain | Producer | Sink | Retention |
 |---|---|---|---|---|
-| `request_profiles` row | dispatched attempt (pre-dispatch rejections never produce one) | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
+| `request_profiles` row | sampled dispatched or selection-only attempt; middleware exits are not covered | stamps on `registry.RequestProfile` / `AttemptProfile`, flattened by `buildProfileRecord` (`coordinator/api/profiler_record.go`) | `profileSink` (`coordinator/api/profiler_sink.go`) → multi-row INSERT | `profileRetainProfiles` — value in [`../reference/telemetry-inventory.md#coordinator-per-request-records-postgres`](../reference/telemetry-inventory.md#coordinator-per-request-records-postgres) |
 | `fleet_snapshots` row | (provider session, slot) per 60 s + one `provider_id = 'coordinator'` row | `registry.FleetSample`, `CoordinatorSample` (`coordinator/registry/fleet_sample.go`) | sampler goroutine, `pgx.CopyFrom` (`coordinator/store/postgres_profiles.go`) | `profileRetainFleet` — same page |
 | `X-Timing` additive keys | committed response | `writeTimingHeaderWithProfile` (`coordinator/api/profiler_dispatch.go`) | response header ([`../reference/api-contracts.md#headers`](../reference/api-contracts.md#headers)) | n/a |
 | Datadog counters | process | [Operations](#operations) | DogStatsD / HTTPS series | n/a |
@@ -392,7 +398,7 @@ to the replication set, and accepts the hourly retention DELETE volume.
 
 Stated so nobody reads a `NULL` as a defect: full-pool candidate sample
 (top-4 + runner-up + near-tie size answer regret); rejection-stage timing
-(pre-dispatch rejections get only `request_rejections`); per-request
+(the compact request ledger covers receipts, not detailed stage timings); per-request
 provider-side cancel detail for already-abandoned requests (the cumulative
 `HeartbeatStats` cancel counters cover it); per-step engine ring; MLX GPU-busy
 counters; per-token ITL arrays; deadline-survival canary; metallib/git

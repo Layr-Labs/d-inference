@@ -30,7 +30,8 @@ func TestQueuedRequestExpiresAsQueueDeadlineLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	const model = "queue-deadline-live-model"
-	_, st, reg, ts := queuedFleetHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 400 * time.Millisecond}, model)
+	srv, st, reg, ts := queuedFleetHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 400 * time.Millisecond}, model)
+	t.Cleanup(srv.Close)
 
 	start := time.Now()
 	res := chatRequestWithID(ctx, ts.URL, model, "queue-deadline-live")
@@ -81,6 +82,36 @@ func TestQueuedRequestExpiresAsQueueDeadlineLive(t *testing.T) {
 	}
 	if rec.ResolvedModel != model {
 		t.Fatalf("rejection ResolvedModel = %q, want %q", rec.ResolvedModel, model)
+	}
+	row := waitRequestOutcome(t, st, 1)[0]
+	if row.Termination != "rejected" || row.RawReason != rejectionReasonQueueDeadline || row.NormalizedCode != "" || row.DispatchedAttemptCount != 0 || row.ContentEgressObserved || row.ResponseEgressCompleted {
+		t.Fatalf("queue expiry must remain distinct from a dispatched timeout: %+v", row)
+	}
+}
+
+func TestRequestAccountingClientDepartureWhileQueued(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const model = "accounting-queued-departure"
+	srv, st, reg, ts := queuedFleetHarness(t, ctx, ServerConfig{FirstContentDeadlineBase: 5 * time.Second}, model)
+	t.Cleanup(srv.Close)
+	requestCtx, cancelRequest := context.WithCancel(ctx)
+	defer cancelRequest()
+	result := make(chan chatResult, 1)
+	go func() { result <- chatRequestWithID(requestCtx, ts.URL, model, "caller-departure-id") }()
+	waitForAdaptiveCondition(t, time.Second, func() bool { return reg.Queue().QueueSize(model) == 1 })
+	cancelRequest()
+	select {
+	case response := <-result:
+		if response.err == nil {
+			t.Fatalf("canceled request unexpectedly received a response: %+v", response)
+		}
+	case <-ctx.Done():
+		t.Fatal("canceled HTTP request did not return")
+	}
+	row := waitRequestOutcome(t, st, 1)[0]
+	if row.Termination != "client_departure" || !row.ClientDeparted || row.DispatchedAttemptCount != 0 || row.ContentEgressObserved || row.ResponseEgressCompleted || row.NormalizedCode != "" || row.CoordRequestID == "caller-departure-id" {
+		t.Fatalf("queued departure misclassified as delivered rejection: %+v", row)
 	}
 }
 

@@ -1,6 +1,6 @@
 # GPT-OSS 20B quick profile — M4 Max
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `94c7c31eb`
 
 On this M4 Max, the initial High Power baseline delivers about **105 tok/s solo and 150–160 aggregate tok/s at B=2/4** for short context. At 8K context, it delivers approximately **86 / 102 / 120 aggregate tok/s at B=1/2/4**. The clearest first optimization is removing unnecessary prefill vocabulary projections; no code speedup is claimed in this report.
 

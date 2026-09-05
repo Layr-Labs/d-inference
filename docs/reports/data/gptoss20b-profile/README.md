@@ -1,6 +1,6 @@
 # GPT-OSS 20B quick-profile evidence
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `94c7c31eb`
 
 Portable evidence for the historical [quick profile](../../2026-09-05-gptoss20b-quick-profile.md) and [improvement estimate](../../2026-09-05-gptoss20b-improvement-estimate.md). These files preserve the initial measurements and estimates; they do not claim results for subsequent optimizations.
 

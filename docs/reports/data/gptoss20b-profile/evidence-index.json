@@ -25,12 +25,12 @@
       "transformation": "Byte-for-byte copy."
     },
     {
-      "bytes": 22210,
+      "bytes": 22119,
       "file": "quick-primary-measurements.svg",
-      "sha256": "a970d0ba88ff6f08f16dd645f2030ca5ac03d7fdf39ded59a857bb94bf4f319a",
+      "sha256": "6cea1f4c9adaa9eddc300368763754395c166ecec2158a9e3385b37566647559",
       "sourceArtifact": "quick-primary-measurements.svg",
       "sourceSHA256": "a970d0ba88ff6f08f16dd645f2030ca5ac03d7fdf39ded59a857bb94bf4f319a",
-      "transformation": "Byte-for-byte copy."
+      "transformation": "Trailing line whitespace normalized; vector coordinates and chart content unchanged."
     },
     {
       "bytes": 4674,

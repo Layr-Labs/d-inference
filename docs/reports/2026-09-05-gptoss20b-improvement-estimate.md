@@ -1,6 +1,6 @@
 # GPT-OSS 20B improvement estimate
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `94c7c31eb`
 
 The saved evidence supports an estimated **7–12% reduction in 8K prefill TTFT from output-head pruning**. For decode, **5–15% higher throughput is a reasonable first-pass planning target**, while **20–40% is an ambitious combined kernel-work target**. Decode ranges are engineering targets, not measured candidate results or statistically established forecasts. Prefix reuse, MTP, model changes, and quantization-quality changes remain outside this estimate.
 

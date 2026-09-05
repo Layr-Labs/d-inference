@@ -1,6 +1,6 @@
 # GPT-OSS 20B prefill and decode improvements
 
-> Last updated: 2026-09-05 · commit `9b73b3efa`
+> Last updated: 2026-09-05 · commit `94c7c31eb`
 
 Local implementation and measurements on Apple M4 Max (40 GPU cores, 128 GB), AC High Power mode, using `mlx-community/gpt-oss-20b-MXFP4-Q8` snapshot `773a7da77e569019bb0fd17a554b263738d669a3`. All workloads use the production CBv2 engine with contiguous KV, synthetic fixed prompts, greedy output, and no prefix reuse or MTP. No remote benchmark or production deployment is part of this work.
 

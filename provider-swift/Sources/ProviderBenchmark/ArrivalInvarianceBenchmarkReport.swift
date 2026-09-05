@@ -87,4 +87,3 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         return String(decoding: try encoder.encode(self), as: UTF8.self)
     }
 }
-

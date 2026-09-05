@@ -1,6 +1,6 @@
 # GPT-OSS 20B prefill and decode optimization
 
-> Last updated: 2026-09-05 · commit `4d9811f7c`
+> Last updated: 2026-09-05 · commit `94c7c31eb`
 
 Status: **In progress** — 2026-09-05. Local implementation and paired measurements; no production rollout.
 

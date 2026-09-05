@@ -1,6 +1,6 @@
 # Provider inference engine
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 How a chat-completion request is served inside the `darkbloom` provider
 process in v0.8.16: one in-process engine (`mlx-swift-lm`
@@ -159,6 +159,25 @@ see [`../reference/configuration.md`](../reference/configuration.md)).
 | `stop` | `stopStrings`, matched on held-back detokenised text (`EngineV2Bridge+StopSequence.swift`) | `[]` |
 | `min_p`, `priority` | **Ignored**: always `0` | — |
 | `n`, `best_of` | **Not represented**: one alternative | — |
+
+### Streaming reasoning state
+
+`ReasoningPromptProbe.streamingPrefix` in
+`provider-swift/Sources/ProviderCore/Inference/ReasoningPromptProbe.swift`
+decodes only the final eight prompt tokens to initialize Qwen/DeepSeek
+streaming parsing. A prompt ending in `<think>` receives an opening marker;
+a prompt ending in `</think>` receives an empty closed block. The downstream
+think parser consumes these prefixes as state transitions, so reasoning or
+ordinary answer text streams immediately. The prefix bypasses tool parsing
+and does not add output frames or token usage.
+
+Both text and media paths in `MultiModelBatchSchedulerEngine` apply the
+probe before forwarding model output. This matters for media because
+`templateAdditionalContext` defaults `enable_thinking` to false unless the
+caller supplied a thinking control: the template already closes the block,
+and generated answers need not emit another marker. Explicit `.none`, other
+parser families, non-streaming requests, and unrecognized prompt tails receive
+no prefix. Unknown tails preserve legacy close-only reasoning parsing.
 
 ### Tool-call parsers
 

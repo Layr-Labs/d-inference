@@ -1,6 +1,6 @@
 # Migrate a public model to a new build
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Runbook for moving a public model name (an **alias**, e.g. `gemma-4-26b`) from
 one concrete build to another with no downtime and without consumers ever
@@ -86,6 +86,15 @@ R2_ACCOUNT_ID=<cloudflare account id> GCP_PROJECT=<gcp project> scripts/publish-
 #   Version (no slashes): 2026-09-03-r1
 #   Required provider capabilities (comma-separated, optional):
 ```
+
+To prefer an existing public HF mirror, set `HUGGING_FACE_ARTIFACT_JSON` before
+running the script. Supply `repo_id`, a full commit `revision`, and optionally
+`path_prefix`; see the [artifact field contract](../reference/model-registry-format.md#hugging-face-download-artifact).
+The script carries it into the printed `hugging_face_artifact_json` workflow
+input. It does not upload HF files. Check the HF files against the manifest
+before registering; mismatched files will use the R2 fallback. For an existing
+version, re-run registration with the artifact field (or `null` to clear it)
+under the same production approval boundary.
 
 The script runs `darkbloom-publish hash` (`provider-swift/Sources/darkbloom-publish/HashCommand.swift`)
 to write `manifest.json` (per-file and aggregate SHA-256, `r2_prefix` derived

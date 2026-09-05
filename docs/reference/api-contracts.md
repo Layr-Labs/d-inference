@@ -6,6 +6,10 @@ The complete public HTTP surface of the coordinator, derived from the 105 `Handl
 
 Production base URL: `https://api.darkbloom.dev`. Unless a file is named, handler symbols below live in `coordinator/api/server.go`.
 
+The public model catalog optionally includes `hugging_face_artifact` for direct
+provider downloads; the admin registration accepts the same object. See the
+[registry artifact contract](model-registry-format.md#hugging-face-download-artifact).
+
 ## Conventions used in the route tables
 
 **Auth column** — how the handler chain establishes identity. The only credential header is `Authorization: Bearer <token>` (`extractBearerToken`); the coordinator never reads `x-api-key`.

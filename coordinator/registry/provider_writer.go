@@ -11,11 +11,22 @@ import (
 )
 
 const (
-	providerWriteQueueSize        = 128
-	providerControlQueueSize      = 64
-	providerWriteMinTimeout       = 5 * time.Second
-	providerWriteMaxTimeout       = 30 * time.Second
-	providerWriteBytesPerSecond   = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
+	providerWriteQueueSize = 128
+	// providerControlQueueSize bounds the priority lane. Its frames are tiny
+	// (cancel / challenge / status, ~100 B) so the cost of depth is nil, while a
+	// full lane silently drops a cancel — the one loss path on the coordinator
+	// side of cancel delivery (inference.cancel_send_failed{reason:queue_full}).
+	providerControlQueueSize    = 256
+	providerWriteMinTimeout     = 5 * time.Second
+	providerWriteMaxTimeout     = 30 * time.Second
+	providerWriteBytesPerSecond = 2 << 20 // 2 MiB/s (~16 Mbps) floor.
+	// providerWriteFragmentBytes is the WebSocket fragment size for data-lane
+	// messages larger than one fragment. nhooyr answers peer pings on its READ
+	// goroutine, under a 5s budget, and that pong needs the per-frame write
+	// lock — so a message must never be one multi-second frame (see
+	// writeFrame). 256 KiB keeps ~100 frames per 20 MiB vision request while
+	// bounding the pong's wait to one fragment's wire time.
+	providerWriteFragmentBytes    = 256 << 10
 	providerControlWriteTimeout   = 5 * time.Second
 	providerWriteWatchdogInterval = 250 * time.Millisecond
 	providerWriteDrainErrorString = "provider websocket writer stopped"
@@ -24,6 +35,13 @@ const (
 var errProviderWriterStopped = errors.New(providerWriteDrainErrorString)
 var errProviderWriterQueueFull = errors.New("provider websocket writer queue full")
 var errProviderWriteTimeout = errors.New("provider websocket write timeout")
+
+// Exported forms of the writer's sentinel errors so callers can classify a
+// best-effort control-frame failure (cancel delivery metrics) with errors.Is.
+var (
+	ErrProviderWriterQueueFull = errProviderWriterQueueFull
+	ErrProviderWriterStopped   = errProviderWriterStopped
+)
 
 // TextFrameWriteMetadata describes the writer-owned handoff of a deferred
 // frame. The caller receives it synchronously and remains the sole owner of any
@@ -87,9 +105,9 @@ type providerWriter struct {
 	acceptMu sync.Mutex
 	dead     atomic.Bool
 
-	// writeDeadline is the UnixNano deadline of the in-flight conn.Write
-	// (0 = no write in progress). Published by writeFrame, enforced by
-	// watchWrites.
+	// writeDeadline is the UnixNano deadline of the in-flight socket write of
+	// one whole message (0 = no write in progress). Published by writeFrame,
+	// enforced by watchWrites.
 	writeDeadline atomic.Int64
 	// writeTimedOut records that the watchdog closed the socket due to a
 	// write deadline, so writeFrame can surface a timeout error instead of
@@ -521,10 +539,10 @@ func (w *providerWriter) drainLane(lane chan *providerWriteRequest, err error) {
 
 // watchWrites enforces per-frame write deadlines with one goroutine per
 // connection instead of a goroutine+timer per frame. writeFrame publishes its
-// deadline before the blocking conn.Write and clears it after; when a deadline
-// is exceeded the watchdog closes the socket, which unblocks Write with an
-// error. Granularity is providerWriteWatchdogInterval, acceptable slack on a
-// >=5s timeout floor.
+// deadline before the blocking socket write of a whole message and clears it
+// after; when a deadline is exceeded the watchdog closes the socket, which
+// unblocks the write with an error. Granularity is
+// providerWriteWatchdogInterval, acceptable slack on a >=5s timeout floor.
 func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 	ticker := time.NewTicker(providerWriteWatchdogInterval)
 	defer ticker.Stop()
@@ -547,22 +565,60 @@ func (w *providerWriter) watchWrites(stop <-chan struct{}) {
 	}
 }
 
+// writeFrame puts one whole text message on the wire and returns only once
+// its last frame has been handed to the socket.
+//
+// Messages larger than providerWriteFragmentBytes are sent as a fragmented
+// WebSocket message (RFC 6455 §5.4) rather than one frame. nhooyr's
+// Conn.Write holds the connection's per-frame write lock for the entire
+// message, and its read goroutine answers the peer's pings inline — with a
+// 5s budget to take that same lock. A single 20 MiB vision frame legitimately
+// takes 10–30s at the write-timeout floor, so a provider ping (every 10s)
+// landing mid-frame failed the pong, which nhooyr reports as a READ error
+// ("failed to handle control frame opPing: ... failed to acquire lock"),
+// tearing down the whole provider session and 502-ing every request on it.
+// With msgWriter.Write the lock is held per fragment, so the pong interleaves
+// between continuation frames; the receiver reassembles into one message.
 func (w *providerWriter) writeFrame(data []byte) error {
-	// Do not pass a cancelable/expiring context to nhooyr.Conn.Write: context
-	// expiration is treated as a connection-level failure by the library. The
-	// writer owns timeout/backpressure externally (watchWrites) and closes
-	// unhealthy sockets explicitly with CloseNow.
+	// Do not pass a cancelable/expiring context to nhooyr's Write/Writer:
+	// context expiration is treated as a connection-level failure by the
+	// library. The writer owns timeout/backpressure externally (watchWrites,
+	// one deadline for the whole message) and closes unhealthy sockets
+	// explicitly with CloseNow.
 	timeout := providerWriteTimeout(len(data))
 	if w.timeoutFor != nil {
 		timeout = w.timeoutFor(len(data))
 	}
 	w.writeDeadline.Store(time.Now().Add(timeout).UnixNano())
-	err := w.conn.Write(context.Background(), websocket.MessageText, data)
+	err := writeFragmented(w.conn, data)
 	w.writeDeadline.Store(0)
 	if err != nil && w.writeTimedOut.Load() {
 		return errProviderWriteTimeout
 	}
 	return err
+}
+
+// writeFragmented sends data as one text message: a single frame when it
+// fits in providerWriteFragmentBytes, otherwise ceil(n/fragment) non-FIN
+// frames of at most fragment bytes followed by nhooyr's zero-length FIN
+// continuation. A mid-message write error is returned as-is without
+// attempting the FIN frame; the caller closes the socket on any error, which
+// is also what makes nhooyr's unreleased message-writer lock irrelevant.
+func writeFragmented(conn *websocket.Conn, data []byte) error {
+	if len(data) <= providerWriteFragmentBytes {
+		return conn.Write(context.Background(), websocket.MessageText, data)
+	}
+	mw, err := conn.Writer(context.Background(), websocket.MessageText)
+	if err != nil {
+		return err
+	}
+	for off := 0; off < len(data); off += providerWriteFragmentBytes {
+		end := min(off+providerWriteFragmentBytes, len(data))
+		if _, err := mw.Write(data[off:end]); err != nil {
+			return err
+		}
+	}
+	return mw.Close()
 }
 
 func providerWriteTimeout(frameBytes int) time.Duration {

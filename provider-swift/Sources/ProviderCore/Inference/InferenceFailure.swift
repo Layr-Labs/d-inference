@@ -66,6 +66,11 @@ public enum InferenceErrorReason: String, Codable, Sendable, Equatable, CaseIter
     case cancelled
     case clientError = "client_error"
     case toolNoncompliance = "tool_noncompliance"
+    /// The provider is refusing new work for an update drain / shutdown.
+    /// Distinct from `capacityBusy` so the coordinator can skip the box
+    /// without derating the (provider, model) pair or spending the request's
+    /// capacity retries. Wire string mirrors coordinator/protocol/messages.go.
+    case draining
 }
 
 /// The only value accepted by provider-to-coordinator inference error sinks.

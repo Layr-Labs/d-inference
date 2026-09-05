@@ -3,7 +3,6 @@ package registry
 import (
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,6 +84,15 @@ const (
 	// capacity-triggered sweeps.
 	ttftCalibrationSweepThreshold = 1024
 	ttftCalibrationSweepInterval  = time.Minute
+	// ttftCalibrationCapacitySweepInterval lets the whole-map TTL sweep run
+	// more often while the map sits AT capacity, so a sustained reserve storm
+	// reclaims expired entries within seconds rather than a minute — while
+	// still never sweeping on every reservation.
+	ttftCalibrationCapacitySweepInterval = 5 * time.Second
+	// ttftCalibrationEvictProbe bounds the per-reservation eviction scan at
+	// capacity between sweeps: probe this many entries, drop the first
+	// expired one, else the last probed.
+	ttftCalibrationEvictProbe = 8
 )
 
 // ttftCalibrationEnabled is the live-read kill switch:
@@ -157,14 +165,22 @@ func clampTTFTCalibrationRatio(ratio float64) float64 {
 type ttftCalibrator struct {
 	mu        sync.RWMutex
 	windows   map[ttftCalibrationKey]*ttftRatioWindow
-	pending   map[string]ttftPendingPrediction
+	pending   map[ttftPendingID]ttftPendingPrediction
 	lastSweep time.Time
+}
+
+// ttftPendingID identifies a reserved attempt's pending prediction. A struct
+// key (vs requestID+"#"+attempt) is built without allocating on every
+// reservation and cannot alias across ids containing the delimiter.
+type ttftPendingID struct {
+	requestID string
+	attempt   int
 }
 
 func newTTFTCalibrator() *ttftCalibrator {
 	return &ttftCalibrator{
 		windows: make(map[ttftCalibrationKey]*ttftRatioWindow),
-		pending: make(map[string]ttftPendingPrediction),
+		pending: make(map[ttftPendingID]ttftPendingPrediction),
 	}
 }
 
@@ -172,8 +188,8 @@ func newTTFTCalibrator() *ttftCalibrator {
 // scheduler (reads + prediction recording) and the API layer (observations).
 var ttftCalibration = newTTFTCalibrator()
 
-func ttftPendingKey(requestID string, attempt int) string {
-	return requestID + "#" + strconv.Itoa(attempt)
+func ttftPendingKey(requestID string, attempt int) ttftPendingID {
+	return ttftPendingID{requestID: requestID, attempt: attempt}
 }
 
 // notePrediction records the RAW (pre-calibration) warm-slot TTFT estimate for
@@ -185,9 +201,23 @@ func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, ch
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.pending) >= ttftCalibrationMaxPending ||
-		(len(c.pending) > ttftCalibrationSweepThreshold && now.Sub(c.lastSweep) > ttftCalibrationSweepInterval) {
+	// The TTL sweep walks the whole map, so it is rate-limited: once per
+	// ttftCalibrationSweepInterval above the threshold, and once per (shorter)
+	// ttftCalibrationCapacitySweepInterval while AT capacity. Between sweeps a
+	// full map (a reserve storm whose attempts never reach first content — the
+	// exact retry-cascade shape) frees one slot with a bounded probe instead of
+	// walking all ttftCalibrationMaxPending entries under this global lock on
+	// every reservation (that walk was ~20% of a fleet-scale reservation). The
+	// map stays bounded either way.
+	atCapacity := len(c.pending) >= ttftCalibrationMaxPending
+	sinceSweep := now.Sub(c.lastSweep)
+	if len(c.pending) > ttftCalibrationSweepThreshold &&
+		(sinceSweep > ttftCalibrationSweepInterval ||
+			(atCapacity && sinceSweep > ttftCalibrationCapacitySweepInterval)) {
 		c.sweepPendingLocked(now)
+	}
+	if len(c.pending) >= ttftCalibrationMaxPending {
+		c.evictOneLocked(now)
 	}
 	c.pending[ttftPendingKey(requestID, attempt)] = ttftPendingPrediction{
 		model: model,
@@ -207,6 +237,30 @@ func (c *ttftCalibrator) discardPrediction(requestID string, attempt int) {
 	c.mu.Lock()
 	delete(c.pending, ttftPendingKey(requestID, attempt))
 	c.mu.Unlock()
+}
+
+// evictOneLocked frees one slot in a full map with bounded work: it probes up
+// to ttftCalibrationEvictProbe entries (map order — effectively random),
+// deletes the first EXPIRED one it sees, and only when none of the probed
+// entries has expired deletes the last probed (possibly live) entry. Caller
+// holds c.mu.
+func (c *ttftCalibrator) evictOneLocked(now time.Time) {
+	var last ttftPendingID
+	probed := 0
+	for k, p := range c.pending {
+		if now.Sub(p.at) > ttftCalibrationPendingTTL {
+			delete(c.pending, k)
+			return
+		}
+		last = k
+		probed++
+		if probed >= ttftCalibrationEvictProbe {
+			break
+		}
+	}
+	if probed > 0 {
+		delete(c.pending, last)
+	}
 }
 
 // sweepPendingLocked drops expired predictions; if the map is still at
@@ -297,7 +351,7 @@ func (c *ttftCalibrator) appliedRatio(model, chip string) float64 {
 func (c *ttftCalibrator) reset() {
 	c.mu.Lock()
 	c.windows = make(map[ttftCalibrationKey]*ttftRatioWindow)
-	c.pending = make(map[string]ttftPendingPrediction)
+	c.pending = make(map[ttftPendingID]ttftPendingPrediction)
 	c.mu.Unlock()
 }
 
@@ -307,13 +361,13 @@ func (c *ttftCalibrator) reset() {
 // unscaled: it is a load-latency proxy, not part of the throughput model the
 // ratio measures, and scaling it would collapse the deliberate cold-route bias
 // (e.g. 30s × 0.33 ≈ 10s would let a cold box pass gates it should not).
-func calibratedTTFTMs(snap routingSnapshot, rawMs float64) float64 {
+func calibratedTTFTMs(snap *routingSnapshot, rawMs float64) float64 {
 	return calibratedTTFTMsWithRatio(snap, rawMs, ttftCalibration.appliedRatio(snap.model, snap.chipFamily))
 }
 
 // calibratedTTFTMsWithRatio is calibratedTTFTMs with the ratio already read,
 // so the scheduler can record exactly the ratio it scored with.
-func calibratedTTFTMsWithRatio(snap routingSnapshot, rawMs float64, ratio float64) float64 {
+func calibratedTTFTMsWithRatio(snap *routingSnapshot, rawMs float64, ratio float64) float64 {
 	if rawMs <= 0 {
 		return rawMs
 	}

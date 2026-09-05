@@ -853,7 +853,12 @@ type Provider struct {
 	// distinguish "never enrolled" from "enrolled but unresponsive".
 	MDMFailureReason string
 
-	Status           ProviderStatus
+	Status ProviderStatus
+	// drainingUntil is non-zero while the provider has declared itself
+	// draining (heartbeat status "draining" or a typed draining rejection);
+	// routing skips it until its next idle/serving heartbeat or the TTL
+	// (drain_state.go). Guarded by p.mu.
+	drainingUntil    time.Time
 	Conn             *websocket.Conn
 	writer           *providerWriter
 	LastHeartbeat    time.Time
@@ -899,6 +904,14 @@ type Provider struct {
 	// state changes. Scheduler hints snapshot it and revalidate under p.mu so a
 	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
 	prefixCacheRevision uint64
+
+	// modelIndexIDs is the advertised model-id list the registry's per-model
+	// provider index currently holds for this session (model_index.go) — the
+	// diff baseline for syncModelIndexLocked. modelIndexDetached is set by
+	// Disconnect so a models_update racing the disconnect can only ever remove
+	// entries, never re-insert the dead session. Both guarded by p.mu.
+	modelIndexIDs      []string
+	modelIndexDetached bool
 
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
@@ -1029,9 +1042,17 @@ type Provider struct {
 
 	// registry back-pointer, set once in Register (nil for bare test Providers).
 	// SetAttestationResult uses it to bind this session's id to its stable
-	// identity so the fault-tracking maps (breakers/cooldowns) key by identity
-	// and survive reconnect churn. Read-only after Register.
+	// identity so the fault-tracking state (breakers/cooldowns) keys by identity
+	// and survives reconnect churn. Read-only after Register.
 	registry *Registry
+	// gate is this session's current routing-gate state (gate_state.go): the
+	// session-keyed gate from Register until attestation binds the stable
+	// identity, then the identity's gate. Atomic so the scan (under p.mu) and
+	// the recorders (without p.mu) read it without another lock; written only
+	// under r.gatesMu (attachSessionGate / bindStableFaultKey). nil for a bare
+	// test Provider — every gate read treats nil as "no state".
+	gate                 atomic.Pointer[gateState]
+	gateDisconnectedAtNS atomic.Int64
 }
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
@@ -1041,7 +1062,16 @@ type Provider struct {
 // that is what lets the grace→enforce deadline flip without a reconnect. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
-	return r.providerSupportsPrivateTextModeLocked(p, r.releasePolicyEnforcedLocked())
+	return r.providerSupportsPrivateTextAtLocked(p, time.Now())
+}
+
+// providerSupportsPrivateTextAtLocked is providerSupportsPrivateTextLocked
+// evaluated at an explicit instant. The fleet walks capture one clock per
+// walk and pass it here (via providerLivenessGateLocked) so the two rollout
+// deadlines (release-policy enforce-after, APNs code-attestation) are not
+// re-read from the wall clock once per eligible provider. Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextAtLocked(p *Provider, now time.Time) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, r.releasePolicyEnforcedAtLocked(now), now)
 }
 
 // providerSupportsPrivateTextModeLocked is the chokepoint body with the
@@ -1050,6 +1080,12 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 // the per-model flip criterion); enforceEvidence=true additionally requires
 // generation-current application evidence. Caller holds r.mu.
 func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvidence bool) bool {
+	return r.providerSupportsPrivateTextModeAtLocked(p, enforceEvidence, time.Now())
+}
+
+// providerSupportsPrivateTextModeAtLocked is the chokepoint body at an explicit
+// instant (see providerSupportsPrivateTextAtLocked). Caller holds r.mu.
+func (r *Registry) providerSupportsPrivateTextModeAtLocked(p *Provider, enforceEvidence bool, now time.Time) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
@@ -1073,7 +1109,7 @@ func (r *Registry) providerSupportsPrivateTextModeLocked(p *Provider, enforceEvi
 		return false
 	}
 	// APNs code-identity gate — the SINGLE chokepoint, no self-route exemption.
-	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
+	if r.codeAttestationEnforcedAtLocked(now) && !p.CodeAttested {
 		return false
 	}
 	caps := p.PrivacyCapabilities
@@ -1709,15 +1745,21 @@ func (r *Registry) SetReleasePolicyEnforceAfter(t time.Time) {
 // releasePolicyEnforcedLocked reports whether the evidence gate is LIVE right
 // now: enforcement configured and past any enforce-after delay. Caller holds r.mu.
 func (r *Registry) releasePolicyEnforcedLocked() bool {
+	return r.releasePolicyEnforcedAtLocked(time.Now())
+}
+
+// releasePolicyEnforcedAtLocked is releasePolicyEnforcedLocked at an explicit
+// instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) releasePolicyEnforcedAtLocked(now time.Time) bool {
 	return r.releasePolicyEnforced &&
-		!time.Now().Before(r.releasePolicyEnforceAfter)
+		!now.Before(r.releasePolicyEnforceAfter)
 }
 
 // ReleasePolicyEnforced reports whether missing application evidence currently
 // blocks routing. Thread-safe.
 func (r *Registry) ReleasePolicyEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.releasePolicyEnforcedLocked()
 }
 
@@ -1795,16 +1837,16 @@ func (r *Registry) CountProvidersWithCurrentApplicationEvidence() (int, int) {
 // CodeAttestationConfigured reports whether an APNs attestor is wired (so the
 // connection handler should issue code-identity challenges). Thread-safe.
 func (r *Registry) CodeAttestationConfigured() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationConfigured
 }
 
 // CodeAttestationEnforced reports whether code-identity attestation is currently
 // mandatory for routing (configured AND past the deadline). Thread-safe.
 func (r *Registry) CodeAttestationEnforced() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.codeAttestationEnforcedLocked()
 }
 
@@ -1814,10 +1856,16 @@ func (r *Registry) CodeAttestationEnforced() bool {
 // then the fleet routes un-attested providers (grace window) while still being
 // challenged.
 func (r *Registry) codeAttestationEnforcedLocked() bool {
+	return r.codeAttestationEnforcedAtLocked(time.Now())
+}
+
+// codeAttestationEnforcedAtLocked is codeAttestationEnforcedLocked at an
+// explicit instant (the fleet walks pass their captured clock). Caller holds r.mu.
+func (r *Registry) codeAttestationEnforcedAtLocked(now time.Time) bool {
 	if !r.codeAttestationConfigured || r.codeAttestationDeadline.IsZero() {
 		return false
 	}
-	return !time.Now().Before(r.codeAttestationDeadline)
+	return !now.Before(r.codeAttestationDeadline)
 }
 
 // Mu returns the provider's mutex for external callers that need to read
@@ -1878,6 +1926,7 @@ func (p *Provider) HardUntrustEpoch() uint64 {
 // marshal the Provider snapshot.
 func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if result == nil {
 		p.AttestationResult = nil
 	} else {
@@ -1886,16 +1935,17 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 			[]string(nil), result.RuntimeCapabilities...)
 		p.AttestationResult = &snapshot
 	}
-	// Re-derive the stable identity while p.mu is held, then bind it OUTSIDE
-	// p.mu (bindStableFaultKey takes r.mu; the established order is r.mu →
-	// p.mu, so taking r.mu here while holding p.mu could deadlock). Binding at
-	// attestation time is what re-attaches a reconnecting machine's fault
-	// state (breakers/cooldowns keyed by serial/SE-key) to its fresh session
-	// id BEFORE it becomes routable — public routing requires attestation.
-	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
-	p.mu.Unlock()
-	if r != nil {
-		r.bindStableFaultKey(id, stableID)
+	// Re-derive the stable identity and bind it while p.mu is STILL held
+	// (lock order r.mu → p.mu → gatesMu → gate.mu; bindStableFaultKey takes the
+	// last two). The bind — which repoints p.gate — must not land inside a
+	// section that reads p.gate and acts on it under p.mu: the reservation
+	// commit's admit re-check through its pending debit, the scan's gate chain,
+	// the alias resolver's routability read. Binding at attestation time is what
+	// re-attaches a reconnecting machine's fault state (breakers/cooldowns keyed
+	// by serial/SE-key) to its fresh session id BEFORE it becomes routable —
+	// public routing requires attestation.
+	if r := p.registry; r != nil {
+		r.bindStableFaultKey(p, stableProviderIdentityLocked(p))
 	}
 }
 
@@ -1906,14 +1956,12 @@ func (p *Provider) SetAttestationResult(result *attestation.VerificationResult) 
 // identity resolves to the ACCOUNT fallback — attestation absent (Open Mode)
 // or invalid — would otherwise never bind: all its fault state would key by
 // session UUID and be wiped on reconnect. Same lock discipline as
-// SetAttestationResult: derive under p.mu, bind OUTSIDE it (bindStableFaultKey
-// takes r.mu; the established order is r.mu → p.mu).
+// SetAttestationResult: derive AND bind under p.mu.
 func (p *Provider) RebindStableFaultKey() {
 	p.mu.Lock()
-	id, stableID, r := p.ID, stableProviderIdentityLocked(p), p.registry
-	p.mu.Unlock()
-	if r != nil {
-		r.bindStableFaultKey(id, stableID)
+	defer p.mu.Unlock()
+	if r := p.registry; r != nil {
+		r.bindStableFaultKey(p, stableProviderIdentityLocked(p))
 	}
 }
 
@@ -2086,6 +2134,13 @@ type Registry struct {
 	providers map[string]*Provider
 
 	queue *RequestQueue
+	// drainSuppress rate-limits HEARTBEAT-triggered queue drains per model
+	// after a saturated pass (queue_drain_suppress.go). Zero value ready.
+	drainSuppress queueDrainSuppressor
+	// drainPasses runs one queue-drain pass per model at a time and reruns it
+	// for triggers that landed mid-pass (queue_drain_coalesce.go). Zero value
+	// ready.
+	drainPasses queueDrainCoalescer
 
 	MinTrustLevel TrustLevel
 
@@ -2171,6 +2226,22 @@ type Registry struct {
 	// shared reading after winner selection and before the serialized commit.
 	// Production leaves it nil; tests set it before starting concurrent scans.
 	reservationAfterScan func(model string)
+	// drainBeforePop is a test-only barrier invoked with no locks held before
+	// every pop of a queue-drain pass, so a test can interleave a trigger at a
+	// chosen point of the pass. Production leaves it nil.
+	drainBeforePop func(model string)
+
+	// modelIndex maps advertised model id → providers advertising it, so the
+	// per-request fleet walks visit only providers that can pass the first
+	// gate (model_index.go). Leaf lock — see that file for the contract.
+	modelIndex providerModelIndex
+	// modelIndexDisabled (tests only) makes providersForModelLocked return the
+	// whole fleet so a walk can be proven identical with and without the index.
+	modelIndexDisabled bool
+
+	// swapPlanGate coalesces heartbeat-triggered model-swap planning to at
+	// most one plan per modelSwapPlanInterval fleet-wide (model_swap_coalesce.go).
+	swapPlanGate modelSwapPlanGate
 
 	onlineCount      atomic.Int64
 	modelProviders   map[string]*atomic.Int64
@@ -2190,131 +2261,48 @@ type Registry struct {
 	// is derived entirely from BackendCapacity.Slots (with WarmModels as the
 	// legacy fallback). Do not add routing reads of this field — see the
 	// "Coordinator State Model" section in AGENTS.md.
-	pendingModelLoads       map[string]time.Time // key: "providerID:modelID", value: expiry
-	pendingModelLoadStarted map[string]time.Time
+	pendingModelLoads       map[modelLoadKey]time.Time // value: expiry (see pair_keys.go)
+	pendingModelLoadStarted map[modelLoadKey]time.Time
 
-	// dispatchLoadCooldowns: provider-model pairs that rejected a dispatch with a
-	// load failure ("insufficient memory"). Routing skips the pair until expiry —
-	// it would instant-503 again, and without this the scheduler re-picks it
-	// (looks idle), causing the dispatch→503→retry storms seen in prod. Cleared
-	// on re-registration and on a served request for the pair.
-	dispatchLoadCooldowns map[string]time.Time // key: "providerID:modelID", value: expiry
-
-	// inferenceErrorStrikes / inferenceErrorCooldowns implement the error-class
-	// circuit breaker for provider-side inference failures: a (provider, model,
-	// shape) triple that returns repeated 5xx errors (e.g. the deterministic
-	// Gemma chat-template render crash on tool schemas) enters a routing
-	// cool-down so retries fall to OTHER providers instead of burning every
-	// attempt on the same broken pair. 4xx (client-shape) errors never count.
-	//
-	// The key is SHAPE-KEYED (inferenceErrorKey) rather than a "providerID:modelID"
-	// string concat. Shape-keying fixes the root bug where a clean non-tool
-	// success reset the SHARED strike counter, so in mixed traffic a deterministic
-	// tool/template failure interleaved with text successes never reached the
-	// 2-strike threshold and the broken provider was never quarantined for tools.
-	// Strikes now accumulate per shape ("tools" independent of "base"), a success
-	// clears only its own shape bucket, and the struct key also closes the
-	// threat-model colon-collision note (a provider or model id containing ':'
-	// could previously alias another pair). Strikes slide over inferenceErrorWindow.
-	// Guarded by r.mu like dispatchLoadCooldowns. See error_cooldown.go.
-	inferenceErrorStrikes   map[inferenceErrorKey][]time.Time // recent 5xx strike times per (provider, model, shape)
-	inferenceErrorCooldowns map[inferenceErrorKey]time.Time   // cool-down expiry per (provider, model, shape)
-
-	// providerOutcomes / providerBreakerOpenUntil / providerBreakerTrips
-	// implement the per-provider (node-health) circuit breaker, SEPARATE from
-	// and ADDITIONAL to the shape-keyed inference-error breaker above. It
-	// quarantines a whole provider that returns GENUINE-FAULT errors
-	// (500/502/504, or a fault-shaped 503 — internal error, crash, the opaque
-	// Foundation string) for ~all of its requests, regardless
-	// of model/shape — the case the inference-error breaker misses because it
-	// skips 503. After an exponential cooldown it re-probes and auto-re-admits
-	// on the first success. Capacity-class sheds (4xx/429 and token-budget /
-	// KV-headroom / draining 503s) never count — a healthy-but-busy provider.
-	// The breaker FAILS OPEN: when it would deroute every provider for a model,
-	// selection re-scans with it bypassed (selectBestCandidateLockedFull) so a
-	// bad fleet-wide rollout cannot zero out routing. Guarded by r.mu like the
-	// maps above. Keyed by the stable fault key (faultKeyLocked) and NOT
-	// cleared on Disconnect — state re-attaches on reconnect; only a provider
-	// with no stable identity has its session-keyed residue dropped. See
-	// provider_breaker.go.
-	providerOutcomes         map[string]*providerHealthWindow // per-provider sliding fault/success ring
-	providerBreakerOpenUntil map[string]time.Time             // breaker-open expiry per provider
-	providerBreakerTrips     map[string]int                   // trip count per provider (exponential backoff)
-
-	// capacityRejectStrikes / capacityCooldowns / capacityCooldownTrips
-	// implement the capacity-reject routing cooldown (capacity_cooldown.go),
-	// SEPARATE from every breaker above — all of which deliberately IGNORE
-	// capacity-class rejections (sound for occasional sheds from a busy box,
-	// catastrophic for a box that capacity-rejects EVERYTHING while its
-	// idle-looking heartbeats keep winning the cost scheduler: the 2026-07
-	// black-hole incident, 7 boxes, ~9k rejects/30min, zero successes). A
-	// (provider, model) pair that accumulates threshold-many capacity rejects
-	// inside the window with ZERO interleaved accepts enters a routing
-	// cooldown with exponential re-trip backoff; any accept (first content
-	// chunk or clean completion) clears all three entries. Config is
-	// env-tunable (EIGENINFERENCE_CAPACITY_COOLDOWN_*), loaded at
-	// construction. Guarded by r.mu like the maps above.
-	capacityCooldownCfg   capacityCooldownConfig
-	capacityRejectStrikes map[capacityRejectKey][]time.Time            // recent capacity-reject strikes per (provider, model)
-	capacityCooldowns     map[capacityRejectKey]*capacityCooldownEntry // cooldown expiry + half-open probe claim per (provider, model)
-	capacityCooldownTrips map[capacityRejectKey]int                    // trip count per (provider, model) (exponential backoff)
-
-	// budgetClamps implements the gray-box budget clamp (budget_clamp.go):
-	// after a capacity-shaped 503, admission stops believing the pair's
-	// stale-optimistic heartbeat budget and treats the slot as FULL until the
-	// provider proves recovery (fresh heartbeat with headroom + an accept) or
-	// the clamp TTL fail-opens. Keyed by stable fault identity; migrated on
-	// rebind; NOT cleared on Disconnect. Guarded by r.mu.
-	budgetClampCfg budgetClampConfig
-	budgetClamps   map[capacityRejectKey]*budgetClampEntry
-
-	// capacityRateRejects / capacityRateAccepts implement the capacity-503
-	// rate penalty (capacity_rate.go): sliding windows of capacity rejects and
-	// served dispatches per (stable identity, model). Unlike every breaker
-	// above there is NO accept-triggered reset — the rate is exactly the
-	// gray-box signal the zero-interleaved-accepts discriminators are blind
-	// to. Keyed by stable fault identity; migrated on rebind; NOT cleared on
-	// Disconnect. Guarded by r.mu.
-	capacityRateCfg     capacityRateConfig
-	capacityRateRejects map[capacityRejectKey][]time.Time
-	capacityRateAccepts map[capacityRejectKey][]time.Time
-
-	// Stable-identity health ejection (health_ejection.go). Keyed by a STABLE
-	// identity (serial/SE-key/account), NOT the session UUID, and DELIBERATELY
-	// NOT deleted on Disconnect — so a zombie that fails ~every request while
-	// reconnecting constantly still accumulates to the ejection threshold.
-	healthEjectionWindows map[string]*providerHealthWindow // stable-id sliding fault/success ring
-	healthEjectionUntil   map[string]time.Time             // ejection-open expiry per stable id
-	healthEjectionTrips   map[string]int                   // trip count per stable id (exponential backoff)
-	// healthEjectionCapacityStreaks counts CONSECUTIVE capacity-shaped 5xx
-	// rejections (zero interleaved successes) per stable identity — the
-	// capacity black-hole signature that every fault breaker deliberately
-	// ignores (prod: 13,333 "token_budget"-shaped 503s, 100% error rate, 90
-	// min, never ejected). Any success clears the streak, so a busy-but-
-	// serving box can never trip. See health_ejection.go.
-	healthEjectionCapacityStreaks map[string]capacityStreak
-	// healthEjectionLastTripCapacity records whether an identity's most recent
-	// ejection came from the capacity streak (true) or the fault path (false).
-	// The capacity branch's half-open instant re-arm applies only to capacity
-	// trips: a single capacity shed — legitimate for a healthy-but-full box —
-	// must not re-arm a FAULT ejection whose cooldown just expired.
-	healthEjectionLastTripCapacity map[string]bool
-	// disconnectedStableIDs caches a provider's stable identity at Disconnect time,
-	// keyed by its (now-removed) session id, so the pending-request ErrorCh flush —
-	// which runs AFTER Disconnect deletes the provider and carries the 502 "provider
-	// disconnected" faults that define a reconnecting zombie — can still resolve the
-	// identity and record those faults against the stable-identity breaker.
+	// Per-identity routing-gate state (gate_state.go). Every fault tracker —
+	// the dispatch-load cooldown, the shape-keyed inference-error breaker
+	// (error_cooldown.go), the node-health breaker (provider_breaker.go), the
+	// capacity cooldown / rate window / budget clamp (capacity_cooldown.go,
+	// capacity_rate.go, budget_clamp.go) and stable-identity health ejection
+	// (health_ejection.go) — lives on the gateState of the provider's STABLE
+	// fault key (serial → SE key → account → session id), each gate with its
+	// own mutex. Recorders take gate.mu only, never r.mu: the six per-request
+	// write acquisitions of r.mu that convoyed behind the fleet-scan readers
+	// are gone. gates is keyed by fault key; sessions indexes LIVE session ids
+	// to their Provider (whose p.gate caches the current gate) so recorders
+	// resolve a session without r.mu; disconnectedStableIDs caches a
+	// provider's stable identity at Disconnect time, keyed by its now-removed
+	// session id, so the trailing pending-request ErrorCh flush — which
+	// carries the 502 "provider disconnected" faults that define a
+	// reconnecting zombie — still resolves the identity. All three under
+	// gatesMu: RLock to resolve, Lock only in Register / Disconnect / the
+	// attestation-time bind / the periodic sweep. Fault state is keyed by
+	// identity and NOT cleared on Disconnect — it re-attaches on reconnect
+	// (the prod zombie exploit: median 18 sessions/machine/week reset every
+	// session-keyed breaker before it could trip).
+	gatesMu               sync.RWMutex
+	gates                 map[string]*gateState
+	sessions              map[string]*Provider
 	disconnectedStableIDs map[string]disconnectedStableID
-	// faultKeyBySession maps a LIVE session id to its stable identity
-	// (serial/SE-key/account). Bound by SetAttestationResult, removed on
-	// Disconnect (the disconnectedStableIDs cache covers the trailing flush).
-	// Every fault-tracking map above (inference-error cooldowns, node-health
-	// breaker, dispatch-load cooldowns) keys by faultKeyLocked(sessionID) —
-	// the stable identity when bound, the session id itself otherwise — so a
-	// reconnecting machine re-attaches its accumulated fault state instead of
-	// wiping it (the prod zombie exploit: median 18 sessions/machine/week
-	// reset every session-keyed breaker before it could trip).
-	faultKeyBySession map[string]string
+	gateSweepAt           time.Time
+	// gateWaitObserver, when set, is told about gate.mu acquisition waits above
+	// gateWaitReportThreshold, tagged by recorder site (SetGateWaitObserver).
+	gateWaitObserver atomic.Pointer[func(site string, wait time.Duration)]
+
+	// reserveCommitMode selects whether the reservation commit holds r.mu for
+	// reading (shared, default) or writing (global — the kill switch). Read
+	// once from EIGENINFERENCE_RESERVE_COMMIT_MODE at construction.
+	reserveCommitMode reserveCommitMode
+
+	// Env-tunable tracker configs, read once at construction.
+	capacityCooldownCfg capacityCooldownConfig
+	budgetClampCfg      budgetClampConfig
+	capacityRateCfg     capacityRateConfig
 
 	// evictStrikes counts consecutive eviction sweeps a provider has been stale.
 	// A provider is only evicted after STALE on two sweeps in a row, so a single
@@ -2393,42 +2381,27 @@ type modelLoadAction struct {
 // New creates a new Registry.
 func New(logger *slog.Logger) *Registry {
 	return &Registry{
-		providers:                      make(map[string]*Provider),
-		queue:                          NewRequestQueueFromEnv(),
-		MinTrustLevel:                  TrustHardware,
-		tpsRegistry:                    NewTPSRegistry(),
-		modelProviders:                 make(map[string]*atomic.Int64),
-		pendingModelLoads:              make(map[string]time.Time),
-		pendingModelLoadStarted:        make(map[string]time.Time),
-		dispatchLoadCooldowns:          make(map[string]time.Time),
-		inferenceErrorStrikes:          make(map[inferenceErrorKey][]time.Time),
-		inferenceErrorCooldowns:        make(map[inferenceErrorKey]time.Time),
-		providerOutcomes:               make(map[string]*providerHealthWindow),
-		providerBreakerOpenUntil:       make(map[string]time.Time),
-		providerBreakerTrips:           make(map[string]int),
-		capacityCooldownCfg:            loadCapacityCooldownConfig(),
-		capacityRejectStrikes:          make(map[capacityRejectKey][]time.Time),
-		capacityCooldowns:              make(map[capacityRejectKey]*capacityCooldownEntry),
-		capacityCooldownTrips:          make(map[capacityRejectKey]int),
-		budgetClampCfg:                 loadBudgetClampConfig(),
-		budgetClamps:                   make(map[capacityRejectKey]*budgetClampEntry),
-		capacityRateCfg:                loadCapacityRateConfig(),
-		capacityRateRejects:            make(map[capacityRejectKey][]time.Time),
-		capacityRateAccepts:            make(map[capacityRejectKey][]time.Time),
-		healthEjectionWindows:          make(map[string]*providerHealthWindow),
-		healthEjectionUntil:            make(map[string]time.Time),
-		healthEjectionTrips:            make(map[string]int),
-		healthEjectionCapacityStreaks:  make(map[string]capacityStreak),
-		healthEjectionLastTripCapacity: make(map[string]bool),
-		disconnectedStableIDs:          make(map[string]disconnectedStableID),
-		faultKeyBySession:              make(map[string]string),
-		evictStrikes:                   make(map[string]int),
-		cacheRouting:                   newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
-		cacheActivation:                newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
-		cacheRoutingMode:               CacheRoutingOff,
-		cacheRoutingMaxDiscountMs:      defaultCacheRoutingMaxDiscountMs,
-		cacheRoutingMaxCostFraction:    defaultCacheRoutingMaxCostFraction,
-		logger:                         logger,
+		providers:                   make(map[string]*Provider),
+		queue:                       NewRequestQueueFromEnv(),
+		MinTrustLevel:               TrustHardware,
+		tpsRegistry:                 NewTPSRegistry(),
+		modelProviders:              make(map[string]*atomic.Int64),
+		pendingModelLoads:           make(map[modelLoadKey]time.Time),
+		pendingModelLoadStarted:     make(map[modelLoadKey]time.Time),
+		gates:                       make(map[string]*gateState),
+		sessions:                    make(map[string]*Provider),
+		disconnectedStableIDs:       make(map[string]disconnectedStableID),
+		reserveCommitMode:           loadReserveCommitMode(logger),
+		capacityCooldownCfg:         loadCapacityCooldownConfig(),
+		budgetClampCfg:              loadBudgetClampConfig(),
+		capacityRateCfg:             loadCapacityRateConfig(),
+		evictStrikes:                make(map[string]int),
+		cacheRouting:                newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:             newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
+		cacheRoutingMode:            CacheRoutingOff,
+		cacheRoutingMaxDiscountMs:   defaultCacheRoutingMaxDiscountMs,
+		cacheRoutingMaxCostFraction: defaultCacheRoutingMaxCostFraction,
+		logger:                      logger,
 	}
 }
 
@@ -2484,42 +2457,56 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 // RecordDispatchLoadFailure puts a provider-model pair on a routing cool-down
 // after the provider rejected a dispatch with a load failure. Returns true
 // when this call started a new cool-down (false when one was already live),
-// so callers can emit metrics without double-counting the retry storm. Keyed
-// by the provider's stable fault key (faultKeyLocked) so the cool-down
-// survives a reconnect within its TTL.
+// so callers can emit metrics without double-counting the retry storm. Lives
+// on the provider's stable-identity gate (gate_state.go) so the cool-down
+// survives a reconnect within its TTL; takes only gate.mu.
 func (r *Registry) RecordDispatchLoadFailure(providerID, modelID string) bool {
-	hold := r.lockWrite("dispatch_load_failure")
+	hold := r.lockGate(r.gateForSession(providerID), "dispatch_load_failure")
 	defer hold.unlock()
+	g := hold.g
 	now := time.Now()
-	// Opportunistic sweep: bound the map by dropping expired entries when it
-	// grows (churned identities are never re-keyed).
-	if len(r.dispatchLoadCooldowns) > 1024 {
-		for key, expiry := range r.dispatchLoadCooldowns {
-			if !now.Before(expiry) {
-				delete(r.dispatchLoadCooldowns, key)
-			}
-		}
-	}
-	key := r.faultKeyLocked(providerID) + ":" + modelID
-	_, active := r.dispatchLoadCooldowns[key]
-	active = active && now.Before(r.dispatchLoadCooldowns[key])
-	r.dispatchLoadCooldowns[key] = now.Add(dispatchLoadCooldownTTL)
+	expiry, active := g.dispatchLoadCooldowns[modelID]
+	active = active && now.Before(expiry)
+	g.dispatchLoadCooldowns[modelID] = now.Add(dispatchLoadCooldownTTL)
+	g.updatedLocked(now)
 	return !active
 }
 
 // ClearDispatchLoadCooldown removes the cool-down for one provider-model pair
 // (called when the pair serves a request successfully — it can load after all).
+// Runs at request completion; takes only the identity's gate.mu.
 func (r *Registry) ClearDispatchLoadCooldown(providerID, modelID string) {
-	hold := r.lockWrite("dispatch_load_cooldown")
+	ref, has := r.refHasPairState(r.lookupSessionGateRef(providerID), gateFlagDispatchLoad)
+	if !has {
+		return // nothing to clear — the common case, one lock-free flag load
+	}
+	hold := r.lockGate(ref, "dispatch_load_clear")
 	defer hold.unlock()
-	delete(r.dispatchLoadCooldowns, r.faultKeyLocked(providerID)+":"+modelID)
+	g := hold.g
+	if g == nil {
+		return
+	}
+
+	delete(g.dispatchLoadCooldowns, modelID)
+	g.updatedLocked(time.Now())
 }
 
-// dispatchLoadCooldownActiveLocked reports whether routing should skip the pair.
-// READ-ONLY (no lazy delete) — some callers hold only r.mu.RLock. Caller holds
-// r.mu in either mode.
-func (r *Registry) dispatchLoadCooldownActiveLocked(providerID, modelID string, now time.Time) bool {
-	expiry, ok := r.dispatchLoadCooldowns[r.faultKeyLocked(providerID)+":"+modelID]
+// dispatchLoadCooled reports whether routing should skip the pair. Resolves
+// the session's gate; the scan uses the cached p.gate directly.
+func (r *Registry) dispatchLoadCooled(providerID, modelID string, now time.Time) bool {
+	return r.lookupGateForSession(providerID).dispatchLoadCooled(modelID, now)
+}
+
+// dispatchLoadCooled is the gate-level check: lock-free "no cooldown on any
+// model" fast path, otherwise one short gate.mu section. READ-ONLY (no lazy
+// delete). nil-safe.
+func (g *gateState) dispatchLoadCooled(modelID string, now time.Time) bool {
+	if !g.hasPairState(gateFlagDispatchLoad) {
+		return false
+	}
+	g = g.lockResolved()
+	expiry, ok := g.dispatchLoadCooldowns[modelID]
+	g.mu.Unlock()
 	return ok && now.Before(expiry)
 }
 
@@ -2786,7 +2773,7 @@ func (r *Registry) ResolveModelConstrainedWithTraits(
 // structural=true ignores transient slot/cooldown state so alias resolution can
 // queue against a capable build instead of falling back to an incapable one.
 // Self-route to an owned machine relaxes trust and allows private-only
-// providers, mirroring snapshotProviderLocked. Caller holds r.mu.
+// providers, mirroring snapshotProviderIntoLockedEx. Caller holds r.mu.
 func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	buildID string,
 	allowedSerials map[string]struct{},
@@ -2796,7 +2783,9 @@ func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	traits RequestTraits,
 	structural bool,
 ) bool {
-	for _, p := range r.providers {
+	// Only providers advertising the build can route it; the per-model index
+	// prunes the rest (gates unchanged). Copied before any p.mu is taken.
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := func() bool {
 			if len(allowedSerials) > 0 {
@@ -2867,7 +2856,7 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	}
 	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
 	// migrating to a larger build than the source). totalMemory prefers the
-	// backend-reported figure, matching snapshotProviderLocked. A resident
+	// backend-reported figure, matching snapshotProviderIntoLockedEx. A resident
 	// running/idle slot has already demonstrated fit and must bypass the
 	// heuristic. Owner-only off-catalog models use their advertised size.
 	totalMemoryGB := float64(p.Hardware.MemoryGB)
@@ -2902,7 +2891,15 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	) {
 		return false
 	}
-	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
+	// The session's current gate, read under p.mu — which the identity bind
+	// also holds (bindStableFaultKey) — so a rebind cannot repoint p.gate, or
+	// migrate the cooldown away from the gate read here, mid-check. Without
+	// that, a read of a shared source gate emptied by this session's own
+	// rebind would say "not cooled" and let an alias resolve to a Desired
+	// build whose only provider is cooled (the request then queues or 429s
+	// instead of taking the routable Previous build). No gateView
+	// confirmation is needed under p.mu.
+	if r.gateOf(p).dispatchLoadCooled(buildID, now) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -2924,7 +2921,8 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 	now := time.Now()
 	minTrust := r.MinTrustLevel
-	for _, p := range r.providers {
+	// Per-model index: only advertisers can route the build (model_index.go).
+	for _, p := range r.providersForModelLocked(buildID) {
 		p.mu.Lock()
 		ok := r.providerCanRouteBuildLocked(p, buildID, minTrust, now, false)
 		p.mu.Unlock()
@@ -3121,6 +3119,7 @@ func (r *Registry) mergeProviderModels(
 			p.PrefixCacheStatuses,
 			p.PrefixCacheStatusReported,
 		)
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 	if len(cacheStateInvalidated) > 0 {
 		r.mu.RLock()
@@ -3138,7 +3137,7 @@ func (r *Registry) mergeProviderModels(
 
 // RoutableProviderIDsForBuild returns the ids of providers that would actually
 // pass the routing gate for the build right now — the SAME checks
-// snapshotProviderLocked applies (advertises the build, not offline/untrusted,
+// snapshotProviderIntoLockedEx applies (advertises the build, not offline/untrusted,
 // public, trust ≥ floor, runtime verified, private-text capable, fresh
 // challenge), minus per-request capacity/headroom. Cold-but-healthy providers
 // count (no warm slot required — they load on first demand). Used to measure how
@@ -3226,6 +3225,7 @@ func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]
 	}
 	if changed {
 		p.Models = models
+		p.syncModelIndexLocked() // ids unchanged; keeps the invariant explicit
 	}
 }
 
@@ -3796,6 +3796,10 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		return existing
 	}
 	r.providers[id] = p
+	r.attachSessionGate(p)
+	p.mu.Lock()
+	r.modelIndex.sync(p)
+	p.mu.Unlock()
 	r.onlineCount.Add(1)
 	for _, m := range models {
 		r.modelProviderInc(m.ID)
@@ -3924,14 +3928,15 @@ func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online
 	return online
 }
 
-// Heartbeat updates the provider's status and stats.
-func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
+// Heartbeat updates the provider's status and stats and reports whether the
+// snapshot was accepted. Rejected stale snapshots still advance liveness.
+func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) bool {
 	r.mu.RLock()
 	p, ok := r.providers[id]
 	if !ok {
 		r.mu.RUnlock()
 		r.logger.Warn("heartbeat from unknown provider", "provider_id", id)
-		return
+		return false
 	}
 
 	// Work from registry-owned copies so clamping and retention never mutate the
@@ -3985,7 +3990,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			p.mu.Unlock()
 			r.logger.Debug("discarding stale capacity heartbeat",
 				"provider_id", id, "seq", msg.BackendCapacity.CapacitySeq, "applied_seq", appliedSeq)
-			return
+			return false
 		}
 		p.capacitySeq = msg.BackendCapacity.CapacitySeq
 		// Seq-stamping providers implement the wave-2 capacity protocol:
@@ -4076,6 +4081,10 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// loaded. Clear stale state so challenge checks never compare against a
 	// provider-injected identifier.
 	p.CurrentModel = currentModel
+	// Drain awareness (drain_state.go): "draining" arms the routing skip,
+	// "idle"/"serving" clear it. Independent of p.Status below — a draining
+	// provider keeps its online/serving accounting; only routing changes.
+	applyHeartbeatDrainStateLocked(p, msg.Status, now)
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -4091,6 +4100,9 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 			p.Status = StatusServing
 		}
 	}
+	// Backstop for the per-model provider index: allocation-free when p.Models
+	// is already in step, and self-healing within one heartbeat otherwise.
+	p.syncModelIndexLocked()
 	p.mu.Unlock()
 
 	// This heartbeat may be the release proof for a budget clamp
@@ -4109,12 +4121,20 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 
 	// Heartbeats can make a recovered slot routable again (for example after a
 	// crash auto-restart). Drain matching queues using the canonical scheduler
-	// rather than the legacy direct queue assignment path.
-	r.drainQueuedRequestsForModelsWithReason(providerModelIDs(p), DrainTriggerHeartbeat)
+	// rather than the legacy direct queue assignment path. Heartbeats are the
+	// one trigger that is rate-limited after a saturated pass
+	// (queue_drain_suppress.go); every capacity-freeing trigger drains at once.
+	r.drainQueuedRequestsForHeartbeat(providerModelIDs(p))
 
 	// If queue drain didn't satisfy all pending requests (no warm provider),
-	// check if a cold provider should swap models to serve queued demand.
-	r.TriggerModelSwaps()
+	// check if a cold provider should swap models to serve queued demand —
+	// coalesced fleet-wide to one plan per modelSwapPlanInterval, since N
+	// heartbeats inside that window would each re-derive the same plan; a
+	// heartbeat the window refuses arms one trailing plan for its end
+	// (model_swap_coalesce.go). Drain work can outlast the planning window,
+	// so claim against the current time rather than the heartbeat timestamp.
+	r.triggerModelSwapsFromHeartbeat(time.Now())
+	return true
 }
 
 // SendLoadModel instructs a provider to eagerly load a model so it becomes
@@ -4466,7 +4486,11 @@ func (r *Registry) planModelLoadActions(queuedModels []string, now time.Time) []
 // hasWarmProviderLocked reports whether a connected provider already has the
 // model warm. Caller must hold r.mu (read or write).
 func (r *Registry) hasWarmProviderLocked(model string, now time.Time) bool {
-	for _, p := range r.providers {
+	// Only advertisers can hold the model warm (warm/slot reports are
+	// canonicalized against p.Models; providerHasWarmModelLocked also requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
 		p.mu.Lock()
 		warm := r.providerHasWarmModelLocked(p, model, now)
 		p.mu.Unlock()
@@ -4523,7 +4547,11 @@ func (r *Registry) providerHasWarmModelLocked(p *Provider, model string, now tim
 // pending requests. Caller must hold r.mu (read or write).
 func (r *Registry) bestModelLoadProviderLocked(model string, now time.Time, selectedProviders map[string]struct{}) string {
 	bestProviderID := ""
-	for id, p := range r.providers {
+	// Only advertisers qualify (modelLoadCandidatePendingLocked requires
+	// providerServesRoutableModelLocked), so the per-model index prunes the
+	// walk losslessly (model_index.go).
+	for _, p := range r.providersForModelLocked(model) {
+		id := p.ID
 		if _, selected := selectedProviders[id]; selected {
 			continue
 		}
@@ -4600,7 +4628,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 
 	reserved := actions[:0]
@@ -4619,7 +4647,7 @@ func (r *Registry) reservePendingModelLoads(actions []modelLoadAction, now time.
 		if r.providerHasPendingLoad(action.providerID) {
 			continue
 		}
-		key := modelLoadKey(action.providerID, action.modelID)
+		key := modelLoadKey{ProviderID: action.providerID, ModelID: action.modelID}
 		r.pendingModelLoads[key] = now.Add(pendingModelLoadTTL)
 		r.pendingModelLoadStarted[key] = now
 		reserved = append(reserved, action)
@@ -4640,16 +4668,11 @@ func (r *Registry) sendModelLoadActions(actions []modelLoadAction) {
 	}
 }
 
-func modelLoadKey(providerID, modelID string) string {
-	return providerID + ":" + modelID
-}
-
 // providerHasPendingLoad reports whether the provider has any pending
 // load_model command. Caller must hold r.mu (read or write).
 func (r *Registry) providerHasPendingLoad(providerID string) bool {
-	prefix := providerID + ":"
 	for key := range r.pendingModelLoads {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+		if key.ProviderID == providerID && key.ModelID != "" {
 			return true
 		}
 	}
@@ -4670,14 +4693,12 @@ func (r *Registry) ClearIneligiblePendingModelLoads(providerID string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	prefix := providerID + ":"
 	cleared := 0
 	for key := range r.pendingModelLoads {
-		if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
+		if key.ProviderID != providerID || key.ModelID == "" {
 			continue
 		}
-		modelID := key[len(prefix):]
-		if r.providerCanAcquireCatalogModelLocked(p, modelID) {
+		if r.providerCanAcquireCatalogModelLocked(p, key.ModelID) {
 			continue
 		}
 		delete(r.pendingModelLoads, key)
@@ -4747,7 +4768,7 @@ func (r *Registry) MarkModelWarm(providerID, modelID string) {
 // load_model_status response.
 func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Duration {
 	r.mu.Lock()
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	started := r.pendingModelLoadStarted[key]
 	delete(r.pendingModelLoads, key)
 	delete(r.pendingModelLoadStarted, key)
@@ -4760,7 +4781,7 @@ func (r *Registry) ClearPendingModelLoad(providerID, modelID string) time.Durati
 
 func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Duration {
 	r.mu.RLock()
-	started := r.pendingModelLoadStarted[modelLoadKey(providerID, modelID)]
+	started := r.pendingModelLoadStarted[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	if started.IsZero() {
 		return 0
@@ -4774,7 +4795,7 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 // allowing them to mutate warm-model state.
 func (r *Registry) HasPendingModelLoad(providerID, modelID string) bool {
 	r.mu.RLock()
-	expiresAt, ok := r.pendingModelLoads[modelLoadKey(providerID, modelID)]
+	expiresAt, ok := r.pendingModelLoads[modelLoadKey{ProviderID: providerID, ModelID: modelID}]
 	r.mu.RUnlock()
 	return ok && time.Now().Before(expiresAt)
 }
@@ -4790,12 +4811,12 @@ func (r *Registry) backoffPendingModelLoad(providerID, modelID string, backoff t
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pendingModelLoads == nil {
-		r.pendingModelLoads = make(map[string]time.Time)
+		r.pendingModelLoads = make(map[modelLoadKey]time.Time)
 	}
 	if r.pendingModelLoadStarted == nil {
-		r.pendingModelLoadStarted = make(map[string]time.Time)
+		r.pendingModelLoadStarted = make(map[modelLoadKey]time.Time)
 	}
-	key := modelLoadKey(providerID, modelID)
+	key := modelLoadKey{ProviderID: providerID, ModelID: modelID}
 	now := time.Now()
 	r.pendingModelLoads[key] = now.Add(backoff)
 	if r.pendingModelLoadStarted[key].IsZero() {
@@ -4951,58 +4972,63 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 	return merged
 }
 
-// Disconnect removes a provider from the registry and cleans up pending requests.
+// Disconnect removes a provider from the registry and cleans up pending
+// requests. This is the ABRUPT path: the flushed terminals carry
+// CoordinatorCauseProviderDisconnected and strike the provider's stable
+// identity. The provider read loop, which knows how the socket ended, calls
+// DisconnectWithReason (disconnect_reason.go) so a graceful peer close flushes
+// with the health-neutral restart cause instead.
 func (r *Registry) Disconnect(id string) {
+	r.disconnectWithCause(id, protocol.CoordinatorCauseProviderDisconnected)
+}
+
+// disconnectWithCause preserves the read loop's graceful/abrupt classification
+// for unconditional disconnects. Eviction adds an identity/freshness guard.
+func (r *Registry) disconnectWithCause(id string, cause protocol.CoordinatorInferenceErrorCause) {
+	r.disconnectProvider(id, nil, 0, cause)
+}
+
+// disconnectProvider applies an optional eviction guard atomically with removal.
+// expected is the exact session observed by the stale scan; nil is an ordinary
+// unconditional disconnect. Both its identity and latest heartbeat are checked
+// while r.mu and p.mu exclude replacement and heartbeat updates. The supplied
+// cause is stamped on every flushed pending-request terminal.
+func (r *Registry) disconnectProvider(id string, expected *Provider, timeout time.Duration, cause protocol.CoordinatorInferenceErrorCause) bool {
 	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
 	if ok {
+		if expected != nil && p != expected {
+			r.mu.Unlock()
+			return false
+		}
+		p.mu.Lock()
+		if expected != nil && time.Since(p.LastHeartbeat) <= timeout {
+			p.mu.Unlock()
+			r.mu.Unlock()
+			return false
+		}
 		delete(r.providers, id)
 		// Clear any pending model load entries for this provider.
 		for key := range r.pendingModelLoads {
-			if len(key) > len(id)+1 && key[:len(id)+1] == id+":" {
+			if key.ProviderID == id {
 				delete(r.pendingModelLoads, key)
 				delete(r.pendingModelLoadStarted, key)
 			}
 		}
-		p.mu.Lock()
-		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault-tracking map
+		p.detachModelIndexLocked(r)
+		// FAULT STATE IS NOT CLEARED ON DISCONNECT. Every fault tracker
 		// (node-health breaker, inference-error cooldowns, dispatch-load
-		// cooldowns, health ejection) keys by the STABLE identity when one is
-		// bound, so it must survive reconnect churn — wiping it here was the
-		// zombie exploit. Only when the provider never had a stable identity
-		// (sid == "": its fault key WAS this session id, which never recurs)
-		// is the session-keyed residue dropped for hygiene.
-		//
-		// Cache the stable identity (keyed by this session id) before the pending
-		// flush below: GetProviderStableIdentity and faultKeyLocked fall back to it
-		// so the 502 "provider disconnected" faults — the dominant reconnecting-
-		// zombie signal — are still recorded against the stable-identity state even
-		// though the provider is already gone from r.providers.
-		if sid := stableProviderIdentityLocked(p); sid != "" {
-			r.rememberDisconnectedStableIDLocked(id, sid)
-		} else {
-			delete(r.providerOutcomes, id)
-			delete(r.providerBreakerOpenUntil, id)
-			delete(r.providerBreakerTrips, id)
-			for key := range r.inferenceErrorStrikes {
-				if key.ProviderID == id {
-					delete(r.inferenceErrorStrikes, key)
-				}
-			}
-			for key := range r.inferenceErrorCooldowns {
-				if key.ProviderID == id {
-					delete(r.inferenceErrorCooldowns, key)
-				}
-			}
-			prefix := id + ":"
-			for key := range r.dispatchLoadCooldowns {
-				if strings.HasPrefix(key, prefix) {
-					delete(r.dispatchLoadCooldowns, key)
-				}
-			}
-		}
-		delete(r.faultKeyBySession, id)
+		// cooldowns, health ejection, capacity trackers) lives on the STABLE
+		// identity's gate when one is bound, so it must survive reconnect
+		// churn — wiping it here was the zombie exploit. detachSessionGate
+		// caches the identity (keyed by this session id) before the pending
+		// flush below so the 502 "provider disconnected" faults — the dominant
+		// reconnecting-zombie signal — still resolve to it even though the
+		// provider is already gone from r.providers; only a provider that never
+		// had a stable identity (sid == "": its gate WAS this session id, which
+		// never recurs) has its session-keyed residue dropped for hygiene.
+		r.detachSessionGate(p, stableProviderIdentityLocked(p))
 		disconnectedModels = make([]string, 0, len(p.Models))
 		for _, m := range p.Models {
 			disconnectedModels = append(disconnectedModels, m.ID)
@@ -5018,7 +5044,7 @@ func (r *Registry) Disconnect(id string) {
 	r.mu.Unlock()
 
 	if !ok {
-		return
+		return false
 	}
 	// Removing the last capable provider can turn a queued constrained request
 	// from temporarily capacity-blocked into permanently unservable. Re-run
@@ -5054,7 +5080,8 @@ func (r *Registry) Disconnect(id string) {
 					RequestID:        reqID,
 					Error:            "provider disconnected",
 					StatusCode:       502,
-					CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
+					ErrorReason:      disconnectFlushErrorReason(cause),
+					CoordinatorCause: cause,
 				}
 			}()
 			func() {
@@ -5107,6 +5134,7 @@ func (r *Registry) Disconnect(id string) {
 	}
 
 	r.logger.Info("provider disconnected", "provider_id", id)
+	return true
 }
 
 // GetProvider returns a provider by ID, or nil if not found.
@@ -5507,46 +5535,44 @@ func (r *Registry) ListModels() []AggregateModel {
 	// Aggregate by model ID only — consumers request by ID, so providers
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
-	agg := make(map[string]*modelAgg)
+	//
+	// The whole per-provider step runs under p.mu: it reads only strings and
+	// booleans, retains nothing from the provider, and costs a few map lookups.
+	// There is deliberately NO per-provider snapshot slice — at fleet scale
+	// (~1,260 providers) that was one heap allocation per provider per call,
+	// and /v1/models (uncached, two ListModels calls per request) paid for it
+	// mostly as GC pressure rather than as the walk itself.
+	agg := make(map[string]*modelAgg, len(r.modelCatalog))
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		attested := p.Attested
-		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
-		privateOnly := p.PrivateOnly
-		// Snapshot only provider-model pairs that satisfy the live catalog and
-		// connection-scoped capability requirements.
-		models := make([]protocol.ModelInfo, 0, len(p.Models))
-		for _, model := range p.Models {
-			if r.providerModelAllowedByCatalogLocked(p, model) {
-				models = append(models, model)
-			}
-		}
-		p.mu.Unlock()
-
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
+		// Provider-level gates first, so an ineligible provider costs one lock
+		// and a handful of field reads — never a walk of its inventory.
 		// Private-only providers serve only their owner's self-route traffic, so
 		// they must not appear in or inflate the public /v1/models aggregation.
-		if privateOnly {
+		if p.Status == StatusOffline || p.Status == StatusUntrusted ||
+			p.PrivateOnly ||
+			!r.trustMeetsMinimum(p.TrustLevel) ||
+			!r.providerSupportsPrivateTextLocked(p) {
+			p.mu.Unlock()
 			continue
 		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
-			continue
-		}
-		for _, m := range models {
-			k := m.ID
-			a, ok := agg[k]
+		trust := p.TrustLevel
+		attestResult := p.AttestationResult
+		attested := p.Attested && attestResult != nil
+		for _, m := range p.Models {
+			// Count only provider-model pairs that satisfy the live catalog and
+			// connection-scoped capability requirements.
+			if !r.providerModelAllowedByCatalogLocked(p, m) {
+				continue
+			}
+			a, ok := agg[m.ID]
 			if !ok {
 				a = &modelAgg{
 					modelType:    m.ModelType,
 					quantization: m.Quantization,
 					highestTrust: TrustNone,
 				}
-				agg[k] = a
+				agg[m.ID] = a
 			}
 			a.count++
 
@@ -5555,13 +5581,14 @@ func (r *Registry) ListModels() []AggregateModel {
 				a.highestTrust = trust
 			}
 
-			if attested && attestResult != nil {
+			if attested {
 				a.attestedCount++
 				a.secureEnclave = a.secureEnclave || attestResult.SecureEnclaveAvailable
 				a.sipEnabled = a.sipEnabled || attestResult.SIPEnabled
 				a.secureBoot = a.secureBoot || attestResult.SecureBootEnabled
 			}
 		}
+		p.mu.Unlock()
 	}
 
 	models := make([]AggregateModel, 0, len(agg))
@@ -6101,7 +6128,7 @@ func (r *Registry) publiclyRoutableLocked(p *Provider, now time.Time) bool {
 
 // ModelCapacitySnapshot returns a capacity snapshot for every model served
 // by at least one provider. Providers must pass the same routing gates as
-// snapshotProviderLocked (status, trust, runtime, privacy, challenge
+// snapshotProviderIntoLockedEx (status, trust, runtime, privacy, challenge
 // freshness, concurrency headroom) to be counted as routable.
 func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	now := time.Now()
@@ -6113,7 +6140,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 	for _, p := range r.providers {
 		p.mu.Lock()
 
-		// Apply the same gates as snapshotProviderLocked. Private-only machines
+		// Apply the same gates as snapshotProviderIntoLockedEx. Private-only machines
 		// never serve the public fleet, so they do not count toward public
 		// model capacity.
 		if !r.publiclyRoutableLocked(p, now) {
@@ -6171,7 +6198,7 @@ func (r *Registry) ModelCapacitySnapshot() []ModelCapacity {
 				poolSnap.pendingMaxTokensAllModels,
 				poolSnap.pendingMaxBytesAllModels,
 				poolSnap.pendingBytesKnown,
-				poolSnap.pooledTokenBudget.kvBytesPerToken[m.ID],
+				poolSnap.pooledTokenBudget.kvRateFor(m.ID),
 			)
 
 			snap := providerCapSnap{
@@ -6387,17 +6414,21 @@ func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration)
 func (r *Registry) evictStale(timeout time.Duration) {
 	now := time.Now()
 
-	// Scan under the write lock: we both READ LastHeartbeat and REBUILD
-	// evictStrikes. Collect every provider's heartbeat age for the summary, and
-	// decide who to evict: a provider is reaped only after it is stale on TWO
-	// consecutive sweeps (strike >= 2), so a single transient stall that ages
-	// many timestamps at once gives the fleet a sweep to recover instead of a
-	// mass reap.
-	r.mu.Lock()
+	// Scan under the READ lock: the walk only reads LastHeartbeat (under p.mu)
+	// and the previous sweep's strikes. evictStrikes is written solely by this
+	// function on the single eviction goroutine, so a read-scan followed by a
+	// short write-locked install is race-free — and the routing scans that
+	// share r.mu are no longer blocked for a whole fleet walk every timeout/3.
+	// Collect every provider's heartbeat age for the summary, and decide who to
+	// evict: a provider is reaped only after it is stale on TWO consecutive
+	// sweeps (strike >= 2), so a single transient stall that ages many
+	// timestamps at once gives the fleet a sweep to recover instead of a mass
+	// reap.
+	r.mu.RLock()
 	fleet := len(r.providers)
 	ages := make([]time.Duration, 0, fleet)
-	nextStrikes := make(map[string]int, len(r.evictStrikes))
-	var toEvict []string
+	var nextStrikes map[string]int // allocated lazily: steady state carries nothing
+	var toEvict []*Provider
 	var evictAges []time.Duration
 	for id, p := range r.providers {
 		p.mu.Lock()
@@ -6408,15 +6439,30 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		if age > timeout {
 			strikes := r.evictStrikes[id] + 1
 			if strikes >= evictStrikeThreshold {
-				toEvict = append(toEvict, id)
+				toEvict = append(toEvict, p)
 				evictAges = append(evictAges, age)
 			} else {
+				if nextStrikes == nil {
+					nextStrikes = make(map[string]int)
+				}
 				nextStrikes[id] = strikes // carry the strike to next sweep
 			}
 		}
 	}
-	r.evictStrikes = nextStrikes
-	r.mu.Unlock()
+	hadStrikes := len(r.evictStrikes) > 0
+	r.mu.RUnlock()
+
+	// Install the rebuilt strike map under the write lock only when it changes
+	// anything (a strike carried or cleared). The steady state — nobody stale,
+	// nothing carried — never takes the write lock at all.
+	if hadStrikes || len(nextStrikes) > 0 {
+		if nextStrikes == nil {
+			nextStrikes = make(map[string]int)
+		}
+		r.mu.Lock()
+		r.evictStrikes = nextStrikes
+		r.mu.Unlock()
+	}
 
 	if len(ages) > 0 {
 		amin, amed, ap90, amax := durationStats(ages)
@@ -6436,10 +6482,18 @@ func (r *Registry) evictStale(timeout time.Duration) {
 		)
 	}
 
-	for _, id := range toEvict {
-		r.logger.Warn("evicting stale provider", "provider_id", id, "timeout", timeout)
-		r.Disconnect(id)
+	for _, p := range toEvict {
+		// A heartbeat may recover this session after the read scan, or the
+		// same id may name a replacement. Revalidate inside the removal lock.
+		if r.disconnectProvider(p.ID, p, timeout, protocol.CoordinatorCauseProviderDisconnected) {
+			r.logger.Warn("evicted stale provider", "provider_id", p.ID, "timeout", timeout)
+		}
 	}
+
+	// Bound the per-identity gate index on the same cadence (gate_state.go):
+	// prunes dead per-model entries and drops gates no live session references
+	// once idle. Off the request path and outside r.mu.
+	r.sweepGates(now)
 }
 
 // evictStrikeThreshold is how many consecutive stale sweeps trigger eviction.

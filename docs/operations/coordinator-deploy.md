@@ -1,6 +1,6 @@
 # Deploy the coordinator (production)
 
-> Last updated: 2026-09-04 · commit `bda995368`
+> Last updated: 2026-09-04 · commit `376b4868f`
 
 Runbook for swapping the production coordinator container on the GCE VM
 `darkbloom-coordinator` to a Cloud-Build image of a reviewed `master` commit,
@@ -9,6 +9,9 @@ may read build metadata and health endpoints but must not pull, stop, start, or
 edit the env file. Provider CLI releases are a separate runbook:
 [`provider-release.md`](provider-release.md); the dev coordinator is
 [dev-environment.md](dev-environment.md).
+
+For the remaining coordinator performance upgrade, also follow
+[the Tiers 2 and 3 rollout checks](coordinator-perf-tier23-rollout.md).
 
 ## When to use
 

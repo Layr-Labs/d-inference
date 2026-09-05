@@ -336,7 +336,7 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 //   - identity: r.providers[id] must still be the exact retained *Provider
 //     (a reconnect registers a new object under the same ID — its slot state,
 //     trust, and capacity are a stranger's; see Register/Disconnect);
-//   - snapshotProviderLocked → providerPassesRoutingGatesLocked (every
+//   - snapshotProviderIntoLockedEx → providerPassesRoutingGatesLocked (every
 //     structural/privacy/cooldown/trait gate);
 //   - buildCandidateWithReason (slot state, concurrency headroom, thermal,
 //     hardware fit, freeMemoryAdmits — including the in-flight pending debit
@@ -349,12 +349,14 @@ func (r *Registry) ReserveProviderWithPlan(model string, pr *PendingRequest, exc
 //     valve still protects the all-providers-broken case).
 //
 // Ledger note (why plan reservations cannot double-spend a heartbeat budget):
-// the r.mu WRITE lock is held for the whole loop, exactly like
-// ReserveProviderEx, so reservations serialize fleet-wide; and each entry is
-// re-snapshotted here, so freeMemoryAdmits charges every pending request
-// admitted since the plan was built (fillSnapshotPendingAndPool →
-// coordinatorExtra / pooledBudgetAdmits). See the ledger rationale on
-// reserveProvider's pending-debit path in scheduler.go.
+// each entry is re-snapshotted, re-costed, admit-checked and debited inside
+// ONE p.mu section (exactly like commitProviderReservation), so
+// freeMemoryAdmits charges every pending request admitted since the plan was
+// built (fillSnapshotPendingAndPool → coordinatorExtra / pooledBudgetAdmits)
+// and no concurrent commit can slip between the check and the debit. r.mu is
+// held for reading across the loop (identity checks against r.providers stay
+// valid); the global commit mode takes it for writing instead. See the ledger
+// rationale on reserveProvider's pending-debit path in scheduler.go.
 //
 // Version-diverse retry (SOFT — parity with scanCandidatesLocked's
 // post-candidate AvoidVersion narrowing): when pr.Traits.AvoidVersion is set,
@@ -396,8 +398,9 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	enforceTTFT := pr.MaxTTFTMs > 0 && !pr.RequiresVision
 
 	var skips []PlanSkip
-	hold := r.lockWrite("commit_plan")
-	defer hold.unlock()
+	lock := r.commitLock("commit_plan")
+	lock.lock()
+	defer lock.unlock()
 
 	// tryReserve runs the full CURRENT gate chain against one identity-checked
 	// entry and, on success, commits the reservation. Failure appends the
@@ -405,6 +408,8 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	tryReserve := func(entry planEntry) (*Provider, RoutingDecision, bool) {
 		id := entry.view.ProviderID
 		p := entry.provider
+		// One clock read per revalidated entry (snapshot, cost, admit, claim).
+		now := time.Now()
 		skip := func(reason PlanSkipReason) {
 			skips = append(skips, PlanSkip{ProviderID: id, Reason: reason})
 		}
@@ -420,36 +425,43 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 			return nil, RoutingDecision{}, false
 		}
 		relaxTrust := owned && (pr.SelfRouteOnly || pr.PreferOwner)
-		snap, ok := r.snapshotProviderLocked(p, model, pr.Traits, relaxTrust)
-		if !ok {
+
+		// Snapshot, cost, admit and reservation under ONE p.mu hold — the same
+		// commit sequence as commitProviderReservation, so nothing can change
+		// the provider between the admit re-check and the debit.
+		p.mu.Lock()
+		var snap routingSnapshot
+		if ok, _ := r.snapshotProviderIntoPLockedEx(&snap, p, model, pr.Traits, relaxTrust, false, now); !ok {
+			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
-		candidate, _, ok := r.buildCandidateWithReason(snap, pr)
+		candidate, _, ok := r.buildCandidateWithReason(snap, pr, now)
 		if !ok {
+			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
 		if enforceTTFT && snap.hasBackendCapacity && candidate.breakdown.TTFTMs > pr.MaxTTFTMs {
+			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
-
-		// Final admit + reservation under p.mu — the same commit sequence as
-		// reserveProvider (snapshotProviderLocked released p.mu, so the admit
-		// re-check closes the snapshot→reserve gap, including the vision gate).
-		p.mu.Lock()
-		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false) ||
+		if !r.providerCanAdmitLockedEx(p, model, pr.Traits, relaxTrust, false, now) ||
 			(pr.RequiresVision && !r.providerServesVisionModelLocked(p, model, relaxTrust)) {
+			p.mu.Unlock()
+			skip(PlanSkipGateRejected)
+			return nil, RoutingDecision{}, false
+		}
+		// Half-open capacity probe: check-and-claim under gate.mu, identical to
+		// the primary reservation path (p.mu → gate.mu).
+		if !r.tryClaimCapacityProbe(p, model, now) {
 			p.mu.Unlock()
 			skip(PlanSkipGateRejected)
 			return nil, RoutingDecision{}, false
 		}
 		pr.ProviderID = p.ID
 		p.addPendingLocked(pr)
-		// Half-open capacity probe claim: identical to the primary reservation
-		// path (the r.mu write lock held across this loop serializes claims).
-		r.claimCapacityProbeLocked(p.ID, model, time.Now())
 		if p.Status != StatusUntrusted && p.Status != StatusOffline {
 			p.Status = StatusServing
 		}
@@ -520,7 +532,7 @@ func (r *Registry) ReserveNextFromPlan(pr *PendingRequest, plan *DispatchPlan, e
 	}
 	// Pass 2: no diverse entry was admissible — fall back to the avoided
 	// version rather than failing closed. The pass-1 identity checks remain
-	// valid: r.providers cannot change while the r.mu write lock is held.
+	// valid: r.providers cannot change while r.mu is held in either mode.
 	for _, entry := range deferred {
 		if p, decision, ok := tryReserve(entry); ok {
 			return p, decision, skips

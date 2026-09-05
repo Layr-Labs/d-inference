@@ -24,6 +24,7 @@ func addAdvertisedModel(p *Provider, modelID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Models = append(p.Models, protocol.ModelInfo{ID: modelID, ModelType: "chat", Quantization: "4bit"})
+	p.syncModelIndexLocked()
 }
 
 func testLogger() *slog.Logger {

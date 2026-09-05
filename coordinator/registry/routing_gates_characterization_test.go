@@ -387,7 +387,7 @@ func TestReleasePolicyGenerationImmediatelyDeroutesStaleApplicationEvidence(t *t
 			EvidenceGeneration: 1, PolicyGeneration: 1,
 		},
 	}
-	reg.providers[provider.ID] = provider
+	insertTestProvider(reg, provider)
 	if !reg.providerSupportsPrivateTextLocked(provider) {
 		t.Fatal("current release evidence should authorize the routing contribution")
 	}
@@ -441,7 +441,7 @@ func TestReleasePolicyGenerationCarriesForwardStillApprovedEvidence(t *testing.T
 			EvidenceGeneration: 1, PolicyGeneration: 1,
 		},
 	}
-	reg.providers[provider.ID] = provider
+	insertTestProvider(reg, provider)
 
 	invalidated := reg.SetReleasePolicyGeneration(2, true,
 		func(evidence ApplicationEvidence) bool { return evidence.BinaryHash == "hash" })
@@ -496,7 +496,7 @@ func TestReleasePolicyShadowModeNeverBlocksRouting(t *testing.T) {
 			EnvScrubbed:          true,
 		},
 	}
-	reg.providers[provider.ID] = provider
+	insertTestProvider(reg, provider)
 
 	if !reg.providerSupportsPrivateTextLocked(provider) {
 		t.Fatal("shadow mode must route a provider without application evidence")
@@ -560,7 +560,7 @@ func TestReleasePolicyEnforceAfterDelaysEnforcement(t *testing.T) {
 		releasePolicyRequired:   true,
 	}
 	provider := evidenceGateTestProvider()
-	reg.providers[provider.ID] = provider
+	insertTestProvider(reg, provider)
 
 	reg.SetReleasePolicyEnforcement(true)
 	reg.SetReleasePolicyEnforceAfter(time.Now().Add(time.Hour))
@@ -593,7 +593,7 @@ func TestReleasePolicySweepKeepsCapabilitiesInShadow(t *testing.T) {
 	}
 	provider := evidenceGateTestProvider()
 	provider.RuntimeCapabilities = []string{ProviderCapabilityMLXNAX}
-	reg.providers[provider.ID] = provider
+	insertTestProvider(reg, provider)
 
 	if reg.SetReleasePolicyGeneration(2, true, nil); provider.RuntimeCapabilities == nil {
 		t.Fatal("shadow sweep must not clear runtime capabilities")
@@ -636,8 +636,8 @@ func TestApplicationEvidenceModelCoverage(t *testing.T) {
 	uncovered.RuntimeVerified = true
 	uncovered.LastChallengeVerified = time.Now()
 	uncovered.Models = []protocol.ModelInfo{{ID: "model-uncovered"}}
-	reg.providers[covered.ID] = covered
-	reg.providers[uncovered.ID] = uncovered
+	insertTestProvider(reg, covered)
+	insertTestProvider(reg, uncovered)
 
 	coverage := reg.ApplicationEvidenceModelCoverage()
 	if c := coverage["model-covered"]; c.Routable != 1 || c.WithEvidence != 1 {

@@ -1,6 +1,6 @@
 # Request Outcome Observability
 
-> Last updated: 2026-09-04 · commit `d574bd5af`
+> Last updated: 2026-09-04 · commit `6f364e64b`
 
 Every inference request the coordinator dispatches ends in exactly one terminal outcome, and that outcome is recorded three ways: a closed `final_status` / `error_class` / `error_reason` triple on the `inference_routes` row, a per-attempt `request_profiles` row with separate `client_outcome` and `provider_outcome` columns, and a small set of low-cardinality Datadog counters. Requests refused before dispatch land in the `request_rejections` ledger instead. This page explains the taxonomy as the code implements it, where each value is decided, and what is still not modelled.
 
@@ -144,11 +144,43 @@ All counters go through `ddIncr`/`ddHistogram`, which are no-ops when Datadog is
 | `inference.timing.{parse_ms,reserve_ms,route_ms,encrypt_ms,queue_wait_ms,dispatch_ms,total_duration_ms}` | `model`, `final_status` | `emitTimingDecompositionMetric` (`coordinator/api/timing_metrics.go`) | histograms of the same values persisted on the route row; zero segments are skipped |
 | `inference.partial_success` | `model`, `error_class` | `handleComplete` when `consumerGone` (`coordinator/api/partial_success_metrics.go`) | subset of `inference.completions`; `error_class` is always `client_gone_after_commit_provider_completed` |
 | `inference.no_terminal_after_cancel` | `model` | `settlement.go` grace expiry | payout gap: refunded, provider unpaid |
-| `routing.client_gone` | `model`, `prompt_bucket`, `chip_family`, `phase` | `emitClientGone` (`coordinator/api/prompt_buckets.go`) from pre-commit arms (`phase:before_first_token`) and from `handleComplete`, `handleInferenceError`, settlement expiry (`phase:after_commit`) | at most one per request; `chip_family` is `unknown` when unobserved |
+| `routing.client_gone` | `model`, `prompt_bucket`, `chip_family`, `phase`, `deadline_bucket` | `emitClientGone` (`coordinator/api/prompt_buckets.go`) from pre-commit arms (`phase:before_first_token`) and from `handleComplete`, `handleInferenceError`, settlement expiry (`phase:after_commit`) | at most one per request; `chip_family` uses the fixed vocabulary in `coordinator/api/chip_family_tags.go`; `deadline_bucket` distinguishes early aborts from cancellations at the first-content deadline |
 | `inference.ttft_ms`, `inference.decode_tps` | `model`, `kv_backend`, `kv_backend_fallback` | `handleComplete` (`coordinator/api/kv_backend_metrics.go`) | the same values written to `inference_routes.actual_ttft_ms` / `actual_decode_tps`; skipped when unmeasurable |
 | `routing.unservable_reclassified` | `model` | dispatch-exhausted backstop in `dispatch.go` | a provider token-budget/KV/context `5xx` turned into an uptime-neutral `429` |
 
 `kv_backend` uses the heartbeat vocabulary (`paged`, `contiguous`, `unspecified`, `other`, `unknown`) and `kv_backend_fallback` the slot's `kv_backend_fallback_reason` (`none` is a real value). Attribution follows the slot that served, is sticky for the provider session (`coordinator/registry/kv_backend.go`), and is never coerced: a request that never reached a slot is `unknown`/`unknown`. Nothing consults `kv_backend` for routing, admission, scoring or shedding.
+
+`inference.attempt_outcome{model,class}` counts dispatched attempts only.
+Queued exits carry the transient `QueueExit` marker and instead increment
+`inference.queue_outcome{model,class}`; queue deadline expiry uses
+`queue_deadline`, while a provider silent after dispatch uses
+`first_chunk_timeout`. Typed drain refusals count as capacity, never faults
+(`coordinator/api/attempt_outcome_metrics.go`, `emitAttemptOutcomeMetric`;
+`coordinator/api/dispatch.go`, `queuedExitOutcome`).
+
+`inference.request_outcome_or_view{model,class}` also counts a TTFT rejection
+on the first reservation scan as `rate_limited`, even though that branch does
+not write a retry rejection row. The request-level outcome is independent of
+the retry-only ledger/legacy dispatch metrics
+(`coordinator/api/dispatch.go`, `dispatchPrimary`).
+
+`inference.cancel_sent{cause,model}` counts cancels accepted by the provider
+writer; a full/stopped writer increments `inference.cancel_send_failed{reason}`.
+`inference.cancel_to_terminal_ms{terminal,model,cause}` starts at the first
+successful enqueue, excluding failed-enqueue retry delay. It uses a terminal
+frame, or the last subsequent stray chunk for an expired entry. A cancel that
+was never accepted contributes only to `inference.cancel_unresolved` on expiry,
+even if stray chunks arrived. `inference.cancelled_terminal` includes
+`delivered:true|false` for correlated terminals. Successful enqueue marking and terminal resolution share the tracker lock,
+so an immediate terminal cannot observe an unmarked accepted cancel.
+Enqueue acceptance does not prove a frame reached the provider (`coordinator/api/cancel_lifecycle.go`,
+`sendRecordedCancel`, `resolveCancelledTerminal`, `emitExpiredCancelEntries`).
+The zombie tracker keeps at most `zombieCancelMaxEntries = 4096` entries.
+Insertions at the cap evict one least-recently-active ID with constant-time
+list operations; they do not force an expiry scan. TTL and warning-state
+cleanup remain rate-limited to `zombieSweepEvery`
+(`coordinator/api/zombie_eviction.go`, `makeRoomLocked`;
+`coordinator/api/zombie_stream.go`, `sweepLocked`).
 
 ### Read surfaces
 

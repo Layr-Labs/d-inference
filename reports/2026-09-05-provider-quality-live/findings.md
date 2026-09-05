@@ -66,3 +66,9 @@ Still proposed: latest stable history across same-process reconnects; unified at
 - Documentation checks: 127 files passed, including the new design. `git diff --check`: passed.
 
 These checks validate local source, not deployment. The live query results do not attest that production is running this exact source commit. The original audit artifacts are historical baseline evidence; the ordinary regression tests in this worktree are the acceptance checks for the fixes.
+
+## PR preparation follow-up
+
+Integrated newer master changes, preserving both changelog entries. Focused Go and documentation checks passed after the merge. The required pre-push hook passed its full Go suite, lint and Next.js build.
+
+A clean standalone `tsc --noEmit --incremental false` found a missing `unknown` sort rank in the new grid status model; that entry is fixed. The remaining 13 type diagnostics reproduce on an archived master baseline with the same dependencies (matching diagnostic identity/counts, ignoring shifted line numbers). Existing diagnostics affect earnings fetch headers, RUM/Privy types, Vitest configuration and old test fixtures. Next.js is configured with `typescript.ignoreBuildErrors: true`; its successful build does not establish standalone type-check success.

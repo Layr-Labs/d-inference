@@ -12,8 +12,9 @@ import { FleetControls, type Density, type SortMode } from "./FleetControls";
 const STATE_RANK: Record<RoutingState, number> = {
   blocked: 0,
   offline: 1,
-  degraded: 2,
-  routable: 3,
+  unknown: 2,
+  degraded: 3,
+  routable: 4,
 };
 
 export function MachineGrid({

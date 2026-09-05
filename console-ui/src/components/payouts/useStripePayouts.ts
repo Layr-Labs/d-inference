@@ -163,7 +163,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       onWithdrawError?.();
       const p = classifyWithdrawError(e);
       addToast(p.message);
-      if (["quote_expired", "payout_changed", "quote_required"].includes(p.code)) { setWithdrawQuote(null); setWithdrawConfirmationPending(false); }
+      if (["quote_expired", "payout_changed", "quote_required", "insufficient_withdrawable"].includes(p.code)) { setWithdrawQuote(null); setWithdrawConfirmationPending(false); }
       if (p.closeModal) setWithdrawOpen(false);
       if (p.refreshStatus) await reload(status?.payout_rail === "global");
       // Keep the quote ID after a lost response so retrying confirmation

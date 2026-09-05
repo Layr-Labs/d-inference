@@ -24,7 +24,7 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 9
+REPORT_SCHEMA_VERSION = 10
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
@@ -1108,6 +1108,29 @@ def validate_report(
         actual_keys.add((kind, width, batch))
         if case.get("measurementRepetitions") != repetitions:
             raise ValueError(f"case {kind}/{width}/B{batch} repetition count is wrong")
+        # Schema 10 fields (Swift 17e732bc bumped currentSchemaVersion 9 -> 10;
+        # preCaseExit itself arrived in the schema-9 hold-between-cases work at
+        # 05430abf). preCaseExit is the per-case thermal-hold command's exit
+        # status: nil/absent when nothing held before the case, otherwise an
+        # integer status. repetitionStableRequired says whether token identity
+        # across repetitions is a property this mode has (true for
+        # target-only/fixed, false for the adaptive controller, whose measured
+        # depth schedule legitimately differs run to run); when it IS required
+        # the case must actually be repetition-stable.
+        pre_case_exit = case.get("preCaseExit")
+        if pre_case_exit is not None and (
+            isinstance(pre_case_exit, bool) or not isinstance(pre_case_exit, int)
+        ):
+            raise ValueError(
+                f"case {kind}/{width}/B{batch} preCaseExit is not an integer or null")
+        rep_required = case.get("repetitionStableRequired")
+        if not isinstance(rep_required, bool):
+            raise ValueError(
+                f"case {kind}/{width}/B{batch} omits repetitionStableRequired")
+        if rep_required and case.get("repetitionStable") is not True:
+            raise ValueError(
+                f"case {kind}/{width}/B{batch} requires repetition stability "
+                f"but repetitionStable is {case.get('repetitionStable')!r}")
         if parity_policy == "enforce":
             if case.get("tokenParity") is not True or case.get("parityMismatchRows") != []:
                 raise ValueError(f"case {kind}/{width}/B{batch} failed token parity")

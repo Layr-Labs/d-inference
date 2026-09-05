@@ -48,6 +48,7 @@ struct ThinkStreamingLatencyTests {
             messages: [OpenAIChatMessage(role: .user, content: .text("hi"))]
         )
         request.stream = true
+        request.streamOptions = .init(includeUsage: true)
         request.reasoningParser = .qwen3
         var frames: [String] = []
         for try await frame in try await service.streamChatCompletionFrames(request: request) {
@@ -86,6 +87,35 @@ struct ThinkStreamingLatencyTests {
         let joined = frames.joined()
         #expect(!joined.contains("<think>"))
         #expect(!joined.contains("</think>"))
+    }
+
+    @Test("a pre-closed prompt streams ordinary chunks without adding content or usage")
+    func nonThinkingAnswerStreamsIncrementally() async throws {
+        let prefix = try #require(ReasoningPromptProbe.streamingPrefix(
+            reasoningParser: .qwen3, stream: true, promptTokens: [1, 2, 3],
+            decodeTail: { _ in "<|im_start|>assistant\n<think>\n\n</think>\n\n" }))
+        let frames = try await collectFrames(events: [
+            .content(prefix),
+            .content("A person "), .content("walks across "), .content("the room."),
+            .info(.init(promptTokens: 5, completionTokens: 3,
+                        promptTime: 0, generationTime: 0, stopReason: "stop")),
+        ])
+        let payloads = try frames.compactMap { frame -> [String: Any]? in
+            guard let data = frame.split(separator: "\n").first,
+                  data.hasPrefix("data:"), !data.contains("[DONE]") else { return nil }
+            return try JSONSerialization.jsonObject(
+                with: Data(data.dropFirst(5).utf8)) as? [String: Any]
+        }
+        let deltas = payloads.flatMap { $0["choices"] as? [[String: Any]] ?? [] }
+            .compactMap { $0["delta"] as? [String: Any] }
+        #expect(deltas.compactMap { $0["content"] as? String }
+            == ["A person ", "walks across ", "the room."])
+        #expect(deltas.compactMap { $0["reasoning_content"] as? String }.isEmpty)
+        let usage = try #require(payloads.compactMap { $0["usage"] as? [String: Any] }.last)
+        #expect(usage["prompt_tokens"] as? Int == 5)
+        #expect(usage["completion_tokens"] as? Int == 3)
+        #expect(!frames.joined().contains("<think>"))
+        #expect(!frames.joined().contains("</think>"))
     }
 
     @Test("without an opening tag, close-only reasoning buffers until the close (the bug the injection fixes)")

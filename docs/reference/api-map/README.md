@@ -215,10 +215,19 @@ size at every zoom. Which wires carry one is a judgement about legibility, not a
 about the map: **↦** in the graph toolbar switches between `auto` — every live wire once a
 filter, a focus or a close zoom has narrowed the picture below 140 of them, and otherwise
 only the wire being read — `all`, and `read`. A focused node's own edges are always
-pointed, and a shaded one never is. The unfiltered coordinator map is on the wrong side of
-that budget on purpose: 857 wires end on 97 dots, so a head each turns every dot into a
-rosette that hides it. Zoom past roughly twice the fitted scale — where you have stopped
-looking at the system and started reading a corner of it — and they arrive unasked.
+pointed, and a shaded one never is — and a focused node's wires are *brightened*, not just
+pointed, because SVG opacity applies to a path's markers too and a wire's resting 22% turns
+a 9px glyph into a rumour.
+
+The unfiltered coordinator map is on the wrong side of that budget on purpose, and it is
+worth stating how far: at the fitted zoom, 846 of the 857 heads would have another head
+within their own width, 88 on average, and one 9-pixel square would hold 107 of them.
+Moving them to the wires' midpoints — five times less crowded — still leaves 844 touching.
+No arrangement points every wire in this system legibly, so the picture has to be narrowed
+first: hover a dot, click one, filter, or zoom past roughly twice the fitted scale, where
+you have stopped looking at the system and started reading a corner of it. The `↦` button's
+tooltip says which rule is in force, how many wires are on the picture, and what would
+change it, so "why do I see no arrows" is answered in the toolbar rather than inferred.
 
 A number sits on the midpoint of the wire it belongs to when it can. On the widest handler
 57 wires leave one square and their midpoints pile up, so a number that cannot fit there

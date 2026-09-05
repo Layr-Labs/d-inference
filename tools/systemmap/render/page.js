@@ -447,10 +447,10 @@ for (const ep of DATA.routes) {
 // priority or in the drawn-topology fingerprint: adding a REFERENCES to the schema
 // must not move a single dot. A key whose child or parent has no node is not a line —
 // there is nothing to draw it between — and still appears in the table's definition.
-// Nor is a self-reference: the generator declines to publish one, and an arc from a dot
-// to itself would be drawn as a degenerate curve if one ever arrived.
-// A self-reference is one node rather than an edge between two, so it is not drawn —
-// the drawer states it instead. Two *different* keys between the same pair of tables
+// Nor is a self-reference: it is one node rather than an edge between two, the generator
+// declines to publish it as a link, and an arc from a dot to itself would be a degenerate
+// curve if one ever arrived — the table's own drawer states it instead. Two *different*
+// keys between the same pair of tables
 // are two edges, and drawArc bows from the endpoints alone, so they would land on top
 // of each other with the second one's tooltip unreachable; `spread` fans them apart.
 const FKLINKS = [];
@@ -711,9 +711,13 @@ const modeColor = { R: 'var(--r)', W: 'var(--w)', RW: 'var(--rw)' };
 
 // Arrowheads. Four shapes — one per indirection kind — in every access-mode colour,
 // so one head states both facts a wire carries: its colour is what the endpoint does
-// to the state, its shape is how it reaches it. They are generated from the same two
-// vocabularies the rest of the page reads, rather than written out, so a kind or a
-// mode the generator adds arrives as a marker instead of as a silent fallback.
+// to the state, its shape is how it reaches it.
+//
+// The two vocabularies below are this page's copy of the generator's, and a head is
+// generated per pair rather than written out — so an indirection kind the generator adds
+// and the page has not learned is drawn with no head at all, which `wiring.test.mjs`
+// fails on. A new access *mode* is the weaker case: it falls back to the grey `-x` head,
+// which is legible and wrong, so the mode list is the one to update first.
 const MARKER_PATH = {
   direct: 'M0 0 L8 3 L0 6 Z',               // a filled head: nothing in the way
   interface: 'M0.7 0.7 L7.3 3 L0.7 5.3 Z',  // hollow: the callee is chosen at runtime
@@ -753,9 +757,15 @@ function buildMarkers() {
     // background rather than left transparent, or the wire under it shows through
     // and reads as a solid head; a goroutine's chevron has no interior to fill.
     const fill = kind === 'interface' ? 'var(--bg)' : kind === 'async' ? 'none' : color;
+    // `markerUnits: userSpaceOnUse` is the load-bearing attribute of the whole family:
+    // the default, `strokeWidth`, multiplies the box by the referencing wire's stroke
+    // width, which the hover and focus states change — the box below is a screen-pixel
+    // size divided by the zoom, and it means nothing if a class can scale it. `orient:
+    // auto` rather than `auto-start-reverse` because only `marker-end` is ever set, and
+    // an engine that does not know the longer keyword points every head due east.
     const m = svg('marker', { id: id, viewBox: ARROW_VIEW, refX: 7.4, refY: 3,
       markerWidth: box.w, markerHeight: box.h,
-      orient: 'auto-start-reverse', markerUnits: 'userSpaceOnUse' });
+      orient: 'auto', markerUnits: 'userSpaceOnUse' });
     m.append(svg('path', { d: MARKER_PATH[kind], fill: fill, stroke: color, 'stroke-width': 1 }));
     defs.append(m);
     return m;
@@ -773,8 +783,13 @@ function buildMarkers() {
   }
   // The foreign-key head belongs to the relationship, not to an access mode: a key is
   // not something anybody read or wrote. It is only ever drawn in the scene, so it has
-  // no fixed-size twin.
-  const fk = head('a-fk', 'deferred', 'var(--dim)', FK_ARROW_PX);
+  // no fixed-size twin — and it is drawn with the plain head rather than the diamond,
+  // because the diamond is a shape the indirection key teaches (`defer`) and a grey
+  // diamond on a dotted arc would read as a deferred call the key cannot explain. The
+  // plain head is taught too, but a foreign key's arc is dotted and colourless where
+  // every access is solid or dashed and carries a mode colour, so the wire disambiguates
+  // its own head.
+  const fk = head('a-fk', 'direct', 'var(--dim)', FK_ARROW_PX);
   SCENE_MARKERS.push({ node: fk, px: FK_ARROW_PX });
   sizeMarkers();
 }
@@ -805,13 +820,34 @@ function sizeMarkers() {
 // the zoom past which the count stops mattering because most of them are off-screen.
 //
 // The whole coordinator map fits at k ≈ 0.43 and has 857 wires, so the unfiltered view is
-// deliberately on the wrong side of both numbers: every one of those wires ends on one of
-// 97 dots, and a head each turns every dot into a rosette of overlapping heads that hides
-// the dot. The zoom threshold is set just over twice the fit scale — the point where a
-// reader has stopped looking at the system and started reading a corner of it — so heads
-// arrive without being asked for, well before anybody traces an individual line.
+// deliberately on the wrong side of both numbers, and it is worth saying how far: at that
+// scale 846 of the 857 heads would have another head within their own width, 88 on
+// average, and one 9-pixel square would hold 107 of them. Moving them to the wires'
+// midpoints — five times less crowded — still leaves 844 of them touching. There is no
+// arrangement in which a picture of this system points every wire legibly, so the reader
+// has to narrow it first, and the toolbar says so rather than leaving them to wonder.
+//
+// The zoom threshold is just over twice the fit scale — the point where a reader has
+// stopped looking at the system and started reading a corner of it — so heads arrive
+// without being asked for, well before anybody traces an individual line.
 const ARROW_ALL_MAX = 140;
 const ARROW_ALL_ZOOM = 0.9;
+
+// The toolbar control is also the answer to "why can I see no arrows": rather than leaving
+// a reader to discover that 857 wires is over a threshold they cannot see, the button says
+// what the rule decided and what would change it. Written on every styleGraph, because the
+// count it reports moves with every filter.
+function arrowsNote(live, all) {
+  const btn = document.getElementById('garrows');
+  if (!btn) return;
+  btn.textContent = '↦ ' + state.arrows;
+  const why = all
+    ? live + ' wires shown, each pointed by how it gets there'
+    : live + ' wires shown — too many to point at once (over ' + ARROW_ALL_MAX + '), so ' +
+      'heads are drawn where a line is being read: hover a dot, click one, filter, or zoom in';
+  btn.title = 'Arrowheads: ' + state.arrows + '. ' + why +
+    '. Click to cycle auto → all → read.';
+}
 
 // syncArrows decides which wires carry an arrowhead.
 //
@@ -829,6 +865,7 @@ function syncArrows() {
   for (const l of GLINKS) if (l.live) live++;
   const all = state.arrows === 'all' ||
     (state.arrows === 'auto' && (live <= ARROW_ALL_MAX || view.k >= ARROW_ALL_ZOOM));
+  arrowsNote(live, all);
   for (const l of GLINKS) {
     // A shaded wire never carries a head, whatever the rule says: a focus is a claim
     // that everything off this node's edges is not the answer, and eight hundred heads
@@ -1307,6 +1344,11 @@ function styleGraph() {
     l.node.classList.toggle('mute', !live);
     l.node.classList.toggle('hi', !!lit && live);
     l.node.classList.toggle('shade', shaded);
+    // A focused node's own wires. Opacity applies to a path *and to the markers it
+    // references*, so a head on a wire at the base 22% is a hint of a head — which is
+    // most of the reason the arrows could not be seen even after they were sized right.
+    // The focus already darkens everything else; this is the other half of it.
+    l.node.classList.toggle('pick', live && !!fnode && !shaded);
     // What syncArrows needs, recorded here rather than recomputed there: the zoom can
     // change which wires carry a head without changing any of this.
     l.live = live;
@@ -1670,18 +1712,20 @@ function drawDepInfo(host, n, meta, pinned) {
 // enough to read and can take the whole graph when that is not enough.
 // ---------------------------------------------------------------------------
 // openTable follows a reference. When the other table has a dependency node the whole
-// selection moves — the graph focuses it and the drawer follows, which is what a click
-// means everywhere else on this page. A table nothing reaches has no node to focus, so
-// the drawer opens on its own.
-// Following a relationship into the other table. It opens, and only opens: selectDep
-// toggles, so calling it on the table already selected would close the drawer this was
-// asked to show — and leave the focus pinned to it — which is what a reader clicking
-// from `usage` to `models` and back again does in two clicks.
+// selection moves — the graph focuses it and the drawer follows it, which is what a click
+// means everywhere else on this page. It opens, and only opens: `selectDep` toggles, so
+// calling it on the table already selected would close the drawer this was asked to show,
+// which is what a reader clicking from `usage` to `models` and back again does in two
+// clicks. So the filter is only touched when it has to move, and the focus follows the
+// drawer either way — a table with a node is always worth focusing, whether or not the
+// reader's own dependency filter already happens to name it.
 function openTable(name) {
   const id = 'pg.' + name;
-  if (DATA.nodes[id] && state.dep !== id) {
+  if (DATA.nodes[id]) {
     state.focus = 'dep:' + id;
-    selectDep(id);
+    if (state.dep !== id) { selectDep(id); return; }
+    state.table = id;
+    draw();
     return;
   }
   state.table = id;
@@ -1941,7 +1985,7 @@ const ARROW_MODES = ['auto', 'all', 'read'];
 const arrowsBtn = document.getElementById('garrows');
 arrowsBtn.onclick = () => {
   state.arrows = ARROW_MODES[(ARROW_MODES.indexOf(state.arrows) + 1) % ARROW_MODES.length];
-  arrowsBtn.textContent = '↦ ' + state.arrows;
+  // The label and the reason both come from syncArrows, which is where the rule lives.
   styleGraph();
 };
 gsvg.addEventListener('pointerdown', ev => {

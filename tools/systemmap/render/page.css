@@ -131,6 +131,12 @@ svg.prov .hull-sub { fill: var(--pp); }
    "this happens in a goroutine" looks like at a glance. */
 .glink { stroke-width: 1; opacity: .22; }
 .glink.k-async { opacity: .17; }
+/* The wires of a focused node: what the click asked about, so they are drawn to be read
+   rather than to be seen. At the base opacity a wire is a hint of a line — enough to say
+   the association exists in a picture of 857 of them, and not enough to make out a dash
+   pattern or an arrowhead, which are the two things a focus is for. The shadow around
+   them is what the focus removes; this is what it promotes. Hover still wins. */
+.glink.pick { stroke-width: 1.5; opacity: .8; }
 .glink.hi { stroke-width: 2.2; opacity: .95; }
 .glink.mute { opacity: .04; }
 .glink.shade { opacity: .015; }

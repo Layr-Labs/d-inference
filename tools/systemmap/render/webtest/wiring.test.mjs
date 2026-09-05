@@ -232,6 +232,45 @@ test('arrowheads state a wire\'s kind and mode, and follow the page\'s own rule 
     `zoom ${zoom}) should carry ${narrow ? 'a head each' : 'none until read'}`);
 });
 
+// Drawing a head is not the same as being able to see it, and this is the difference. SVG
+// `opacity` on a path applies to the markers it references, and a wire's resting state is
+// 22% — enough to say an association exists in a picture of 857 of them, not enough to make
+// out a 9px glyph's shape or a dash pattern. So the heads were sized correctly and still
+// unreadable in the one state where they matter most: a focus, which dims the rest of the
+// map but used to leave the wires it promotes at the same 22% as the ones nobody asked
+// about. The claim is about the class *and* the rule behind it, because a class no
+// stylesheet acts on would satisfy the first half on its own.
+test('a focused node\'s own wires are drawn to be read, not merely drawn', t => {
+  const p = load({ t });
+  const css = [...p.doc.querySelectorAll('style')].map(s => s.textContent).join('\n');
+  const opacity = sel => {
+    const m = css.match(new RegExp(sel.replace(/\./g, '\\.') + '\\s*\\{[^}]*opacity:\\s*([\\d.]+)'));
+    assert.ok(m, `the page has no ${sel} rule with an opacity`);
+    return Number(m[1]);
+  };
+  const base = opacity('.glink'), pick = opacity('.glink.pick'), hi = opacity('.glink.hi');
+  assert.ok(pick >= 0.5, `.glink.pick draws a focused wire at ${pick} — a head on it is a rumour`);
+  assert.ok(pick > base, `.glink.pick (${pick}) is no brighter than a resting wire (${base})`);
+  assert.ok(hi >= pick, `a hovered wire (${hi}) should be at least as loud as a focused one (${pick})`);
+
+  const picked = () => [...p.peek('GLINKS')].filter(l => l.node.classList.contains('pick'));
+  assert.equal(picked().length, 0, 'wires are promoted with nothing focused');
+
+  const ep = flowNode(p, 1);
+  p.clickNode(ep.g);
+  const own = [...p.peek('GLINKS')].filter(l => l.live && !l.shaded);
+  assert.ok(own.length > 0, `focusing ${ep.id} left it with no wires of its own`);
+  assert.deepEqual(picked().map(l => l.s.id + ' → ' + l.t.id).sort(),
+    own.map(l => l.s.id + ' → ' + l.t.id).sort(),
+    `the wires promoted by focusing ${ep.id} are not the ones it touches`);
+  for (const l of picked()) {
+    assert.ok(l.node.getAttribute('marker-end'),
+      `${l.s.id} → ${l.t.id} is promoted for reading but carries no head`);
+  }
+  p.key('Escape');
+  assert.equal(picked().length, 0, 'the promotion outlived the focus');
+});
+
 // The bug this test exists for: a marker on a path inside the scaled scene is measured in
 // scene units, so the heads were 8 units wide and the coordinator map fits at k≈0.43 —
 // three screen pixels with a half-pixel outline. They were drawn, correctly, and could
@@ -249,6 +288,17 @@ test('an arrowhead is the same size on screen at every zoom, and the legend\'s d
         w: +node.getAttribute('markerWidth') * k, h: +node.getAttribute('markerHeight') * k };
     });
   };
+  // The one attribute the screen-pixel arithmetic rests on. `markerUnits` defaults to
+  // `strokeWidth`, which multiplies the box by the referencing wire's stroke width — and
+  // hover and focus both change that, so a head would grow when a wire was read. Deleting
+  // it leaves every other assertion in this file passing.
+  for (const m of markers) {
+    const node = p.$('#gdefs #' + m.id);
+    assert.equal(node.getAttribute('markerUnits'), 'userSpaceOnUse',
+      `${m.id} is not measured in user space, so dividing its box by the zoom means nothing`);
+    assert.equal(node.getAttribute('orient'), 'auto',
+      `${m.id} does not orient along its wire`);
+  }
   const check = where => {
     for (const m of onScreen()) {
       // A quarter of a pixel of rounding is the two-decimal attribute, not a policy.

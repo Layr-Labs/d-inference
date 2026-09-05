@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — stats location refresh
+
+- Restore public stats refreshes on large usage tables by aggregating locations per provider before combining location totals. Preserve distinct-provider and token counts and request-weighted coordinates without sorting every usage row. Keep the selective cutoff's query plan local to the analytics transaction.
+
 ## Unreleased — coordinator performance Tiers 2 and 3
 
 - Cache repeated user and model lookups, batch route telemetry writes, and credit balances in one database statement. Invalidate model caches without allowing older in-flight reads to republish stale entries.

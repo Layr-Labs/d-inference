@@ -36,6 +36,19 @@ def fixture(batch=2):
 
 
 class IntegrityTests(unittest.TestCase):
+    def test_ordered_submission_metadata_and_timestamps(self):
+        spec, manifest, report = fixture()
+        report["schemaVersion"] = 7
+        with self.assertRaisesRegex(ValueError, "submission order"):
+            validate(report, spec, manifest)
+        report["decodeSubmissionOrder"] = "row_index"
+        rows = report["decode"][0]["decodeTiming"]["rows"]
+        rows[0]["submittedAtMs"], rows[1]["submittedAtMs"] = 1, 2
+        validate(report, spec, manifest)
+        rows[0]["submittedAtMs"] = 3
+        with self.assertRaisesRegex(ValueError, "contradict row order"):
+            validate(report, spec, manifest)
+
     def test_rejects_partial_batch_and_tiny_overlap(self):
         spec, manifest, report = fixture()
         validate(report, spec, manifest)

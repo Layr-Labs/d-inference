@@ -185,7 +185,9 @@ TTFT; decode compares aggregate common-window throughput and output hashes.
 Prefill token parity is explicitly unavailable in this report schema. Keep
 numerical/KV tests separate from uninstrumented timing. The decode warmup now
 uses the requested generation length so long prompts can establish the full
-batch before measured work. Sources: `scripts/gptoss_profile/controls.py`
+batch before measured work. Schema 7 submits requests in row-index order before
+concurrently consuming their streams; validation checks the recorded order and
+timestamps. This prevents task scheduling from silently changing admission order. Sources: `scripts/gptoss_profile/controls.py`
 (`execute_controls`), `scripts/gptoss_profile/control_report.py`
 (`summarize_controls`), `provider-swift/Sources/ProviderBenchmark/ThroughputSweep.swift`
 (`measureDecode`). See [GPT-OSS optimization results](../reports/2026-09-05-gptoss20b-optimization-results.md).

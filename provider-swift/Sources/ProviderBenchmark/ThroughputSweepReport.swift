@@ -18,7 +18,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// for versus which ones actually produced a measurement.
     /// 5 adds required effective config-projected Gemma settings.
     /// 6 adds raw decode timing and the shared all-row decode overlap metric.
-    public static let currentSchemaVersion = 6
+    /// 7 records deterministic row-index decode submission.
+    public static let currentSchemaVersion = 7
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -231,6 +232,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
     }
 
     public let schemaVersion: Int
+    public let decodeSubmissionOrder: String?
     public let modelID: String
     public let modelPath: String
     public let hardware: Hardware
@@ -255,6 +257,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
 
     public init(
         schemaVersion: Int = ThroughputSweepReport.currentSchemaVersion,
+        decodeSubmissionOrder: String? = "row_index",
         modelID: String,
         modelPath: String,
         hardware: Hardware,
@@ -269,6 +272,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
             requestedBatchSizes: [], unmeasured: [])
     ) {
         self.schemaVersion = schemaVersion
+        self.decodeSubmissionOrder = decodeSubmissionOrder
         self.modelID = modelID
         self.modelPath = modelPath
         self.hardware = hardware

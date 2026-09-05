@@ -488,21 +488,27 @@ public enum ThroughputSweep {
         let rows = await withTaskGroup(of: RowMeasure.self) { group -> [RowMeasure] in
             for i in 0 ..< batchSize {
                 let prompt = Self.tile(baseTokens, to: promptLen, offset: i * 7 + 1)
-                group.addTask { [engine] in
-                    let submittedMs = Self.seconds(ContinuousClock.now - epoch) * 1000
-                    let stream: AsyncStream<CBv2Event>
-                    do {
-                        stream = try engine.submit(CBv2Request(
-                            id: CBv2RequestID(UInt64(i + 1)),
-                            promptTokens: prompt,
-                            sampling: CBv2SamplingParams(temperature: 0.0),
-                            maxTokens: decodeTokens + 1,
-                            stopTokens: Self.fixedBudgetStopTokens
-                        ))
-                    } catch {
-                        return RowMeasure(
-                            produced: 0, elapsed: .zero, submitFailure: "\(error)")
+                // Submit in row order on this task. Scheduling submissions
+                // inside child tasks can reverse admission and change prompt
+                // chunk/batch geometry between otherwise identical runs.
+                let submittedMs = Self.seconds(ContinuousClock.now - epoch) * 1000
+                let stream: AsyncStream<CBv2Event>
+                do {
+                    stream = try engine.submit(CBv2Request(
+                        id: CBv2RequestID(UInt64(i + 1)),
+                        promptTokens: prompt,
+                        sampling: CBv2SamplingParams(temperature: 0.0),
+                        maxTokens: decodeTokens + 1,
+                        stopTokens: Self.fixedBudgetStopTokens
+                    ))
+                } catch {
+                    let failure = String(describing: error)
+                    group.addTask {
+                        RowMeasure(produced: 0, elapsed: .zero, submitFailure: failure)
                     }
+                    continue
+                }
+                group.addTask {
                     var tokenIDs: [Int] = []
                     var timestamps: [Double] = []
                     var finishReason: CBv2FinishReason?

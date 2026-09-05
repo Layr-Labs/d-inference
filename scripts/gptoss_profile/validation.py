@@ -27,6 +27,9 @@ def validate(report, spec, manifest):
                                        for r in kv["resolved"]), "Resolved KV backend mismatch")
     if cell["phase"] == "decode":
         require(report.get("schemaVersion", 0) >= 6, "Decode schema predates raw common-overlap timing")
+        ordered = report.get("schemaVersion", 0) >= 7
+        if ordered:
+            require(report.get("decodeSubmissionOrder") == "row_index", "Decode submission order is unspecified")
         coverage = report.get("decodeCoverage", {})
         require(coverage.get("requestedBatchSizes") == [cell["batch"]], "Requested batch coverage mismatch")
         require(coverage.get("unmeasured") == [] and not report.get("decodeConstructionFailure"),
@@ -42,6 +45,9 @@ def validate(report, spec, manifest):
             rows = timing.get("rows", [])
             require(len(rows) == cell["batch"], "Missing decode rows")
             require(sorted(r.get("row") for r in rows) == list(range(cell["batch"])), "Duplicate/missing row indices")
+            if ordered:
+                submitted = [r["submittedAtMs"] for r in sorted(rows, key=lambda r: r["row"])]
+                require(submitted == sorted(submitted), "Decode submission timestamps contradict row order")
             for row in rows:
                 require(row.get("finishReason") == "length", "Decode row did not terminate at the requested length")
                 times, tokens = row.get("tokenArrivalMs", []), row.get("tokenIDs", [])

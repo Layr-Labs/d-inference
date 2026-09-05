@@ -1303,6 +1303,54 @@ struct MTPBenchmarkTests {
             Issue.record("unexpected deadline error: \(error)")
         }
     }
+
+    // Regression for #770: `Duration.components` is a (seconds, attoseconds)
+    // quotient/remainder pair, so reading only `attoseconds` throws away every
+    // whole second — a 2.168 s phase reported 168 ms, and the derived decode
+    // window went negative, printing a flat 0 tok/s.
+    @Test(
+        "iteration timings keep whole seconds",
+        arguments: [
+            (Duration.milliseconds(900), Duration.seconds(2) + .milliseconds(100), 900.0, 2100.0, 213.333),
+            (Duration.seconds(2) + .milliseconds(168), Duration.seconds(4), 2168.0, 4000.0, 139.738),
+            (Duration.milliseconds(168), Duration.milliseconds(900), 168.0, 900.0, 349.727),
+        ] as [(Duration, Duration, Double, Double, Double)]
+    )
+    func iterationTimingsKeepWholeSeconds(
+        prefill: Duration,
+        total: Duration,
+        wantPrefillMs: Double,
+        wantTotalMs: Double,
+        wantTps: Double
+    ) {
+        let result = ModelBenchmark.iterationResult(
+            iteration: 1,
+            promptTokens: 12,
+            completionTokens: 256,
+            prefillElapsed: prefill,
+            infoPromptTimeSeconds: 0,
+            totalElapsed: total)
+
+        #expect(abs(result.prefillLatencyMs - wantPrefillMs) < 1e-6)
+        #expect(abs(result.totalTimeMs - wantTotalMs) < 1e-6)
+        #expect(abs(result.decodeTokensPerSecond - wantTps) < 1e-3)
+    }
+
+    @Test("iteration falls back to info prompt time when no chunk arrived")
+    func iterationFallsBackToInfoPromptTime() {
+        let result = ModelBenchmark.iterationResult(
+            iteration: 2,
+            promptTokens: 12,
+            completionTokens: 0,
+            prefillElapsed: nil,
+            infoPromptTimeSeconds: 1.25,
+            totalElapsed: .seconds(3))
+
+        #expect(abs(result.prefillLatencyMs - 1250.0) < 1e-6)
+        #expect(abs(result.totalTimeMs - 3000.0) < 1e-6)
+        #expect(result.decodeTokensPerSecond == 0)
+    }
+
 }
 
 private final class TerminalErrorEngine: CBv2Engine, @unchecked Sendable {

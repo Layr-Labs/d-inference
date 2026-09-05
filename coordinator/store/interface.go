@@ -647,18 +647,19 @@ type ModelRegistryEntry struct {
 
 // ModelVersion is an uploaded manifest version for a registered model.
 type ModelVersion struct {
-	ID              int64          `json:"id"`
-	ModelID         string         `json:"model_id"`
-	Version         string         `json:"version"`
-	R2Prefix        string         `json:"r2_prefix"`
-	AggregateSHA256 string         `json:"aggregate_sha256"`
-	TotalSizeBytes  int64          `json:"total_size_bytes"`
-	FileCount       int            `json:"file_count"`
-	Status          string         `json:"status"`
-	UploadedBy      string         `json:"uploaded_by,omitempty"`
-	UploadedAt      time.Time      `json:"uploaded_at"`
-	PromotedAt      *time.Time     `json:"promoted_at,omitempty"`
-	Metadata        map[string]any `json:"metadata"`
+	HuggingFaceArtifact *HuggingFaceArtifact `json:"hugging_face_artifact,omitempty"`
+	ID                  int64                `json:"id"`
+	ModelID             string               `json:"model_id"`
+	Version             string               `json:"version"`
+	R2Prefix            string               `json:"r2_prefix"`
+	AggregateSHA256     string               `json:"aggregate_sha256"`
+	TotalSizeBytes      int64                `json:"total_size_bytes"`
+	FileCount           int                  `json:"file_count"`
+	Status              string               `json:"status"`
+	UploadedBy          string               `json:"uploaded_by,omitempty"`
+	UploadedAt          time.Time            `json:"uploaded_at"`
+	PromotedAt          *time.Time           `json:"promoted_at,omitempty"`
+	Metadata            map[string]any       `json:"metadata"`
 }
 
 // ModelVersionFile is one file in a model version manifest.

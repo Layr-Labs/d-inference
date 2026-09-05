@@ -17,37 +17,6 @@ extension ModelDownloader {
         return hex == sha256.lowercased()
     }
 
-    /// Download a single manifest file into its staging destination, resuming
-    /// from a `.part` file when present, verifying size + SHA-256 before
-    /// promoting to the final staged path. Reuses the resume-capable
-    /// `downloadFile` helper (Range requests, Content-Range validation, retries).
-    ///
-    /// `onChunk(bytesOnDisk)` reports cumulative bytes-on-disk for this file as
-    /// it streams, so the foreground path can render a live per-shard bar; the
-    /// background prefetch passes nil and accounts progress per whole file.
-    internal func downloadManifestFileWithResume(
-        _ job: (file: ManifestFile, destination: URL, url: String),
-        onChunk: (@Sendable (Int64) -> Void)? = nil
-    ) async throws {
-        let ok = try await downloadFile(
-            from: job.url,
-            to: job.destination,
-            label: job.file.path,
-            onProgress: nil,
-            required: true,
-            expectedSHA256: job.file.sha256.lowercased(),
-            maximumBytes: job.file.sizeBytes,
-            onChunk: onChunk
-        )
-        guard ok else {
-            throw ModelCatalogError.downloadFailed("\(job.file.path): required file could not be fetched")
-        }
-        let size = fileSize(job.destination)
-        guard size == job.file.sizeBytes else {
-            throw ModelCatalogError.downloadFailed("\(job.file.path): size \(size) != manifest size \(job.file.sizeBytes)")
-        }
-    }
-
     internal func fetchManifestFromCDN(model: CatalogModel) async throws -> ModelManifest {
         guard let r2Prefix = model.r2Prefix else {
             throw ModelCatalogError.downloadFailed("model missing r2_prefix")
@@ -244,7 +213,7 @@ extension ModelDownloader {
                     let job = pending[next]
                     next += 1
                     group.addTask {
-                        try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                        try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                             progress.update(label: job.file.path, downloadedBytes: bytes)
                         })
                         progress.complete(label: job.file.path)
@@ -256,7 +225,7 @@ extension ModelDownloader {
                         let job = pending[next]
                         next += 1
                         group.addTask {
-                            try await self.downloadManifestFileWithResume(job, onChunk: { bytes in
+                            try await self.downloadManifestFileWithResume(job, huggingFaceArtifact: model.huggingFaceArtifact, onChunk: { bytes in
                                 progress.update(label: job.file.path, downloadedBytes: bytes)
                             })
                             progress.complete(label: job.file.path)

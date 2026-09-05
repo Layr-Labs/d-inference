@@ -51,6 +51,10 @@ on:
         description: Runtime parameters JSON object
         required: false
         default: '{}'
+      hugging_face_artifact_json:
+        description: Optional exact public HF artifact JSON (repo_id, full commit revision, optional path_prefix); null keeps R2 only.
+        required: false
+        default: 'null'
       metadata_json:
         description: Metadata JSON object
         required: false
@@ -92,6 +96,7 @@ jobs:
           MIN_RAM_GB: ${{ inputs.min_ram_gb }}
           DESCRIPTION: ${{ inputs.description }}
           RUNTIME_PARAMETERS_JSON: ${{ inputs.runtime_parameters_json }}
+          HUGGING_FACE_ARTIFACT_JSON: ${{ inputs.hugging_face_artifact_json }}
           METADATA_JSON: ${{ inputs.metadata_json }}
           PROMOTE: ${{ inputs.promote }}
           INPUT_PRICE: ${{ inputs.input_price }}
@@ -111,6 +116,7 @@ jobs:
             --argjson min_ram_gb "$MIN_RAM_GB" \
             --arg description "$DESCRIPTION" \
             --argjson runtime_parameters "$RUNTIME_PARAMETERS_JSON" \
+            --argjson hugging_face_artifact "${HUGGING_FACE_ARTIFACT_JSON:-null}" \
             --argjson metadata "$METADATA_JSON" \
             --argjson promote "$PROMOTE" \
             --argjson input_price "$INPUT_PRICE" \
@@ -144,6 +150,7 @@ jobs:
               required_provider_capabilities: ($required_provider_capabilities_csv | required_provider_capabilities),
               description: $description,
               runtime_parameters: $runtime_parameters,
+              hugging_face_artifact: $hugging_face_artifact,
               metadata: $metadata,
               promote: $promote,
               input_price: $input_price,

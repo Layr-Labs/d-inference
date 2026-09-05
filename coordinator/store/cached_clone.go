@@ -47,6 +47,7 @@ func cloneRegistryEntryForCache(entry *ModelRegistryEntry) ModelRegistryEntry {
 func cloneModelVersionForCache(version *ModelVersion) ModelVersion {
 	cp := *version
 	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneJSONMap(version.Metadata)
 	return cp
 }

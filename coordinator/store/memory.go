@@ -2025,6 +2025,7 @@ func cloneModelVersion(version *ModelVersion) ModelVersion {
 	}
 	cp := *version
 	cp.PromotedAt = cloneTimePtr(version.PromotedAt)
+	cp.HuggingFaceArtifact = cloneHuggingFaceArtifact(version.HuggingFaceArtifact)
 	cp.Metadata = cloneMetadata(version.Metadata)
 	return cp
 }

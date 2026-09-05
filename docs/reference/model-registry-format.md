@@ -1,6 +1,6 @@
 # Model registry format
 
-> Last updated: 2026-09-03 · commit `5d400cf75`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Exact shapes for everything the model registry stores or accepts: the
 `manifest.json` a publisher uploads to R2, the registration and admin requests,
@@ -182,6 +182,46 @@ Keys in `model_registry.metadata` the coordinator reads
 | `openrouter_slug` | `openrouter-slug` action | OpenRouter marketplace slug in the feed |
 | `deprecation_date` | `deprecation` action | `YYYY-MM-DD`; OpenRouter deprecation metadata |
 
+## Hugging Face download artifact
+
+`registerModelRequest.hugging_face_artifact` is an optional object stored on
+`model_versions.hugging_face_artifact` (nullable JSONB) and emitted on each
+public catalog model by `catalogModelFromRegistryRecord`. Its fields are
+validated by `HuggingFaceArtifact.Validate` in
+`coordinator/store/hugging_face_artifact.go`:
+
+| Field | Rule |
+|---|---|
+| `repo_id` | `owner/repository`, at most 192 bytes; repository components use ASCII letters, digits, `_`, `-`, `.` and start with a letter, digit, or `_`; no `..` |
+| `revision` | Full 40-character lowercase hexadecimal HF commit SHA; branches and tags are rejected |
+| `path_prefix` | Optional directory relative to the repository root, at most 1024 bytes; same component rules; no empty or traversal components |
+
+Example registration field (substitute the commit of your published artifact):
+
+```json
+"hugging_face_artifact": {
+  "repo_id": "EigenLabs/your-model",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "path_prefix": "mlx"
+}
+```
+
+The artifact is independent of `metadata.hugging_face_id`, which identifies the
+upstream model for feeds. Use a public, ungated repository whose files match the
+registered manifest, including any modified templates and configs. Provider
+requests carry no HF credentials. Missing, gated, unavailable, or mismatched
+files fall back to R2 individually. HF gets one attempt with a 30-second idle
+request timeout; R2 retains the existing three-attempt policy. Every accepted
+file must pass size and SHA-256 checks, then the complete snapshot must pass the
+aggregate hash (`provider-swift/Sources/ProviderCore/Models/ModelDownloader+Sources.swift`,
+`downloadManifestFileWithResume`). No speed comparison or automatic source race
+is performed. The manifest and checksum authority remain the coordinator/R2.
+
+Omitting the field or sending `null` on re-registration clears the source for
+that version. Existing entries and older providers continue using R2. Adding or
+clearing it on an existing version uses the normal registration endpoint;
+production registration still requires approval.
+
 ## Admin actions
 
 `POST /v1/admin/models/{model_id}/{action}` — `handleAdminModelRegistryAction`
@@ -342,7 +382,8 @@ Catalog model fields (`catalogModelFromRegistryRecord`): `id`, `s3_name`
 (= `aggregate_sha256`), `family`, `quantization`, `max_context_length`,
 `max_output_length`, `capabilities`, `required_provider_capabilities`,
 `runtime_parameters`, `metadata`, `status`, `created`, `version`, `r2_prefix`,
-`aggregate_sha256`, `total_size_bytes`, `file_count`, plus the
+`aggregate_sha256`, `total_size_bytes`, `file_count`, optional
+`hugging_face_artifact`, plus the
 OpenRouter-shaped `name`, `hugging_face_id`, `input_modalities`,
 `output_modalities`, `supported_features`, `supported_sampling_parameters`.
 
@@ -356,8 +397,8 @@ build; aliases with neither are omitted).
 | Tool | Interface | Notes |
 |---|---|---|
 | `darkbloom-publish hash <dir> --id <model_id> --version <version> [-o manifest.json]` | `provider-swift/Sources/darkbloom-publish/HashCommand.swift` | validates id/version before hashing; writes to stdout without `-o` |
-| `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last, prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
-| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
+| `scripts/publish-model.sh` | interactive; env `R2_ACCOUNT_ID` (required), `R2_BUCKET` (`darkbloom-models`), `R2_ACCESS_KEY_SECRET` / `R2_SECRET_KEY_SECRET` (GCP Secret Manager names `darkbloom-r2-access-key-id`, `darkbloom-r2-secret-access-key`) | runs the hasher via `swift run -c release`, uploads files with concurrency 8, uploads `manifest.json` last; optional env `HUGGING_FACE_ARTIFACT_JSON` validates an existing public HF artifact and passes it into the printed registration command; prints a `gh workflow run register-model.yml` command; defaults `required_provider_capabilities` to `apple_m5,mlx_nax` for `EigenLabs/Qwen3.8-27B-4bit` |
+| `.github/workflows/register-model.yml` | `workflow_dispatch` inputs mirroring the registration request (`capabilities_csv` and `required_provider_capabilities` are comma-separated; `runtime_parameters_json`, `metadata_json` are JSON objects; `hugging_face_artifact_json` is an artifact object or `null`; `coordinator_url` defaults to `https://api.darkbloom.dev`) | builds the payload with `jq` and POSTs with `Authorization: Bearer ${{ secrets.MODEL_REGISTRY_PUBLISHING_KEY }}` |
 
 ## Related
 

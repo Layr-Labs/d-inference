@@ -10,6 +10,12 @@ map: the console UI job lints and builds but does not run vitest, and the
 benchmark-wrapper tests run only locally). The e2e suite needs an Apple Silicon
 Mac with the test checkpoints cached.
 
+For HF artifact downloads, `HuggingFaceDownloadTests` covers source preference,
+checksum rejection, fallback, and cancellation. `scripts/test-publish-model.sh`
+checks the artifact workflow payload. `TestHuggingFaceArtifactPostgresAndCache`
+in `coordinator/store/hugging_face_artifact_test.go` uses a disposable
+`DATABASE_URL` to check storage and cache invalidation.
+
 ## Prerequisites
 
 - Toolchain from [build.md](build.md) (`mise install`, submodules, `cmake`).

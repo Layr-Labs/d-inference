@@ -1,6 +1,6 @@
 # Reports — dated records
 
-> Last updated: 2026-09-04 · commit `0be2aa074`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Frozen records: incident analyses, measurements, experiment results, and
 migration records. Each file describes the code **as it was on its date**; none
@@ -27,6 +27,8 @@ freshness stamp carries its own date, not the current one.
 
 | Date | Report | One line |
 |---|---|---|
+| 2026-09-05 | [gptoss20b-improvement-estimate](2026-09-05-gptoss20b-improvement-estimate.md) | Estimated optimization upside and corrected compiled-operation attribution |
+| 2026-09-05 | [gptoss20b-quick-profile](2026-09-05-gptoss20b-quick-profile.md) | Approximate M4 Max prefill/decode measurements and targeted GPU dispatch findings |
 | 2026-06-15 | [metal-resource-count-fix-handoff](2026-06-15-metal-resource-count-fix-handoff.md) | How the Metal resource-count crash fix was landed through the `Layr-Labs/mlx*` forks |
 | 2026-07-02 | [engine-v2-contract-issues-provider-bridge](2026-07-02-engine-v2-contract-issues-provider-bridge.md) | Where the frozen `CBv2Contracts.swift` was insufficient for the provider bridge, and what was chosen |
 | 2026-07-19 | [frozen-full-prefix-cache-proof](2026-07-19-frozen-full-prefix-cache-proof.md) | Proof that frozen full-prefix reuse is exact on hybrid sliding-window models |
@@ -79,3 +81,5 @@ Machine-generated; kept as evidence for the reports above.
 
 - Release notes: [`../releases/v0.8.0-notes.md`](../releases/v0.8.0-notes.md) (superseded by v0.8.1; kept as the record). Current release history is `CHANGELOG.md` at the repository root.
 - Plans and decisions, each with a status: [`../design/README.md`](../design/README.md).
+
+- [GPT-OSS 20B optimization results](2026-09-05-gptoss20b-optimization-results.md) — local prefill/decode changes, paired comparisons, correctness evidence and rejected experiments.

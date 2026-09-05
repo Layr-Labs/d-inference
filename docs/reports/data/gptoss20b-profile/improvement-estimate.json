@@ -1,0 +1,29 @@
+{
+  "kind": "analysis_not_candidate_measurement",
+  "prefill8K": {
+    "baselineTTFTSeconds": 8.3219,
+    "estimatedReductionFraction": [
+      0.07,
+      0.12
+    ],
+    "estimatedTTFTSeconds": [
+      7.3,
+      7.7
+    ],
+    "mixedHeadGEMMBuffersSeconds": 1.100693082,
+    "headContainingUnionSeconds": 1.134948,
+    "prefillGPUUnionSeconds": 8.643479732
+  },
+  "decodeTargets": {
+    "firstPassThroughputMultiplier": [
+      1.05,
+      1.15
+    ],
+    "ambitiousCombinedMultiplier": [
+      1.2,
+      1.4
+    ]
+  },
+  "correction": "1200 SwiGLU dispatches span50actual steps; previous2450/step attribution withdrawn",
+  "measuredCandidateSpeedup": null
+}

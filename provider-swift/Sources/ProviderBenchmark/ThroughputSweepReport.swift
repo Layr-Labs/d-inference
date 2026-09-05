@@ -17,7 +17,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// 4 adds the required `decodeCoverage` block: which cells were ASKED
     /// for versus which ones actually produced a measurement.
     /// 5 adds required effective config-projected Gemma settings.
-    public static let currentSchemaVersion = 5
+    /// 6 adds raw decode timing and the shared all-row decode overlap metric.
+    public static let currentSchemaVersion = 6
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -47,10 +48,12 @@ public struct ThroughputSweepReport: Codable, Sendable {
         }
     }
 
-    /// One decode-throughput data point at a fixed batch size. `aggregate` is
-    /// the summed tok/s across all `batchSize` sequences; `perSequence` is
-    /// `aggregate / batchSize` (the rate an individual user sees). Both exclude
-    /// the first (prefill) token per sequence.
+    /// One decode-throughput data point at a fixed batch size. The legacy
+    /// aggregate divides total decoded tokens by the longest row's first-token
+    /// to finish duration; perSequence divides that aggregate by batch size.
+    /// These exclude each row's first token but can include other rows' prefill
+    /// and batch drain. Use decodeTiming.overlapAggregateTokensPerSecond for
+    /// the common all-row decode interval; raw row times support ITL analysis.
     public struct DecodeSample: Codable, Sendable {
         public let batchSize: Int
         public let decodeTokensPerSequence: Int
@@ -65,6 +68,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
         /// degrading selection resolving paged at B=1 and contiguous at
         /// B=8. A single run-wide scalar would hide exactly that.
         public let resolvedKVBackend: String?
+        /// Raw host-observed token timing. Nil on legacy/synthesized samples.
+        public let decodeTiming: DecodeTiming?
 
         public init(
             batchSize: Int,
@@ -72,7 +77,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
             aggregateTokensPerSecond: Double,
             perSequenceTokensPerSecond: Double,
             elapsedMs: Double,
-            resolvedKVBackend: String? = nil
+            resolvedKVBackend: String? = nil,
+            decodeTiming: DecodeTiming? = nil
         ) {
             self.batchSize = batchSize
             self.decodeTokensPerSequence = decodeTokensPerSequence
@@ -80,6 +86,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
             self.perSequenceTokensPerSecond = perSequenceTokensPerSecond
             self.elapsedMs = elapsedMs
             self.resolvedKVBackend = resolvedKVBackend
+            self.decodeTiming = decodeTiming
         }
     }
 

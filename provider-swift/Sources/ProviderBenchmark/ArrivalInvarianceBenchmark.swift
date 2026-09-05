@@ -5,88 +5,6 @@ import MLXLMCommon
 import MLXVLM
 import ProviderCore
 
-public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
-    public struct Row: Codable, Sendable {
-        public let row: Int
-        public let scheduledDelayMs: Int
-        public let submittedAtMs: Double
-        /// Signed distance between the measured submission offset and the
-        /// intended one (`submittedAtMs - scheduledDelayMs`); positive means
-        /// the request entered the engine later than the topology asked for.
-        public let arrivalErrorMs: Double
-        public let ttftMs: Double
-        public let decodeTokensPerSecond: Double
-        public let generatedTokens: Int
-        public let completedAtMs: Double
-        public let tokenChecksum: String
-    }
-
-    public struct Sample: Codable, Sendable {
-        public let iteration: Int
-        public let rows: [Row]
-        public let aggregateDecodeTokensPerSecond: Double
-        public let endToEndTokensPerSecond: Double
-        public let makespanMs: Double
-        /// Worst absolute arrival error across this sample's rows.
-        public let maxArrivalErrorMs: Double
-        /// Attempts discarded before this one because their arrivals missed
-        /// the tolerance. Non-zero means the host was scheduling badly.
-        public let discardedAttempts: Int
-    }
-
-    public struct Pattern: Codable, Sendable {
-        public let name: String
-        public let arrivalDelaysMs: [Int]
-        public let samples: [Sample]
-        public let medianTTFTMs: Double
-        public let medianPerRequestDecodeTokensPerSecond: Double
-        public let medianAggregateDecodeTokensPerSecond: Double
-        public let medianMakespanMs: Double
-        public let outputsStableAcrossIterations: Bool
-        public let outputsMatchBurst: Bool
-        /// Per-row median of the *measured* submission offsets, directly
-        /// comparable to `arrivalDelaysMs`.
-        public let measuredArrivalOffsetsMs: [Double]
-        public let maxArrivalErrorMs: Double
-        public let arrivalWithinTolerance: Bool
-    }
-
-    /// 2 adds the measured delivered-topology evidence (per-row
-    ///   `submittedAtMs`/`arrivalErrorMs`, the tolerance, discarded attempts).
-    /// 3 adds the required `kvBackend` block: the selection this run was
-    ///   launched with and the backend its engine actually built. Without it
-    ///   the phase's numbers cannot be attributed to an arm, and `.auto`
-    ///   resolves CONTIGUOUS.
-    /// 4 adds required effective config-projected Gemma settings.
-    public static let currentSchemaVersion = 4
-
-    public let schemaVersion: Int
-    public let modelID: String
-    public let modelPath: String
-    public let promptTokensPerRequest: Int
-    public let decodeTokensPerRequest: Int
-    public let iterations: Int
-    /// Config-projected Gemma settings this subprocess actually benchmarked.
-    public let gemmaOptimizations: BenchmarkGemmaOptimizations
-    /// Bound enforced on every measured row's `arrivalErrorMs`. Samples that
-    /// exceed it are re-run, and the benchmark fails rather than reporting
-    /// numbers produced by a topology it did not actually deliver.
-    public let arrivalToleranceMs: Double
-    public let arrivalMaxAttemptsPerSample: Int
-    /// Selection versus the backend the ONE engine every pattern is measured
-    /// on actually resolved to. One engine per run (deliberately: every
-    /// arrival topology must see the same warm engine), so `resolved` carries
-    /// exactly one descriptor on any run that got that far.
-    public let kvBackend: BenchmarkKVBackend
-    public let patterns: [Pattern]
-
-    public func jsonString() throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return String(decoding: try encoder.encode(self), as: UTF8.self)
-    }
-}
-
 /// Measures production ContinuousBatchingV2 under equivalent request sets
 /// submitted with different arrival schedules. Prefix caching is absent, all
 /// rows use greedy decoding, and exact output-token checksums pin numerical
@@ -160,6 +78,7 @@ public enum ArrivalInvarianceBenchmark {
         modelID: String,
         modelDirectory: URL,
         promptTokens: Int = 512,
+        promptLengths: [Int]? = nil,
         decodeTokens: Int = 64,
         iterations: Int = 3,
         arrivalToleranceMs: Double? = nil,
@@ -168,6 +87,10 @@ public enum ArrivalInvarianceBenchmark {
         gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
+        let promptLengths = promptLengths ?? Array(repeating: promptTokens, count: 4)
+        guard promptLengths.count == 4, promptLengths.allSatisfy({ $0 >= 2 }) else {
+            throw BenchmarkError.invalidPromptLengths
+        }
         let decodeTokens = max(2, decodeTokens)
         let iterations = max(1, iterations)
         let toleranceMs = resolvedToleranceMs(explicit: arrivalToleranceMs)
@@ -233,7 +156,7 @@ public enum ArrivalInvarianceBenchmark {
                     engine: engine,
                     facts: facts,
                     pattern: pattern,
-                    promptTokens: promptTokens,
+                    promptLengths: promptLengths,
                     decodeTokens: min(8, decodeTokens),
                     iteration: 0,
                     requestIDBase: nextRequestID,
@@ -254,7 +177,7 @@ public enum ArrivalInvarianceBenchmark {
                         engine: engine,
                         facts: facts,
                         pattern: pattern,
-                        promptTokens: promptTokens,
+                        promptLengths: promptLengths,
                         decodeTokens: decodeTokens,
                         iteration: iteration,
                         requestIDBase: nextRequestID,
@@ -323,6 +246,7 @@ public enum ArrivalInvarianceBenchmark {
             modelID: modelID,
             modelPath: modelDirectory.path,
             promptTokensPerRequest: promptTokens,
+            promptLengthsPerRequest: promptLengths,
             decodeTokensPerRequest: decodeTokens,
             iterations: iterations,
             gemmaOptimizations: BenchmarkGemmaOptimizations(
@@ -356,7 +280,7 @@ public enum ArrivalInvarianceBenchmark {
         engine: any CBv2Engine,
         facts: ModelFacts,
         pattern: PatternDefinition,
-        promptTokens: Int,
+        promptLengths: [Int],
         decodeTokens: Int,
         iteration: Int,
         requestIDBase: UInt64,
@@ -368,7 +292,7 @@ public enum ArrivalInvarianceBenchmark {
         // Built before the clock starts so prompt tiling cannot leak into the
         // measured submission offsets.
         let prompts = (0 ..< rowCount).map { row in
-            ThroughputSweep.tile(facts.baseTokens, to: promptTokens, offset: row * 17 + 1)
+            ThroughputSweep.tile(facts.baseTokens, to: promptLengths[row], offset: row * 17 + 1)
         }
         let attempts = max(1, maxAttempts)
         var worstObserved = 0.0
@@ -605,6 +529,8 @@ public enum ArrivalInvarianceBenchmark {
         return MeasuredRow(
             report: ArrivalInvarianceBenchmarkReport.Row(
                 row: row,
+                promptTokens: prompt.count,
+                tokenArrivalTimesMs: timestamps.map { milliseconds(from: scenarioStartedAt, to: $0) },
                 scheduledDelayMs: delayMs,
                 submittedAtMs: submittedAtMs,
                 arrivalErrorMs: submittedAtMs - Double(delayMs),
@@ -660,6 +586,7 @@ public enum ArrivalInvarianceBenchmark {
 
     private enum BenchmarkError: Error, CustomStringConvertible {
         case noTokens(Int)
+        case invalidPromptLengths
         case unexpectedFinish(row: Int, reason: String)
         case unexpectedTokenCount(row: Int, expected: Int, actual: Int)
         case arrivalOutOfTolerance(
@@ -672,6 +599,7 @@ public enum ArrivalInvarianceBenchmark {
 
         var description: String {
             switch self {
+            case .invalidPromptLengths: return "arrival prompt lengths must contain exactly four integers >= 2"
             case .noTokens(let row): return "row \(row) produced no tokens"
             case .unexpectedFinish(let row, let reason):
                 return "row \(row) finished unexpectedly: \(reason)"

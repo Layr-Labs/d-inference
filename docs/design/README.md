@@ -33,6 +33,7 @@ below repeats the vocabulary word only; the file's line 5 carries the evidence.
 
 | Record | Status | Date | One line |
 |---|---|---|---|
+| [gptoss20b-prefill-decode-optimization.md](gptoss20b-prefill-decode-optimization.md) | In progress | 2026-09-05 | Fresh-prompt output pruning, expert kernels and decode constant reuse with paired local controls |
 | [gemma4-cbv2-mtp.md](gemma4-cbv2-mtp.md) | Implemented | 2026-07-14 | Gemma 4 frozen-KV multi-token prediction on continuous batching v2 |
 | [gemma4-26b-inference-optimization.md](gemma4-26b-inference-optimization.md) | Proposed | 2026-08-03 | Op-level profile of Gemma 4 26B-A4B decode and prefill with a tiered list of kernel and scheduling wins |
 | [paged-attention-for-prefill.md](paged-attention-for-prefill.md) | Superseded by [paged-kv-migration.md](paged-kv-migration.md) | 2026-07-25 | Decision memo: paged attention does not solve the prefill problem; optimise AttentionV1 instead |

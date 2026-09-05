@@ -1,0 +1,1884 @@
+{
+  "cells": [
+    {
+      "batch": 1,
+      "context": 512,
+      "iterations": 5,
+      "name": "decode-512-b1",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "0e20863843eec58875d7ba0429e8af213463b735827a813b3670a3d2b04dcbba",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 89.82568966665976,
+          "legacyAggregateTokensPerSecond": 106.40395048041776,
+          "overlapAggregateTokensPerSecond": 106.52564593045668,
+          "overlapDecodedTokens": 256,
+          "overlapDecodedTokensPerRow": [
+            256
+          ],
+          "overlapDurationMs": 2403.1771670000003,
+          "overlapEndMs": 2858.353708,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 455.176541,
+          "peakMemoryBytes": 13445445153,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 2861.10225,
+              "firstTokenAtMs": 455.176541,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 2858.353708,
+              "row": 0,
+              "submittedAtMs": 0.0053750000000000004,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 88.34288303055308,
+          "legacyAggregateTokensPerSecond": 104.67466778783266,
+          "overlapAggregateTokensPerSecond": 104.7925072538622,
+          "overlapDecodedTokens": 256,
+          "overlapDecodedTokensPerRow": [
+            256
+          ],
+          "overlapDurationMs": 2442.92275,
+          "overlapEndMs": 2906.374417,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 463.451667,
+          "peakMemoryBytes": 13445445217,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 2909.1245830000003,
+              "firstTokenAtMs": 463.451667,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 2906.374417,
+              "row": 0,
+              "submittedAtMs": 0.005125,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 88.85577574874996,
+          "legacyAggregateTokensPerSecond": 105.89717477403131,
+          "overlapAggregateTokensPerSecond": 106.01934308254053,
+          "overlapDecodedTokens": 256,
+          "overlapDecodedTokensPerRow": [
+            256
+          ],
+          "overlapDurationMs": 2414.653709,
+          "overlapEndMs": 2889.546709,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 474.89300000000003,
+          "peakMemoryBytes": 13445445281,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 2892.332375,
+              "firstTokenAtMs": 474.89300000000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 2889.546709,
+              "row": 0,
+              "submittedAtMs": 0.0049169999999999995,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 88.00302097044327,
+          "legacyAggregateTokensPerSecond": 104.93352372734212,
+          "overlapAggregateTokensPerSecond": 105.05702702257807,
+          "overlapDecodedTokens": 256,
+          "overlapDecodedTokensPerRow": [
+            256
+          ],
+          "overlapDurationMs": 2436.771792,
+          "overlapEndMs": 2917.491708,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 480.719916,
+          "peakMemoryBytes": 13445445313,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 2920.359708,
+              "firstTokenAtMs": 480.719916,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 2917.491708,
+              "row": 0,
+              "submittedAtMs": 0.005416000000000001,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 87.6723519125741,
+          "legacyAggregateTokensPerSecond": 104.50285344326953,
+          "overlapAggregateTokensPerSecond": 104.6261515517979,
+          "overlapDecodedTokens": 256,
+          "overlapDecodedTokensPerRow": [
+            256
+          ],
+          "overlapDurationMs": 2446.8070000000002,
+          "overlapEndMs": 2928.4875,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 481.6805,
+          "peakMemoryBytes": 13445445313,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 2931.374375,
+              "firstTokenAtMs": 481.6805,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 2928.4875,
+              "row": 0,
+              "submittedAtMs": 0.005541,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "context": 512,
+      "iterations": 5,
+      "name": "decode-512-b2",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "0f885610c4369080697060c0ce032226b0285c97b03a7c2ed48a47733f2a5fed",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 123.98679166778606,
+          "legacyAggregateTokensPerSecond": 159.32425148007218,
+          "overlapAggregateTokensPerSecond": 159.19038241292168,
+          "overlapDecodedTokens": 511,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255
+          ],
+          "overlapDurationMs": 3209.992917,
+          "overlapEndMs": 4142.029834,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 932.036917,
+          "peakMemoryBytes": 13857223429,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4145.425125,
+              "firstTokenAtMs": 932.0355000000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4142.029834,
+              "row": 0,
+              "submittedAtMs": 0.006334,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4145.609209,
+              "firstTokenAtMs": 932.036917,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4142.23725,
+              "row": 1,
+              "submittedAtMs": 0.014209000000000001,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 118.68227007192927,
+          "legacyAggregateTokensPerSecond": 158.08291939611632,
+          "overlapAggregateTokensPerSecond": 157.9517847188218,
+          "overlapDecodedTokens": 511,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255
+          ],
+          "overlapDurationMs": 3235.1644580000006,
+          "overlapEndMs": 4327.255958000001,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 1092.0915,
+          "peakMemoryBytes": 13857223461,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4330.719458,
+              "firstTokenAtMs": 1092.0849580000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4327.255958000001,
+              "row": 0,
+              "submittedAtMs": 0.006875,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4330.898083,
+              "firstTokenAtMs": 1092.0915,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4327.451208,
+              "row": 1,
+              "submittedAtMs": 0.013875,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 118.68530052823905,
+          "legacyAggregateTokensPerSecond": 133.67177125168763,
+          "overlapAggregateTokensPerSecond": 157.8175721107515,
+          "overlapDecodedTokens": 509,
+          "overlapDecodedTokensPerRow": [
+            255,
+            254
+          ],
+          "overlapDurationMs": 3225.242875,
+          "overlapEndMs": 4327.007917,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 1101.765042,
+          "peakMemoryBytes": 13445441429,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4330.786208,
+              "firstTokenAtMs": 500.5085419999999,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4327.007917,
+              "row": 0,
+              "submittedAtMs": 0.005582999999999999,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4330.783,
+              "firstTokenAtMs": 1101.765042,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4330.613958,
+              "row": 1,
+              "submittedAtMs": 0.007708,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 117.72537176713882,
+          "legacyAggregateTokensPerSecond": 155.92504911416734,
+          "overlapAggregateTokensPerSecond": 155.78286338201093,
+          "overlapDecodedTokens": 511,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255
+          ],
+          "overlapDurationMs": 3280.2067499999994,
+          "overlapEndMs": 4362.679499999999,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 1082.47275,
+          "peakMemoryBytes": 13857223493,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4365.906583,
+              "firstTokenAtMs": 1082.470125,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4362.679499999999,
+              "row": 0,
+              "submittedAtMs": 0.008,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4366.101666,
+              "firstTokenAtMs": 1082.47275,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4362.891165999999,
+              "row": 1,
+              "submittedAtMs": 0.015416,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 111.96242549713347,
+          "legacyAggregateTokensPerSecond": 154.47723955508897,
+          "overlapAggregateTokensPerSecond": 154.35371104381167,
+          "overlapDecodedTokens": 511,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255
+          ],
+          "overlapDurationMs": 3310.5780000000004,
+          "overlapEndMs": 4587.007209,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 1276.429209,
+          "peakMemoryBytes": 13857223525,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4590.539167,
+              "firstTokenAtMs": 1276.428042,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4587.007209,
+              "row": 0,
+              "submittedAtMs": 0.007459,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 4590.833334,
+              "firstTokenAtMs": 1276.429209,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 4587.216459,
+              "row": 1,
+              "submittedAtMs": 0.014084,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 4,
+      "context": 512,
+      "iterations": 5,
+      "name": "decode-512-b4",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "f6855891ac9bcd0fdaa6d65a4764e24e2e429904daaf2c82273f74612bcab106",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 127.09429474593622,
+          "legacyAggregateTokensPerSecond": 165.36852888270397,
+          "overlapAggregateTokensPerSecond": 165.08670123947613,
+          "overlapDecodedTokens": 1021,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255,
+            255,
+            255
+          ],
+          "overlapDurationMs": 6184.629,
+          "overlapEndMs": 8080.88875,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 1896.25975,
+          "peakMemoryBytes": 14893305233,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8088.312500000001,
+              "firstTokenAtMs": 1896.240625,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8080.88875,
+              "row": 0,
+              "submittedAtMs": 0.007292,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8088.470624999999,
+              "firstTokenAtMs": 1896.2545,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8081.077708000001,
+              "row": 1,
+              "submittedAtMs": 0.011208000000000001,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8088.319167,
+              "firstTokenAtMs": 1896.251083,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8080.910707999999,
+              "row": 2,
+              "submittedAtMs": 0.014957999999999999,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8088.489958,
+              "firstTokenAtMs": 1896.25975,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8081.105875,
+              "row": 3,
+              "submittedAtMs": 0.017499999999999998,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 115.97787434358588,
+          "legacyAggregateTokensPerSecond": 163.66383007984638,
+          "overlapAggregateTokensPerSecond": 163.3899134253499,
+          "overlapDecodedTokens": 1021,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255,
+            255,
+            255
+          ],
+          "overlapDurationMs": 6248.855750000001,
+          "overlapEndMs": 8855.896334000001,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 2607.040584,
+          "peakMemoryBytes": 14893305297,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8863.511584,
+              "firstTokenAtMs": 2607.0306250000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8855.896334000001,
+              "row": 0,
+              "submittedAtMs": 0.008542000000000001,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8863.737667000001,
+              "firstTokenAtMs": 2607.039625,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8856.126375,
+              "row": 1,
+              "submittedAtMs": 0.014542000000000001,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8863.744499999999,
+              "firstTokenAtMs": 2607.0380840000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8856.151959,
+              "row": 2,
+              "submittedAtMs": 0.018417,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 8863.768167,
+              "firstTokenAtMs": 2607.040584,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 8856.183459,
+              "row": 3,
+              "submittedAtMs": 0.017792,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 109.99243561262966,
+          "legacyAggregateTokensPerSecond": 156.4862330606088,
+          "overlapAggregateTokensPerSecond": 156.22606485382332,
+          "overlapDecodedTokens": 1021,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255,
+            255,
+            255
+          ],
+          "overlapDurationMs": 6535.401125,
+          "overlapEndMs": 9337.803291,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 2802.4021660000003,
+          "peakMemoryBytes": 14893305265,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9345.750208,
+              "firstTokenAtMs": 2802.3875829999997,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9337.803291,
+              "row": 0,
+              "submittedAtMs": 0.009833,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9346.054,
+              "firstTokenAtMs": 2802.393708,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9338.108583000001,
+              "row": 1,
+              "submittedAtMs": 0.017499999999999998,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9346.107082999999,
+              "firstTokenAtMs": 2802.4021660000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9338.181041,
+              "row": 2,
+              "submittedAtMs": 0.020208,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9346.103375,
+              "firstTokenAtMs": 2802.39675,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9338.154541,
+              "row": 3,
+              "submittedAtMs": 0.024666,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 106.19017258137066,
+          "legacyAggregateTokensPerSecond": 151.33235652041094,
+          "overlapAggregateTokensPerSecond": 151.0747363971722,
+          "overlapDecodedTokens": 1021,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255,
+            255,
+            255
+          ],
+          "overlapDurationMs": 6758.244458000001,
+          "overlapEndMs": 9672.437625,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 2914.193167,
+          "peakMemoryBytes": 14859076245,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9680.388167000001,
+              "firstTokenAtMs": 2914.181917,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9672.437625,
+              "row": 0,
+              "submittedAtMs": 0.0115,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9680.756667000001,
+              "firstTokenAtMs": 2914.193167,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9672.815584,
+              "row": 1,
+              "submittedAtMs": 0.023417,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9680.400875,
+              "firstTokenAtMs": 2914.192625,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9672.477499999999,
+              "row": 2,
+              "submittedAtMs": 0.022084,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9680.455709,
+              "firstTokenAtMs": 2914.190792,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9672.526959,
+              "row": 3,
+              "submittedAtMs": 0.026334,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 103.32618905171584,
+          "legacyAggregateTokensPerSecond": 147.70995477103875,
+          "overlapAggregateTokensPerSecond": 147.45318312585567,
+          "overlapDecodedTokens": 1021,
+          "overlapDecodedTokensPerRow": [
+            256,
+            255,
+            255,
+            255
+          ],
+          "overlapDurationMs": 6924.231667000001,
+          "overlapEndMs": 9940.8165,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 3016.584833,
+          "peakMemoryBytes": 14893305329,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9948.784708,
+              "firstTokenAtMs": 3016.5715830000004,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9940.8165,
+              "row": 0,
+              "submittedAtMs": 0.012707999999999999,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9949.046665999998,
+              "firstTokenAtMs": 3016.577416,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9941.09225,
+              "row": 1,
+              "submittedAtMs": 0.019791,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9949.087666000001,
+              "firstTokenAtMs": 3016.584833,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9941.159416,
+              "row": 2,
+              "submittedAtMs": 0.027625,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9949.084708,
+              "firstTokenAtMs": 3016.579708,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 9941.135208,
+              "row": 3,
+              "submittedAtMs": 0.026958,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 8,
+      "context": 512,
+      "iterations": 5,
+      "name": "decode-512-b8",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "ec80426307d960775f12190a22d639ef8ee7580acf7c6f7fdcfa8f985c932fea",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 107.21727721407765,
+          "legacyAggregateTokensPerSecond": 124.08137228476126,
+          "overlapAggregateTokensPerSecond": 147.3488021197271,
+          "overlapDecodedTokens": 2025,
+          "overlapDecodedTokensPerRow": [
+            254,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253
+          ],
+          "overlapDurationMs": 13742.901000000002,
+          "overlapEndMs": 19133.536666,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 5390.635665999999,
+          "peakMemoryBytes": 15073436325,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.500541,
+              "firstTokenAtMs": 2645.371583,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19133.536666,
+              "row": 0,
+              "submittedAtMs": 0.014416,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.662416,
+              "firstTokenAtMs": 2645.3779160000004,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19133.709958,
+              "row": 1,
+              "submittedAtMs": 0.015875,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.666583,
+              "firstTokenAtMs": 2645.379625,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19133.727415999998,
+              "row": 2,
+              "submittedAtMs": 0.018625,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.690833,
+              "firstTokenAtMs": 2645.3930410000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19133.755791,
+              "row": 3,
+              "submittedAtMs": 0.022125,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.113250000002,
+              "firstTokenAtMs": 5283.03475,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19150.051583,
+              "row": 4,
+              "submittedAtMs": 0.025625,
+              "tokenIDsSHA256": "5d9dc0b338563f7bf57cb97fc52ca0b654db8c46b0cb9a5100751a30c0db3fab"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.254083,
+              "firstTokenAtMs": 5283.039083000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19150.251375,
+              "row": 5,
+              "submittedAtMs": 0.026041,
+              "tokenIDsSHA256": "d37af791e161f25e0d18651e4b719ebeedfd74754550e57f5ae12557cccb2fbc"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19150.492625,
+              "firstTokenAtMs": 5283.038750000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19150.371958,
+              "row": 6,
+              "submittedAtMs": 0.026583,
+              "tokenIDsSHA256": "cbecf41372e93ec8cb70f351e2b391cb41a2a08d01fc52a186dbedb150facc09"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19176.028333000002,
+              "firstTokenAtMs": 5390.635665999999,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19172.8845,
+              "row": 7,
+              "submittedAtMs": 0.028625,
+              "tokenIDsSHA256": "71dfee7c83ae4167cbbe64405f56a09186f5641d3696df95425e337610becfac"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 106.34980562807853,
+          "legacyAggregateTokensPerSecond": 125.2515718184249,
+          "overlapAggregateTokensPerSecond": 148.9011517767847,
+          "overlapDecodedTokens": 2025,
+          "overlapDecodedTokensPerRow": [
+            254,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253
+          ],
+          "overlapDurationMs": 13599.626167000002,
+          "overlapEndMs": 19288.656667000003,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 5689.030500000001,
+          "peakMemoryBytes": 15073436389,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.85825,
+              "firstTokenAtMs": 2954.801333,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19288.656667000003,
+              "row": 0,
+              "submittedAtMs": 0.011875,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.593042,
+              "firstTokenAtMs": 5581.060875,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19305.442082999998,
+              "row": 1,
+              "submittedAtMs": 0.013917,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.862250000002,
+              "firstTokenAtMs": 2954.8469170000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19288.682042,
+              "row": 2,
+              "submittedAtMs": 0.01875,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.888375,
+              "firstTokenAtMs": 2954.8559170000003,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19288.713458,
+              "row": 3,
+              "submittedAtMs": 0.023208,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.954958000002,
+              "firstTokenAtMs": 2954.8627500000002,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19288.792542,
+              "row": 4,
+              "submittedAtMs": 0.026250000000000002,
+              "tokenIDsSHA256": "5d9dc0b338563f7bf57cb97fc52ca0b654db8c46b0cb9a5100751a30c0db3fab"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.733333,
+              "firstTokenAtMs": 5581.065208,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19305.729625,
+              "row": 5,
+              "submittedAtMs": 0.026333,
+              "tokenIDsSHA256": "d37af791e161f25e0d18651e4b719ebeedfd74754550e57f5ae12557cccb2fbc"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19332.44025,
+              "firstTokenAtMs": 5689.030500000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19329.337667,
+              "row": 6,
+              "submittedAtMs": 0.027583,
+              "tokenIDsSHA256": "cbecf41372e93ec8cb70f351e2b391cb41a2a08d01fc52a186dbedb150facc09"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19305.738333,
+              "firstTokenAtMs": 5581.064582999999,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19305.736167,
+              "row": 7,
+              "submittedAtMs": 0.029,
+              "tokenIDsSHA256": "d16320e8d6e5b16e183236294ac7a6de796f9451cd87e0d616ede35c953bc0c2"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 107.59082182361102,
+          "legacyAggregateTokensPerSecond": 127.23225868306193,
+          "overlapAggregateTokensPerSecond": 151.7910894076335,
+          "overlapDecodedTokens": 2025,
+          "overlapDecodedTokensPerRow": [
+            254,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253
+          ],
+          "overlapDurationMs": 13340.704042000001,
+          "overlapEndMs": 19067.275708,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 5726.571666,
+          "peakMemoryBytes": 15073436389,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.776625,
+              "firstTokenAtMs": 2987.4457909999996,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19067.275708,
+              "row": 0,
+              "submittedAtMs": 0.011625,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.937375,
+              "firstTokenAtMs": 2987.450875,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19067.485791,
+              "row": 1,
+              "submittedAtMs": 0.015000000000000001,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.9415,
+              "firstTokenAtMs": 2987.456458,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19067.50525,
+              "row": 2,
+              "submittedAtMs": 0.021208,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.643083,
+              "firstTokenAtMs": 5618.919625,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19083.614707999997,
+              "row": 3,
+              "submittedAtMs": 0.023833,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19084.006166000003,
+              "firstTokenAtMs": 2987.459416,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19067.589916,
+              "row": 4,
+              "submittedAtMs": 0.02325,
+              "tokenIDsSHA256": "5d9dc0b338563f7bf57cb97fc52ca0b654db8c46b0cb9a5100751a30c0db3fab"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.769,
+              "firstTokenAtMs": 5618.920833,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19083.767000000003,
+              "row": 5,
+              "submittedAtMs": 0.024958,
+              "tokenIDsSHA256": "d37af791e161f25e0d18651e4b719ebeedfd74754550e57f5ae12557cccb2fbc"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19083.581666000002,
+              "firstTokenAtMs": 5618.918583000001,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19083.416916000002,
+              "row": 6,
+              "submittedAtMs": 0.025958000000000002,
+              "tokenIDsSHA256": "cbecf41372e93ec8cb70f351e2b391cb41a2a08d01fc52a186dbedb150facc09"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 19109.448333,
+              "firstTokenAtMs": 5726.571666,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 19106.410833,
+              "row": 7,
+              "submittedAtMs": 0.027166,
+              "tokenIDsSHA256": "71dfee7c83ae4167cbbe64405f56a09186f5641d3696df95425e337610becfac"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 111.91571574668188,
+          "legacyAggregateTokensPerSecond": 132.29930359565182,
+          "overlapAggregateTokensPerSecond": 158.43912399904048,
+          "overlapDecodedTokens": 2025,
+          "overlapDecodedTokensPerRow": [
+            254,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253
+          ],
+          "overlapDurationMs": 12780.934083000002,
+          "overlapEndMs": 18330.460375000002,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 5549.5262920000005,
+          "peakMemoryBytes": 15073436389,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18345.915167000003,
+              "firstTokenAtMs": 2866.0131250000004,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18330.460375000002,
+              "row": 0,
+              "submittedAtMs": 0.011834,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18346.076959,
+              "firstTokenAtMs": 2866.025709,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18330.642167,
+              "row": 1,
+              "submittedAtMs": 0.013542,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18346.081209,
+              "firstTokenAtMs": 2866.048084,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18330.663999999997,
+              "row": 2,
+              "submittedAtMs": 0.020041999999999997,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18346.103792,
+              "firstTokenAtMs": 2866.0534169999996,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18330.693334,
+              "row": 3,
+              "submittedAtMs": 0.022209,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18370.979542,
+              "firstTokenAtMs": 5549.5262920000005,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18367.949834,
+              "row": 4,
+              "submittedAtMs": 0.022625000000000003,
+              "tokenIDsSHA256": "5220233936990e3e08cfbe312b8e6b8fc6e3ecfd0596c5d969c6a98c3b2970b4"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18345.706667000002,
+              "firstTokenAtMs": 5436.279084,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18345.70475,
+              "row": 5,
+              "submittedAtMs": 0.026,
+              "tokenIDsSHA256": "d37af791e161f25e0d18651e4b719ebeedfd74754550e57f5ae12557cccb2fbc"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18345.577417,
+              "firstTokenAtMs": 5436.22775,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18345.461625,
+              "row": 6,
+              "submittedAtMs": 0.025209,
+              "tokenIDsSHA256": "cbecf41372e93ec8cb70f351e2b391cb41a2a08d01fc52a186dbedb150facc09"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 18345.5875,
+              "firstTokenAtMs": 5436.27,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 18345.584084,
+              "row": 7,
+              "submittedAtMs": 0.027209,
+              "tokenIDsSHA256": "d16320e8d6e5b16e183236294ac7a6de796f9451cd87e0d616ede35c953bc0c2"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 512,
+          "endToEndTokensPerSecond": 115.33053855505617,
+          "legacyAggregateTokensPerSecond": 136.69826130750815,
+          "overlapAggregateTokensPerSecond": 163.7760949786984,
+          "overlapDecodedTokens": 2025,
+          "overlapDecodedTokensPerRow": [
+            254,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253,
+            253
+          ],
+          "overlapDurationMs": 12364.441833,
+          "overlapEndMs": 17787.03425,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 5422.592417,
+          "peakMemoryBytes": 15073436389,
+          "requestedPostFirstTokenDecodeTokens": 256,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17802.267209,
+              "firstTokenAtMs": 2820.54175,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17787.03425,
+              "row": 0,
+              "submittedAtMs": 0.012292,
+              "tokenIDsSHA256": "09e61f92c24f779765bcc25a29df67ed8fed1cc4ad1679ac97d219f060143a1b"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17802.425750000002,
+              "firstTokenAtMs": 2820.5475,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17787.226749999998,
+              "row": 1,
+              "submittedAtMs": 0.014167,
+              "tokenIDsSHA256": "c037ad912d2dc114bdd8114de980e288d5e87435bb1e8b79fb537a5603d211f0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17802.432542,
+              "firstTokenAtMs": 2820.550875,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17787.244417,
+              "row": 2,
+              "submittedAtMs": 0.020584,
+              "tokenIDsSHA256": "877459aeeead44a4154a855abf95e823ef5c1caffd5ba3ce5de8dbc5ea0c0a36"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17802.454292,
+              "firstTokenAtMs": 2820.551959,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17787.275334,
+              "row": 3,
+              "submittedAtMs": 0.022625000000000003,
+              "tokenIDsSHA256": "9fee4c0de098d5cea9384816069ec48c7c007d0b3987c5c968302d0ba7a0d56e"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17802.133959,
+              "firstTokenAtMs": 5320.828417,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17802.064417,
+              "row": 4,
+              "submittedAtMs": 0.023042,
+              "tokenIDsSHA256": "5d9dc0b338563f7bf57cb97fc52ca0b654db8c46b0cb9a5100751a30c0db3fab"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17827.033875,
+              "firstTokenAtMs": 5422.592417,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17824.109292,
+              "row": 5,
+              "submittedAtMs": 0.027459,
+              "tokenIDsSHA256": "d37af791e161f25e0d18651e4b719ebeedfd74754550e57f5ae12557cccb2fbc"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17801.97875,
+              "firstTokenAtMs": 5320.822459,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17801.860292,
+              "row": 6,
+              "submittedAtMs": 0.025625,
+              "tokenIDsSHA256": "cbecf41372e93ec8cb70f351e2b391cb41a2a08d01fc52a186dbedb150facc09"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 17801.9925,
+              "firstTokenAtMs": 5320.8265,
+              "generatedTokens": 257,
+              "lastTokenAtMs": 17801.989209,
+              "row": 7,
+              "submittedAtMs": 0.028125,
+              "tokenIDsSHA256": "d16320e8d6e5b16e183236294ac7a6de796f9451cd87e0d616ede35c953bc0c2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "context": 4096,
+      "iterations": 5,
+      "name": "prefill-4096",
+      "phase": "prefill",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "d2b3173f2e7f79d19a9ea06520a822a6f6bfc2f68e87e95ac132a555d0dd5ca0",
+      "samples": [
+        {
+          "activeMemoryBytes": 12199981481,
+          "iteration": 1,
+          "msPerPrefillToken": 0.8847191086691087,
+          "peakMemoryBytes": 15405878413,
+          "promptTokens": 4096,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 3622.92475
+        },
+        {
+          "activeMemoryBytes": 12183171497,
+          "iteration": 2,
+          "msPerPrefillToken": 0.8646258852258852,
+          "peakMemoryBytes": 15405878445,
+          "promptTokens": 4096,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 3540.643
+        },
+        {
+          "activeMemoryBytes": 12199981549,
+          "iteration": 3,
+          "msPerPrefillToken": 0.9000628713064713,
+          "peakMemoryBytes": 15405878477,
+          "promptTokens": 4096,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 3685.757458
+        },
+        {
+          "activeMemoryBytes": 12260389385,
+          "iteration": 4,
+          "msPerPrefillToken": 0.8989416769230769,
+          "peakMemoryBytes": 15405878509,
+          "promptTokens": 4096,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 3681.166167
+        },
+        {
+          "activeMemoryBytes": 12156907993,
+          "iteration": 5,
+          "msPerPrefillToken": 0.9263148046398046,
+          "peakMemoryBytes": 15405878509,
+          "promptTokens": 4096,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 3793.259125
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "context": 512,
+      "iterations": 5,
+      "name": "prefill-512",
+      "phase": "prefill",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "b1b5ef7537a72252bc1deafd3120a560452ca6f15c587967c7bfb1f8990953aa",
+      "samples": [
+        {
+          "activeMemoryBytes": 12105183621,
+          "iteration": 1,
+          "msPerPrefillToken": 0.8576503581213306,
+          "peakMemoryBytes": 13433227317,
+          "promptTokens": 512,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 438.25933299999997
+        },
+        {
+          "activeMemoryBytes": 12091912541,
+          "iteration": 2,
+          "msPerPrefillToken": 0.8596479119373777,
+          "peakMemoryBytes": 13433227349,
+          "promptTokens": 512,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 439.280083
+        },
+        {
+          "activeMemoryBytes": 12099875249,
+          "iteration": 3,
+          "msPerPrefillToken": 0.8704105499021526,
+          "peakMemoryBytes": 13433227381,
+          "promptTokens": 512,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 444.779791
+        },
+        {
+          "activeMemoryBytes": 12097221101,
+          "iteration": 4,
+          "msPerPrefillToken": 0.8611761252446184,
+          "peakMemoryBytes": 13433227445,
+          "promptTokens": 512,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 440.061
+        },
+        {
+          "activeMemoryBytes": 12103184897,
+          "iteration": 5,
+          "msPerPrefillToken": 0.8624513209393346,
+          "peakMemoryBytes": 13433227477,
+          "promptTokens": 512,
+          "resolvedKVBackend": "contiguous",
+          "strategy": "cbv2",
+          "ttftMs": 440.712625
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "context": 32768,
+      "iterations": 2,
+      "name": "decode-32768-b1",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "15b29551b3903b8a23d78000d08ac6335578d7071ab087aafa1b3e8aeeb927de",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 32768,
+          "endToEndTokensPerSecond": 2.6095402654750686,
+          "legacyAggregateTokensPerSecond": 63.35359403048205,
+          "overlapAggregateTokensPerSecond": 63.4723005286245,
+          "overlapDecodedTokens": 128,
+          "overlapDecodedTokensPerRow": [
+            128
+          ],
+          "overlapDurationMs": 2016.6277090000076,
+          "overlapEndMs": 49430.270167,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 47413.642457999995,
+          "peakMemoryBytes": 16750241669,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 49434.04875,
+              "firstTokenAtMs": 47413.642457999995,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 49430.270167,
+              "row": 0,
+              "submittedAtMs": 0.053917,
+              "tokenIDsSHA256": "52443fc3a341d73d14723eec2e1d7fd061773b921f53d06406102d8e447bacde"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 32768,
+          "endToEndTokensPerSecond": 2.586478077940708,
+          "legacyAggregateTokensPerSecond": 62.86784315770373,
+          "overlapAggregateTokensPerSecond": 62.98148701012964,
+          "overlapDecodedTokens": 128,
+          "overlapDecodedTokensPerRow": [
+            128
+          ],
+          "overlapDurationMs": 2032.3432500000054,
+          "overlapEndMs": 49871.160084,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 47838.816834,
+          "peakMemoryBytes": 16750241701,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 49874.833875,
+              "firstTokenAtMs": 47838.816834,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 49871.160084,
+              "row": 0,
+              "submittedAtMs": 0.063584,
+              "tokenIDsSHA256": "52443fc3a341d73d14723eec2e1d7fd061773b921f53d06406102d8e447bacde"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 1,
+      "context": 8192,
+      "iterations": 2,
+      "name": "decode-8192-b1",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "4439e06096b53cd9b8a8d44328a8059f40c9b6ce07c1a11a454664a733db9430",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 13.816295263606014,
+          "legacyAggregateTokensPerSecond": 90.57342886943128,
+          "overlapAggregateTokensPerSecond": 90.76192508879427,
+          "overlapDecodedTokens": 128,
+          "overlapDecodedTokensPerRow": [
+            128
+          ],
+          "overlapDurationMs": 1410.2829999999994,
+          "overlapEndMs": 9333.876999999999,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 7923.593999999999,
+          "peakMemoryBytes": 15613489189,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 9336.812,
+              "firstTokenAtMs": 7923.593999999999,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 9333.876999999999,
+              "row": 0,
+              "submittedAtMs": 0.010959,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 12.502382307142145,
+          "legacyAggregateTokensPerSecond": 80.10900457286294,
+          "overlapAggregateTokensPerSecond": 80.25143778601326,
+          "overlapDecodedTokens": 128,
+          "overlapDecodedTokensPerRow": [
+            128
+          ],
+          "overlapDurationMs": 1594.987000000001,
+          "overlapEndMs": 10315.2085,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 8720.2215,
+          "peakMemoryBytes": 15613489253,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 10318.044375,
+              "firstTokenAtMs": 8720.2215,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 10315.2085,
+              "row": 0,
+              "submittedAtMs": 0.010832999999999999,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "context": 8192,
+      "iterations": 2,
+      "name": "decode-8192-b2",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "ab21533e17ff64cc4da7c1dda156306bd80d673795df5aace07eb423ff3c3159",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 10.890475506178248,
+          "legacyAggregateTokensPerSecond": 19.77248798287942,
+          "overlapAggregateTokensPerSecond": 111.64113996673905,
+          "overlapDecodedTokens": 223,
+          "overlapDecodedTokensPerRow": [
+            112,
+            111
+          ],
+          "overlapDurationMs": 1997.4715419999993,
+          "overlapEndMs": 23467.962042,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 21470.4905,
+          "peakMemoryBytes": 15613489157,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 23472.283959,
+              "firstTokenAtMs": 10525.000834,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 23467.962042,
+              "row": 0,
+              "submittedAtMs": 0.018792,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 23690.444417,
+              "firstTokenAtMs": 21470.4905,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 23687.220959000002,
+              "row": 1,
+              "submittedAtMs": 0.025292000000000002,
+              "tokenIDsSHA256": "8ccad5226b5193679609251979abbea92aca7b15edc330ec8bde75fd62ff8c34"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 9.856818096419428,
+          "legacyAggregateTokensPerSecond": 17.461079321376882,
+          "overlapAggregateTokensPerSecond": 92.09019553267554,
+          "overlapDecodedTokens": 223,
+          "overlapDecodedTokensPerRow": [
+            112,
+            111
+          ],
+          "overlapDurationMs": 2421.5390000000043,
+          "overlapEndMs": 25867.095625,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 23445.556624999997,
+          "peakMemoryBytes": 15613489157,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 25874.038167,
+              "firstTokenAtMs": 11212.859709,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 25867.095625,
+              "row": 0,
+              "submittedAtMs": 0.017374999999999998,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 26174.792792,
+              "firstTokenAtMs": 23445.556624999997,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 26170.531167,
+              "row": 1,
+              "submittedAtMs": 0.022709,
+              "tokenIDsSHA256": "8ccad5226b5193679609251979abbea92aca7b15edc330ec8bde75fd62ff8c34"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "batch": 4,
+      "context": 8192,
+      "iterations": 2,
+      "name": "decode-8192-b4",
+      "phase": "decode",
+      "powerBoundaries": {
+        "after": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        },
+        "before": {
+          "acPowerMode": 2,
+          "batteryPowerMode": 1,
+          "lowPowerModeBySource": {},
+          "source": "AC Power"
+        }
+      },
+      "rawStdoutSHA256": "92d4f9b3cb20d6a49b46b06704b3b0ab0686ced6bdd1c4bae7263855081e3f4d",
+      "samples": [
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 10.259027725698411,
+          "legacyAggregateTokensPerSecond": 13.557695436821552,
+          "overlapAggregateTokensPerSecond": 110.61376357012972,
+          "overlapDecodedTokens": 325,
+          "overlapDecodedTokensPerRow": [
+            82,
+            81,
+            81,
+            81
+          ],
+          "overlapDurationMs": 2938.1515419999996,
+          "overlapEndMs": 49226.125042,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 46287.9735,
+          "peakMemoryBytes": 15613489189,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 49236.223375,
+              "firstTokenAtMs": 11471.693084,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 49226.125042,
+              "row": 0,
+              "submittedAtMs": 0.016667,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 49737.380417,
+              "firstTokenAtMs": 23747.266459,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 49729.178417,
+              "row": 1,
+              "submittedAtMs": 0.02075,
+              "tokenIDsSHA256": "8ccad5226b5193679609251979abbea92aca7b15edc330ec8bde75fd62ff8c34"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 50072.897584000006,
+              "firstTokenAtMs": 35330.485584,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 50068.095125,
+              "row": 2,
+              "submittedAtMs": 0.037959,
+              "tokenIDsSHA256": "ad8068a8e72c011da32b80c88f60bf92caef8d161df0e752a5ed901794477de6"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 50297.180667,
+              "firstTokenAtMs": 46287.9735,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 50293.790292,
+              "row": 3,
+              "submittedAtMs": 0.04575,
+              "tokenIDsSHA256": "6db6a55fb2a5e131a9ecdc0939834d82c27431979fb090e26cd06fd6786e1e31"
+            }
+          ]
+        },
+        {
+          "clock": "ContinuousClock host event arrival; shared batch epoch",
+          "decodePromptTokens": 8192,
+          "endToEndTokensPerSecond": 11.536909341988594,
+          "legacyAggregateTokensPerSecond": 15.29228425520488,
+          "overlapAggregateTokensPerSecond": 129.94807924493745,
+          "overlapDecodedTokens": 325,
+          "overlapDecodedTokensPerRow": [
+            82,
+            81,
+            81,
+            81
+          ],
+          "overlapDurationMs": 2500.998875000005,
+          "overlapEndMs": 43787.048375,
+          "overlapMeetsMinimumSupport": true,
+          "overlapMinimumTokensPerRow": 32,
+          "overlapStartMs": 41286.049499999994,
+          "peakMemoryBytes": 15613489221,
+          "requestedPostFirstTokenDecodeTokens": 128,
+          "rows": [
+            {
+              "finishReason": "length",
+              "finishedAtMs": 43796.02775,
+              "firstTokenAtMs": 10315.091125,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 43787.048375,
+              "row": 0,
+              "submittedAtMs": 0.027625,
+              "tokenIDsSHA256": "29adae709950cdc1d2f58875510cb91d91605f29bf343d753825d98e30bd17b0"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 44230.978792,
+              "firstTokenAtMs": 21261.371917,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 44224.454959,
+              "row": 1,
+              "submittedAtMs": 0.045917,
+              "tokenIDsSHA256": "8ccad5226b5193679609251979abbea92aca7b15edc330ec8bde75fd62ff8c34"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 44526.556292,
+              "firstTokenAtMs": 31445.57225,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 44522.317292,
+              "row": 2,
+              "submittedAtMs": 0.063834,
+              "tokenIDsSHA256": "ad8068a8e72c011da32b80c88f60bf92caef8d161df0e752a5ed901794477de6"
+            },
+            {
+              "finishReason": "length",
+              "finishedAtMs": 44726.044334,
+              "firstTokenAtMs": 41286.049499999994,
+              "generatedTokens": 129,
+              "lastTokenAtMs": 44722.758292,
+              "row": 3,
+              "submittedAtMs": 0.092792,
+              "tokenIDsSHA256": "6db6a55fb2a5e131a9ecdc0939834d82c27431979fb090e26cd06fd6786e1e31"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "hardware": {
+    "chip": "Apple M4 Max",
+    "gpuCores": 40,
+    "macOS": "26.5.2",
+    "memoryGiB": 128
+  },
+  "scope": "Compact raw-derived numeric samples, output hashes, and power boundaries. Full token sequences, event timestamps, host/process snapshots, stdout/stderr, and manifests remain local."
+}

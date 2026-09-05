@@ -87,6 +87,10 @@ def validate_checksums(checksum_sets: dict[str, dict[int, set[str]]]) -> None:
 def validate_arrival(args: argparse.Namespace, arrival: dict) -> None:
     if arrival.get("promptTokensPerRequest") != args.arrival_prompt_tokens:
         raise RuntimeError("arrival benchmark reported the wrong prompt length")
+    if arrival.get("schemaVersion") == 5 and arrival.get("promptLengthsPerRequest") != [
+        args.arrival_prompt_tokens
+    ] * 4:
+        raise RuntimeError("arrival benchmark reported the wrong per-row prompt lengths")
     if arrival.get("decodeTokensPerRequest") != args.arrival_decode_tokens:
         raise RuntimeError("arrival benchmark reported the wrong decode budget")
     tolerance, max_attempts = validate_arrival_bounds(arrival)

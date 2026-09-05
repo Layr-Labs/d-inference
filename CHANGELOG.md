@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — GPT-OSS prefill and decode
+
+- Skip unused GPT-OSS prefill vocabulary projections, fuse compatible 20B expert gate/up weights with bounded load materialization, reuse unchanged quantized constants, and enable the measured width-2880 MXFP4 decode path on M4 Max. Keep rollback controls and unsupported-shape fallbacks.
+
+- Add sequential, provenance-pinned GPT-OSS profiling with full-shape warmups, raw decode token timing, memory measurements, common-window aggregate B=2/B=4 decode rates, and mixed-length arrival workloads. Preserve failed and diagnostic runs separately from valid baseline measurements; raw evidence and paired comparisons distinguish measurement from optimization.
+
 ## Unreleased — stats location refresh
 
 - Restore public stats refreshes on large usage tables by aggregating locations per provider before combining location totals. Preserve distinct-provider and token counts and request-weighted coordinates without sorting every usage row. Keep the selective cutoff's query plan local to the analytics transaction.

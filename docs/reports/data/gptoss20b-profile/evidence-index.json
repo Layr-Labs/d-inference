@@ -1,0 +1,110 @@
+{
+  "files": [
+    {
+      "bytes": 8453,
+      "file": "baseline-short-summary.json",
+      "sha256": "3d648c8220509d661ce5dcd99a47ed3f0d57d1d981b5e3cad7bc43a46d795a4b",
+      "sourceArtifact": "baseline-high-power-short/summary.json",
+      "sourceSHA256": "3d648c8220509d661ce5dcd99a47ed3f0d57d1d981b5e3cad7bc43a46d795a4b",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 6798,
+      "file": "long-context-summary.json",
+      "sha256": "3fe3baf472c104f05628f77983890cc4818db617bac767fc12f551285eaf1e24",
+      "sourceArtifact": "quick-long-context/summary.json",
+      "sourceSHA256": "3fe3baf472c104f05628f77983890cc4818db617bac767fc12f551285eaf1e24",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 153670,
+      "file": "quick-primary-measurements.png",
+      "sha256": "eb15ea19c5ce5174d05daf10c11a7fa222f552134a369e23d5ec7f6d515575ea",
+      "sourceArtifact": "quick-primary-measurements.png",
+      "sourceSHA256": "eb15ea19c5ce5174d05daf10c11a7fa222f552134a369e23d5ec7f6d515575ea",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 22210,
+      "file": "quick-primary-measurements.svg",
+      "sha256": "a970d0ba88ff6f08f16dd645f2030ca5ac03d7fdf39ded59a857bb94bf4f319a",
+      "sourceArtifact": "quick-primary-measurements.svg",
+      "sourceSHA256": "a970d0ba88ff6f08f16dd645f2030ca5ac03d7fdf39ded59a857bb94bf4f319a",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 4674,
+      "file": "improvement-head-buffers.json",
+      "sha256": "b49fa35cef8fc4a9a747331568e03721843af72758c3cb445233bc3ccd000dec",
+      "sourceArtifact": "improvement-head-buffers.json",
+      "sourceSHA256": "b49fa35cef8fc4a9a747331568e03721843af72758c3cb445233bc3ccd000dec",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 663,
+      "file": "improvement-estimate.json",
+      "sha256": "18da7fa08ec6a59a93827fe9ce790435de5a8343a40f21f8068a743be73adb3c",
+      "sourceArtifact": "improvement-estimate.json",
+      "sourceSHA256": "18da7fa08ec6a59a93827fe9ce790435de5a8343a40f21f8068a743be73adb3c",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 54475,
+      "file": "control-b2-b4-summary.json",
+      "sha256": "a9f95253218ecdffd038b925f3f9ed5bd7fc7b895e4ff394ccc0f5f7f0481cda",
+      "sourceArtifact": "control-b2-b4/comparison.json",
+      "sourceSHA256": "a9f95253218ecdffd038b925f3f9ed5bd7fc7b895e4ff394ccc0f5f7f0481cda",
+      "transformation": "Byte-for-byte copy."
+    },
+    {
+      "bytes": 563,
+      "file": "quick-primary-measurements.csv",
+      "sha256": "21355e78cdac70be4227980351d314faf1c2bda6cfe1072a3430fc2dd83a2118",
+      "sourceArtifact": "quick-primary-measurements.csv",
+      "sourceSHA256": "c0ecc3b83caddfe11ae735519cbea447ee79ad15e9d671ef5c9bd98836984cbe",
+      "transformation": "Source column points to published summary filenames; numbers unchanged."
+    },
+    {
+      "bytes": 5857,
+      "file": "baseline-build-receipt.json",
+      "sha256": "cd5494e07ffd75f6d184103a49f9e8ca5c35cb8c218cd1be82eaf1211990cb15",
+      "sourceArtifact": "baseline-build/build-receipt.json",
+      "sourceSHA256": "0222fb83cefb1e59f7d83a150b15f4479b2ca9e3963a5fa06a248e9f6458bb70",
+      "transformation": "Local absolute artifact paths replaced with basenames; receipt hashes/source pins unchanged."
+    },
+    {
+      "bytes": 374116,
+      "file": "model-inventory.json",
+      "sha256": "dd063863cc3de80d2ded7e23e45a70dd613fe97ab82e3b2d5167ce054d8f90f5",
+      "sourceArtifact": "model-inventory.json",
+      "sourceSHA256": "8b5c70fc417a2f5656f7402aaeff8b2aabda7c0e864ec5178aad6b61559ece58",
+      "transformation": "Local snapshot path replaced with public model ID and revision; full header inventory and measured storage counts unchanged."
+    },
+    {
+      "bytes": 8270,
+      "file": "prefill-8192-trace-summary.json",
+      "sha256": "835d9921609beaf8d11ed54cee08b7daaa9425b20838a365876dc6b5c08c1b80",
+      "sourceArtifact": "quick-traces/prefill-8192/reduction/trace-reduction.json",
+      "sourceSHA256": "faf096b57af3990553aebe5cd6ee0703fadc3698297f0547d43cda2d0b3142ae",
+      "transformation": "Selected fields; see file scope notes."
+    },
+    {
+      "bytes": 28077,
+      "file": "decode-512-b4-trace-summary.json",
+      "sha256": "61a664d97428abc50b7dbbfd66a758647b24bae85c56f0449522a3929d5c32b3",
+      "sourceArtifact": "quick-traces-selected/decode-512-b4/reduction/trace-reduction.json",
+      "sourceSHA256": "f48ac6ef8580c787a666e0a1757372264040e16c360aed89a9ab2e0bf3e4e93d",
+      "transformation": "Selected fields; see file scope notes."
+    },
+    {
+      "bytes": 69899,
+      "file": "measurement-samples.json",
+      "sha256": "db114e3de740aa6a256868cf9f095108b6f26313a75c994e85886354f874fbf9",
+      "sourceArtifact": null,
+      "sourceSHA256": null,
+      "transformation": "Selected fields; see file scope notes."
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": "Portable evidence for the historical quick-profile and improvement-estimate reports; no model weights, executables, raw large traces, secrets, or local absolute filesystem paths included."
+}

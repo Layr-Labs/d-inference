@@ -1,0 +1,8 @@
+{
+  "allGreedyExact": true,
+  "allPrefillKVExact": true,
+  "completedArms": 42,
+  "maxLogitDifference": 5.1498413e-05,
+  "teacherForcedPositions": 1568,
+  "teacherForcedTop1Disagreements": 0
+}

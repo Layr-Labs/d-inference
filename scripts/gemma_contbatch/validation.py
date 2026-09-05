@@ -10,9 +10,11 @@ from .checks import assert_finite, require_positive
 
 
 RAW_SCHEMA_VERSIONS = {
-    "throughput sweep": 5,
-    "scheduler prefill": 3,
-    "arrival invariance": 4,
+    # New versions add raw event/memory evidence; the legacy metrics this
+    # runner compares retain their definitions. Accept only reviewed versions.
+    "throughput sweep": (5, 6),
+    "scheduler prefill": (3, 4),
+    "arrival invariance": (4, 5),
 }
 
 
@@ -110,10 +112,10 @@ def validate_raw_outputs(
         ("arrival invariance", arrival),
     ):
         expected_schema = RAW_SCHEMA_VERSIONS[name]
-        if payload.get("schemaVersion") != expected_schema:
+        if payload.get("schemaVersion") not in expected_schema:
             raise RuntimeError(
                 f"{name} schemaVersion is {payload.get('schemaVersion')!r}, "
-                f"expected {expected_schema}"
+                f"expected one of {expected_schema}"
             )
         if payload.get("modelID", "").replace("\\/", "/") != args.model:
             raise RuntimeError(f"{name} returned the wrong model ID")

@@ -118,6 +118,9 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Arrival benchmark: prompt tokens per request.")
     var arrivalPromptTokens = 512
 
+    @Option(name: .long, help: "Arrival benchmark: four comma-separated per-row prompt lengths, e.g. 8192,512,512,512.")
+    var arrivalPromptLengths: String?
+
     @Option(name: .long, help: "Arrival benchmark: generated tokens per request.")
     var arrivalDecodeTokens = 64
 

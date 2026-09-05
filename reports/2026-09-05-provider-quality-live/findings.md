@@ -24,7 +24,7 @@ Qwen3.5-35B-A3B contributed 3,089 successes, 10,714 rate limits, 10 service faul
 
 ## Read-replica evidence and freshness
 
-GCP identified `d-inference-prod-pg17-ro` as a running `READ_REPLICA_INSTANCE`. SQL independently confirmed `pg_is_in_recovery() = true` and `transaction_read_only = on`. Every query used a read-only transaction, 15-second statement timeout and one-second lock timeout. No primary database query or production mutation was performed.
+GCP identified the selected production replica as a running `READ_REPLICA_INSTANCE`. SQL independently confirmed `pg_is_in_recovery() = true` and `transaction_read_only = on`. Every query used a read-only transaction, 15-second statement timeout and one-second lock timeout. No primary database query or production mutation was performed.
 
 At 18:39:07 UTC the last replay timestamp was 18:33:15 UTC, approximately 351 seconds behind. At 18:40:11 UTC the latest fleet snapshot was 18:33:05 UTC. Consequently those fleet observations are historical, not instant live state. A later bounded reputation sample reached a snapshot timestamp of 18:45:05 UTC; freshness changed during the investigation.
 

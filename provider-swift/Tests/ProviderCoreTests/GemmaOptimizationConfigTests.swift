@@ -206,6 +206,38 @@ struct GemmaOptimizationEnvironmentTests {
         #expect(!consulted, "hermetic context must not read ambient environment")
     }
 
+    @Test("the MLX buffer cap is a serving refinement, absent from retained validation")
+    func bufferCapIsServingOnly() {
+        // Serving (and benchmark) must carry the measured cap: MLX C++ reads it
+        // once at first Metal device construction, so the projection is the only
+        // place that can set it before MLX initializes.
+        let serving = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(),
+            getenv: { _ in nil }
+        )
+        #expect(
+            serving[GemmaOptimizationEnvironment.maxMBPerBufferKey]
+                == GemmaOptimizationEnvironment.measuredMaxMBPerBuffer
+        )
+
+        // Retained validation is the hermetic control-authority check
+        // (artifact verification, the packaged runtime-smoke gate,
+        // paged-kernel preflight, SelfUpdater). It must be exactly the coupled
+        // control keys — `validateRetainedProjection` throws on any extra key —
+        // so the non-config buffer cap must not leak into it.
+        let retained = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(),
+            context: .retainedValidation,
+            getenv: { _ in nil }
+        )
+        #expect(retained[GemmaOptimizationEnvironment.maxMBPerBufferKey] == nil)
+        #expect(Set(retained.keys) == [
+            GemmaOptimizationEnvironment.prefillLayer18Key,
+            GemmaOptimizationEnvironment.weightedUnsortKey,
+            GemmaOptimizationEnvironment.safeR1Key,
+        ])
+    }
+
     @Test("daemon passthrough persists exactly the drain refinement")
     func daemonDrainPassthroughIsExact() {
         let key = GemmaOptimizationEnvironment.safeR1Key

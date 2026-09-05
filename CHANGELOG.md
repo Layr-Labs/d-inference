@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — provider console entry
+
+- Open the provider workspace directly from the console home page, removing the Consumer/Provider selection page. Keep chat and API access in workspace navigation.
+
 ## Unreleased — GPT-OSS prefill and decode
 
 - Skip unused GPT-OSS prefill vocabulary projections, fuse compatible 20B expert gate/up weights with bounded load materialization, reuse unchanged quantized constants, and enable the measured width-2880 MXFP4 decode path on M4 Max. Keep rollback controls and unsupported-shape fallbacks.

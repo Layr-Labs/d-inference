@@ -1,6 +1,6 @@
 # Console UI (`console-ui/`)
 
-> Last updated: 2026-09-04 · commit `dbd12f295`
+> Last updated: 2026-09-05 · commit `d70df51bc`
 
 The console at `console.darkbloom.dev` is a Next.js 16 App Router / React 19 application (`console-ui/package.json`) that gives consumers a chat client, model catalog, network stats, billing, API-key management, and provider linking. The browser never calls the coordinator for authenticated work: every page fetches same-origin `/api/*` route handlers, which resolve the coordinator URL server-side and forward the caller's own credential. This page explains how those pieces fit; the coordinator routes they call are specified in [`../../reference/api-contracts.md`](../../reference/api-contracts.md). The internal, read-only operator dashboard is a separate app — see [`admin-ui.md`](admin-ui.md).
 
@@ -23,7 +23,7 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 
 | Path | File(s) | Purpose | Auth |
 |---|---|---|---|
-| `/` | `page.tsx`, `components/console-entry/*` | Consumer/Provider workspace chooser with account-aware provider destinations | Public |
+| `/` | `page.tsx` | Server redirect to `/providers` | Public |
 | `/chat` | `chat/page.tsx`, `components/chat/*`, `hooks/useChatStream.ts` | Chat: model picker, image upload, think-block rendering, per-message trust badge (`components/TrustBadge.tsx`) | Renders for guests; sending needs `authenticated && apiKeyReady` (`useAuth`) |
 | `/login` | `login/page.tsx` | Legacy Privy login page (redirects to `?next=` once authenticated) | **Unreachable** — `console-ui/src/proxy.ts` redirects `/login` to `/`; its copy ("email, wallet, or social") is stale |
 | `/link` | `link/page.tsx`, `link/DeviceLinkForm.tsx` | RFC 8628 device-code approval for `darkbloom login`: `POST /api/device/approve` with `Authorization: Bearer <Privy token>` | Privy |
@@ -42,19 +42,22 @@ Files are under `console-ui/src/app/`. "Auth" is what the page itself requires; 
 
 ### Workspace entry and provider journeys
 
-`ConsoleWelcome` (`console-ui/src/components/console-entry/ConsoleWelcome.tsx`)
-offers Consumer → `/chat` with API/catalog links, and Provider → setup or the
-fleet. Workspace choice changes navigation, not account permissions. The root
-remains a chooser; no saved preference overrides a deep link. `AppShell` omits
-the sidebar on `/` and preserves the standalone device approval flow on `/link`.
+`ConsoleHomePage` (`console-ui/src/app/page.tsx`) redirects `/` to `/providers`
+on the server, regardless of the saved workspace preference. The provider page
+shows onboarding to guests and confirmed empty accounts, and the fleet to
+linked accounts. `WorkspaceSwitcher`
+(`console-ui/src/components/navigation/WorkspaceSwitcher.tsx`) keeps Consumer →
+`/chat` and Provider → setup or fleet available. Workspace choice changes
+navigation, not account permissions; deep links retain their destination.
+`AppShell` preserves the standalone device approval flow on `/link`.
 
 `useProviderAccount` (`console-ui/src/components/console-entry/useProviderAccount.ts`)
 uses the Privy auth context without provisioning an inference key. A successful
 empty provider list selects setup. Any linked record, including an offline or
 never-seen Mac, selects the fleet. Loading, malformed responses, missing tokens,
 and request errors remain unknown; they never imply a new provider. Discovery
-has a 15-second deadline and retries when the page becomes visible or the user
-requests it. Account changes cancel pending results.
+has a 15-second deadline and retries when the page becomes visible. Account
+changes cancel pending results.
 
 `ConsoleExperienceProvider` (`console-ui/src/components/console-entry/ConsoleExperience.tsx`)
 resolves consumer/provider routes first and the last workspace on shared stats
@@ -67,12 +70,15 @@ requires macOS 26 or later (`ProviderRequirements`,
 
 ```mermaid
 flowchart TD
-  Home[ConsoleWelcome at /] --> Consumer[Consumer: /chat or /api-console]
-  Home --> Discovery[useProviderAccount]
+  Home[ConsoleHomePage at /] -->|Server redirect| Fleet[ProviderDashboard at /providers]
+  Fleet -->|Guest or confirmed empty| Guide[ProviderOnboarding]
+  Fleet -->|Linked, including offline| Machines[Fleet and machine status]
+  Fleet -->|Loading or error| Pending[Loading or retry UI]
+  Fleet --> Switcher[WorkspaceSwitcher]
+  Switcher -->|Consumer| Consumer[Consumer: /chat with API navigation]
+  Switcher -->|Provider| Discovery[useProviderAccount]
   Discovery -->|Guest or verified empty| Setup[ProviderOnboarding at /providers/setup]
-  Discovery -->|Linked, including offline| Fleet[ProviderDashboard at /providers]
-  Discovery -->|Loading or error| Unknown[Open provider workspace or retry discovery]
-  Unknown --> Fleet
+  Discovery -->|Linked or unresolved| Fleet
   Setup --> Link[Device approval at /link]
   Link --> Fleet
   Fleet --> Earnings[Recorded earnings at /providers/earnings]

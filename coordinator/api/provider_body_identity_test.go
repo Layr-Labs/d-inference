@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -255,6 +256,24 @@ func TestProviderBodyByteIdentity(t *testing.T) {
 		}
 		assertProviderBytes(t, got, want)
 	})
+
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("responses instructions stream=%t", stream), func(t *testing.T) {
+			body := fmt.Sprintf(`{"model":%q,"instructions":"Answer in French.","input":"hello","max_output_tokens":16,"stream":%t}`, plainBuild, stream)
+			got := postAndCapture(t, ctx, ts, fp, "/v1/responses", "test-key", body)
+			want := forwardOracle(t, body, func(p map[string]any) {
+				delete(p, "instructions")
+				delete(p, "input")
+				delete(p, "max_output_tokens")
+				p["max_tokens"] = 16
+				p["messages"] = []any{
+					map[string]any{"role": "system", "content": "Answer in French."},
+					map[string]any{"role": "user", "content": "hello"},
+				}
+			})
+			assertProviderBytes(t, got, want)
+		})
+	}
 
 	t.Run("responses lowering after rewrite", func(t *testing.T) {
 		body := `{"model":"` + alias + `","input":"hello"}`

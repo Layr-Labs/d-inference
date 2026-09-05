@@ -90,9 +90,24 @@ fn lower_completions(input: &Map<String, Value>) -> Result<Map<String, Value>, E
 }
 
 fn lower_responses(input: &Map<String, Value>) -> Result<Map<String, Value>, EndpointError> {
-    let messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    let mut messages = responses_messages(input.get("input").ok_or(EndpointError::Invalid)?)?;
+    match input.get("instructions") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(instructions)) => {
+            if !instructions.is_empty() {
+                messages.insert(0, json!({"role": "system", "content": instructions}));
+            }
+        }
+        Some(_) => return Err(EndpointError::Invalid),
+    }
     let mut out = input.clone();
-    for key in ["input", "endpoint", "max_output_tokens", "text"] {
+    for key in [
+        "input",
+        "instructions",
+        "endpoint",
+        "max_output_tokens",
+        "text",
+    ] {
         out.remove(key);
     }
     out.insert("messages".into(), Value::Array(messages));
@@ -535,6 +550,31 @@ fn explicit_max_tokens(input: &Map<String, Value>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowers_responses_instructions_shared_vectors() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../fixtures/prompt-contract/v1/responses_instructions.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let result = lower(Endpoint::Responses, case["request"].clone());
+            if case["invalid"] == true {
+                assert!(
+                    matches!(result, Err(EndpointError::Invalid)),
+                    "{}: {result:?}",
+                    case["name"]
+                );
+            } else {
+                assert_eq!(
+                    Value::Object(result.unwrap()),
+                    case["expected"],
+                    "{}",
+                    case["name"]
+                );
+            }
+        }
+    }
 
     #[test]
     fn lowers_responses_function_history() {

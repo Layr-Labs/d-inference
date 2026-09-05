@@ -273,6 +273,8 @@ export default function EarningsContent() {
       {/* Stripe Withdraw Modal */}
       <PayoutModal open={payouts.withdrawOpen} onClose={() => !payouts.withdrawLoading && payouts.setWithdrawOpen(false)}>
         <StripeWithdrawModal
+          quote={payouts.withdrawQuote}
+          confirmationPending={payouts.withdrawConfirmationPending}
           status={payouts.status}
           balanceMicroUsd={withdrawableBalanceMicro}
           amount={payouts.withdrawAmount}

@@ -24,6 +24,12 @@ type Config struct {
 	StripeConnectReturnURL       string // where Stripe redirects after onboarding completes
 	StripeConnectRefreshURL      string // where Stripe redirects if the link expires
 
+	// Global Payouts is enabled only when its funding account is configured.
+	StripeGlobalPayoutsEnabled          bool
+	StripeGlobalPayoutsFinancialAccount string
+	StripeGlobalPayoutsSecretKey        string
+	StripeGlobalPayoutsWebhookSecret    string
+
 	// EncryptionMnemonic is a BIP39 mnemonic phrase used to derive the
 	// coordinator's X25519 encryption key (via HKDF) for sender→coordinator
 	// E2E request encryption (e2e.DeriveCoordinatorKey).
@@ -47,16 +53,20 @@ func ReadConfig() Config {
 			os.Getenv("MNEMONIC"),
 			os.Getenv(env.EnvPrefix+"_MNEMONIC"),
 		),
-		StripeSecretKey:              os.Getenv(env.EnvPrefix + "_STRIPE_SECRET_KEY"),
-		StripeWebhookSecret:          os.Getenv(env.EnvPrefix + "_STRIPE_WEBHOOK_SECRET"),
-		StripeSuccessURL:             os.Getenv(env.EnvPrefix + "_STRIPE_SUCCESS_URL"),
-		StripeCancelURL:              os.Getenv(env.EnvPrefix + "_STRIPE_CANCEL_URL"),
-		StripeConnectWebhookSecret:   os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_WEBHOOK_SECRET"),
-		StripeConnectPlatformCountry: env.EnvOr(env.EnvPrefix+"_STRIPE_CONNECT_COUNTRY", "US"),
-		StripeConnectReturnURL:       os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_RETURN_URL"),
-		StripeConnectRefreshURL:      os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_REFRESH_URL"),
-		MockMode:                     os.Getenv(env.EnvPrefix+"_BILLING_MOCK") == "true",
-		ReferralSharePercent:         20,
+		StripeSecretKey:                     os.Getenv(env.EnvPrefix + "_STRIPE_SECRET_KEY"),
+		StripeWebhookSecret:                 os.Getenv(env.EnvPrefix + "_STRIPE_WEBHOOK_SECRET"),
+		StripeSuccessURL:                    os.Getenv(env.EnvPrefix + "_STRIPE_SUCCESS_URL"),
+		StripeCancelURL:                     os.Getenv(env.EnvPrefix + "_STRIPE_CANCEL_URL"),
+		StripeConnectWebhookSecret:          os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_WEBHOOK_SECRET"),
+		StripeConnectPlatformCountry:        env.EnvOr(env.EnvPrefix+"_STRIPE_CONNECT_COUNTRY", "US"),
+		StripeConnectReturnURL:              os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_RETURN_URL"),
+		StripeConnectRefreshURL:             os.Getenv(env.EnvPrefix + "_STRIPE_CONNECT_REFRESH_URL"),
+		StripeGlobalPayoutsEnabled:          os.Getenv(env.EnvPrefix+"_STRIPE_GLOBAL_PAYOUTS_ENABLED") == "true",
+		StripeGlobalPayoutsFinancialAccount: os.Getenv(env.EnvPrefix + "_STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT"),
+		StripeGlobalPayoutsSecretKey:        env.FirstNonEmpty(os.Getenv(env.EnvPrefix+"_STRIPE_GLOBAL_PAYOUTS_SECRET_KEY"), os.Getenv(env.EnvPrefix+"_STRIPE_SECRET_KEY")),
+		StripeGlobalPayoutsWebhookSecret:    os.Getenv(env.EnvPrefix + "_STRIPE_GLOBAL_PAYOUTS_WEBHOOK_SECRET"),
+		MockMode:                            os.Getenv(env.EnvPrefix+"_BILLING_MOCK") == "true",
+		ReferralSharePercent:                20,
 	}
 	if refShareStr := os.Getenv(env.EnvPrefix + "_REFERRAL_SHARE_PCT"); refShareStr != "" {
 		if v, err := strconv.ParseInt(refShareStr, 10, 64); err == nil {
@@ -71,7 +81,10 @@ func ReadConfig() Config {
 // enablement in a production deployment with live keys would silently skip
 // payment verification.
 func (c Config) Check() error {
-	if c.MockMode && c.StripeSecretKey != "" {
+	if c.StripeGlobalPayoutsEnabled && (c.StripeGlobalPayoutsFinancialAccount == "" || c.StripeGlobalPayoutsSecretKey == "") {
+		return fmt.Errorf("Global Payouts requires a financial account and restricted API key")
+	}
+	if c.MockMode && (c.StripeSecretKey != "" || c.StripeGlobalPayoutsSecretKey != "") {
 		return fmt.Errorf("billing mock mode is enabled but a real Stripe secret key is configured — these are mutually exclusive; unset %s_STRIPE_SECRET_KEY or disable %s_BILLING_MOCK", env.EnvPrefix, env.EnvPrefix)
 	}
 	return nil

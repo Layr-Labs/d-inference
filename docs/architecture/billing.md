@@ -1,11 +1,11 @@
 # Billing: pricing, reservations, ledger, and payouts
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Darkbloom is prepaid. A consumer account holds an integer micro-USD balance;
 the coordinator reserves the worst-case cost of a request before dispatch,
 settles the provider-reported cost after the terminal message, and credits the
-provider a withdrawable share that it withdraws through Stripe Connect. This
+provider a withdrawable share that it withdraws through Stripe. Connect and the opt-in Global Payouts adapter share the earned-balance ledger. This
 page explains the money path and what it guarantees. Constants, formulas,
 routes, and env vars are tabulated in
 [`reference/pricing-model.md`](../reference/pricing-model.md); the consumer
@@ -31,7 +31,7 @@ how-to is [`consumer/billing.md`](../consumer/billing.md).
   credits. `users.role = "service"` (`coordinator/store/interface.go`
   `RoleService`) marks wholesale partners.
 - **Two balance columns.** `balances.balance_micro_usd` is spendable;
-  `balances.withdrawable_micro_usd` is the earned subset that Stripe Connect
+  `balances.withdrawable_micro_usd` is the earned subset that Stripe
   may pay out (`coordinator/store/postgres.go` DDL and
   `coordinator/store/postgres_withdrawable_migration.go`).
 
@@ -495,3 +495,11 @@ Names are written without the Datadog namespace prefix, which is owned by [telem
 - [`architecture/request-outcome-observability.md`](request-outcome-observability.md) — how billing outcomes join the request outcome taxonomy
 - [`reference/api-contracts.md`](../reference/api-contracts.md) — error envelope and status codes
 - [`storage.md`](storage.md) — which store backend holds the ledger and what survives a restart
+
+## International bank withdrawal route
+
+When Global Payouts is enabled, the server returns its explicit country policy in the existing payout status response. New destinations outside the configured Connect transfer region use Stripe-hosted recipient onboarding. Existing ready Connect destinations remain on Connect (`coordinator/api/global_payouts_onboarding.go`, `maybeGlobalOnboard`). The UI presents bank setup and withdrawal without asking users to select payment infrastructure.
+
+`handleGlobalPayoutQuote` (`coordinator/api/global_payouts_withdraw.go`) verifies recipient and bank eligibility and stores an immutable request plus local-currency estimate without moving earnings. Confirming the quote calls `BeginGlobalPayout` (`coordinator/store/global_payouts_postgres.go`), which locks the payout and recipient, guards both balance columns, and records the debit in one transaction. Connect withdrawals contend on the same balance row.
+
+`syncGlobalPayout` (`coordinator/api/global_payouts_reconcile.go`) uses a persistent idempotency key and reconciles current Stripe state after webhook notifications. Leases bound concurrent sends. Ambiguous results retain the debit; repeated confirmations retain the original identity even after unlinking. A bank return refunds once in the same transaction as its state change. The UI labels `posted` as sent, not paid. The [rollout runbook](../operations/global-payouts.md) defines live validation and rollback obligations.

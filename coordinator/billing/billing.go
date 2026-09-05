@@ -12,6 +12,7 @@ package billing
 import (
 	"log/slog"
 
+	"github.com/eigeninference/d-inference/coordinator/billing/globalpayouts"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
@@ -33,6 +34,7 @@ type Service struct {
 
 	stripe        *StripeProcessor
 	stripeConnect *StripeConnect
+	globalPayouts *globalpayouts.Client
 	referral      *ReferralService
 }
 
@@ -48,6 +50,10 @@ func NewService(st store.Store, ledger *payments.Ledger, logger *slog.Logger, cf
 		logger:   logger,
 		config:   cfg,
 		referral: NewReferralService(st, logger, cfg.ReferralSharePercent),
+	}
+
+	if cfg.StripeGlobalPayoutsSecretKey != "" && cfg.StripeGlobalPayoutsFinancialAccount != "" {
+		svc.globalPayouts = globalpayouts.New(cfg.StripeGlobalPayoutsSecretKey, cfg.StripeGlobalPayoutsFinancialAccount)
 	}
 
 	// Initialize Stripe if configured
@@ -138,4 +144,16 @@ type PaymentMethodInfo struct {
 	Method      PaymentMethod `json:"method"`
 	DisplayName string        `json:"display_name"`
 	Currencies  []string      `json:"currencies"`
+}
+
+// GlobalPayouts returns the bank adapter when credentials are configured.
+func (s *Service) GlobalPayouts() *globalpayouts.Client { return s.globalPayouts }
+func (s *Service) GlobalPayoutsWebhookSecret() string {
+	return s.config.StripeGlobalPayoutsWebhookSecret
+}
+
+// GlobalPayoutsEnabled gates new onboarding and withdrawals. Reconciliation
+// continues while the credentials remain configured, even when admissions stop.
+func (s *Service) GlobalPayoutsEnabled() bool {
+	return s.config.StripeGlobalPayoutsEnabled && s.globalPayouts != nil
 }

@@ -1,6 +1,6 @@
 # Pricing model reference
 
-> Last updated: 2026-09-04 · commit `075d37a91`
+> Last updated: 2026-09-05 · commit `4d9811f7c`
 
 Constants, formulas, enums, routes, and environment variables of the
 coordinator's money path, each row cited to the code that defines it. How the
@@ -283,3 +283,14 @@ Defaults and validation live in [configuration.md](configuration.md); this table
 | `EIGENINFERENCE_ADMIN_KEY`, `EIGENINFERENCE_ADMIN_EMAILS` | admin authorization for admin billing routes (`isAdminAuthorized`, `coordinator/api/release_handlers.go`) | [Auth: admin key, Privy, release key, sender encryption](configuration.md#auth-admin-key-privy-release-key-sender-encryption) |
 | `MODEL_REGISTRY_PUBLISHING_KEY` | bootstrap publishing key accepted by `POST /v1/admin/models/register` (`requirePublishingAPIKey`) | [Model registry, releases and R2/CDN](configuration.md#model-registry-releases-and-r2cdn) |
 | `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_RPS`, `EIGENINFERENCE_FINANCIAL_RATE_LIMIT_BURST`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_RPS`, `EIGENINFERENCE_SERVICE_RATE_LIMIT_BURST` | financial and service limiters; compiled defaults under [Constants](#constants) | [Routing, admission and TTFT](configuration.md#routing-admission-and-ttft) |
+
+## Global Payouts withdrawals
+
+| Quantity | Policy | Citation |
+|---|---|---|
+| User fee | Zero for standard bank withdrawals; platform pays Stripe charges | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
+| USD input | Decimal with at most two fractional digits; $1 to $1,000,000, further constrained by balance and Stripe corridor limits | `coordinator/api/global_payouts_withdraw.go` (`payoutUSDCents`) |
+| Local amount | Stripe quote, in destination minor units with explicit currency exponent | `coordinator/api/global_payouts_withdraw.go` (`payoutCurrencyExponent`) |
+| Quote validity | At most two minutes, shortened to the Stripe FX lock expiry | `coordinator/api/global_payouts_withdraw.go` (`handleGlobalPayoutQuote`) |
+| Retry window without remote ID | Twelve hours, then manual reconciliation without automatic refund | `coordinator/api/global_payouts_reconcile.go` (`syncGlobalPayout`) |
+| Reconciliation | One-minute loop, up to 200 records per scan; posted records polled for 90 days and later returns handled by events | `coordinator/api/global_payouts_reconcile.go` (`StartGlobalPayoutReconciler`); `coordinator/store/global_payouts_postgres.go` (`ListGlobalPayoutsToReconcile`) |

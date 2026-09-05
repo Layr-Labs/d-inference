@@ -892,6 +892,7 @@ func main() {
 	// manual payout schedule and alerts on withdrawals stuck in "transferred".
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
+	srv.StartGlobalPayoutReconciler(ctx)
 
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{

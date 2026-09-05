@@ -134,7 +134,15 @@ export interface InviteRedeemResponse {
   balance_usd: string;
 }
 
+export interface BankWithdrawalQuote {
+  id: string; amount_usd: string; fee_usd: string; destination_amount: number; currency: string; currency_exponent: number; expires_at: string; destination_last4: string; eta: string;
+}
+
 export interface StripeStatus {
+  payout_rail?: "connect" | "global";
+  payout_currency?: string;
+  payouts_available?: boolean;
+  countries?: { code: string; name: string; rail: string; currency?: string }[];
   configured: boolean;
   has_account: boolean;
   stripe_account_id?: string;
@@ -163,6 +171,8 @@ export interface StripeDashboardLinkResponse {
 }
 
 export interface StripeWithdrawResponse {
+  payout_rail?: "connect" | "global";
+  refunded?: boolean;
   status: string;
   withdrawal_id: string;
   transfer_id?: string;
@@ -177,6 +187,10 @@ export interface StripeWithdrawResponse {
 }
 
 export interface StripeWithdrawal {
+  payout_rail?: "connect" | "global";
+  payout_currency?: string;
+  destination_amount?: number;
+  currency_exponent?: number;
   id: string;
   account_id: string;
   stripe_account_id: string;
@@ -186,7 +200,7 @@ export interface StripeWithdrawal {
   fee_micro_usd: number;
   net_micro_usd: number;
   method: "standard" | "instant";
-  status: "pending" | "transferred" | "paid" | "failed";
+  status: "pending" | "transferred" | "paid" | "failed" | "processing" | "posted" | "returned" | "canceled";
   failure_reason?: string;
   refunded?: boolean;
   created_at: string;

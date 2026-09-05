@@ -6,6 +6,8 @@ import {
   startStripeOnboarding,
   createStripeDashboardLink,
   withdrawStripe,
+  fetchBankWithdrawalQuote,
+  type BankWithdrawalQuote,
   fetchStripeWithdrawals,
   unlinkStripeAccount,
   type StripeStatus,
@@ -33,6 +35,8 @@ export interface UseStripePayouts {
   withdrawMethod: WithdrawMethod;
   setWithdrawMethod: (m: WithdrawMethod) => void;
   withdrawLoading: boolean;
+  withdrawQuote: BankWithdrawalQuote | null;
+  withdrawConfirmationPending: boolean;
   /** Refetch Stripe status + withdrawal history (refresh=1 pulls live). */
   reload: (refresh?: boolean) => Promise<void>;
   /** Start (or continue) Stripe Express onboarding for the selected country. */
@@ -74,7 +78,10 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   const [withdrawals, setWithdrawals] = useState<StripeWithdrawal[]>([]);
   const [onboardLoading, setOnboardLoading] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
-  const [withdrawAmount, setWithdrawAmount] = useState("10");
+  const [withdrawAmount, setWithdrawAmountState] = useState("10");
+  const [withdrawQuote, setWithdrawQuote] = useState<BankWithdrawalQuote | null>(null);
+  const [withdrawConfirmationPending, setWithdrawConfirmationPending] = useState(false);
+  const setWithdrawAmount = useCallback((value: string) => { if (!withdrawConfirmationPending) { setWithdrawAmountState(value); setWithdrawQuote(null); } }, [withdrawConfirmationPending]);
   const [withdrawMethod, setWithdrawMethod] = useState<WithdrawMethod>("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
@@ -133,31 +140,44 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
 
   const withdraw = useCallback(async () => {
     setWithdrawLoading(true);
-    onWithdrawStart?.(withdrawMethod);
+    const global = status?.payout_rail === "global";
     try {
-      const resp = await withdrawStripe(withdrawAmount, withdrawMethod);
-      onWithdrawSuccess?.(withdrawMethod);
-      addToast(withdrawSuccessMessage(resp), "success");
+      if (global && (!withdrawQuote || Number(withdrawQuote.amount_usd) !== Number(withdrawAmount) || (Date.parse(withdrawQuote.expires_at) <= Date.now() && !withdrawConfirmationPending))) {
+        setWithdrawQuote(await fetchBankWithdrawalQuote(withdrawAmount));
+        return;
+      }
+      onWithdrawStart?.(withdrawMethod);
+      if (global) setWithdrawConfirmationPending(true);
+      const resp = await withdrawStripe(withdrawAmount, global ? "standard" : withdrawMethod, global ? withdrawQuote?.id : undefined);
+      if (resp.refunded) {
+        addToast("The withdrawal could not be completed. The funds are back in your available earnings.", "error");
+      } else {
+        onWithdrawSuccess?.(withdrawMethod);
+        addToast(withdrawSuccessMessage(resp), "success");
+      }
       setWithdrawOpen(false);
+      setWithdrawConfirmationPending(false);
+      setWithdrawQuote(null);
       await Promise.all([onAfterWithdraw?.(), reload(false)]);
     } catch (e) {
       onWithdrawError?.();
-      // Map backend error codes to friendly copy; account-state errors close
-      // the modal and refresh status so the card lands on the right branch
-      // (gone -> set up payouts again, recreate_required -> Action needed).
       const p = classifyWithdrawError(e);
       addToast(p.message);
+      if (["quote_expired", "payout_changed", "quote_required"].includes(p.code)) { setWithdrawQuote(null); setWithdrawConfirmationPending(false); }
       if (p.closeModal) setWithdrawOpen(false);
-      if (p.refreshStatus) await reload(false);
+      if (p.refreshStatus) await reload(status?.payout_rail === "global");
+      // Keep the quote ID after a lost response so retrying confirmation
+      // resolves the same withdrawal instead of creating another debit.
+    } finally {
+      setWithdrawLoading(false);
     }
-    setWithdrawLoading(false);
-  }, [withdrawAmount, withdrawMethod, addToast, onAfterWithdraw, reload, onWithdrawStart, onWithdrawSuccess, onWithdrawError]);
+  }, [status?.payout_rail, withdrawQuote, withdrawConfirmationPending, withdrawAmount, withdrawMethod, addToast, onAfterWithdraw, reload, onWithdrawStart, onWithdrawSuccess, onWithdrawError]);
 
   const openWithdraw = useCallback((defaultAmount = "10") => {
-    setWithdrawAmount(defaultAmount);
+    if (!withdrawConfirmationPending) { setWithdrawAmount(defaultAmount); setWithdrawQuote(null); }
     setWithdrawMethod(status?.instant_eligible ? "instant" : "standard");
     setWithdrawOpen(true);
-  }, [status?.instant_eligible]);
+  }, [status?.instant_eligible, setWithdrawAmount, withdrawConfirmationPending]);
 
   // Changing the payout bank account happens in Stripe's Express Dashboard,
   // reached through a single-use login link. The tab is opened synchronously
@@ -194,7 +214,9 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
     try {
-      const { url } = await createStripeDashboardLink();
+      const { url } = status?.payout_rail === "global"
+        ? await startStripeOnboarding(`${window.location.origin}${window.location.pathname}?stripe_return=1`, status.stripe_account_country)
+        : await createStripeDashboardLink();
       if (!url) throw new Error("Stripe didn't return a dashboard link.");
       if (tab && !tab.closed) {
         tab.location.replace(url);
@@ -211,7 +233,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       if (p.refreshStatus) await reload(false);
     }
     setDashboardLoading(false);
-  }, [addToast, reload]);
+  }, [addToast, reload, status?.payout_rail, status?.stripe_account_country]);
 
   const [unlinkLoading, setUnlinkLoading] = useState(false);
   const unlink = useCallback(async () => {
@@ -240,6 +262,8 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     withdrawMethod,
     setWithdrawMethod,
     withdrawLoading,
+    withdrawQuote,
+    withdrawConfirmationPending,
     reload,
     onboard,
     withdraw,

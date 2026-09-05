@@ -2871,10 +2871,13 @@ func (s *Server) routes() {
 	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
+	// A single bank withdrawal experience, with separate payout lifecycles.
+	s.mux.HandleFunc("POST /v1/billing/stripe/quote", s.requirePrivyAuth(s.rateLimitFinancial(s.handleGlobalPayoutQuote)))
+	s.mux.HandleFunc("POST /v1/billing/stripe/global/webhook", s.handleGlobalPayoutWebhook)
 	// Stripe Payouts (Connect Express) — bank/card withdrawals.
-	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))
 	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
 	// requirePrivyAuth (not requireAuth): both of these are account-management
 	// operations — a leaked inference API key must not be able to detach the

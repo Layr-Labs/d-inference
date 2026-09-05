@@ -8,6 +8,11 @@
 
 - Open the provider workspace directly from the console home page, removing the Consumer/Provider selection page. Keep chat and API access in workspace navigation.
 
+## Unreleased — international bank withdrawals
+
+- Add an opt-in Stripe Global Payouts route for additional bank-payout countries, including India, alongside existing Connect withdrawals. Providers review a local-currency estimate before confirming.
+- Use one earned-balance ledger across both routes, retry confirmations without duplicate debits, and reconcile bank returns exactly once. Display sent transfers separately from bank receipt.
+
 ## Unreleased — GPT-OSS prefill and decode
 
 - Skip unused GPT-OSS prefill vocabulary projections, fuse compatible 20B expert gate/up weights with bounded load materialization, reuse unchanged quantized constants, and enable the measured width-2880 MXFP4 decode path on M4 Max. Keep rollback controls and unsupported-shape fallbacks.

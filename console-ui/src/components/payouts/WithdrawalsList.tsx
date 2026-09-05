@@ -1,5 +1,6 @@
 "use client";
 
+import { formatBankAmount } from "./bank-withdrawal-format";
 import { Check, Clock, X } from "lucide-react";
 import { type StripeWithdrawal } from "@/lib/api";
 import { formatUsd, microToUsd } from "@/lib/format";
@@ -16,7 +17,7 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
       </p>
       <div className="space-y-2">
         {withdrawals.slice(0, 5).map((w) => {
-          const presentation = withdrawalStatusPresentation(w.status, w.refunded);
+          const presentation = withdrawalStatusPresentation(w.status, w.refunded, w.failure_reason);
           return (
             <div key={w.id} className="flex items-center justify-between text-sm">
               <div className="flex items-center gap-2">
@@ -28,7 +29,9 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
                   <Clock size={12} className="text-gold" />
                 )}
                 <span className="font-mono text-text-secondary">
-                  {formatUsd(microToUsd(w.net_micro_usd))}
+                  {w.payout_rail === "global" && w.payout_currency && w.destination_amount
+                    ? formatBankAmount(w.destination_amount, w.payout_currency, w.currency_exponent ?? 2)
+                    : formatUsd(microToUsd(w.net_micro_usd))}
                 </span>
                 <span className="text-[10px] font-mono uppercase text-text-tertiary">
                   {w.method}

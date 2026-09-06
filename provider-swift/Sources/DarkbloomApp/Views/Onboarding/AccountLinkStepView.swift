@@ -45,7 +45,7 @@ struct AccountLinkStepView: View {
             }
         case .unreachable:
             VStack(alignment: .leading, spacing: 3) {
-                Label("Darkbloom could not be reached. Check your connection and retry.", systemImage: "wifi.exclamationmark")
+                Label("Couldn’t link this Mac. Review the details and try again.", systemImage: "exclamationmark.circle")
                     .accountStatusStyle(color: .orange)
                 if let detail = flow.accountLinkFailureDetail {
                     Text(detail)
@@ -108,7 +108,7 @@ private struct AccountLinkSurface: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isLinked: Bool { flow.accountPhase == .linked }
-    private var showsCode: Bool { flow.accountPhase != .introduction && !isLinked }
+    private var showsCode: Bool { flow.showsAccountLinkCode }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -190,7 +190,7 @@ private struct AccountLinkSurface: View {
         switch flow.accountPhase {
         case .linked: "CONNECTED"
         case .expired: "EXPIRED"
-        case .unreachable: "OFFLINE"
+        case .unreachable: "TRY AGAIN"
         case .introduction, .waitingForApproval, .confirming: "PRIVATE"
         }
     }

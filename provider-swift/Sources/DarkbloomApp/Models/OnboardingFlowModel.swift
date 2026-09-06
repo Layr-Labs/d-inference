@@ -119,6 +119,11 @@ final class OnboardingFlowModel {
 
     var usesLiveReadiness: Bool { !freezesAutomaticProgress && diagnosticsRunner != nil }
     var usesLiveAccountLink: Bool { !freezesAutomaticProgress && accountLinkRunner != nil }
+
+    var showsAccountLinkCode: Bool {
+        guard accountPhase == .waitingForApproval || accountPhase == .confirming else { return false }
+        return !usesLiveAccountLink || accountLinkSession.verificationURI != nil
+    }
     var usesLiveEnrollment: Bool { !freezesAutomaticProgress && enrollmentRunner != nil }
     var usesLivePreparation: Bool { !freezesAutomaticProgress && preparationService != nil }
     var usesLiveVerification: Bool { !freezesAutomaticProgress }

@@ -1,6 +1,6 @@
 # Darkbloom App Release Runbook
 
-> Last updated: 2026-09-06 · commit `63caa59f5`
+> Last updated: 2026-09-06 · commit `7daeb553f`
 
 Use this runbook to package and qualify the SwiftUI **Darkbloom** macOS app
 (`DarkbloomApp`) with its provider CLI. The public app zip and the legacy
@@ -216,6 +216,12 @@ Darkbloom.app/                         # the only top-level item
 This zip is created with `ditto` **after** notarization and stapling. The
 pre-staple `/tmp/darkbloom-notarization-submission.zip` is only input to Apple
 notarytool and must never be uploaded.
+
+Before archiving, the workflow removes `com.apple.macl` from the staged outer
+app. Local launch probes can attach this host-specific access metadata; it does
+not belong in a release. The archive retains the metallib’s `com.apple.cs.*`
+signature attributes and the strict preflight continues to reject unrelated
+metadata (`.github/workflows/release-swift.yml`, bundle and notarization steps).
 
 Legacy coordinator/self-update asset
 `darkbloom-bundle-macos-arm64.tar.gz`:

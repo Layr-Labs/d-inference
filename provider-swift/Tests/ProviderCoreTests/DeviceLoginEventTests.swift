@@ -285,6 +285,36 @@ struct DeviceLoginEventTests {
         }
     }
 
+    @Test("A saved login for another issuer cannot confirm this coordinator", arguments: [false, true])
+    func loginRejectsDifferentIssuer(recoverIncompleteCredential: Bool) async throws {
+        try await withAuthTokenOverride { _ in
+            try ProviderCredentialStore.save(
+                token: "existing-bound-token", accountID: "existing-account",
+                coordinatorURL: "http://127.0.0.1:2"
+            )
+            let recorder = EventRecorder()
+            do {
+                _ = try await performDeviceCodeLogin(
+                    coordinatorURL: "http://127.0.0.1:1",
+                    onDisplayCode: { _, _, _ in Issue.record("Wrong-issuer login must stop before requesting a code") },
+                    openBrowser: false,
+                    onEvent: { recorder.record($0) },
+                    recoverIncompleteCredential: recoverIncompleteCredential
+                )
+                Issue.record("Expected an issuer mismatch")
+            } catch let error as DeviceAuthError {
+                #expect(error.description.contains("belongs to"))
+            }
+            #expect(recorder.events.count == 1)
+            guard case .error(let message) = recorder.events.first else {
+                Issue.record("Expected one terminal error")
+                return
+            }
+            #expect(!message.hasPrefix("Already logged in"))
+            #expect(try ProviderCredentialStore.authenticationToken(for: "http://127.0.0.1:2") == "existing-bound-token")
+        }
+    }
+
     @Test("Implicit login refuses legacy credentials and points to explicit login")
     func legacyCredentialEmitsRecoveryGuidance() async throws {
         try await withAuthTokenOverride { _ in

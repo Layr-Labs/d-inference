@@ -8,9 +8,8 @@ name: Release Provider Bundle (Swift)
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
 #   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
-#   - Darkbloom.app          (SwiftUI DarkbloomApp main executable with the
-#     provider CLI co-bundled in Contents/MacOS — DarkbloomCLILocator probes
-#     the bundle copy first)
+#   - Darkbloom.app          (SwiftUI main plus the provisioned provider helper;
+#     managed locators use the nested CLI and the outer CLI path is an alias)
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
 #   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources, incl. the
 #     app's DarkbloomProvider_DarkbloomApp.bundle with its default.metallib)
@@ -690,6 +689,11 @@ jobs:
           # before stapling and MUST NEVER be uploaded as a release asset. The
           # downloadable Darkbloom-macOS-arm64.zip is rebuilt from the stapled
           # app in the next step.
+          # Running the local launch probes can attach host-specific access
+          # metadata to this staged app. It is not distribution metadata.
+          if xattr -p com.apple.macl "$APP" >/dev/null 2>&1; then
+            xattr -d com.apple.macl "$APP"
+          fi
           rm -f /tmp/darkbloom-notarization-submission.zip
           ditto -c -k --keepParent \
             "$APP" /tmp/darkbloom-notarization-submission.zip
@@ -757,6 +761,9 @@ jobs:
           # part of the registered hash contract.
           APP_ARCHIVE="/tmp/$APP_ARCHIVE_NAME"
           LEGACY_BUNDLE="/tmp/$LEGACY_BUNDLE_NAME"
+          if xattr -p com.apple.macl "$APP" >/dev/null 2>&1; then
+            xattr -d com.apple.macl "$APP"
+          fi
           rm -f "$APP_ARCHIVE" "$LEGACY_BUNDLE"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$APP_ARCHIVE"
           # mlx.metallib carries its nested code signature in com.apple.cs.*
@@ -770,7 +777,7 @@ jobs:
             -C "${{ steps.bundle.outputs.stage }}" .
           # Apply the same bounded raw-header walk used by clean-machine shell
           # installs before this exact archive can be extracted or uploaded.
-          scripts/install.sh --preflight-release-archive "$LEGACY_BUNDLE"
+          bash scripts/install.sh --preflight-release-archive "$LEGACY_BUNDLE"
           tar tzf "$LEGACY_BUNDLE" | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt

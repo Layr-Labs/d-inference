@@ -319,7 +319,7 @@ private func runDeviceCodeLogin(
         recovery = recoverIncompleteCredential
             ? try ProviderCredentialRecovery.prepare(for: coordinatorURL)
             : nil
-        existingCredential = recovery == nil ? try ProviderCredentialStore.load() : nil
+        existingCredential = recovery == nil ? try ProviderCredentialStore.load(for: coordinatorURL) : nil
     } catch let error as ProviderCredentialStoreError
         where error == .incompleteCredential || error == .credentialRecoveryRequired {
         throw DeviceAuthError.credentialRecoveryRequired

@@ -115,9 +115,11 @@ struct OnboardingLiveLinkTests {
         // phase directly would race: code→linked can land in one MainActor
         // turn, so a later poll only ever sees the terminal state.
         var observedPhases: [AccountLinkPhase] = []
-        flow.setDraftChangeHandler { draft in
+        var observedCodeVisibility: [Bool] = []
+        flow.setDraftChangeHandler { [weak flow] draft in
             if observedPhases.last != draft.accountPhase {
                 observedPhases.append(draft.accountPhase)
+                observedCodeVisibility.append(flow?.showsAccountLinkCode ?? false)
             }
         }
 
@@ -132,6 +134,7 @@ struct OnboardingLiveLinkTests {
         // The code phase preceded the terminal link, with the real code,
         // expiry, and a deeplinked URL.
         #expect(observedPhases == [.waitingForApproval, .linked])
+        #expect(observedCodeVisibility == [true, false])
         #expect(flow.accountLinkSession.code == "REAL-C0DE")
         #expect(flow.accountLinkSession.verificationURI == "https://app.darkbloom.dev/link")
         #expect(flow.accountLinkSession.lifetimeMinutes == 10)
@@ -160,6 +163,8 @@ struct OnboardingLiveLinkTests {
         #expect(expired)
         #expect(flow.accountLinkFailureDetail?.contains("expired") == true)
         #expect(!flow.canContinue)
+
+        #expect(!flow.showsAccountLinkCode)
 
         flow.startAccountLink()
         let linked = await eventually { flow.accountPhase == .linked }
@@ -192,6 +197,7 @@ struct OnboardingLiveLinkTests {
         let failed = await eventually { deadFlow.accountPhase == .unreachable }
         #expect(failed)
         #expect(deadFlow.accountLinkFailureDetail != nil)
+        #expect(!deadFlow.showsAccountLinkCode)
     }
 
     @Test("An already-linked machine maps the error message onto .linked")
